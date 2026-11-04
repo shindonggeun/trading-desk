@@ -73,7 +73,7 @@ export default function RunView({ runId }: { runId: string }) {
     <main className="run">
       <div className="run-head">
         <a href="#/" className="link">← 대시보드</a>
-        <h1>{run.ticker} <span className="muted">{run.trade_date}</span></h1>
+        <h1>{run.options.name ?? run.ticker} <span className="muted">{run.options.name ? `${run.ticker} · ` : ""}{run.trade_date}</span></h1>
         <span className={`status status-${status}`}>{STATUS_LABEL[status]}</span>
         <span className="muted small">{duration(run.started_at, run.finished_at)}</span>
       </div>
@@ -90,7 +90,7 @@ export default function RunView({ runId }: { runId: string }) {
             ),
           )}
           {status === "running" && <div className="typing"><span /><span /><span /></div>}
-          {plan && <PlanCard plan={plan} ticker={run.ticker} />}
+          {plan && <PlanCard plan={plan} ticker={run.options.name ? `${run.options.name} (${run.ticker})` : run.ticker} />}
           <div ref={bottom} />
         </div>
       </div>

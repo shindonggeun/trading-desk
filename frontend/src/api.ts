@@ -1,4 +1,4 @@
-import type { DeskConfig, DeskEvent, Holding, RegimeSnapshot, Run } from "./types";
+import type { DeskConfig, DeskEvent, Holding, Instrument, RegimeSnapshot, Run } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -40,6 +40,8 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 
 export interface NewRun {
   ticker: string;
+  name?: string;
+  profile?: string;
   trade_date?: string;
   analysts: string[];
   use_portfolio: boolean;
@@ -58,6 +60,9 @@ export const api = {
   createRun: (body: NewRun) => call<Run>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
   portfolio: () => call<{ broker: string; error?: string; holdings: Holding[] }>("/api/portfolio"),
   regime: () => call<RegimeSnapshot>("/api/regime"),
+  instruments: (q: string) => call<Instrument[]>(`/api/instruments?q=${encodeURIComponent(q)}`),
+  instrumentsStatus: () =>
+    call<{ source: string; count: number; updated_at: string | null; error: string | null }>("/api/instruments/status"),
 };
 
 /** Follow a run's events. The server replays from the start, then streams live. */

@@ -12,6 +12,11 @@ export interface Plan {
   time_horizon: string | null;
   position_sizing: string | null;
   executive_summary: string | null;
+  /** Where each level came from: the model's call or the ATR fill (backend desk/levels.py). */
+  levels_source?: Partial<Record<"entry_price" | "stop_loss" | "price_target", "model" | "atr">>;
+  atr?: number;
+  last_close?: number;
+  levels_error?: string;
 }
 
 export interface Run {
@@ -19,7 +24,13 @@ export interface Run {
   ticker: string;
   trade_date: string;
   status: RunStatus;
-  options: { analysts: string[]; use_portfolio: boolean; output_language: string | null };
+  options: {
+    analysts: string[];
+    use_portfolio: boolean;
+    output_language: string | null;
+    name?: string | null;
+    profile?: string | null;
+  };
   plan: Plan | null;
   error: string | null;
   report_path: string | null;
@@ -65,4 +76,15 @@ export interface DeskConfig {
   output_language: string;
   fake_runs: boolean;
   broker: string;
+  profiles: { id: string; label: string }[];
+  default_profile: string;
+}
+
+/** One search hit from /api/instruments: Toss' listing with the Yahoo ticker to analyse. */
+export interface Instrument {
+  symbol: string;
+  ticker: string;
+  name: string;
+  market: string;
+  security_type: string;
 }

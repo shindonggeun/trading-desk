@@ -204,3 +204,16 @@ table.runs { width: 100%; border-collapse: collapse; }
 .ladder-entry .ladder-tick { background: var(--accent); }
 .ladder-stop .ladder-tick { background: var(--short); }
 .ladder-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* instrument search */
+.search { position: relative; }
+.search-list {
+  position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 4px); margin: 0; padding: 4px;
+  list-style: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  max-height: 320px; overflow-y: auto; box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+}
+.search-list li { display: flex; justify-content: space-between; gap: 8px; padding: 7px 8px; border-radius: 6px; cursor: pointer; }
+.search-list li.active { background: var(--surface-2); }
+.search-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-meta { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; white-space: nowrap; }
+

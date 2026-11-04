@@ -1,5 +1,3 @@
-import type { Bias } from "./types";
-
 export function price(v: number | null | undefined): string {
   if (v === null || v === undefined) return "—";
   return v.toLocaleString(undefined, { maximumFractionDigits: v >= 1000 ? 0 : 2 });
@@ -17,13 +15,6 @@ export function duration(from: string | null, to: string | null): string {
   const s = Math.max(0, Math.round(ms / 1000));
   return s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`;
 }
-
-export const BIAS_LABEL: Record<Bias, string> = {
-  long: "LONG",
-  short: "SHORT / 축소",
-  flat: "관망",
-  review: "판단 보류",
-};
 
 export const STATUS_LABEL: Record<string, string> = {
   queued: "대기",

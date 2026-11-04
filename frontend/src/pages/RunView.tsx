@@ -3,6 +3,9 @@ import { api, followRun } from "../api";
 import AgentRail from "../components/AgentRail";
 import { ChatMessage, SystemLine, ToolRow } from "../components/ChatMessage";
 import PlanCard from "../components/PlanCard";
+
+// 백엔드 desk/profile.py 의 label 과 같다. 옛 분석(성향 없음)은 표시하지 않는다
+const PROFILE_LABEL: Record<string, string> = { aggressive_leverage: "공격형 · 레버리지", balanced: "균형형" };
 import { duration, STATUS_LABEL } from "../format";
 import type { DeskEvent, Plan, Run } from "../types";
 
@@ -90,7 +93,13 @@ export default function RunView({ runId }: { runId: string }) {
             ),
           )}
           {status === "running" && <div className="typing"><span /><span /><span /></div>}
-          {plan && <PlanCard plan={plan} ticker={run.options.name ? `${run.options.name} (${run.ticker})` : run.ticker} />}
+          {plan && (
+            <PlanCard
+              plan={plan}
+              ticker={run.options.name ? `${run.options.name} (${run.ticker})` : run.ticker}
+              profile={PROFILE_LABEL[run.options.profile ?? ""]}
+            />
+          )}
           <div ref={bottom} />
         </div>
       </div>

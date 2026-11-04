@@ -52,3 +52,19 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  # 배포 이미지가 실제로 빌드되는지만 본다(푸시하지 않는다). 서버(scripts/deploy.sh)와 같은 Dockerfile · 컨텍스트다
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f backend/backend.Dockerfile -t trading-desk-backend:ci backend
+      - run: docker build -f frontend/frontend.Dockerfile -t trading-desk-web:ci frontend
+      - name: backend image starts and serves /api/health
+        run: |
+          docker run -d --name be -e DESK_DATABASE_URL=sqlite:////tmp/desk.db trading-desk-backend:ci
+          for i in $(seq 1 30); do
+            docker exec be python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)" && exit 0
+            sleep 2
+          done
+          docker logs be; exit 1

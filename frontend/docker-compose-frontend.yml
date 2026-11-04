@@ -1,0 +1,44 @@
+# trading-desk 웹 배포 정의 (docs/deploy.md). 이름 · 보간 규칙은 backend/docker-compose-backend.yml 과 같다.
+#
+#   docker compose -p trading-desk-web-prod --env-file ../../.env.runtime -f docker-compose-frontend.yml \
+#     up -d --build --wait --remove-orphans web-prod
+#
+# 외부에 여는 유일한 컨테이너다. 홈랩 인그레스(storage 192.168.0.12)의 nginx 가 trading.8llow8llowme.com 을 이 포트로 넘긴다.
+# 바인드 주소는 env 로 받고 기본값은 루프백(닫힌 쪽)이다 — 서버에서는 사설 IP(192.168.0.9)만 연다.
+# 쿠키가 Secure 라 HTTPS 앞단 없이 http://192.168.0.9:<포트> 로 열면 로그인이 안 된다(점검은 /api/health 로).
+
+x-logging: &default_logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  web-prod:
+    build:
+      context: .
+      dockerfile: frontend.Dockerfile
+    image: trading-desk-web:prod
+    container_name: trading-desk-web-prod
+    environment:
+      # 같은 네트워크의 백엔드 컨테이너(이름 고정, backend/docker-compose-backend.yml)
+      BACKEND_UPSTREAM: trading-desk-backend-prod:8000
+    ports:
+      - "${DESK_WEB_BIND:-127.0.0.1}:${DESK_WEB_PORT:?docs/deploy.md 3절}:80" # bind:host:container
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+    stop_grace_period: 20s
+    restart: unless-stopped
+    logging: *default_logging
+    networks:
+      - desk
+    mem_limit: ${DESK_WEB_MEM_LIMIT:-128m}
+
+networks:
+  desk:
+    name: ${DESK_DOCKER_NETWORK:?docs/deploy.md 3절}
+    external: true

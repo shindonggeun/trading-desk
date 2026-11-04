@@ -31,6 +31,9 @@ EXCHANGE_INFO = {"symbols": [
 ]}
 # Contract price at each anchor close (the 1m bar that ends there) and now.
 ANCHOR = {("SAMSUNGUSDT", "2026-11-06T06:29:00+00:00"): "164.00",
+          ("SAMSUNGUSDT", "2026-11-04T06:29:00+00:00"): "164.00",
+          ("SAMSUNGUSDT", "2026-11-19T07:29:00+00:00"): "164.00",
+          ("NVDAUSDT", "2026-11-27T17:59:00+00:00"): "205.00",
           ("SAMSUNGUSDT", "2026-11-03T06:29:00+00:00"): "160.00",
           ("NVDAUSDT", "2026-11-06T20:59:00+00:00"): "205.00",
           ("BRKBUSDT", "2026-11-06T20:59:00+00:00"): "481.00"}
@@ -47,7 +50,7 @@ class FakeBinance:
         self.calls.append(path)
         if path == "/fapi/v1/exchangeInfo":
             return httpx.Response(200, json=EXCHANGE_INFO)
-        if path == "/fapi/v1/klines":
+        if path == "/fapi/v1/markPriceKlines":
             assert params["interval"] == "1m" and params["limit"] == "1"
             start = int(params["startTime"])
             key = (params["symbol"], datetime.fromtimestamp(start / 1000, UTC).isoformat())
@@ -128,7 +131,7 @@ def test_estimates_are_cached_and_the_contract_list_is_read_once():
     asyncio.run(est.estimate("BRK-B"))
     assert binance.calls.count("/fapi/v1/premiumIndex") == 3
     assert binance.calls.count("/fapi/v1/exchangeInfo") == 1
-    assert binance.calls.count("/fapi/v1/klines") == 2                # one anchor per contract and close
+    assert binance.calls.count("/fapi/v1/markPriceKlines") == 2                # one anchor per contract and close
 
 
 def test_no_bar_at_the_anchor_close_is_an_error_not_a_guess():
@@ -154,7 +157,7 @@ def test_estimate_endpoint(db_url):
         client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
         body = client.get("/api/estimate?ticker=005930.ks").json()
         assert body["supported"] is True and body["estimate"] == 222360.0
-        assert body["method"] == "binance_perp" and body["fetched_at"] and body["close_at"]
+        assert body["method"] == "binance_perp_mark" and body["fetched_at"] and body["close_at"]
         assert client.get("/api/estimate?ticker=AAPL").json() == {"ticker": "AAPL", "supported": False}
         assert client.get("/api/estimate?ticker=NV%20DA").status_code == 422
 
@@ -164,3 +167,60 @@ def test_estimate_endpoint_is_503_when_the_anchor_is_missing(db_url):
     with _client(db_url, est) as client:
         client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
         assert client.get("/api/estimate?ticker=005930.KS").status_code == 503
+
+
+def test_nan_close_rows_are_not_bars():
+    closes = {"005930.KS": [(date(2026, 11, 5), 215000.0), (date(2026, 11, 6), float("nan"))]}
+    est, _ = _estimator(SATURDAY_KST_10AM, closes, binance=FakeBinance())
+    with pytest.raises(ValueError):            # 11-05 has no anchor in the fake: proves 11-06 was skipped
+        asyncio.run(est.estimate("005930.KS"))
+    ANCHOR[("SAMSUNGUSDT", "2026-11-05T06:29:00+00:00")] = "160.00"
+    try:
+        est, _ = _estimator(SATURDAY_KST_10AM, closes)
+        result = asyncio.run(est.estimate("005930.KS"))
+        assert result.last_close_date == "2026-11-05" and result.last_close == 215000.0
+    finally:
+        del ANCHOR[("SAMSUNGUSDT", "2026-11-05T06:29:00+00:00")]
+
+
+def test_right_after_todays_close_the_anchor_is_today_and_the_market_is_closed():
+    closes = {"005930.KS": [(date(2026, 11, 3), 210000.0), (date(2026, 11, 4), 218000.0)]}
+    est, _ = _estimator(datetime(2026, 11, 4, 6, 45, tzinfo=UTC), closes)     # 15:45 KST
+    result = asyncio.run(est.estimate("005930.KS"))
+    assert result.last_close_date == "2026-11-04" and result.market_state == "closed"
+
+
+def test_us_half_day_anchors_on_the_1pm_close():
+    closes = {"NVDA": [(date(2026, 11, 27), 204.2)]}
+    est, _ = _estimator(datetime(2026, 11, 28, 15, 0, tzinfo=UTC), closes)
+    result = asyncio.run(est.estimate("NVDA"))
+    assert result.close_at == "2026-11-27T18:00:00+00:00"          # 13:00 EST
+
+
+def test_csat_day_opens_and_closes_an_hour_late():
+    closes = {"005930.KS": [(date(2026, 11, 18), 210000.0), (date(2026, 11, 19), 218000.0)]}
+    during = datetime(2026, 11, 19, 6, 45, tzinfo=UTC)                          # 15:45 KST, still trading
+    ANCHOR[("SAMSUNGUSDT", "2026-11-18T06:29:00+00:00")] = "160.00"
+    try:
+        est, _ = _estimator(during, closes)
+        result = asyncio.run(est.estimate("005930.KS"))
+        assert result.market_state == "open" and result.last_close_date == "2026-11-18"
+    finally:
+        del ANCHOR[("SAMSUNGUSDT", "2026-11-18T06:29:00+00:00")]
+    est, _ = _estimator(datetime(2026, 11, 19, 8, 0, tzinfo=UTC), closes)       # 17:00 KST
+    result = asyncio.run(est.estimate("005930.KS"))
+    assert result.close_at == "2026-11-19T07:30:00+00:00" and result.market_state == "closed"
+
+
+def test_a_failure_is_remembered_for_the_cache_window():
+    clock = Clock()
+    binance = FakeBinance(missing_anchor=True)
+    est, _ = _estimator(SATURDAY_KST_10AM, binance=binance, clock=clock)
+    for _ in range(3):
+        with pytest.raises(ValueError):
+            asyncio.run(est.estimate("005930.KS"))
+    assert binance.calls.count("/fapi/v1/markPriceKlines") == 1
+    clock.t += 16
+    with pytest.raises(ValueError):
+        asyncio.run(est.estimate("005930.KS"))
+    assert binance.calls.count("/fapi/v1/markPriceKlines") == 2

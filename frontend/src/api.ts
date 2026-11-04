@@ -1,4 +1,4 @@
-import type { DeskConfig, DeskEvent, Holding, Instrument, RegimeSnapshot, Run } from "./types";
+import type { DeskConfig, DeskEvent, Holding, Instrument, RegimeSnapshot, Run, RunPage } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -55,7 +55,8 @@ export const api = {
   logout: () => call<void>("/api/auth/logout", { method: "POST" }),
   me: () => call<{ username: string }>("/api/auth/me"),
   config: () => call<DeskConfig>("/api/config"),
-  runs: () => call<Run[]>("/api/runs"),
+  runs: (page = 1, size = 50) => call<RunPage>(`/api/runs?page=${page}&size=${size}`),
+  deleteRun: (id: string) => call<void>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
   run: (id: string) => call<Run>(`/api/runs/${id}`),
   createRun: (body: NewRun) => call<Run>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
   portfolio: () => call<{ broker: string; error?: string; holdings: Holding[] }>("/api/portfolio"),

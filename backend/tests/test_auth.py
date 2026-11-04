@@ -16,6 +16,7 @@ def test_everything_but_health_and_login_needs_a_session(db_url):
                      "/api/runs/x/stream", "/docs", "/openapi.json", "/api/health/", "/API/runs"):
             assert client.get(path).status_code == 401, path
         assert client.post("/api/runs", json={"ticker": "NVDA"}).status_code == 401
+        assert client.delete("/api/runs/whatever").status_code == 401
 
 
 def test_login_sets_a_strict_httponly_cookie_and_logout_kills_it(db_url):
@@ -85,6 +86,7 @@ def test_cross_origin_writes_are_refused(db_url):
     with _client(db_url) as client:
         evil = {"Origin": "https://evil.example"}
         assert client.post("/api/runs", json={"ticker": "NVDA"}, headers=evil).status_code == 403
+        assert client.delete("/api/runs/whatever", headers=evil).status_code == 403
         assert client.post("/api/auth/login", json=CREDS, headers=evil).status_code == 403
         same = {"Origin": "https://testserver"}
         assert client.post("/api/runs", json={"ticker": "NVDA"}, headers=same).status_code == 201

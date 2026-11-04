@@ -2,12 +2,14 @@ import time
 from datetime import timedelta
 
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 from desk.api import create_app
 from desk.auth import Auth
-from desk.db import make_engine
+from desk.db import events, make_engine
 from desk.runner import make_fake_runner
 from desk.settings import Settings
+from desk.store import Store
 
 OWNER, PASSWORD = "owner", "correct horse battery"
 
@@ -81,3 +83,50 @@ def test_runs_default_to_the_servers_profile_and_reject_unknown_ones(db_url):
         done = _wait_done(client, run["id"])
         assert done["plan"]["levels_source"] == {"entry_price": "model", "stop_loss": "model",
                                                  "price_target": "model"}
+
+
+def test_runs_list_pages_without_overlap_or_gaps(db_url):
+    with _client(db_url) as client:
+        ids = [client.post("/api/runs", json={"ticker": "NVDA"}).json()["id"] for _ in range(5)]
+        for run_id in ids:
+            _wait_done(client, run_id)
+        pages = [client.get(f"/api/runs?page={p}&size=2").json() for p in (1, 2, 3, 4)]
+        assert [p["total"] for p in pages] == [5, 5, 5, 5]
+        assert [len(p["items"]) for p in pages] == [2, 2, 1, 0]
+        seen = [r["id"] for p in pages for r in p["items"]]
+        assert sorted(seen) == sorted(ids) and len(set(seen)) == 5
+        clamped = client.get("/api/runs?page=0&size=1000").json()
+        assert (clamped["page"], clamped["size"]) == (1, 100)
+        huge = client.get("/api/runs?page=99999999999999999999").json()
+        assert (huge["page"], huge["items"]) == (100_000, [])
+
+
+def test_delete_run_removes_it_with_its_events_but_not_an_active_one(db_url):
+    with _client(db_url) as client:
+        run_id = client.post("/api/runs", json={"ticker": "NVDA"}).json()["id"]
+        _wait_done(client, run_id)
+        assert client.delete(f"/api/runs/{run_id}").status_code == 204
+        assert client.get(f"/api/runs/{run_id}").status_code == 404
+        assert client.get(f"/api/runs/{run_id}/events").status_code == 404
+        engine = make_engine(db_url)
+        try:
+            with engine.connect() as conn:
+                left = conn.execute(select(func.count()).where(events.c.run_id == run_id)).scalar_one()
+            assert left == 0
+            queued = Store(engine).create_run("AAPL", "2026-11-03", {})   # no worker: stays queued
+        finally:
+            engine.dispose()
+        assert client.delete(f"/api/runs/{queued}").status_code == 409
+        assert client.get(f"/api/runs/{queued}").json()["status"] == "queued"
+        engine = make_engine(db_url)
+        try:
+            store = Store(engine)
+            store.mark_running(queued)
+            failed = store.create_run("MSFT", "2026-11-03", {})
+            store.mark_failed(failed, "boom")
+        finally:
+            engine.dispose()
+        assert client.delete(f"/api/runs/{queued}").status_code == 409   # running
+        assert client.delete(f"/api/runs/{failed}").status_code == 204
+        assert client.delete(f"/api/runs/{run_id}").status_code == 404
+        assert client.get("/api/runs").json()["total"] == 1

@@ -57,9 +57,12 @@ export interface RegimeSnapshot {
   triggers?: { ts: string; symbol: string; kind: string; direction: string; level: string }[];
 }
 
-export interface Health {
-  ok: boolean;
+export interface DeskConfig {
+  analysts: string[];
+  provider: string;
+  deep_model: string | null;
+  quick_model: string | null;
+  output_language: string;
   fake_runs: boolean;
   broker: string;
-  auth: boolean;
 }

@@ -19,6 +19,13 @@ export interface Plan {
   levels_error?: string;
 }
 
+export interface RunPage {
+  items: Run[];
+  total: number;
+  page: number;
+  size: number;
+}
+
 export interface Run {
   id: string;
   ticker: string;

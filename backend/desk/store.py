@@ -80,12 +80,32 @@ class Store:
         with self.engine.connect() as conn:
             return conn.execute(select(runs.c.status).where(runs.c.id == run_id)).scalar()
 
-    def list_runs(self, limit: int = 50) -> list[dict]:
+    def delete_run(self, run_id: str) -> str:
+        """Delete one finished run with its events. Returns ``deleted``, ``missing`` or
+        ``active`` (queued/running stay: the worker still writes to them). The status
+        condition sits on both deletes, so a run cannot slip from active to gone between
+        a check and the delete; a finished run never becomes active again. Should a run
+        finish between the two statements (PostgreSQL READ COMMITTED), its events go with
+        the FK's ON DELETE CASCADE instead. Call it from the event loop thread: RunManager
+        writes its last events right after mark_done() without yielding."""
+        finished = select(runs.c.id).where(runs.c.id == run_id, runs.c.status.in_(TERMINAL))
+        with self.engine.begin() as conn:
+            conn.execute(delete(events).where(events.c.run_id.in_(finished)))
+            if conn.execute(delete(runs).where(runs.c.id.in_(finished))).rowcount:
+                return "deleted"
+            exists = conn.execute(select(runs.c.id).where(runs.c.id == run_id)).first()
+        return "active" if exists else "missing"
+
+    def list_runs(self, limit: int = 50, offset: int = 0) -> list[dict]:
         with self.engine.connect() as conn:
             rows = conn.execute(
-                select(runs).order_by(runs.c.created_at.desc(), runs.c.id).limit(limit)
+                select(runs).order_by(runs.c.created_at.desc(), runs.c.id).limit(limit).offset(offset)
             ).mappings().all()
         return [_run(row) for row in rows]
+
+    def count_runs(self) -> int:
+        with self.engine.connect() as conn:
+            return conn.execute(select(func.count()).select_from(runs)).scalar_one()
 
     # --- events ---------------------------------------------------------------------
 

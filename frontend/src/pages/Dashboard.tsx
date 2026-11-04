@@ -113,7 +113,7 @@ function RegimePanel() {
 export default function Dashboard() {
   const [runs, setRuns] = useState<Run[]>([]);
   useEffect(() => {
-    const load = () => api.runs().then(setRuns).catch(() => {});
+    const load = () => api.runs().then((page) => setRuns(page.items)).catch(() => {});
     load();
     const timer = setInterval(load, 5000); // running rows fill in on their own
     return () => clearInterval(timer);

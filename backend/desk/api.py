@@ -233,8 +233,24 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return store.get_run(run_id)
 
     @app.get("/api/runs")
-    def list_runs(limit: int = 50):
-        return store.list_runs(min(max(limit, 1), 200))
+    def list_runs(page: int = 1, size: int = 20):
+        # Clamp both: a huge page would overflow the OFFSET bigint and surface as a 500.
+        page, size = min(max(page, 1), 100_000), min(max(size, 1), 100)
+        return {"items": store.list_runs(size, (page - 1) * size), "total": store.count_runs(),
+                "page": page, "size": size}
+
+    @app.delete("/api/runs/{run_id}", status_code=204)
+    async def delete_run(run_id: str):
+        # async on purpose: runs on the loop thread, so it cannot land between RunManager's
+        # mark_done() and its last plan/done events (no await between them), and Hub is touched
+        # from the loop only.
+        result = store.delete_run(run_id)
+        if result == "missing":
+            raise HTTPException(404, "run not found")
+        if result == "active":
+            raise HTTPException(409, "run is still in progress")
+        hub.notify(run_id)   # wake any open stream so it sees the run is gone and closes
+        return Response(status_code=204)
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str):
@@ -271,7 +287,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     yield f"id: {seq}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if events:
                     continue
-                if store.run_status(run_id) in TERMINAL:
+                status = store.run_status(run_id)
+                if status is None or status in TERMINAL:   # None: deleted while streaming
                     return
                 try:
                     await asyncio.wait_for(waiter.wait(), HEARTBEAT_SEC)

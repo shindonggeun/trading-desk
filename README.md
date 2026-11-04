@@ -26,7 +26,7 @@ TradingAgents 버전은 `backend/pyproject.toml` 에 **커밋 SHA로 고정**되
 
 ```
 backend/desk/
-  api.py        FastAPI. /api/runs (생성·목록·상세), /stream (SSE), /portfolio, /regime
+  api.py        FastAPI. /api/runs (생성·목록(페이지)·상세·삭제), /stream (SSE), /portfolio, /regime
   runner.py     TradingAgents 실행(워커 스레드) · FAKE 러너 · RunManager(동시 실행 제한)
   events.py     stream_run 상태 → 채팅 이벤트 (어느 에이전트가 무엇을 말했나)
   plan.py       최종 상태 → 등급 · bias(long/short/flat) · 진입/손절/목표 · 손익비

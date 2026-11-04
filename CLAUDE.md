@@ -21,7 +21,7 @@ python -m venv .venv && .venv/Scripts/pip install -e ".[dev]"
 .venv/Scripts/python -m pytest -q
 .venv/Scripts/python -m pytest tests/test_plan.py::test_levels_parsed_and_missing_ones_are_none -q  # 테스트 하나
 .venv/Scripts/uvicorn desk.api:create_app --factory --reload --port 8000           # 앱은 팩토리로만 만든다
-.venv/Scripts/python -m desk.cli create-user <아이디>                                  # 로그인 계정 (가입 API 없음)
+.venv/Scripts/python -m desk.cli create-user <이메일>                                  # 로그인 계정 (가입 API 없음)
 
 # frontend
 cd frontend

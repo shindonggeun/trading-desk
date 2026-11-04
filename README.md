@@ -35,6 +35,7 @@ backend/desk/
   store.py      runs · events. SSE는 여기서 재생하므로 새로고침해도 대화가 남는다
   broker/       읽기 전용 브로커 포트. mock / toss(holdings)
   regime.py     semibot.db 읽기 전용 (레짐 · 트리거 패널)
+  universe.py   종목 검색. 토스 /stocks/all 의 한글 종목명(미국 포함)을 하루 1회 instruments 테이블로 복사 → 이름 · 티커 검색
 frontend/src/
   pages/Dashboard.tsx   새 분석 · 분석 기록 표 · 보유 종목 · semibot 레짐
   pages/RunView.tsx     에이전트 레일 + 채팅 스트림 + 최종 계획 카드

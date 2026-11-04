@@ -1,7 +1,7 @@
 """Toss Securities Open API, read-only (spec v1.2.14, the copy in the semibot project:
 D:/ProjectWorkSpace/stock/docs/toss-openapi-1.2.14.json).
 
-Only holdings are read today. Market data and the regime/trigger loop already live in
+Reads holdings and the per-market listing (for the name search). Market data and the regime/trigger loop already live in
 semibot; this desk reads semibot's database rather than polling Toss a second time.
 """
 
@@ -13,7 +13,7 @@ import time
 
 import httpx
 
-from .base import Broker, Holding
+from .base import Broker, Holding, Listing
 
 BASE_URL = "https://openapi.tossinvest.com"
 REFRESH_MARGIN_SEC = 300
@@ -103,3 +103,10 @@ class TossBroker(Broker):
                 last_price=_num(item.get("lastPrice")),
             ))
         return out
+
+    async def list_stocks(self, market: str) -> list[Listing]:
+        # Batch data refreshed daily on Toss' side; desk.universe caches it for a day.
+        rows = await self._get("/api/v1/stocks/all", params={"market": market}) or []
+        return [Listing(symbol=r["symbol"], name=r.get("name") or r["symbol"], market=market,
+                        security_type=r.get("securityType", "STOCK"))
+                for r in rows if r.get("symbol")]

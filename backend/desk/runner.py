@@ -27,6 +27,7 @@ Emit = Callable[[dict], None]
 class RunRequest:
     ticker: str
     trade_date: str
+    name: str | None = None
     analysts: list[str] = field(default_factory=lambda: list(ANALYSTS))
     use_portfolio: bool = False
     output_language: str | None = None

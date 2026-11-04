@@ -64,6 +64,18 @@ events = Table(
     Column("data", Json),
 )
 
+# Name search over the broker's listing (desk.universe). Rebuilt whole once a day.
+instruments = Table(
+    "instruments", metadata,
+    Column("symbol", String(20), primary_key=True),      # broker symbol: 005930, NVDA, BRK.B
+    Column("yahoo", String(24), nullable=False),          # what TradingAgents reads: 005930.KS, BRK-B
+    Column("name", String(200), nullable=False),          # Korean name from Toss
+    Column("name_key", String(200), nullable=False),      # lower-cased, spaces removed: "kodex레버리지"
+    Column("market", String(16), nullable=False),
+    Column("security_type", String(24), nullable=False),
+    Column("updated_at", Timestamp, nullable=False),
+)
+
 # One row in practice: accounts are made with `python -m desk.cli create-user`, never over HTTP.
 users = Table(
     "users", metadata,

@@ -1,0 +1,9 @@
+# 컨텍스트는 frontend/ 다. 빌드에 쓰는 소스만 보낸다 (node_modules · dist · .env* 는 보내지 않는다)
+**
+!package.json
+!package-lock.json
+!index.html
+!tsconfig.json
+!vite.config.ts
+!src/**
+!nginx.conf.template

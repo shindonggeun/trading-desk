@@ -1,0 +1,36 @@
+# 로컬 개발용 PostgreSQL — 서버(PostgreSQL)와 같은 경로를 PC 에서 시험할 때만 쓴다. 평소 로컬은 SQLite 로 충분하다.
+# 앱(uvicorn · vite)은 직접 띄우고 이 compose 는 DB 만 올린다.
+#
+#   기동:   docker compose -f docker-compose-local.yml up -d --wait
+#   연결:   DESK_DATABASE_URL=postgresql+psycopg://desk:desk@localhost:55432/trading_desk?options=-csearch_path%3Ddesk
+#   테스트: DESK_TEST_DATABASE_URL=<위 URL> pytest      (테스트가 테이블을 지우고 다시 만든다)
+#   초기화: docker compose -f docker-compose-local.yml down -v
+#
+# 로컬 전용 고정 계정(desk/desk)이다. 서버 값과 무관하다.
+name: trading-desk-local
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    container_name: trading-desk-postgres-local
+    environment:
+      POSTGRES_DB: trading_desk
+      POSTGRES_USER: desk
+      POSTGRES_PASSWORD: desk
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      # 다른 프로젝트의 로컬 5432 와 겹치지 않게
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # 서버와 같은 프로젝트 스키마(public 을 쓰지 않는다)
+      - ./backend/docker/postgres-init.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U desk -d trading_desk"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  postgres-data:

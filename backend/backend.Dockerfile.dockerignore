@@ -1,0 +1,5 @@
+# 컨텍스트는 backend/ 다. 이미지에 들어갈 것만 보낸다 (venv · 테스트 · 로컬 DB · .env* 는 보내지 않는다)
+**
+!pyproject.toml
+!desk/**
+desk/**/__pycache__

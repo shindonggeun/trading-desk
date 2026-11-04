@@ -21,6 +21,7 @@ from . import regime
 from .auth import COOKIE, Auth, Busy, LoginThrottle
 from .broker import make_broker
 from .db import make_engine, migrate, now
+from .prices import PriceSource
 from .profile import PROFILES
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
 from .settings import Settings, load
@@ -36,6 +37,13 @@ UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 class LoginIn(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=256)
+
+
+def clean_ticker(v: str) -> str:
+    v = v.strip().upper()
+    if not v or len(v) > 20 or not all(c.isalnum() or c in ".-^=" for c in v):
+        raise ValueError("ticker may contain letters, digits and . - ^ = only")
+    return v
 
 
 class RunIn(BaseModel):
@@ -54,10 +62,7 @@ class RunIn(BaseModel):
     @field_validator("ticker")
     @classmethod
     def _ticker(cls, v: str) -> str:
-        v = v.strip().upper()
-        if not all(c.isalnum() or c in ".-^=" for c in v):
-            raise ValueError("ticker may contain letters, digits and . - ^ = only")
-        return v
+        return clean_ticker(v)
 
     @field_validator("profile")
     @classmethod
@@ -87,7 +92,7 @@ def purge_expired_runs(store: Store, retention_days: int) -> int:
     return deleted
 
 
-def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
+def create_app(settings: Settings | None = None, runner=None, prices: PriceSource | None = None) -> FastAPI:
     settings = settings or load()
     migrate(settings.database_url)
     engine = make_engine(settings.database_url)
@@ -97,6 +102,7 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
     universe = Universe(engine)
     hub = Hub()
     broker = make_broker(settings)
+    prices = prices or PriceSource(broker)
     if runner is None:
         runner = make_fake_runner(settings.fake_delay) if settings.fake_runs else run_tradingagents
 
@@ -105,7 +111,9 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
         stale = store.fail_unfinished("The server restarted while this run was in progress.")
         if stale:
             log.warning("marked %d unfinished run(s) as failed", stale)
-        app.state.manager = RunManager(store, hub, runner, broker, settings.max_concurrent_runs)
+        # Scripted runs keep levels on the script's numbers instead of fetching a live quote.
+        app.state.manager = RunManager(store, hub, runner, broker, settings.max_concurrent_runs,
+                                       prices=None if settings.fake_runs else prices)
 
         async def keep_listing_fresh():
             while True:
@@ -286,6 +294,19 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
         except Exception as exc:  # noqa: BLE001 - a broker outage shows in the panel, not as a 500
             return {"broker": broker.name, "error": f"{type(exc).__name__}: {exc}", "holdings": []}
         return {"broker": broker.name, "holdings": [h.to_dict() for h in holdings]}
+
+    @app.get("/api/quote")
+    async def quote(ticker: str):
+        """Current price for the plan card: Toss when connected, else Yahoo; cached ~10 s."""
+        try:
+            ticker = clean_ticker(ticker)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        try:
+            return (await prices.quote(ticker)).to_dict()
+        except Exception as exc:  # noqa: BLE001 - both sources failed
+            log.warning("quote for %s failed: %s", ticker, exc)
+            raise HTTPException(503, f"no price for {ticker}") from None
 
     @app.get("/api/regime")
     def regime_view():

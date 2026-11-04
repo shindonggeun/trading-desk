@@ -1,4 +1,4 @@
-from .base import MARKETS, Broker, Holding, Listing
+from .base import MARKETS, Bar, Broker, Holding, Listing
 from .mock import MockBroker
 from .toss import TossBroker
 
@@ -14,4 +14,4 @@ def make_broker(settings) -> Broker:
     return MockBroker()
 
 
-__all__ = ["MARKETS", "Broker", "Holding", "Listing", "MockBroker", "TossBroker", "make_broker"]
+__all__ = ["MARKETS", "Bar", "Broker", "Holding", "Listing", "MockBroker", "TossBroker", "make_broker"]

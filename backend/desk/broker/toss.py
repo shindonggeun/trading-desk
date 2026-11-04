@@ -1,8 +1,9 @@
 """Toss Securities Open API, read-only (spec v1.2.14, the copy in the semibot project:
 D:/ProjectWorkSpace/stock/docs/toss-openapi-1.2.14.json).
 
-Reads holdings and the per-market listing (for the name search). Market data and the regime/trigger loop already live in
-semibot; this desk reads semibot's database rather than polling Toss a second time.
+Reads holdings, the per-market listing (for the name search), and quotes / candles for
+desk.prices, which caches them and falls back on Yahoo. The regime/trigger loop stays in
+semibot; this desk reads semibot's database for that.
 """
 
 from __future__ import annotations
@@ -10,10 +11,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import time
+from datetime import UTC, datetime
 
 import httpx
 
-from .base import Broker, Holding, Listing
+from .base import Bar, Broker, Holding, Listing
 
 BASE_URL = "https://openapi.tossinvest.com"
 REFRESH_MARGIN_SEC = 300
@@ -125,3 +127,41 @@ class TossBroker(Broker):
         return [Listing(symbol=r["symbol"], name=r.get("name") or r["symbol"], market=market,
                         security_type=r.get("securityType", "STOCK"))
                 for r in rows if r.get("symbol")]
+
+    async def quote(self, symbol: str) -> tuple[float, str | None]:
+        rows = _rows(await self._get("/api/v1/prices", params={"symbols": symbol}), "prices")
+        for row in rows:
+            if str(row.get("symbol", "")).upper() == symbol.upper():
+                price = _num(row.get("lastPrice"))
+                if price:
+                    return price, row.get("currency")
+        raise TossError(f"Toss has no price for {symbol}")
+
+    async def candles(self, symbol: str, interval: str, count: int) -> list[Bar]:
+        payload = await self._get("/api/v1/candles", params={
+            "symbol": symbol, "interval": interval, "count": min(max(count, 1), 200), "adjusted": "true"})
+        bars = []
+        for row in _rows(payload, "candles"):
+            values = [_num(row.get(k)) for k in ("openPrice", "highPrice", "lowPrice", "closePrice")]
+            stamp = row.get("timestamp") or row.get("date")
+            if None in values or not stamp:
+                continue
+            bars.append(Bar(_iso(stamp), *values, _num(row.get("volume")) or 0.0))
+        return sorted(bars, key=lambda bar: bar.at)
+
+
+def _rows(payload, key: str) -> list[dict]:
+    """``result`` may be the list itself or an object holding it under ``key``/``items``."""
+    if isinstance(payload, dict):
+        payload = payload.get(key, payload.get("items", []))
+    return payload if isinstance(payload, list) else []
+
+
+def _iso(value) -> str:
+    text = str(value)
+    if len(text) == 10:                       # a bare date on daily bars
+        text += "T00:00:00+00:00"
+    parsed = datetime.fromisoformat(text)   # 3.11+ reads a trailing Z
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).isoformat(timespec="seconds")

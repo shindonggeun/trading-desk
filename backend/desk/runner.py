@@ -4,6 +4,7 @@ thread, with every new chat event written to the store as it happens."""
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
 import time
 from collections.abc import Callable
@@ -14,6 +15,7 @@ from .broker.base import Broker
 from .events import StateDiffer
 from .levels import fill_levels
 from .plan import parse_plan
+from .prices import PriceSource
 from .profile import desk_portfolio
 from .store import Store
 
@@ -191,8 +193,9 @@ class Hub:
 
 class RunManager:
     def __init__(self, store: Store, hub: Hub, runner: Runner, broker: Broker, max_concurrent: int,
-                 levels=fill_levels) -> None:
+                 levels=fill_levels, prices: PriceSource | None = None) -> None:
         self.levels = levels
+        self.prices = prices
         self.store = store
         self.hub = hub
         self.runner = runner
@@ -207,6 +210,17 @@ class RunManager:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return run_id
+
+    async def _live_quote(self, request: RunRequest) -> dict | None:
+        """The current quote for a same-day analysis; None for a past date or no price."""
+        if self.prices is None or request.trade_date != dt.date.today().isoformat():
+            return None
+        try:
+            quote = await self.prices.quote(request.ticker)
+        except Exception as exc:  # noqa: BLE001 - levels then start from the last close
+            log.warning("no live quote for %s: %s", request.ticker, exc)
+            return None
+        return {"price": quote.price, "source": quote.source, "fetched_at": quote.fetched_at}
 
     def _publish(self, run_id: str, event: dict) -> None:
         self.store.append_event(run_id, event)
@@ -227,8 +241,9 @@ class RunManager:
                 portfolio = desk_portfolio(request.profile, book)
                 result = await asyncio.to_thread(self.runner, request, emit, portfolio)
                 # The model may still leave a level out; fill it from ATR and mark it as computed.
+                live = await self._live_quote(request)
                 plan = await asyncio.to_thread(self.levels, parse_plan(result.final_state),
-                                               request.ticker, request.trade_date)
+                                               request.ticker, request.trade_date, live=live)
                 self.store.mark_done(run_id, plan, result.report_path)
                 self._publish(run_id, {"type": "plan", "agent": "portfolio_manager", "data": plan})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "done"})

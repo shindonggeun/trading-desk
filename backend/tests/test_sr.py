@@ -122,3 +122,45 @@ def test_candles_and_levels_endpoints(db_url):
         assert client.get("/api/candles?ticker=NVDA&interval=5m").status_code == 422
         levels = client.get("/api/levels?ticker=NVDA").json()
         assert levels["levels"] and {"price", "kind", "timeframe", "strength", "basis"} <= set(levels["levels"][0])
+
+
+def test_korean_bars_are_cut_on_the_korean_date_and_past_dates_use_finished_weeks():
+    # Toss/Yahoo date a KRX day at local midnight = 15:00 UTC the day before
+    daily = [{"at": f"2026-11-0{d}T15:00:00+00:00", "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}
+             for d in (3, 4, 5)]               # KST 11-04, 11-05, 11-06
+    weekly = [{"at": f"{d}T15:00:00+00:00", "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}
+              for d in ("2026-10-25", "2026-11-01")]   # weeks starting KST Mon 10-26 and 11-02
+    days, weeks = sr._until(daily, weekly, "005930.KS", "2026-11-05")
+    assert [b["at"][:10] for b in days] == ["2026-11-03", "2026-11-04"]
+    assert [b["at"][:10] for b in weeks] == ["2026-10-25"]      # the week of 11-02 has not ended
+    us_days, _ = sr._until([{**daily[0], "at": "2026-11-05T05:00:00+00:00"}], [], "NVDA", "2026-11-05")
+    assert len(us_days) == 1
+
+
+def test_a_live_price_result_does_not_poison_the_cache():
+    sr._CACHE.clear()
+    source, _ = _source()
+    live = asyncio.run(sr.support_resistance(source, "NVDA", price=100.0))
+    plain = asyncio.run(sr.support_resistance(source, "NVDA"))
+    assert live["reference"] == "live" and plain["reference"] == "close"
+
+
+def test_run_finishes_without_levels_when_the_lookup_fails_or_hangs(monkeypatch):
+    from desk import runner
+
+    class Request:
+        ticker, trade_date = "NVDA", "2026-11-04"
+
+    async def hang(*_args):
+        await asyncio.sleep(60)
+
+    manager = runner.RunManager.__new__(runner.RunManager)
+    manager.prices = object()
+    monkeypatch.setattr(runner, "SR_TIMEOUT_SEC", 0.05)
+    monkeypatch.setattr(runner, "support_resistance", hang)
+    assert asyncio.run(manager._support_resistance(Request())) is None
+
+    async def boom(*_args):
+        raise ConnectionError("down")
+    monkeypatch.setattr(runner, "support_resistance", boom)
+    assert asyncio.run(manager._support_resistance(Request())) is None

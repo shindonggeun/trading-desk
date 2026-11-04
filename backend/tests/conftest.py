@@ -20,3 +20,17 @@ def db_url(tmp_path):
         conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
     engine.dispose()
     return url
+
+
+@pytest.fixture(autouse=True)
+def no_yahoo_network(monkeypatch):
+    """Tests never reach Yahoo: a PriceSource without injected Yahoo functions fails over to
+    these, so a real run's support/resistance lookup ends quickly instead of hitting the net."""
+    from desk import prices, sr
+
+    def offline(*_args):
+        raise ConnectionError("no network in tests")
+
+    monkeypatch.setattr(prices, "yahoo_quote", offline)
+    monkeypatch.setattr(prices, "yahoo_candles", offline)
+    sr._CACHE.clear()

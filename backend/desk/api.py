@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 from . import regime
 from .auth import COOKIE, Auth, Busy, LoginThrottle
 from .broker import make_broker
-from .db import make_engine, migrate
+from .db import make_engine, migrate, now
 from .profile import PROFILES
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
 from .settings import Settings, load
@@ -77,6 +77,16 @@ class RunIn(BaseModel):
         return v
 
 
+def purge_expired_runs(store: Store, retention_days: int) -> int:
+    """Delete finished runs older than ``retention_days`` (0 = keep everything)."""
+    if retention_days <= 0:
+        return 0
+    deleted = store.purge_finished_before(now() - timedelta(days=retention_days))
+    if deleted:
+        log.info("retention: deleted %d run(s) older than %d days", deleted, retention_days)
+    return deleted
+
+
 def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
     settings = settings or load()
     migrate(settings.database_url)
@@ -102,9 +112,20 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
                 await universe.refresh_if_stale(broker)
                 await asyncio.sleep(3600)
 
+        async def purge_old_runs():
+            while True:
+                try:
+                    purge_expired_runs(store, settings.retention_days)
+                except Exception:  # a failed sweep must not stop the next one
+                    log.exception("retention sweep failed")
+                await asyncio.sleep(24 * 3600)
+
         refresher = asyncio.create_task(keep_listing_fresh())
+        purger = asyncio.create_task(purge_old_runs()) if settings.retention_days > 0 else None
         yield
         refresher.cancel()
+        if purger:
+            purger.cancel()
         engine.dispose()
 
     docs = settings.enable_docs

@@ -18,6 +18,8 @@ x-backend-environment: &backend_environment
   DESK_FAKE_RUNS: ${DESK_FAKE_RUNS:-false}
   DESK_FAKE_DELAY: ${DESK_FAKE_DELAY:-0.6}
   DESK_MAX_CONCURRENT_RUNS: ${DESK_MAX_CONCURRENT_RUNS:-1}
+  # 끝난 분석 기록 보관 일수. 기동 시 · 하루 1회 지난 run 을 지운다. 0 = 지우지 않음
+  DESK_RETENTION_DAYS: ${DESK_RETENTION_DAYS:-90}
   # 로그인 세션 (docs/security.md §2). 쿠키는 HTTPS 앞단 뒤에서만 쓰므로 Secure 를 끄지 않는다
   DESK_SESSION_MAX_HOURS: ${DESK_SESSION_MAX_HOURS:-72}
   DESK_SESSION_IDLE_HOURS: ${DESK_SESSION_IDLE_HOURS:-12}

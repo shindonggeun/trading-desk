@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.engine import Engine, RowMapping
 
 from .db import aware, events, now, runs
@@ -56,6 +56,16 @@ class Store:
                 .values(status="failed", error=reason, finished_at=now())
             )
             return result.rowcount
+
+    def purge_finished_before(self, cutoff: datetime) -> int:
+        """Delete done/failed runs created before ``cutoff`` with their events. Queued and
+        running runs stay whatever their age. Events are deleted explicitly rather than
+        left to the FK cascade, so a SQLite connection without ``foreign_keys=ON`` cannot
+        leave orphans behind."""
+        old = select(runs.c.id).where(runs.c.created_at < cutoff, runs.c.status.in_(TERMINAL))
+        with self.engine.begin() as conn:
+            conn.execute(delete(events).where(events.c.run_id.in_(old)))
+            return conn.execute(delete(runs).where(runs.c.id.in_(old))).rowcount
 
     def _update(self, run_id: str, **fields: Any) -> None:
         with self.engine.begin() as conn:

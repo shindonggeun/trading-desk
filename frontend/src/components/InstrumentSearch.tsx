@@ -58,6 +58,7 @@ export default function InstrumentSearch({ value, onChange }: { value: Picked; o
   const typed = (raw: string) => {
     setText(raw);
     setOpen(true);
+    setHits([]); // 이전 검색어의 후보를 새 결과가 올 때까지 보여 주지 않는다
     // 고르기 전까지는 친 글자를 티커로 둔다 — 목록에 없는 종목도 분석할 수 있게
     onChange({ ticker: raw.trim().toUpperCase() });
   };

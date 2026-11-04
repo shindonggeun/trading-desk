@@ -2,13 +2,14 @@ import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { agentInfo } from "../agents";
+import { koreanizeLabels } from "../korean";
 import type { DeskEvent } from "../types";
 
 const COLLAPSE_AT = 900; // characters; analyst reports run long
 
 export function ChatMessage({ event }: { event: DeskEvent }) {
   const info = agentInfo(event.agent);
-  const text = event.content ?? "";
+  const text = koreanizeLabels(event.content ?? "");
   const long = text.length > COLLAPSE_AT;
   const [open, setOpen] = useState(!long);
   return (

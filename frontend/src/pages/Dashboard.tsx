@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import NewRunForm from "../components/NewRunForm";
-import { BiasBadge } from "../components/PlanCard";
+import { BiasBadge, RatingText } from "../components/PlanCard";
 import { price, STATUS_LABEL, time } from "../format";
 import type { Holding, RegimeSnapshot, Run } from "../types";
 
@@ -30,7 +30,7 @@ function RunsTable({ runs }: { runs: Run[] }) {
                 {r.options.name ? <>{r.options.name} <span className="muted small">{r.ticker}</span></> : r.ticker}
               </td>
               <td>{r.trade_date}</td>
-              <td>{r.plan ? <><span className="rating">{r.plan.rating}</span> <BiasBadge plan={r.plan} /></> : "—"}</td>
+              <td>{r.plan ? <><RatingText rating={r.plan.rating} /> <BiasBadge plan={r.plan} /></> : "—"}</td>
               <td className="num">{price(r.plan?.entry_price)}</td>
               <td className="num">{price(r.plan?.stop_loss)}</td>
               <td className="num">{price(r.plan?.price_target)}</td>

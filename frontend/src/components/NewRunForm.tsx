@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ANALYST_CHOICES } from "../agents";
 import { api } from "../api";
 import InstrumentSearch, { type Picked } from "./InstrumentSearch";
@@ -14,7 +14,19 @@ export default function NewRunForm() {
   const [analysts, setAnalysts] = useState<string[]>(ANALYST_CHOICES.map((c) => c.key));
   const [usePortfolio, setUsePortfolio] = useState(true);
   const [language, setLanguage] = useState("Korean");
+  const [profiles, setProfiles] = useState<{ id: string; label: string }[]>([]);
+  const [profile, setProfile] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api
+      .config()
+      .then((c) => {
+        setProfiles(c.profiles);
+        setProfile(c.default_profile);
+      })
+      .catch(() => {});
+  }, []);
   const [error, setError] = useState<string | null>(null);
 
   const toggle = (key: string) =>
@@ -28,6 +40,7 @@ export default function NewRunForm() {
       const run = await api.createRun({
         ticker: instrument.ticker,
         name: instrument.name,
+        profile: profile || undefined,
         trade_date: date,
         analysts,
         use_portfolio: usePortfolio,
@@ -62,6 +75,19 @@ export default function NewRunForm() {
           ))}
         </div>
       </fieldset>
+      {profiles.length > 0 && (
+        <label>
+          투자 성향
+          <select value={profile} onChange={(e) => setProfile(e.target.value)}>
+            {profiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+          <span className="muted small">트레이더 · 리스크 토론 · 최종 판단에 지침으로 들어갑니다</span>
+        </label>
+      )}
       <label>
         보고서 언어
         <select value={language} onChange={(e) => setLanguage(e.target.value)}>

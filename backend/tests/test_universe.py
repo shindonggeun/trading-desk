@@ -66,3 +66,55 @@ def test_instrument_routes_need_login_and_runs_keep_the_name(db_url):
         assert run["options"]["name"] == "엔비디아"
         run = client.post("/api/runs", json={"ticker": "005930.KS", "name": "삼성전자"}).json()
         assert run["options"]["name"] == "삼성전자"
+
+
+def test_toss_waits_out_the_rate_limit(monkeypatch):
+    import httpx
+
+    from desk.broker import toss
+
+    calls = {"list": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth2/token":
+            return httpx.Response(200, json={"access_token": "t", "expires_in": 3600})
+        calls["list"] += 1
+        if calls["list"] == 1:
+            return httpx.Response(429, headers={"retry-after": "1"}, json={"error": {"code": "rate-limit-exceeded"}})
+        return httpx.Response(200, json={"result": [{"symbol": "NVDA", "name": "엔비디아"}]})
+
+    slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(toss.asyncio, "sleep", fake_sleep)
+    http = httpx.AsyncClient(base_url=toss.BASE_URL, transport=httpx.MockTransport(handler))
+    broker = toss.TossBroker("id", "secret", http=http)
+    listing = asyncio.run(broker.list_stocks("NASDAQ"))
+    assert [item.symbol for item in listing] == ["NVDA"]
+    assert calls["list"] == 2 and slept == [1.0]
+
+
+def test_toss_gives_up_after_repeated_rate_limits(monkeypatch):
+    import httpx
+    import pytest
+
+    from desk.broker import toss
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth2/token":
+            return httpx.Response(200, json={"access_token": "t", "expires_in": 3600})
+        return httpx.Response(429, headers={"retry-after": "99"})
+
+    slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(toss.asyncio, "sleep", fake_sleep)
+    http = httpx.AsyncClient(base_url=toss.BASE_URL, transport=httpx.MockTransport(handler))
+    broker = toss.TossBroker("id", "secret", http=http)
+    with pytest.raises(toss.TossError, match="429"):
+        asyncio.run(broker.list_stocks("NYSE"))
+    assert slept == [toss.MAX_RETRY_AFTER_SEC] * toss.RATE_LIMIT_RETRIES

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ANALYST_CHOICES } from "../agents";
 import { api } from "../api";
+import InstrumentSearch, { type Picked } from "./InstrumentSearch";
 
 function today(): string {
   const d = new Date();
@@ -8,7 +9,7 @@ function today(): string {
 }
 
 export default function NewRunForm() {
-  const [ticker, setTicker] = useState("");
+  const [instrument, setInstrument] = useState<Picked>({ ticker: "" });
   const [date, setDate] = useState(today());
   const [analysts, setAnalysts] = useState<string[]>(ANALYST_CHOICES.map((c) => c.key));
   const [usePortfolio, setUsePortfolio] = useState(true);
@@ -25,7 +26,8 @@ export default function NewRunForm() {
     setError(null);
     try {
       const run = await api.createRun({
-        ticker,
+        ticker: instrument.ticker,
+        name: instrument.name,
         trade_date: date,
         analysts,
         use_portfolio: usePortfolio,
@@ -42,8 +44,8 @@ export default function NewRunForm() {
     <form className="card new-run" onSubmit={submit}>
       <h2>새 분석</h2>
       <label>
-        티커
-        <input value={ticker} onChange={(e) => setTicker(e.target.value)} placeholder="NVDA · 005930.KS · BTC-USD" required />
+        종목
+        <InstrumentSearch value={instrument} onChange={setInstrument} />
       </label>
       <label>
         분석 기준일
@@ -72,7 +74,7 @@ export default function NewRunForm() {
         내 보유 종목을 반영해서 판단
       </label>
       {error && <p className="error">{error}</p>}
-      <button type="submit" disabled={busy || !ticker.trim() || analysts.length === 0}>
+      <button type="submit" disabled={busy || !instrument.ticker.trim() || analysts.length === 0}>
         {busy ? "등록 중…" : "분석 시작"}
       </button>
       <p className="muted small">한 번 분석에 수 분이 걸리고, 구독 플랜 사용량이 차감됩니다.</p>

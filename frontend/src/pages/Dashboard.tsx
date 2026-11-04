@@ -12,7 +12,7 @@ function RunsTable({ runs }: { runs: Run[] }) {
       <table className="runs">
         <thead>
           <tr>
-            <th>티커</th>
+            <th>종목</th>
             <th>기준일</th>
             <th>판단</th>
             <th className="num">진입</th>
@@ -26,7 +26,9 @@ function RunsTable({ runs }: { runs: Run[] }) {
         <tbody>
           {runs.map((r) => (
             <tr key={r.id} onClick={() => (window.location.hash = `#/runs/${r.id}`)}>
-              <td className="ticker">{r.ticker}</td>
+              <td className="ticker">
+                {r.options.name ? <>{r.options.name} <span className="muted small">{r.ticker}</span></> : r.ticker}
+              </td>
               <td>{r.trade_date}</td>
               <td>{r.plan ? <><span className="rating">{r.plan.rating}</span> <BiasBadge plan={r.plan} /></> : "—"}</td>
               <td className="num">{price(r.plan?.entry_price)}</td>

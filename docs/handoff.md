@@ -1,6 +1,6 @@
-# 인수인계 (2026-11-04 18:00 기준)
+# 인수인계 (2026-11-05 기준)
 
-다음 세션(집 PC)에서 이 파일부터 읽는다. 끝난 일 · 남은 일 · 바로 쓸 명령만 적는다.
+다음 세션에서 이 파일부터 읽는다. 끝난 일 · 남은 일 · 바로 쓸 명령만 적는다.
 
 ## 1. 지금 돌아가는 것
 
@@ -8,80 +8,70 @@
 |------|------|
 | 사이트 | `https://trading.8llow8llowme.com` — 이메일 로그인(계정 1개, CLI 로 만듦) |
 | 서버 | backend-server `192.168.0.9` 컨테이너 `trading-desk-web-prod`(:10088) · `trading-desk-backend-prod` |
-| 배포 커밋 | `3111e1b` (로컬 스택 맨 위, `scripts/deploy.sh` 로 배포) |
-| DB | main-server `.11` PostgreSQL `trading_desk` / 스키마 `desk`, Alembic `0002` |
-| LLM | ChatGPT Pro 플랜 로그인 완료, deep `gpt-6-sol` · quick `gpt-6-luna`, FAKE 모드 꺼짐 |
-| 브로커 | **mock** (토스 키 없음) — 종목 검색도 샘플 18종 |
-| 인그레스 | storage `.12` nginx conf · 인증서(만료 2027-02-02) · fail2ban `nginx-trading-login` 적용 |
+| 배포 커밋 | `c118d90` (develop, 배포 기준 브랜치는 develop — #39) |
+| DB | main-server `.11` PostgreSQL `trading_desk` / 스키마 `desk` |
+| LLM | ChatGPT Pro 플랜, deep `gpt-6-sol` · quick `gpt-6-luna`, FAKE 모드 꺼짐 |
+| 브로커 | **토스 연결됨** — 서버 `.env.runtime` 에 `DESK_BROKER=toss` · 키 반영, 허용 IP `1.241.243.70` 등록. 보유 종목 · 종목 목록(15,040종) · 현재가 · 1분/일봉 실호출 확인 |
+| 인그레스 | storage `.12` nginx conf · 인증서(만료 2027-02-02) · fail2ban `nginx-trading-login` |
 
-실제 분석 1회 확인(NVDA, 기술 분석가만, 205초): 에이전트 순서 · 한글 출력 · 계획 파싱 정상.
+토스 메모: `/api/v1/stocks/all` 은 초당 1회(429 + `Retry-After`) — `TossBroker._get` 이 기다렸다 재시도한다.
+토스 봉은 **주봉 없음**(`1w` 400), 한 번에 **최대 200개**.
 
-## 2. 이 세션에서 한 것 (이슈 → 브랜치)
+## 2. 진행 중 — #32 (브랜치 푸시됨, PR 아직 없음)
 
-스택 PR 이다. **앞에서부터 순서대로 머지**한다(`gh pr merge <번호> --rebase`).
+- 브랜치 `feature/be/32-candles-levels`, 워크트리 `D:\ProjectWorkSpace\trading-desk-wt\32-candles-levels`, origin/develop(`c118d90`) 위로 rebase 됨
+- 검증: `ruff` OK · `pytest` 91 passed (rebase 후). `reviewer` 검토 HIGH 1 · MEDIUM 2 · LOW 1(캐시) 반영 완료
+- 내용
+  - `desk/sr.py` — 일봉 · 주봉 스윙 고저점, 52주 고저, 지난주 고저 · 피벗, 20/50/200일선 → ATR 절반 안에서 구간으로 묶음.
+    강도 = 근거 수(주봉 2배, 1년 반감), 현재가에서 min(6 ATR, 35%) 안만, 강도 ÷ 거리로 위 · 아래 4개
+  - `GET /api/candles?ticker=&interval=1m|1d|1w&count=` · `GET /api/levels?ticker=` (세션 필요). 주봉 · 200개 초과는 야후
+  - 분석 시작 때 거래일까지의 레벨을 계산(20초 제한)해 트레이더 · 리스크 · PM 지침에 참고로 넣고 계획에 `support_resistance` 저장
+- 운영 실데이터 확인(배포 전, 계산만): NVDA 205.8 → 저항 208 · 214.5 / 지지 200.5 · 195.6, 삼성전자 221,500 → 지지 205,438 · 191,561
+- **남은 일**
+  1. PR 생성: `/pr 검증: ruff OK · pytest 91 passed · reviewer HIGH 1 반영(테스트가 실제 야후 호출 → autouse 차단)`
+  2. 리뷰 LOW 미반영: 현재가와 같은 구간이 `resistance` 로만 분류됨(`at` 종류 검토)
+  3. 머지 후 배포 → 실제 분석 1회로 에이전트가 지지 · 저항을 근거로 쓰는지 확인
+- 참고: 초기 pytest 원인 미상 실패 2회는 위 HIGH(실제 야후 호출)로 추정 — 반영 후 재현 없음
 
-| 이슈 | 브랜치 | PR | 내용 |
-|------|--------|----|------|
-| #1 | chore/infra/1-claude-workflow | #7 | 스킬 · 에이전트 · Git 규칙 · CI · CLAUDE.md |
-| #2 | feature/be/2-postgres-store | #8 | SQLAlchemy · Alembic · PostgreSQL |
-| #3 | feature/be/3-session-login | #9 | 로그인 · 세션 쿠키(보안 검토 반영) |
-| #4 | feature/fe/4-login-screen | #10 | 로그인 화면 · 이메일 표시 |
-| #5 | feature/infra/5-backend-server-deploy | #11 | 앱별 Dockerfile · compose · 배포 스크립트 · 문서 |
-| #12 | feature/be/12-instrument-search | (이번에 생성) | 토스 종목 목록 한글 검색 API |
-| #14 | feature/be/14-investor-profile | (이번에 생성) | 레버리지 공격형 지침 · ATR 타점 채우기 |
-| #13 | feature/fe/13-instrument-search | (이번에 생성) | 종목 검색 자동완성 |
-| #15 | feature/fe/15-korean-terms | (이번에 생성) | 등급 · 행동 한글 풀이 · 투자 성향 선택 · 이 문서 |
+## 3. 이번 세션에서 끝난 것
 
-Infra 저장소: 이슈 #68 · PR #69 (nginx · 인증서 · fail2ban · README). 호스트에는 이미 적용됨.
+| 이슈 | PR | 내용 |
+|------|----|------|
+| #12 | #29 | 토스 종목 검색 + 429 재시도 |
+| #14 · #13 · #15 · #16 · #23 | #20 · #21 · #22 · #28 · #30 | 투자 성향 · 검색 자동완성 · 한글 풀이 · 90일 보관 · 현재가 기준 타점(BE) |
+| #31 | #38 | 손절가가 트레이더 초안으로 남던 버그 — PM 요약의 최종 진입 · 손절을 우선(SOXL 110.77 → 98.26) |
 
-### ⚠️ 먼저 할 일 — #5 브랜치 강제 푸시
+다른 세션이 같은 기간에 #27(바이낸스 추정가) · #34(분석 기록 삭제 · 페이지네이션) · #39 를 머지했다.
 
-#4 에 커밋을 더하면서 #5 이후를 로컬에서 리베이스했다. 강제 푸시가 권한 정책에 막혀 원격 #5 는 **옛 커밋**이다.
-그 위의 #12~#15 PR 이 깔끔하게 보이려면 먼저:
-
-```bash
-git -C D:/ProjectWorkSpace/trading-desk push --force-with-lease origin feature/infra/5-backend-server-deploy
-```
-
-## 3. 남은 일
+## 4. 남은 일
 
 | 이슈 | 내용 | 메모 |
 |------|------|------|
-| #6 | OTP(TOTP) 2단계 인증 | users 에 비밀 · 복구코드 컬럼(Alembic 0003) |
-| #16 | 분석 기록 3개월 보관 · 자동 삭제 | 지금은 무기한. events 는 FK CASCADE 라 runs 만 지우면 된다 |
-| #17 | 매매 복기 — 토스 체결 내역 vs 분석 타점 | 토스 `GET /api/v1/orders`(읽기). 토스 키 · IP 등록 먼저 |
-| #18 | 가격 차트 + 진입 · 손절 · 목표선 | yfinance 일봉 → lightweight-charts |
-| — | 토스 키 연결 | 서버 `.env.runtime` 에 `DESK_BROKER=toss` · `TOSS_CLIENT_ID` · `TOSS_CLIENT_SECRET` → `scripts/deploy.sh HEAD backend`. 토스 WTS 허용 IP 에 `1.241.243.70` 등록. 그러면 검색이 국장 · 미장 전 종목이 된다 |
-| — | Infra PR #69 머지 후 정리 | storage 에서 미리 올린 3파일(`nginx/conf.d/trading.8llow8llowme.conf`, `fail2ban/filter.d/nginx-trading-login.conf`, 수정된 `fail2ban/jail.local`)을 지우고 `git pull` |
-| — | 실제 분석 재확인 | 애널리스트 4명 + 공격형으로 한 번 — 진입 · 손절 · 목표가 숫자로 나오는지, 비면 "계산값" 표시 |
-
-## 4. 확인된 사실 (질문에 대한 답)
-
-- **진입 · 손절 · 목표가가 비던 이유**: 토스 연결과 무관. TradingAgents 가 타점을 "확신할 때만" 쓰는 선택 항목으로 둔다. #14 로 지침에서 항상 요구하고, 그래도 비면 ATR(14)로 채워 "계산값" 으로 표시한다. 가격 데이터는 yfinance(야후).
-- **국장**: 된다. 토스 목록의 시장으로 `.KS`(코스피) · `.KQ`(코스닥)을 붙여 야후로 분석한다. 다만 뉴스 · 재무 소스는 영어권 위주라 국내 종목은 기술적 분석 비중이 커진다.
-- **국제 정세**: 뉴스 분석가가 `get_global_news`(거시 · 세계 뉴스), `get_macro_indicators`(FRED: CPI · 금리 · 실업률 · 장단기 금리차), `get_prediction_markets`(지정학 · 금리 인하 확률 등)를 쓴다. 심리 분석가는 StockTwits · Reddit.
-- **심리 · 뉴스 · 재무 분석가가 활동하지 않았던 것**: 시험 분석에서 사용량을 아끼려고 기술 분석가 1명만 골랐기 때문이다. 화면 기본값은 4명 전부다.
-- **분석 기록 보관**: 지금은 무기한 → #16 에서 90일.
-- **차트**: 가능 → #18.
+| #32 | 위 2절 | PR → 머지 → 배포 |
+| #18 | [FE] 분석 화면 차트(lightweight-charts) — 일봉 · 주봉 전환, 거래량, 진입 · 손절 · 목표선 | **다음 작업**. #32 의 `/api/candles` 사용 |
+| #25 | [FE] 차트에 지지 · 저항선 · 띠, 근거 툴팁 | #32 `/api/levels` · plan `support_resistance` |
+| #26 | [FE] 실시간 차트(1분봉) | |
+| #23 | [FE 잔여] 계획 카드에 현재가 · 진입가까지 거리 · 갱신 시각 | BE 는 #30 으로 끝 |
+| #17 | 매매 복기(토스 체결 내역) | 토스 연결됨 — 바로 가능 |
+| #24 · #35 · #36 · #37 · #6 | 용어 사전 · 원화/달러 환산 · 기록 페이지 · 총평가액 · OTP | #35~#37 은 다른 세션이 연 것 |
+| — | 계획 카드: `levels_origin` 이 섞이면(pm/trader) 경고 표시, `trader_levels` 로 바뀐 값 표시 | #31 리뷰 MEDIUM, 프론트 |
 
 ## 5. 자주 쓰는 명령
 
 ```bash
-# 배포 (커밋된 HEAD 를 서버에서 빌드)
-scripts/deploy.sh                 # 전체
-scripts/deploy.sh HEAD backend    # 백엔드만
-
-# 계정 (서버)
-ssh -t homelab-backend-server docker exec -it trading-desk-backend-prod python -m desk.cli set-password <이메일>
+# 배포 — 이 PC 의 ssh 별칭은 backend-server(LAN) / backend-server-ext(밖, 2219)
+DESK_DEPLOY_HOST=backend-server scripts/deploy.sh                 # 전체
+DESK_DEPLOY_HOST=backend-server scripts/deploy.sh HEAD backend    # 백엔드만
 
 # 로그 · 상태
-ssh homelab-backend-server 'docker logs --tail 50 trading-desk-backend-prod; docker ps --filter name=trading-desk'
+ssh backend-server 'docker logs --tail 50 trading-desk-backend-prod; docker ps --filter name=trading-desk; cat ~/deploy/trading-desk/src/REVISION'
 
-# ChatGPT 재로그인 (토큰이 만료 · 폐기됐을 때) — docs/deploy.md 5절.
-# 서버에서 1회용 컨테이너를 --network host 로 띄워야 한다(로그인 서버가 컨테이너 127.0.0.1 에만 붙음).
+# 컨테이너 안에서 파이썬으로 점검(DB · 토스) — stdin 으로 스크립트를 넘긴다
+ssh backend-server 'docker exec -i trading-desk-backend-prod python -' < script.py
 ```
 
-## 6. 작업 방식
+## 6. 작업 방식 메모
 
-- 이슈 → 브랜치 → PR(base develop) → Rebase and merge (`docs/git-workflow.md`). 스킬은 trading-desk 폴더에서 Claude Code 를 열어야 보인다(`/dev-orchestrator` · `/issue` · `/issue-start` · `/pr`).
-- PR 머지와 storage(`.12`) 쓰기 · 강제 푸시는 권한 정책상 사람이 하거나 허용 규칙을 추가해야 한다.
+- 본 저장소 폴더(`D:\ProjectWorkSpace\trading-desk`)는 **다른 세션도 쓴다** — 브랜치가 바뀌어 있을 수 있으니 작업은 워크트리(`trading-desk-wt/<번호>-...`)에서.
+- 스택 PR 을 base 브랜치로 rebase 머지하면 위 PR 이 SHA 어긋남으로 CONFLICTING 이 된다 → 새 base 위로 rebase 후 `git push --force-with-lease`(허용 규칙 있음). 가능하면 PR 은 develop 에 바로 쌓지 않고 하나씩 머지.
+- `gh pr create/edit` · `--force-with-lease` 푸시는 `.claude/settings.local.json` 에 허용됨. `gh pr merge` 는 사용자가 한다.

@@ -66,8 +66,11 @@ class DeskPortfolio(PortfolioContext):
         return f"{block}\n\n{self.mandate}" if self.mandate else block
 
 
-def desk_portfolio(profile: str | None, book: PortfolioContext | None) -> DeskPortfolio | None:
+def desk_portfolio(profile: str | None, book: PortfolioContext | None,
+                   levels_note: str | None = None) -> DeskPortfolio | None:
+    """``levels_note`` is the desk's support/resistance reference (desk.sr.prompt_note)."""
     mandate = PROFILES.get(profile or "", {}).get("mandate")
+    mandate = "\n\n".join(part for part in (mandate, levels_note) if part) or None
     if book is None and mandate is None:
         return None
     data = book.model_dump() if book is not None else {}

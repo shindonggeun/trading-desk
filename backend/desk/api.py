@@ -22,10 +22,11 @@ from .auth import COOKIE, Auth, Busy, LoginThrottle
 from .broker import make_broker
 from .db import make_engine, migrate, now
 from .estimate import BinanceEstimator
-from .prices import PriceSource
+from .prices import INTERVALS, PriceSource
 from .profile import PROFILES
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
 from .settings import Settings, load
+from .sr import support_resistance
 from .store import TERMINAL, Store, iso
 from .universe import Universe
 
@@ -328,6 +329,34 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except Exception as exc:  # noqa: BLE001 - both sources failed
             log.warning("quote for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no price for {ticker}") from None
+
+    @app.get("/api/candles")
+    async def candles(ticker: str, interval: str = "1d", count: int = 120):
+        """Bars for the chart, oldest first. 1m/1d: Toss then Yahoo; 1w (and > 200 bars): Yahoo."""
+        try:
+            ticker = clean_ticker(ticker)
+            if interval not in INTERVALS:
+                raise ValueError(f"interval must be one of {', '.join(INTERVALS)}")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        try:
+            return await prices.candles(ticker, interval, count)
+        except Exception as exc:  # noqa: BLE001 - both sources failed
+            log.warning("candles for %s %s failed: %s", ticker, interval, exc)
+            raise HTTPException(503, f"no candles for {ticker}") from None
+
+    @app.get("/api/levels")
+    async def levels(ticker: str):
+        """Support/resistance zones from daily and weekly bars (desk.sr), cached a few minutes."""
+        try:
+            ticker = clean_ticker(ticker)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        try:
+            return await support_resistance(prices, ticker)
+        except Exception as exc:  # noqa: BLE001 - no bars or too few
+            log.warning("levels for %s failed: %s", ticker, exc)
+            raise HTTPException(503, f"no levels for {ticker}") from None
 
     @app.get("/api/estimate")
     async def estimate(ticker: str):

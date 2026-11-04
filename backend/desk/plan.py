@@ -64,14 +64,80 @@ def reward_risk(entry: float | None, stop: float | None, target: float | None) -
     return round(reward / risk, 2)
 
 
+# The portfolio manager's schema has a Price Target but no entry or stop, so when the risk
+# debate revises the trader's levels the final numbers live only in the Executive Summary
+# prose ("진입가 $85.75, 손절가 $98.26" / "Entry Price: 85.75 / Stop Loss: 98.26").
+_SUMMARY_KEYWORDS = {
+    "entry_price": r"entry(?:\s+price)?|진입가|진입",
+    "stop_loss": r"stop(?:[\s-]*loss)?|손절가|손절",
+}
+# The line profile.py asks the PM for: "Entry Price: 85.75 / Stop Loss: 98.26 / Price Target: 60.73".
+_LABELED = r"(?:\*\*)?{label}(?:\*\*)?\s*:\s*(?:\*\*)?\s*[$₩]?\s*({num})"
+# Prose fallback: keyword, an optional noun/particle, then the number right away. "손절 시 손실 1.46%",
+# "목표 비중 50~75%" never match (other words sit in between); the lookahead drops numbers that are
+# counts or units ("2.5 ATR", "2분할", "1차", "10만원", "50-day", "2:1", "2.5R") or a level being
+# replaced ("110.77을 98.26으로" — the first number is the old one).
+_PROSE = (r"(?:{kw})\s*(?:\*\*)?\s*(?:라인|선|기준|가격)?\s*(?:[:=]|은|는|이|가|at|of|around)?\s*"
+          r"(?:약\s*)?[$₩]?\s*({num})"
+          r"(?!\d|[,.]\d|-\w|\s*(?:%|주|배|[xX]\b|일|개|분할|차|회|만|ATR|R\b|day|DMA|:|을|를|에서|→|->))")
+# A prose number this far from every known level is a misread, not a level.
+_PLAUSIBLE = 0.5
+
+
+def _number(raw: str) -> float | None:
+    try:
+        return float(raw.replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _labeled_price(text: str, label: str) -> float | None:
+    """The last ``Label: number`` in the text — the PM restates the final levels at the end."""
+    hits = re.findall(_LABELED.format(label=re.escape(label), num=_NUMBER.pattern), text or "", re.IGNORECASE)
+    return _number(hits[-1]) if hits else None
+
+
+def _prose_price(summary: str | None, key: str, references: list[float]) -> float | None:
+    if not summary or not references:
+        return None   # nothing to sanity-check a prose number against
+    pattern = _PROSE.format(kw=_SUMMARY_KEYWORDS[key], num=_NUMBER.pattern)
+    for match in re.finditer(pattern, summary, re.IGNORECASE):
+        value = _number(match.group(1))
+        if value is not None and any(abs(value - ref) <= _PLAUSIBLE * abs(ref) for ref in references):
+            return value
+    return None
+
+
 def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
     trader = state.get("trader_investment_plan") or ""
     decision = state.get("final_trade_decision") or ""
+    summary = _field(decision, "Executive Summary")
     rating = _rating(state)
-    entry = _price(trader, "Entry Price")
-    stop = _price(trader, "Stop Loss")
+    levels: dict[str, float | None] = {}
+    origin: dict[str, str] = {}
+    trader_levels: dict[str, float] = {}
     target = _price(decision, "Price Target")
-    return {
+    drafts = {key: _price(trader, label) for key, label in (("entry_price", "Entry Price"), ("stop_loss", "Stop Loss"))}
+    for key, label in (("entry_price", "Entry Price"), ("stop_loss", "Stop Loss")):
+        drafted = drafts[key]
+        final = _price(decision, label)
+        if final is None:
+            final = _labeled_price(summary or "", label)
+        if final is None:
+            refs = [v for v in (drafted, target, *drafts.values()) if v]
+            final = _prose_price(summary, key, refs)
+        if final is not None:
+            levels[key], origin[key] = final, "pm"
+            if drafted is not None and drafted != final:
+                trader_levels[key] = drafted   # the trader's draft the risk debate overruled
+        elif drafted is not None:
+            levels[key], origin[key] = drafted, "trader"
+        else:
+            levels[key] = None
+    if target is not None:
+        origin["price_target"] = "pm"
+    entry, stop = levels["entry_price"], levels["stop_loss"]
+    plan = {
         "rating": rating or "REVIEW",
         "bias": BIAS.get(rating, "review"),
         "trader_action": _field(trader, "Action"),
@@ -81,5 +147,9 @@ def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
         "reward_risk": reward_risk(entry, stop, target),
         "time_horizon": _field(decision, "Time Horizon"),
         "position_sizing": _field(trader, "Position Sizing"),
-        "executive_summary": _field(decision, "Executive Summary"),
+        "executive_summary": summary,
+        "levels_origin": origin,
     }
+    if trader_levels:
+        plan["trader_levels"] = trader_levels
+    return plan

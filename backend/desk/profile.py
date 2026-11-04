@@ -16,7 +16,11 @@ _LEVELS = (
     "always fills **Entry Price** and **Stop Loss**, and the portfolio manager always fills "
     "**Price Target** — for Buy/Overweight they describe the long entry, for Sell/Underweight "
     "the short or inverse entry, for Hold the level at which the owner should act. Never leave "
-    "them out because the call is bearish or uncertain; state the best level you can justify."
+    "them out because the call is bearish or uncertain; state the best level you can justify. "
+    "The portfolio manager's levels are the ones the owner trades: end the Executive Summary with "
+    "the final levels written exactly as 'Entry Price: <number> / Stop Loss: <number> / Price "
+    "Target: <number>' (keep these English labels in any output language), and when the risk "
+    "debate revised the trader's entry or stop, give the revised numbers there."
 )
 
 PROFILES: dict[str, dict[str, str]] = {

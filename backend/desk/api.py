@@ -21,6 +21,7 @@ from . import regime
 from .auth import COOKIE, Auth, Busy, LoginThrottle
 from .broker import make_broker
 from .db import make_engine, migrate, now
+from .estimate import BinanceEstimator
 from .prices import PriceSource
 from .profile import PROFILES
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
@@ -92,7 +93,8 @@ def purge_expired_runs(store: Store, retention_days: int) -> int:
     return deleted
 
 
-def create_app(settings: Settings | None = None, runner=None, prices: PriceSource | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, runner=None, prices: PriceSource | None = None,
+               estimator: BinanceEstimator | None = None) -> FastAPI:
     settings = settings or load()
     migrate(settings.database_url)
     engine = make_engine(settings.database_url)
@@ -103,6 +105,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     hub = Hub()
     broker = make_broker(settings)
     prices = prices or PriceSource(broker)
+    estimator = estimator or BinanceEstimator()
     if runner is None:
         runner = make_fake_runner(settings.fake_delay) if settings.fake_runs else run_tradingagents
 
@@ -134,6 +137,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         refresher.cancel()
         if purger:
             purger.cancel()
+        await estimator.aclose()
         engine.dispose()
 
     docs = settings.enable_docs
@@ -307,6 +311,21 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except Exception as exc:  # noqa: BLE001 - both sources failed
             log.warning("quote for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no price for {ticker}") from None
+
+    @app.get("/api/estimate")
+    async def estimate(ticker: str):
+        """Off-hours estimate from the ticker's Binance stock perpetual (desk.estimate).
+        ``supported: false`` when Binance lists no contract for it."""
+        try:
+            ticker = clean_ticker(ticker)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        try:
+            result = await estimator.estimate(ticker)
+        except Exception as exc:  # noqa: BLE001 - Binance or Yahoo down
+            log.warning("estimate for %s failed: %s", ticker, exc)
+            raise HTTPException(503, f"no estimate for {ticker}") from None
+        return result.to_dict() if result else {"ticker": ticker, "supported": False}
 
     @app.get("/api/regime")
     def regime_view():

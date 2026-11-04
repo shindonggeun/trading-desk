@@ -1,0 +1,27 @@
+services:
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      DESK_DB_PATH: /data/desk.db
+      # semibot's DB, mounted read-only below. Remove both lines if semibot runs elsewhere.
+      SEMIBOT_DB_PATH: /semibot/semibot.db
+    volumes:
+      - desk_data:/data
+      # ChatGPT sign-in, TradingAgents memory log, reports and cache.
+      - tradingagents_home:/home/appuser/.tradingagents
+      - ${SEMIBOT_DATA_DIR:-./semibot-data}:/semibot:ro
+    # The ChatGPT sign-in returns to 127.0.0.1:1455; publish it only while signing in
+    # (see README, "ChatGPT sign-in on a server").
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    depends_on: [backend]
+    ports:
+      - "${DESK_WEB_PORT:-8088}:80"
+    restart: unless-stopped
+
+volumes:
+  desk_data:
+  tradingagents_home:

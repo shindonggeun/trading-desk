@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading-desk"
+version = "0.1.0"
+description = "Web desk for TradingAgents: watch the agents argue like a chat, keep the plans on a dashboard."
+requires-python = ">=3.11"
+dependencies = [
+    # TradingAgents is used as a library and pinned to one commit of the fork.
+    # Bump the SHA deliberately after reading upstream's CHANGELOG.
+    "tradingagents @ git+https://github.com/shindonggeun/TradingAgents.git@c4544913a14ed3df5f1ed7b9e8483270ce20682a",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+include = ["desk*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"

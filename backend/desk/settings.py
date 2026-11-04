@@ -1,0 +1,49 @@
+"""Settings read once from the environment (and .env)."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def _bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _list(name: str) -> list[str]:
+    return [part.strip() for part in os.getenv(name, "").split(",") if part.strip()]
+
+
+@dataclass(frozen=True)
+class Settings:
+    db_path: Path = field(default_factory=lambda: Path(os.getenv("DESK_DB_PATH", "data/desk.db")))
+    # Fake runs replay a scripted debate: build the UI without spending the plan's quota.
+    fake_runs: bool = field(default_factory=lambda: _bool("DESK_FAKE_RUNS"))
+    fake_delay: float = field(default_factory=lambda: float(os.getenv("DESK_FAKE_DELAY", "0.6")))
+    # One run at a time by default: every run draws on the same ChatGPT plan.
+    max_concurrent_runs: int = field(default_factory=lambda: int(os.getenv("DESK_MAX_CONCURRENT_RUNS", "1")))
+    # Shared secret for the API. Leave empty only behind an authenticating proxy / VPN.
+    api_token: str = field(default_factory=lambda: os.getenv("DESK_API_TOKEN", ""))
+    cors_origins: list[str] = field(default_factory=lambda: _list("DESK_CORS_ORIGINS"))
+
+    broker: str = field(default_factory=lambda: os.getenv("DESK_BROKER", "mock").lower())
+    toss_client_id: str = field(default_factory=lambda: os.getenv("TOSS_CLIENT_ID", ""))
+    toss_client_secret: str = field(default_factory=lambda: os.getenv("TOSS_CLIENT_SECRET", ""))
+    toss_account_seq: str = field(default_factory=lambda: os.getenv("TOSS_ACCOUNT_SEQ", ""))
+    # Toss gives a bare 6-digit code for KR listings; Yahoo needs .KS (KOSPI) or .KQ (KOSDAQ).
+    kosdaq_symbols: list[str] = field(default_factory=lambda: _list("DESK_KOSDAQ_SYMBOLS"))
+
+    # semibot's SQLite (regime/trigger log), read-only. Empty = panel hidden.
+    semibot_db_path: str = field(default_factory=lambda: os.getenv("SEMIBOT_DB_PATH", ""))
+
+
+def load() -> Settings:
+    return Settings()

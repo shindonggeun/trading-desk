@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from . import regime
-from .auth import COOKIE, Auth, LoginThrottle
+from .auth import COOKIE, Auth, Busy, LoginThrottle
 from .broker import make_broker
 from .db import make_engine, migrate
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
@@ -113,16 +113,18 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
     @app.post("/api/auth/login", status_code=204)
     def login(body: LoginIn, request: Request):
         ip = _client_ip(request)
-        wait = throttle.retry_after(ip, body.username)
+        wait = throttle.attempt(ip)
         if wait:
             return JSONResponse({"detail": "too many failed logins", "retry_after": wait},
                                 status_code=429, headers={"Retry-After": str(wait)})
-        user = auth.authenticate(body.username, body.password)
+        try:
+            user = auth.authenticate(body.username, body.password)
+        except Busy:
+            return JSONResponse({"detail": "busy, try again"}, status_code=503, headers={"Retry-After": "5"})
         if user is None:
-            throttle.failed(ip, body.username)
             log.warning("login failed ip=%s", ip)   # fail2ban reads the ingress log; this is for us
             return JSONResponse({"detail": "invalid username or password"}, status_code=401)
-        throttle.succeeded(ip, body.username)
+        throttle.succeeded(ip)
         auth.close_session(request.cookies.get(COOKIE))   # never keep a token issued before this login
         token = auth.open_session(user, ip, request.headers.get("user-agent"))
         log.info("login ok user=%s ip=%s", user.username, ip)
@@ -194,9 +196,14 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
         last_id = request.headers.get("last-event-id")
         start = int(last_id) if last_id and last_id.isdigit() else after
 
+        token = request.cookies.get(COOKIE)
+
         async def frames():
             seq = start
             while not await request.is_disconnected():
+                # Re-check every round: logout, revoke or expiry ends an open stream too.
+                if await asyncio.to_thread(auth.resolve, token) is None:
+                    return
                 waiter = hub.listen(run_id)          # before reading, so nothing slips between
                 events = store.events_after(run_id, seq)
                 for event in events:

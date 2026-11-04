@@ -17,6 +17,7 @@ from .levels import fill_levels
 from .plan import parse_plan
 from .prices import PriceSource
 from .profile import desk_portfolio
+from .sr import prompt_note, support_resistance
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -222,6 +223,16 @@ class RunManager:
             return None
         return {"price": quote.price, "source": quote.source, "fetched_at": quote.fetched_at}
 
+    async def _support_resistance(self, request: RunRequest) -> dict | None:
+        """Daily/weekly support and resistance up to the analysis date; None without prices."""
+        if self.prices is None:
+            return None
+        try:
+            return await support_resistance(self.prices, request.ticker, request.trade_date)
+        except Exception as exc:  # noqa: BLE001 - the analysis runs without the reference
+            log.warning("no support/resistance for %s: %s", request.ticker, exc)
+            return None
+
     def _publish(self, run_id: str, event: dict) -> None:
         self.store.append_event(run_id, event)
         self.hub.notify(run_id)
@@ -238,12 +249,15 @@ class RunManager:
 
             try:
                 book = await self.broker.portfolio() if request.use_portfolio else None
-                portfolio = desk_portfolio(request.profile, book)
+                sr = await self._support_resistance(request)
+                portfolio = desk_portfolio(request.profile, book, prompt_note(sr))
                 result = await asyncio.to_thread(self.runner, request, emit, portfolio)
                 # The model may still leave a level out; fill it from ATR and mark it as computed.
                 live = await self._live_quote(request)
                 plan = await asyncio.to_thread(self.levels, parse_plan(result.final_state),
                                                request.ticker, request.trade_date, live=live)
+                if sr:
+                    plan["support_resistance"] = sr
                 self.store.mark_done(run_id, plan, result.report_path)
                 self._publish(run_id, {"type": "plan", "agent": "portfolio_manager", "data": plan})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "done"})

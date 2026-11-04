@@ -24,7 +24,13 @@ log = logging.getLogger(__name__)
 QUOTE_TTL_SEC = 10.0
 CANDLE_TTL_SEC = 30.0
 CACHE_MAX = 256
-INTERVALS = ("1m", "1d")
+INTERVALS = ("1m", "1d", "1w")
+MAX_COUNT = 500
+# Toss serves at most 200 bars and no weekly bars ("지원하지 않는 캔들 주기"); longer or weekly
+# histories come straight from Yahoo.
+BROKER_MAX_COUNT = 200
+BROKER_INTERVALS = ("1m", "1d")
+_YAHOO_INTERVAL = {"1m": "1m", "1d": "1d", "1w": "1wk"}
 
 
 @dataclass(frozen=True)
@@ -73,8 +79,14 @@ def yahoo_candles(ticker: str, interval: str, count: int) -> list[Bar]:
     import yfinance as yf
 
     # Yahoo keeps 1-minute bars for about a week; 5 days covers a weekend and a holiday.
-    period = "5d" if interval == "1m" else f"{max(count * 2, 30)}d"
-    frame = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
+    if interval == "1m":
+        period = "5d"
+    elif interval == "1w":
+        period = f"{count * 7 + 14}d"
+    else:
+        period = f"{max(count * 2, 30)}d"
+    frame = yf.Ticker(ticker).history(period=period, interval=_YAHOO_INTERVAL[interval], auto_adjust=False)
+    frame = frame.dropna(subset=["Open", "High", "Low", "Close"])
     bars = [Bar(at=index.to_pydatetime().astimezone(UTC).isoformat(timespec="seconds"),
                 open=float(row["Open"]), high=float(row["High"]), low=float(row["Low"]),
                 close=float(row["Close"]), volume=float(row["Volume"]))
@@ -111,12 +123,14 @@ class PriceSource:
         """{"ticker", "interval", "source", "fetched_at", "bars": [...oldest first]}."""
         if interval not in INTERVALS:
             raise ValueError(f"interval must be one of {INTERVALS}")
-        count = min(max(count, 1), 200)
+        count = min(max(count, 1), MAX_COUNT)
         key = (ticker, interval, count)
         cached = self._candles.get(key)
         if cached and self._clock() - cached[0] < CANDLE_TTL_SEC:
             return cached[1]
         try:
+            if interval not in BROKER_INTERVALS or count > BROKER_MAX_COUNT:
+                raise NotImplementedError
             bars = await self.broker.candles(broker_symbol(ticker), interval, count)
             if not bars:
                 raise ValueError("no bars")

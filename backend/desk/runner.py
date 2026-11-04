@@ -12,7 +12,9 @@ from typing import Any
 
 from .broker.base import Broker
 from .events import StateDiffer
+from .levels import fill_levels
 from .plan import parse_plan
+from .profile import desk_portfolio
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -28,6 +30,8 @@ class RunRequest:
     ticker: str
     trade_date: str
     name: str | None = None
+    # desk.profile.PROFILES key: the owner's style, handed to the deciding agents.
+    profile: str | None = None
     analysts: list[str] = field(default_factory=lambda: list(ANALYSTS))
     use_portfolio: bool = False
     output_language: str | None = None
@@ -102,7 +106,8 @@ def run_tradingagents(request: RunRequest, emit: Emit, portfolio: Any) -> RunRes
 def make_fake_runner(delay: float) -> Runner:
     def run_fake(request: RunRequest, emit: Emit, portfolio: Any) -> RunResult:
         t = request.ticker
-        held = f"\n\n보유 현황 반영: {portfolio.render(t)}" if portfolio is not None else ""
+        known = portfolio is not None and getattr(portfolio, "book_known", True)
+        held = f"\n\n보유 현황 반영: {portfolio.render(t)}" if known else ""
         steps: list[tuple[list, dict | None]] = []
         reports = {
             "market": ("market_report", f"## {t} 기술적 분석\n\n- 20일선 위, 50일선 지지 확인\n- RSI 61, 과열 아님\n- MACD 골든크로스 3일차"),
@@ -185,7 +190,9 @@ class Hub:
 
 
 class RunManager:
-    def __init__(self, store: Store, hub: Hub, runner: Runner, broker: Broker, max_concurrent: int) -> None:
+    def __init__(self, store: Store, hub: Hub, runner: Runner, broker: Broker, max_concurrent: int,
+                 levels=fill_levels) -> None:
+        self.levels = levels
         self.store = store
         self.hub = hub
         self.runner = runner
@@ -216,9 +223,12 @@ class RunManager:
                 loop.call_soon_threadsafe(self._publish, run_id, event)
 
             try:
-                portfolio = await self.broker.portfolio() if request.use_portfolio else None
+                book = await self.broker.portfolio() if request.use_portfolio else None
+                portfolio = desk_portfolio(request.profile, book)
                 result = await asyncio.to_thread(self.runner, request, emit, portfolio)
-                plan = parse_plan(result.final_state)
+                # The model may still leave a level out; fill it from ATR and mark it as computed.
+                plan = await asyncio.to_thread(self.levels, parse_plan(result.final_state),
+                                               request.ticker, request.trade_date)
                 self.store.mark_done(run_id, plan, result.report_path)
                 self._publish(run_id, {"type": "plan", "agent": "portfolio_manager", "data": plan})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "done"})

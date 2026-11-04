@@ -66,3 +66,18 @@ def test_rejects_unknown_analyst_and_odd_ticker(db_url):
     with _client(db_url) as client:
         assert client.post("/api/runs", json={"ticker": "NVDA", "analysts": ["astrology"]}).status_code == 422
         assert client.post("/api/runs", json={"ticker": "../etc"}).status_code == 422
+
+
+def test_runs_default_to_the_servers_profile_and_reject_unknown_ones(db_url):
+    with _client(db_url) as client:
+        config = client.get("/api/config").json()
+        assert config["default_profile"] == "aggressive_leverage"
+        assert {p["id"] for p in config["profiles"]} == {"aggressive_leverage", "balanced"}
+        run = client.post("/api/runs", json={"ticker": "NVDA"}).json()
+        assert run["options"]["profile"] == "aggressive_leverage"
+        run = client.post("/api/runs", json={"ticker": "NVDA", "profile": "balanced"}).json()
+        assert run["options"]["profile"] == "balanced"
+        assert client.post("/api/runs", json={"ticker": "NVDA", "profile": "yolo"}).status_code == 422
+        done = _wait_done(client, run["id"])
+        assert done["plan"]["levels_source"] == {"entry_price": "model", "stop_loss": "model",
+                                                 "price_target": "model"}

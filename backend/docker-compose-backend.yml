@@ -23,6 +23,8 @@ x-backend-environment: &backend_environment
   DESK_SESSION_IDLE_HOURS: ${DESK_SESSION_IDLE_HOURS:-12}
   DESK_COOKIE_SECURE: "true"
   DESK_ENABLE_DOCS: "false"
+  # 투자 성향 기본값(desk/profile.py): aggressive_leverage | balanced
+  DESK_INVESTOR_PROFILE: ${DESK_INVESTOR_PROFILE:-aggressive_leverage}
   # 브로커: mock | toss. toss 는 서버 공인 IP 를 토스 WTS 허용 IP 에 등록해야 한다(docs/deploy.md 6절)
   DESK_BROKER: ${DESK_BROKER:-mock}
   TOSS_CLIENT_ID: ${TOSS_CLIENT_ID:-}

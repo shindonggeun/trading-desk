@@ -44,7 +44,17 @@ src/           방금 배포한 소스 (REVISION 에 커밋)
 src.old/       직전 배포 — 되돌릴 때: src.old 로 들어가 같은 compose 명령
 ```
 
-`main` 이 배포본이다(`docs/git-workflow.md` §8). 배포 뒤 확인:
+**`develop` 이 배포본이다**(`docs/git-workflow.md` §8 — `main` 은 쓰지 않는다). 순서:
+
+1. `git fetch origin` 후 올릴 커밋 = `origin/develop` 최신. 그 커밋의 CI 가 통과했는지 본다 — `gh run list --branch develop --limit 1`
+2. 지금 서버 커밋(`REVISION`)과 비교해 바뀐 쪽만 올린다 — `git diff --stat <서버 커밋> origin/develop`
+3. 커밋을 지정해 올린다. 작업 트리가 다른 브랜치에 있어도 지정한 커밋만 나간다
+
+```bash
+scripts/deploy.sh "$(git rev-parse --short origin/develop)" backend   # backend/ 만 바뀌었을 때 (web | all)
+```
+
+배포 뒤 확인:
 
 ```bash
 ssh homelab-backend-server 'docker ps --filter name=trading-desk; cat ~/deploy/trading-desk/src/REVISION'

@@ -14,8 +14,8 @@
 
 | 브랜치 | 용도 |
 |--------|------|
-| `main` | 배포본. 릴리스 PR(develop → main)로만 바뀐다 |
-| `develop` | 통합 브랜치. 모든 작업 PR 의 base |
+| `develop` | 통합 브랜치이자 **배포본**. 모든 작업 PR 의 base, 머지된 커밋을 그대로 서버에 올린다(§8) |
+| `main` | GitHub 기본 브랜치일 뿐 쓰지 않는다. 커밋 · 머지 · 배포 대상이 아니다 |
 | `<type>/<영역>/<번호>-<요약>` | 이슈 하나의 작업 브랜치 |
 
 ## 2. 이슈
@@ -109,18 +109,18 @@ gh pr create --base develop --title "<이슈 제목>" --body-file <본문> --ass
 - 1인 저장소라 셀프 머지한다. 단 **PR 은 생략하지 않는다** — CI 와 검토 기록이 남는 곳이다.
 - **30파일 / 1,000줄을 넘으면** 이유를 본문에 적는다.
 
-## 7. 머지 · 이슈 갱신 · 릴리스
+## 7. 머지 · 이슈 갱신
 
 - 작업 PR: **`gh pr merge <번호> --rebase`** (CI 통과 후). 원격 브랜치는 GitHub 가 자동으로 지운다.
 - 이슈는 develop 머지로 자동으로 닫히지 않는다(기본 브랜치가 `main`). 체크박스를 갱신하고 `gh issue close <번호>`.
-- 릴리스(develop → main): **`gh pr merge <번호> --merge`** (merge commit).
+- 릴리스 단계는 없다. 머지된 develop 커밋을 배포한다(§8).
 
 ### 7-1. 저장소 설정
 
 | 설정 | 값 |
 |------|-----|
 | Allow rebase merging | 켬 — 작업 PR 의 유일한 머지 방식 |
-| Allow merge commits | 켬 — 릴리스 전용 |
+| Allow merge commits | 켬 — 지금은 쓰지 않는다(예전 릴리스용) |
 | Allow squash merging | 끔 |
 | Automatically delete head branches | 켬 |
 
@@ -140,5 +140,7 @@ CI 는 GitHub Actions(`.github/workflows/ci.yml` — 백엔드 ruff · pytest, �
 
 | 브랜치 | 배포 |
 |--------|------|
-| `main` | `scripts/deploy.sh` 로 `backend-server`(`192.168.0.9`)에 올린다 — 정본 [docs/deploy.md](deploy.md) |
-| 그 외 | 없음 |
+| `develop` | 머지 뒤 CI 가 통과한 커밋을 `scripts/deploy.sh <커밋>` 으로 `backend-server`(`192.168.0.9`)에 올린다 — 정본 [docs/deploy.md](deploy.md) |
+| 그 외 | 없음 (`main` 포함) |
+
+1인 운영이라 develop → main 릴리스를 두지 않는다. 되돌릴 때는 서버의 직전 배포본(`src.old`)이나 이전 develop 커밋을 다시 올린다.

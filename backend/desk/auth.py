@@ -22,11 +22,14 @@ from sqlalchemy.engine import Engine
 
 from .db import aware, now, sessions, users
 
-COOKIE = "desk_session"
+# __Host-: Secure, Path=/, no Domain — a sibling *.8llow8llowme.com app cannot plant or shadow it.
+COOKIE = "__Host-desk_session"
 MIN_PASSWORD = 12
 # Refresh last_seen_at at most this often: one write per minute, not per request.
 TOUCH_EVERY = timedelta(minutes=1)
 
+# argon2 takes ~64 MiB per verify: cap concurrent verifies so a burst of logins cannot exhaust the host.
+_VERIFY_SLOTS = threading.BoundedSemaphore(2)
 _hasher = PasswordHasher()   # argon2id, library defaults (RFC 9106 low-memory profile)
 # Verified against when the username is unknown, so a miss costs the same time as a wrong password.
 _DUMMY_HASH = _hasher.hash(secrets.token_hex(16))
@@ -34,6 +37,10 @@ _DUMMY_HASH = _hasher.hash(secrets.token_hex(16))
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+class Busy(Exception):
+    """Too many password checks already running."""
 
 
 @dataclass(frozen=True)
@@ -83,10 +90,14 @@ class Auth:
             row = conn.execute(select(users.c.id, users.c.username, users.c.password_hash)
                                .where(users.c.username == username)).first()
         stored = row.password_hash if row else _DUMMY_HASH
+        if not _VERIFY_SLOTS.acquire(timeout=5):
+            raise Busy
         try:
             _hasher.verify(stored, password)
         except (VerificationError, InvalidHashError):
             return None
+        finally:
+            _VERIFY_SLOTS.release()
         if row is None:
             return None
         if _hasher.check_needs_rehash(stored):
@@ -140,46 +151,35 @@ def _check_password(password: str) -> None:
 
 
 class LoginThrottle:
-    """Failed logins per client IP and per username inside a sliding window.
+    """Login attempts per client IP inside a sliding window.
 
-    In memory on purpose: one process, and a restart forgetting the count is fine —
-    fail2ban on the ingress keeps the longer memory (nginx log, 401 on the login route).
+    An attempt counts *before* the password is checked, so parallel requests cannot
+    all slip past the limit while argon2 runs; a success clears the IP's count.
+    There is deliberately no per-username lock: with a single known account it would
+    let anyone keep the owner out. Distributed guessing is left to fail2ban on the
+    ingress and to the password itself (12+ chars, argon2id) — and OTP next (#6).
+
+    In memory on purpose: one process, and a restart forgetting the count is fine.
     """
 
-    def __init__(self, per_ip: int = 5, per_user: int = 10, window_sec: float = 900) -> None:
+    def __init__(self, per_ip: int = 5, window_sec: float = 900) -> None:
         self.per_ip = per_ip
-        self.per_user = per_user
         self.window = window_sec
-        self._fails: dict[str, deque[float]] = defaultdict(deque)
+        self._attempts: dict[str, deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
 
-    def retry_after(self, ip: str, username: str) -> int:
-        """Seconds until this client may try again; 0 = go ahead."""
-        with self._lock:
-            waits = [self._wait(f"ip:{ip}", self.per_ip), self._wait(f"user:{username.lower()}", self.per_user)]
-        return max(waits)
-
-    def failed(self, ip: str, username: str) -> None:
+    def attempt(self, ip: str) -> int:
+        """Record an attempt. Returns 0 to go ahead, or seconds to wait (nothing recorded)."""
         stamp = time.monotonic()
         with self._lock:
-            self._fails[f"ip:{ip}"].append(stamp)
-            self._fails[f"user:{username.lower()}"].append(stamp)
+            attempts = self._attempts[ip]
+            while attempts and attempts[0] < stamp - self.window:
+                attempts.popleft()
+            if len(attempts) >= self.per_ip:
+                return max(1, int(attempts[0] + self.window - stamp) + 1)
+            attempts.append(stamp)
+            return 0
 
-    def succeeded(self, ip: str, username: str) -> None:
+    def succeeded(self, ip: str) -> None:
         with self._lock:
-            self._fails.pop(f"ip:{ip}", None)
-            self._fails.pop(f"user:{username.lower()}", None)
-
-    def _wait(self, key: str, limit: int) -> int:
-        fails = self._fails.get(key)
-        if not fails:
-            return 0
-        cutoff = time.monotonic() - self.window
-        while fails and fails[0] < cutoff:
-            fails.popleft()
-        if not fails:
-            del self._fails[key]
-            return 0
-        if len(fails) < limit:
-            return 0
-        return max(1, int(fails[0] + self.window - time.monotonic()) + 1)
+            self._attempts.pop(ip, None)

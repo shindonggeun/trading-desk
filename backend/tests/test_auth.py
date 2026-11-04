@@ -104,12 +104,28 @@ def test_set_password_signs_everyone_out_and_rejects_short_ones(db_url):
         assert client.get("/api/runs").status_code == 401
 
 
-def test_throttle_window_forgets_old_failures():
-    throttle = LoginThrottle(per_ip=2, per_user=99, window_sec=0.05)
-    throttle.failed("1.2.3.4", "a")
-    throttle.failed("1.2.3.4", "b")
-    assert throttle.retry_after("1.2.3.4", "c") > 0
-    assert throttle.retry_after("5.6.7.8", "c") == 0
+def test_throttle_counts_before_checking_and_forgets_old_attempts():
+    throttle = LoginThrottle(per_ip=2, window_sec=0.05)
+    assert throttle.attempt("1.2.3.4") == 0
+    assert throttle.attempt("1.2.3.4") == 0
+    assert throttle.attempt("1.2.3.4") > 0      # third in the window: refused before any password check
+    assert throttle.attempt("5.6.7.8") == 0     # other clients are not affected
     import time
     time.sleep(0.06)
-    assert throttle.retry_after("1.2.3.4", "c") == 0
+    assert throttle.attempt("1.2.3.4") == 0
+    throttle.succeeded("1.2.3.4")
+    assert throttle.attempt("1.2.3.4") == 0
+
+
+def test_cookie_uses_host_prefix():
+    assert COOKIE.startswith("__Host-")
+
+
+def test_open_stream_ends_when_the_session_is_revoked(db_url):
+    with _client(db_url) as client:
+        run_id = client.post("/api/runs", json={"ticker": "NVDA"}).json()["id"]
+        engine = make_engine(db_url)
+        Auth(engine, timedelta(hours=1), timedelta(hours=1)).revoke_all(OWNER)
+        engine.dispose()
+        # Auth passed at the door only via the middleware; revoked now, so the stream is refused
+        assert client.get(f"/api/runs/{run_id}/stream").status_code == 401

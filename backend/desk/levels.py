@@ -1,8 +1,9 @@
 """Make sure a plan carries entry, stop and target.
 
 The model is asked for all three (desk.profile) but may still leave one out. A
-missing level is filled from recent prices: entry = last close up to the analysis
-date, stop = entry ∓ 1.5 ATR(14), target = entry ± 3 ATR(14) — a 2:1 trade sized to
+missing level is filled from recent prices: entry = the live quote when the analysis
+is for today (desk.prices: Toss, else Yahoo), otherwise the last close up to the
+analysis date; stop = entry ∓ 1.5 ATR(14), target = entry ± 3 ATR(14) — a 2:1 trade sized to
 the instrument's own volatility. Each level records where it came from, so the page
 can tell the model's call from the arithmetic.
 """
@@ -18,6 +19,9 @@ STOP_ATR = 1.5
 TARGET_ATR = 3.0
 ATR_DAYS = 14
 LEVELS = ("entry_price", "stop_loss", "price_target")
+# A live quote this far from the last daily close is more likely a unit mismatch (a split
+# the daily bars have not caught, another currency) than a move; levels then use the close.
+LIVE_MAX_GAP = 0.25
 
 PriceFn = Callable[[str, str], tuple[float, float]]
 
@@ -44,21 +48,34 @@ def _round(price: float) -> float:
     return float(round(price)) if price >= 1000 else round(price, 2)
 
 
-def fill_levels(plan: dict, ticker: str, trade_date: str, prices: PriceFn = last_close_and_atr) -> dict:
+def fill_levels(plan: dict, ticker: str, trade_date: str, prices: PriceFn = last_close_and_atr,
+                live: dict | None = None) -> dict:
     """The plan with missing levels filled for a long or short bias. Flat/review plans and
-    complete plans come back unchanged apart from the source markers."""
+    complete plans come back unchanged apart from the source markers.
+
+    ``live`` ({"price", "source", "fetched_at"}) is the quote at the end of a same-day analysis;
+    when given, a computed entry starts from it instead of the last daily close."""
     plan = dict(plan)
     source = {key: "model" for key in LEVELS if plan.get(key) is not None}
     direction = {"long": 1, "short": -1}.get(plan.get("bias"))
     missing = [key for key in LEVELS if plan.get(key) is None]
+    if live:
+        plan["live_price"] = live
     if direction is not None and missing:
         try:
             close, atr = prices(ticker, trade_date)
         except Exception as exc:  # noqa: BLE001 - no data means no computed levels, not a failed run
             plan["levels_error"] = f"{type(exc).__name__}: {exc}"
         else:
-            entry = plan.get("entry_price") or close
-            computed = {"entry_price": close,
+            use_live = bool(live) and abs(live["price"] - close) <= LIVE_MAX_GAP * close
+            if live and not use_live:
+                plan["levels_warning"] = (f"live price {live['price']} is over {LIVE_MAX_GAP:.0%} "
+                                          f"from the last close {_round(close)}; levels use the close")
+            base = live["price"] if use_live else close
+            plan["reference_price"] = {"price": _round(base),
+                                       "source": live["source"] if use_live else "close"}
+            entry = plan.get("entry_price") or base
+            computed = {"entry_price": base,
                         "stop_loss": entry - direction * STOP_ATR * atr,
                         "price_target": entry + direction * TARGET_ATR * atr}
             for key in missing:

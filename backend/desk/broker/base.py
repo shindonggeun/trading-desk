@@ -43,6 +43,16 @@ class Listing:
     security_type: str     # STOCK | ETF | ETN | ...
 
 
+@dataclass(frozen=True)
+class Bar:
+    at: str                # bar open time, ISO 8601 UTC
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
 class Broker(ABC):
     name: str = "broker"
 
@@ -52,6 +62,15 @@ class Broker(ABC):
     @abstractmethod
     async def list_stocks(self, market: str) -> list[Listing]:
         """Every active listing of one market; feeds the name search (desk.universe)."""
+
+    # Market data is optional: a broker without it leaves desk.prices to fall back on Yahoo.
+    async def quote(self, symbol: str) -> tuple[float, str | None]:
+        """(last price, currency) for the broker's own symbol."""
+        raise NotImplementedError
+
+    async def candles(self, symbol: str, interval: str, count: int) -> list[Bar]:
+        """Up to ``count`` bars of ``interval`` (1m | 1d), oldest first."""
+        raise NotImplementedError
 
     async def portfolio(self):
         """Holdings as TradingAgents' PortfolioContext, so the trader and the managers

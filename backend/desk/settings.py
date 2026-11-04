@@ -37,6 +37,8 @@ class Settings:
     cookie_secure: bool = field(default_factory=lambda: _bool("DESK_COOKIE_SECURE", True))
     # FastAPI's /docs and /openapi.json. Even when on, they sit behind the login.
     enable_docs: bool = field(default_factory=lambda: _bool("DESK_ENABLE_DOCS"))
+    # Finished runs (and their events) older than this are deleted at start and once a day. 0 keeps all.
+    retention_days: int = field(default_factory=lambda: int(os.getenv("DESK_RETENTION_DAYS", "90")))
     cors_origins: list[str] = field(default_factory=lambda: _list("DESK_CORS_ORIGINS"))
 
     # Default investing style for new runs (desk.profile.PROFILES).

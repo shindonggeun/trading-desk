@@ -8,13 +8,13 @@
 - 가입 API 는 없다. 계정은 서버에서 CLI 로만 만든다.
 
   ```bash
-  docker exec -it trading-desk-backend-prod python -m desk.cli create-user <아이디>      # 비밀번호를 두 번 묻는다(12자 이상)
-  docker exec -it trading-desk-backend-prod python -m desk.cli set-password <아이디>     # 바꾸면 모든 세션이 끊긴다
-  docker exec -it trading-desk-backend-prod python -m desk.cli revoke-sessions <아이디>  # 비밀번호는 두고 전부 로그아웃
+  docker exec -it trading-desk-backend-prod python -m desk.cli create-user <이메일>      # 비밀번호를 두 번 묻는다(12자 이상)
+  docker exec -it trading-desk-backend-prod python -m desk.cli set-password <이메일>     # 바꾸면 모든 세션이 끊긴다
+  docker exec -it trading-desk-backend-prod python -m desk.cli revoke-sessions <이메일>  # 비밀번호는 두고 전부 로그아웃
   ```
 
 - 비밀번호는 argon2id 해시만 `users.password_hash` 에 저장한다. 해시 파라미터가 바뀌면 다음 로그인 때 다시 해시한다.
-- 없는 아이디도 더미 해시를 검증해 응답 시간 · 본문이 틀린 비밀번호와 같다(아이디 열거 방지).
+- 없는 이메일도 더미 해시를 검증해 응답 시간 · 본문이 틀린 비밀번호와 같다(계정 열거 방지).
 
 ## 2. 세션
 

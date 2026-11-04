@@ -69,7 +69,7 @@ DB · 계정은 Infra 저장소의 `PostgreSQL/scripts/create-project-db.sh trad
 가입 API 는 없다. 서버에서 직접 만든다(비밀번호를 두 번 묻는다, 12자 이상).
 
 ```bash
-ssh -t homelab-backend-server docker exec -it trading-desk-backend-prod python -m desk.cli create-user <아이디>
+ssh -t homelab-backend-server docker exec -it trading-desk-backend-prod python -m desk.cli create-user <이메일>
 ```
 
 비밀번호 변경 · 전체 로그아웃은 같은 방식으로 `set-password` · `revoke-sessions` (`docs/security.md` §1).

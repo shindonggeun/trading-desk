@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 
 DAILY_BARS = 200
@@ -69,8 +69,10 @@ def _round(price: float) -> float:
     return float(round(price)) if price >= 1000 else round(price, 2)
 
 
-def compute(daily: list[dict], weekly: list[dict], price: float | None = None) -> dict:
-    """``daily``/``weekly`` are bars oldest first ({"at","open","high","low","close","volume"})."""
+def compute(daily: list[dict], weekly: list[dict], price: float | None = None,
+            weekly_complete: bool = False) -> dict:
+    """``daily``/``weekly`` are bars oldest first ({"at","open","high","low","close","volume"}).
+    ``weekly_complete``: the last weekly bar has ended (otherwise it may still be trading)."""
     if len(daily) < ATR_DAYS + 1:
         raise ValueError("not enough daily bars for support/resistance")
     atr = _atr(daily) or 0.0
@@ -85,8 +87,9 @@ def compute(daily: list[dict], weekly: list[dict], price: float | None = None) -
         year = weekly[-52:]
         candidates.append(_Candidate(max(b["high"] for b in year), "1w", "52주 고가", 2.0))
         candidates.append(_Candidate(min(b["low"] for b in year), "1w", "52주 저가", 2.0))
-    if len(weekly) >= 2:
-        last = weekly[-2]   # the last completed week; weekly[-1] may still be trading
+    finished = weekly if weekly_complete else weekly[:-1]
+    if finished:
+        last = finished[-1]
         pivot = (last["high"] + last["low"] + last["close"]) / 3
         candidates += [_Candidate(last["high"], "1w", "지난주 고가", 1.0),
                        _Candidate(last["low"], "1w", "지난주 저가", 1.0),
@@ -146,10 +149,23 @@ def prompt_note(sr: dict | None) -> str | None:
             "They are arithmetic from price history, not a forecast.")
 
 
-def _until(bars: list[dict], trade_date: str | None) -> list[dict]:
-    if not trade_date:
-        return bars
-    return [b for b in bars if b["at"][:10] <= trade_date]
+def _local_day(at: str, ticker: str) -> date:
+    """The market's own date of a bar. Korean bars open at local midnight, which is 15:00 UTC the
+    day before; US bars (midnight New York = 04:00/05:00 UTC) already carry their own date."""
+    stamp = datetime.fromisoformat(at)
+    if ticker.upper().endswith((".KS", ".KQ")):
+        stamp += timedelta(hours=9)
+    return stamp.date()
+
+
+def _until(daily: list[dict], weekly: list[dict], ticker: str,
+           trade_date: str) -> tuple[list[dict], list[dict]]:
+    """Bars an analysis on ``trade_date`` could have seen: days up to it, and only the weeks that
+    had ended before it (a weekly bar carries the whole week's high and low)."""
+    cut = date.fromisoformat(trade_date)
+    days = [b for b in daily if _local_day(b["at"], ticker) <= cut]
+    weeks = [b for b in weekly if _local_day(b["at"], ticker) + timedelta(days=7) <= cut]
+    return days, weeks
 
 
 async def support_resistance(prices, ticker: str, trade_date: str | None = None,
@@ -158,14 +174,18 @@ async def support_resistance(prices, ticker: str, trade_date: str | None = None,
     minutes. ``price`` (a live quote) decides which side of it a zone is on."""
     key = (ticker, trade_date)
     cached = _CACHE.get(key)
-    if cached and clock() - cached[0] < CACHE_TTL_SEC and price is None:
+    if price is None and cached and clock() - cached[0] < CACHE_TTL_SEC:
         return cached[1]
     daily, weekly = await asyncio.gather(prices.candles(ticker, "1d", DAILY_BARS),
                                          prices.candles(ticker, "1w", WEEKLY_BARS))
-    result = compute(_until(daily["bars"], trade_date), _until(weekly["bars"], trade_date), price)
+    days, weeks = daily["bars"], weekly["bars"]
+    if trade_date:
+        days, weeks = _until(days, weeks, ticker, trade_date)
+    result = compute(days, weeks, price, weekly_complete=bool(trade_date))
     result.update(ticker=ticker, sources={"1d": daily["source"], "1w": weekly["source"]},
                   computed_at=datetime.now(UTC).isoformat(timespec="seconds"))
-    if len(_CACHE) > 256:
-        _CACHE.clear()
-    _CACHE[key] = (clock(), result)
+    if price is None:   # a result framed around a live price is not the cached, close-based one
+        if len(_CACHE) > 256:
+            _CACHE.clear()
+        _CACHE[key] = (clock(), result)
     return result

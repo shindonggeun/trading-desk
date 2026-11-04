@@ -95,11 +95,12 @@ def yahoo_candles(ticker: str, interval: str, count: int) -> list[Bar]:
 
 
 class PriceSource:
-    def __init__(self, broker: Broker, yahoo_quote=yahoo_quote, yahoo_candles=yahoo_candles,
+    def __init__(self, broker: Broker, yahoo_quote=None, yahoo_candles=None,
                  clock=time.monotonic) -> None:
         self.broker = broker
-        self._yahoo_quote = yahoo_quote
-        self._yahoo_candles = yahoo_candles
+        # Looked up at call time when not injected, so tests can keep Yahoo off the network.
+        self._yahoo_quote = yahoo_quote or (lambda *args: globals()["yahoo_quote"](*args))
+        self._yahoo_candles = yahoo_candles or (lambda *args: globals()["yahoo_candles"](*args))
         self._clock = clock
         self._quotes: dict[str, tuple[float, Quote]] = {}
         self._candles: dict[tuple[str, str, int], tuple[float, dict]] = {}

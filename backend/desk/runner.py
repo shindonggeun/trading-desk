@@ -192,6 +192,11 @@ class Hub:
             event.set()
 
 
+# The levels are a reference, not a prerequisite: a slow Toss (429 retries) or Yahoo must not
+# hold the run — and the queue behind it — at "running" with nothing on screen.
+SR_TIMEOUT_SEC = 20.0
+
+
 class RunManager:
     def __init__(self, store: Store, hub: Hub, runner: Runner, broker: Broker, max_concurrent: int,
                  levels=fill_levels, prices: PriceSource | None = None) -> None:
@@ -228,8 +233,9 @@ class RunManager:
         if self.prices is None:
             return None
         try:
-            return await support_resistance(self.prices, request.ticker, request.trade_date)
-        except Exception as exc:  # noqa: BLE001 - the analysis runs without the reference
+            return await asyncio.wait_for(
+                support_resistance(self.prices, request.ticker, request.trade_date), SR_TIMEOUT_SEC)
+        except Exception as exc:  # noqa: BLE001 - incl. timeout: the analysis runs without the reference
             log.warning("no support/resistance for %s: %s", request.ticker, exc)
             return None
 

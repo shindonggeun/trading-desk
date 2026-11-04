@@ -1,0 +1,90 @@
+# trading-desk 백엔드 배포 정의 (docs/deploy.md).
+#
+#   docker compose -p trading-desk-backend-prod --env-file ../../.env.runtime -f docker-compose-backend.yml \
+#     up -d --build --wait --remove-orphans backend-prod
+# scripts/deploy.sh 가 위 명령을 부른다. -p 를 빼지 않는다 — 빠지면 디렉터리 이름이 프로젝트가 돼 다른 compose 와 섞이고
+# --remove-orphans 가 남의 컨테이너를 지울 수 있다.
+#
+# 호스트 포트를 열지 않는다. 웹 컨테이너만 같은 외부 네트워크(DESK_DOCKER_NETWORK)로 컨테이너 이름을 불러 닿는다 —
+# 열면 X-Forwarded-For 위조로 로그인 시도 제한을 우회할 수 있다(docs/security.md §4).
+#
+# 값은 저장소에 쓰지 않는다. 키 이름은 루트 .env.example, 실값은 서버 ~/deploy/trading-desk/.env.runtime(권한 600).
+# environment 에는 앱 · TradingAgents 가 실제로 읽는 키만 넘긴다. 키를 더하면 여기와 .env.example 을 같은 PR 에서 맞춘다.
+
+x-backend-environment: &backend_environment
+  # PostgreSQL(main-server 192.168.0.11, 스키마 desk). 기본값을 두지 않는다 — 비면 컨테이너 안 SQLite 로 떠 기록이 볼륨 밖에서 사라진다
+  DESK_DATABASE_URL: ${DESK_DATABASE_URL:?docs/deploy.md 3절}
+  # true = 대본 러너(LLM 호출 없음). ChatGPT 로그인 전까지 true 로 둔다
+  DESK_FAKE_RUNS: ${DESK_FAKE_RUNS:-false}
+  DESK_FAKE_DELAY: ${DESK_FAKE_DELAY:-0.6}
+  DESK_MAX_CONCURRENT_RUNS: ${DESK_MAX_CONCURRENT_RUNS:-1}
+  # 로그인 세션 (docs/security.md §2). 쿠키는 HTTPS 앞단 뒤에서만 쓰므로 Secure 를 끄지 않는다
+  DESK_SESSION_MAX_HOURS: ${DESK_SESSION_MAX_HOURS:-72}
+  DESK_SESSION_IDLE_HOURS: ${DESK_SESSION_IDLE_HOURS:-12}
+  DESK_COOKIE_SECURE: "true"
+  DESK_ENABLE_DOCS: "false"
+  # 브로커: mock | toss. toss 는 서버 공인 IP 를 토스 WTS 허용 IP 에 등록해야 한다(docs/deploy.md 6절)
+  DESK_BROKER: ${DESK_BROKER:-mock}
+  TOSS_CLIENT_ID: ${TOSS_CLIENT_ID:-}
+  TOSS_CLIENT_SECRET: ${TOSS_CLIENT_SECRET:-}
+  TOSS_ACCOUNT_SEQ: ${TOSS_ACCOUNT_SEQ:-}
+  DESK_KOSDAQ_SYMBOLS: ${DESK_KOSDAQ_SYMBOLS:-}
+  # semibot 은 PC 에서 돈다. 서버에서는 레짐 패널이 빈다
+  SEMIBOT_DB_PATH: ""
+  # TradingAgents 가 직접 읽는 키
+  TRADINGAGENTS_LLM_PROVIDER: ${TRADINGAGENTS_LLM_PROVIDER:-chatgpt}
+  TRADINGAGENTS_QUICK_THINK_LLM: ${TRADINGAGENTS_QUICK_THINK_LLM:-}
+  TRADINGAGENTS_DEEP_THINK_LLM: ${TRADINGAGENTS_DEEP_THINK_LLM:-}
+  TRADINGAGENTS_OUTPUT_LANGUAGE: ${TRADINGAGENTS_OUTPUT_LANGUAGE:-Korean}
+  TRADINGAGENTS_MAX_DEBATE_ROUNDS: ${TRADINGAGENTS_MAX_DEBATE_ROUNDS:-1}
+  TRADINGAGENTS_MAX_RISK_ROUNDS: ${TRADINGAGENTS_MAX_RISK_ROUNDS:-1}
+  TRADINGAGENTS_NO_UPDATE_CHECK: "1"
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+  SEC_EDGAR_USER_AGENT: ${SEC_EDGAR_USER_AGENT:-}
+  FRED_API_KEY: ${FRED_API_KEY:-}
+  # 로그 시각만 바뀐다. 저장 시각은 언제나 UTC
+  TZ: ${TIME_ZONE:-Asia/Seoul}
+
+x-logging: &default_logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  backend-prod:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    image: trading-desk-backend:prod
+    container_name: trading-desk-backend-prod
+    environment: *backend_environment
+    volumes:
+      # ChatGPT 로그인(chatgpt-auth.json) · TradingAgents 메모리 로그 · 리포트 · 데이터 캐시. 백업 대상이다(docs/deploy.md 7절)
+      - tradingagents_home:/home/app/.tradingagents
+    # /api/health 는 세션 없이 열린 유일한 GET 이다({"ok": true} 만 준다)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      # TradingAgents · langchain import 와 Alembic upgrade 시간
+      start_period: 60s
+    # 진행 중인 SSE 응답을 끊을 시간. 진행 중인 분석은 재시작 시 failed 로 표시된다(워커 스레드는 프로세스와 함께 끝난다)
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging: *default_logging
+    networks:
+      - desk
+    # LangGraph · pandas 가 분석 중에 수백 MB 를 쓴다. 동시 실행 1 기준
+    mem_limit: ${DESK_BACKEND_MEM_LIMIT:-2g}
+
+volumes:
+  tradingagents_home:
+    name: trading-desk-tradingagents-home
+
+# 웹 compose 와 같은 외부 네트워크. scripts/deploy.sh 가 없으면 만든다
+networks:
+  desk:
+    name: ${DESK_DOCKER_NETWORK:?docs/deploy.md 3절}
+    external: true

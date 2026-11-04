@@ -23,7 +23,8 @@ from .broker import make_broker
 from .db import make_engine, migrate
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
 from .settings import Settings, load
-from .store import TERMINAL, Store
+from .store import TERMINAL, Store, iso
+from .universe import Universe
 
 log = logging.getLogger(__name__)
 HEARTBEAT_SEC = 15
@@ -38,6 +39,8 @@ class LoginIn(BaseModel):
 
 class RunIn(BaseModel):
     ticker: str = Field(min_length=1, max_length=20)
+    # Display name from the search (엔비디아). Looked up from the listing when absent.
+    name: str | None = Field(default=None, max_length=200)
     trade_date: date | None = None
     analysts: list[str] = Field(default_factory=lambda: list(ANALYSTS))
     use_portfolio: bool = False
@@ -71,6 +74,7 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
     store = Store(engine)
     auth = Auth(engine, timedelta(hours=settings.session_max_hours), timedelta(hours=settings.session_idle_hours))
     throttle = LoginThrottle()
+    universe = Universe(engine)
     hub = Hub()
     broker = make_broker(settings)
     if runner is None:
@@ -82,7 +86,15 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
         if stale:
             log.warning("marked %d unfinished run(s) as failed", stale)
         app.state.manager = RunManager(store, hub, runner, broker, settings.max_concurrent_runs)
+
+        async def keep_listing_fresh():
+            while True:
+                await universe.refresh_if_stale(broker)
+                await asyncio.sleep(3600)
+
+        refresher = asyncio.create_task(keep_listing_fresh())
         yield
+        refresher.cancel()
         engine.dispose()
 
     docs = settings.enable_docs
@@ -160,8 +172,10 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
 
     @app.post("/api/runs", status_code=201)
     async def create_run(body: RunIn, request: Request):
+        listed = None if body.name else universe.lookup(body.ticker)
         run_request = RunRequest(
             ticker=body.ticker,
+            name=body.name or (listed or {}).get("name"),
             trade_date=(body.trade_date or date.today()).isoformat(),
             analysts=body.analysts,
             use_portfolio=body.use_portfolio,
@@ -220,6 +234,16 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
 
         return StreamingResponse(frames(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.get("/api/instruments")
+    def search_instruments(q: str = "", limit: int = 20):
+        return universe.search(q[:50], min(max(limit, 1), 50))
+
+    @app.get("/api/instruments/status")
+    def instruments_status():
+        status = universe.status()
+        return {"source": broker.name, "count": status["count"],
+                "updated_at": iso(status["updated_at_dt"]), "error": status["error"]}
 
     @app.get("/api/portfolio")
     async def portfolio():

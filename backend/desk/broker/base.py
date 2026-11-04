@@ -30,11 +30,28 @@ class Holding:
         return {**asdict(self), "profit_rate": self.profit_rate}
 
 
+# Markets searched by name. KR_ETC (KONEX) and US_ETC (OTC) are left out: Yahoo, which
+# TradingAgents reads prices from, covers them poorly.
+MARKETS = ("KOSPI", "KOSDAQ", "NYSE", "NASDAQ", "AMEX")
+
+
+@dataclass(frozen=True)
+class Listing:
+    symbol: str            # the broker's symbol (005930, NVDA)
+    name: str              # Korean name, as Toss gives it for US listings too (엔비디아)
+    market: str            # one of MARKETS
+    security_type: str     # STOCK | ETF | ETN | ...
+
+
 class Broker(ABC):
     name: str = "broker"
 
     @abstractmethod
     async def holdings(self) -> list[Holding]: ...
+
+    @abstractmethod
+    async def list_stocks(self, market: str) -> list[Listing]:
+        """Every active listing of one market; feeds the name search (desk.universe)."""
 
     async def portfolio(self):
         """Holdings as TradingAgents' PortfolioContext, so the trader and the managers

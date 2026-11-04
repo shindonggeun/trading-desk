@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
-import { api, setToken, Unauthorized } from "./api";
-import type { Health } from "./types";
+import { useCallback, useEffect, useState } from "react";
+import { api, setUnauthorizedHandler, Unauthorized } from "./api";
+import type { DeskConfig } from "./types";
+import LoginForm from "./components/LoginForm";
 import Dashboard from "./pages/Dashboard";
 import RunView from "./pages/RunView";
-
 function useHashRoute(): string {
   const [hash, setHash] = useState(() => window.location.hash || "#/");
   useEffect(() => {
@@ -16,14 +16,32 @@ function useHashRoute(): string {
 
 export default function App() {
   const route = useHashRoute();
-  const [health, setHealth] = useState<Health | null>(null);
-  const [needToken, setNeedToken] = useState(false);
-  const [tokenInput, setTokenInput] = useState("");
+  // undefined = still asking the server; null = signed out.
+  const [user, setUser] = useState<string | null | undefined>(undefined);
+  const [config, setConfig] = useState<DeskConfig | null>(null);
+  const [offline, setOffline] = useState(false);
 
   useEffect(() => {
-    api.health().then(setHealth).catch(() => setHealth(null));
-    // /api/health is open; probe a guarded route to learn whether the token is right.
-    api.runs().catch((e) => e instanceof Unauthorized && setNeedToken(true));
+    setUnauthorizedHandler(() => setUser(null));
+    api
+      .me()
+      .then((me) => setUser(me.username))
+      .catch((err) => {
+        if (err instanceof Unauthorized) return; // the handler already showed the login screen
+        setOffline(true);
+        setUser(null);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (user) api.config().then(setConfig).catch(() => setConfig(null));
+    else setConfig(null);
+  }, [user]);
+
+  const logout = useCallback(async () => {
+    await api.logout().catch(() => {});
+    setUser(null);
+    window.location.hash = "#/";
   }, []);
 
   const runMatch = route.match(/^#\/runs\/([\w-]+)/);
@@ -34,30 +52,26 @@ export default function App() {
         <a className="brand" href="#/">
           <span className="brand-mark">TD</span> Trading Desk
         </a>
-        <nav>
-          <a href="#/" className={!runMatch ? "active" : ""}>대시보드</a>
-        </nav>
+        {user && (
+          <nav>
+            <a href="#/" className={!runMatch ? "active" : ""}>대시보드</a>
+          </nav>
+        )}
         <div className="topbar-right">
-          {health?.fake_runs && <span className="pill pill-warn">FAKE 모드</span>}
-          {health && <span className="pill">broker: {health.broker}</span>}
-          {!health && <span className="pill pill-bad">API 연결 안 됨</span>}
+          {config?.fake_runs && <span className="pill pill-warn">FAKE 모드</span>}
+          {config && <span className="pill">broker: {config.broker}</span>}
+          {offline && <span className="pill pill-bad">API 연결 안 됨</span>}
+          {user && (
+            <>
+              <span className="pill">{user}</span>
+              <button type="button" className="logout" onClick={logout}>로그아웃</button>
+            </>
+          )}
         </div>
       </header>
 
-      {needToken ? (
-        <form
-          className="card token-gate"
-          onSubmit={(e) => {
-            e.preventDefault();
-            setToken(tokenInput.trim());
-            window.location.reload();
-          }}
-        >
-          <h2>API 토큰</h2>
-          <p className="muted">서버의 DESK_API_TOKEN 값을 입력하세요. 이 브라우저에만 저장됩니다.</p>
-          <input type="password" value={tokenInput} onChange={(e) => setTokenInput(e.target.value)} autoFocus />
-          <button type="submit">저장</button>
-        </form>
+      {user === undefined ? null : user === null ? (
+        <LoginForm onLoggedIn={(name) => { setOffline(false); setUser(name); }} />
       ) : runMatch ? (
         <RunView key={runMatch[1]} runId={runMatch[1]} />
       ) : (

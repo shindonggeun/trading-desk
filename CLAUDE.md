@@ -21,6 +21,7 @@ python -m venv .venv && .venv/Scripts/pip install -e ".[dev]"
 .venv/Scripts/python -m pytest -q
 .venv/Scripts/python -m pytest tests/test_plan.py::test_levels_parsed_and_missing_ones_are_none -q  # 테스트 하나
 .venv/Scripts/uvicorn desk.api:create_app --factory --reload --port 8000           # 앱은 팩토리로만 만든다
+.venv/Scripts/python -m desk.cli create-user <아이디>                                  # 로그인 계정 (가입 API 없음)
 
 # frontend
 cd frontend
@@ -52,6 +53,13 @@ TradingAgents SHA 를 올리면 `_SLOTS` 의 필드 이름부터 확인한다.
 **SSE 는 DB 에서 재생한다** (`/api/runs/{id}/stream`): 이벤트 테이블이 정본이고 `Last-Event-ID`(= `seq`)부터 다시 읽는다.
 새로고침 · 재접속해도 대화가 남는 이유다. `Hub.listen()` 을 **DB 읽기 전에** 잡아야 그 사이 이벤트를 놓치지 않는다.
 앞단 프록시는 `proxy_buffering off` 와 긴 `proxy_read_timeout` 이 필요하다(`frontend/nginx.conf`, 홈랩 인그레스 conf).
+
+**인증**: `/api/health` · `/api/auth/login` 을 뺀 **모든 경로**가 세션 쿠키를 요구한다(`api.require_session`, 기본 닫힘).
+계정은 CLI(`python -m desk.cli create-user`)로만 만든다. 규칙 정본은 [docs/security.md](docs/security.md) — 인증을 건드리면 `security-reviewer` 를 부른다.
+
+**DB**: 스키마는 `db.py`(SQLAlchemy Core), 변경은 Alembic 리비전(`desk/migrations/versions/`)으로, 기동 시 `upgrade head` 자동.
+로컬은 SQLite, 서버는 홈랩 PostgreSQL(스키마 `desk`). `tests/test_db.py` 가 리비전과 `db.py` 의 어긋남을 잡는다.
+테스트는 `db_url` fixture 를 쓴다 — `DESK_TEST_DATABASE_URL` 이 있으면 PostgreSQL 로 돈다(CI).
 
 **재시작**: 기동 시 `queued`/`running` run 은 `failed` 로 바꾼다 — 워커 스레드는 프로세스와 함께 죽는다.
 

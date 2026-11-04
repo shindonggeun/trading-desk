@@ -30,8 +30,13 @@ class Settings:
     fake_delay: float = field(default_factory=lambda: float(os.getenv("DESK_FAKE_DELAY", "0.6")))
     # One run at a time by default: every run draws on the same ChatGPT plan.
     max_concurrent_runs: int = field(default_factory=lambda: int(os.getenv("DESK_MAX_CONCURRENT_RUNS", "1")))
-    # Shared secret for the API. Leave empty only behind an authenticating proxy / VPN.
-    api_token: str = field(default_factory=lambda: os.getenv("DESK_API_TOKEN", ""))
+    # Login sessions: hard limit from sign-in, and sign-out after this long without a request.
+    session_max_hours: float = field(default_factory=lambda: float(os.getenv("DESK_SESSION_MAX_HOURS", "72")))
+    session_idle_hours: float = field(default_factory=lambda: float(os.getenv("DESK_SESSION_IDLE_HOURS", "12")))
+    # Secure cookies need HTTPS; browsers treat http://localhost as secure, so this stays on in dev too.
+    cookie_secure: bool = field(default_factory=lambda: _bool("DESK_COOKIE_SECURE", True))
+    # FastAPI's /docs and /openapi.json. Even when on, they sit behind the login.
+    enable_docs: bool = field(default_factory=lambda: _bool("DESK_ENABLE_DOCS"))
     cors_origins: list[str] = field(default_factory=lambda: _list("DESK_CORS_ORIGINS"))
 
     broker: str = field(default_factory=lambda: os.getenv("DESK_BROKER", "mock").lower())

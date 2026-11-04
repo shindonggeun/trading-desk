@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from . import regime
 from .broker import make_broker
+from .db import make_engine, migrate
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
 from .settings import Settings, load
 from .store import TERMINAL, Store
@@ -55,7 +56,9 @@ class RunIn(BaseModel):
 
 def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
     settings = settings or load()
-    store = Store(settings.db_path)
+    migrate(settings.database_url)
+    engine = make_engine(settings.database_url)
+    store = Store(engine)
     hub = Hub()
     broker = make_broker(settings)
     if runner is None:
@@ -68,6 +71,7 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
             log.warning("marked %d unfinished run(s) as failed", stale)
         app.state.manager = RunManager(store, hub, runner, broker, settings.max_concurrent_runs)
         yield
+        engine.dispose()
 
     app = FastAPI(title="Trading Desk", lifespan=lifespan)
     if settings.cors_origins:
@@ -148,7 +152,7 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
                     yield f"id: {seq}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if events:
                     continue
-                if store.get_run(run_id)["status"] in TERMINAL:
+                if store.run_status(run_id) in TERMINAL:
                     return
                 try:
                     await asyncio.wait_for(waiter.wait(), HEARTBEAT_SEC)

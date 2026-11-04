@@ -30,7 +30,9 @@ backend/desk/
   runner.py     TradingAgents 실행(워커 스레드) · FAKE 러너 · RunManager(동시 실행 제한)
   events.py     stream_run 상태 → 채팅 이벤트 (어느 에이전트가 무엇을 말했나)
   plan.py       최종 상태 → 등급 · bias(long/short/flat) · 진입/손절/목표 · 손익비
-  store.py      SQLite (runs, events). SSE는 여기서 재생하므로 새로고침해도 대화가 남는다
+  db.py         스키마(SQLAlchemy Core) · 엔진 · 기동 시 Alembic upgrade. 로컬은 SQLite, 서버는 PostgreSQL
+  migrations/   Alembic 리비전 (스키마를 바꾸면 리비전 추가 — tests/test_db.py 가 어긋남을 잡는다)
+  store.py      runs · events. SSE는 여기서 재생하므로 새로고침해도 대화가 남는다
   broker/       읽기 전용 브로커 포트. mock / toss(holdings)
   regime.py     semibot.db 읽기 전용 (레짐 · 트리거 패널)
 frontend/src/

@@ -3,7 +3,8 @@ services:
     build: ./backend
     env_file: .env
     environment:
-      DESK_DB_PATH: /data/desk.db
+      # Overridden by DESK_DATABASE_URL in .env (PostgreSQL on the server).
+      DESK_DATABASE_URL: ${DESK_DATABASE_URL:-sqlite:////data/desk.db}
       # semibot's DB, mounted read-only below. Remove both lines if semibot runs elsewhere.
       SEMIBOT_DB_PATH: /semibot/semibot.db
     volumes:

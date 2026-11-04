@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -24,7 +23,8 @@ def _list(name: str) -> list[str]:
 
 @dataclass(frozen=True)
 class Settings:
-    db_path: Path = field(default_factory=lambda: Path(os.getenv("DESK_DB_PATH", "data/desk.db")))
+    # sqlite:///data/desk.db locally; postgresql+psycopg://user:pw@host:5432/db?options=-csearch_path%3Ddesk
+    database_url: str = field(default_factory=lambda: os.getenv("DESK_DATABASE_URL", "sqlite:///data/desk.db"))
     # Fake runs replay a scripted debate: build the UI without spending the plan's quota.
     fake_runs: bool = field(default_factory=lambda: _bool("DESK_FAKE_RUNS"))
     fake_delay: float = field(default_factory=lambda: float(os.getenv("DESK_FAKE_DELAY", "0.6")))

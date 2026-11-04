@@ -21,6 +21,7 @@ from . import regime
 from .auth import COOKIE, Auth, Busy, LoginThrottle
 from .broker import make_broker
 from .db import make_engine, migrate
+from .profile import PROFILES
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
 from .settings import Settings, load
 from .store import TERMINAL, Store, iso
@@ -41,6 +42,8 @@ class RunIn(BaseModel):
     ticker: str = Field(min_length=1, max_length=20)
     # Display name from the search (엔비디아). Looked up from the listing when absent.
     name: str | None = Field(default=None, max_length=200)
+    # Investing style (desk.profile.PROFILES); the server default when absent.
+    profile: str | None = None
     trade_date: date | None = None
     analysts: list[str] = Field(default_factory=lambda: list(ANALYSTS))
     use_portfolio: bool = False
@@ -54,6 +57,13 @@ class RunIn(BaseModel):
         v = v.strip().upper()
         if not all(c.isalnum() or c in ".-^=" for c in v):
             raise ValueError("ticker may contain letters, digits and . - ^ = only")
+        return v
+
+    @field_validator("profile")
+    @classmethod
+    def _profile(cls, v: str | None) -> str | None:
+        if v is not None and v not in PROFILES:
+            raise ValueError(f"unknown profile; choose from {list(PROFILES)}")
         return v
 
     @field_validator("analysts")
@@ -168,6 +178,8 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
             "output_language": os.getenv("TRADINGAGENTS_OUTPUT_LANGUAGE", "English"),
             "fake_runs": settings.fake_runs,
             "broker": broker.name,
+            "profiles": [{"id": key, "label": value["label"]} for key, value in PROFILES.items()],
+            "default_profile": settings.investor_profile,
         }
 
     @app.post("/api/runs", status_code=201)
@@ -176,6 +188,7 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
         run_request = RunRequest(
             ticker=body.ticker,
             name=body.name or (listed or {}).get("name"),
+            profile=body.profile or settings.investor_profile,
             trade_date=(body.trade_date or date.today()).isoformat(),
             analysts=body.analysts,
             use_portfolio=body.use_portfolio,

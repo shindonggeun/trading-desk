@@ -39,6 +39,9 @@ class Settings:
     enable_docs: bool = field(default_factory=lambda: _bool("DESK_ENABLE_DOCS"))
     cors_origins: list[str] = field(default_factory=lambda: _list("DESK_CORS_ORIGINS"))
 
+    # Default investing style for new runs (desk.profile.PROFILES).
+    investor_profile: str = field(
+        default_factory=lambda: os.getenv("DESK_INVESTOR_PROFILE", "aggressive_leverage"))
     broker: str = field(default_factory=lambda: os.getenv("DESK_BROKER", "mock").lower())
     toss_client_id: str = field(default_factory=lambda: os.getenv("TOSS_CLIENT_ID", ""))
     toss_client_secret: str = field(default_factory=lambda: os.getenv("TOSS_CLIENT_SECRET", ""))

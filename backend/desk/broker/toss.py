@@ -17,10 +17,20 @@ from .base import Broker, Holding, Listing
 
 BASE_URL = "https://openapi.tossinvest.com"
 REFRESH_MARGIN_SEC = 300
+RATE_LIMIT_RETRIES = 4
+MAX_RETRY_AFTER_SEC = 10.0
 
 
 class TossError(RuntimeError):
     pass
+
+
+def _retry_after(value: str | None) -> float:
+    try:
+        seconds = float(value) if value else 1.0
+    except ValueError:
+        seconds = 1.0
+    return min(max(seconds, 0.5), MAX_RETRY_AFTER_SEC)
 
 
 def _num(value) -> float | None:
@@ -66,8 +76,13 @@ class TossBroker(Broker):
 
     async def _get(self, path: str, headers: dict | None = None, params: dict | None = None):
         token = await self._access_token()
-        r = await self._http.get(path, params=params,
-                                 headers={"Authorization": f"Bearer {token}", **(headers or {})})
+        for attempt in range(RATE_LIMIT_RETRIES + 1):
+            r = await self._http.get(path, params=params,
+                                     headers={"Authorization": f"Bearer {token}", **(headers or {})})
+            # Some endpoints allow 1 call/s (/stocks/all: x-ratelimit-limit 1) and answer 429 with Retry-After.
+            if r.status_code != 429 or attempt == RATE_LIMIT_RETRIES:
+                break
+            await asyncio.sleep(_retry_after(r.headers.get("retry-after")))
         if r.status_code != 200:
             raise TossError(f"Toss GET {path} failed {r.status_code}: {r.text[:300]}")
         return r.json().get("result")

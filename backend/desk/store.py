@@ -1,124 +1,89 @@
-"""SQLite store for runs and their event stream. The event table is the source of
-truth the SSE endpoint replays from, so a reconnecting browser misses nothing."""
+"""Runs and their event stream. The events table is the source of truth the SSE
+endpoint replays from, so a reconnecting browser misses nothing.
+
+All writes happen on the event loop thread (workers hand events over with
+``call_soon_threadsafe``), so ``seq`` = max + 1 has a single writer per run; the
+primary key on (run_id, seq) catches it if that ever stops being true."""
 
 from __future__ import annotations
 
-import json
-import sqlite3
-import threading
 import uuid
-from contextlib import contextmanager
-from datetime import UTC, datetime
-from pathlib import Path
+from datetime import datetime
 from typing import Any
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS runs (
-    id           TEXT PRIMARY KEY,
-    ticker       TEXT NOT NULL,
-    trade_date   TEXT NOT NULL,
-    status       TEXT NOT NULL,          -- queued | running | done | failed
-    options_json TEXT NOT NULL,
-    plan_json    TEXT,
-    error        TEXT,
-    report_path  TEXT,
-    created_at   TEXT NOT NULL,
-    started_at   TEXT,
-    finished_at  TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_runs_created ON runs (created_at DESC);
+from sqlalchemy import func, select, update
+from sqlalchemy.engine import Engine, RowMapping
 
-CREATE TABLE IF NOT EXISTS events (
-    run_id    TEXT NOT NULL,
-    seq       INTEGER NOT NULL,
-    ts        TEXT NOT NULL,
-    type      TEXT NOT NULL,              -- status | message | tool | plan | error | done
-    agent     TEXT,
-    content   TEXT,
-    data_json TEXT,
-    PRIMARY KEY (run_id, seq)
-);
-"""
+from .db import aware, events, now, runs
 
 TERMINAL = ("done", "failed")
 
 
-def now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+def iso(value: datetime | None) -> str | None:
+    value = aware(value)
+    return value.isoformat(timespec="seconds") if value else None
 
 
 class Store:
-    def __init__(self, path: Path) -> None:
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_lock = threading.Lock()
-        with self._conn() as conn:
-            conn.executescript(SCHEMA)
-
-    @contextmanager
-    def _conn(self):
-        conn = sqlite3.connect(self.path, timeout=30)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            yield conn
-            conn.commit()
-        finally:
-            conn.close()
+    def __init__(self, engine: Engine) -> None:
+        self.engine = engine
 
     # --- runs -----------------------------------------------------------------------
 
     def create_run(self, ticker: str, trade_date: str, options: dict) -> str:
         run_id = uuid.uuid4().hex[:12]
-        with self._write_lock, self._conn() as conn:
-            conn.execute(
-                "INSERT INTO runs (id, ticker, trade_date, status, options_json, created_at) "
-                "VALUES (?, ?, ?, 'queued', ?, ?)",
-                (run_id, ticker, trade_date, json.dumps(options), now()),
-            )
+        with self.engine.begin() as conn:
+            conn.execute(runs.insert().values(
+                id=run_id, ticker=ticker, trade_date=trade_date, status="queued",
+                options=options, created_at=now(),
+            ))
         return run_id
 
     def mark_running(self, run_id: str) -> None:
         self._update(run_id, status="running", started_at=now())
 
     def mark_done(self, run_id: str, plan: dict, report_path: str | None) -> None:
-        self._update(run_id, status="done", plan_json=json.dumps(plan), report_path=report_path,
-                     finished_at=now())
+        self._update(run_id, status="done", plan=plan, report_path=report_path, finished_at=now())
 
     def mark_failed(self, run_id: str, error: str) -> None:
         self._update(run_id, status="failed", error=error, finished_at=now())
 
     def fail_unfinished(self, reason: str) -> int:
         """Runs a previous process left mid-way cannot continue; say so instead of spinning forever."""
-        with self._write_lock, self._conn() as conn:
-            cur = conn.execute(
-                "UPDATE runs SET status='failed', error=?, finished_at=? WHERE status IN ('queued','running')",
-                (reason, now()),
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                update(runs).where(runs.c.status.in_(("queued", "running")))
+                .values(status="failed", error=reason, finished_at=now())
             )
-            return cur.rowcount
+            return result.rowcount
 
     def _update(self, run_id: str, **fields: Any) -> None:
-        columns = ", ".join(f"{key}=?" for key in fields)
-        with self._write_lock, self._conn() as conn:
-            conn.execute(f"UPDATE runs SET {columns} WHERE id=?", (*fields.values(), run_id))
+        with self.engine.begin() as conn:
+            conn.execute(update(runs).where(runs.c.id == run_id).values(**fields))
 
     def get_run(self, run_id: str) -> dict | None:
-        with self._conn() as conn:
-            row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        with self.engine.connect() as conn:
+            row = conn.execute(select(runs).where(runs.c.id == run_id)).mappings().first()
         return _run(row) if row else None
 
+    def run_status(self, run_id: str) -> str | None:
+        with self.engine.connect() as conn:
+            return conn.execute(select(runs.c.status).where(runs.c.id == run_id)).scalar()
+
     def list_runs(self, limit: int = 50) -> list[dict]:
-        with self._conn() as conn:
-            rows = conn.execute("SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(runs).order_by(runs.c.created_at.desc(), runs.c.id).limit(limit)
+            ).mappings().all()
         return [_run(row) for row in rows]
 
     # --- events ---------------------------------------------------------------------
 
     def append_event(self, run_id: str, event: dict) -> dict:
-        with self._write_lock, self._conn() as conn:
+        with self.engine.begin() as conn:
             seq = conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE run_id=?", (run_id,)
-            ).fetchone()[0]
+                select(func.coalesce(func.max(events.c.seq), 0) + 1).where(events.c.run_id == run_id)
+            ).scalar_one()
             stored = {
                 "run_id": run_id,
                 "seq": seq,
@@ -128,43 +93,28 @@ class Store:
                 "content": event.get("content"),
                 "data": event.get("data"),
             }
-            conn.execute(
-                "INSERT INTO events (run_id, seq, ts, type, agent, content, data_json) VALUES (?,?,?,?,?,?,?)",
-                (run_id, seq, stored["ts"], stored["type"], stored["agent"], stored["content"],
-                 json.dumps(stored["data"]) if stored["data"] is not None else None),
-            )
-        return stored
+            conn.execute(events.insert().values(**stored))
+        return {**stored, "ts": iso(stored["ts"])}
 
     def events_after(self, run_id: str, after: int = 0) -> list[dict]:
-        with self._conn() as conn:
+        with self.engine.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM events WHERE run_id=? AND seq>? ORDER BY seq", (run_id, after)
-            ).fetchall()
-        return [
-            {
-                "run_id": row["run_id"],
-                "seq": row["seq"],
-                "ts": row["ts"],
-                "type": row["type"],
-                "agent": row["agent"],
-                "content": row["content"],
-                "data": json.loads(row["data_json"]) if row["data_json"] else None,
-            }
-            for row in rows
-        ]
+                select(events).where(events.c.run_id == run_id, events.c.seq > after).order_by(events.c.seq)
+            ).mappings().all()
+        return [{**row, "ts": iso(row["ts"])} for row in rows]
 
 
-def _run(row: sqlite3.Row) -> dict:
+def _run(row: RowMapping) -> dict:
     return {
         "id": row["id"],
         "ticker": row["ticker"],
         "trade_date": row["trade_date"],
         "status": row["status"],
-        "options": json.loads(row["options_json"]),
-        "plan": json.loads(row["plan_json"]) if row["plan_json"] else None,
+        "options": row["options"],
+        "plan": row["plan"],
         "error": row["error"],
         "report_path": row["report_path"],
-        "created_at": row["created_at"],
-        "started_at": row["started_at"],
-        "finished_at": row["finished_at"],
+        "created_at": iso(row["created_at"]),
+        "started_at": iso(row["started_at"]),
+        "finished_at": iso(row["finished_at"]),
     }

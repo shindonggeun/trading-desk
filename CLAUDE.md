@@ -29,8 +29,9 @@ npm install
 npm run dev      # :5173, /api 는 127.0.0.1:8000 으로 프록시
 npm run build    # tsc --noEmit + vite build — 타입 검사는 이것뿐
 
-# 전체 (배포 형태)
-docker compose up -d --build
+# 배포 (backend-server, docs/deploy.md) — 서버에서 컨테이너 2개를 빌드 · 기동
+scripts/deploy.sh                       # HEAD. 백엔드만: scripts/deploy.sh HEAD backend
+docker compose -f docker-compose-local.yml up -d --wait   # PC 에서 PostgreSQL 경로를 시험할 때만
 ```
 
 UI 작업은 `.env` 에 `DESK_FAKE_RUNS=true` — 대본 러너가 **같은 `StateDiffer`** 를 거쳐 이벤트를 내므로 LLM 쿼터 없이 화면을 끝까지 볼 수 있다.
@@ -52,7 +53,11 @@ TradingAgents SHA 를 올리면 `_SLOTS` 의 필드 이름부터 확인한다.
 
 **SSE 는 DB 에서 재생한다** (`/api/runs/{id}/stream`): 이벤트 테이블이 정본이고 `Last-Event-ID`(= `seq`)부터 다시 읽는다.
 새로고침 · 재접속해도 대화가 남는 이유다. `Hub.listen()` 을 **DB 읽기 전에** 잡아야 그 사이 이벤트를 놓치지 않는다.
-앞단 프록시는 `proxy_buffering off` 와 긴 `proxy_read_timeout` 이 필요하다(`frontend/nginx.conf`, 홈랩 인그레스 conf).
+앞단 프록시는 `proxy_buffering off` 와 긴 `proxy_read_timeout` 이 필요하다(`frontend/nginx.conf.template`, 홈랩 인그레스 conf).
+
+**컨테이너** (commerce-foundry 와 같은 형식): 앱마다 `<app>.Dockerfile` + `.dockerignore` + `docker-compose-<app>.yml`,
+`-p` 프로젝트 이름 고정, 필수 env 는 `${KEY:?}`, 외부 네트워크 `DESK_DOCKER_NETWORK` 로 웹 → 백엔드(컨테이너 이름). 백엔드는 호스트 포트를 열지 않는다.
+compose `environment` 에는 앱이 읽는 키만 나열한다 — 새 env 키는 compose · `.env.example` 을 같이 고친다.
 
 **인증**: `/api/health` · `/api/auth/login` 을 뺀 **모든 경로**가 세션 쿠키를 요구한다(`api.require_session`, 기본 닫힘).
 계정은 CLI(`python -m desk.cli create-user`)로만 만든다. 규칙 정본은 [docs/security.md](docs/security.md) — 인증을 건드리면 `security-reviewer` 를 부른다.

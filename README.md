@@ -78,32 +78,19 @@ cd backend && tradingagents login chatgpt     # 브라우저로 로그인 → ~/
 
 모델 ID는 로그인 후 `tradingagents` CLI의 Subscription 메뉴에 나오는 목록에서 골라 `TRADINGAGENTS_QUICK_THINK_LLM` / `TRADINGAGENTS_DEEP_THINK_LLM` 에 넣는다.
 
-### 서버에서 로그인 (홈랩 · Docker)
-
-로그인은 브라우저를 `127.0.0.1:1455` 로 돌려보낸다. 서버에서는 둘 중 하나:
-
-```bash
-# A) SSH 터널: PC 브라우저의 콜백이 서버로 간다
-ssh -L 1455:127.0.0.1:1455 homelab-ollama-01
-docker compose run --rm -p 127.0.0.1:1455:1455 backend tradingagents login chatgpt
-
-# B) 브라우저가 마지막에 도착한 (접속 실패) 주소를 복사해 터미널에 붙여넣기
-docker compose run --rm backend tradingagents login chatgpt
-```
-
-로그인 정보는 `tradingagents_home` 볼륨에 남는다. 해제: `tradingagents logout chatgpt`.
+서버(Docker)에서의 로그인은 [docs/deploy.md](docs/deploy.md) 5절.
 
 ## 배포 (홈랩)
 
+`https://trading.8llow8llowme.com` — backend-server(`192.168.0.9`)에 컨테이너 둘(웹 · 백엔드), DB 는 홈랩 PostgreSQL.
+절차 · 서버 env · 첫 계정 · ChatGPT 로그인 · 토스 IP 등록 · 백업은 [docs/deploy.md](docs/deploy.md).
+
 ```bash
-cp .env.example .env
-docker compose exec backend python -m desk.cli create-user <아이디>   # 로그인 계정 (docs/security.md)
-docker compose up -d --build
-# → http://<서버>:8088
+scripts/deploy.sh          # HEAD 를 git archive 로 보내 서버에서 빌드 · 기동
 ```
 
 - 모든 경로가 로그인(ID/비밀번호 + 서버 세션 쿠키) 뒤에 있다 — [docs/security.md](docs/security.md).
-- SSE 때문에 앞단 프록시에서 `/api/` 는 `proxy_buffering off`, 긴 `proxy_read_timeout` 이 필요하다(`frontend/nginx.conf` 참고).
+- SSE 때문에 앞단 프록시는 `proxy_buffering off`, 긴 `proxy_read_timeout` 이 필요하다(`frontend/nginx.conf.template`).
 
 ## 실행(주문) — 아직 없음, 붙이기 전 조건
 

@@ -8,9 +8,9 @@
 - 가입 API 는 없다. 계정은 서버에서 CLI 로만 만든다.
 
   ```bash
-  docker compose exec backend python -m desk.cli create-user <아이디>      # 비밀번호를 두 번 묻는다(12자 이상)
-  docker compose exec backend python -m desk.cli set-password <아이디>     # 바꾸면 모든 세션이 끊긴다
-  docker compose exec backend python -m desk.cli revoke-sessions <아이디>  # 비밀번호는 두고 전부 로그아웃
+  docker exec -it trading-desk-backend-prod python -m desk.cli create-user <아이디>      # 비밀번호를 두 번 묻는다(12자 이상)
+  docker exec -it trading-desk-backend-prod python -m desk.cli set-password <아이디>     # 바꾸면 모든 세션이 끊긴다
+  docker exec -it trading-desk-backend-prod python -m desk.cli revoke-sessions <아이디>  # 비밀번호는 두고 전부 로그아웃
   ```
 
 - 비밀번호는 argon2id 해시만 `users.password_hash` 에 저장한다. 해시 파라미터가 바뀌면 다음 로그인 때 다시 해시한다.
@@ -56,9 +56,9 @@ SSE(`EventSource`)도 쿠키로 인증된다. URL 에 토큰을 싣지 않는다
 
 | 비밀 | 있는 곳 | 저장소 |
 |------|---------|--------|
-| DB 비밀번호 · 토스 키 | 서버 `~/deploy/trading-desk/.env` (권한 600) | `.env.example` 에 이름만 |
+| DB 비밀번호 · 토스 키 | 서버 `~/deploy/trading-desk/.env.runtime` (권한 600) | `.env.example` 에 이름만 |
 | 사용자 비밀번호 | 소유자의 머리 · 비밀번호 관리자. DB 에는 해시만 | 없음 |
-| ChatGPT 로그인 | `tradingagents_home` 볼륨의 `chatgpt-auth.json` | 없음 |
+| ChatGPT 로그인 | 볼륨 `trading-desk-tradingagents-home` 의 `chatgpt-auth.json` | 없음 |
 
 ## 6. 다음 — OTP (#6)
 

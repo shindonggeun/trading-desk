@@ -18,7 +18,7 @@ TradingAgents의 멀티 에이전트 토론을 **채팅처럼 실시간으로 �
 - **업스트림을 계속 받기 위해.** TradingAgents는 한두 주에 한 번 릴리스된다(v0.5 → v0.7.1, 두 달). 포크 안에 웹 · DB · 브로커 코드를 섞으면 매 릴리스가 충돌이다.
 - **라이브러리 경계가 이미 있다.** `TradingAgentsGraph.stream_run()` · `create_run_state()` · `save_reports()` 를 CLI와 같은 순서로 부르면 된다. 포크를 고칠 일이 없다.
 - **고칠 일이 생기면** 포크(`shindonggeun/TradingAgents`)에 브랜치로 고치고 `backend/pyproject.toml` 의 커밋 SHA만 올린다. 업스트림에 PR 보내기도 쉽다.
-- **비밀이 섞이지 않는다.** 토스 키 · 웹 토큰은 이 레포에만 있다.
+- **비밀이 섞이지 않는다.** 토스 키 · DB 비밀번호는 이 앱의 서버 `.env` 에만 있다.
 
 TradingAgents 버전은 `backend/pyproject.toml` 에 **커밋 SHA로 고정**되어 있다. 올릴 때는 업스트림 CHANGELOG를 읽고 SHA를 바꾼다.
 
@@ -96,12 +96,13 @@ docker compose run --rm backend tradingagents login chatgpt
 ## 배포 (홈랩)
 
 ```bash
-cp .env.example .env    # DESK_API_TOKEN 반드시 설정
+cp .env.example .env
+docker compose exec backend python -m desk.cli create-user <아이디>   # 로그인 계정 (docs/security.md)
 docker compose up -d --build
 # → http://<서버>:8088
 ```
 
-- 웹은 외부에 그대로 열지 말 것. API에 닿는 사람은 당신의 ChatGPT 플랜을 쓰고 보유 종목을 본다. `DESK_API_TOKEN` + 인그레스 인증 또는 VPN.
+- 모든 경로가 로그인(ID/비밀번호 + 서버 세션 쿠키) 뒤에 있다 — [docs/security.md](docs/security.md).
 - SSE 때문에 앞단 프록시에서 `/api/` 는 `proxy_buffering off`, 긴 `proxy_read_timeout` 이 필요하다(`frontend/nginx.conf` 참고).
 
 ## 실행(주문) — 아직 없음, 붙이기 전 조건

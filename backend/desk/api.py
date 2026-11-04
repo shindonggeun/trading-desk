@@ -1,21 +1,24 @@
-"""HTTP API. Run with: uvicorn desk.api:create_app --factory --host 0.0.0.0 --port 8000"""
+"""HTTP API. Run with: uvicorn desk.api:create_app --factory --host 0.0.0.0 --port 8000
+
+Every route needs a login session except the two in OPEN_PATHS. See docs/security.md."""
 
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, timedelta
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from . import regime
+from .auth import COOKIE, Auth, LoginThrottle
 from .broker import make_broker
 from .db import make_engine, migrate
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
@@ -24,6 +27,13 @@ from .store import TERMINAL, Store
 
 log = logging.getLogger(__name__)
 HEARTBEAT_SEC = 15
+OPEN_PATHS = frozenset({"/api/health", "/api/auth/login"})
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+class LoginIn(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
 
 
 class RunIn(BaseModel):
@@ -59,6 +69,8 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
     migrate(settings.database_url)
     engine = make_engine(settings.database_url)
     store = Store(engine)
+    auth = Auth(engine, timedelta(hours=settings.session_max_hours), timedelta(hours=settings.session_idle_hours))
+    throttle = LoginThrottle()
     hub = Hub()
     broker = make_broker(settings)
     if runner is None:
@@ -73,25 +85,64 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
         yield
         engine.dispose()
 
-    app = FastAPI(title="Trading Desk", lifespan=lifespan)
+    docs = settings.enable_docs
+    app = FastAPI(title="Trading Desk", lifespan=lifespan, docs_url="/docs" if docs else None,
+                  redoc_url=None, openapi_url="/openapi.json" if docs else None)
     if settings.cors_origins:
         app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                            allow_methods=["*"], allow_headers=["*"])
 
     @app.middleware("http")
-    async def require_token(request: Request, call_next):
-        # EventSource cannot send headers, so the token is also accepted as ?token=.
-        if settings.api_token and request.url.path.startswith("/api/") and request.url.path != "/api/health":
-            given = request.headers.get("authorization", "").removeprefix("Bearer ").strip() \
-                or request.query_params.get("token", "")
-            if not hmac.compare_digest(given, settings.api_token):
-                return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    async def require_session(request: Request, call_next):
+        # Cross-site writes: the SameSite=Strict cookie already stays home; this also stops login CSRF.
+        if request.method in UNSAFE_METHODS and not _same_origin(request):
+            return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
+        if request.url.path not in OPEN_PATHS:
+            user = await asyncio.to_thread(auth.resolve, request.cookies.get(COOKIE))
+            if user is None:
+                return JSONResponse({"detail": "login required"}, status_code=401)
+            request.state.user = user
         return await call_next(request)
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "fake_runs": settings.fake_runs, "broker": broker.name,
-                "auth": bool(settings.api_token)}
+        return {"ok": True}
+
+    # --- login -------------------------------------------------------------------------
+
+    @app.post("/api/auth/login", status_code=204)
+    def login(body: LoginIn, request: Request):
+        ip = _client_ip(request)
+        wait = throttle.retry_after(ip, body.username)
+        if wait:
+            return JSONResponse({"detail": "too many failed logins", "retry_after": wait},
+                                status_code=429, headers={"Retry-After": str(wait)})
+        user = auth.authenticate(body.username, body.password)
+        if user is None:
+            throttle.failed(ip, body.username)
+            log.warning("login failed ip=%s", ip)   # fail2ban reads the ingress log; this is for us
+            return JSONResponse({"detail": "invalid username or password"}, status_code=401)
+        throttle.succeeded(ip, body.username)
+        auth.close_session(request.cookies.get(COOKIE))   # never keep a token issued before this login
+        token = auth.open_session(user, ip, request.headers.get("user-agent"))
+        log.info("login ok user=%s ip=%s", user.username, ip)
+        response = Response(status_code=204)
+        response.set_cookie(COOKIE, token, max_age=int(settings.session_max_hours * 3600), path="/",
+                            secure=settings.cookie_secure, httponly=True, samesite="strict")
+        return response
+
+    @app.post("/api/auth/logout", status_code=204)
+    def logout(request: Request):
+        auth.close_session(request.cookies.get(COOKIE))
+        response = Response(status_code=204)
+        response.delete_cookie(COOKIE, path="/", secure=settings.cookie_secure, httponly=True, samesite="strict")
+        return response
+
+    @app.get("/api/auth/me")
+    def me(request: Request):
+        return {"username": request.state.user.username}
+
+    # --- desk --------------------------------------------------------------------------
 
     @app.get("/api/config")
     def config():
@@ -102,6 +153,7 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
             "quick_model": os.getenv("TRADINGAGENTS_QUICK_THINK_LLM"),
             "output_language": os.getenv("TRADINGAGENTS_OUTPUT_LANGUAGE", "English"),
             "fake_runs": settings.fake_runs,
+            "broker": broker.name,
         }
 
     @app.post("/api/runs", status_code=201)
@@ -175,3 +227,17 @@ def create_app(settings: Settings | None = None, runner=None) -> FastAPI:
         return regime.snapshot(settings.semibot_db_path)
 
     return app
+
+
+def _client_ip(request: Request) -> str:
+    # uvicorn --proxy-headers already replaced the peer with X-Forwarded-For, which the web
+    # container's nginx sets to the address the ingress vouched for (frontend/nginx.conf).
+    return request.client.host if request.client else "unknown"
+
+
+def _same_origin(request: Request) -> bool:
+    """Browsers send Origin on every cross-site write. No Origin = not a browser form/fetch."""
+    origin = request.headers.get("origin")
+    if origin is None:
+        return True
+    return urlsplit(origin).netloc.lower() == request.headers.get("host", "").lower()

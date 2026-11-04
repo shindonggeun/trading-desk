@@ -1,15 +1,26 @@
 import time
+from datetime import timedelta
 
 from fastapi.testclient import TestClient
 
 from desk.api import create_app
+from desk.auth import Auth
+from desk.db import make_engine
 from desk.runner import make_fake_runner
 from desk.settings import Settings
 
+OWNER, PASSWORD = "owner", "correct horse battery"
 
-def _client(db_url, **overrides) -> TestClient:
+
+def _client(db_url, login=True, **overrides) -> TestClient:
     settings = Settings(database_url=db_url, fake_runs=True, fake_delay=0, **overrides)
-    return TestClient(create_app(settings, runner=make_fake_runner(0)))
+    client = TestClient(create_app(settings, runner=make_fake_runner(0)), base_url="https://testserver")
+    engine = make_engine(db_url)
+    Auth(engine, timedelta(hours=1), timedelta(hours=1)).create_user(OWNER, PASSWORD)
+    engine.dispose()
+    if login:
+        assert client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD}).status_code == 204
+    return client
 
 
 def _wait_done(client, run_id, headers=None):
@@ -49,14 +60,6 @@ def test_portfolio_run_feeds_holdings_to_the_trader(db_url):
         _wait_done(client, run_id)
         trader = next(e for e in client.get(f"/api/runs/{run_id}/events").json() if e["agent"] == "trader")
         assert "Current position in NVDA: 12 units" in trader["content"]
-
-
-def test_token_guards_the_api_but_not_health(db_url):
-    with _client(db_url, api_token="s3cret") as client:
-        assert client.get("/api/health").status_code == 200
-        assert client.get("/api/runs").status_code == 401
-        assert client.get("/api/runs?token=s3cret").status_code == 200
-        assert client.get("/api/runs", headers={"Authorization": "Bearer s3cret"}).status_code == 200
 
 
 def test_rejects_unknown_analyst_and_odd_ticker(db_url):

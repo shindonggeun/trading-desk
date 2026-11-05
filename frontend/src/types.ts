@@ -112,3 +112,20 @@ export interface Instrument {
   market: string;
   security_type: string;
 }
+
+/** GET /api/estimate (backend desk/estimate.py): 장이 닫힌 동안 바이낸스 주식 무기한 선물로 낸 추정가. */
+export type Estimate =
+  | { ticker: string; supported: false }
+  | {
+      ticker: string;
+      supported: true;
+      estimate: number;
+      /** 기준 종가 이후 계약 가격 변화, % */
+      change_pct: number;
+      last_close: number;
+      last_close_date: string;
+      close_at: string;
+      contract: string;
+      market_state: "open" | "closed";
+      fetched_at: string;
+    };

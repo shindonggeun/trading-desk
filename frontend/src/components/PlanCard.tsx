@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { api } from "../api";
 import { price } from "../format";
 import { ACTION, BIAS, RATING, term } from "../korean";
-import type { Plan } from "../types";
+import type { Estimate, Plan } from "../types";
 
 export function BiasBadge({ plan }: { plan: Plan }) {
   const b = BIAS[plan.bias];
@@ -80,6 +80,7 @@ const FAR_ATR = 2;
 const FAR_PCT = 0.05;
 const LIVE_MAX_GAP = 0.25;
 const QUOTE_EVERY_MS = 15_000;
+const ESTIMATE_EVERY_MS = 60_000;
 
 type Gap = NonNullable<Plan["entry_vs_live"]>;
 
@@ -136,13 +137,49 @@ function useLiveQuote(symbol: string | undefined, fallback: Live | undefined, en
   return quote ?? fallback ?? null;
 }
 
+type ClosedEstimate = Extract<Estimate, { supported: true }>;
+
+/** 장이 닫혀 있는 동안의 추정가(바이낸스 주식 무기한 선물). 계약이 없거나 장중 · 실패면 null. */
+function useEstimate(symbol: string | undefined, enabled: boolean): ClosedEstimate | null {
+  const [est, setEst] = useState<Estimate | null>(null);
+  useEffect(() => {
+    if (!symbol || !enabled) return;
+    let alive = true;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const load = () => {
+      if (document.hidden) return;
+      api.estimate(symbol).then(
+        (e) => {
+          if (!alive) return;
+          setEst(e);
+          if (!e.supported) clearInterval(timer); // 계약이 없는 종목은 다시 묻지 않는다
+        },
+        () => alive && setEst(null),
+      );
+    };
+    load();
+    timer = setInterval(load, ESTIMATE_EVERY_MS);
+    document.addEventListener("visibilitychange", load);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", load);
+    };
+  }, [symbol, enabled]);
+  return est && est.supported && est.market_state === "closed" ? est : null;
+}
+
+function hhmm(iso: string): string {
+  return new Date(iso).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+}
+
 /** 진입가가 지금 가격에서 얼마나 떨어져 있고, 어떤 주문이 되는지. */
-function EntryVsLive({ plan, g }: { plan: Plan; g: Gap | null }) {
+function EntryVsLive({ plan, g, basis }: { plan: Plan; g: Gap | null; basis: string }) {
   if (!g) return null;
   const kind = ENTRY_KIND[plan.bias]?.[g.kind];
   return (
     <span className={`muted small${g.far ? " entry-far" : ""}`}>
-      {" "}현재가 대비 {g.gap_pct > 0 ? "+" : ""}
+      {" "}{basis} 대비 {g.gap_pct > 0 ? "+" : ""}
       {g.gap_pct.toFixed(1)}%{g.gap_atr !== null && ` (${g.gap_atr} ATR)`}
       {kind && ` · ${kind}`}
     </span>
@@ -156,15 +193,15 @@ function pct(from: number | null, to: number | null): string {
 }
 
 /** 계획이 지금 가격과 어긋날 때: 진입이 멀거나, 손절 · 목표를 이미 지났을 때. */
-function LiveWarning({ g }: { g: Gap | null }) {
+function LiveWarning({ g, basis }: { g: Gap | null; basis: string }) {
   if (!g || !(g.far || g.stop_passed || g.target_passed)) return null;
   const notes: string[] = [];
-  if (g.stop_passed) notes.push("현재가가 이미 손절가를 넘어섰습니다 — 이 계획은 지금 가격에서 유효하지 않습니다.");
+  if (g.stop_passed) notes.push(`${basis}가 이미 손절가를 넘어섰습니다 — 이 계획은 지금 가격에서 유효하지 않습니다.`);
   else if (g.target_passed)
-    notes.push("현재가가 이미 목표가를 지났습니다 — 진입가까지 되돌아오지 않으면 이 계획은 성립하지 않습니다.");
+    notes.push(`${basis}가 이미 목표가를 지났습니다 — 진입가까지 되돌아오지 않으면 이 계획은 성립하지 않습니다.`);
   if (g.far && !g.stop_passed)
     notes.push(
-      `진입가가 현재가에서 ${Math.abs(g.gap_pct).toFixed(1)}% 떨어져 있습니다 — 그 가격이 올 때만 거는 조건부 주문이며, 오지 않으면 거래하지 않습니다.`,
+      `진입가가 ${basis}에서 ${Math.abs(g.gap_pct).toFixed(1)}% 떨어져 있습니다 — 그 가격이 올 때만 거는 조건부 주문이며, 오지 않으면 거래하지 않습니다.`,
     );
   return <p className="plan-warning">{notes.join(" ")}</p>;
 }
@@ -178,7 +215,10 @@ export default function PlanCard({ plan, ticker, symbol, profile }: {
 }) {
   const directional = plan.bias === "long" || plan.bias === "short";
   const live = useLiveQuote(symbol, plan.live_price, directional);
-  const g = entryGap(plan, live?.price ?? null);
+  const est = useEstimate(symbol, directional);
+  // 장이 닫혀 있으면 시세는 마지막 종가라, 진입가 거리는 추정가로 잰다.
+  const basis = est ? "추정가" : "현재가";
+  const g = entryGap(plan, est?.estimate ?? live?.price ?? null);
   const rating = term(RATING, plan.rating);
   const action = term(ACTION, plan.trader_action);
   const anyAtr = Object.values(plan.levels_source ?? {}).includes("atr");
@@ -212,13 +252,33 @@ export default function PlanCard({ plan, ticker, symbol, profile }: {
                 {price(live.price)}
                 <span className="src" title={`${live.fetched_at} 에 읽은 값 (${QUOTE_EVERY_MS / 1000}초마다 갱신)`}>
                   {live.source === "toss" ? "토스" : "야후"} ·{" "}
-                  {new Date(live.fetched_at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}
+                  {hhmm(live.fetched_at)}
+                </span>
+                {est && <span className="muted small"> 장 마감</span>}
+              </dd>
+            </>
+          )}
+          {est && (
+            <>
+              <dt>추정가</dt>
+              <dd>
+                {price(est.estimate)}
+                <span className="muted small">
+                  {" "}
+                  {est.change_pct > 0 ? "+" : ""}
+                  {est.change_pct.toFixed(2)}% (종가 {price(est.last_close)} · {est.last_close_date})
+                </span>
+                <span
+                  className="src"
+                  title={`바이낸스 ${est.contract} 무기한 선물이 종가 이후 움직인 비율을 종가에 곱한 값입니다. 실제 체결가가 아닙니다.`}
+                >
+                  바이낸스 {est.contract} · {hhmm(est.fetched_at)}
                 </span>
               </dd>
             </>
           )}
           <dt>진입가</dt>
-          <Level plan={plan} k="entry_price" after={<EntryVsLive plan={plan} g={g} />} />
+          <Level plan={plan} k="entry_price" after={<EntryVsLive plan={plan} g={g} basis={basis} />} />
           <dt>손절가</dt>
           <Level plan={plan} k="stop_loss" />
           <dt>목표가</dt>
@@ -238,7 +298,7 @@ export default function PlanCard({ plan, ticker, symbol, profile }: {
         </dl>
         <Ladder plan={plan} />
       </div>
-      <LiveWarning g={g} />
+      <LiveWarning g={g} basis={basis} />
       {plan.executive_summary && <p className="plan-summary">{plan.executive_summary}</p>}
       <p className="muted small">
         LLM 이 낸 계획이며 주문은 연결되어 있지 않습니다.

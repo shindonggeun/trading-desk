@@ -913,6 +913,7 @@ span.cs-hold-text { color: var(--warn); }
 
 /* #110 인버스 짝 제안 · 상품 기준 표시 (색은 토큰만) */
 .plan-basis { margin: 4px 0 0; }
+.holder-exit { margin: 10px 0 0; padding: 8px 12px; border-radius: var(--radius-s, 6px); background: var(--surface-2); font-size: 13px; }
 .pair-block { margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-left: 3px solid var(--short);
   border-radius: var(--radius); background: var(--surface-2); display: grid; gap: 8px; }
 .pair-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }

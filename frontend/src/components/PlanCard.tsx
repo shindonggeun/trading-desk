@@ -287,7 +287,7 @@ function PairBlock({ plan, ticker }: { plan: Plan; ticker: string }) {
       </div>
       <p className="muted small pair-note">
         {ticker} 를 공매도하지 않고 {pair.ticker} 를 삽니다. 아래 숫자는 모두 {pair.ticker} 가격입니다
-        {pair.price != null ? ` (분석 때 ${price(pair.price)})` : ""}.
+        {pair.price != null ? ` (분석 때 ${pair.price_source === "close" ? "종가" : "현재가"} ${price(pair.price)})` : ""}.
       </p>
       <dl className="pair-levels">
         <div><dt>진입</dt><dd className="num">{price(pair.entry_price)}</dd></div>
@@ -434,6 +434,12 @@ export default function PlanCard({ plan, ticker, symbol, profile, outcome, outco
         </p>
       )}
       <OpinionBanner plan={plan} ticker={ticker} />
+      {plan.holder_exit != null && (
+        <p className="holder-exit">
+          <span className="muted small">이미 보유 중이라면</span>{" "}
+          <strong>{ticker} {price(plan.holder_exit)}</strong> 에서 축소 · 청산
+        </p>
+      )}
       <PairBlock plan={plan} ticker={ticker} />
       {plan.valid_until && (
         <p className={`small ${expired ? "plan-expired-note" : "muted"}`}>

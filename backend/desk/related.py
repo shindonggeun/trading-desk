@@ -116,7 +116,7 @@ def relation_for(ticker: str, holdings: Callable[[str], list[str]] | None = None
             top = []
         if top:
             group = Relation(peers=tuple(top[:6]))
-    korean = base.endswith((".KS", ".KQ"))
+    korean = base.endswith((".KS", ".KQ")) or base.startswith(("^KS", "^KQ"))   # ^KS11 · ^KS200 · ^KQ11
     market = _MARKET_KR if korean else _MARKET_US
     group = group or Relation()
     drivers = group.drivers or market.drivers

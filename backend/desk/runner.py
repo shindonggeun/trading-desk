@@ -18,7 +18,7 @@ from .events import StateDiffer
 from .levels import LEVELS, entry_vs_live, fill_levels
 from .leverage_analyst import LEVER_TIMEOUT_SEC, LeverContext, llm_analyst
 from .plan import BIAS, parse_plan
-from .prices import PriceSource
+from .prices import CRYPTO_SUFFIXES, PriceSource, is_market_symbol
 from .profile import desk_portfolio
 from .related import collect as collect_related
 from .related import prompt_note as related_note
@@ -28,7 +28,6 @@ from .store import Store
 log = logging.getLogger(__name__)
 
 ANALYSTS = ("market", "social", "news", "fundamentals")
-CRYPTO_SUFFIXES = ("-USD", "-USDT", "-USDC", "-BTC", "-ETH")
 
 Emit = Callable[[dict], None]
 
@@ -53,8 +52,11 @@ class RunRequest:
 
     def selected_analysts(self) -> list[str]:
         chosen = [a for a in ANALYSTS if a in self.analysts] or list(ANALYSTS)
-        # Crypto has no company statements to read.
-        return [a for a in chosen if not (self.asset_type() == "crypto" and a == "fundamentals")]
+        # Crypto, indices (^KS11), futures (NQ=F) and FX (KRW=X) have no company statements to read.
+        # (desk.prices.is_market_symbol)
+        no_statements = self.asset_type() == "crypto" or is_market_symbol(self.ticker)
+        return [a for a in chosen if not (no_statements and a == "fundamentals")]
+
 
 
 @dataclass

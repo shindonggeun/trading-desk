@@ -19,7 +19,14 @@ from .consensus import parse as parse_consensus
 from .consensus import render as render_consensus
 from .events import StateDiffer
 from .levels import LEVELS, entry_vs_live, fill_levels
-from .leverage_analyst import LEVER_TIMEOUT_SEC, LeverContext, llm_analyst, parse_pair
+from .leverage_analyst import (
+    LEVER_TIMEOUT_SEC,
+    LeverContext,
+    llm_analyst,
+    parse_holder_exit,
+    parse_pair,
+    strip_extras,
+)
 from .plan import BIAS, parse_plan
 from .prices import CRYPTO_SUFFIXES, PriceSource, is_market_symbol
 from .profile import desk_portfolio
@@ -276,6 +283,20 @@ class RunManager:
             return None
         return {"price": quote.price, "source": quote.source, "fetched_at": quote.fetched_at}
 
+    async def _pair_price(self, request: RunRequest, ticker: str) -> dict | None:
+        """The pair's price for the leverage analyst and the check of its levels: live for a same-day
+        analysis, else (or when the quote fails) the last daily close up to the analysis date."""
+        live = await self._live_quote(request, ticker)
+        if live or self.prices is None:
+            return live
+        try:
+            bars = (await asyncio.wait_for(self.prices.candles(ticker, "1d", 30), QUOTE_TIMEOUT_SEC))["bars"]
+        except Exception as exc:  # noqa: BLE001 - incl. timeout: no pair trade then
+            log.warning("no close for pair %s: %s", ticker, exc)
+            return None
+        bars = [b for b in bars if str(b["at"])[:10] <= request.trade_date]
+        return {"price": bars[-1]["close"], "source": "close", "fetched_at": bars[-1]["at"]} if bars else None
+
     async def _support_resistance(self, request: RunRequest, live: dict | None = None,
                                   ticker: str | None = None) -> dict | None:
         """Daily/weekly support and resistance of ``ticker`` (default: the run's) up to the analysis
@@ -331,7 +352,9 @@ class RunManager:
                                                  request, sr_u, live_u)
         daily = sr_u and (sr_u.get("fallback") or horizon.primary == "1d")
         pair = inverse_pair(request.ticker)
-        live_pair = await self._live_quote(request, pair[0]) if pair else None
+        live_pair = await self._pair_price(request, pair[0]) if pair else None
+        if not live_pair:   # no price to check its levels against: no pair trade offered
+            pair = None
         ctx = LeverContext(
             product=request.ticker, base=base, leverage=leverage, proxy=proxy, horizon=horizon.id,
             holding=horizon.holding_en, u_plan=u_plan,
@@ -353,7 +376,8 @@ class RunManager:
         if text and text.strip():
             self._publish(run_id, {"type": "message", "agent": "leverage_analyst", "content": text.strip(),
                                    "data": None})
-            plan = parse_plan({"final_trade_decision": text, "trader_investment_plan": text})
+            clean = strip_extras(text)   # the pair's and a holder's numbers are not the product's entry
+            plan = parse_plan({"final_trade_decision": clean, "trader_investment_plan": clean})
             plan.pop("underlying_levels", None)
             if plan["rating"] == "REVIEW":   # '**Rating**: 매수 (Buy)', '**Buy**' ...
                 loose = under.loose_rating(text)
@@ -395,8 +419,11 @@ class RunManager:
         plan = entry_vs_live(plan, sr and sr.get("atr"))
         plan["underlying"] = underlying
         plan["analysis_subject"] = base
-        if paired := parse_pair(text or "", ctx):   # #109: the bet against the product, in its pair
+        # #109: the bet against the product, bought in its pair; a holder's exit in the product's price
+        if paired := parse_pair(text or "", ctx, plan.get("bias")):
             plan["pair"] = paired
+        if (holder := parse_holder_exit(text or "", ctx)) is not None:
+            plan["holder_exit"] = holder
         return plan
 
     async def _consensus(self, run_id: str, request: RunRequest, subject: str, final_state: dict,

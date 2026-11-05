@@ -694,8 +694,9 @@ span.cs-hold-text { color: var(--warn); }
 @media (max-width: 1100px) { .dash-sections { grid-template-columns: minmax(0, 1fr); } }
 .dash-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .dash-closed .dash-head { margin-bottom: 0; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
-.dash-toggle { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; padding: 4px 0; color: var(--text); cursor: pointer; }
-.dash-toggle h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.dash-title { margin: 0; font-size: 15px; font-weight: 600; }
+.dash-toggle { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; padding: 4px 0; color: var(--text); cursor: pointer;
+  font: inherit; }
 .dash-caret { color: var(--muted); width: 12px; }
 .dash-order { display: inline-flex; gap: 4px; }
 .dash-move { min-width: 28px; min-height: 28px; padding: 0; background: none; color: var(--muted); border: 1px solid var(--border); border-radius: var(--radius-s, 6px); }

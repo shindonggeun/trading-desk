@@ -12,10 +12,10 @@ import {
   type SeriesMarker,
   type Time,
 } from "lightweight-charts";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type Candles, type ReviewRow } from "../api";
 import { price } from "../format";
-import type { Plan } from "../types";
+import type { Plan, SrLevel, SupportResistance } from "../types";
 
 type Interval = "1d" | "1w";
 // 일봉 약 6개월, 주봉 약 2년(주봉 · 200개 초과는 백엔드가 야후로 받는다).
@@ -70,7 +70,32 @@ function css(name: string, fallback: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
 
+type SrMode = "plan" | "now" | "off";
+const SR_LABEL: Record<SrMode, string> = { plan: "분석 당시", now: "지금", off: "끄기" };
+const TF_LABEL: Record<SrLevel["timeframe"], string> = { "1d": "일봉", "1w": "주봉" };
+
+/** 지지 · 저항은 그 계산의 기준가 위 · 아래로 나뉜다 — 어느 가격 기준인지 같이 적는다. */
+function srNote(mode: SrMode, src: Partial<SupportResistance> | null): string {
+  const ref = src?.reference_price != null ? price(src.reference_price) : null;
+  const kind = src?.reference === "live" ? "실시간가" : "종가";
+  const day = src?.as_of ? ` · ${kstDay(src.as_of)}` : "";
+  const base = ref ? `기준가 ${ref}(${kind}${day}) 아래는 지지, 위는 저항` : "기준가 아래는 지지, 위는 저항";
+  return mode === "plan"
+    ? `분석할 때 에이전트가 받은 구역 — ${base}. 지금 가격과는 위아래가 다를 수 있습니다. 가격 기록의 계산이지 예측이 아닙니다.`
+    : `지금 봉 기준 — ${base}. 가격 기록의 계산이지 예측이 아닙니다.`;
+}
+
+const TIP_W = 260;
+/** 툴팁을 차트 상자 안에 — 오른쪽 끝에선 왼쪽으로, 위쪽 끝에선 선 아래로. */
+function tipPosition(h: { x: number; y: number }, el: HTMLDivElement | null): { left: number; top: number } {
+  const width = el?.clientWidth ?? TIP_W + 8;
+  const left = Math.min(Math.max(4, h.x - TIP_W / 2), Math.max(4, width - TIP_W - 4));
+  const top = h.y > 80 ? h.y - 72 : h.y + 12;
+  return { left, top };
+}
+
 type Drawn = {
+  chart: IChartApi;
   series: ISeriesApi<"Candlestick">;
   markers: ISeriesMarkersPluginApi<Time>;
   days: string[];
@@ -87,6 +112,28 @@ export default function PriceChart({ ticker, tradeDate, plan }: { ticker: string
   const [failed, setFailed] = useState(false);
   const [drawn, setDrawn] = useState<Drawn | null>(null);
   const box = useRef<HTMLDivElement>(null);
+  // 지지 · 저항 — 기본은 그 분석이 에이전트에게 준 레벨(계획에 저장됨), 없으면(옛 분석) 지금 봉 기준.
+  const saved = plan?.support_resistance?.levels?.length ? plan.support_resistance : null;
+  const [srMode, setSrMode] = useState<SrMode | null>(null);
+  const mode: SrMode = srMode ?? (saved ? "plan" : "now");
+  const [nowSr, setNowSr] = useState<SupportResistance | null>(null);
+  const [srFailed, setSrFailed] = useState(false);
+  const [hover, setHover] = useState<{ level: SrLevel; x: number; y: number } | null>(null);
+  // 매 렌더 새 배열이면 선을 계속 다시 그린다 — 근거가 바뀔 때만.
+  const sr: SrLevel[] = useMemo(
+    () => (mode === "plan" ? saved?.levels ?? [] : mode === "now" ? nowSr?.levels ?? [] : []),
+    [mode, saved, nowSr],
+  );
+
+  useEffect(() => {
+    if (mode !== "now" || nowSr) return;
+    let live = true;
+    setSrFailed(false);
+    api.levels(ticker).then((v) => live && setNowSr(v)).catch(() => live && setSrFailed(true));
+    return () => {
+      live = false;
+    };
+  }, [mode, nowSr, ticker]);
 
   useEffect(() => {
     let live = true;
@@ -142,7 +189,7 @@ export default function PriceChart({ ticker, tradeDate, plan }: { ticker: string
       volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
       volume.setData(rows.map(({ day, bar }) => ({ time: day as Time, value: bar.volume, color: (bar.close >= bar.open ? up : down) + "55" })));
       chart.timeScale().fitContent();
-      setDrawn({ series, markers: createSeriesMarkers(series, []), days: rows.map((r) => r.day), lastClose: rows[rows.length - 1].bar.close, alive });
+      setDrawn({ chart, series, markers: createSeriesMarkers(series, []), days: rows.map((r) => r.day), lastClose: rows[rows.length - 1].bar.close, alive });
     } catch {
       chart?.remove(); // 봉 데이터가 이상하면 앱 전체가 아니라 차트만 실패로
       setFailed(true);
@@ -197,6 +244,49 @@ export default function PriceChart({ ticker, tradeDate, plan }: { ticker: string
     };
   }, [drawn, plan, fills, tradeDate, ticker]);
 
+  // 지지 · 저항선 — 주봉 근거는 굵은 긴 점선, 일봉은 가는 점선. 축 라벨은 계획선만 달아 겹치지 않게.
+  useEffect(() => {
+    if (!drawn) return;
+    const { chart, series } = drawn;
+    const made = sr.map((lv) =>
+      series.createPriceLine({
+        price: lv.price,
+        color: css(lv.kind === "support" ? "--sr-support" : "--sr-resistance", lv.kind === "support" ? "#39c5bb" : "#c297ff"),
+        lineWidth: lv.timeframe === "1w" ? 2 : 1,
+        lineStyle: lv.timeframe === "1w" ? LineStyle.LargeDashed : LineStyle.Dotted,
+        axisLabelVisible: false,
+        title: "", // 구역이 많아 제목은 겹친다 — 근거는 툴팁 · 목록에
+      }),
+    );
+    // 선 근처(5px)에 마우스를 올리면 근거를 띄운다.
+    const onMove = (param: { point?: { x: number; y: number } }) => {
+      const pt = param.point;
+      if (!pt || sr.length === 0) return setHover(null);
+      let best: { level: SrLevel; d: number } | null = null;
+      for (const level of sr) {
+        const y = series.priceToCoordinate(level.price);
+        if (y === null) continue;
+        const d = Math.abs(y - pt.y);
+        if (d <= 5 && (!best || d < best.d)) best = { level, d };
+      }
+      // 툴팁은 선의 높이에 붙이고, 다른 선으로 옮겨 갈 때만 다시 그린다(마우스 이동마다 렌더하지 않게).
+      const hit = best?.level ?? null;
+      setHover((prev) => {
+        if (!hit) return null;
+        if (prev?.level === hit) return prev;
+        return { level: hit, x: pt.x, y: series.priceToCoordinate(hit.price) ?? pt.y };
+      });
+    };
+    chart.subscribeCrosshairMove(onMove);
+    return () => {
+      setHover(null);
+      if (!drawn.alive.current) return;
+      chart.unsubscribeCrosshairMove(onMove);
+      for (const line of made) series.removePriceLine(line);
+    };
+  }, [drawn, sr]);
+
+  const srSource = mode === "plan" ? saved : mode === "now" ? nowSr : null;
   const currency = isKorean(ticker) ? "원" : "달러";
   const levels = plan ? [plan.entry_price, plan.stop_loss, plan.price_target] : [];
   const hasLevels = levels.some((v) => v != null);
@@ -207,12 +297,22 @@ export default function PriceChart({ ticker, tradeDate, plan }: { ticker: string
         <h3>
           가격 차트 <span className="muted small">{currency}{candles ? ` · ${candles.source}` : ""}</span>
         </h3>
-        <div className="review-periods" role="group" aria-label="봉 간격">
-          {(["1d", "1w"] as Interval[]).map((iv) => (
-            <button key={iv} type="button" className={iv === interval ? "" : "secondary"} aria-pressed={iv === interval} onClick={() => setBarInterval(iv)}>
-              {iv === "1d" ? "일봉" : "주봉"}
-            </button>
-          ))}
+        <div className="price-chart-tools">
+          <div className="review-periods" role="group" aria-label="지지 · 저항선">
+            <span className="muted small">지지 · 저항</span>
+            {(["plan", "now", "off"] as SrMode[]).filter((m) => m !== "plan" || saved).map((m) => (
+              <button key={m} type="button" className={m === mode ? "" : "secondary"} aria-pressed={m === mode} onClick={() => setSrMode(m)}>
+                {SR_LABEL[m]}
+              </button>
+            ))}
+          </div>
+          <div className="review-periods" role="group" aria-label="봉 간격">
+            {(["1d", "1w"] as Interval[]).map((iv) => (
+              <button key={iv} type="button" className={iv === interval ? "" : "secondary"} aria-pressed={iv === interval} onClick={() => setBarInterval(iv)}>
+                {iv === "1d" ? "일봉" : "주봉"}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       {failed ? (
@@ -228,6 +328,13 @@ export default function PriceChart({ ticker, tradeDate, plan }: { ticker: string
           aria-describedby={hasLevels ? "price-chart-legend" : undefined}
         >
           {!candles && <p className="muted small">불러오는 중…</p>}
+          {hover && (
+            <div className="sr-tip" style={tipPosition(hover, box.current)}>
+              <strong>{hover.level.kind === "support" ? "지지" : "저항"} {price(hover.level.price)}</strong>{" "}
+              <span className="muted">{TF_LABEL[hover.level.timeframe]} · 강도 {hover.level.strength}</span>
+              <div>{hover.level.basis}</div>
+            </div>
+          )}
         </div>
       )}
       {plan && hasLevels && (
@@ -237,6 +344,27 @@ export default function PriceChart({ ticker, tradeDate, plan }: { ticker: string
           {fills.length > 0 && ` · 내 체결 ${fills.length}건`}
           {outOfRange && " · 현재가와 너무 먼 선은 축 범위에서 뺐습니다"}
         </p>
+      )}
+      {mode !== "off" && (
+        srFailed && mode === "now" ? (
+          <p className="muted small">지지 · 저항을 계산하지 못했습니다.</p>
+        ) : mode === "now" && !nowSr ? (
+          <p className="muted small">지지 · 저항 계산 중…</p>
+        ) : sr.length > 0 ? (
+          <>
+          <ul className="sr-list" aria-label="지지 · 저항 구역">
+            {sr.map((lv) => (
+              <li key={`${lv.kind}-${lv.price}`} className={`sr-${lv.kind}`}>
+                <span className="sr-kind">{lv.kind === "support" ? "지지" : "저항"}</span>
+                <strong className="num">{price(lv.price)}</strong>
+                <span className="muted small">{TF_LABEL[lv.timeframe]} · 강도 {lv.strength}</span>
+                <span className="small">{lv.basis}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="muted small sr-note">{srNote(mode, srSource)}</p>
+          </>
+        ) : null
       )}
     </section>
   );

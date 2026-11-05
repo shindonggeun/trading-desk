@@ -310,3 +310,18 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .lg-entry { border-color: var(--accent); }
 .lg-stop { border-color: var(--short); border-top-style: dashed !important; }
 .lg-target { border-color: var(--long); border-top-style: dashed !important; }
+
+/* 차트 지지 · 저항 (#25) */
+:root { --sr-support: #39c5bb; --sr-resistance: #c297ff; }
+@media (prefers-color-scheme: light) { :root { --sr-support: #0f8a80; --sr-resistance: #8250df; } }
+.price-chart-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.price-chart-tools .review-periods { align-items: center; }
+.sr-tip { position: absolute; z-index: 3; pointer-events: none; width: max-content; max-width: 260px; padding: 6px 9px; border-radius: 8px;
+  background: var(--surface); border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0, 0, 0, .25); font-size: 12px; line-height: 1.45; }
+.sr-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; }
+.sr-list li { display: grid; grid-template-columns: 34px 80px 110px minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.sr-note { margin: 6px 0 0; }
+.sr-kind { font-size: 12px; font-weight: 600; }
+.sr-support .sr-kind { color: var(--sr-support); }
+.sr-resistance .sr-kind { color: var(--sr-resistance); }
+@media (max-width: 760px) { .sr-list li { grid-template-columns: 34px 72px minmax(0, 1fr); } .sr-list li > span:last-child { grid-column: 2 / -1; } }

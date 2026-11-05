@@ -1,4 +1,4 @@
-import type { DeskConfig, DeskEvent, Estimate, Instrument, Portfolio, RegimeSnapshot, Run, RunPage } from "./types";
+import type { DeskConfig, DeskEvent, Estimate, Instrument, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -150,6 +150,8 @@ export const api = {
   estimate: (ticker: string) => call<Estimate>(`/api/estimate?ticker=${encodeURIComponent(ticker)}`),
   candles: (ticker: string, interval: "1d" | "1w", count: number) =>
     call<Candles>(`/api/candles?ticker=${encodeURIComponent(ticker)}&interval=${interval}&count=${count}`),
+  /** 지지 · 저항(backend desk/sr.py) — 지금 봉 기준, 서버가 몇 분 캐시. */
+  levels: (ticker: string) => call<SupportResistance>(`/api/levels?ticker=${encodeURIComponent(ticker)}`),
   instruments: (q: string) => call<Instrument[]>(`/api/instruments?q=${encodeURIComponent(q)}`),
   instrumentsStatus: () =>
     call<{ source: string; count: number; updated_at: string | null; error: string | null }>("/api/instruments/status"),

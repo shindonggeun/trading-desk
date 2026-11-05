@@ -833,7 +833,7 @@ span.cs-hold-text { color: var(--warn); }
 /* #97 — 차트 머리줄 한 줄 · 표시 메뉴 · 십자선 범례 · 크게 보기 */
 .price-chart-head { flex-wrap: nowrap; gap: 8px; }
 .price-chart-head h3 { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.price-chart-head .chart-intervals { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; flex: 0 1 auto; }
+.price-chart-head .chart-intervals { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; flex: 0 1 auto; }
 .price-chart-head .chart-intervals .chip { white-space: nowrap; }
 .chart-menu { position: relative; flex: none; }
 .chart-menu summary { list-style: none; cursor: pointer; padding: 5px 10px; border-radius: var(--radius-s); background: var(--surface-2);

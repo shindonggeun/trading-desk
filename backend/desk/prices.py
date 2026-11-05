@@ -57,6 +57,21 @@ class Quote:
         return asdict(self)
 
 
+CRYPTO_SUFFIXES = ("-USD", "-USDT", "-USDC", "-BTC", "-ETH")
+
+
+def is_market_symbol(ticker: str) -> bool:
+    """A Yahoo index (^KS11), futures contract (NQ=F), FX pair (KRW=X) or ICE index (DX-Y.NYB):
+    a market, not a company."""
+    t = ticker.upper()
+    return t.startswith("^") or t.endswith(("=F", "=X", ".NYB"))
+
+
+def off_broker(ticker: str) -> bool:
+    """Symbols a stock broker never lists - straight to Yahoo instead of a failing broker call."""
+    return is_market_symbol(ticker) or ticker.upper().endswith(CRYPTO_SUFFIXES)
+
+
 def broker_symbol(ticker: str) -> str:
     """005930.KS -> 005930, BRK-B -> BRK.B, NVDA -> NVDA."""
     ticker = ticker.upper()
@@ -153,6 +168,8 @@ class PriceSource:
         if cached and self._clock() - cached[0] < QUOTE_TTL_SEC:
             return cached[1]
         try:
+            if off_broker(ticker):
+                raise NotImplementedError
             price, currency = await self.broker.quote(broker_symbol(ticker))
             quote = Quote(ticker, _tidy(price), currency, self.broker.name, _now())
         except Exception as exc:  # noqa: BLE001 - any broker miss falls back to Yahoo
@@ -181,7 +198,7 @@ class PriceSource:
         # Extra bars ahead of the shown ones so the RSI has settled by the first bar drawn.
         fetch = count + (RSI_WARMUP if "rsi14" in indicators else 0)
         try:
-            if interval not in BROKER_INTERVALS or count > BROKER_MAX_COUNT:
+            if interval not in BROKER_INTERVALS or count > BROKER_MAX_COUNT or off_broker(ticker):
                 raise NotImplementedError
             # Toss caps at 200: a chart that fits keeps Toss as its source with the RSI on, taking
             # only the warm-up bars that still fit, rather than flipping to Yahoo's (unadjusted) bars.

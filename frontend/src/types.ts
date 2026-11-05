@@ -13,7 +13,9 @@ export interface Plan {
   position_sizing: string | null;
   executive_summary: string | null;
   /** Where each level came from: the model's call or the ATR fill (backend desk/levels.py). */
-  levels_source?: Partial<Record<"entry_price" | "stop_loss" | "price_target", "model" | "atr">>;
+  levels_source?: Partial<Record<"entry_price" | "stop_loss" | "price_target", "model" | "atr" | "converted">>;
+  /** A leveraged product's levels on its underlying (backend desk/underlying.py); the same keys as the plan. Drawn by #68. */
+  underlying?: Plan & { ticker: string; leverage: number; proxy: boolean };
   atr?: number;
   last_close?: number;
   levels_error?: string;

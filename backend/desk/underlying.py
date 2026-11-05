@@ -68,11 +68,15 @@ def anchors(start: dict | None, start_u: dict | None, sr: dict | None, sr_u: dic
     """A pair of prices from the same instant: both live quotes when both look sane against their
     own close, else both closes. None when either side is unknown."""
     close, close_u = (sr or {}).get("last_close"), (sr_u or {}).get("last_close")
-    if start and start_u and close and close_u \
+    # one feed for both (a Toss overnight print against a Yahoo close is not the same instant)
+    if start and start_u and close and close_u and start["source"] == start_u["source"] \
             and abs(start["price"] - close) <= LIVE_MAX_GAP * close \
             and abs(start_u["price"] - close_u) <= LIVE_MAX_GAP * close_u:
         return {"source": "live", "product": start["price"], "underlying": start_u["price"]}
-    if close and close_u:
+    # closes only from the same session date; a 24/7 underlying (BTC) has no close at the product's
+    same_day = (sr or {}).get("as_of", "")[:10] == (sr_u or {}).get("as_of", "")[:10]
+    crypto = str((sr_u or {}).get("ticker") or "").endswith("-USD")
+    if close and close_u and same_day and not crypto:
         return {"source": "close", "product": close, "underlying": close_u}
     return None
 
@@ -100,6 +104,7 @@ def split(plan: dict, underlying: str, leverage: float, proxy: bool,
     other side. Only model levels are converted; ATR filling comes after, per side."""
     plan = dict(plan)
     given = plan.pop("underlying_levels", None) or {}
+    origin = plan.get("levels_origin") or {}
     bias = plan.get("bias")
     if leverage < 0:
         bias = {"long": "short", "short": "long"}.get(bias, bias)
@@ -112,6 +117,11 @@ def split(plan: dict, underlying: str, leverage: float, proxy: bool,
         for key in LEVELS:
             if plan.get(key) is not None and sub.get(key) is not None:
                 implied = to_product(sub[key], anchor, leverage)
+                if origin.get(key) == "trader" and implied is not None:
+                    # the trader's pre-debate draft yields to the PM's final level on the underlying
+                    plan["trader_levels"] = {**plan.get("trader_levels", {}), key: plan[key]}
+                    plan[key], source[key], converted = implied, "converted", True
+                    continue
                 if implied is None or abs(implied - plan[key]) > MISMATCH * plan[key]:
                     mismatch[key] = {"product": plan[key], "underlying": sub[key], "implied_product": implied}
             elif plan.get(key) is None and sub.get(key) is not None:

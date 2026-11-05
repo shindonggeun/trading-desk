@@ -268,13 +268,17 @@ class RunManager:
             log.warning("no related instruments for %s: %s", request.ticker, exc)
             return None
 
-    async def _underlying_plan(self, sub: dict, request: RunRequest, sr_u: dict, live_u: dict | None) -> dict:
-        """The underlying side, ATR-filled from its own bars and checked against its own price."""
-        def bars(*_args):
-            return sr_u["last_close"], sr_u["atr"]
-        sub = await asyncio.to_thread(self.levels, sub, sub["ticker"], request.trade_date, prices=bars, live=live_u)
-        sub = entry_vs_live(sub, sr_u.get("atr"))
-        sub["support_resistance"] = sr_u
+    async def _underlying_plan(self, sub: dict, request: RunRequest, sr_u: dict | None,
+                               live_u: dict | None) -> dict:
+        """The underlying side, ATR-filled from its own bars and checked against its own price. Without
+        its support/resistance the model's levels still stand; missing ones come from Yahoo bars."""
+        kwargs = {"live": live_u}
+        if sr_u:
+            kwargs["prices"] = lambda *_args: (sr_u["last_close"], sr_u["atr"])
+        sub = await asyncio.to_thread(self.levels, sub, sub["ticker"], request.trade_date, **kwargs)
+        sub = entry_vs_live(sub, sr_u and sr_u.get("atr"))
+        if sr_u:
+            sub["support_resistance"] = sr_u
         return sub
 
     def _publish(self, run_id: str, event: dict) -> None:
@@ -309,15 +313,18 @@ class RunManager:
                 portfolio = desk_portfolio(request.profile, book, note)
                 result = await asyncio.to_thread(self.runner, request, emit, portfolio)
                 # The model may still leave a level out; fill it from ATR and mark it as computed.
-                live = await self._live_quote(request) or start
+                fresh, fresh_u = await asyncio.gather(
+                    self._live_quote(request), self._live_quote(request, base) if base else _none())
+                live, live_u = fresh or start, fresh_u or start_u
                 plan, sub = parse_plan(result.final_state), None
-                if lever and sr_u:
+                if lever:   # the anchor stays the pre-run pair: what the agents saw
                     plan, sub = under.split(plan, *lever, under.anchors(start, start_u, sr, sr_u))
                 plan = await asyncio.to_thread(self.levels, plan, request.ticker, request.trade_date, live=live)
                 plan = entry_vs_live(plan, sr and sr.get("atr"))
                 if sub is not None:
-                    plan["underlying"] = await self._underlying_plan(sub, request, sr_u, start_u)
-                plan.pop("underlying_levels", None)   # a non-leveraged run whose model wrote them anyway
+                    plan["underlying"] = await self._underlying_plan(sub, request, sr_u, live_u)
+                # only a non-leveraged run gets here with them (its model wrote the line anyway)
+                plan.pop("underlying_levels", None)
                 if sr:
                     plan["support_resistance"] = sr
                 if related:

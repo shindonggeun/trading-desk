@@ -56,12 +56,17 @@ def test_no_anchor_means_no_conversion_and_impossible_prices_are_dropped():
 
 
 def test_anchors_pair_like_with_like():
-    sr, sr_u = {"last_close": 60.0}, {"last_close": 450.0}
-    live, live_u = {"price": 62.0}, {"price": 455.0}
+    sr = {"last_close": 60.0, "as_of": "2026-11-04T04:00:00+00:00"}
+    sr_u = {"last_close": 450.0, "as_of": "2026-11-04T04:00:00+00:00", "ticker": "SOXX"}
+    live, live_u = {"price": 62.0, "source": "toss"}, {"price": 455.0, "source": "toss"}
     assert under.anchors(live, live_u, sr, sr_u) == {"source": "live", "product": 62.0, "underlying": 455.0}
     assert under.anchors(live, None, sr, sr_u)["source"] == "close"           # never one live, one close
-    assert under.anchors({"price": 6.0}, live_u, sr, sr_u)["source"] == "close"  # a split-looking quote
+    assert under.anchors({"price": 6.0, "source": "toss"}, live_u, sr, sr_u)["source"] == "close"  # split-like
+    assert under.anchors(live, {**live_u, "source": "yahoo"}, sr, sr_u)["source"] == "close"     # two feeds
     assert under.anchors(live, live_u, sr, None) is None
+    assert under.anchors(None, None, sr, {**sr_u, "as_of": "2026-11-03T04:00:00+00:00"}) is None  # other day
+    btc = {"last_close": 100000.0, "as_of": "2026-11-04T00:00:00+00:00", "ticker": "BTC-USD"}
+    assert under.anchors(None, None, sr, btc) is None                          # 24/7: no shared close
 
 
 def test_atr_fill_keeps_the_converted_marker():
@@ -137,3 +142,102 @@ def test_two_sets_that_disagree_are_kept_and_flagged():
     product, sub = under.split(plan, "SOXX", 3.0, False, ANCHOR)
     assert product["price_target"] == 90.0 and sub["price_target"] == 480.0
     assert product["levels_mismatch"] == {"price_target": {"product": 90.0, "underlying": 480.0, "implied_product": 72.0}}
+
+
+def test_the_summary_keeps_what_the_pm_wrote_and_label_variants_parse():
+    text = ("SOXX 450달러 지지에서 진입. Entry Price: 60 / Stop Loss: 55 / Price Target: 75 / "
+            "Underlying SOXX Entry Price: 450 / Underlying Stop: 440 / Underlying Target Price: 480")
+    plan = parse_plan(_decision(text))
+    assert plan["executive_summary"] == text
+    assert plan["entry_price"] == 60 and plan["underlying_levels"] == {"entry_price": 450, "stop_loss": 440,
+                                                                       "price_target": 480}
+
+
+def test_the_pms_underlying_level_beats_the_traders_draft():
+    state = _decision("리스크 토론 후 SOXX 기준으로 조정. Underlying Entry: 444 / Underlying Stop: 432")
+    state["trader_investment_plan"] = "**Action**: Buy\n\n**Entry Price**: 62\n\n**Stop Loss**: 57"
+    plan = parse_plan(state)
+    assert plan["entry_price"] == 62 and plan["levels_origin"]["entry_price"] == "trader"
+    product, sub = under.split(plan, "SOXX", 3.0, False, ANCHOR)
+    assert product["entry_price"] == 57.6 and product["levels_source"]["entry_price"] == "converted"
+    assert product["trader_levels"] == {"entry_price": 62.0, "stop_loss": 57.0}
+    assert sub["entry_price"] == 444 and "levels_mismatch" not in product
+
+
+def _app(db_url, run, prices):
+    from fastapi.testclient import TestClient
+
+    from desk import api
+    from desk.auth import Auth
+    from desk.db import make_engine
+    from desk.settings import Settings
+    from tests.test_api import OWNER, PASSWORD
+
+    client = TestClient(api.create_app(Settings(database_url=db_url, fake_delay=0), runner=run, prices=prices),
+                        base_url="https://testserver")
+    engine = make_engine(db_url)
+    Auth(engine, timedelta(hours=1), timedelta(hours=1)).create_user(OWNER, PASSWORD)
+    engine.dispose()
+    return client
+
+
+def test_a_same_day_inverse_run_anchors_on_live_quotes_and_flips_the_underlying(db_url, monkeypatch):
+    from datetime import date
+
+    from desk import runner
+    from desk.prices import Quote
+    from desk.runner import RunResult
+    from tests.test_api import OWNER, PASSWORD, _wait_done
+
+    async def fake_sr(_prices, ticker, _day, price=None):
+        close, atr = {"SOXS": (20.0, 1.5), "SOXX": (450.0, 12.0)}[ticker]
+        return {"ticker": ticker, "reference_price": price or close, "reference": "live", "last_close": close,
+                "atr": atr, "as_of": "2026-11-04T04:00:00+00:00", "levels": []}
+
+    class Prices:
+        async def quote(self, ticker):
+            return Quote(ticker, {"SOXS": 21.0, "SOXX": 440.0}[ticker], "USD", "toss", "2026-11-05T15:00:00+00:00")
+
+    monkeypatch.setattr(runner, "support_resistance", fake_sr)
+
+    def run(request, emit, portfolio):
+        return RunResult(final_state=_decision("SOXS long. Entry Price: 21 / Stop Loss: 19.5", rating="Buy"))
+
+    with _app(db_url, run, Prices()) as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        rid = client.post("/api/runs", json={"ticker": "SOXS", "trade_date": date.today().isoformat()}).json()["id"]
+        plan = _wait_done(client, rid)["plan"]
+    sub = plan["underlying"]
+    assert plan["conversion"]["anchor"] == {"source": "live", "product": 21.0, "underlying": 440.0}
+    assert sub["bias"] == "short" and sub["entry_price"] == 440.0 and sub["stop_loss"] > sub["entry_price"]
+    assert sub["live_price"]["price"] == 440.0 and sub["entry_vs_live"]["kind"] == "now"
+
+
+def test_without_the_underlyings_bars_the_models_underlying_levels_still_stand(db_url, monkeypatch):
+    from desk import runner
+    from desk.runner import RunResult
+    from tests.test_api import OWNER, PASSWORD, _wait_done
+
+    async def only_soxl(_prices, ticker, _day, price=None):
+        if ticker == "SOXX":
+            raise TimeoutError("slow")
+        return {"ticker": ticker, "reference_price": 60.0, "reference": "close", "last_close": 60.0, "atr": 4.0,
+                "as_of": "2026-11-02T04:00:00+00:00", "levels": []}
+
+    class Prices:
+        async def quote(self, _ticker):
+            raise AssertionError("past date")
+
+    monkeypatch.setattr(runner, "support_resistance", only_soxl)
+    monkeypatch.setattr("desk.levels.last_close_and_atr", lambda *_: (450.0, 12.0))
+
+    def run(request, emit, portfolio):
+        return RunResult(final_state=_decision(
+            "Entry Price: 60 / Stop Loss: 55 / Underlying Entry: 450 / Underlying Stop: 440 / Underlying Target: 480"))
+
+    with _app(db_url, run, Prices()) as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        rid = client.post("/api/runs", json={"ticker": "SOXL", "trade_date": "2026-11-02"}).json()["id"]
+        plan = _wait_done(client, rid)["plan"]
+    assert plan["underlying"]["entry_price"] == 450 and "support_resistance" not in plan["underlying"]
+    assert "conversion" not in plan and "underlying_levels" not in plan

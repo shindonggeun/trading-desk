@@ -63,6 +63,11 @@ function Level({ plan, k, after }: { plan: Plan; k: LevelKey; after?: ReactNode 
         </span>
       )}
       {source === "model" && <span className="src">모델 제시</span>}
+      {source === "converted" && (
+        <span className="src src-atr" title="모델이 본주(기초자산) 기준으로 낸 레벨을 일일 배수로 환산했습니다. 며칠 보유하면 실제와 어긋날 수 있습니다">
+          환산값
+        </span>
+      )}
       {after}
     </dd>
   );

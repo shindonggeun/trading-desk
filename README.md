@@ -33,10 +33,11 @@ backend/desk/
   db.py         스키마(SQLAlchemy Core) · 엔진 · 기동 시 Alembic upgrade. 로컬은 SQLite, 서버는 PostgreSQL
   migrations/   Alembic 리비전 (스키마를 바꾸면 리비전 추가 — tests/test_db.py 가 어긋남을 잡는다)
   store.py      runs · events. SSE는 여기서 재생하므로 새로고침해도 대화가 남는다
-  broker/       읽기 전용 브로커 포트. mock / toss(holdings)
+  broker/       읽기 전용 브로커 포트. mock / toss(보유 · 종목 목록 · 시세 · 체결 내역). 주문 메서드는 없다
   regime.py     semibot.db 읽기 전용 (레짐 · 트리거 패널)
   profile.py    투자 성향 지침(공격형 · 레버리지 기본). PortfolioContext 를 확장해 트레이더 · 리스크 토론 · PM 프롬프트에 싣는다
   levels.py     모델이 비운 진입 · 손절 · 목표가를 ATR(14)로 채운다(손절 1.5 ATR · 목표 3 ATR), 출처를 model/atr 로 표시
+  review.py     매매 복기. 토스 체결 내역을 체결 전 30일 안의 최신 분석과 묶어 진입가 차이 · 손절/목표 먼저 닿음 · FIFO 실현 손익(GET /api/review)
   universe.py   종목 검색. 토스 /stocks/all 의 한글 종목명(미국 포함)을 하루 1회 instruments 테이블로 복사 → 이름 · 티커 검색
 frontend/src/
   pages/Dashboard.tsx   새 분석 · 분석 기록 표 · 보유 종목 · semibot 레짐

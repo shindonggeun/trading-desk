@@ -66,7 +66,8 @@ DESK_DEPLOY_HOST=backend-server scripts/deploy.sh HEAD backend    # 백엔드만
 # 로그 · 상태
 ssh backend-server 'docker logs --tail 50 trading-desk-backend-prod; docker ps --filter name=trading-desk; cat ~/deploy/trading-desk/src/REVISION'
 
-# 컨테이너 안에서 파이썬으로 점검(DB · 토스) — stdin 으로 스크립트를 넘긴다
+# 컨테이너 안에서 파이썬으로 점검(DB) — stdin 으로 스크립트를 넘긴다.
+# 토스는 여기서 부르지 않는다: TossBroker 가 토큰을 새로 받아 서버 토큰이 무효화된다(docs/deploy.md 6절, #50). 앱 API 로 확인
 ssh backend-server 'docker exec -i trading-desk-backend-prod python -' < script.py
 ```
 

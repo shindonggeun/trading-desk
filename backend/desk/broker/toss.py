@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import time
 from datetime import UTC, date, datetime
 
@@ -19,6 +20,11 @@ from .base import Bar, Broker, Fill, Holding, Listing
 
 BASE_URL = "https://openapi.tossinvest.com"
 REFRESH_MARGIN_SEC = 300
+# A revoked token is renewed at most once per this many seconds. Two clients on one key revoke
+# each other on every renewal; without a pause they would both hammer /oauth2/token (AUTH limit).
+RENEW_COOLDOWN_SEC = 60.0
+
+log = logging.getLogger(__name__)
 # Pages of 100 closed orders read per review (ORDER_HISTORY rate limit group): 2,000 orders.
 FILL_PAGES = 20
 RATE_LIMIT_RETRIES = 4
@@ -60,11 +66,22 @@ class TossBroker(Broker):
         self._token: str | None = None
         self._expires_at = 0.0
         self._lock = asyncio.Lock()
+        self._renewed_at: float | None = None
 
-    async def _access_token(self) -> str:
+    async def _access_token(self, revoked: str | None = None) -> str:
+        """The cached token, or a new one. ``revoked`` is a token Toss just refused: Toss keeps
+        one valid token per client, so a token issued anywhere else (a one-off script, another
+        app on the same key) revokes ours at once. Only that token is dropped - if a concurrent
+        call already replaced it, the replacement is reused instead of revoking it in turn."""
         async with self._lock:
-            if self._token and time.monotonic() < self._expires_at:
+            if self._token and self._token != revoked and time.monotonic() < self._expires_at:
                 return self._token
+            if revoked is not None:
+                if self._renewed_at is not None and time.monotonic() - self._renewed_at < RENEW_COOLDOWN_SEC:
+                    raise TossError("Toss token revoked again within a minute: another client is using "
+                                    "the same key (docs/deploy.md section 6)")
+                self._renewed_at = time.monotonic()
+                log.warning("toss token revoked (issued elsewhere on the same key); renewing")
             r = await self._http.post(
                 "/oauth2/token",
                 headers={"Authorization": f"Basic {self._basic}",
@@ -80,12 +97,20 @@ class TossBroker(Broker):
 
     async def _get(self, path: str, headers: dict | None = None, params: dict | None = None):
         token = await self._access_token()
-        for attempt in range(RATE_LIMIT_RETRIES + 1):
+        renewed = False
+        attempt = 0
+        while True:
             r = await self._http.get(path, params=params,
                                      headers={"Authorization": f"Bearer {token}", **(headers or {})})
+            # 401: revoked by a token issued elsewhere, or expired early. Renew once and retry.
+            if r.status_code == 401 and not renewed:
+                renewed = True
+                token = await self._access_token(revoked=token)
+                continue
             # Some endpoints allow 1 call/s (/stocks/all: x-ratelimit-limit 1) and answer 429 with Retry-After.
             if r.status_code != 429 or attempt == RATE_LIMIT_RETRIES:
                 break
+            attempt += 1
             await asyncio.sleep(_retry_after(r.headers.get("retry-after")))
         if r.status_code != 200:
             raise TossError(f"Toss GET {path} failed {r.status_code}: {r.text[:300]}")

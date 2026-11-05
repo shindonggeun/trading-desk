@@ -733,6 +733,7 @@ span.cs-hold-text { color: var(--warn); }
   .dash-search .quick-run { padding: 10px 12px; box-shadow: 0 6px 12px -8px rgba(0, 0, 0, .5); }
   .quick-run-summary { font-size: 11px; }
   .recent-runs { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* #99 — 분석 화면: 결론 줄 + 요약 · 차트 · 토론 · 근거 탭 */
 .run-bar { position: sticky; top: var(--topbar-h, 52px); z-index: 4; margin: 0 0 8px; background: var(--surface);

@@ -48,7 +48,7 @@ def test_fake_run_streams_the_whole_desk_and_ends_with_a_plan(db_url):
         events = client.get(f"/api/runs/{run['id']}/events").json()
         speakers = [e["agent"] for e in events if e["type"] == "message"]
         assert speakers[:4] == ["market_analyst", "sentiment_analyst", "news_analyst", "fundamentals_analyst"]
-        assert speakers[-1] == "portfolio_manager"
+        assert speakers[-2:] == ["portfolio_manager", "consensus"]   # #94 closes the chat
         assert [e["type"] for e in events][-2:] == ["plan", "done"]
 
         # The stream replays everything after the given id and closes once the run is over.

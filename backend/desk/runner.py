@@ -14,6 +14,9 @@ from typing import Any
 from . import horizons, verdict
 from . import underlying as under
 from .broker.base import Broker
+from .consensus import CONSENSUS_TIMEOUT_SEC, ConsensusContext, llm_summariser
+from .consensus import parse as parse_consensus
+from .consensus import render as render_consensus
 from .events import StateDiffer
 from .levels import LEVELS, entry_vs_live, fill_levels
 from .leverage_analyst import LEVER_TIMEOUT_SEC, LeverContext, llm_analyst
@@ -238,8 +241,9 @@ RELATED_TIMEOUT_SEC = 30.0
 class RunManager:
     def __init__(self, store: Store, hub: Hub, runner: Runner, broker: Broker, max_concurrent: int,
                  levels=fill_levels, prices: PriceSource | None = None, related=collect_related,
-                 lever_analyst=llm_analyst) -> None:
+                 lever_analyst=llm_analyst, summariser=llm_summariser) -> None:
         self.levels = levels
+        self.summariser = summariser
         self.lever_analyst = lever_analyst
         self.related = related
         self.prices = prices
@@ -389,6 +393,26 @@ class RunManager:
         plan["analysis_subject"] = base
         return plan
 
+    async def _consensus(self, run_id: str, request: RunRequest, subject: str, final_state: dict,
+                         plan: dict) -> None:
+        """#94: the closing summary into ``plan["consensus"]``; a failure only leaves
+        ``consensus_error`` — the run still ends with its plan."""
+        if self.summariser is None:
+            return
+        self._publish(run_id, {"type": "status", "agent": "consensus", "content": "thinking"})
+        ctx = ConsensusContext(ticker=request.ticker, subject=subject, final_state=final_state, plan=plan,
+                               language=request.output_language)
+        try:   # the HTTP call has its own timeout; this is the backstop for the thread
+            text = await asyncio.wait_for(asyncio.to_thread(self.summariser, ctx), CONSENSUS_TIMEOUT_SEC + 30)
+            summary = parse_consensus(text, final_state, subject)
+        except Exception as exc:  # noqa: BLE001 - incl. timeout and unreadable JSON
+            log.warning("consensus failed for %s: %s", request.ticker, exc)
+            plan["consensus_error"] = f"{type(exc).__name__}: {exc}"[:300]
+            return
+        plan["consensus"] = summary
+        self._publish(run_id, {"type": "message", "agent": "consensus", "content": render_consensus(summary),
+                               "data": None})
+
     def _publish(self, run_id: str, event: dict) -> None:
         self.store.append_event(run_id, event)
         self.hub.notify(run_id)
@@ -452,6 +476,7 @@ class RunManager:
                     plan["support_resistance"] = sr
                 if related:
                     plan["related"] = related
+                await self._consensus(run_id, request, subject.ticker, result.final_state, plan)
                 self.store.mark_done(run_id, plan, result.report_path)
                 self._publish(run_id, {"type": "plan", "agent": "portfolio_manager", "data": plan})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "done"})

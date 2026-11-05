@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from . import horizons, live, otp, outcome, regime, review, verdict
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
 from .broker import make_broker
+from .consensus import fake_summariser, llm_summariser
 from .db import make_engine, migrate, now
 from .estimate import BinanceEstimator
 from .indicators import INDICATORS
@@ -176,7 +177,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        prices=None if settings.fake_runs else prices,
                                        # a scripted run stays offline, like its support/resistance
                                        related=None if settings.fake_runs else collect_related,
-                                       lever_analyst=fake_analyst if settings.fake_runs else llm_analyst)
+                                       lever_analyst=fake_analyst if settings.fake_runs else llm_analyst,
+                                       summariser=fake_summariser if settings.fake_runs else llm_summariser)
 
         async def keep_listing_fresh():
             while True:

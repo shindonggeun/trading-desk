@@ -14,6 +14,8 @@ export default function AgentRail({ events, status, analysts }: { events: DeskEv
 
   const stateOf = (id: string, team: Team): State => {
     if (skipped.has(id)) return "skipped";
+    // announced itself but never spoke (the closing summary failed): skipped once the run is over
+    if (status !== "running" && started.has(id) && !spoken.has(id)) return "skipped";
     if (status === "running") {
       // Analysts all work at once, so each is "speaking" until its report lands.
       if (team === "analyst" && !spoken.has(id) && !anyBeyondAnalysts) return "speaking";

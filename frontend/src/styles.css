@@ -591,3 +591,33 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .live-alerts { margin-top: 12px; }
 .live-alerts-head { display: flex; justify-content: space-between; align-items: center; }
 .live-alert-list { margin: 6px 0 0; padding-left: 18px; }
+
+/* #75 — 대시보드 "시장" 패널 · 설정의 종목 목록 */
+.market-board { grid-column: 1 / -1; }
+.mb-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.mb-head h2 { margin: 0; flex: 1 1 auto; }
+.mb-head .chips { display: flex; gap: 6px; }
+.market-board-closed .mb-head h2 { font-size: 16px; }
+.mb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 12px; }
+.mb-tile { display: flex; flex-direction: column; align-items: stretch; gap: 4px; text-align: left; padding: 10px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--surface-2); color: var(--text); font-weight: 400; cursor: pointer; min-width: 0; }
+.mb-tile:hover, .mb-tile:focus-visible { border-color: var(--accent); }
+.mb-tile-on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.mb-tile > span { display: block; min-width: 0; }
+.mb-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mb-price { display: flex !important; align-items: baseline; justify-content: space-between; gap: 6px; font-size: 16px; font-variant-numeric: tabular-nums; }
+.spark { display: block; width: 100%; height: 36px; }
+.spark path { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.spark-up path { stroke: var(--up); }
+.spark-down path { stroke: var(--down); }
+.spark-empty { height: 36px; }
+.mb-sr { display: flex !important; flex-wrap: wrap; gap: 2px 8px; }
+.mb-confirm { margin-top: 12px; padding: 12px; border: 1px solid var(--accent); border-radius: 8px; }
+.mb-confirm p { margin: 0 0 6px; }
+.mb-confirm-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.settings { gap: 16px; }
+.market-list { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+.market-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.market-list-actions { display: flex; gap: 10px; flex-shrink: 0; }
+.market-add { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; }
+@media (max-width: 480px) { .mb-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .market-add { grid-template-columns: 1fr; } }

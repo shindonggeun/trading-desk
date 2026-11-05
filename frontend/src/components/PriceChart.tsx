@@ -188,6 +188,8 @@ function tipPosition(h: { x: number; y: number }, el: HTMLDivElement | null): { 
 type Drawn = {
   chart: IChartApi;
   series: ISeriesApi<"Candlestick">;
+  volume: ISeriesApi<"Histogram">;
+  rsi: ISeriesApi<"Line"> | null;
   markers: ISeriesMarkersPluginApi<Time>;
   rows: Row[];
   intraday: boolean;
@@ -210,7 +212,7 @@ export interface ExtraLine {
  * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
  * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
  */
-export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true }: {
+export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose }: {
   ticker: string;
   tradeDate: string;
   plan: Plan | null;
@@ -221,6 +223,10 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   initialInterval?: Interval;
   /** 차트 아래 지지 · 저항 · 추세선 · 피보나치 글 목록. 분석 화면(#99)은 근거 탭에 따로 보여 주고 끈다. */
   lists?: boolean;
+  /** 크게 보기(#97)로 연다 — 차트 주소(#/chart/…) 화면. */
+  startExpanded?: boolean;
+  /** 크게 보기를 닫을 때(차트 주소 화면은 이전 화면으로 돌아간다). 없으면 카드로 접힌다. */
+  onClose?: () => void;
 }) {
   const [prefs] = useState(loadPrefs);
   const [interval, setBarInterval] = useState<Interval>(initialInterval ?? prefs.interval);
@@ -255,6 +261,99 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
 
   useEffect(() => savePrefs(interval, show), [interval, show]);
   const toggle = (k: keyof Show) => setShow((s) => ({ ...s, [k]: !s[k] }));
+
+  // 크게 보기(#97): 브라우저 전체 화면을 쓰고, 안 되면(iOS Safari 등) 화면을 꽉 채운 고정 레이어로.
+  const section = useRef<HTMLElement>(null);
+  const [expanded, setExpanded] = useState(startExpanded);
+  const native = useRef(false);
+  const closing = useRef(false); // Esc 와 fullscreenchange 가 같이 와도 한 번만(onClose 가 뒤로 가기라 두 번이면 두 화면을 건넌다)
+  const close = () => {
+    if (closing.current) return;
+    closing.current = true;
+    if (native.current && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    native.current = false;
+    if (onClose) onClose();
+    else setExpanded(false);
+  };
+  const open = () => {
+    closing.current = false;
+    setExpanded(true);
+    const el = section.current;
+    if (el?.requestFullscreen && document.fullscreenEnabled) {
+      el.requestFullscreen({ navigationUI: "hide" }).then(() => (native.current = true), () => {});
+    }
+  };
+  useEffect(() => {
+    if (!expanded) return;
+    // 브라우저 전체 화면을 Esc 로 나가면 크게 보기도 끝낸다
+    const onFs = () => {
+      if (native.current && !document.fullscreenElement) close();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    document.addEventListener("fullscreenchange", onFs);
+    document.addEventListener("keydown", onKey);
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden"; // 뒤 화면이 같이 스크롤되지 않게
+    return () => {
+      document.removeEventListener("fullscreenchange", onFs);
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = overflow;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded]);
+
+  // 십자선 범례: 커서(모바일은 누른 채로) 아래 봉의 시가 · 고가 · 저가 · 종가 · 거래량 · RSI.
+  // 마우스가 움직일 때마다 렌더하지 않게 DOM 을 직접 고친다.
+  const ohlc = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!drawn) return;
+    const { chart, series, volume, rsi, rows } = drawn;
+    const last = rows[rows.length - 1];
+    const write = (o: number, h: number, l: number, c: number, v: number | null, r: number | null, prev: number | null) => {
+      const el = ohlc.current;
+      if (!el) return;
+      const chg = prev ? ((c - prev) / prev) * 100 : null;
+      const tone = c >= o ? "up" : "down";
+      el.replaceChildren();
+      const add = (label: string, value: string, cls = "") => {
+        const span = document.createElement("span");
+        if (label) {
+          const i = document.createElement("i");
+          i.textContent = label;
+          span.append(i, " ");
+        }
+        const strong = document.createElement("b");
+        strong.textContent = value;
+        if (cls) strong.className = cls;
+        span.append(strong);
+        el.appendChild(span);
+      };
+      add("시", price(o), tone); add("고", price(h), tone); add("저", price(l), tone); add("종", price(c), tone);
+      if (chg != null) add("", `${chg > 0 ? "+" : ""}${chg.toFixed(2)}%`, chg >= 0 ? "up" : "down");
+      if (v != null) add("거래량", v.toLocaleString("ko-KR"));
+      if (r != null) add("RSI", r.toFixed(1));
+    };
+    const showLast = () => {
+      const prev = rows.length > 1 ? rows[rows.length - 2].bar.close : null;
+      write(last.bar.open, last.bar.high, last.bar.low, last.bar.close, last.bar.volume, last.bar.rsi ?? null, prev);
+    };
+    showLast();
+    const onMove = (param: MouseEventParams<Time>) => {
+      const bar = param.seriesData.get(series) as { open?: number; high?: number; low?: number; close?: number } | undefined;
+      if (!param.point || bar?.close == null) return showLast();
+      const v = param.seriesData.get(volume) as { value?: number } | undefined;
+      const r = rsi ? (param.seriesData.get(rsi) as { value?: number } | undefined) : undefined;
+      const i = param.logical != null ? Math.round(param.logical as number) : -1;
+      const prev = i > 0 && rows[i - 1] ? rows[i - 1].bar.close : null;
+      write(bar.open ?? bar.close, bar.high ?? bar.close, bar.low ?? bar.close, bar.close, v?.value ?? null, r?.value ?? null, prev);
+    };
+    chart.subscribeCrosshairMove(onMove);
+    return () => {
+      if (drawn.alive.current) chart.unsubscribeCrosshairMove(onMove);
+    };
+  }, [drawn]);
 
   useEffect(() => {
     if (!wantSr || mode !== "now" || nowSr) return;
@@ -330,8 +429,9 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       volume.setData(rows.map(({ key, bar }) => ({ time: time(key), value: bar.volume, color: (bar.close >= bar.open ? up : down) + "55" })));
 
       // RSI(14) — 아래 패널(시간축 공유라 확대 · 이동이 같이 움직인다), 30 · 70 점선.
+      let rsi: ISeriesApi<"Line"> | null = null;
       if (candles.indicators?.includes("rsi14")) {
-        const rsi = chart.addSeries(LineSeries, {
+        rsi = chart.addSeries(LineSeries, {
           color: css("--warn", "#e5a23a"), lineWidth: 2, priceLineVisible: false, lastValueVisible: true,
           priceFormat: { type: "custom", formatter: (v: number) => v.toFixed(0), minMove: 0.01 },
           autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
@@ -345,7 +445,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       }
 
       chart.timeScale().fitContent();
-      setDrawn({ chart, series, markers: createSeriesMarkers(series, []), rows, intraday, interval: iv, lastClose: rows[rows.length - 1].bar.close, alive });
+      setDrawn({ chart, series, volume, rsi, markers: createSeriesMarkers(series, []), rows, intraday, interval: iv, lastClose: rows[rows.length - 1].bar.close, alive });
     } catch {
       chart?.remove(); // 봉 데이터가 이상하면 앱 전체가 아니라 차트만 실패로
       setFailed(true);
@@ -582,34 +682,46 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const limited = candles?.truncated && candles.history_limit_days != null ? candles.history_limit_days : null;
   const rsiOn = show.rsi && !!candles?.indicators?.includes("rsi14");
   return (
-    <section className="card price-chart">
+    <section ref={section} className={`card price-chart${expanded ? " price-chart-expanded" : ""}`}>
       <div className="price-chart-head">
         <h3>
-          {title ?? "가격 차트"} <span className="muted small">{currency}{candles ? ` · ${candles.source}` : ""}</span>
+          {title ?? "가격 차트"}{" "}
+          <span className="muted small">{ticker} · {currency}{candles ? ` · ${candles.source}` : ""}</span>
         </h3>
-        <div className="review-periods chart-intervals" role="group" aria-label="봉 주기">
+        <div className="chips chart-intervals" role="group" aria-label="봉 주기">
           {INTERVALS.map(({ iv, label }) => (
-            <button key={iv} type="button" className={iv === interval ? "" : "secondary"} aria-pressed={iv === interval} onClick={() => setBarInterval(iv)}>
+            <button key={iv} type="button" className={`chip ${iv === interval ? "chip-on" : ""}`} aria-pressed={iv === interval} onClick={() => setBarInterval(iv)}>
               {label}
             </button>
           ))}
         </div>
-      </div>
-      <div className="chart-toggles" role="group" aria-label="차트 표시">
-        {(Object.keys(SHOW_LABEL) as (keyof Show)[]).map((k) => (
-          <button key={k} type="button" className={`chip ${show[k] ? "chip-on" : ""}`} aria-pressed={show[k]} onClick={() => toggle(k)}>
-            {SHOW_LABEL[k]}
-          </button>
-        ))}
-        {wantSr && (
-          <span className="chart-sr-source" role="group" aria-label="지지 · 저항 · 추세선 기준">
-            {(["plan", "now"] as SrMode[]).filter((m) => m !== "plan" || saved).map((m) => (
-              <button key={m} type="button" className={`chip chip-sub ${m === mode ? "chip-on" : ""}`} aria-pressed={m === mode} onClick={() => setSrMode(m)}>
-                {SR_LABEL[m]}
-              </button>
+        <details className="chart-menu">
+          <summary>표시</summary>
+          <div className="chart-menu-body" role="group" aria-label="차트 표시">
+            {(Object.keys(SHOW_LABEL) as (keyof Show)[]).map((k) => (
+              <label key={k} className="chart-menu-item">
+                <input type="checkbox" checked={show[k]} onChange={() => toggle(k)} />
+                {SHOW_LABEL[k]}
+              </label>
             ))}
-          </span>
-        )}
+            {wantSr && (
+              <div className="chart-sr-source" role="group" aria-label="지지 · 저항 · 추세선 기준">
+                <span className="muted small">선 기준</span>
+                <div className="chips">
+                  {(["plan", "now"] as SrMode[]).filter((m) => m !== "plan" || saved).map((m) => (
+                    <button key={m} type="button" className={`chip chip-sub ${m === mode ? "chip-on" : ""}`} aria-pressed={m === mode} onClick={() => setSrMode(m)}>
+                      {SR_LABEL[m]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </details>
+        <button type="button" className="secondary chart-expand" aria-pressed={expanded}
+          title={expanded ? "작게 보기 (Esc)" : "크게 보기"} onClick={() => (expanded ? close() : open())}>
+          {expanded ? "닫기" : "크게"}
+        </button>
       </div>
       {limited != null && <p className="muted small chart-limit">야후 보관 한도로 {LABEL[interval]}봉은 최근 {limited}일만 제공됩니다.</p>}
       {failed ? (
@@ -625,6 +737,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           aria-describedby={hasLevels && show.levels ? legendId : undefined}
         >
           {!candles && <p className="muted small">불러오는 중…</p>}
+          <div ref={ohlc} className="chart-ohlc small" aria-hidden />
           {hover && (
             <div className="sr-tip" style={tipPosition(hover, box.current)}>
               {hover.type === "sr" ? (

@@ -829,3 +829,49 @@ span.cs-hold-text { color: var(--warn); }
   .run-tab { flex: 1; padding: 12px 4px; border-bottom: 0; border-top: 2px solid transparent; }
   .run-tab-on { border-top-color: var(--accent); }
 }
+
+/* #97 — 차트 머리줄 한 줄 · 표시 메뉴 · 십자선 범례 · 크게 보기 */
+.price-chart-head { flex-wrap: nowrap; gap: 8px; }
+.price-chart-head h3 { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.price-chart-head .chart-intervals { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; flex: 0 1 auto; }
+.price-chart-head .chart-intervals .chip { white-space: nowrap; }
+.chart-menu { position: relative; flex: none; }
+.chart-menu summary { list-style: none; cursor: pointer; padding: 5px 10px; border-radius: var(--radius-s); background: var(--surface-2);
+  color: var(--muted); font-size: var(--fs-s); font-weight: 500; user-select: none; }
+.chart-menu summary::-webkit-details-marker { display: none; }
+.chart-menu summary::after { content: " ▾"; }
+.chart-menu[open] summary { color: var(--text); background: var(--surface-3); }
+.chart-menu-body { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 180px; display: grid; gap: 2px;
+  padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .28); }
+.chart-menu-item { display: flex; align-items: center; gap: 8px; padding: 4px 4px; font-size: var(--fs-s); cursor: pointer; border-radius: 4px; }
+.chart-menu-item:hover { background: var(--surface-2); }
+.chart-menu .chart-sr-source { display: grid; gap: 4px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.chart-expand { flex: none; padding: 5px 10px; font-size: var(--fs-s); }
+.chart-ohlc { position: absolute; top: 4px; left: 8px; z-index: 3; display: flex; flex-wrap: wrap; gap: 2px 10px; pointer-events: none;
+  font-variant-numeric: tabular-nums; color: var(--text); max-width: calc(100% - 90px); }
+.chart-ohlc i { font-style: normal; color: var(--muted); }
+.chart-ohlc b { font-weight: 600; }
+.chart-ohlc b.up { color: var(--up); }
+.chart-ohlc b.down { color: var(--down); }
+
+/* 크게 보기: 화면 전체(브라우저 전체 화면이면 그 안에서도 같은 배치) */
+.price-chart-expanded { position: fixed; inset: 0; z-index: 50; margin: 0; border: 0; border-radius: 0; display: flex; flex-direction: column;
+  height: 100vh; height: 100dvh; padding: max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+  max(10px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); background: var(--bg); }
+.price-chart-expanded .price-chart-box, .price-chart-expanded .price-chart-box.with-rsi { flex: 1 1 auto; height: auto; min-height: 0; }
+.price-chart-expanded .price-chart-legend { flex: none; }
+.chart-view { min-height: 100dvh; }
+/* 가로로 눕힌 휴대폰: 차트에 높이를 다 준다 */
+@media (orientation: landscape) and (max-height: 520px) {
+  .price-chart-expanded { padding-top: 6px; padding-bottom: 6px; }
+  .price-chart-expanded .price-chart-head h3 .muted, .price-chart-expanded .price-chart-legend, .price-chart-expanded .chart-limit { display: none; }
+}
+@media (max-width: 600px) {
+  .price-chart-head { flex-wrap: wrap; }
+  .price-chart-head h3 { flex-basis: 100%; }
+  .price-chart-head .chart-intervals { flex: 1 1 0; }
+}
+/* 실시간 화면은 기본이 큰 차트 */
+.live-chart-box { height: max(420px, calc(100dvh - 330px)); }
+@media (max-width: 600px) { .live-chart-box { height: max(320px, calc(100dvh - 300px)); } }

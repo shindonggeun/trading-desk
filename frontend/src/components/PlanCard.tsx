@@ -81,6 +81,7 @@ const FAR_PCT = 0.05;
 const LIVE_MAX_GAP = 0.25;
 const QUOTE_EVERY_MS = 15_000;
 const ESTIMATE_EVERY_MS = 60_000;
+const ESTIMATE_STALE_MS = 3 * 60_000;
 
 type Gap = NonNullable<Plan["entry_vs_live"]>;
 
@@ -143,22 +144,24 @@ type ClosedEstimate = Extract<Estimate, { supported: true }>;
 function useEstimate(symbol: string | undefined, enabled: boolean): ClosedEstimate | null {
   const [est, setEst] = useState<Estimate | null>(null);
   useEffect(() => {
+    setEst(null);
     if (!symbol || !enabled) return;
     let alive = true;
-    let timer: ReturnType<typeof setInterval> | undefined;
+    let stopped = false;
     const load = () => {
-      if (document.hidden) return;
+      if (document.hidden || stopped) return;
       api.estimate(symbol).then(
         (e) => {
           if (!alive) return;
           setEst(e);
-          if (!e.supported) clearInterval(timer); // 계약이 없는 종목은 다시 묻지 않는다
+          if (!e.supported) stopped = true; // 계약이 없는 종목은 다시 묻지 않는다
         },
-        () => alive && setEst(null),
+        // 한 번 실패로 기준이 추정가 ↔ 현재가로 흔들리지 않게, 오래되기 전까지는 마지막 값을 둔다
+        () => alive && setEst((prev) => (prev?.supported && Date.now() - Date.parse(prev.fetched_at) < ESTIMATE_STALE_MS ? prev : null)),
       );
     };
     load();
-    timer = setInterval(load, ESTIMATE_EVERY_MS);
+    const timer = setInterval(load, ESTIMATE_EVERY_MS);
     document.addEventListener("visibilitychange", load);
     return () => {
       alive = false;

@@ -293,7 +293,9 @@ class RunManager:
                                live_u: dict | None) -> dict:
         """The underlying side, ATR-filled from its own bars and checked against its own price. Without
         its support/resistance the model's levels still stand; missing ones come from Yahoo bars."""
-        kwargs = {"live": live_u}
+        # The same horizon as the product, unless its levels fell back to daily bars: then its
+        # last close and ATR are daily ones and only the swing multiples fit them.
+        kwargs = {"live": live_u, "horizon": None if sr_u and sr_u.get("fallback") else request.horizon}
         if sr_u:
             kwargs["prices"] = lambda *_args: (sr_u["last_close"], sr_u["atr"])
         sub = await asyncio.to_thread(self.levels, sub, sub["ticker"], request.trade_date, **kwargs)

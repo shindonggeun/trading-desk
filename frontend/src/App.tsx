@@ -7,13 +7,25 @@ import RunView from "./pages/RunView";
 import Review from "./pages/Review";
 import Live from "./pages/Live";
 import History from "./pages/History";
+import { navigation } from "./nav";
 import ChartView from "./pages/ChartView";
 import Settings from "./pages/Settings";
+
+function safeDecode(v: string): string {
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return v;
+  }
+}
 
 function useHashRoute(): string {
   const [hash, setHash] = useState(() => window.location.hash || "#/");
   useEffect(() => {
-    const onChange = () => setHash(window.location.hash || "#/");
+    const onChange = () => {
+      navigation.moved = true;
+      setHash(window.location.hash || "#/");
+    };
     window.addEventListener("hashchange", onChange);
     return () => window.removeEventListener("hashchange", onChange);
   }, []);
@@ -89,7 +101,7 @@ export default function App() {
       {user === undefined ? null : user === null ? (
         <LoginForm onLoggedIn={(name) => { setOffline(false); setUser(name); }} />
       ) : chartMatch ? (
-        <ChartView key={route} ticker={decodeURIComponent(chartMatch[1])} query={new URLSearchParams(chartMatch[2] ?? "")} />
+        <ChartView key={route} ticker={safeDecode(chartMatch[1])} query={new URLSearchParams(chartMatch[2] ?? "")} />
       ) : onHistory ? (
         <History />
       ) : onLive ? (

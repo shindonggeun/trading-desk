@@ -147,7 +147,7 @@ export const api = {
   config: () => call<DeskConfig>("/api/config"),
   runs: (page = 1, size = 50) => call<RunPage>(`/api/runs?page=${page}&size=${size}`),
   deleteRun: (id: string) => call<void>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  run: (id: string) => call<Run>(`/api/runs/${id}`),
+  run: (id: string) => call<Run>(`/api/runs/${encodeURIComponent(id)}`),
   createRun: (body: NewRun) => call<Run>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
   portfolio: () => call<Portfolio>("/api/portfolio"),
   regime: () => call<RegimeSnapshot>("/api/regime"),

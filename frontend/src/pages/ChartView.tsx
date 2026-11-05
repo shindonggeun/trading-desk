@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { api } from "../api";
+import { navigation } from "../nav";
 import type { Interval } from "../components/PriceChart";
 import type { Plan, Run } from "../types";
 
@@ -27,15 +28,14 @@ export default function ChartView({ ticker, query }: { ticker: string; query: UR
 
   // 닫기: 앞 화면이 있으면 돌아가고, 주소로 바로 열었으면 분석 화면 · 대시보드로
   const close = () => {
-    if (window.history.length > 1) window.history.back();
-    else window.location.hash = runId ? `#/runs/${runId}` : "#/";
+    if (navigation.moved) window.history.back();
+    else window.location.replace(runId ? `#/runs/${runId}` : "#/");
   };
 
   const plan: Plan | null = run?.plan ?? null;
   if (runId && !run && !failed) return <main className="chart-view"><p className="muted">불러오는 중…</p></main>;
   return (
     <main className="chart-view">
-      {failed && <p className="error small">분석 기록을 찾지 못해 타점선 없이 보여 줍니다.</p>}
       <Suspense fallback={<p className="muted">차트를 여는 중…</p>}>
         <PriceChart
           ticker={run?.ticker ?? ticker}
@@ -46,6 +46,7 @@ export default function ChartView({ ticker, query }: { ticker: string; query: UR
           lists={false}
           startExpanded
           onClose={close}
+          notice={failed ? "분석 기록을 찾지 못해 타점선 없이 보여 줍니다." : undefined}
         />
       </Suspense>
     </main>

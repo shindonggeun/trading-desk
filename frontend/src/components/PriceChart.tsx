@@ -212,7 +212,7 @@ export interface ExtraLine {
  * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
  * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
  */
-export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose }: {
+export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice }: {
   ticker: string;
   tradeDate: string;
   plan: Plan | null;
@@ -227,6 +227,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   startExpanded?: boolean;
   /** 크게 보기를 닫을 때(차트 주소 화면은 이전 화면으로 돌아간다). 없으면 카드로 접힌다. */
   onClose?: () => void;
+  /** 머리줄 아래 한 줄 안내(차트 주소 화면: 분석 기록을 못 찾았을 때 등). */
+  notice?: string;
 }) {
   const [prefs] = useState(loadPrefs);
   const [interval, setBarInterval] = useState<Interval>(initialInterval ?? prefs.interval);
@@ -290,7 +292,12 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (native.current && !document.fullscreenElement) close();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
+      if (e.key !== "Escape") return;
+      if (menu.current?.open) {
+        menu.current.open = false; // 열린 표시 메뉴만 닫는다
+        return;
+      }
+      close();
     };
     document.addEventListener("fullscreenchange", onFs);
     document.addEventListener("keydown", onKey);
@@ -303,6 +310,17 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded]);
+
+  // 표시 메뉴는 바깥을 누르면 닫는다(카드 · 크게 보기 모두)
+  const menu = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      const m = menu.current;
+      if (m?.open && !m.contains(e.target as Node)) m.open = false;
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, []);
 
   // 십자선 범례: 커서(모바일은 누른 채로) 아래 봉의 시가 · 고가 · 저가 · 종가 · 거래량 · RSI.
   // 마우스가 움직일 때마다 렌더하지 않게 DOM 을 직접 고친다.
@@ -351,6 +369,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     };
     chart.subscribeCrosshairMove(onMove);
     return () => {
+      ohlc.current?.replaceChildren(); // 다른 주기를 불러오는 동안 이전 봉 값을 남기지 않게
       if (drawn.alive.current) chart.unsubscribeCrosshairMove(onMove);
     };
   }, [drawn]);
@@ -682,7 +701,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const limited = candles?.truncated && candles.history_limit_days != null ? candles.history_limit_days : null;
   const rsiOn = show.rsi && !!candles?.indicators?.includes("rsi14");
   return (
-    <section ref={section} className={`card price-chart${expanded ? " price-chart-expanded" : ""}`}>
+    <section ref={section} className={`card price-chart${expanded ? " price-chart-expanded" : ""}`}
+      {...(expanded ? { role: "dialog", "aria-modal": true, "aria-label": `${title ?? ticker} 큰 차트` } : {})}>
       <div className="price-chart-head">
         <h3>
           {title ?? "가격 차트"}{" "}
@@ -695,7 +715,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
             </button>
           ))}
         </div>
-        <details className="chart-menu">
+        <details ref={menu} className="chart-menu">
           <summary>표시</summary>
           <div className="chart-menu-body" role="group" aria-label="차트 표시">
             {(Object.keys(SHOW_LABEL) as (keyof Show)[]).map((k) => (
@@ -718,11 +738,12 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
             )}
           </div>
         </details>
-        <button type="button" className="secondary chart-expand" aria-pressed={expanded}
-          title={expanded ? "작게 보기 (Esc)" : "크게 보기"} onClick={() => (expanded ? close() : open())}>
+        <button type="button" className="secondary chart-expand" aria-label={expanded ? "크게 보기 닫기 (Esc)" : "차트 크게 보기"}
+          onClick={() => (expanded ? close() : open())}>
           {expanded ? "닫기" : "크게"}
         </button>
       </div>
+      {notice && <p className="error small chart-limit">{notice}</p>}
       {limited != null && <p className="muted small chart-limit">야후 보관 한도로 {LABEL[interval]}봉은 최근 {limited}일만 제공됩니다.</p>}
       {failed ? (
         <p className="muted small">시세를 불러오지 못했습니다.</p>

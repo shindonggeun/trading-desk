@@ -156,9 +156,12 @@ function lineAt(t: Trendline, ms: number): number {
   return Math.exp(a.lp + ((b.lp - a.lp) * (ms - a.ms)) / (b.ms - a.ms));
 }
 
+/** 분봉 주기(1m · 5m · 60m …) — 1M(월봉)과 구별 */
+const isIntradayTf = (tf: string) => /^\d+m$/.test(tf);
+
 type Hover = { x: number; y: number; key: string } & (
   | { type: "sr"; level: SrLevel }
-  | { type: "trend"; line: Trendline }
+  | { type: "trend"; line: Trendline; here: number }
   | { type: "fib"; level: FibLevel; fib: Fibonacci }
 );
 
@@ -188,6 +191,8 @@ type Drawn = {
   markers: ISeriesMarkersPluginApi<Time>;
   rows: Row[];
   intraday: boolean;
+  /** 그린 봉 주기 — 같은 주기의 추세선은 봉 순서로 */
+  interval: Interval;
   lastClose: number;
   /** chart.remove() 뒤에는 false — 지운 차트에 선을 지우면 다시 그리기가 예약돼 throw 한다. */
   alive: { current: boolean };
@@ -242,6 +247,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const trendLines: Trendline[] = useMemo(() => (show.trend ? srSource?.trendlines ?? [] : []), [show.trend, srSource]);
   const fib: Fibonacci | null = show.fib ? srSource?.fibonacci ?? null : null;
   const wantSr = show.sr || show.trend || show.fib;
+  // 분석 당시 값이면 "지금" 이라 하지 않는다 — 선은 오늘까지 그어도 거리 · 상태는 그때 기준
+  const when = mode === "plan" ? "분석 당시" : "지금";
   const [trendDrawn, setTrendDrawn] = useState<{ line: Trendline; series: ISeriesApi<"Line"> }[]>([]);
 
   useEffect(() => savePrefs(interval, show), [interval, show]);
@@ -336,7 +343,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       }
 
       chart.timeScale().fitContent();
-      setDrawn({ chart, series, markers: createSeriesMarkers(series, []), rows, intraday, lastClose: rows[rows.length - 1].bar.close, alive });
+      setDrawn({ chart, series, markers: createSeriesMarkers(series, []), rows, intraday, interval: iv, lastClose: rows[rows.length - 1].bar.close, alive });
     } catch {
       chart?.remove(); // 봉 데이터가 이상하면 앱 전체가 아니라 차트만 실패로
       setFailed(true);
@@ -438,40 +445,85 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const { chart, series, rows, intraday } = drawn;
     const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
     const keys = rows.map((r) => r.key);
-    const keyOf = (iso: string) => barFor(keys, intraday ? kstStamp(iso) : kstDay(iso));
+    const first = Date.parse(rows[0].bar.at);
+    const index = new Map(keys.map((k, i) => [k, i]));
+    /**
+     * 그 시각이 든 봉. 분봉 차트에 일봉 이상 시각(자정)이 오면 그날 첫 봉 — 분석일 마커와 같은 규칙
+     * (자정은 그날 첫 분봉보다 앞이라 그대로 찾으면 전 거래일 마지막 봉에 붙는다).
+     */
+    const keyOf = (iso: string, tf: string): Key | null => {
+      if (!Number.isFinite(Date.parse(iso))) return null;
+      if (intraday && !isIntradayTf(tf)) return rows.find((r) => r.day === marketDay(iso, ticker))?.key ?? null;
+      return barFor(keys, intraday ? kstStamp(iso) : kstDay(iso));
+    };
     const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, autoscaleInfoProvider: () => null };
     const lines: { line: Trendline; series: ISeriesApi<"Line"> }[] = [];
     const marks: { key: Key; m: Omit<SeriesMarker<Time>, "time"> }[] = [];
     let swing: ISeriesApi<"Line"> | null = null;
     const fibLines: IPriceLine[] = [];
     const marked = new Set<string>(); // 같은 봉 · 같은 쪽엔 앞(더 강한) 선의 번호 하나만 — 비슷한 선끼리 겹쳐 찍지 않게
+    const sameFrame = (tf: string) => tf === drawn.interval;
     for (const line of trendLines) {
-      const start = Date.parse(line.anchors[0].at);
-      const data = rows.filter((r) => Date.parse(r.bar.at) >= start).map((r) => ({ time: time(r.key), value: lineAt(line, Date.parse(r.bar.at)) }));
-      if (data.length < 2) continue; // 선이 보는 기간 밖에서 시작해 끝났다
-      const base = css(line.kind === "support" ? "--sr-support" : "--sr-resistance", line.kind === "support" ? "#39c5bb" : "#c297ff");
-      const broken = line.state === "broken";
-      const s = chart.addSeries(LineSeries, { ...quiet, color: broken ? `${base}80` : base, lineWidth: 2, lineStyle: broken ? LineStyle.Dashed : LineStyle.Solid });
-      s.setData(data);
-      lines.push({ line, series: s });
-      line.touches.forEach((at, i) => {
-        const key = keyOf(at);
-        const spot = `${key}-${line.kind}`;
-        if (key == null || Date.parse(at) < Date.parse(rows[0].bar.at) || marked.has(spot)) return;
-        marked.add(spot);
-        marks.push({ key, m: { position: line.kind === "support" ? "belowBar" : "aboveBar", shape: "circle", color: base, text: String(i + 1), size: 0.6 } });
-      });
+      try {
+        const a0 = Date.parse(line.anchors[0]?.at);
+        if (!Number.isFinite(a0) || !(line.anchors[0].price > 0)) continue;
+        // 앵커가 든 봉부터(보는 기간 전에 시작한 선은 첫 봉부터)
+        const startKey = a0 < first ? keys[0] : keyOf(line.anchors[0].at, line.timeframe);
+        const from = startKey == null ? -1 : index.get(startKey) ?? -1;
+        if (from < 0) continue;
+        let value: (i: number) => number;
+        if (sameFrame(line.timeframe)) {
+          // 같은 주기: 백엔드와 같은 "로그 가격 × 봉 순서" 직선 — 장 마감 · 주말 공백에 계단이 생기지 않는다
+          const ref = [line.anchors[0], line.anchors[1], line.end]
+            .map((p) => ({ p, i: p && Date.parse(p.at) >= first ? index.get(keyOf(p.at, line.timeframe) ?? "") : undefined }))
+            .filter((r): r is { p: Trendline["end"]; i: number } => r.i !== undefined && r.p.price > 0);
+          const [r0, r1] = ref;
+          const slope = r0 && r1 && r1.i > r0.i ? Math.log(r1.p.price / r0.p.price) / (r1.i - r0.i) : Math.log(1 + line.slope_pct_per_bar / 100);
+          const at0 = r0 ?? { p: line.end, i: keys.length - 1 };
+          value = (i) => at0.p.price * Math.exp(slope * (i - at0.i));
+        } else {
+          value = (i) => lineAt(line, Date.parse(rows[i].bar.at));
+        }
+        const data = [];
+        for (let i = from; i < rows.length; i++) {
+          const v = value(i);
+          if (Number.isFinite(v) && v > 0) data.push({ time: time(rows[i].key), value: v });
+        }
+        if (data.length < 2) continue; // 선이 보는 기간 밖에서 끝났다
+        const base = css(line.kind === "support" ? "--sr-support" : "--sr-resistance", line.kind === "support" ? "#39c5bb" : "#c297ff");
+        const broken = line.state === "broken";
+        const s = chart.addSeries(LineSeries, { ...quiet, color: broken ? `${base}80` : base, lineWidth: 2, lineStyle: broken ? LineStyle.Dashed : LineStyle.Solid });
+        lines.push({ line, series: s });
+        s.setData(data);
+        line.touches.forEach((at, i) => {
+          const key = Date.parse(at) < first ? null : keyOf(at, line.timeframe);
+          const spot = `${key}-${line.kind}`;
+          if (key == null || marked.has(spot)) return;
+          marked.add(spot);
+          marks.push({ key, m: { position: line.kind === "support" ? "belowBar" : "aboveBar", shape: "circle", color: base, text: String(i + 1), size: 0.6 } });
+        });
+      } catch {
+        /* 이상한 선 하나는 건너뛴다 — 차트 · 분석 화면은 그대로 */
+      }
     }
     if (fib) {
-      const color = css("--muted", "#8b96a5");
-      for (const lv of fib.levels) {
-        fibLines.push(series.createPriceLine({ price: lv.price, color, lineWidth: 1, lineStyle: LineStyle.SparseDotted, axisLabelVisible: true, axisLabelColor: color, title: String(lv.ratio) }));
-      }
-      const a = keyOf(fib.from.at);
-      const b = keyOf(fib.to.at);
-      if (a != null && b != null && a !== b && Date.parse(fib.from.at) >= Date.parse(rows[0].bar.at)) {
-        swing = chart.addSeries(LineSeries, { ...quiet, color, lineWidth: 1, lineStyle: LineStyle.Dashed });
-        swing.setData([{ time: time(a), value: fib.from.price }, { time: time(b), value: fib.to.price }].sort((x, y) => (x.time < y.time ? -1 : 1)));
+      try {
+        const color = css("--muted", "#8b96a5");
+        for (const lv of fib.levels) {
+          if (!Number.isFinite(lv.price)) continue;
+          // 축 라벨은 0 < 비율 < 1 만 — 0 · 1(스윙 끝점)까지 달면 계획선 라벨과 겹친다
+          const inner = lv.ratio > 0 && lv.ratio < 1;
+          fibLines.push(series.createPriceLine({ price: lv.price, color, lineWidth: 1, lineStyle: LineStyle.SparseDotted, axisLabelVisible: inner, axisLabelColor: color, title: inner ? String(lv.ratio) : "" }));
+        }
+        const tf = srSource?.intervals?.primary ?? "1d";
+        const a = keyOf(fib.from.at, tf);
+        const b = keyOf(fib.to.at, tf);
+        if (a != null && b != null && a !== b && Date.parse(fib.from.at) >= first && Date.parse(fib.to.at) >= first) {
+          swing = chart.addSeries(LineSeries, { ...quiet, color, lineWidth: 1, lineStyle: LineStyle.Dashed });
+          swing.setData([{ time: time(a), value: fib.from.price }, { time: time(b), value: fib.to.price }].sort((x, y) => (x.time < y.time ? -1 : 1)));
+        }
+      } catch {
+        /* 되돌림을 못 그려도 차트는 그대로 */
       }
     }
     marks.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
@@ -486,7 +538,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (swing) chart.removeSeries(swing);
       for (const l of fibLines) series.removePriceLine(l);
     };
-  }, [drawn, trendLines, fib]);
+  }, [drawn, trendLines, fib, ticker, srSource]);
 
   // 선 근처(5px)에 마우스를 올리면 근거 — 지지 · 저항 · 피보나치(가로선)와 추세선(그 봉에서의 선 높이).
   useEffect(() => {
@@ -507,7 +559,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (fib) for (const level of fib.levels) consider(level.price, (y) => ({ type: "fib", level, fib, key: `fib-${level.ratio}`, x: pt.x, y }));
       for (const { line, series: s } of trendDrawn) {
         const v = param.seriesData.get(s) as { value?: number } | undefined;
-        if (v?.value != null) consider(v.value, (y) => ({ type: "trend", line, key: `trend-${line.kind}-${line.anchors[0].at}-${line.anchors[1]?.at}`, x: pt.x, y }));
+        if (v?.value != null) consider(v.value, (y) => ({ type: "trend", line, here: v.value as number, key: `trend-${line.kind}-${line.anchors[0].at}-${line.anchors[1]?.at}`, x: pt.x, y }));
       }
       // 다른 선으로 옮겨 갈 때만 다시 그린다(마우스 이동마다 렌더하지 않게).
       const hit = (best as { hit: Hover } | null)?.hit ?? null;
@@ -581,9 +633,11 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
                 </>
               ) : hover.type === "trend" ? (
                 <>
-                  <strong>{TREND_NAME[hover.line.kind]} {price(hover.line.price_now)}</strong>{" "}
+                  <strong>{TREND_NAME[hover.line.kind]} {price(hover.here)}</strong>{" "}
                   <span className="muted">{tfLabel(hover.line.timeframe)} · 터치 {hover.line.touches.length}회</span>
-                  <div>지금 가격은 선에서 {signed(hover.line.distance_atr)} ATR · {TREND_STATE[hover.line.state]}</div>
+                  <div>
+                    {when} 선 {price(hover.line.price_now)} · 가격은 선에서 {signed(hover.line.distance_atr)} ATR · {TREND_STATE[hover.line.state]}
+                  </div>
                 </>
               ) : (
                 <>
@@ -643,7 +697,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
                 <strong className="num">{price(t.price_now)}</strong>
                 <span className="muted small">{tfLabel(t.timeframe)} · 터치 {t.touches.length}회</span>
                 <span className="small">
-                  {TREND_NAME[t.kind]} · {kstDay(t.anchors[0].at)}부터 · 지금 가격 {signed(t.distance_atr)} ATR ·{" "}
+                  {TREND_NAME[t.kind]} · {kstDay(t.anchors[0].at)}부터 · {when} 가격 {signed(t.distance_atr)} ATR ·{" "}
                   <strong className="trend-state">{TREND_STATE[t.state]}</strong>
                 </span>
               </li>

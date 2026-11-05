@@ -135,6 +135,8 @@ export interface SupportResistance {
   as_of: string;
   levels: SrLevel[];
   computed_at: string;
+  /** 레벨을 계산한 봉 주기(#63 시간축) */
+  intervals?: { primary: string; secondary: string };
   /** 추세선(#73) — 옛 분석 · 계산 실패면 없다 */
   trendlines?: Trendline[];
   fibonacci?: Fibonacci | null;

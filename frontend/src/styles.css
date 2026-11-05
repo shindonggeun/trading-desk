@@ -910,3 +910,18 @@ span.cs-hold-text { color: var(--warn); }
   .tm-row { grid-template-columns: 64px 72px minmax(0, 1fr); }
   .tm-why { grid-column: 1 / -1; white-space: normal; }
 }
+
+/* #110 인버스 짝 제안 · 상품 기준 표시 (색은 토큰만) */
+.plan-basis { margin: 4px 0 0; }
+.pair-block { margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-left: 3px solid var(--short);
+  border-radius: var(--radius); background: var(--surface-2); display: grid; gap: 8px; }
+.pair-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.pair-title { font-size: var(--fs-m, 14px); }
+.pair-note { margin: 0; }
+.pair-levels { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.pair-levels div { display: grid; gap: 2px; min-width: 0; }
+.pair-levels dt { color: var(--muted); font-size: 12px; }
+.pair-levels dd { margin: 0; font-weight: 600; }
+.pair-confirm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pair-start { justify-self: start; }
+@media (max-width: 420px) { .pair-levels { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

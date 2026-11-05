@@ -40,6 +40,80 @@ export interface Plan {
     stop_passed: boolean;
     target_passed: boolean;
   };
+  /** #63 매매 시간축(desk/horizons.py). 없으면(예전 run) 스윙. */
+  horizon?: HorizonId;
+  /** 진입이 유효한 마지막 시각(ISO). 스윙은 null. */
+  valid_until?: string | null;
+  /** 시간축 mandate 의 Entry 줄(#63) — 스윙엔 없다. */
+  entry_type?: "now" | "limit" | "stop" | null;
+  invalidation?: string | null;
+  exit_by?: string | null;
+  /** #64 판단 체크리스트 · 고확률 필터(desk/verdict.py). 예전 run 엔 없다. */
+  win_probability?: number | null;
+  checklist?: Partial<Record<Factor, "long" | "short" | "neutral">> | null;
+  score?: { long: number; short: number } | null;
+  long_trigger?: number | null;
+  short_trigger?: number | null;
+  opinion?: Opinion;
+  filter?: {
+    passed: boolean | null;
+    reasons: string[];
+    thresholds: { win_probability: number; reward_risk: number; agreeing: number };
+  };
+}
+
+export type HorizonId = "scalp" | "intraday" | "short_swing" | "swing";
+export type Factor = "trend" | "location" | "momentum" | "volume" | "catalyst" | "regime";
+export type Opinion = "buy" | "sell" | "hold" | "review";
+
+/** desk/outcome.py judge 의 status. */
+export type OutcomeStatus =
+  | "target" | "stop" | "both" | "expired" | "unfilled" | "invalid" | "unscorable"
+  | "open" | "waiting" | "error";
+
+export interface Outcome {
+  status: OutcomeStatus;
+  detail?: string;
+  entry_kind?: "now" | "limit" | "stop";
+  filled_at?: string;
+  exited_at?: string;
+  /** 손절폭 대비 손익(R). 목표 = +손익비, 손절 = −1 근처 */
+  r?: number | null;
+  late?: boolean;
+  partial_first_session?: boolean;
+}
+
+/** GET /api/stats/plans 의 한 묶음(desk/outcome.py _group). */
+export interface StatsGroup {
+  key?: string;
+  plans: number;
+  filled: number;
+  target: number;
+  stop: number;
+  both: number;
+  expired: number;
+  unfilled: number;
+  open: number;
+  waiting: number;
+  hit_rate: number | null;
+  avg_probability: number | null;
+  avg_probability_resolved: number | null;
+  avg_r_at_expiry: number | null;
+}
+
+export interface PlanStats {
+  days: number;
+  from: string;
+  to: string;
+  thresholds: { win_probability: number; agreeing: number };
+  rules_version: number;
+  total: { plans: number; scored: number; waiting: number; errors: number; unscorable: number };
+  by_horizon: (StatsGroup & { key: string })[];
+  by_rating: (StatsGroup & { key: string })[];
+  by_direction: (StatsGroup & { key: string })[];
+  by_opinion: (StatsGroup & { key: string })[];
+  by_analysts: (StatsGroup & { key: string })[];
+  calibration: { bucket: string; plans: number; resolved: number; hits: number; hit_rate: number | null; avg_probability: number | null }[];
 }
 
 /** 지지 · 저항 한 구역(backend desk/sr.py compute). */
@@ -81,6 +155,7 @@ export interface Run {
     output_language: string | null;
     name?: string | null;
     profile?: string | null;
+    horizon?: HorizonId | null;
   };
   plan: Plan | null;
   error: string | null;
@@ -88,6 +163,10 @@ export interface Run {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  /** #64 채점(서버가 1시간마다). 아직 안 봤으면 null. */
+  outcome?: Outcome | null;
+  outcome_status?: OutcomeStatus | null;
+  scored_at?: string | null;
 }
 
 export interface DeskEvent {
@@ -194,6 +273,8 @@ export interface DeskConfig {
   broker: string;
   profiles: { id: string; label: string }[];
   default_profile: string;
+  horizons?: { id: HorizonId; label: string; holding: string }[];
+  default_horizon?: HorizonId;
 }
 
 /** One search hit from /api/instruments: Toss' listing with the Yahoo ticker to analyse. */

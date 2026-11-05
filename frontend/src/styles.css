@@ -503,3 +503,49 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .flow-table th { color: var(--muted); font-weight: 500; text-align: left; }
 .flow-table th.num { text-align: right; }
 .flow-note { margin: 0; }
+
+/* #65 — 의견 · 진입 조건 · 근거 · 채점 · 적중률 */
+.opinion { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px; background: var(--surface-2); }
+.opinion-buy { border-left-color: var(--long); }
+.opinion-sell { border-left-color: var(--short); }
+.opinion-hold { border-left-color: var(--flat); }
+.opinion-review { border-left-color: var(--warn); }
+.opinion-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.opinion-label { font-size: 22px; font-weight: 700; }
+.opinion-buy .opinion-label { color: var(--long); }
+.opinion-sell .opinion-label { color: var(--short); }
+.opinion-review .opinion-label { color: var(--warn); }
+.opinion-prob strong { font-size: 18px; }
+.opinion-desc { margin: 4px 0 0; color: var(--muted); }
+.opinion-reasons { margin: 6px 0 0; padding-left: 18px; color: var(--warn); }
+.triggers-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.trigger { display: flex; flex-direction: column; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.trigger-long strong { color: var(--long); }
+.trigger-short strong { color: var(--short); }
+@media (max-width: 420px) { .triggers-row { grid-template-columns: 1fr; } }
+.plan-expired .plan-grid, .plan-expired .ladder { opacity: 0.5; }
+.plan-expired-note { color: var(--warn); margin: 0 0 8px; }
+.checklist { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.factor { font-size: 12px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); }
+.factor-long { border-color: var(--long); }
+.factor-long strong { color: var(--long); }
+.factor-short { border-color: var(--short); }
+.factor-short strong { color: var(--short); }
+.outcome { margin: 10px 0 0; }
+.outcome-target strong { color: var(--long); }
+.outcome-stop strong, .outcome-both strong { color: var(--short); }
+.opinion-tag, .outcome-tag { display: inline-block; margin-left: 6px; font-size: 11px; padding: 0 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); white-space: nowrap; }
+.opinion-tag.opinion-buy { color: var(--long); border-color: var(--long); }
+.opinion-tag.opinion-sell { color: var(--short); border-color: var(--short); }
+.outcome-tag.outcome-target { color: var(--long); border-color: var(--long); }
+.outcome-tag.outcome-stop, .outcome-tag.outcome-both { color: var(--short); border-color: var(--short); }
+.runs-card > .chips, .plan-stats > .chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 10px; }
+.chips-gap { flex: 1 0 8px; }
+.stats-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.stats-table th, .stats-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+.stats-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.plan-stats h4 { margin: 12px 0 6px; }
+.calibration { display: flex; flex-direction: column; gap: 4px; }
+.calibration-row { display: grid; grid-template-columns: 84px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.calibration-bar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.calibration-bar > span { display: block; height: 100%; background: var(--accent); }

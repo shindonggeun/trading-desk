@@ -79,3 +79,42 @@ export function koreanizeLabels(markdown: string): string {
       return `**최종 제안**: ${t ? t.ko : a}`;
     });
 }
+
+/** 매매 시간축(backend desk/horizons.py). 서버 config 가 안 오면 이것으로 그린다. */
+export const HORIZON: Record<string, { ko: string; holding: string }> = {
+  scalp: { ko: "스캘핑", holding: "수 분~1시간" },
+  intraday: { ko: "단타", holding: "당일" },
+  short_swing: { ko: "2~3일", holding: "2~3 거래일" },
+  swing: { ko: "스윙", holding: "1~3주" },
+};
+
+/** 판단 레이어(#64 desk/verdict.py)의 의견. 등급(rating)과 따로, 고확률 필터를 거친 결과다. */
+export const OPINION: Record<string, Term> = {
+  buy: { ko: "매수", desc: "고확률 필터를 통과한 롱 판단입니다." },
+  sell: { ko: "매도", desc: "고확률 필터를 통과한 숏 · 축소 판단입니다." },
+  hold: { ko: "관망", desc: "방향이 없거나 승률 · 손익비 · 근거가 기준에 못 미칩니다. 아래 진입 조건에 닿을 때 움직입니다." },
+  review: { ko: "확인 필요", desc: "등급 또는 승률 · 체크리스트 줄을 읽지 못했습니다. 대화 원문을 보고 직접 판단하세요." },
+};
+
+export const FACTOR: Record<string, string> = {
+  trend: "추세",
+  location: "위치",
+  momentum: "모멘텀",
+  volume: "거래량",
+  catalyst: "촉매",
+  regime: "시장 국면",
+};
+
+/** 채점 결과(#64 desk/outcome.py). */
+export const OUTCOME: Record<string, Term> = {
+  target: { ko: "목표 도달", desc: "체결 뒤 손절보다 목표에 먼저 닿았습니다." },
+  stop: { ko: "손절", desc: "체결 뒤 목표보다 손절에 먼저 닿았습니다." },
+  both: { ko: "같은 봉에 둘 다", desc: "한 봉 안에서 목표와 손절이 모두 닿아 순서를 모릅니다 — 실패로 셉니다." },
+  expired: { ko: "기간 만료", desc: "보유 기간 안에 목표 · 손절 어디에도 닿지 않았습니다. R 은 만료 시점 종가 기준입니다." },
+  unfilled: { ko: "미체결", desc: "진입 유효 시간 안에 진입가에 닿지 않았습니다." },
+  invalid: { ko: "채점 불가 · 레벨", desc: "진입 · 손절 · 목표가 맞지 않거나 이미 지나 있었습니다." },
+  unscorable: { ko: "채점 불가", desc: "과거 날짜 분석이거나 봉 데이터가 닿지 않습니다." },
+  open: { ko: "보유 중", desc: "체결됐고 보유 기간이 아직 남았습니다." },
+  waiting: { ko: "체결 대기", desc: "아직 진입가에 닿지 않았습니다." },
+  error: { ko: "채점 오류", desc: "봉 데이터를 받지 못했습니다. 다음 채점 때 다시 봅니다." },
+};

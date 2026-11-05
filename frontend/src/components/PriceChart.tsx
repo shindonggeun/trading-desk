@@ -298,14 +298,14 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     let chart: IChartApi | null = null;
     const alive = { current: true };
     try {
-      const up = css("--up", "#e5534b");
-      const down = css("--down", "#4f8cff");
-      const grid = css("--border", "#2a3240");
+      const up = css("--up", "#f2464b");
+      const down = css("--down", "#3a86f8");
+      const grid = css("--border", "#2a3038");
       chart = createChart(el, {
         autoSize: true,
         layout: {
           background: { type: ColorType.Solid, color: "transparent" },
-          textColor: css("--muted", "#8b96a5"),
+          textColor: css("--muted", "#8c939d"),
           fontFamily: getComputedStyle(document.body).fontFamily,
           panes: { separatorColor: grid },
         },
@@ -332,14 +332,14 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       // RSI(14) — 아래 패널(시간축 공유라 확대 · 이동이 같이 움직인다), 30 · 70 점선.
       if (candles.indicators?.includes("rsi14")) {
         const rsi = chart.addSeries(LineSeries, {
-          color: css("--warn", "#d29922"), lineWidth: 2, priceLineVisible: false, lastValueVisible: true,
+          color: css("--warn", "#e5a23a"), lineWidth: 2, priceLineVisible: false, lastValueVisible: true,
           priceFormat: { type: "custom", formatter: (v: number) => v.toFixed(0), minMove: 0.01 },
           autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
         }, 1);
         // RSI 축은 늘 0~100 일반 눈금 — 주 · 월 · 년봉의 로그 눈금이 번지지 않게.
         rsi.priceScale().applyOptions({ mode: PriceScaleMode.Normal, scaleMargins: { top: 0.08, bottom: 0.08 } });
         rsi.setData(rows.flatMap(({ key, bar }) => (bar.rsi == null ? [] : [{ time: time(key), value: bar.rsi }])));
-        const muted = css("--muted", "#8b96a5");
+        const muted = css("--muted", "#8c939d");
         for (const lv of [70, 30]) rsi.createPriceLine({ price: lv, color: muted, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "" });
         chart.panes()[1]?.setHeight(110);
       }
@@ -365,9 +365,9 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const { series, markers, rows, intraday, lastClose } = drawn;
     const lines: [number | null | undefined, string, string, LineStyle][] = show.levels
       ? [
-          [plan?.entry_price, "진입", css("--accent", "#4f8cff"), LineStyle.Solid],
-          [plan?.stop_loss, "손절", css("--short", "#e5534b"), LineStyle.Dashed],
-          [plan?.price_target, "목표", css("--long", "#2ea043"), LineStyle.Dashed],
+          [plan?.entry_price, "진입", css("--accent", "#c9d1db"), LineStyle.Solid],
+          [plan?.stop_loss, "손절", css("--short", "#3a86f8"), LineStyle.Dashed],
+          [plan?.price_target, "목표", css("--long", "#f2464b"), LineStyle.Dashed],
           ...(extraLines ?? []).map(
             (l): [number, string, string, LineStyle] => [l.price, l.label, l.color, l.dashed ? LineStyle.Dotted : LineStyle.Solid],
           ),
@@ -386,8 +386,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       },
     });
 
-    const up = css("--up", "#e5534b");
-    const down = css("--down", "#4f8cff");
+    const up = css("--up", "#f2464b");
+    const down = css("--down", "#3a86f8");
     const keys = rows.map((r) => r.key);
     const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
     const list: { key: Key; m: Omit<SeriesMarker<Time>, "time"> }[] = [];
@@ -396,7 +396,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       // 주말 · 휴장일 분석이면 그 전 거래일 — 일봉과 같은 규칙
       const day = intraday ? barFor(rows.map((r) => r.day), tradeDate) : null;
       const at = intraday ? (day == null ? null : rows.find((r) => r.day === day)?.key ?? null) : barFor(keys, tradeDate);
-      if (at != null) list.push({ key: at, m: { position: "aboveBar", shape: "arrowDown", color: css("--warn", "#d29922"), text: "분석" } });
+      if (at != null) list.push({ key: at, m: { position: "aboveBar", shape: "arrowDown", color: css("--warn", "#e5a23a"), text: "분석" } });
     }
     if (show.fills) {
       for (const f of fills) {
@@ -428,7 +428,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const made = sr.map((lv) =>
       series.createPriceLine({
         price: lv.price,
-        color: css(lv.kind === "support" ? "--sr-support" : "--sr-resistance", lv.kind === "support" ? "#39c5bb" : "#c297ff"),
+        color: css(lv.kind === "support" ? "--sr-support" : "--sr-resistance", lv.kind === "support" ? "#2bb3a3" : "#b58cf0"),
         lineWidth: lv.timeframe === "1w" ? 2 : 1,
         lineStyle: lv.timeframe === "1w" ? LineStyle.LargeDashed : LineStyle.Dotted,
         axisLabelVisible: false,
@@ -492,7 +492,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           if (Number.isFinite(v) && v > 0) data.push({ time: time(rows[i].key), value: v });
         }
         if (data.length < 2) continue; // 선이 보는 기간 밖에서 끝났다
-        const base = css(line.kind === "support" ? "--sr-support" : "--sr-resistance", line.kind === "support" ? "#39c5bb" : "#c297ff");
+        const base = css(line.kind === "support" ? "--sr-support" : "--sr-resistance", line.kind === "support" ? "#2bb3a3" : "#b58cf0");
         const broken = line.state === "broken";
         const s = chart.addSeries(LineSeries, { ...quiet, color: broken ? `${base}80` : base, lineWidth: 2, lineStyle: broken ? LineStyle.Dashed : LineStyle.Solid });
         lines.push({ line, series: s });
@@ -510,7 +510,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     }
     if (fib) {
       try {
-        const color = css("--muted", "#8b96a5");
+        const color = css("--muted", "#8c939d");
         for (const lv of fib.levels) {
           if (!Number.isFinite(lv.price)) continue;
           // 축 라벨은 0 < 비율 < 1 만 — 0 · 1(스윙 끝점)까지 달면 계획선 라벨과 겹친다

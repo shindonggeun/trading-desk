@@ -37,9 +37,10 @@ const ROLE: Record<RelatedRow["role"], string> = { self: "이 종목", underlyin
 function triggerLines(plan: Plan | null): ExtraLine[] {
   if (!plan) return [];
   const lines: ExtraLine[] = [];
-  const css = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  if (plan.long_trigger != null) lines.push({ price: plan.long_trigger, label: "롱 조건", color: css("--long"), dashed: true });
-  if (plan.short_trigger != null) lines.push({ price: plan.short_trigger, label: "숏 조건", color: css("--short"), dashed: true });
+  const css = (name: string, fallback: string) =>
+    getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+  if (plan.long_trigger != null) lines.push({ price: plan.long_trigger, label: "롱 조건", color: css("--long", "#f2464b"), dashed: true });
+  if (plan.short_trigger != null) lines.push({ price: plan.short_trigger, label: "숏 조건", color: css("--short", "#3a86f8"), dashed: true });
   return lines;
 }
 

@@ -21,7 +21,7 @@
   --flat: #8c939d;
   --ok: #3fb68b;          /* 완료 · 연결됨 */
   --warn: #e5a23a;
-  --danger: #f2464b;      /* 오류 */
+  --danger: #ff6a3d;      /* 오류 — 오름 빨강과 구분되는 주황빛 */
   --team-analyst: #6f9fd8;
   --team-research: #a78bd4;
   --team-trading: #5fae8c;
@@ -46,17 +46,17 @@
     --bg: #f4f5f7;
     --surface: #ffffff;
     --surface-2: #eef0f3;
-    --surface-3: #e1e4e9;
+    --surface-3: #d5d9e0;
     --border: #e1e4e9;
     --text: #191f28;
-    --muted: #6b7684;
+    --muted: #5f6b7a;
     --accent: #333d4b;
     --focus: #191f28;
     --up: #e42939;
-    --down: #2a6fdb;
-    --ok: #1f9d6f;
-    --warn: #b7791f;
-    --danger: #e42939;
+    --down: #2563c9;
+    --ok: #18825c;
+    --warn: #9a6416;
+    --danger: #d9480f;
     color-scheme: light;
   }
 }
@@ -83,24 +83,24 @@ button {
   background: var(--text); color: var(--bg); border: 0; border-radius: var(--radius-s);
   padding: 8px 14px; font: inherit; font-weight: 600; cursor: pointer;
 }
-button:hover:not(:disabled) { filter: brightness(1.08); }
+button:hover:not(:disabled) { opacity: .88; }
 button:disabled { opacity: .45; cursor: default; }
 button.link { background: none; color: var(--accent); padding: 4px 0; font-weight: 500; text-decoration: underline;
   text-decoration-color: var(--border); text-underline-offset: 3px; }
-button.link:hover:not(:disabled) { text-decoration-color: currentColor; filter: none; }
+button.link:hover:not(:disabled) { text-decoration-color: currentColor; opacity: 1; }
 a.link { color: var(--accent); text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 3px; }
 input, select {
   width: 100%; background: var(--surface-2); color: var(--text); border: 1px solid transparent;
   border-radius: var(--radius-s); padding: 8px 10px; font: inherit;
 }
 input:hover, select:hover { border-color: var(--border); }
-input:focus, select:focus { border-color: var(--muted); outline: none; }
+input:not([type=checkbox]):not([type=radio]):focus, select:focus { border-color: var(--muted); outline: none; }
 input[type=checkbox], input[type=radio] { width: auto; accent-color: var(--text); }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
 /* 상태 표시: 테두리 알약 대신 글자색 + 점 */
 .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; font-size: var(--fs-s); color: var(--muted); }
-.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .7; }
+.pill-warn::before, .pill-bad::before, .pill-on::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .pill-warn { color: var(--warn); }
 .pill-bad { color: var(--danger); }
 
@@ -140,10 +140,10 @@ legend { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
 .chips { display: flex; flex-wrap: wrap; gap: 2px; }
 .chip { display: inline-flex !important; align-items: center; border: 0; border-radius: var(--radius-s); padding: 5px 10px;
   cursor: pointer; color: var(--muted) !important; background: var(--surface-2); font-weight: 500; }
-.chip:hover { color: var(--text) !important; }
+.chip:hover { background: var(--surface-3); }
 .chip input { position: absolute; opacity: 0; pointer-events: none; }
 .chip:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 1px; }
-.chip-on { color: var(--text) !important; background: var(--surface-3); }
+.chip-on { color: var(--text) !important; background: var(--surface-3); font-weight: 650; box-shadow: inset 0 0 0 1px var(--muted); }
 
 .table-wrap { overflow-x: auto; }
 table.runs { width: 100%; border-collapse: collapse; }
@@ -305,8 +305,8 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .side-sell { color: var(--short); font-weight: 600; }
 .pnl-up { color: var(--long); }
 .pnl-down { color: var(--short); }
-.align-with { color: var(--long); border-color: var(--long); }
-.align-against { color: var(--short); border-color: var(--short); }
+.align-with { color: var(--ok); }
+.align-against { color: var(--warn); }
 .align-flat { color: var(--warn); border-color: var(--warn); }
 .out-target { color: var(--long); }
 .out-stop { color: var(--short); }
@@ -332,7 +332,7 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .pf-head h3 { margin: 0; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-s); overflow: hidden; flex-shrink: 0; }
 .seg button { background: transparent; color: var(--muted); border: 0; padding: 4px 12px; cursor: pointer; font: inherit; }
-.seg button.on { background: var(--surface-3); color: var(--text); }
+.seg button.on { background: var(--surface-3); color: var(--text); font-weight: 650; box-shadow: inset 0 0 0 1px var(--muted); }
 .pf-total { margin: 12px 0 8px; display: grid; gap: 2px; }
 .pf-amount { font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .pf-view { display: flex; justify-content: flex-end; margin: 8px 0 4px; }
@@ -405,7 +405,7 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .chart-intervals button { padding: 5px 9px; }
 .chart-toggles { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 8px; }
 .chip { min-height: 26px; padding: 3px 10px; font-size: var(--fs-s); border-radius: var(--radius-s); background: var(--surface-2); color: var(--muted); border: 0; }
-.chip-on { color: var(--text); background: var(--surface-3); }
+.chip-on { color: var(--text); background: var(--surface-3); font-weight: 650; box-shadow: inset 0 0 0 1px var(--muted); }
 .chip-sub { min-height: 24px; font-size: 11px; padding: 2px 8px; }
 .chart-sr-source { display: inline-flex; gap: 4px; margin-left: 2px; }
 .chart-limit { margin: 0 0 6px; }

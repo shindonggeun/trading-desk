@@ -18,6 +18,8 @@ export interface Plan {
   underlying?: Plan & { ticker: string; leverage: number; proxy: boolean };
   /** What TradingAgents analysed: the underlying for a leveraged product (#82). */
   analysis_subject?: string;
+  /** #109: a move against a leveraged product is traded by buying its pair (SOXL → SOXS), in the pair's prices. */
+  pair?: PairTrade;
   /** The leverage analyst failed; the plan is the underlying's call (flipped for inverse) with converted levels. */
   leverage_analyst_error?: string;
   atr?: number;
@@ -202,6 +204,18 @@ export interface SrLevel {
 }
 
 /** GET /api/levels, 그리고 분석 때 에이전트가 받은 것(plan.support_resistance). */
+/** backend desk/leverage_analyst.parse_pair — always a buy of the pair (stop < entry < target). */
+export interface PairTrade {
+  ticker: string;
+  leverage: number | null;
+  entry_price: number;
+  stop_loss: number;
+  price_target: number;
+  reward_risk: number | null;
+  /** the pair's price when the analysis ran (same-day only) */
+  price: number | null;
+}
+
 export interface SupportResistance {
   ticker: string;
   reference_price: number;

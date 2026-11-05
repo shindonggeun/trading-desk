@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react";
+import { ANALYST_CHOICES } from "../agents";
 import { api } from "../api";
 import { price } from "../format";
 import { ACTION, BIAS, FACTOR, HORIZON, OPINION, OUTCOME, RATING, term } from "../korean";
@@ -253,8 +254,63 @@ function filterReasons(plan: Plan): string[] {
   return out.length ? out : f.reasons;
 }
 
+/**
+ * #110: 상품과 반대로 걸 때는 그 상품을 공매도하지 않고 짝(SOXL ↔ SOXS)을 산다 — 짝 가격의 진입 · 손절 · 목표.
+ * 분석 시작은 확인을 한 번 거친다(구독 플랜 사용량).
+ */
+function PairBlock({ plan, ticker }: { plan: Plan; ticker: string }) {
+  const pair = plan.pair;
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!pair) return null;
+  const against = (pair.leverage ?? -1) < 0 ? "하락" : "상승";
+  const start = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const run = await api.createRun({
+        ticker: pair.ticker, horizon: plan.horizon ?? undefined, output_language: "Korean",
+        analysts: ANALYST_CHOICES.map((c) => c.key), use_portfolio: true,
+      });
+      window.location.hash = `#/runs/${run.id}`;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="pair-block" aria-label={`${against}에 걸 때 — ${pair.ticker} 매수`}>
+      <div className="pair-head">
+        <span className="pair-title">{against}에 걸 때 — <strong>{pair.ticker} 매수</strong></span>
+        {pair.leverage != null && <span className="muted small">{pair.leverage > 0 ? "+" : ""}{pair.leverage}배</span>}
+      </div>
+      <p className="muted small pair-note">
+        {ticker} 를 공매도하지 않고 {pair.ticker} 를 삽니다. 아래 숫자는 모두 {pair.ticker} 가격입니다
+        {pair.price != null ? ` (분석 때 ${price(pair.price)})` : ""}.
+      </p>
+      <dl className="pair-levels">
+        <div><dt>진입</dt><dd className="num">{price(pair.entry_price)}</dd></div>
+        <div><dt>손절</dt><dd className="num">{price(pair.stop_loss)}</dd></div>
+        <div><dt>목표</dt><dd className="num">{price(pair.price_target)}</dd></div>
+        <div><dt>손익비</dt><dd className="num">{pair.reward_risk != null ? `${pair.reward_risk} : 1` : "—"}</dd></div>
+      </dl>
+      {confirm ? (
+        <div className="pair-confirm">
+          <span className="small">{pair.ticker} 분석을 시작할까요? 수 분이 걸리고 사용량이 차감됩니다.</span>
+          <button type="button" onClick={start} disabled={busy}>{busy ? "등록 중…" : "시작"}</button>
+          <button type="button" className="secondary" onClick={() => setConfirm(false)} disabled={busy}>취소</button>
+        </div>
+      ) : (
+        <button type="button" className="secondary pair-start" onClick={() => setConfirm(true)}>{pair.ticker} 따로 분석하기</button>
+      )}
+      {error && <p className="error small">{error}</p>}
+    </div>
+  );
+}
+
 /** 카드 맨 위: 매수 · 매도 · 관망 · 확인 필요. 진입 조건(롱 · 숏)을 나란히. */
-function OpinionBanner({ plan }: { plan: Plan }) {
+function OpinionBanner({ plan, ticker }: { plan: Plan; ticker: string }) {
   const op = plan.opinion;
   if (!op) return null;
   const t = OPINION[op];
@@ -285,11 +341,11 @@ function OpinionBanner({ plan }: { plan: Plan }) {
       {triggers && (
         <div className="triggers-row">
           <div className="trigger trigger-long">
-            <span className="muted small">롱 진입 조건</span>
+            <span className="muted small">롱 진입 조건 · {ticker}</span>
             <strong>{plan.long_trigger != null ? `${price(plan.long_trigger)} 회복 · 돌파` : "없음"}</strong>
           </div>
           <div className="trigger trigger-short">
-            <span className="muted small">숏 · 축소 조건</span>
+            <span className="muted small">{plan.pair ? "보유분 축소 · 손절 조건" : "숏 · 축소 조건"} · {ticker}</span>
             <strong>{plan.short_trigger != null ? `${price(plan.short_trigger)} 이탈` : "없음"}</strong>
           </div>
         </div>
@@ -372,7 +428,13 @@ export default function PlanCard({ plan, ticker, symbol, profile, outcome, outco
         </div>
         <BiasBadge plan={plan} />
       </div>
-      <OpinionBanner plan={plan} />
+      {plan.analysis_subject && plan.analysis_subject !== ticker && (
+        <p className="muted small plan-basis">
+          분석은 {plan.analysis_subject}(본주)로 했고, 이 카드의 가격은 모두 {ticker} 기준입니다. 본주 가격은 결과 차트의 "본주" 에서 봅니다.
+        </p>
+      )}
+      <OpinionBanner plan={plan} ticker={ticker} />
+      <PairBlock plan={plan} ticker={ticker} />
       {plan.valid_until && (
         <p className={`small ${expired ? "plan-expired-note" : "muted"}`}>
           {expired

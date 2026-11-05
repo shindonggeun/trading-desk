@@ -274,3 +274,11 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .review-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .review-table tbody tr:hover { background: var(--surface-2); }
 .review-head .pill { justify-self: start; margin: 0; }
+
+/* 분석 기록 페이지 · 삭제 (#36) */
+.pager { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: center; margin-top: 12px; }
+.pager button { min-width: 36px; padding: 6px 10px; }
+.runs .run-delete { color: var(--muted); font-size: 12px; }
+.runs .run-delete:not(:disabled):hover { color: var(--short); }
+.table-wrap.stale { opacity: .5; transition: opacity .15s; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

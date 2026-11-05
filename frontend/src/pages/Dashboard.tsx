@@ -1,49 +1,9 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import NewRunForm from "../components/NewRunForm";
-import { BiasBadge, RatingText } from "../components/PlanCard";
-import { price, STATUS_LABEL, time } from "../format";
-import type { Holding, RegimeSnapshot, Run } from "../types";
-
-function RunsTable({ runs }: { runs: Run[] }) {
-  if (runs.length === 0) return <p className="muted">아직 분석이 없습니다. 왼쪽에서 첫 분석을 시작하세요.</p>;
-  return (
-    <div className="table-wrap">
-      <table className="runs">
-        <thead>
-          <tr>
-            <th>종목</th>
-            <th>기준일</th>
-            <th>판단</th>
-            <th className="num">진입</th>
-            <th className="num">손절</th>
-            <th className="num">목표</th>
-            <th className="num">손익비</th>
-            <th>상태</th>
-            <th>요청</th>
-          </tr>
-        </thead>
-        <tbody>
-          {runs.map((r) => (
-            <tr key={r.id} onClick={() => (window.location.hash = `#/runs/${r.id}`)}>
-              <td className="ticker">
-                {r.options.name ? <>{r.options.name} <span className="muted small">{r.ticker}</span></> : r.ticker}
-              </td>
-              <td>{r.trade_date}</td>
-              <td>{r.plan ? <><RatingText rating={r.plan.rating} /> <BiasBadge plan={r.plan} /></> : "—"}</td>
-              <td className="num">{price(r.plan?.entry_price)}</td>
-              <td className="num">{price(r.plan?.stop_loss)}</td>
-              <td className="num">{price(r.plan?.price_target)}</td>
-              <td className="num">{r.plan?.reward_risk ?? "—"}</td>
-              <td><span className={`status status-${r.status}`}>{STATUS_LABEL[r.status]}</span></td>
-              <td className="muted">{time(r.created_at)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+import RunsCard from "../components/RunsCard";
+import { price, time } from "../format";
+import type { Holding, RegimeSnapshot } from "../types";
 
 function HoldingsPanel() {
   const [data, setData] = useState<{ broker: string; error?: string; holdings: Holding[] } | null>(null);
@@ -111,21 +71,10 @@ function RegimePanel() {
 }
 
 export default function Dashboard() {
-  const [runs, setRuns] = useState<Run[]>([]);
-  useEffect(() => {
-    const load = () => api.runs().then((page) => setRuns(page.items)).catch(() => {});
-    load();
-    const timer = setInterval(load, 5000); // running rows fill in on their own
-    return () => clearInterval(timer);
-  }, []);
-
   return (
     <main className="dashboard">
       <NewRunForm />
-      <section className="card runs-card">
-        <h2>분석 기록</h2>
-        <RunsTable runs={runs} />
-      </section>
+      <RunsCard />
       <div className="side">
         <HoldingsPanel />
         <RegimePanel />

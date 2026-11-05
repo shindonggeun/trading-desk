@@ -408,6 +408,8 @@ class RunManager:
         except Exception as exc:  # noqa: BLE001 - incl. timeout and unreadable JSON
             log.warning("consensus failed for %s: %s", request.ticker, exc)
             plan["consensus_error"] = f"{type(exc).__name__}: {exc}"[:300]
+            # the rail and chat stop showing the summariser as working
+            self._publish(run_id, {"type": "status", "agent": "consensus", "content": "skipped"})
             return
         plan["consensus"] = summary
         self._publish(run_id, {"type": "message", "agent": "consensus", "content": render_consensus(summary),

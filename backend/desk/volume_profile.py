@@ -14,6 +14,8 @@ Arithmetic from price history, not a forecast.
 
 from __future__ import annotations
 
+import math
+
 MIN_BINS = 24
 MAX_BINS = 48
 BIN_ATR = 0.25          # bin width ≈ a quarter ATR, kept within MIN/MAX_BINS over the range
@@ -21,6 +23,7 @@ VALUE_AREA = 0.70
 THICK = 1.3             # a peak at 1.3× the average bin is a thick node
 THIN = 0.5              # a trough under half the average is a thin one
 MAX_NODES = 4           # per kind, the most marked first
+GAP_THIN = 0.8          # a stretch averaging under 0.8× the average bin is a thin run
 
 
 def _round(price: float) -> float:
@@ -30,7 +33,10 @@ def _round(price: float) -> float:
 def profile(bars: list[dict], atr: float | None = None, interval: str | None = None) -> dict | None:
     """The profile of ``bars`` ({"high","low","volume"}, oldest first), or None when there is no
     volume to profile (an index without volume, too few bars)."""
-    rows = [b for b in bars if (b.get("volume") or 0) > 0 and b.get("high") is not None and b.get("low") is not None]
+    # a vendor glitch (high under low, NaN) drops that bar, not the whole profile
+    rows = [b for b in bars if (b.get("volume") or 0) > 0 and isinstance(b.get("high"), (int, float))
+            and isinstance(b.get("low"), (int, float)) and math.isfinite(b["high"]) and math.isfinite(b["low"])
+            and b["high"] >= b["low"]]
     if len(rows) < 10:
         return None
     lo, hi = min(b["low"] for b in rows), max(b["high"] for b in rows)
@@ -107,6 +113,18 @@ def density(vp: dict | None, price: float) -> str | None:
     if near["share"] <= THIN * mean:
         return "thin"
     return None
+
+
+def gap_thin(vp: dict | None, a: float | None, b: float | None) -> bool | None:
+    """Whether the stretch strictly between ``a`` and ``b`` is thin on average (price tends to
+    travel it quickly); None when the profile does not cover it."""
+    if not vp or a is None or b is None:
+        return None
+    lo, hi = min(a, b), max(a, b)
+    inside = [x["share"] for x in vp.get("bins") or [] if lo < x["price"] < hi]
+    if not inside:
+        return None
+    return sum(inside) / len(inside) <= GAP_THIN / len(vp["bins"])
 
 
 def prompt_line(vp: dict | None) -> str | None:

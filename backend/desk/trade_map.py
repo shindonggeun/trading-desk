@@ -76,6 +76,13 @@ def side_map(side: str, entry: float, stop: float | None, target: float | None, 
     up = side == "long"
     sign = 1 if up else -1
     vp = (sr or {}).get("volume_profile")
+    # The plan's own levels only count on their proper side: a long's stop above its entry or a
+    # target behind it is a model mistake — set aside (and said so), the chart fills the slot.
+    ignored: dict[str, float] = {}
+    if stop is not None and sign * (entry - stop) <= 0:
+        ignored["stop_loss"], stop = stop, None
+    if target is not None and sign * (target - entry) <= MIN_GAP_ATR * atr:
+        ignored["price_target"], target = target, None
     cands = _candidates(sr, target)
     ahead = [c for c in cands if sign * (c["price"] - entry) > MIN_GAP_ATR * atr]
     behind = [c for c in cands if sign * (entry - c["price"]) > MIN_GAP_ATR * atr and c["source"] != "plan"]
@@ -90,6 +97,10 @@ def side_map(side: str, entry: float, stop: float | None, target: float | None, 
         t1, t2 = targets[0], targets[t_idx]
     p1 = t1["price"] if t1 else entry + sign * FILL_ATR * atr
     p2 = t2["price"] if t2 else p1 + sign * FILL_ATR * atr
+    if p1 <= 0:   # a short filled from ATR on a cheap product: no target below zero
+        t1, p1 = None, None
+    if p2 is not None and p2 <= 0 or p1 is None:
+        t2, p2 = None, None
 
     if stop is not None:
         stop_zone = {"source": "plan", "sources": ["plan"], "strength": None, "basis": "계획 손절가"}
@@ -102,20 +113,26 @@ def side_map(side: str, entry: float, stop: float | None, target: float | None, 
     guards = [g for g in guards if sign * (g["price"] - p_stop) > 0][:2]
 
     risk = abs(entry - p_stop) or None
-    heavy = bool(t1) and ((t1["strength"] or 0) >= STRONG or volume_profile.density(vp, p1) == "thick")
+    heavy = p1 is not None and (((t1 or {}).get("strength") or 0) >= STRONG
+                                or volume_profile.density(vp, p1) == "thick")
+    rr = (lambda p: round(abs(p - entry) / risk, 2) if risk else None)
+    targets_out = []
+    if p2 is not None:
+        targets_out.append(_step("target2", t2, p2, "take_rest", vp, rr=rr(p2),
+                                 gap_thin=volume_profile.gap_thin(vp, p1, p2)))
+    if p1 is not None:
+        targets_out.append(_step("target1", t1, p1, "take_partial", vp, share=50 if heavy else 33, heavy=heavy,
+                                 then_stop=_round(entry), rr=rr(p1)))
     steps = [
-        _step("target2", t2, p2, "take_rest", vp, rr=round(abs(p2 - entry) / risk, 2) if risk else None),
-        _step("target1", t1, p1, "take_partial", vp, share=50 if heavy else 33, then_stop=_round(entry),
-              rr=round(abs(p1 - entry) / risk, 2) if risk else None),
+        *targets_out,
         _step("entry", {"source": origin, "sources": [origin], "strength": None,
                         "basis": "계획 진입가" if origin == "plan" else ("롱 조건" if up else "숏 조건")},
               entry, "enter", vp, entry_type=entry_type),
         *[_step(f"guard{i + 1}", g, g["price"], "hold_check" if i == 0 else "reduce", vp) for i, g in enumerate(guards)],
         _step("stop", stop_zone, p_stop, "exit", vp),
     ]
-    if not up:
-        steps.reverse()   # always highest price first
-    return {"side": side, "origin": origin, "steps": steps}
+    steps.sort(key=lambda s: -s["price"])   # always highest price first
+    return {"side": side, "origin": origin, "steps": steps, "ignored": ignored}
 
 
 def build(plan: dict, sr: dict | None) -> dict | None:

@@ -118,3 +118,47 @@ def test_a_fake_run_plan_carries_a_trade_map(db_url):
     assert tm["maps"] and all(m["steps"] for m in tm["maps"])
     prices = [s["price"] for s in tm["maps"][0]["steps"]]
     assert prices == sorted(prices, reverse=True)   # highest first, whichever side
+
+
+def test_a_stop_on_the_wrong_side_is_set_aside_and_said():
+    plan = {"opinion": "buy", "bias": "long", "entry_price": 100.0, "stop_loss": 105.0, "price_target": 98.0}
+    m = trade_map.build(plan, SR)["maps"][0]
+    assert m["ignored"] == {"stop_loss": 105.0, "price_target": 98.0}
+    roles = dict(_roles(m))
+    assert roles["stop"] < 100.0 and roles["target1"] == 104.0 and roles["target2"] == 110.0
+    prices = [s["price"] for s in m["steps"]]
+    assert prices == sorted(prices, reverse=True)
+    assert all(s["source"] != "plan" for s in m["steps"] if s["role"] != "entry")
+
+
+def test_a_plan_target_further_out_becomes_the_second_target_and_guards_past_the_stop_drop():
+    plan = {"opinion": "buy", "bias": "long", "entry_price": 97.4, "stop_loss": 95.5, "price_target": 110.0}
+    m = trade_map.build(plan, SR)["maps"][0]
+    assert dict(_roles(m))["target1"] == 104.0 and dict(_roles(m))["target2"] == 110.0
+    assert [r for r, _ in _roles(m) if r.startswith("guard")] == []   # 97 is inside the entry's own zone, 93 past the stop
+    t1 = next(s for s in m["steps"] if s["role"] == "target1")
+    assert t1["heavy"] is True and t1["share"] == 50
+
+
+def test_a_demoted_plan_without_triggers_maps_its_bias():
+    plan = {"opinion": "hold", "bias": "long", "entry_price": 100.0, "stop_loss": 95.0, "price_target": 110.0}
+    assert trade_map.build(plan, SR)["maps"][0]["side"] == "long"
+
+
+def test_no_target_below_zero_on_a_cheap_short():
+    plan = {"opinion": "sell", "bias": "short", "entry_price": 4.0, "stop_loss": None, "price_target": None, "atr": 1.2}
+    m = trade_map.build(plan, None)["maps"][0]
+    assert all(s["price"] > 0 for s in m["steps"])
+    assert "target2" not in dict(_roles(m))
+
+
+def test_a_bad_bar_drops_only_itself():
+    bars = _bars() + [_bar(130, 120, 999), {"at": "x", "high": float("nan"), "low": 1.0, "volume": 5}]
+    vp = volume_profile.profile(bars, atr=2.0)
+    assert vp["bars"] == len(_bars()) and vp["high"] <= 120
+
+
+def test_gap_density_between_targets():
+    vp = volume_profile.profile(_bars(), atr=2.0)
+    assert volume_profile.gap_thin(vp, 112.0, 119.0) is True     # only quiet bars up there
+    assert volume_profile.gap_thin(vp, 107.0, 111.0) is False    # the heavy cluster

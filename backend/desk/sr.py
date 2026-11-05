@@ -162,9 +162,10 @@ def prompt_note(sr: dict | None) -> str | None:
     trend_note = trend.prompt_note(sr)
     vp_line = volume_profile.prompt_line((sr or {}).get("volume_profile"))
     if vp_line:
-        trend_note = "\n\n".join(part for part in (vp_line + " Thick nodes above the entry are where to take "
-                                                     "partial profit; a thin gap beyond a broken level is where "
-                                                     "price can run to the next zone.", trend_note) if part)
+        trend_note = "\n\n".join(part for part in (vp_line + " Thick nodes in the trade's direction are where to "
+                                                     "take partial profit; thick nodes against it are where a "
+                                                     "pullback should hold; a thin stretch past a broken level is "
+                                                     "where price can run to the next zone.", trend_note) if part)
     if not sr or not sr.get("levels"):
         return trend_note
     lines = [f"- {'R' if lv['kind'] == 'resistance' else 'S'} {lv['price']} "

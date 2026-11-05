@@ -371,3 +371,18 @@ def test_a_fake_run_of_a_leveraged_product_goes_end_to_end(db_url):
     plan = done["plan"]
     assert done["status"] == "done" and plan["analysis_subject"] == "SOXX" and plan["underlying"]["ticker"] == "SOXX"
     assert plan["rating"] == plan["underlying"]["rating"] and plan["entry_price"] is not None
+
+
+def test_the_underlyings_checklist_carries_over_so_the_filter_can_judge_the_product(db_url, monkeypatch):
+    # #64: without a checklist and a win probability every leveraged plan would be 'review'
+    sell = _soxx("Sell", 440, 452, 410)
+    sell["final_trade_decision"] += ("\n\nWin Probability: 75% / Long Trigger: none / Short Trigger: 445"
+                                     "\n\nChecklist: trend=short, location=short, momentum=short, volume=neutral, "
+                                     "catalyst=short, regime=neutral")
+    done, _, _ = _run(db_url, monkeypatch, "SOXS",
+                      lambda ctx: "**Rating**: Buy\n\n**Entry Price**: 21\n\n**Stop Loss**: 19.5\n\n**Price Target**: 25",
+                      sell)
+    plan = done["plan"]
+    assert plan["checklist"]["trend"] == "long" and plan["score"] == {"long": 4, "short": 0}
+    assert plan["win_probability"] == 0.75 and plan["opinion"] == "buy" and plan["filter"]["passed"]
+    assert plan["underlying"]["checklist"]["trend"] == "short"

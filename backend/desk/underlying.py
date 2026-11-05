@@ -61,6 +61,11 @@ def loose_rating(text: str) -> str | None:
     return found.group(1).capitalize() if found else None
 
 
+def flip_checklist(checklist: dict) -> dict:
+    """#64's factor sides on the inverse product: a factor long SOXX is short SOXS."""
+    return {k: {"long": "short", "short": "long"}.get(v, v) for k, v in checklist.items()}
+
+
 def flip_rating(rating: str) -> str:
     """The same view expressed on an inverse product: a Sell on SOXX is a Buy on SOXS."""
     return _FLIP.get(rating, rating)

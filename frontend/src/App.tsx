@@ -7,6 +7,7 @@ import RunView from "./pages/RunView";
 import Review from "./pages/Review";
 import Live from "./pages/Live";
 import History from "./pages/History";
+import ChartView from "./pages/ChartView";
 import Settings from "./pages/Settings";
 
 function useHashRoute(): string {
@@ -54,6 +55,8 @@ export default function App() {
   const onReview = route.startsWith("#/review");
   const onLive = route.startsWith("#/live");
   const onHistory = route.startsWith("#/history");
+  // 큰 차트(#97): #/chart/<티커>?run=…&interval=…
+  const chartMatch = route.match(/^#\/chart\/([^?]+)(?:\?(.*))?$/);
 
   return (
     <div className="shell">
@@ -85,6 +88,8 @@ export default function App() {
 
       {user === undefined ? null : user === null ? (
         <LoginForm onLoggedIn={(name) => { setOffline(false); setUser(name); }} />
+      ) : chartMatch ? (
+        <ChartView key={route} ticker={decodeURIComponent(chartMatch[1])} query={new URLSearchParams(chartMatch[2] ?? "")} />
       ) : onHistory ? (
         <History />
       ) : onLive ? (

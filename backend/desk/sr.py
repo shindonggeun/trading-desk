@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 
+from . import horizons
+
 DAILY_BARS = 200
 WEEKLY_BARS = 156          # three years
 ATR_DAYS = 14
@@ -51,13 +53,29 @@ def _atr(bars: list[dict]) -> float | None:
     return atr
 
 
-def _swings(bars: list[dict], k: int, timeframe: str, label: str, weight: float) -> list[_Candidate]:
+def _ages(bars: list[dict], timeframe: str, half_life: timedelta) -> list[float]:
+    """Each bar's age in half-lives behind the last bar: by date for day and longer bars (as
+    before horizons), by the clock for intraday bars."""
+    if not bars:
+        return []
+    if timeframe in ("1d", "1w", "1M", "1y"):
+        last = date.fromisoformat(bars[-1]["at"][:10])
+        unit = half_life.total_seconds() / 86400
+        return [(last - date.fromisoformat(b["at"][:10])).days / unit for b in bars]
+    last_at = datetime.fromisoformat(bars[-1]["at"])
+    unit = half_life.total_seconds()
+    return [(last_at - datetime.fromisoformat(b["at"])).total_seconds() / unit for b in bars]
+
+
+def _swings(bars: list[dict], k: int, timeframe: str, label: str, weight: float,
+            half_life: timedelta = timedelta(days=HALF_LIFE_DAYS)) -> list[_Candidate]:
     out = []
-    last = date.fromisoformat(bars[-1]["at"][:10]) if bars else None
+    ages = _ages(bars, timeframe, half_life)
     for i in range(k, len(bars) - k):
         window = bars[i - k:i + k + 1]
-        age = (last - date.fromisoformat(bars[i]["at"][:10])).days
-        decayed = weight * 0.5 ** (age / HALF_LIFE_DAYS)
+        decayed = weight * 0.5 ** ages[i]
+        if decayed < 1e-6:   # long forgotten: also keeps a zone's total weight above zero
+            continue
         if bars[i]["high"] == max(b["high"] for b in window):
             out.append(_Candidate(bars[i]["high"], timeframe, f"{label} 스윙 고점", decayed))
         if bars[i]["low"] == min(b["low"] for b in window):
@@ -70,32 +88,34 @@ def _round(price: float) -> float:
 
 
 def compute(daily: list[dict], weekly: list[dict], price: float | None = None,
-            weekly_complete: bool = False) -> dict:
-    """``daily``/``weekly`` are bars oldest first ({"at","open","high","low","close","volume"}).
-    ``weekly_complete``: the last weekly bar has ended (otherwise it may still be trading)."""
+            weekly_complete: bool = False, *, horizon: str | None = None) -> dict:
+    """``daily``/``weekly`` are bars oldest first ({"at","open","high","low","close","volume"}):
+    the horizon's primary and secondary bars (desk.horizons; swing = daily and weekly).
+    ``weekly_complete``: the last secondary bar has ended (otherwise it may still be trading)."""
+    h = horizons.get(horizon)
     if len(daily) < ATR_DAYS + 1:
-        raise ValueError("not enough daily bars for support/resistance")
+        raise ValueError(f"not enough {h.primary} bars for support/resistance")
     atr = _atr(daily) or 0.0
     reference = price if price else daily[-1]["close"]
-    candidates = _swings(daily, SWING_DAILY, "1d", "일봉", 1.0)
-    candidates += _swings(weekly, SWING_WEEKLY, "1w", "주봉", 2.0)
+    candidates = _swings(daily, h.primary_k, h.primary, h.primary_label, 1.0, h.half_life)
+    candidates += _swings(weekly, h.secondary_k, h.secondary, h.secondary_label, 2.0, h.secondary_half_life)
     closes = [b["close"] for b in daily]
     for days in (20, 50, 200):
         if len(closes) >= days:
-            candidates.append(_Candidate(sum(closes[-days:]) / days, "1d", f"{days}일선", 1.0))
+            candidates.append(_Candidate(sum(closes[-days:]) / days, h.primary, h.ma_label(days), 1.0))
     if weekly:
-        year = weekly[-52:]
-        candidates.append(_Candidate(max(b["high"] for b in year), "1w", "52주 고가", 2.0))
-        candidates.append(_Candidate(min(b["low"] for b in year), "1w", "52주 저가", 2.0))
+        year = weekly[-h.range_bars:]
+        candidates.append(_Candidate(max(b["high"] for b in year), h.secondary, f"{h.range_label} 고가", 2.0))
+        candidates.append(_Candidate(min(b["low"] for b in year), h.secondary, f"{h.range_label} 저가", 2.0))
     finished = weekly if weekly_complete else weekly[:-1]
     if finished:
         last = finished[-1]
         pivot = (last["high"] + last["low"] + last["close"]) / 3
-        candidates += [_Candidate(last["high"], "1w", "지난주 고가", 1.0),
-                       _Candidate(last["low"], "1w", "지난주 저가", 1.0),
-                       _Candidate(pivot, "1w", "주간 피벗", 1.0)]
+        candidates += [_Candidate(last["high"], h.secondary, f"{h.last_label} 고가", 1.0),
+                       _Candidate(last["low"], h.secondary, f"{h.last_label} 저가", 1.0),
+                       _Candidate(pivot, h.secondary, h.pivot_label, 1.0)]
 
-    tolerance = max(0.5 * atr, 0.005 * reference)
+    tolerance = max(0.5 * atr, h.tolerance_pct * reference)
     zones: list[list[_Candidate]] = []
     for cand in sorted(candidates, key=lambda c: c.price):
         if zones:
@@ -106,9 +126,9 @@ def compute(daily: list[dict], weekly: list[dict], price: float | None = None,
                 continue
         zones.append([cand])
 
-    max_distance = MAX_DISTANCE_PCT * reference
+    max_distance = h.max_distance_pct * reference
     if atr:
-        max_distance = min(max_distance, MAX_DISTANCE_ATR * atr)
+        max_distance = min(max_distance, h.max_distance_atr * atr)
     unit = 2 * atr if atr else 0.01 * reference
     levels = []
     for zone in zones:
@@ -122,7 +142,7 @@ def compute(daily: list[dict], weekly: list[dict], price: float | None = None,
         basis = " · ".join(f"{name} ×{n}" if n > 1 else name
                            for name, n in sorted(counts.items(), key=lambda kv: -kv[1]))
         levels.append({"price": _round(level), "kind": "support" if level < reference else "resistance",
-                       "timeframe": "1w" if any(c.timeframe == "1w" for c in zone) else "1d",
+                       "timeframe": h.secondary if any(c.timeframe == h.secondary for c in zone) else h.primary,
                        "strength": round(weight, 1), "basis": basis})
 
     picked = []
@@ -143,7 +163,12 @@ def prompt_note(sr: dict | None) -> str | None:
         return None
     lines = [f"- {'R' if lv['kind'] == 'resistance' else 'S'} {lv['price']} "
              f"({lv['timeframe']}, {lv['basis']}; strength {lv['strength']})" for lv in sr["levels"]]
-    return ("Desk-computed support (S) and resistance (R) from daily and weekly bars "
+    intervals = sr.get("intervals") or {"primary": "1d", "secondary": "1w"}
+    frame = ("daily and weekly bars" if intervals == {"primary": "1d", "secondary": "1w"}
+             else f"{intervals['primary']} and {intervals['secondary']} bars")
+    if sr.get("fallback"):
+        frame += f" ({sr['fallback']['from']} bars were not available for this date, so these are daily-frame levels)"
+    return (f"Desk-computed support (S) and resistance (R) from {frame} "
             f"(reference price {sr['reference_price']}, ATR14 {sr['atr']}):\n" + "\n".join(lines) + "\n"
             "Use them when you set levels: an entry near a support (long) or resistance (short), a stop "
             "beyond the next zone, a target before the opposite zone. Say which zone a level relies on. "
@@ -175,33 +200,52 @@ def _local_day(at: str, ticker: str) -> date:
 
 
 def _until(daily: list[dict], weekly: list[dict], ticker: str,
-           trade_date: str) -> tuple[list[dict], list[dict]]:
-    """Bars an analysis on ``trade_date`` could have seen: days up to it, and only the weeks that
-    had ended before it (a weekly bar carries the whole week's high and low)."""
+           trade_date: str, *, secondary_days: int = 7) -> tuple[list[dict], list[dict]]:
+    """Bars an analysis on ``trade_date`` could have seen: primary bars up to it, and only the
+    secondary bars that had ended before it (a weekly bar carries the whole week's high and low;
+    with daily secondary bars, the analysis day itself is still trading)."""
     cut = date.fromisoformat(trade_date)
     days = [b for b in daily if _local_day(b["at"], ticker) <= cut]
-    weeks = [b for b in weekly if _local_day(b["at"], ticker) + timedelta(days=7) <= cut]
+    weeks = [b for b in weekly if _local_day(b["at"], ticker) + timedelta(days=secondary_days) <= cut]
     return days, weeks
 
 
 async def support_resistance(prices, ticker: str, trade_date: str | None = None,
-                             price: float | None = None, clock=time.monotonic) -> dict:
+                             price: float | None = None, clock=time.monotonic, *,
+                             horizon: str | None = None) -> dict:
     """Levels for ``ticker`` from desk.prices bars, up to ``trade_date`` when given; cached a few
-    minutes. ``price`` (a live quote) decides which side of it a zone is on."""
-    key = (ticker, trade_date)
+    minutes. ``price`` (a live quote) decides which side of it a zone is on. ``horizon``
+    (desk.horizons) picks the bars; when its intraday bars are missing (an old date, Yahoo's
+    intraday limits) the levels come from the swing frame and say so under ``fallback``."""
+    h = horizons.get(horizon)
+    key = (ticker, trade_date, h.id)
     cached = _CACHE.get(key)
-    if price is None and cached and clock() - cached[0] < CACHE_TTL_SEC:
+    if price is None and cached and clock() - cached[0] < h.sr_ttl_sec:
         return cached[1]
-    daily, weekly = await asyncio.gather(prices.candles(ticker, "1d", DAILY_BARS),
-                                         prices.candles(ticker, "1w", WEEKLY_BARS))
-    days, weeks = daily["bars"], weekly["bars"]
-    if trade_date:
-        days, weeks = _until(days, weeks, ticker, trade_date)
-    result = compute(days, weeks, price, weekly_complete=bool(trade_date))
-    result.update(ticker=ticker, sources={"1d": daily["source"], "1w": weekly["source"]},
-                  computed_at=datetime.now(UTC).isoformat(timespec="seconds"))
+    try:
+        result = await _frame(prices, ticker, trade_date, price, h)
+    except Exception as exc:
+        if h.id == horizons.DEFAULT_HORIZON:
+            raise
+        result = await _frame(prices, ticker, trade_date, price, horizons.get(None))
+        result["fallback"] = {"from": h.primary, "reason": f"{type(exc).__name__}: {exc}"}
+    result["horizon"] = h.id
     if price is None:   # a result framed around a live price is not the cached, close-based one
         if len(_CACHE) > 256:
             _CACHE.clear()
         _CACHE[key] = (clock(), result)
+    return result
+
+
+async def _frame(prices, ticker: str, trade_date: str | None, price: float | None,
+                 h: horizons.Horizon) -> dict:
+    primary, secondary = await asyncio.gather(prices.candles(ticker, h.primary, h.primary_bars),
+                                              prices.candles(ticker, h.secondary, h.secondary_bars))
+    days, weeks = primary["bars"], secondary["bars"]
+    if trade_date:
+        days, weeks = _until(days, weeks, ticker, trade_date, secondary_days=h.secondary_days)
+    result = compute(days, weeks, price, weekly_complete=bool(trade_date), horizon=h.id)
+    result.update(ticker=ticker, sources={h.primary: primary["source"], h.secondary: secondary["source"]},
+                  intervals={"primary": h.primary, "secondary": h.secondary},
+                  computed_at=datetime.now(UTC).isoformat(timespec="seconds"))
     return result

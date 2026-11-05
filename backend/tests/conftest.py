@@ -39,4 +39,5 @@ def no_yahoo_network(monkeypatch):
     # nor an LLM: the leverage analyst (#82) is stubbed unless a test injects its own
     from desk import api
     monkeypatch.setattr(api, "llm_analyst", offline)
+    monkeypatch.setattr(api, "llm_summariser", offline)   # nor the closing summary (#94)
     sr._CACHE.clear()

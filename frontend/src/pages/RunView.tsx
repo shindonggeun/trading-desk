@@ -66,6 +66,7 @@ export default function RunView({ runId }: { runId: string }) {
   // 고른 탭. null 이면 상태를 따른다: 분석 중엔 토론, 끝나면 요약.
   const [chosen, setChosen] = useState<Tab | null>(() => tabInHash(runId));
   const tabs = useRef<HTMLDivElement>(null);
+  const runBar = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     api.run(runId).then(setRun).catch((e) => setError(String(e)));
@@ -86,16 +87,24 @@ export default function RunView({ runId }: { runId: string }) {
     return () => window.removeEventListener("hashchange", onHash);
   }, [runId]);
 
-  // 결론 줄은 상단 바 바로 아래에 붙는다 — 상단 바 높이(좁은 화면은 두 줄)를 재서 넘긴다.
+  // 결론 줄은 상단 바 바로 아래에 붙고, 토론 탭의 에이전트 목록 · 용어 사전은 그 아래에 붙는다 —
+  // 두 높이(좁은 화면은 상단 바가 두 줄, 결론 줄은 펼침에 따라)를 재서 CSS 로 넘긴다.
+  const ready = !!run;
   useEffect(() => {
-    const bar = document.querySelector<HTMLElement>(".topbar");
-    if (!bar || typeof ResizeObserver === "undefined") return;
-    const set = () => document.documentElement.style.setProperty("--topbar-h", `${bar.offsetHeight}px`);
+    const top = document.querySelector<HTMLElement>(".topbar");
+    const bar = runBar.current;
+    if (typeof ResizeObserver === "undefined") return;
+    const root = document.documentElement.style;
+    const set = () => {
+      if (top) root.setProperty("--topbar-h", `${top.offsetHeight}px`);
+      if (bar) root.setProperty("--runbar-h", `${bar.offsetHeight}px`);
+    };
     set();
     const ro = new ResizeObserver(set);
-    ro.observe(bar);
+    if (top) ro.observe(top);
+    if (bar) ro.observe(bar);
     return () => ro.disconnect();
-  }, []);
+  }, [ready]);
 
   // Elapsed time ticks while running.
   useEffect(() => {
@@ -112,9 +121,12 @@ export default function RunView({ runId }: { runId: string }) {
   // 분석이 끝나면 토론 탭에서 요약으로 넘어간다(차트 · 근거를 보던 중이면 그대로).
   const wasWorking = useRef(working);
   useEffect(() => {
-    if (wasWorking.current && !working && chosen === "debate") setChosen(null);
+    if (wasWorking.current && !working && chosen === "debate") {
+      setChosen(null);
+      window.history.replaceState(null, "", `#/runs/${runId}`);   // 새로 고침 · 공유도 요약으로
+    }
     wasWorking.current = working;
-  }, [working, chosen]);
+  }, [working, chosen, runId]);
 
   // Follow the conversation unless the reader scrolled up to read.
   useEffect(() => {
@@ -135,9 +147,11 @@ export default function RunView({ runId }: { runId: string }) {
     window.scrollTo({ top: 0 });
   };
   const onTabKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
     const i = TABS.findIndex((t) => t.id === tab);
-    const next = TABS[(i + (e.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length].id;
+    const at = { ArrowRight: i + 1, ArrowLeft: i - 1 + TABS.length, Home: 0, End: TABS.length - 1 }[e.key];
+    if (at === undefined) return;
+    e.preventDefault();
+    const next = TABS[at % TABS.length].id;
     pick(next);
     tabs.current?.querySelector<HTMLButtonElement>(`#run-tab-${next}`)?.focus();
   };
@@ -156,7 +170,7 @@ export default function RunView({ runId }: { runId: string }) {
         <span className={`status status-${status}`}>{STATUS_LABEL[status]}</span>
         <span className="muted small">{duration(run.started_at, run.finished_at)}</span>
       </div>
-      <RunSummaryBar run={run} plan={plan} status={status} events={events} />
+      <RunSummaryBar ref={runBar} run={run} plan={plan} status={status} events={events} />
       <div className="run-tabs" role="tablist" aria-label="분석 보기" ref={tabs} onKeyDown={onTabKey}>
         {TABS.map((t) => (
           <button
@@ -165,7 +179,7 @@ export default function RunView({ runId }: { runId: string }) {
             type="button"
             role="tab"
             aria-selected={tab === t.id}
-            aria-controls={`run-panel-${t.id}`}
+            aria-controls={tab === t.id ? `run-panel-${t.id}` : undefined}
             tabIndex={tab === t.id ? 0 : -1}
             className={`run-tab ${tab === t.id ? "run-tab-on" : ""}`}
             onClick={() => pick(t.id)}

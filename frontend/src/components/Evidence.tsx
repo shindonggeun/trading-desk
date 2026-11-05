@@ -56,6 +56,9 @@ function Levels({ sr, title }: { sr: Partial<SupportResistance>; title: string }
           ))}
         </ul>
       )}
+      {trends.length > 0 && (
+        <p className="muted small">추세선은 로그 가격에서 직선, 차트의 번호는 선에 닿은 저점 · 고점 순서입니다.</p>
+      )}
       {fib && (
         <p className="muted small">
           피보나치 되돌림 — {fib.direction === "up" ? "상승" : "하락"} {price(fib.from.price)} → {price(fib.to.price)}:{" "}
@@ -71,7 +74,8 @@ export default function EvidenceLevels({ plan, ticker }: { plan: Plan | null; ti
   const own = plan?.support_resistance;
   const u = plan?.underlying;
   const under = u?.support_resistance;
-  if (!own?.levels?.length && !under?.levels?.length) {
+  const any = (sr?: Partial<SupportResistance>) => !!(sr?.levels?.length || sr?.trendlines?.length || sr?.fibonacci);
+  if (!any(own) && !any(under)) {
     return (
       <section className="card evidence-levels">
         <h3>지지 · 저항</h3>
@@ -83,8 +87,8 @@ export default function EvidenceLevels({ plan, ticker }: { plan: Plan | null; ti
   }
   return (
     <>
-      {own?.levels?.length ? <Levels sr={own} title={`${ticker} 지지 · 저항`} /> : null}
-      {u && under?.levels?.length ? <Levels sr={under} title={`${u.ticker} 지지 · 저항(본주)`} /> : null}
+      {own && any(own) ? <Levels sr={own} title={`${ticker} 지지 · 저항`} /> : null}
+      {u && under && any(under) ? <Levels sr={under} title={`${u.ticker} 지지 · 저항(본주)`} /> : null}
     </>
   );
 }

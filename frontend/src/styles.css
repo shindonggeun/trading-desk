@@ -549,3 +549,19 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .calibration-row { display: grid; grid-template-columns: 84px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
 .calibration-bar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .calibration-bar > span { display: block; height: 100%; background: var(--accent); }
+
+/* #68 분석 결과 차트 */
+.analysis-result { margin-top: 16px; }
+.analysis-result-title { font-size: 16px; margin: 0 0 8px; }
+.result-charts { display: grid; gap: 12px; }
+.result-charts-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 900px) { .result-charts-two { grid-template-columns: 1fr; } }
+.related-card { margin-top: 12px; }
+.related-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.related-table th, .related-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+.related-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.related-table .up { color: var(--up, #e5534b); }
+.related-table .down { color: var(--down, #4f8cff); }
+.related-news { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
+.related-news li { margin: 2px 0; }
+.table-scroll { overflow-x: auto; }

@@ -4,6 +4,7 @@ import AgentRail from "../components/AgentRail";
 import { ChatMessage, SystemLine, ToolRow } from "../components/ChatMessage";
 import { GlossaryPanel, GlossaryProvider } from "../components/Glossary";
 import PlanCard from "../components/PlanCard";
+import AnalysisResult from "../components/AnalysisResult";
 import SectionBoundary from "../components/SectionBoundary";
 
 // 백엔드 desk/profile.py 의 label 과 같다. 옛 분석(성향 없음)은 표시하지 않는다
@@ -124,6 +125,7 @@ export default function RunView({ runId }: { runId: string }) {
               outcomeStatus={run.outcome_status}
             />
           )}
+          {plan && status === "done" && <AnalysisResult plan={plan} ticker={run.ticker} tradeDate={run.trade_date} />}
           <div ref={bottom} />
         </div>
         <GlossaryPanel events={events} focusId={glossary.id} focusSeq={glossary.seq} />

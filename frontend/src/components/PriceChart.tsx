@@ -165,7 +165,22 @@ type Drawn = {
  * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
  * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
  */
-export default function PriceChart({ ticker, tradeDate, plan }: { ticker: string; tradeDate: string; plan: Plan | null }) {
+/** 계획의 진입 · 손절 · 목표 말고 더 그을 가로선(관망 계획의 롱 · 숏 진입 조건 등, #68). */
+export interface ExtraLine {
+  price: number;
+  label: string;
+  color: string;
+  dashed?: boolean;
+}
+
+export default function PriceChart({ ticker, tradeDate, plan, title, extraLines }: {
+  ticker: string;
+  tradeDate: string;
+  plan: Plan | null;
+  /** 머리글 이름(기본 "가격 차트") — 분석 결과 차트가 본주 · 레버리지를 구분한다. */
+  title?: string;
+  extraLines?: ExtraLine[];
+}) {
   const [prefs] = useState(loadPrefs);
   const [interval, setBarInterval] = useState<Interval>(prefs.interval);
   const [show, setShow] = useState<Show>(prefs.show);
@@ -302,6 +317,9 @@ export default function PriceChart({ ticker, tradeDate, plan }: { ticker: string
           [plan?.entry_price, "진입", css("--accent", "#4f8cff"), LineStyle.Solid],
           [plan?.stop_loss, "손절", css("--short", "#e5534b"), LineStyle.Dashed],
           [plan?.price_target, "목표", css("--long", "#2ea043"), LineStyle.Dashed],
+          ...(extraLines ?? []).map(
+            (l): [number, string, string, LineStyle] => [l.price, l.label, l.color, l.dashed ? LineStyle.Dotted : LineStyle.Solid],
+          ),
         ]
       : [];
     const made: IPriceLine[] = [];
@@ -350,7 +368,7 @@ export default function PriceChart({ ticker, tradeDate, plan }: { ticker: string
       // 봉이 바뀌면 차트 effect 가 먼저 chart.remove() 한다 — 그때는 지울 선도 이미 없다.
       if (drawn.alive.current) for (const line of made) series.removePriceLine(line);
     };
-  }, [drawn, plan, fills, tradeDate, ticker, show.levels, show.analysis, show.fills]);
+  }, [drawn, plan, fills, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines]);
 
   // 지지 · 저항선 — 주봉 근거는 굵은 긴 점선, 일봉은 가는 점선. 축 라벨은 계획선만 달아 겹치지 않게.
   useEffect(() => {
@@ -407,7 +425,7 @@ export default function PriceChart({ ticker, tradeDate, plan }: { ticker: string
     <section className="card price-chart">
       <div className="price-chart-head">
         <h3>
-          가격 차트 <span className="muted small">{currency}{candles ? ` · ${candles.source}` : ""}</span>
+          {title ?? "가격 차트"} <span className="muted small">{currency}{candles ? ` · ${candles.source}` : ""}</span>
         </h3>
         <div className="review-periods chart-intervals" role="group" aria-label="봉 주기">
           {INTERVALS.map(({ iv, label }) => (

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 
-from . import horizons
+from . import horizons, trend
 
 DAILY_BARS = 200
 WEEKLY_BARS = 156          # three years
@@ -159,8 +159,9 @@ def compute(daily: list[dict], weekly: list[dict], price: float | None = None,
 
 def prompt_note(sr: dict | None) -> str | None:
     """The levels as a short reference block for the agents' prompts."""
+    trend_note = trend.prompt_note(sr)
     if not sr or not sr.get("levels"):
-        return None
+        return trend_note
     lines = [f"- {'R' if lv['kind'] == 'resistance' else 'S'} {lv['price']} "
              f"({lv['timeframe']}, {lv['basis']}; strength {lv['strength']})" for lv in sr["levels"]]
     intervals = sr.get("intervals") or {"primary": "1d", "secondary": "1w"}
@@ -172,7 +173,24 @@ def prompt_note(sr: dict | None) -> str | None:
             f"(reference price {sr['reference_price']}, ATR14 {sr['atr']}):\n" + "\n".join(lines) + "\n"
             "Use them when you set levels: an entry near a support (long) or resistance (short), a stop "
             "beyond the next zone, a target before the opposite zone. Say which zone a level relies on. "
-            "They are arithmetic from price history, not a forecast.")
+            "They are arithmetic from price history, not a forecast."
+            + ("\n\n" + trend_note if trend_note else ""))
+
+
+def add_trend(result: dict, days: list[dict], weeks: list[dict], h: horizons.Horizon,
+              price: float | None) -> None:
+    """Trendlines on both timeframes and the primary bars' retracement (desk.trend) onto a
+    ``compute`` result. A failure leaves the horizontal levels as they are and says why."""
+    try:
+        atr = result["atr"] or (_atr(days) or 0.0)
+        reference = price or days[-1]["close"]
+        lines = trend.trendlines(days, h.primary, h.primary_k, reference, atr)
+        lines += trend.trendlines(weeks, h.secondary, h.secondary_k, reference, atr, _atr(weeks))
+        result["trendlines"] = lines
+        result["fibonacci"] = trend.fibonacci(days, result["levels"], max(0.5 * atr, h.tolerance_pct * reference))
+    except Exception as exc:  # noqa: BLE001 - the levels stand without the lines
+        result["trendlines"], result["fibonacci"] = [], None
+        result["trend_error"] = f"{type(exc).__name__}: {exc}"
 
 
 def live_note(live: dict | None, atr: float | None = None) -> str | None:
@@ -253,6 +271,7 @@ async def _frame(prices, ticker: str, trade_date: str | None, price: float | Non
         weeks = [b for b in weeks if _local_day(b["at"], ticker) < session]
         complete = True
     result = compute(days, weeks, price, weekly_complete=complete, horizon=h.id)
+    add_trend(result, days, weeks, h, price)
     result.update(ticker=ticker, sources={h.primary: primary["source"], h.secondary: secondary["source"]},
                   intervals={"primary": h.primary, "secondary": h.secondary},
                   computed_at=datetime.now(UTC).isoformat(timespec="seconds"))

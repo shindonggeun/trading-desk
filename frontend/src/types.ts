@@ -55,11 +55,30 @@ export interface Plan {
   long_trigger?: number | null;
   short_trigger?: number | null;
   opinion?: Opinion;
+  /** #94 결론 정리(desk/consensus.py): 에이전트별 투표 · 양쪽 관점 · 토론 요지. 예전 run · 실패면 없다. */
+  consensus?: Consensus;
+  consensus_error?: string;
   filter?: {
     passed: boolean | null;
     reasons: string[];
     thresholds: { win_probability: number; reward_risk: number; agreeing: number };
   };
+}
+
+export type Stance = "long" | "short" | "hold";
+
+export interface Consensus {
+  /** 투표가 가리키는 종목 — 레버리지 상품이면 본주(SOXL → SOXX). */
+  subject: string;
+  /** fixed: 리서치 매니저 · 트레이더 · 포트폴리오 매니저처럼 등급 라벨에서 읽은 표. */
+  votes: { agent: string; stance: Stance; reason: string; fixed: boolean }[];
+  tally: Record<Stance, number>;
+  /** 표가 가장 많은 쪽, 동률이면 null. */
+  majority: Stance | null;
+  long_case: string[];
+  short_case: string[];
+  debate: string;
+  conclusion: string;
 }
 
 export type HorizonId = "scalp" | "intraday" | "short_swing" | "swing";

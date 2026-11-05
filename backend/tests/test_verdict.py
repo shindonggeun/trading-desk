@@ -57,7 +57,9 @@ def test_reads_probability_checklist_and_triggers():
 
 
 @pytest.mark.parametrize("text, expected", [("Win Probability: 0.65", 0.65), ("Win Probability: 65", 0.65),
-                                            ("**Win Probability**: 65 %", 0.65), ("Win Probability: 150%", None)])
+                                            ("**Win Probability**: 65 %", 0.65), ("Win Probability: 150%", None),
+                                            ("**Win Probability**: ~72%", 0.72), ("Win Probability: 약 72%", 0.72),
+                                            ("Win Probability: 1", None)])
 def test_probability_formats(text, expected):
     assert verdict.parse(text)["win_probability"] == expected
 
@@ -231,7 +233,7 @@ def test_stats_group_outcomes_and_calibrate_probability():
     stats = outcome.stats([run("target", 0.75, "buy"), run("stop", 0.72, "buy"), run("target", 0.55, "hold"),
                            run("unfilled", 0.8, "buy"), run(None, 0.7, "buy"),
                            {"plan": {"bias": "flat"}, "outcome_status": "invalid"}])
-    assert stats["total"] == {"plans": 5, "scored": 4, "waiting": 1, "unscorable": 0}
+    assert stats["total"] == {"plans": 5, "scored": 4, "waiting": 1, "errors": 0, "unscorable": 0}
     by_opinion = {row["key"]: row for row in stats["by_opinion"]}
     assert by_opinion["buy"]["hit_rate"] == 0.5 and by_opinion["hold"]["hit_rate"] == 1.0
     buckets = {row["bucket"]: row for row in stats["calibration"]}
@@ -254,3 +256,107 @@ def test_a_scripted_run_carries_the_new_fields(db_url):
     assert plan["win_probability"] == 0.72 and plan["long_trigger"] == 185.0 and plan["short_trigger"] == 170.0
     assert plan["score"] == {"long": 4, "short": 1} and plan["opinion"] in ("buy", "hold")
     assert run["outcome_status"] is None      # fake runs are never scored
+
+
+def test_currency_signs_and_colon_checklists_are_read():
+    parsed = verdict.parse("Long Trigger: $185 / Short Trigger: ₩170\nChecklist: trend: long, location: short, "
+                           "momentum: long, volume: neutral, catalyst: long, regime: long")
+    assert (parsed["long_trigger"], parsed["short_trigger"]) == (185.0, 170.0)
+    assert parsed["score"] == {"long": 4, "short": 1}
+
+
+def test_an_unreadable_line_is_review_not_a_demoted_hold():
+    assert verdict.apply(_plan(win_probability=None), SWING)["opinion"] == "review"
+    assert verdict.apply(_plan(checklist=None, score=None), SWING)["opinion"] == "review"
+
+
+def test_a_scripted_run_below_the_bar_is_hold_with_its_rating_levels_and_triggers(db_url, monkeypatch):
+    monkeypatch.setattr(verdict, "FAKE_SUMMARY_LINE", "Win Probability: 55% / Long Trigger: 186 / Short Trigger: 170")
+    with _client(db_url) as client:
+        run = _wait_done(client, client.post("/api/runs", json={"ticker": "NVDA"}).json()["id"])
+    plan = run["plan"]
+    assert plan["opinion"] == "hold" and plan["filter"]["passed"] is False
+    assert plan["rating"] == "Overweight" and plan["bias"] == "long" and plan["entry_price"] == 182.5
+    assert plan["long_trigger"] == 186.0 and plan["short_trigger"] == 170.0
+
+
+def _daily(rows, first="2026-11-02T15:00:00+00:00"):
+    """Korean daily bars: stamped at KST midnight = 15:00 UTC the day before."""
+    start = datetime.fromisoformat(first)
+    return [{"at": (start + timedelta(days=i)).isoformat(), "open": o, "high": h, "low": low, "close": c,
+             "volume": 1} for i, (o, h, low, c) in enumerate(rows)]
+
+
+def test_a_plan_made_before_the_open_scores_that_days_session():
+    # 08:43 KST on 11-03 = 23:43 UTC 11-02; the 11-03 bar (stamped 11-02 15:00 UTC) opens at 09:00 KST
+    plan = {"bias": "long", "entry_price": 100.0, "stop_loss": 95.0, "price_target": 110.0,
+            "entry_vs_live": {"kind": "limit"}}
+    result = outcome.judge(plan, _daily([(101, 111, 99, 110)]), SWING, "2026-11-02T23:43:00+00:00",
+                           outcome.session_open("005930.KS"))
+    assert result["status"] == "open"          # the fill bar's high does not count as the target
+    assert result["filled_at"] == "2026-11-02T15:00:00+00:00"
+
+
+def test_a_session_already_trading_counts_only_for_an_entry_now():
+    # 11:00 KST, mid-session: the day's earlier low must not fill a limit set at 11:00
+    plan = {"bias": "long", "entry_price": 100.0, "stop_loss": 95.0, "price_target": 110.0}
+    rows = [(101, 102, 99, 101), (101, 102, 100.5, 101.5)]
+    limit = outcome.judge({**plan, "entry_vs_live": {"kind": "limit"}}, _daily(rows), SWING,
+                          "2026-11-03T02:00:00+00:00", outcome.session_open("005930.KS"))
+    assert limit["status"] == "waiting"
+    now = outcome.judge({**plan, "entry_vs_live": {"kind": "now"}}, _daily(rows), SWING,
+                        "2026-11-03T02:00:00+00:00", outcome.session_open("005930.KS"))
+    assert now["filled_at"] == "2026-11-02T15:00:00+00:00" and now["partial_first_session"] is True
+
+
+def test_an_analysis_longer_than_the_entry_window_is_marked_late():
+    result = _scored([(100, 101, 99, 100)], valid_until="2026-11-02T14:00:00+00:00")
+    assert result["status"] == "unfilled" and result["late"] is True
+
+
+def test_intraday_bars_that_no_longer_reach_the_plan_are_unscorable():
+    bars = _bars([(100, 101, 99, 100)], start=datetime(2026, 11, 5, tzinfo=UTC), step=timedelta(minutes=5))
+    result = outcome.judge({"bias": "long", "entry_price": 100.0, "stop_loss": 95.0, "price_target": 110.0},
+                           bars, INTRADAY, PLAN_AT)
+    assert result["status"] == "unscorable"
+
+
+def test_levels_on_the_wrong_side_are_invalid_and_a_gap_through_the_stop_costs_more():
+    assert _scored([(100, 101, 99, 100)], stop_loss=102.0)["status"] == "invalid"
+    gap = _scored([(100, 100.5, 99.9, 100), (92, 93, 91, 92)])
+    assert gap["status"] == "stop" and gap["r"] == -1.6
+
+
+def test_scalp_holding_ends_after_sixty_bars():
+    start = datetime(2026, 11, 2, 14, 30, tzinfo=UTC)
+    rows = [(100, 100.2, 99.9, 100)] + [(100, 100.4, 99.8, 100.2)] * 70
+    plan = {"bias": "long", "entry_price": 100.0, "stop_loss": 99.0, "price_target": 101.5,
+            "entry_vs_live": {"kind": "now"}, "valid_until": "2026-11-02T14:45:00+00:00"}
+    result = outcome.judge(plan, _bars(rows, start, timedelta(minutes=1)), horizons.get("scalp"), PLAN_AT)
+    assert result["status"] == "expired" and result["r"] == 0.2
+
+
+def test_errors_and_waiting_stop_retrying_after_the_horizons_max_age(db_url):
+    class Down:
+        async def candles(self, *_):
+            raise ConnectionError("delisted")
+    live = {"bias": "long", "entry_price": 100.0, "stop_loss": 95.0, "price_target": 110.0,
+            "live_price": {"price": 100, "fetched_at": PLAN_AT}}
+    run = {"ticker": "GONE", "plan": live, "options": {}}
+    soon = asyncio.run(outcome.score(run, Down(), datetime(2026, 11, 3, tzinfo=UTC)))
+    late = asyncio.run(outcome.score(run, Down(), datetime(2027, 2, 1, tzinfo=UTC)))
+    assert soon["status"] == "error" and late["status"] == "unscorable"
+
+
+def test_the_sweep_looks_at_the_longest_unseen_runs_first(db_url):
+    from desk.db import migrate
+
+    migrate(db_url)
+    store = Store(make_engine(db_url))
+    ids = [_done_run(store, {"bias": "flat"}) for _ in range(3)]
+    store.set_outcome(ids[0], {"status": "open"})          # seen just now
+    store.set_outcome(ids[1], {"status": "waiting"})
+    with store.engine.begin() as conn:
+        conn.execute(runs.update().where(runs.c.id == ids[1]).values(scored_at=datetime(2026, 1, 1, tzinfo=UTC)))
+    order = [r["id"] for r in store.runs_to_score(3)]
+    assert order == [ids[2], ids[1], ids[0]]                # never scored, then oldest look, then newest

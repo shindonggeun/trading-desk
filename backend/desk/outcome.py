@@ -58,23 +58,58 @@ def _sessions(bars: list[dict]) -> list[int]:
     return out
 
 
-def judge(plan: dict, bars: list[dict], horizon: horizons.Horizon, plan_at: str) -> dict:
-    """The outcome of one plan on ``bars`` (oldest first, desk.prices shape). Pure function."""
+def session_open(ticker: str) -> timedelta:
+    """How long after its local midnight a market opens; daily bars are stamped at that midnight."""
+    return timedelta(hours=9) if ticker.upper().endswith((".KS", ".KQ")) else timedelta(hours=9, minutes=30)
+
+
+def _levels_make_sense(direction: int, entry: float, stop: float, target: float) -> bool:
+    return (stop < entry < target) if direction > 0 else (target < entry < stop)
+
+
+def judge(plan: dict, bars: list[dict], horizon: horizons.Horizon, plan_at: str,
+          opens_after: timedelta = timedelta(hours=9, minutes=30)) -> dict:
+    """The outcome of one plan on ``bars`` (oldest first, desk.prices shape). Pure function.
+    ``opens_after``: the market's open after local midnight (``session_open``), used for daily
+    bars, which are stamped at that midnight."""
     base = {"rules_version": RULES_VERSION, "interval": horizon.primary, "plan_at": plan_at}
     direction = {"long": 1, "short": -1}.get(plan.get("bias"))
     entry, stop, target = plan.get("entry_price"), plan.get("stop_loss"), plan.get("price_target")
-    if direction is None or None in (entry, stop, target) or entry == stop:
+    if direction is None or None in (entry, stop, target):
         return {**base, "status": "invalid", "detail": "no directional plan with entry, stop and target"}
+    if not _levels_make_sense(direction, entry, stop, target):
+        return {**base, "status": "invalid", "detail": "stop and target are not on the right sides of the entry"}
     reach = plan.get("entry_vs_live") or {}
     if reach.get("stop_passed") or reach.get("target_passed"):
         return {**base, "status": "invalid", "detail": "the price had already passed the stop or target"}
     kind = reach.get("kind") or plan.get("entry_type") or "limit"
     start = _at(plan_at)
-    after = [b for b in bars if _at(b["at"]) >= start]
+    valid_until = _at(plan["valid_until"]) if plan.get("valid_until") else None
+    if valid_until is not None and valid_until <= start:
+        # the analysis outlasted the entry window (it counts from the quote the agents saw)
+        return {**base, "status": "unfilled", "late": True, "detail": "the entry window closed before the plan arrived"}
+    if not bars:
+        return {**base, "status": "waiting", "detail": "no bars yet"}
+    daily = horizon.primary in ("1d", "1w")
+    if not daily and _at(bars[0]["at"]) > start:
+        return {**base, "status": "unscorable", "detail": "the bars no longer reach back to the plan"}
+    if daily:
+        # A daily bar opened before the plan was made can still be the session it trades in: one whose
+        # market opened after the plan counts whole; one already trading only for an entry 'now'
+        # (its earlier prices cannot fill a limit or stop that did not exist yet).
+        after, partial = [], False
+        for bar in bars:
+            opened = _at(bar["at"]) + opens_after
+            if opened >= start:
+                after.append(bar)
+            elif _at(bar["at"]) + timedelta(days=1) > start and kind == "now":
+                after.append(bar)
+                partial = True
+    else:
+        after, partial = [b for b in bars if _at(b["at"]) >= start], False
     if not after:
         return {**base, "status": "waiting", "detail": "no bars after the plan yet"}
     sessions = _sessions(after)
-    valid_until = _at(plan["valid_until"]) if plan.get("valid_until") else None
     entry_sessions = ENTRY_SESSIONS.get(horizon.id, 1)
 
     def entry_closed(i: int) -> bool:
@@ -99,6 +134,8 @@ def judge(plan: dict, bars: list[dict], horizon: horizons.Horizon, plan_at: str)
         return {**base, "status": "waiting", "detail": "not filled yet"}
 
     filled = {**base, "entry_kind": kind, "filled_at": after[fill]["at"]}
+    if partial and fill == 0:
+        filled["partial_first_session"] = True
     risk = abs(entry - stop)
 
     def stop_hit(bar: dict) -> bool:
@@ -107,8 +144,14 @@ def judge(plan: dict, bars: list[dict], horizon: horizons.Horizon, plan_at: str)
     def target_hit(bar: dict) -> bool:
         return bar["high"] >= target if direction > 0 else bar["low"] <= target
 
+    def stop_r(bar: dict, first: bool) -> float:
+        """-1 at the stop; worse when the bar opened beyond it (a gap) after the fill bar."""
+        gapped = not first and ((bar["open"] < stop) if direction > 0 else (bar["open"] > stop))
+        exit_price = bar["open"] if gapped else stop
+        return round((exit_price - entry) * direction / risk, 2)
+
     if stop_hit(after[fill]):
-        return {**filled, "status": "stop", "exited_at": after[fill]["at"], "r": -1.0}
+        return {**filled, "status": "stop", "exited_at": after[fill]["at"], "r": stop_r(after[fill], True)}
     mode, length = HOLD[horizon.id]
     for i in range(fill + 1, len(after)):
         over = (i - fill > length) if mode == "bars" else (sessions[i] - sessions[fill] >= length)
@@ -121,7 +164,7 @@ def judge(plan: dict, bars: list[dict], horizon: horizons.Horizon, plan_at: str)
         if t and s:
             return {**filled, "status": "both", "exited_at": bar["at"], "r": None}
         if s:
-            return {**filled, "status": "stop", "exited_at": bar["at"], "r": -1.0}
+            return {**filled, "status": "stop", "exited_at": bar["at"], "r": stop_r(bar, False)}
         if t:
             return {**filled, "status": "target", "exited_at": bar["at"],
                     "r": round(abs(target - entry) / risk, 2)}
@@ -138,8 +181,14 @@ def plan_time(run: dict) -> str | None:
     return live.get("fetched_at")
 
 
+# After this long a plan still waiting or open is closed as unscorable: the entry and holding
+# windows are long over, so missing bars (a delisted symbol, a feed gap) will not come back.
+MAX_AGE = {"scalp": timedelta(days=3), "intraday": timedelta(days=7), "short_swing": timedelta(days=21),
+           "swing": timedelta(days=60)}
+
+
 async def score(run: dict, prices, now: datetime | None = None) -> dict:
-    """Fetch the bars and judge one run; ``unscorable`` once its bars are past Yahoo's reach."""
+    """Fetch the bars and judge one run; ``unscorable`` once its bars are past reach."""
     plan = run.get("plan") or {}
     horizon = horizons.get(plan.get("horizon") or (run.get("options") or {}).get("horizon"))
     base = {"rules_version": RULES_VERSION, "interval": horizon.primary}
@@ -148,15 +197,20 @@ async def score(run: dict, prices, now: datetime | None = None) -> dict:
         return {**base, "status": "invalid", "detail": "not a directional plan"}
     if not plan_at:
         return {**base, "status": "unscorable", "detail": "no live quote: a past-date run"}
-    limit = HISTORY_LIMIT_DAYS.get(horizon.primary)
     now = now or datetime.now(UTC)
-    if limit and now - _at(plan_at) > timedelta(days=limit):
+    age = now - _at(plan_at)
+    limit = HISTORY_LIMIT_DAYS.get(horizon.primary)
+    if limit and age > timedelta(days=limit):
         return {**base, "status": "unscorable", "detail": f"{horizon.primary} bars older than {limit} days"}
     try:
         candles = await prices.candles(run["ticker"], horizon.primary, BARS)
-    except Exception as exc:  # noqa: BLE001 - try again next pass
-        return {**base, "status": "error", "detail": f"{type(exc).__name__}: {exc}"}
-    return judge(plan, candles["bars"], horizon, plan_at)
+        result = judge(plan, candles["bars"], horizon, plan_at, session_open(run["ticker"]))
+    except Exception as exc:  # noqa: BLE001 - try again next pass, until MAX_AGE
+        result = {**base, "status": "error", "detail": f"{type(exc).__name__}: {exc}"}
+    if result["status"] in ("waiting", "open", "error") and age > MAX_AGE[horizon.id]:
+        return {**result, "status": "unscorable",
+                "detail": f"still {result['status']} after {MAX_AGE[horizon.id].days} days: {result.get('detail', '')}"}
+    return result
 
 
 async def sweep(store, prices, now: datetime | None = None, limit: int = PER_PASS) -> int:
@@ -181,20 +235,26 @@ _COUNTED = ("target", "stop", "both", "expired", "unfilled", "open", "waiting")
 
 def _group(rows: list[dict]) -> dict:
     counts = {key: 0 for key in _COUNTED}
-    probabilities, expiry_r = [], []
+    probabilities, resolved_probabilities, expiry_r = [], [], []
     for row in rows:
         status = row["status"]
         if status in counts:
             counts[status] += 1
         if row["probability"] is not None:
             probabilities.append(row["probability"])
+            if status in ("target", "stop", "both"):
+                resolved_probabilities.append(row["probability"])
         if status == "expired" and row["r"] is not None:
             expiry_r.append(row["r"])
+    # hit_rate = target / (target + stop + both): a bar touching both counts as a miss
     resolved = counts["target"] + counts["stop"] + counts["both"]
     filled = resolved + counts["expired"] + counts["open"]
     return {"plans": len(rows), "filled": filled, **counts,
             "hit_rate": round(counts["target"] / resolved, 3) if resolved else None,
             "avg_probability": round(sum(probabilities) / len(probabilities), 3) if probabilities else None,
+            # the same average over the resolved plans only - the one to set against hit_rate
+            "avg_probability_resolved": (round(sum(resolved_probabilities) / len(resolved_probabilities), 3)
+                                         if resolved_probabilities else None),
             "avg_r_at_expiry": round(sum(expiry_r) / len(expiry_r), 2) if expiry_r else None}
 
 
@@ -203,7 +263,7 @@ def stats(runs: list[dict]) -> dict:
     direction, the desk's opinion (did the filter help?), analyst set, and a calibration of the
     model's win probability against what happened."""
     rows = []
-    total = {"plans": 0, "scored": 0, "waiting": 0, "unscorable": 0}
+    total = {"plans": 0, "scored": 0, "waiting": 0, "errors": 0, "unscorable": 0}
     for run in runs:
         plan = run.get("plan") or {}
         if plan.get("bias") not in ("long", "short"):
@@ -213,8 +273,10 @@ def stats(runs: list[dict]) -> dict:
         total["plans"] += 1
         if status in TERMINAL:
             total["scored"] += 1
-        if status in (None, "waiting", "open", "error"):
+        if status in (None, "waiting", "open"):
             total["waiting"] += 1
+        if status == "error":
+            total["errors"] += 1
         if status == "unscorable":
             total["unscorable"] += 1
         analysts = (run.get("options") or {}).get("analysts") or []
@@ -236,7 +298,7 @@ def stats(runs: list[dict]) -> dict:
             calibration.append({"bucket": f"{low}-{low + 10}", "plans": group["plans"],
                                 "resolved": group["target"] + group["stop"] + group["both"],
                                 "hits": group["target"], "hit_rate": group["hit_rate"],
-                                "avg_probability": group["avg_probability"]})
+                                "avg_probability": group["avg_probability_resolved"]})
     return {"rules_version": RULES_VERSION, "total": total,
             "by_horizon": by("horizon"), "by_rating": by("rating"), "by_direction": by("direction"),
             "by_opinion": by("opinion"), "by_analysts": by("analysts"), "calibration": calibration}

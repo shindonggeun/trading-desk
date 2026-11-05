@@ -37,7 +37,7 @@ def mandate(horizon: horizons.Horizon) -> str:
         f"probability: the chance the price target is reached before the stop within {horizon.holding_en}, as a "
         "whole percent. High-probability filter: rate Buy/Overweight or Sell/Underweight only when the win "
         f"probability is at least {MIN_PROBABILITY:.0%}, reward:risk is at least {horizon.min_rr:g}, at least "
-        f"{MIN_AGREEING} factors point with the call, and the entry can be reached soon (within about 1.5 ATR "
+        f"{MIN_AGREEING} factors point with the call, and the entry can be reached soon (within about 2 ATR "
         "of the current price, or now). Otherwise rate Hold - still with levels and a conditional plan. Every "
         "call, Hold included, names a Long Trigger (the price whose reclaim or break would make you buy) and a "
         "Short Trigger (the price whose loss would make you short or reduce), or 'none'. Write two lines with "
@@ -50,12 +50,13 @@ def mandate(horizon: horizons.Horizon) -> str:
 
 
 _NUMBER = r"[-+]?\d[\d,]*(?:\.\d+)?"
-_PROBABILITY = re.compile(rf"\bWin\s*Probability\s*\**\s*:\s*\**\s*({_NUMBER})\s*(%?)", re.IGNORECASE)
-_TRIGGER = r"\b{side}\s*Trigger\s*\**\s*:\s*\**\s*(none|n/a|{num})"
+_APPROX = r"(?:~|약|about|approx\.?|≈)?\s*"
+_PROBABILITY = re.compile(rf"\bWin\s*Probability\s*\**\s*:\s*\**\s*{_APPROX}({_NUMBER})\s*(%?)", re.IGNORECASE)
+_TRIGGER = r"\b{side}\s*Trigger\s*\**\s*:\s*\**\s*(?:[$₩]\s*)?(none|n/a|{num})"
 _LONG = re.compile(_TRIGGER.format(side="Long", num=_NUMBER), re.IGNORECASE)
 _SHORT = re.compile(_TRIGGER.format(side="Short", num=_NUMBER), re.IGNORECASE)
 _CHECKLIST = re.compile(r"\bChecklist\s*\**\s*:\s*\**\s*(.+)$", re.IGNORECASE | re.MULTILINE)
-_FACTOR = re.compile(r"\b(" + "|".join(FACTORS) + r")\s*=\s*\**\s*(long|short|neutral)\b", re.IGNORECASE)
+_FACTOR = re.compile(r"\b(" + "|".join(FACTORS) + r")\s*[=:]\s*\**\s*(long|short|neutral)\b", re.IGNORECASE)
 
 
 def _num(text: str) -> float | None:
@@ -72,12 +73,15 @@ def parse(text: str) -> dict:
     probability = None
     found = _PROBABILITY.findall(text)
     if found:
-        value, percent = found[-1]
-        value = _num(value)
+        raw, percent = found[-1]
+        value = _num(raw)
         if value is not None:
-            # "72%" and "72" are percents; "0.72" is a fraction
-            probability = value / 100 if percent or value > 1 else value
-            probability = round(probability, 4) if 0 <= probability <= 1 else None
+            # "72%" and "72" are percents, "0.72" a fraction; a bare "1" or "0" could be either
+            if percent or value > 1:
+                probability = value / 100
+            elif "." in raw:
+                probability = value
+            probability = round(probability, 4) if probability is not None and 0 <= probability <= 1 else None
 
     def trigger(pattern: re.Pattern) -> float | None:
         hits = pattern.findall(text)
@@ -107,10 +111,11 @@ def apply(plan: dict, horizon: horizons.Horizon) -> dict:
         plan["opinion"] = _OPINION.get(bias, "review")
         plan["filter"] = {"passed": None, "reasons": [], "thresholds": thresholds}
         return plan
-    if plan.get("win_probability") is None and plan.get("checklist") is None:
-        # the model ignored the checklist: not a deliberate hold, so say so
+    missing = [name for name in ("win_probability", "checklist") if plan.get(name) is None]
+    if missing:
+        # a line the desk could not read is not a deliberate hold: say so instead of demoting the call
         plan["opinion"] = "review"
-        plan["filter"] = {"passed": None, "reasons": ["no win probability or checklist in the decision"],
+        plan["filter"] = {"passed": None, "reasons": [f"no {' / '.join(missing)} in the decision"],
                           "thresholds": thresholds}
         return plan
     reasons = []

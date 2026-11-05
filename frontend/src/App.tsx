@@ -4,6 +4,7 @@ import type { DeskConfig } from "./types";
 import LoginForm from "./components/LoginForm";
 import Dashboard from "./pages/Dashboard";
 import RunView from "./pages/RunView";
+import Review from "./pages/Review";
 import Settings from "./pages/Settings";
 
 function useHashRoute(): string {
@@ -48,6 +49,7 @@ export default function App() {
 
   const runMatch = route.match(/^#\/runs\/([\w-]+)/);
   const onSettings = route.startsWith("#/settings");
+  const onReview = route.startsWith("#/review");
 
   return (
     <div className="shell">
@@ -57,7 +59,8 @@ export default function App() {
         </a>
         {user && (
           <nav>
-            <a href="#/" className={!runMatch && !onSettings ? "active" : ""}>대시보드</a>
+            <a href="#/" className={!runMatch && !onSettings && !onReview ? "active" : ""}>대시보드</a>
+            <a href="#/review" className={onReview ? "active" : ""}>매매 복기</a>
             <a href="#/settings" className={onSettings ? "active" : ""}>설정</a>
           </nav>
         )}
@@ -76,6 +79,8 @@ export default function App() {
 
       {user === undefined ? null : user === null ? (
         <LoginForm onLoggedIn={(name) => { setOffline(false); setUser(name); }} />
+      ) : onReview ? (
+        <Review />
       ) : onSettings ? (
         <Settings />
       ) : runMatch ? (

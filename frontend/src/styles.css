@@ -240,3 +240,35 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .login-links { display: flex; justify-content: space-between; gap: 8px; }
 .topbar nav { display: flex; gap: 16px; }
 .settings-row .pill { white-space: nowrap; flex-shrink: 0; }
+
+/* trade review (#48) */
+.review { padding: 20px; display: grid; gap: 16px; }
+.review-head { display: grid; gap: 8px; }
+.review-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.review-title h2 { margin: 0; }
+.review-periods { display: flex; gap: 6px; }
+.review-periods button { padding: 5px 12px; font-size: 13px; }
+.review-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; margin-top: 4px; }
+.review-summary > div { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.review-summary strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.review-pnl { grid-column: span 2; }
+.review-table td, .review-table th { white-space: nowrap; }
+.review-plan { display: grid; color: inherit; text-decoration: none; }
+.review-plan:hover span:first-child { text-decoration: underline; }
+.side-buy { color: var(--long); font-weight: 600; }
+.side-sell { color: var(--short); font-weight: 600; }
+.pnl-up { color: var(--long); }
+.pnl-down { color: var(--short); }
+.align-with { color: var(--long); border-color: var(--long); }
+.align-against { color: var(--short); border-color: var(--short); }
+.align-flat { color: var(--warn); border-color: var(--warn); }
+.out-target { color: var(--long); }
+.out-stop { color: var(--short); }
+.out-both { color: var(--warn); }
+.out-open { color: var(--muted); }
+.review-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.review-table th { text-align: left; font-weight: 600; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.review-table th.num { text-align: right; }
+.review-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.review-table tbody tr:hover { background: var(--surface-2); }
+.review-head .pill { justify-self: start; margin: 0; }

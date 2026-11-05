@@ -169,7 +169,8 @@ export default function LiveChart({ ticker, plan, onPrice }: {
       [plan?.short_trigger, "숏 조건", css("--short", "#e5534b"), LineStyle.Dotted],
       ...(plan?.support_resistance?.levels ?? []).slice(0, 8).map(
         (lv): [number, string, string, LineStyle] => [
-          lv.price, lv.kind === "resistance" ? "저항" : "지지", lv.kind === "resistance" ? "#a371f7" : "#2da44e", LineStyle.LargeDashed,
+          lv.price, lv.kind === "resistance" ? "저항" : "지지",
+          css(lv.kind === "resistance" ? "--sr-resistance" : "--sr-support", lv.kind === "resistance" ? "#b58cf0" : "#2bb3a3"), LineStyle.LargeDashed,
         ],
       ),
     ];

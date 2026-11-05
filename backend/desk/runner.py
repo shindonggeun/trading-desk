@@ -367,8 +367,18 @@ class RunManager:
                     "leverage_analyst_error": error or "no answer"}
         # Gaps in the analyst's levels: converted from the underlying's (anchor = the pre-run pair) —
         # only when the analyst kept the underlying's direction; a Sell SOXL must not get a long setup.
-        if plan["bias"] == BIAS.get(expected) and plan["bias"] in ("long", "short"):
+        kept = plan["bias"] == BIAS.get(expected) and plan["bias"] in ("long", "short")
+        if kept:
             plan["underlying_levels"] = {k: u_plan[k] for k in LEVELS if u_plan.get(k) is not None}
+        # #64's filter needs a checklist and a win probability: the research team scored the
+        # underlying, so its checklist carries over (sides swapped for inverse) and, when the
+        # analyst kept the direction and gave none, so does its probability.
+        if plan.get("checklist") is None and u_plan.get("checklist"):
+            plan["checklist"] = under.flip_checklist(u_plan["checklist"]) if leverage < 0 else u_plan["checklist"]
+            score = u_plan.get("score") or {}
+            plan["score"] = {"long": score.get("short"), "short": score.get("long")} if leverage < 0 else score
+        if plan.get("win_probability") is None and (kept or not text):
+            plan["win_probability"] = u_plan.get("win_probability")
         plan, _ = under.split(plan, base, leverage, proxy, under.anchors(start, start_u, sr, sr_u))
         plan = await asyncio.to_thread(self.levels, plan, request.ticker, request.trade_date, live=live,
                                        horizon=horizon.id)

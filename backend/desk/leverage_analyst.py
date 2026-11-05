@@ -123,7 +123,9 @@ def build_prompt(ctx: LeverContext) -> str:
         "**Position Sizing**: <share of capital, and the loss at the stop>",
         f"**Executive Summary**: <the call on {p}, how to act, and where it differs from the {b} call and why>",
         (f"End with one line: 'Entry: now|limit|stop / Invalidation: <{p} price or event> / "
-        "Exit by: <time or condition>'."),
+         "Exit by: <time or condition>'."),
+        (f"And one more: 'Win Probability: <% that the {p} target is reached before the stop> / "
+         f"Long Trigger: <{p} price or none> / Short Trigger: <{p} price or none>'."),
     ]
     return "\n".join(lines)
 

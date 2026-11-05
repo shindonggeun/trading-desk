@@ -8,15 +8,16 @@ import datetime as dt
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from . import horizons, verdict
 from . import underlying as under
 from .broker.base import Broker
 from .events import StateDiffer
-from .levels import entry_vs_live, fill_levels
-from .plan import parse_plan
+from .levels import LEVELS, entry_vs_live, fill_levels
+from .leverage_analyst import LEVER_TIMEOUT_SEC, LeverContext, llm_analyst
+from .plan import BIAS, parse_plan
 from .prices import PriceSource
 from .profile import desk_portfolio
 from .related import collect as collect_related
@@ -232,8 +233,10 @@ RELATED_TIMEOUT_SEC = 30.0
 
 class RunManager:
     def __init__(self, store: Store, hub: Hub, runner: Runner, broker: Broker, max_concurrent: int,
-                 levels=fill_levels, prices: PriceSource | None = None, related=collect_related) -> None:
+                 levels=fill_levels, prices: PriceSource | None = None, related=collect_related,
+                 lever_analyst=llm_analyst) -> None:
         self.levels = levels
+        self.lever_analyst = lever_analyst
         self.related = related
         self.prices = prices
         self.store = store
@@ -306,6 +309,53 @@ class RunManager:
             sub["support_resistance"] = sr_u
         return sub
 
+    async def _leveraged_plan(self, run_id: str, request: RunRequest, lever: tuple, result: RunResult,
+                              horizon, starts: tuple, lives: tuple, srs: tuple, related: dict | None) -> dict:
+        """The product's plan from the underlying's run: the underlying side as analysed, then the
+        leverage analyst's call on the product, its gaps filled by conversion and ATR. A failing
+        analyst leaves the underlying's direction (flipped for inverse) and converted levels."""
+        base, leverage, proxy = lever
+        (start, start_u), (live, live_u), (sr, sr_u) = starts, lives, srs
+        u_plan = parse_plan(result.final_state)
+        u_plan.pop("underlying_levels", None)
+        underlying = await self._underlying_plan({**u_plan, "ticker": base, "leverage": leverage, "proxy": proxy},
+                                                 request, sr_u, live_u)
+        daily = sr_u and (sr_u.get("fallback") or horizon.primary == "1d")
+        ctx = LeverContext(
+            product=request.ticker, base=base, leverage=leverage, proxy=proxy, horizon=horizon.id,
+            holding=horizon.holding_en, u_plan=u_plan,
+            u_decision=result.final_state.get("final_trade_decision") or "", live=live, live_u=live_u,
+            sr=sr, sr_u=sr_u, beta=(related or {}).get("tracking"),
+            language=request.output_language, daily_atr_u=sr_u["atr"] if daily else None)
+        text, error = None, None
+        if self.lever_analyst is not None:
+            try:   # the HTTP call has its own timeout; this is the backstop for the thread
+                text = await asyncio.wait_for(asyncio.to_thread(self.lever_analyst, ctx), LEVER_TIMEOUT_SEC + 30)
+            except Exception as exc:  # noqa: BLE001 - incl. timeout: the run ends on the underlying's call
+                log.warning("leverage analyst failed for %s: %s", request.ticker, exc)
+                error = f"{type(exc).__name__}: {exc}"
+        if text and text.strip():
+            self._publish(run_id, {"type": "message", "agent": "leverage_analyst", "content": text.strip(),
+                                   "data": None})
+            plan = parse_plan({"final_trade_decision": text, "trader_investment_plan": text})
+            plan.pop("underlying_levels", None)
+        else:
+            rating = under.flip_rating(u_plan["rating"]) if leverage < 0 else u_plan["rating"]
+            plan = {"rating": rating, "bias": BIAS.get(rating, "review"), "trader_action": None,
+                    "entry_price": None, "stop_loss": None, "price_target": None, "reward_risk": None,
+                    "time_horizon": u_plan.get("time_horizon"), "position_sizing": None,
+                    "executive_summary": None, "levels_origin": {},
+                    "leverage_analyst_error": error or "no answer"}
+        # gaps in the analyst's levels: converted from the underlying's (anchor = the pre-run pair)
+        plan["underlying_levels"] = {k: u_plan[k] for k in LEVELS if u_plan.get(k) is not None}
+        plan, _ = under.split(plan, base, leverage, proxy, under.anchors(start, start_u, sr, sr_u))
+        plan = await asyncio.to_thread(self.levels, plan, request.ticker, request.trade_date, live=live,
+                                       horizon=horizon.id)
+        plan = entry_vs_live(plan, sr and sr.get("atr"))
+        plan["underlying"] = underlying
+        plan["analysis_subject"] = base
+        return plan
+
     def _publish(self, run_id: str, event: dict) -> None:
         self.store.append_event(run_id, event)
         self.hub.notify(run_id)
@@ -313,8 +363,13 @@ class RunManager:
     async def _execute(self, run_id: str, request: RunRequest) -> None:
         async with self._slots:
             self.store.mark_running(run_id)
+            # A leveraged/inverse product is analysed through its underlying (desk.underlying, #82):
+            # TradingAgents reads SOXX, then the leverage analyst turns the call into one on SOXL.
+            lever = under.leverage_of(request.ticker)
+            base = lever[0] if lever else None
+            subject = replace(request, ticker=base) if base else request
             self._publish(run_id, {"type": "status", "agent": "system", "content": "running",
-                                   "data": {"analysts": request.selected_analysts()}})
+                                   "data": {"analysts": subject.selected_analysts()}})
             loop = asyncio.get_running_loop()
 
             def emit(event: dict) -> None:   # called from the worker thread
@@ -323,39 +378,39 @@ class RunManager:
             try:
                 book = await self.broker.portfolio() if request.use_portfolio else None
                 # The agents set levels against the price now, not only a close days old.
-                # A leveraged/inverse product is also read on its underlying (desk.underlying).
-                lever = under.leverage_of(request.ticker)
-                base = lever[0] if lever else None
                 start, start_u = await asyncio.gather(
                     self._live_quote(request), self._live_quote(request, base) if base else _none())
                 sr, sr_u, related = await asyncio.gather(
                     self._support_resistance(request, start),
                     self._support_resistance(request, start_u, base) if base else _none(),
                     self._related(request))
-                lever_note = under.prompt_note(request.ticker, *lever, sr_u, start_u) if lever else None
-                note = "\n\n".join(part for part in (live_note(start, sr and sr.get("atr")), prompt_note(sr),
-                                                     lever_note, related_note(related)) if part) or None
+                # The run's own instrument: the underlying for a leveraged product.
+                main_live, main_sr = (start_u, sr_u) if lever else (start, sr)
+                lever_note = under.prompt_note(request.ticker, *lever) if lever else None
+                note = "\n\n".join(part for part in (live_note(main_live, main_sr and main_sr.get("atr")),
+                                                     prompt_note(main_sr), lever_note, related_note(related))
+                                   if part) or None
                 horizon = horizons.get(request.horizon)
-                frame = horizons.get(None) if sr and sr.get("fallback") else horizon
-                mandate = horizons.horizon_mandate(horizon, sr and sr.get("atr"), frame=frame, levels_below=bool(sr))
+                frame = horizons.get(None) if main_sr and main_sr.get("fallback") else horizon
+                mandate = horizons.horizon_mandate(horizon, main_sr and main_sr.get("atr"), frame=frame,
+                                                   levels_below=bool(main_sr))
                 # #64: the symmetric checklist and high-probability filter, swing included
                 mandate = "\n\n".join(part for part in (mandate, verdict.mandate(horizon)) if part)
                 portfolio = desk_portfolio(request.profile, book, note, horizon_mandate=mandate)
-                result = await asyncio.to_thread(self.runner, request, emit, portfolio)
+                result = await asyncio.to_thread(self.runner, subject, emit, portfolio)
                 # The model may still leave a level out; fill it from ATR and mark it as computed.
                 fresh, fresh_u = await asyncio.gather(
                     self._live_quote(request), self._live_quote(request, base) if base else _none())
                 live, live_u = fresh or start, fresh_u or start_u
-                plan, sub = parse_plan(result.final_state), None
-                if lever:   # the anchor stays the pre-run pair: what the agents saw
-                    plan, sub = under.split(plan, *lever, under.anchors(start, start_u, sr, sr_u))
-                plan = await asyncio.to_thread(self.levels, plan, request.ticker, request.trade_date, live=live,
-                                               horizon=horizon.id)
-                plan = entry_vs_live(plan, sr and sr.get("atr"))
-                if sub is not None:
-                    plan["underlying"] = await self._underlying_plan(sub, request, sr_u, live_u)
-                # only a non-leveraged run gets here with them (its model wrote the line anyway)
-                plan.pop("underlying_levels", None)
+                if lever:
+                    plan = await self._leveraged_plan(run_id, request, lever, result, horizon,
+                                                      (start, start_u), (live, live_u), (sr, sr_u), related)
+                else:
+                    plan = parse_plan(result.final_state)
+                    plan.pop("underlying_levels", None)   # a model that wrote the line anyway
+                    plan = await asyncio.to_thread(self.levels, plan, request.ticker, request.trade_date,
+                                                   live=live, horizon=horizon.id)
+                    plan = entry_vs_live(plan, sr and sr.get("atr"))
                 # The entry is valid from the price the agents saw, so the minutes spent analysing count.
                 plan["horizon"] = horizon.id
                 plan["valid_until"] = horizons.valid_until(horizon, start["fetched_at"] if start else None)

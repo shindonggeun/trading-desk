@@ -5,6 +5,8 @@ export interface AgentInfo {
   name: string;
   short: string;
   team: Team;
+  /** Only some runs have it (the leverage analyst speaks on leveraged products): listed once it speaks. */
+  onlyIfSpoken?: boolean;
 }
 
 // Pipeline order: the rail on the run page lists agents in this order.
@@ -21,6 +23,7 @@ export const AGENTS: AgentInfo[] = [
   { id: "conservative_analyst", name: "보수형 리스크", short: "CO", team: "risk" },
   { id: "neutral_analyst", name: "중립형 리스크", short: "NE", team: "risk" },
   { id: "portfolio_manager", name: "포트폴리오 매니저", short: "PM", team: "portfolio" },
+  { id: "leverage_analyst", name: "레버리지 분석가", short: "LV", team: "portfolio", onlyIfSpoken: true },
 ];
 
 export const TEAM_LABEL: Record<Team, string> = {

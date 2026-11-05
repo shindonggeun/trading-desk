@@ -16,6 +16,10 @@ export interface Plan {
   levels_source?: Partial<Record<"entry_price" | "stop_loss" | "price_target", "model" | "atr" | "converted">>;
   /** A leveraged product's levels on its underlying (backend desk/underlying.py); the same keys as the plan. Drawn by #68. */
   underlying?: Plan & { ticker: string; leverage: number; proxy: boolean };
+  /** What TradingAgents analysed: the underlying for a leveraged product (#82). */
+  analysis_subject?: string;
+  /** The leverage analyst failed; the plan is the underlying's call (flipped for inverse) with converted levels. */
+  leverage_analyst_error?: string;
   atr?: number;
   last_close?: number;
   levels_error?: string;

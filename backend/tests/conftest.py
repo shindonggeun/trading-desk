@@ -36,4 +36,7 @@ def no_yahoo_network(monkeypatch):
     from desk import related
     for name in ("yahoo_daily", "yahoo_news", "yahoo_holdings"):
         monkeypatch.setattr(related, name, offline)
+    # nor an LLM: the leverage analyst (#82) is stubbed unless a test injects its own
+    from desk import api
+    monkeypatch.setattr(api, "llm_analyst", offline)
     sr._CACHE.clear()

@@ -26,7 +26,7 @@ export default function AgentRail({ events, status, analysts }: { events: DeskEv
       {teams.map((team) => (
         <div key={team} className="rail-team">
           <div className="rail-team-label">{TEAM_LABEL[team]}</div>
-          {AGENTS.filter((a) => a.team === team).map((a) => {
+          {AGENTS.filter((a) => a.team === team && (!a.onlyIfSpoken || spoken.has(a.id))).map((a) => {
             const s = stateOf(a.id, a.team);
             return (
               <div key={a.id} className={`rail-agent rail-${s}`}>

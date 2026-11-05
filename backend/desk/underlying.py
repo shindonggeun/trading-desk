@@ -36,32 +36,22 @@ def leverage_of(ticker: str) -> tuple[str, float, bool] | None:
     return underlying, float(leverage), ticker.upper() in PROXY
 
 
-def prompt_note(ticker: str, underlying: str, leverage: float, proxy: bool,
-                sr_u: dict | None, live_u: dict | None) -> str:
-    """Tells the deciding agents to set levels on the underlying first, and how to write them."""
-    inverse = leverage < 0
-    lines = [
-        f"{ticker.upper()} is a {leverage:+g}x daily product on {underlying}"
-        + (" (it tracks its own index; the underlying is a close proxy)" if proxy else "") + ". "
-        f"Read the chart structure on {underlying}: set entry, stop and target on {underlying}'s "
-        f"support/resistance first, then translate them to {ticker.upper()} prices.",
-    ]
-    if inverse:
-        lines.append(f"It is an inverse product: a long {ticker.upper()} is a short on {underlying}, so the "
-                     f"{underlying} stop sits above its entry and the {underlying} target below it.")
-    if live_u:
-        lines.append(f"{underlying} live price: {live_u['price']} ({live_u['source']} at {live_u['fetched_at']} UTC).")
-    if sr_u and sr_u.get("levels"):
-        zones = ", ".join(f"{'R' if lv['kind'] == 'resistance' else 'S'} {lv['price']} ({lv['timeframe']})"
-                          for lv in sr_u["levels"])
-        lines.append(f"{underlying} support (S) / resistance (R), reference {sr_u['reference_price']}, "
-                     f"ATR14 {sr_u['atr']}: {zones}.")
-    lines.append(
-        "The portfolio manager ends the Executive Summary with one line holding both sets, English labels "
-        f"in any output language: 'Entry Price: <{ticker.upper()}> / Stop Loss: <{ticker.upper()}> / "
-        f"Price Target: <{ticker.upper()}> / Underlying Entry: <{underlying}> / Underlying Stop: <{underlying}> / "
-        f"Underlying Target: <{underlying}>'.")
-    return "\n".join(lines)
+def prompt_note(ticker: str, underlying: str, leverage: float, proxy: bool) -> str:
+    """For the TradingAgents run on the underlying (issue #82): whose call it is and what it is for."""
+    product = ticker.upper()
+    return (f"This run analyses {underlying}. The owner trades {product}, a {leverage:+g}x daily "
+            f"{'inverse ' if leverage < 0 else ''}product on {underlying}"
+            + (" (it tracks its own index; the underlying is a close proxy)" if proxy else "")
+            + f", on your call: a desk leverage analyst converts the decision to {product} afterwards. "
+            f"Set every level (entry, stop, target) on {underlying} prices only.")
+
+
+_FLIP = {"Buy": "Sell", "Overweight": "Underweight", "Hold": "Hold", "Underweight": "Overweight", "Sell": "Buy"}
+
+
+def flip_rating(rating: str) -> str:
+    """The same view expressed on an inverse product: a Sell on SOXX is a Buy on SOXS."""
+    return _FLIP.get(rating, rating)
 
 
 def anchors(start: dict | None, start_u: dict | None, sr: dict | None, sr_u: dict | None) -> dict | None:

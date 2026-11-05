@@ -118,7 +118,10 @@ class Auth:
             ))
         return token
 
-    def resolve(self, token: str | None) -> User | None:
+    def resolve(self, token: str | None, touch: bool = True) -> User | None:
+        """The session's user, or None when it is unknown, expired or idle. ``touch=False`` is for a
+        background re-check (an open SSE stream): it must not count as activity, or an open tab would
+        keep the session from ever going idle."""
         if not token:
             return None
         key = hash_token(token)
@@ -135,7 +138,7 @@ class Auth:
         if aware(row.expires_at) <= stamp or last_seen + self.idle <= stamp:
             self.close_session(token)
             return None
-        if stamp - last_seen >= TOUCH_EVERY:
+        if touch and stamp - last_seen >= TOUCH_EVERY:
             with self.engine.begin() as conn:
                 conn.execute(update(sessions).where(sessions.c.token_hash == key).values(last_seen_at=stamp))
         return User(row.user_id, row.username)

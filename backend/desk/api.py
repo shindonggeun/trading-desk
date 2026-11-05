@@ -27,6 +27,7 @@ from .indicators import INDICATORS
 from .portfolio import Portfolio
 from .prices import INTERVALS, PriceSource
 from .profile import PROFILES
+from .related import collect as collect_related
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
 from .settings import Settings, load
 from .sr import support_resistance
@@ -156,7 +157,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             log.warning("marked %d unfinished run(s) as failed", stale)
         # Scripted runs keep levels on the script's numbers instead of fetching a live quote.
         app.state.manager = RunManager(store, hub, runner, broker, settings.max_concurrent_runs,
-                                       prices=None if settings.fake_runs else prices)
+                                       prices=None if settings.fake_runs else prices,
+                                       # a scripted run stays offline, like its support/resistance
+                                       related=None if settings.fake_runs else collect_related)
 
         async def keep_listing_fresh():
             while True:

@@ -39,6 +39,7 @@ class Relation:
     peers: tuple[str, ...] = ()
     drivers: tuple[str, ...] = ()   # futures, indices, FX, yields
     note: str | None = None
+    proxy: bool = False             # the product tracks its own index; the underlying stands in for it
 
 
 # Groups an underlying belongs to: its main holdings and what moves it.
@@ -88,10 +89,13 @@ LEVERAGED: dict[str, tuple[str, float]] = {
     "LABU": ("XBI", 3), "LABD": ("XBI", -3), "FAS": ("XLF", 3), "FAZ": ("XLF", -3),
     "TECL": ("XLK", 3), "TECS": ("XLK", -3), "ERX": ("XLE", 2), "ERY": ("XLE", -2),
     "NVDL": ("NVDA", 2), "NVDU": ("NVDA", 2), "NVDD": ("NVDA", -1), "NVD": ("NVDA", -2),
-    "TSLL": ("TSLA", 2), "TSLQ": ("TSLA", -1), "AMDL": ("AMD", 2), "CONL": ("COIN", 2),
+    "TSLL": ("TSLA", 2), "TSLQ": ("TSLA", -2), "AMDL": ("AMD", 2), "CONL": ("COIN", 2),
     "MSTU": ("MSTR", 2), "BITX": ("BTC-USD", 2), "MUU": ("MU", 2),
     "122630.KS": ("069500.KS", 2), "252670.KS": ("069500.KS", -2), "114800.KS": ("069500.KS", -1),
 }
+
+# Products on their own index, close to but not the same as the listed underlying.
+PROXY = {"GDXU", "GDXD", "USD", "SSG"}
 
 # When nothing is known: the broad market the ticker trades in.
 _MARKET_US = Relation(drivers=("SPY", "QQQ", "^VIX", "^TNX"))
@@ -118,7 +122,8 @@ def relation_for(ticker: str, holdings: Callable[[str], list[str]] | None = None
     drivers = group.drivers or market.drivers
     peers = tuple(p for p in group.peers if p not in (ticker, base))
     return Relation(underlying=underlying, leverage=leverage, peers=peers,
-                    drivers=tuple(d for d in drivers if d not in (ticker, base)), note=group.note)
+                    drivers=tuple(d for d in drivers if d not in (ticker, base)), note=group.note,
+                    proxy=ticker in PROXY)
 
 
 # --- numbers ------------------------------------------------------------------------
@@ -167,7 +172,9 @@ def _beta(target: list[float], base: list[float]) -> float | None:
 
 
 def _aligned(target: Closes, other: Closes) -> tuple[list[float], list[float]]:
-    """Daily returns of both on the days both traded (US and Korean holidays differ)."""
+    """Daily returns of both on the days both traded (US and Korean holidays differ). Dates are
+    each exchange's own: a US close on day D comes after the Korean close on D, so for a Korean
+    ticker a US driver's same-date return is half a session ahead (and a past-date analysis sees it)."""
     mine = dict(target)
     days = [d for d, _ in other if d in mine]
     theirs = dict(other)
@@ -219,7 +226,8 @@ def yahoo_news(ticker: str) -> list[dict]:
     items = []
     for raw in yf.Ticker(ticker).news[:NEWS_PER_TICKER]:
         content = raw.get("content", raw)   # yfinance >= 0.2.50 nests the story under content
-        title = content.get("title")
+        # one line, bounded: titles go into the prompt one per line
+        title = " ".join((content.get("title") or "").split())[:200]
         at = content.get("pubDate") or content.get("displayTime")
         if not at and raw.get("providerPublishTime"):
             at = datetime.fromtimestamp(raw["providerPublishTime"], UTC).isoformat()
@@ -276,7 +284,7 @@ def collect(ticker: str, trade_date: str, sources: RelatedSources | None = None,
     if not rows:
         return None
     result: dict = {"ticker": ticker, "underlying": relation.underlying, "leverage": relation.leverage,
-                    "note": relation.note, "instruments": rows,
+                    "proxy": relation.proxy, "note": relation.note, "instruments": rows,
                     "self": summarize(ticker, target or [], None, "self")}
     if relation.underlying and target and closes.get(relation.underlying):
         mine, base = _aligned(target, closes[relation.underlying])
@@ -315,13 +323,15 @@ def prompt_note(related: dict | None) -> str | None:
     if not related or not related.get("instruments"):
         return None
     lines = [("Related instruments (desk-computed from daily closes; chg = % change over 1/5/20 "
-             "sessions, vsSMA = % from the 20/50-day average, corr = 60-day correlation of daily "
+             "sessions (calendar days for crypto), vsSMA = % from the 20/50-day average, corr = 60-day correlation of daily "
              f"returns with {related['ticker']}):")]
     if related.get("underlying"):
         tracking = related.get("tracking") or {}
+        proxy = " (its own index; this ETF is a close proxy)" if related.get("proxy") else ""
+        beta = {k: "n/a" if tracking.get(k) is None else tracking[k] for k in ("beta_20d", "beta_60d")}
         lines.append(f"- {related['ticker']} is a {related['leverage']:+g}x daily product on "
-                     f"{related['underlying']}; realized beta to it 20d {tracking.get('beta_20d', 'n/a')}, "
-                     f"60d {tracking.get('beta_60d', 'n/a')}. Read the chart structure on the underlying.")
+                     f"{related['underlying']}{proxy}; realized beta to it 20d {beta['beta_20d']}, "
+                     f"60d {beta['beta_60d']}. Read the chart structure on the underlying.")
     if related.get("note"):
         lines.append(f"- Context: {related['note']}.")
     for row in [related.get("self")] + related["instruments"]:

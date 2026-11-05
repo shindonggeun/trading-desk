@@ -1,7 +1,8 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { api, followRun } from "../api";
 import AgentRail from "../components/AgentRail";
 import { ChatMessage, SystemLine, ToolRow } from "../components/ChatMessage";
+import { GlossaryPanel, GlossaryProvider } from "../components/Glossary";
 import PlanCard from "../components/PlanCard";
 import SectionBoundary from "../components/SectionBoundary";
 
@@ -46,6 +47,8 @@ export default function RunView({ runId }: { runId: string }) {
   const [, tick] = useState(0);
   const bottom = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const [glossary, setGlossary] = useState<{ id: string | null; seq: number }>({ id: null, seq: 0 });
+  const focusTerm = useCallback((id: string) => setGlossary((g) => ({ id, seq: g.seq + 1 })), []);
 
   useEffect(() => {
     api.run(runId).then(setRun).catch((e) => setError(String(e)));
@@ -85,7 +88,7 @@ export default function RunView({ runId }: { runId: string }) {
   const status = (events.some((e) => e.type === "done") && run.status === "running") ? "done" : run.status;
 
   return (
-    <main className="run">
+    <main className="run run-wide">
       <div className="run-head">
         <a href="#/" className="link">← 대시보드</a>
         <h1>{run.options.name ?? run.ticker} <span className="muted">{run.options.name ? `${run.ticker} · ` : ""}{run.trade_date}</span></h1>
@@ -97,7 +100,8 @@ export default function RunView({ runId }: { runId: string }) {
           <PriceChart ticker={run.ticker} tradeDate={run.trade_date} plan={plan} />
         </Suspense>
       </SectionBoundary>
-      <div className="run-body">
+      <GlossaryProvider onFocus={focusTerm}>
+      <div className="run-body has-glossary">
         <AgentRail events={events} status={status} analysts={run.options.analysts} />
         <div className="chat">
           {toItems(events).map((item) =>
@@ -120,7 +124,9 @@ export default function RunView({ runId }: { runId: string }) {
           )}
           <div ref={bottom} />
         </div>
+        <GlossaryPanel events={events} focusId={glossary.id} focusSeq={glossary.seq} />
       </div>
+      </GlossaryProvider>
     </main>
   );
 }

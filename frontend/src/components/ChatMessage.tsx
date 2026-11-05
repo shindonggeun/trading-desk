@@ -1,11 +1,21 @@
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { agentInfo } from "../agents";
 import { koreanizeLabels } from "../korean";
+import { annotate } from "./Glossary";
 import type { DeskEvent } from "../types";
 
 const COLLAPSE_AT = 900; // characters; analyst reports run long
+
+// 용어 사전(#24): 본문 용어에 점선 밑줄 + 뜻 — 같은 용어는 문단 · 항목마다 처음 한 번만.
+// 모듈 상수여야 한다: 렌더마다 새 함수면 React 가 다른 컴포넌트로 보고 본문을 매번 다시 만든다(선택 · 포커스가 풀림).
+// 기억(Set)은 블록마다 새로 — 메시지 전체가 하나를 쓰면 StrictMode 의 두 번째 렌더에서 밑줄이 사라진다.
+const WITH_TERMS: Components = {
+  p: ({ children }) => <p>{annotate(children, new Set())}</p>,
+  li: ({ children }) => <li>{annotate(children, new Set())}</li>,
+  td: ({ children }) => <td>{annotate(children, new Set())}</td>,
+};
 
 export function ChatMessage({ event }: { event: DeskEvent }) {
   const info = agentInfo(event.agent);
@@ -21,7 +31,7 @@ export function ChatMessage({ event }: { event: DeskEvent }) {
           <time>{new Date(event.ts).toLocaleTimeString("ko-KR")}</time>
         </header>
         <div className={`md ${open ? "" : "md-clipped"}`}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={WITH_TERMS}>{text}</ReactMarkdown>
         </div>
         {long && (
           <button className="link" onClick={() => setOpen(!open)}>

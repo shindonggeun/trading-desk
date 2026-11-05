@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from .broker.base import MarketDay
 from .estimate import KRX, US, session_of
@@ -55,6 +55,7 @@ def market_open(ticker: str, now: datetime | None = None) -> bool:
 
 CALENDAR_TTL_SEC = 6 * 3600.0     # a day's sessions do not change; the date rollover refetches too
 CALENDAR_RETRY_SEC = 600.0        # after a failed read, the clock decides this long
+CALENDAR_TIMEOUT_SEC = 5.0
 
 
 def calendar_market(ticker: str) -> str | None:
@@ -75,26 +76,34 @@ class Calendar:
     def __init__(self, broker, clock=time.monotonic):
         self._broker = broker
         self._clock = clock
-        self._days: dict[str, tuple[float, list[MarketDay] | None]] = {}
+        # keyed by (market, the market's own date asked for): whatever came back — even a list
+        # without that date — is used until it expires, so a tick never turns into a broker call
+        self._days: dict[tuple[str, date], tuple[float, list[MarketDay] | None]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
-    async def _load(self, market: str, today) -> list[MarketDay] | None:
-        cached = self._days.get(market)
-        if cached and self._clock() < cached[0] and (cached[1] is None or any(d.day == today for d in cached[1])):
-            return cached[1]
+    def _cached(self, key):
+        hit = self._days.get(key)
+        return hit if hit and self._clock() < hit[0] else None
+
+    async def _load(self, market: str, today: date) -> list[MarketDay] | None:
+        key = (market, today)
+        if hit := self._cached(key):
+            return hit[1]
         async with self._locks.setdefault(market, asyncio.Lock()):
-            cached = self._days.get(market)
-            if cached and self._clock() < cached[0] and (cached[1] is None or any(d.day == today for d in cached[1])):
-                return cached[1]
+            if hit := self._cached(key):
+                return hit[1]
             try:
-                days = await self._broker.market_calendar(market)
-                ttl = CALENDAR_TTL_SEC
+                # bounded: the lock holds every stream of this market, and each re-checks its session
+                days = await asyncio.wait_for(self._broker.market_calendar(market, today), CALENDAR_TIMEOUT_SEC)
+                ttl = CALENDAR_TTL_SEC if days else CALENDAR_RETRY_SEC   # an empty answer is a failure
             except NotImplementedError:
                 days, ttl = None, CALENDAR_TTL_SEC   # the mock broker: the clock decides
-            except Exception as exc:  # noqa: BLE001 - the clock stands in
-                log.warning("market calendar %s failed: %s", market, exc)
+            except Exception as exc:  # noqa: BLE001 - incl. timeout: the clock stands in
+                log.warning("market calendar %s failed: %s", market, type(exc).__name__ if isinstance(exc, TimeoutError) else exc)
                 days, ttl = None, CALENDAR_RETRY_SEC
-            self._days[market] = (self._clock() + ttl, days or None)
+            if len(self._days) > 16:
+                self._days.clear()
+            self._days[key] = (self._clock() + ttl, days or None)
             return days or None
 
     async def is_open(self, market: str, now: datetime | None = None) -> bool | None:

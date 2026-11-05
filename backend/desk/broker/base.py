@@ -138,9 +138,10 @@ class Broker(ABC):
         """Current level of market indices (KOSPI, KOSDAQ)."""
         raise NotImplementedError
 
-    async def market_calendar(self, market: str) -> list[MarketDay]:
-        """The regular session of ``market`` (KR | US) on the previous, current and next business
-        day as the broker publishes them — holidays and shortened days included."""
+    async def market_calendar(self, market: str, day: date | None = None) -> list[MarketDay]:
+        """The regular session of ``market`` (KR | US) on the business days around ``day`` (the
+        market's own date; today when None) as the broker publishes them — holidays and
+        shortened days included."""
         raise NotImplementedError
 
     async def portfolio(self):

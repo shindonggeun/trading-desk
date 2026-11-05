@@ -12,7 +12,7 @@ import asyncio
 import base64
 import logging
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 import httpx
@@ -248,10 +248,12 @@ class TossBroker(Broker):
         next_until = result.get("nextUntil") if isinstance(result, dict) else None
         return records, (str(next_until)[:10] if next_until else None)
 
-    async def market_calendar(self, market: str) -> list[MarketDay]:
+    async def market_calendar(self, market: str, day: date | None = None) -> list[MarketDay]:
         """GET /api/v1/market-calendar/{KR|US} (Market Info group, token only). KR: the integrated
         (KRX+NXT) regular session; US: the regular session. A holiday has no session (null)."""
-        result = await self._get(f"/api/v1/market-calendar/{market}") or {}
+        # date = KST (KR) / New York (US) date, so "today" in the answer is the day we mean
+        params = {"date": day.isoformat()} if day else None
+        result = await self._get(f"/api/v1/market-calendar/{market}", params=params) or {}
         days = []
         for key in ("previousBusinessDay", "today", "nextBusinessDay"):
             node = result.get(key) if isinstance(result, dict) else None
@@ -263,8 +265,7 @@ class TossBroker(Broker):
                 day = date.fromisoformat(str(node["date"])[:10])
                 opens = closes = None
                 if isinstance(regular, dict) and regular.get("startTime") and regular.get("endTime"):
-                    opens = datetime.fromisoformat(str(regular["startTime"]))
-                    closes = datetime.fromisoformat(str(regular["endTime"]))
+                    opens, closes = (_kst(regular["startTime"]), _kst(regular["endTime"]))
             except ValueError:
                 log.warning("Toss %s calendar: unreadable day %s", market, node.get("date"))
                 continue
@@ -309,6 +310,12 @@ class TossBroker(Broker):
                 break
             params = {**params, "cursor": page["nextCursor"]}
         return out
+
+
+def _kst(value) -> datetime:
+    """Toss times carry +09:00; one without an offset is read as KST rather than left naive."""
+    moment = datetime.fromisoformat(str(value))
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone(timedelta(hours=9)))
 
 
 def _rows(payload, key: str) -> list[dict]:

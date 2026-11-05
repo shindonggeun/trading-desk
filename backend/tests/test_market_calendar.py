@@ -28,7 +28,8 @@ def test_toss_calendar_reads_the_regular_session_and_holidays():
     requests: list = []
     kr = _toss({"previousBusinessDay": _kr("2026-11-04"), "today": {"date": "2026-11-05", "integrated": None},
                 "nextBusinessDay": _kr("2026-11-06", "10:00", "16:30")}, requests)
-    days = asyncio.run(kr.market_calendar("KR"))
+    days = asyncio.run(kr.market_calendar("KR", date(2026, 11, 5)))
+    assert requests[0].url.params["date"] == "2026-11-05"
     assert requests[0].url.path == "/api/v1/market-calendar/KR" and "x-account" not in {k.lower() for k in requests[0].headers}
     assert [d.day for d in days] == [date(2026, 11, 4), date(2026, 11, 5), date(2026, 11, 6)]
     assert days[1].opens is None and days[1].closes is None                     # holiday
@@ -37,17 +38,21 @@ def test_toss_calendar_reads_the_regular_session_and_holidays():
     us = _toss({"today": {"date": "2026-11-27", "regularMarket": {"startTime": "2026-11-27T23:30:00+09:00",
                                                                   "endTime": "2026-11-28T03:00:00+09:00"},
                           "preMarket": None, "afterMarket": None, "dayMarket": None},
-                "nextBusinessDay": {"date": "bad"}}, [])
-    (day,) = asyncio.run(us.market_calendar("US"))                               # an unreadable day is skipped
+                "nextBusinessDay": {"date": "2026-11-30", "regularMarket": {"startTime": "2026-11-30T23:30:00",
+                                                                             "endTime": "2026-12-01T06:00:00"}},
+                "previousBusinessDay": {"date": "bad"}}, [])
+    day, nxt = asyncio.run(us.market_calendar("US"))                             # an unreadable day is skipped
     assert day.day == date(2026, 11, 27) and day.closes == datetime(2026, 11, 28, 3, 0, tzinfo=KST)
+    assert nxt.opens == datetime(2026, 11, 30, 23, 30, tzinfo=KST)               # no offset: read as KST
 
 
 class Broker:
     def __init__(self, days=None, error=None):
         self.days, self.error, self.calls = days or [], error, 0
 
-    async def market_calendar(self, market):
+    async def market_calendar(self, market, day=None):
         self.calls += 1
+        self.asked = day
         if self.error:
             raise self.error
         return self.days
@@ -90,7 +95,7 @@ def test_without_a_calendar_the_clock_stands_in_and_failures_are_retried_later()
     assert failing.calls == 2
 
     class Mock:                                                                          # broker without a calendar
-        async def market_calendar(self, market):
+        async def market_calendar(self, market, day=None):
             raise NotImplementedError
     assert asyncio.run(live.is_open(live.Calendar(Mock()), "NVDA", datetime(2026, 11, 5, 15, 0, tzinfo=UTC))) is True
     assert asyncio.run(live.is_open(None, "NVDA", datetime(2026, 11, 7, 15, 0, tzinfo=UTC))) is False  # Saturday
@@ -115,3 +120,37 @@ def test_crypto_fx_and_futures_do_not_use_the_calendar():
     assert asyncio.run(live.is_open(cal, "KRW=X", sat)) is False and broker.calls == 0
     assert live.calendar_market("^KS11") == "KR" and live.calendar_market("^GSPC") == "US"
     assert live.calendar_market("NQ=F") is None and live.calendar_market("035720.KQ") == "KR"
+
+
+def test_a_list_without_today_or_an_empty_answer_is_not_refetched_every_tick():
+    sat = date(2026, 11, 7)
+    broker = Broker([_day(date(2026, 11, 6)), _day(date(2026, 11, 9))])
+    now = [0.0]
+    cal = live.Calendar(broker, clock=lambda: now[0])
+    for _ in range(5):
+        assert asyncio.run(cal.is_open("KR", _at(sat, 10))) is False
+    assert broker.calls == 1 and broker.asked == sat
+    empty = Broker([])
+    cal = live.Calendar(empty, clock=lambda: now[0])
+    assert asyncio.run(cal.is_open("KR", _at(sat, 10))) is None
+    asyncio.run(cal.is_open("KR", _at(sat, 10)))
+    assert empty.calls == 1
+    now[0] = live.CALENDAR_RETRY_SEC + 1                     # empty = a failure: retried in minutes, not hours
+    asyncio.run(cal.is_open("KR", _at(sat, 10)))
+    assert empty.calls == 2
+
+
+def test_us_days_are_new_york_dates_and_a_slow_calendar_gives_way_to_the_clock(monkeypatch):
+    # KST Sat 11/28 02:00 = New York Fri 11/27 12:00, a half day closing 13:00 New York
+    fri = date(2026, 11, 27)
+    half = MarketDay(day=fri, opens=datetime(2026, 11, 27, 23, 30, tzinfo=KST), closes=datetime(2026, 11, 28, 3, 0, tzinfo=KST))
+    cal = live.Calendar(Broker([half]))
+    assert asyncio.run(cal.is_open("US", datetime(2026, 11, 27, 17, 0, tzinfo=UTC))) is True
+    assert asyncio.run(cal.is_open("US", datetime(2026, 11, 27, 18, 30, tzinfo=UTC))) is False   # after 13:00 NY
+
+    class Slow:
+        async def market_calendar(self, market, day=None):
+            await asyncio.sleep(10)
+    monkeypatch.setattr(live, "CALENDAR_TIMEOUT_SEC", 0.05)
+    tue = datetime(2026, 11, 3, 15, 0, tzinfo=UTC)          # Tuesday 10:00 New York: the clock says open
+    assert asyncio.run(live.is_open(live.Calendar(Slow()), "NVDA", tue)) is True

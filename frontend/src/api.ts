@@ -1,4 +1,4 @@
-import type { DeskConfig, DeskEvent, Holding, Instrument, RegimeSnapshot, Run, RunPage } from "./types";
+import type { DeskConfig, Estimate, DeskEvent, Holding, Instrument, RegimeSnapshot, Run, RunPage } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -138,6 +138,7 @@ export const api = {
     call<{ ticker: string; price: number; currency: string | null; source: string; fetched_at: string }>(
       `/api/quote?ticker=${encodeURIComponent(ticker)}`,
     ),
+  estimate: (ticker: string) => call<Estimate>(`/api/estimate?ticker=${encodeURIComponent(ticker)}`),
   instruments: (q: string) => call<Instrument[]>(`/api/instruments?q=${encodeURIComponent(q)}`),
   instrumentsStatus: () =>
     call<{ source: string; count: number; updated_at: string | null; error: string | null }>("/api/instruments/status"),

@@ -13,24 +13,34 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
 from .broker.base import Bar, Broker
+from .indicators import INDICATORS, RSI_WARMUP, rsi
 
 log = logging.getLogger(__name__)
 
 QUOTE_TTL_SEC = 10.0
 CANDLE_TTL_SEC = 30.0
 CACHE_MAX = 256
-INTERVALS = ("1m", "1d", "1w")
+# 1M is a month, 1m a minute. 240m and 1y are built here from Yahoo's 60m and monthly bars.
+INTERVALS = ("1m", "5m", "15m", "30m", "60m", "240m", "1d", "1w", "1M", "1y")
 MAX_COUNT = 500
-# Toss serves at most 200 bars and no weekly bars ("지원하지 않는 캔들 주기"); longer or weekly
-# histories come straight from Yahoo.
+# Toss serves at most 200 bars and only 1m / 1d ("지원하지 않는 캔들 주기"); everything else,
+# and longer histories, come straight from Yahoo.
 BROKER_MAX_COUNT = 200
 BROKER_INTERVALS = ("1m", "1d")
-_YAHOO_INTERVAL = {"1m": "1m", "1d": "1d", "1w": "1wk"}
+_YAHOO_INTERVAL = {"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m", "60m": "60m", "240m": "60m",
+                   "1d": "1d", "1w": "1wk", "1M": "1mo", "1y": "1mo"}
+_MINUTES = {"5m": 5, "15m": 15, "30m": 30, "60m": 60, "240m": 240}
+# How far back Yahoo keeps intraday bars; the chart says "최근 N일만" when a request runs past it.
+HISTORY_LIMIT_DAYS = {"1m": 7, "5m": 60, "15m": 60, "30m": 60, "60m": 730, "240m": 730}
+# Short bars move, long ones barely do: cache each for about as long as it stays useful.
+_CANDLE_TTL = {"1m": CANDLE_TTL_SEC, "5m": CANDLE_TTL_SEC, "15m": 60.0, "30m": 60.0, "60m": 120.0,
+               "240m": 300.0, "1d": CANDLE_TTL_SEC, "1w": 300.0, "1M": 3600.0, "1y": 3600.0}
 
 
 @dataclass(frozen=True)
@@ -75,23 +85,56 @@ def yahoo_quote(ticker: str) -> tuple[float, str | None]:
     return float(price), info.get("currency")
 
 
+def _yahoo_period(interval: str, count: int) -> str:
+    if interval == "1m":
+        return "5d"                       # Yahoo keeps 1-minute bars for about a week
+    if interval in _MINUTES:
+        # ~6.5 trading hours a day, 5 trading days in 7, plus room for holidays.
+        days = math.ceil(count * _MINUTES[interval] / 390 * 7 / 5 * 1.3) + 5
+        return f"{min(days, HISTORY_LIMIT_DAYS[interval] - 1)}d"
+    if interval == "1w":
+        return f"{count * 7 + 14}d"
+    if interval == "1M":
+        return f"{count * 31 + 62}d"
+    if interval == "1y":
+        return "max"
+    return f"{max(count * 2, 30)}d"
+
+
 def yahoo_candles(ticker: str, interval: str, count: int) -> list[Bar]:
     import yfinance as yf
 
-    # Yahoo keeps 1-minute bars for about a week; 5 days covers a weekend and a holiday.
-    if interval == "1m":
-        period = "5d"
-    elif interval == "1w":
-        period = f"{count * 7 + 14}d"
-    else:
-        period = f"{max(count * 2, 30)}d"
-    frame = yf.Ticker(ticker).history(period=period, interval=_YAHOO_INTERVAL[interval], auto_adjust=False)
+    frame = yf.Ticker(ticker).history(period=_yahoo_period(interval, count),
+                                      interval=_YAHOO_INTERVAL[interval], auto_adjust=False)
     frame = frame.dropna(subset=["Open", "High", "Low", "Close"])
-    bars = [Bar(at=index.to_pydatetime().astimezone(UTC).isoformat(timespec="seconds"),
-                open=float(row["Open"]), high=float(row["High"]), low=float(row["Low"]),
-                close=float(row["Close"]), volume=float(row["Volume"]))
-            for index, row in frame.iterrows()]
+    # The index is in the exchange's own time zone, so .date() is the trading day there.
+    rows = []
+    for index, row in frame.iterrows():
+        volume = row["Volume"]
+        rows.append((index, Bar(at=index.to_pydatetime().astimezone(UTC).isoformat(timespec="seconds"),
+                                open=float(row["Open"]), high=float(row["High"]), low=float(row["Low"]),
+                                close=float(row["Close"]), volume=0.0 if math.isnan(volume) else float(volume))))
+    if interval == "240m":
+        bars = group_bars([(index.date(), bar) for index, bar in rows], size=4)
+    elif interval == "1y":
+        bars = group_bars([(index.year, bar) for index, bar in rows])
+    else:
+        bars = [bar for _, bar in rows]
     return bars[-count:]
+
+
+def group_bars(keyed: list[tuple[object, Bar]], size: int | None = None) -> list[Bar]:
+    """Merge consecutive bars sharing a key (a trading day, a year) into one, ``size`` at a
+    time when given - so a 240-minute bar never spans two sessions. Bars come oldest first."""
+    groups: list[list[Bar]] = []
+    last_key: object = object()
+    for key, bar in keyed:
+        if not groups or key != last_key or (size and len(groups[-1]) == size):
+            groups.append([])
+        groups[-1].append(bar)
+        last_key = key
+    return [Bar(at=g[0].at, open=g[0].open, high=max(b.high for b in g), low=min(b.low for b in g),
+                close=g[-1].close, volume=sum(b.volume for b in g)) for g in groups]
 
 
 class PriceSource:
@@ -103,7 +146,7 @@ class PriceSource:
         self._yahoo_candles = yahoo_candles or (lambda *args: globals()["yahoo_candles"](*args))
         self._clock = clock
         self._quotes: dict[str, tuple[float, Quote]] = {}
-        self._candles: dict[tuple[str, str, int], tuple[float, dict]] = {}
+        self._candles: dict[tuple[str, str, int, tuple[str, ...]], tuple[float, dict, float]] = {}
 
     async def quote(self, ticker: str) -> Quote:
         cached = self._quotes.get(ticker)
@@ -120,38 +163,55 @@ class PriceSource:
         _remember(self._quotes, ticker, (self._clock(), quote), QUOTE_TTL_SEC, self._clock)
         return quote
 
-    async def candles(self, ticker: str, interval: str = "1d", count: int = 120) -> dict:
-        """{"ticker", "interval", "source", "fetched_at", "bars": [...oldest first]}."""
+    async def candles(self, ticker: str, interval: str = "1d", count: int = 120,
+                      indicators: tuple[str, ...] = ()) -> dict:
+        """{"ticker", "interval", "source", "fetched_at", "bars": [...oldest first], "indicators",
+        "history_limit_days", "truncated"}. With "rsi14" each bar also carries "rsi"."""
         if interval not in INTERVALS:
             raise ValueError(f"interval must be one of {INTERVALS}")
+        if set(indicators) - set(INDICATORS):
+            raise ValueError(f"indicators must be among {INDICATORS}")
+        indicators = tuple(sorted(set(indicators)))
         count = min(max(count, 1), MAX_COUNT)
-        key = (ticker, interval, count)
+        key = (ticker, interval, count, indicators)
+        ttl = _CANDLE_TTL[interval]
         cached = self._candles.get(key)
-        if cached and self._clock() - cached[0] < CANDLE_TTL_SEC:
+        if cached and self._clock() - cached[0] < ttl:
             return cached[1]
+        # Extra bars ahead of the shown ones so the RSI has settled by the first bar drawn.
+        fetch = count + (RSI_WARMUP if "rsi14" in indicators else 0)
         try:
             if interval not in BROKER_INTERVALS or count > BROKER_MAX_COUNT:
                 raise NotImplementedError
-            bars = await self.broker.candles(broker_symbol(ticker), interval, count)
+            # Toss caps at 200: a chart that fits keeps Toss as its source with the RSI on, taking
+            # only the warm-up bars that still fit, rather than flipping to Yahoo's (unadjusted) bars.
+            bars = await self.broker.candles(broker_symbol(ticker), interval, min(fetch, BROKER_MAX_COUNT))
             if not bars:
                 raise ValueError("no bars")
             source = self.broker.name
         except Exception as exc:  # noqa: BLE001
             if not isinstance(exc, NotImplementedError):
                 log.info("broker candles for %s failed, using Yahoo: %s", ticker, exc)
-            bars = await asyncio.to_thread(self._yahoo_candles, ticker, interval, count)
+            bars = await asyncio.to_thread(self._yahoo_candles, ticker, interval, fetch)
             source = "yahoo"
+        rows = [asdict(bar) for bar in bars]
+        if "rsi14" in indicators:
+            for row, value in zip(rows, rsi([row["close"] for row in rows]), strict=True):
+                row["rsi"] = value
+        rows = rows[-count:]
         result = {"ticker": ticker, "interval": interval, "source": source, "fetched_at": _now(),
-                  "bars": [asdict(bar) for bar in bars]}
-        _remember(self._candles, key, (self._clock(), result), CANDLE_TTL_SEC, self._clock)
+                  "bars": rows, "indicators": list(indicators),
+                  "history_limit_days": HISTORY_LIMIT_DAYS.get(interval), "truncated": len(rows) < count}
+        _remember(self._candles, key, (self._clock(), result, ttl), ttl, self._clock)
         return result
 
 
-def _remember(cache: dict, key, entry: tuple[float, object], ttl: float, clock) -> None:
-    """Store, dropping expired entries once the cache grows past CACHE_MAX tickers."""
+def _remember(cache: dict, key, entry: tuple, ttl: float, clock) -> None:
+    """Store, dropping expired entries once the cache grows past CACHE_MAX tickers. An entry
+    may carry its own TTL as a third item (candles: each interval keeps its own)."""
     if len(cache) >= CACHE_MAX:
         now = clock()
-        for stale in [k for k, (stamp, _) in cache.items() if now - stamp >= ttl]:
+        for stale in [k for k, item in cache.items() if now - item[0] >= (item[2] if len(item) > 2 else ttl)]:
             del cache[stale]
         if len(cache) >= CACHE_MAX:
             cache.clear()

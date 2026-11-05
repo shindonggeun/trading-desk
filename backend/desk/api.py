@@ -23,6 +23,7 @@ from .auth import COOKIE, Auth, Busy, LoginThrottle, User
 from .broker import make_broker
 from .db import make_engine, migrate, now
 from .estimate import BinanceEstimator
+from .indicators import INDICATORS
 from .portfolio import Portfolio
 from .prices import INTERVALS, PriceSource
 from .profile import PROFILES
@@ -537,16 +538,20 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(503, f"no price for {ticker}") from None
 
     @app.get("/api/candles")
-    async def candles(ticker: str, interval: str = "1d", count: int = 120):
-        """Bars for the chart, oldest first. 1m/1d: Toss then Yahoo; 1w (and > 200 bars): Yahoo."""
+    async def candles(ticker: str, interval: str = "1d", count: int = 120, indicators: str = ""):
+        """Bars for the chart, oldest first. 1m/1d: Toss then Yahoo; minute bars, 1w, 1M, 1y
+        (and > 200 bars): Yahoo. ``indicators=rsi14`` adds each bar's RSI(14)."""
+        wanted = tuple(part.strip() for part in indicators.split(",") if part.strip())
         try:
             ticker = clean_ticker(ticker)
             if interval not in INTERVALS:
                 raise ValueError(f"interval must be one of {', '.join(INTERVALS)}")
+            if set(wanted) - set(INDICATORS):
+                raise ValueError(f"indicators must be among {', '.join(INDICATORS)}")
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         try:
-            return await prices.candles(ticker, interval, count)
+            return await prices.candles(ticker, interval, count, wanted)
         except Exception as exc:  # noqa: BLE001 - both sources failed
             log.warning("candles for %s %s failed: %s", ticker, interval, exc)
             raise HTTPException(503, f"no candles for {ticker}") from None

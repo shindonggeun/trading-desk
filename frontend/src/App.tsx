@@ -4,6 +4,8 @@ import type { DeskConfig } from "./types";
 import LoginForm from "./components/LoginForm";
 import Dashboard from "./pages/Dashboard";
 import RunView from "./pages/RunView";
+import Settings from "./pages/Settings";
+
 function useHashRoute(): string {
   const [hash, setHash] = useState(() => window.location.hash || "#/");
   useEffect(() => {
@@ -45,6 +47,7 @@ export default function App() {
   }, []);
 
   const runMatch = route.match(/^#\/runs\/([\w-]+)/);
+  const onSettings = route.startsWith("#/settings");
 
   return (
     <div className="shell">
@@ -54,7 +57,8 @@ export default function App() {
         </a>
         {user && (
           <nav>
-            <a href="#/" className={!runMatch ? "active" : ""}>대시보드</a>
+            <a href="#/" className={!runMatch && !onSettings ? "active" : ""}>대시보드</a>
+            <a href="#/settings" className={onSettings ? "active" : ""}>설정</a>
           </nav>
         )}
         <div className="topbar-right">
@@ -72,6 +76,8 @@ export default function App() {
 
       {user === undefined ? null : user === null ? (
         <LoginForm onLoggedIn={(name) => { setOffline(false); setUser(name); }} />
+      ) : onSettings ? (
+        <Settings />
       ) : runMatch ? (
         <RunView key={runMatch[1]} runId={runMatch[1]} />
       ) : (

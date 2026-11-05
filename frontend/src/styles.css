@@ -223,3 +223,20 @@ table.runs { width: 100%; border-collapse: collapse; }
 .src { margin-left: 6px; font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; }
 .src-atr { color: var(--warn); border-color: var(--warn); }
 
+
+/* settings · OTP */
+.settings { padding: 20px; display: grid; justify-content: center; }
+.settings-card { width: min(560px, 100%); display: grid; gap: 12px; }
+.settings-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.settings-row p { margin: 4px 0 0; }
+.settings-form { display: grid; gap: 10px; }
+.settings-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.settings-notice { margin: 0; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--long) 14%, transparent); font-size: 13px; }
+.pill-on { color: var(--long); border-color: var(--long); }
+button.secondary { background: none; color: var(--text); border: 1px solid var(--border); }
+.otp-qr { background: #fff; padding: 8px; border-radius: 8px; justify-self: start; }
+.otp-secret { display: block; margin-top: 6px; font-size: 15px; letter-spacing: .05em; word-break: break-all; }
+.recovery-codes { margin: 0; padding-left: 22px; columns: 2; font-size: 14px; line-height: 1.9; }
+.login-links { display: flex; justify-content: space-between; gap: 8px; }
+.topbar nav { display: flex; gap: 16px; }
+.settings-row .pill { white-space: nowrap; flex-shrink: 0; }

@@ -103,6 +103,19 @@ class Store:
             ).mappings().all()
         return [_run(row) for row in rows]
 
+    def done_runs_for(self, tickers: list[str], since: str) -> list[dict]:
+        """Finished runs of these tickers with trade_date >= since (YYYY-MM-DD), newest first —
+        the plans the trade review compares executions against."""
+        if not tickers:
+            return []
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(runs).where(runs.c.status == "done", runs.c.ticker.in_(tickers),
+                                   runs.c.trade_date >= since)
+                .order_by(runs.c.trade_date.desc(), runs.c.created_at.desc())
+            ).mappings().all()
+        return [_run(row) for row in rows]
+
     def count_runs(self) -> int:
         with self.engine.connect() as conn:
             return conn.execute(select(func.count()).select_from(runs)).scalar_one()

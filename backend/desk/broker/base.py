@@ -6,7 +6,22 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
+from datetime import date
 from typing import Any
+
+
+@dataclass(frozen=True)
+class Fill:
+    """One executed order, as the broker reports it (averaged over its partial fills)."""
+
+    order_id: str
+    symbol: str            # the broker's symbol (005930, NVDA)
+    side: str              # BUY | SELL
+    quantity: float        # filled quantity
+    price: float           # average fill price, native currency
+    fee: float             # commission + tax, native currency
+    currency: str
+    filled_at: str         # ISO 8601 with offset (Toss gives KST)
 
 
 @dataclass
@@ -62,6 +77,11 @@ class Broker(ABC):
     @abstractmethod
     async def list_stocks(self, market: str) -> list[Listing]:
         """Every active listing of one market; feeds the name search (desk.universe)."""
+
+    # Executions are optional and read-only (the trade review, desk.review). Still no way to place one.
+    async def fills(self, start: date, end: date) -> list[Fill]:
+        """Executed orders (filled quantity > 0) whose order date falls in [start, end], KST."""
+        raise NotImplementedError
 
     # Market data is optional: a broker without it leaves desk.prices to fall back on Yahoo.
     async def quote(self, symbol: str) -> tuple[float, str | None]:

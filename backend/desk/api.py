@@ -8,8 +8,9 @@ import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
@@ -17,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import otp, regime
+from . import otp, regime, review
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User
 from .broker import make_broker
 from .db import make_engine, migrate, now
@@ -31,6 +32,9 @@ from .sr import support_resistance
 from .store import TERMINAL, Store, iso
 from .universe import Universe
 
+KST = timezone(timedelta(hours=9))   # Toss dates (order history from/to) are KST
+REVIEW_CACHE_SEC = 60
+REVIEW_FAIL_CACHE_SEC = 30
 log = logging.getLogger(__name__)
 HEARTBEAT_SEC = 15
 OPEN_PATHS = frozenset({"/api/health", "/api/auth/login"})
@@ -452,6 +456,48 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         status = universe.status()
         return {"source": broker.name, "count": status["count"],
                 "updated_at": iso(status["updated_at_dt"]), "error": status["error"]}
+
+    # Trade review (desk.review). Toss limits order history (ORDER_HISTORY group), so the broker is
+    # asked once for the widest window and every ``days`` is cut from that; one fetch at a time,
+    # and a failure is remembered briefly too, so changing ``days`` or retrying cannot hammer Toss.
+    fills_cache: dict[str, tuple[float, object]] = {}
+    fills_lock = asyncio.Lock()
+
+    async def recent_fills(today: date):
+        async with fills_lock:
+            cached = fills_cache.get("fills")
+            if cached:
+                ttl = REVIEW_CACHE_SEC if isinstance(cached[1], list) else REVIEW_FAIL_CACHE_SEC
+                if time.monotonic() - cached[0] < ttl:
+                    return cached[1]
+            try:
+                value: object = await broker.fills(today - timedelta(days=review.MAX_DAYS), today)
+            except NotImplementedError:
+                value = NotImplementedError()
+            except Exception as exc:  # noqa: BLE001 - a broker outage shows on the page, not as a 500
+                log.warning("trade review: broker fills failed: %s", exc)        # full text stays in the log
+                value = RuntimeError(f"{type(exc).__name__}: {str(exc).split(':')[0]}")  # no response body
+            fills_cache["fills"] = (time.monotonic(), value)
+            return value
+
+    @app.get("/api/review")
+    async def trade_review(days: int = 90):
+        """Executions of the last ``days`` (max 180, KST dates) next to the plan of the time. Read-only."""
+        days = min(max(days, 1), review.MAX_DAYS)
+        today = datetime.now(KST).date()
+        start = today - timedelta(days=days)
+        fills = await recent_fills(today)
+        if isinstance(fills, NotImplementedError):
+            return {"supported": False, "source": broker.name, "fills": [], "summary": None, "errors": []}
+        if isinstance(fills, Exception):
+            return {"supported": True, "source": broker.name, "fills": [], "summary": None, "errors": [str(fills)]}
+        window = [f for f in fills if start.isoformat() <= f.filled_at[:10] <= today.isoformat()]
+
+        async def daily(ticker: str, count: int) -> list[dict]:
+            return (await prices.candles(ticker, "1d", count))["bars"]
+
+        result = await review.build_review(window, store.done_runs_for, universe.lookup, daily, start, today)
+        return {"supported": True, "source": broker.name, **result}
 
     @app.get("/api/portfolio")
     async def portfolio():

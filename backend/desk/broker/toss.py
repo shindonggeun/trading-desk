@@ -11,14 +11,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import httpx
 
-from .base import Bar, Broker, Holding, Listing
+from .base import Bar, Broker, Fill, Holding, Listing
 
 BASE_URL = "https://openapi.tossinvest.com"
 REFRESH_MARGIN_SEC = 300
+# Pages of 100 closed orders read per review (ORDER_HISTORY rate limit group): 2,000 orders.
+FILL_PAGES = 20
 RATE_LIMIT_RETRIES = 4
 MAX_RETRY_AFTER_SEC = 10.0
 
@@ -158,6 +160,31 @@ class TossBroker(Broker):
         if not rate:
             raise TossError("Toss returned no USD/KRW rate")
         return rate
+
+    async def fills(self, start: date, end: date) -> list[Fill]:
+        """Closed orders with a fill, from GET /api/v1/orders?status=CLOSED (read-only), paged by cursor."""
+        account = await self._account()
+        params = {"status": "CLOSED", "from": start.isoformat(), "to": end.isoformat(), "limit": 100}
+        out: list[Fill] = []
+        for _ in range(FILL_PAGES):
+            page = await self._get("/api/v1/orders", headers={"X-Tossinvest-Account": account}, params=params) or {}
+            for order in page.get("orders", []):
+                execution = order.get("execution") or {}
+                quantity = _num(execution.get("filledQuantity")) or 0.0
+                price = _num(execution.get("averageFilledPrice"))
+                if quantity <= 0 or price is None:
+                    continue                       # canceled / rejected without a fill
+                out.append(Fill(
+                    order_id=str(order["orderId"]), symbol=order["symbol"], side=order.get("side", ""),
+                    quantity=quantity, price=price,
+                    fee=(_num(execution.get("commission")) or 0.0) + (_num(execution.get("tax")) or 0.0),
+                    currency=order.get("currency", ""),
+                    filled_at=execution.get("filledAt") or order.get("orderedAt", ""),
+                ))
+            if not page.get("hasNext") or not page.get("nextCursor"):
+                break
+            params = {**params, "cursor": page["nextCursor"]}
+        return out
 
 
 def _rows(payload, key: str) -> list[dict]:

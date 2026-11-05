@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from .base import Broker, Holding, Listing
+from datetime import date, timedelta
+
+from .base import Broker, Fill, Holding, Listing
 
 # A handful of listings so the name search works without Toss keys (dev, tests, and the
 # server until TOSS_* is set). Shape matches GET /api/v1/stocks/all.
@@ -39,3 +41,19 @@ class MockBroker(Broker):
 
     async def list_stocks(self, market: str) -> list[Listing]:
         return [listing for listing in SAMPLE_LISTINGS if listing.market == market]
+
+    async def fills(self, start: date, end: date) -> list[Fill]:
+        """Sample executions dated relative to today, so the review page always has rows."""
+        today = date.today()
+
+        def at(days_ago: int, hhmm: str) -> str:
+            return f"{(today - timedelta(days=days_ago)).isoformat()}T{hhmm}:00+09:00"
+
+        sample = [
+            Fill("m-1", "NVDA", "BUY", 12, 168.4, 0.5, "USD", at(40, "23:41")),
+            Fill("m-2", "005930", "BUY", 40, 71200, 1068, "KRW", at(35, "09:12")),
+            Fill("m-3", "NVDA", "SELL", 5, 182.0, 0.4, "USD", at(12, "00:15")),
+            Fill("m-4", "005930", "SELL", 10, 74800, 2805, "KRW", at(5, "14:02")),
+        ]
+        return [f for f in sample if start <= date.fromisoformat(f.filled_at[:10]) <= end]
+

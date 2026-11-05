@@ -10,7 +10,7 @@ function action(plan: Plan): { key: string; label: string } {
   const op = plan.opinion ?? (plan.bias === "long" ? "buy" : plan.bias === "short" ? "sell" : plan.bias === "flat" ? "hold" : "review");
   if (op === "buy") return { key: "long", label: "롱" };
   if (op === "sell") return { key: "short", label: "숏" };
-  if (op === "hold") return { key: "hold", label: plan.rating === "Hold" ? "관망 · 보유 중이면 유지" : "관망" };
+  if (op === "hold") return { key: "hold", label: "관망" };
   return { key: "review", label: "확인 필요" };
 }
 
@@ -43,6 +43,45 @@ function Triggers({ plan }: { plan: Plan }) {
       {plan.long_trigger != null && <li><span className="cs-long">롱</span> {price(plan.long_trigger)} 회복 · 돌파 시</li>}
       {plan.short_trigger != null && <li><span className="cs-short">숏</span> {price(plan.short_trigger)} 이탈 시</li>}
     </ul>
+  );
+}
+
+const HOLDER_KO: Record<string, { label: string; desc: string }> = {
+  hold: { label: "버티기", desc: "근거가 아직 살아 있습니다. 손절선 위에 있는 동안 들고 갑니다." },
+  trim: { label: "약손절 · 비중 축소", desc: "일부를 덜어 위험을 줄이고, 나머지는 손절선으로 관리합니다." },
+  exit: { label: "손절", desc: "판단이 보유 방향과 반대이거나 지켜야 할 레벨을 이미 깼습니다. 전량 정리를 권합니다." },
+};
+
+function Holder({ plan }: { plan: Plan }) {
+  const h = plan.consensus?.holder;
+  if (!h) return null;
+  const t = HOLDER_KO[h.action];
+  if (!t) return null;
+  const pos = h.position;
+  return (
+    <div className={`cs-holder cs-holder-${h.action}`}>
+      <div className="cs-holder-head">
+        <span className="muted small">보유 중이라면</span>
+        <strong className="cs-holder-label" title={t.desc}>{t.label}</strong>
+      </div>
+      {pos ? (
+        <p className="small cs-holder-pos">
+          내 보유 {pos.quantity.toLocaleString("ko-KR")}주{pos.average_price != null && ` · 평단 ${price(pos.average_price)}`}
+          {pos.pnl_pct != null && (
+            <> · 지금 <strong className={pos.pnl_pct >= 0 ? "cs-long" : "cs-short"}>{pos.pnl_pct >= 0 ? "+" : ""}{pos.pnl_pct}%</strong></>
+          )}
+        </p>
+      ) : (
+        <p className="muted small cs-holder-pos">보유 정보 없이 판단했습니다 — "내 보유 종목을 반영해서 판단" 을 켜고 분석하면 평단 기준으로 봅니다.</p>
+      )}
+      {(h.cut_level != null || h.trim_level != null) && (
+        <ul className="cs-triggers small">
+          {h.cut_level != null && <li><span className="cs-short">손절</span> {price(h.cut_level)} 이탈 시 전량 정리</li>}
+          {h.trim_level != null && <li><span className="cs-hold-text">축소</span> {price(h.trim_level)} 에서 일부 덜기</li>}
+        </ul>
+      )}
+      {h.reason && <p className="small cs-holder-reason">{h.reason}</p>}
+    </div>
   );
 }
 
@@ -82,6 +121,7 @@ export default function ConsensusCard({ plan, ticker }: { plan: Plan; ticker: st
         </>
       )}
       {c?.conclusion && <p className="cs-conclusion">{c.conclusion}</p>}
+      <Holder plan={plan} />
 
       {c && total > 0 ? (
         <>

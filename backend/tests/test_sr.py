@@ -119,7 +119,7 @@ def test_candles_and_levels_endpoints(db_url):
         assert weekly["interval"] == "1w" and weekly["source"] == "yahoo" and len(weekly["bars"]) == 52
         daily = client.get("/api/candles?ticker=NVDA&interval=1d&count=30").json()
         assert daily["source"] == "toss" and len(daily["bars"]) == 30
-        assert client.get("/api/candles?ticker=NVDA&interval=5m").status_code == 422
+        assert client.get("/api/candles?ticker=NVDA&interval=7m").status_code == 422
         levels = client.get("/api/levels?ticker=NVDA").json()
         assert levels["levels"] and {"price", "kind", "timeframe", "strength", "basis"} <= set(levels["levels"][0])
 

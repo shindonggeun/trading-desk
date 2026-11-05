@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import horizons, live, otp, outcome, regime, review, verdict
-from .auth import COOKIE, Auth, Busy, LoginThrottle, User
+from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
 from .broker import make_broker
 from .db import make_engine, migrate, now
 from .estimate import BinanceEstimator
@@ -161,6 +161,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     estimator = estimator or BinanceEstimator()
     book = book or Portfolio(broker, prices)
     flow = flow or MarketFlow(broker)
+    live_streams: dict[str, int] = {}   # open /api/live/stream per session (token hash)
     if runner is None:
         runner = make_fake_runner(settings.fake_delay) if settings.fake_runs else run_tradingagents
 
@@ -579,25 +580,37 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         token = request.cookies.get(COOKIE)
+        key = hash_token(token or "")
+        if live_streams.get(key, 0) >= live.MAX_STREAMS:
+            raise HTTPException(429, f"at most {live.MAX_STREAMS} live charts at once")
+        live_streams[key] = live_streams.get(key, 0) + 1
 
         async def frames():
-            yield f"retry: {int(live.TICK_SEC * 1000)}" + NL2
-            was_open = None
-            while not await request.is_disconnected():
-                # Re-check every round: logout, revoke or expiry ends an open stream too.
-                if await asyncio.to_thread(auth.resolve, token) is None:
-                    return
-                is_open = live.market_open(ticker)
-                if is_open:
-                    data = await live.frame(prices, ticker)
-                elif was_open is not False:
-                    data = {"state": "closed", "ticker": ticker}
-                else:
-                    data = None
-                # a comment frame keeps proxies from dropping an idle stream
-                yield (f"data: {json.dumps(data, ensure_ascii=False)}" if data is not None else ": closed") + NL2
-                was_open = is_open
-                await asyncio.sleep(live.TICK_SEC if is_open else live.CLOSED_SEC)
+            try:
+                yield f"retry: {int(live.TICK_SEC * 1000)}" + NL2
+                was_open, failing = None, 0
+                while not await request.is_disconnected():
+                    # Re-check every round (logout, revoke or expiry ends the stream), without
+                    # counting it as activity: an open tab must not keep the session from idling.
+                    if await asyncio.to_thread(auth.resolve, token, False) is None:
+                        return
+                    is_open = live.market_open(ticker)
+                    if is_open:
+                        data = await live.frame(prices, ticker)
+                        failing = failing + 1 if "quote" not in data and "bars" not in data else 0
+                    elif was_open is not False:
+                        data = {"state": "closed", "ticker": ticker}
+                    else:
+                        data = None
+                    # a comment frame keeps proxies from dropping an idle stream
+                    yield (f"data: {json.dumps(data, ensure_ascii=False)}" if data is not None else ": closed") + NL2
+                    was_open = is_open
+                    pause = live.TICK_SEC if is_open else live.CLOSED_SEC
+                    await asyncio.sleep(live.FAILING_SEC if failing >= live.FAIL_ROUNDS else pause)
+            finally:
+                live_streams[key] -= 1
+                if not live_streams[key]:
+                    del live_streams[key]
 
         return StreamingResponse(frames(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

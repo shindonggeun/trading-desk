@@ -68,3 +68,18 @@ def test_entry_near_the_live_price_is_now_and_a_breakout_long_is_a_stop():
 def test_no_live_price_or_flat_bias_leaves_the_plan_alone():
     assert "entry_vs_live" not in entry_vs_live(_plan("short", entry_price=220.0))
     assert "entry_vs_live" not in entry_vs_live({**_plan("flat", entry_price=220.0), "live_price": LIVE})
+
+
+def test_a_quote_in_other_units_is_not_compared():
+    # a 10:1 split the model's levels predate, or a quote in another currency
+    plan = {**_plan("short", entry_price=220.84), "live_price": {**LIVE, "price": 20.0}}
+    assert "entry_vs_live" not in entry_vs_live(plan, atr=6.0)
+    warned = {**_plan("long", entry_price=180.0), "live_price": LIVE, "levels_warning": "far"}
+    assert "entry_vs_live" not in entry_vs_live(warned, atr=6.0)
+
+
+def test_long_limit_short_stop_and_a_passed_long_stop():
+    assert entry_vs_live({**_plan("long", entry_price=195.0), "live_price": LIVE}, atr=6.0)["entry_vs_live"]["kind"] == "limit"
+    assert entry_vs_live({**_plan("short", entry_price=195.0), "live_price": LIVE}, atr=6.0)["entry_vs_live"]["kind"] == "stop"
+    hit = entry_vs_live({**_plan("long", entry_price=210.0, stop_loss=202.0), "live_price": LIVE}, atr=6.0)
+    assert hit["entry_vs_live"]["stop_passed"]

@@ -108,6 +108,10 @@ def entry_vs_live(plan: dict, atr: float | None = None) -> dict:
     # a quote fill_levels already distrusted (a split, another currency) frames nothing
     if not live or entry is None or direction is None or plan.get("levels_warning"):
         return plan
+    # nor one that far from the plan's own levels when fill_levels had nothing to fill
+    anchor = plan.get("last_close") or entry
+    if abs(live - anchor) > LIVE_MAX_GAP * anchor:
+        return plan
     plan = dict(plan)
     atr = atr or plan.get("atr")
     gap = entry - live

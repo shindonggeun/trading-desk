@@ -1,41 +1,10 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import NewRunForm from "../components/NewRunForm";
+import PortfolioPanel from "../components/PortfolioPanel";
 import RunsCard from "../components/RunsCard";
-import { price, time } from "../format";
-import type { Holding, RegimeSnapshot } from "../types";
-
-function HoldingsPanel() {
-  const [data, setData] = useState<{ broker: string; error?: string; holdings: Holding[] } | null>(null);
-  useEffect(() => {
-    api.portfolio().then(setData).catch((e) => setData({ broker: "?", error: String(e), holdings: [] }));
-  }, []);
-  return (
-    <section className="card">
-      <h3>보유 종목 <span className="muted small">{data?.broker}</span></h3>
-      {data?.error && <p className="error small">{data.error}</p>}
-      {data && data.holdings.length === 0 && !data.error && <p className="muted">보유 종목 없음</p>}
-      <ul className="holdings">
-        {data?.holdings.map((h) => (
-          <li key={h.symbol}>
-            <div>
-              <strong>{h.name}</strong>
-              <div className="muted small">{h.yahoo_ticker} · {h.quantity}주 · 평단 {price(h.average_price)}</div>
-            </div>
-            <div className="num">
-              <div>{price(h.last_price)} {h.currency}</div>
-              {h.profit_rate !== null && (
-                <div className={h.profit_rate >= 0 ? "up small" : "down small"}>
-                  {h.profit_rate >= 0 ? "+" : ""}{h.profit_rate}%
-                </div>
-              )}
-            </div>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
+import { time } from "../format";
+import type { RegimeSnapshot } from "../types";
 
 function RegimePanel() {
   const [data, setData] = useState<RegimeSnapshot | null>(null);
@@ -76,7 +45,7 @@ export default function Dashboard() {
       <NewRunForm />
       <RunsCard />
       <div className="side">
-        <HoldingsPanel />
+        <PortfolioPanel />
         <RegimePanel />
       </div>
     </main>

@@ -22,3 +22,26 @@ export const STATUS_LABEL: Record<string, string> = {
   done: "완료",
   failed: "실패",
 };
+
+export type Currency = "KRW" | "USD";
+
+/** 1,234,567원 / $1,234.56 — "—" when the amount is unknown. */
+export function money(v: number | null | undefined, currency: Currency, signed = false): string {
+  if (v === null || v === undefined) return "—";
+  const digits = currency === "KRW" ? 0 : 2;
+  const abs = Number(Math.abs(v).toFixed(digits)); // sign from the shown amount: no "-$0.00"
+  const sign = abs === 0 ? "" : v < 0 ? "-" : signed ? "+" : "";
+  return currency === "KRW"
+    ? `${sign}${abs.toLocaleString("ko-KR", { maximumFractionDigits: 0 })}원`
+    : `${sign}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+export function percent(v: number | null | undefined): string {
+  if (v === null || v === undefined) return "—";
+  return `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
+}
+
+/** Korean convention: red up, blue down. */
+export function tone(v: number | null | undefined): string {
+  return v === null || v === undefined || v === 0 ? "" : v > 0 ? "up" : "down";
+}

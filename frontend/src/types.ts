@@ -85,6 +85,32 @@ export interface Holding {
   profit_rate: number | null;
 }
 
+/** One amount in both currencies; null when the USD/KRW rate (or a price) is not known. */
+export interface Money {
+  krw: number | null;
+  usd: number | null;
+}
+
+/** GET /api/portfolio(/stream) row (backend desk/portfolio.py). last_price is the live quote. */
+export interface PortfolioRow extends Holding {
+  value: Money;
+  cost: Money;
+  pnl: Money;
+  pnl_rate: number | null;
+  price_source: string;
+  price_at: string | null;
+}
+
+export interface Portfolio {
+  broker: string;
+  fx: { usd_krw: number; source: string; at: string } | null;
+  total: { krw: number | null; usd: number | null; pnl_krw: number | null; pnl_usd: number | null; pnl_rate: number | null };
+  groups: Record<string, PortfolioRow[]>;
+  holdings: PortfolioRow[];
+  updated_at: string;
+  error: string | null;
+}
+
 export interface RegimeSnapshot {
   enabled: boolean;
   error?: string;

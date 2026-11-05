@@ -231,3 +231,51 @@ export function followPortfolio(onSnapshot: (p: Portfolio) => void, onState: (s:
     source?.close();
   };
 }
+
+/** GET /api/live/stream 한 프레임(백엔드 desk/live.py): 장중이면 현재가 · 최근 1분봉, 장 마감이면 state=closed. */
+export interface LiveFrame {
+  state: "open" | "closed";
+  ticker: string;
+  quote?: { price: number; currency: string | null; source: string; fetched_at: string };
+  bars?: Candles["bars"];
+  source?: string;
+  quote_error?: string;
+  bars_error?: string;
+}
+
+/** 실시간 차트(#26)의 흐름. 끊기면 followPortfolio 처럼 API 에 한 번 묻고 점점 늦게 다시 연다. */
+export function followLive(ticker: string, onFrame: (f: LiveFrame) => void, onState: (s: StreamState) => void): () => void {
+  let source: EventSource | null = null;
+  let timer: number | undefined;
+  let stopped = false;
+  let delay = 3000;
+
+  const retry = () => {
+    if (stopped) return;
+    timer = window.setTimeout(open, delay);
+    delay = Math.min(delay * 2, 60000);
+  };
+  function open() {
+    if (stopped) return;
+    const es = new EventSource(`/api/live/stream?ticker=${encodeURIComponent(ticker)}`);
+    source = es;
+    es.onopen = () => {
+      delay = 3000;
+      onState("live");
+    };
+    es.onmessage = (msg) => onFrame(JSON.parse(msg.data));
+    es.onerror = () => {
+      onState("lost");
+      if (es.readyState !== EventSource.CLOSED) return;
+      api.me().then(retry, (e) => {
+        if (!(e instanceof Unauthorized)) retry();
+      });
+    };
+  }
+  open();
+  return () => {
+    stopped = true;
+    window.clearTimeout(timer);
+    source?.close();
+  };
+}

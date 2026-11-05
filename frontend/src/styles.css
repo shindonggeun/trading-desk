@@ -571,3 +571,23 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .trend-testing .trend-state { color: var(--warn); }
 .trend-broken .trend-state { text-decoration: line-through; }
 .fib-note { margin: 8px 0 0; }
+
+/* #26 실시간 차트 · #42 도달 알림 */
+.live { max-width: 1200px; margin: 0 auto; padding: 16px; }
+.live-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+.live-head h1 { font-size: 20px; margin: 0; }
+.live-add { display: flex; gap: 8px; align-items: center; }
+.live-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+.live-tab { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; padding: 0 4px 0 10px; }
+.live-tab button[role="tab"] { background: none; border: 0; padding: 4px 2px; color: inherit; cursor: pointer; }
+.live-tab-on { border-color: var(--accent); }
+.live-tab-x { padding: 0 6px; }
+.live-plan { margin: 4px 0 8px; }
+.live-chart-head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.live-chart-box { height: 460px; }
+@media (max-width: 600px) { .live-chart-box { height: 320px; } }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--muted); }
+.live-on { background: var(--long, #2ea043); }
+.live-alerts { margin-top: 12px; }
+.live-alerts-head { display: flex; justify-content: space-between; align-items: center; }
+.live-alert-list { margin: 6px 0 0; padding-left: 18px; }

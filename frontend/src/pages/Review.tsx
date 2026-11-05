@@ -145,22 +145,22 @@ export default function Review() {
           <p className="muted">이 기간에 체결이 없습니다.</p>
         ) : (
           <div className="table-wrap">
-            <table className="review-table">
-              <thead>
-                <tr>
-                  <th>체결 시각</th>
-                  <th>종목</th>
-                  <th>구분</th>
-                  <th className="num">수량</th>
-                  <th className="num">체결가</th>
-                  <th>그때의 계획</th>
-                  <th>계획과</th>
-                  <th className="num">진입가 대비</th>
-                  <th>이후 결과</th>
-                  <th className="num">실현 손익</th>
+            <table role="table" className="review-table stack-table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th role="columnheader">체결 시각</th>
+                  <th role="columnheader">종목</th>
+                  <th role="columnheader">구분</th>
+                  <th role="columnheader" className="num">수량</th>
+                  <th role="columnheader" className="num">체결가</th>
+                  <th role="columnheader">그때의 계획</th>
+                  <th role="columnheader">계획과</th>
+                  <th role="columnheader" className="num">진입가 대비</th>
+                  <th role="columnheader">이후 결과</th>
+                  <th role="columnheader" className="num">실현 손익</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody role="rowgroup">
                 {data.fills.map((row) => {
                   // 롱 계획 중 매도 · 숏 계획 중 매수는 보통 차익 실현 · 청산이다 — "반대 방향" 만으로 읽히지 않게.
                   const closing = row.alignment === "against_plan" && (
@@ -172,18 +172,18 @@ export default function Review() {
                       : ALIGN[row.alignment];
                   const o = row.outcome ? OUTCOME[row.outcome.result] : null;
                   return (
-                    <tr key={row.order_id}>
-                      <td className="muted small">{when(row.filled_at)}</td>
-                      <td>
+                    <tr role="row" key={row.order_id}>
+                      <td role="cell" className="muted small stack-wide" data-label="체결 시각">{when(row.filled_at)}</td>
+                      <td role="cell" className="stack-wide" data-label="종목">
                         {row.name ?? row.symbol} <span className="muted small">{row.ticker}</span>
                       </td>
-                      <td className={row.side === "BUY" ? "side-buy" : "side-sell"}>{row.side === "BUY" ? "매수" : "매도"}</td>
-                      <td className="num">{row.quantity}</td>
-                      <td className="num">{price(row.price)} <span className="muted small">{row.currency}</span></td>
-                      <td><Plan row={row} /></td>
-                      <td><span className={`pill ${a.cls}`} title={a.desc}>{a.ko}</span></td>
-                      <td className="num">{pct(row.entry_gap_pct)}</td>
-                      <td>
+                      <td role="cell" data-label="구분" className={row.side === "BUY" ? "side-buy" : "side-sell"}>{row.side === "BUY" ? "매수" : "매도"}</td>
+                      <td role="cell" className="num" data-label="수량">{row.quantity}</td>
+                      <td role="cell" className="num" data-label="체결가">{price(row.price)} <span className="muted small">{row.currency}</span></td>
+                      <td role="cell" className="stack-wide" data-label="그때의 계획"><Plan row={row} /></td>
+                      <td role="cell" data-label="계획과"><span className={`pill ${a.cls}`} title={a.desc}>{a.ko}</span></td>
+                      <td role="cell" className="num" data-label="진입가 대비">{pct(row.entry_gap_pct)}</td>
+                      <td role="cell" data-label="이후 결과">
                         {o ? (
                           <span className={o.cls}>
                             {o.ko}
@@ -193,7 +193,7 @@ export default function Review() {
                           <span className="muted small" title="계획대로 한 매매이고 손절 · 목표가 있을 때만 봅니다">—</span>
                         )}
                       </td>
-                      <td className="num"><Realized row={row} /></td>
+                      <td role="cell" className="num" data-label="실현 손익"><Realized row={row} /></td>
                     </tr>
                   );
                 })}

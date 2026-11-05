@@ -58,7 +58,7 @@ export default function App() {
           <span className="brand-mark">TD</span> Trading Desk
         </a>
         {user && (
-          <nav>
+          <nav aria-label="메뉴">
             <a href="#/" className={!runMatch && !onSettings && !onReview ? "active" : ""}>대시보드</a>
             <a href="#/review" className={onReview ? "active" : ""}>매매 복기</a>
             <a href="#/settings" className={onSettings ? "active" : ""}>설정</a>
@@ -66,11 +66,11 @@ export default function App() {
         )}
         <div className="topbar-right">
           {config?.fake_runs && <span className="pill pill-warn">FAKE 모드</span>}
-          {config && <span className="pill">broker: {config.broker}</span>}
+          {config && <span className="pill pill-broker">broker: {config.broker}</span>}
           {offline && <span className="pill pill-bad">API 연결 안 됨</span>}
           {user && (
             <>
-              <span className="pill">{user}</span>
+              <span className="pill pill-user" title={user}>{user}</span>
               <button type="button" className="logout" onClick={logout}>로그아웃</button>
             </>
           )}

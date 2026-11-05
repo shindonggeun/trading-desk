@@ -73,7 +73,16 @@ def test_a_tie_has_no_majority():
     assert s["long_case"] == [] and s["conclusion"] == ""
 
 
-@pytest.mark.parametrize("text", ["", "no json here", "[1, 2]"])
+def test_odd_shapes_lose_only_the_odd_part():
+    text = json.dumps({"votes": [{"agent": ["trader"], "stance": "long"}, "x", {"agent": "market_analyst",
+                       "stance": "short"}], "long_case": "not a list", "conclusion": "관망"}) + " (see {RSI})"
+    s = parse(text, STATE, "NVDA")
+    assert {v["agent"]: v["stance"] for v in s["votes"]}["market_analyst"] == "short"
+    assert s["long_case"] == [] and s["conclusion"] == "관망"
+    assert parse(json.dumps({"votes": 5}), STATE, "NVDA")["tally"]["long"] == 2   # the fixed votes only
+
+
+@pytest.mark.parametrize("text", ["", "no json here", "[1, 2]", "{broken"])
 def test_unreadable_answers_raise(text):
     with pytest.raises(ValueError):
         parse(text, STATE, "NVDA")
@@ -133,5 +142,8 @@ def test_a_failing_summary_still_finishes_the_run(db_url, monkeypatch):
     with _client(db_url, monkeypatch, broken) as client:
         rid = client.post("/api/runs", json={"ticker": "NVDA", "trade_date": "2026-11-03"}).json()["id"]
         run = _wait_done(client, rid)
+        events = client.get(f"/api/runs/{rid}/events").json()
     assert run["status"] == "done" and run["plan"]["rating"] == "Overweight"
     assert "consensus" not in run["plan"] and run["plan"]["consensus_error"].startswith("TimeoutError")
+    said = [(e["type"], e["content"]) for e in events if e["agent"] == "consensus"]
+    assert said == [("status", "thinking"), ("status", "skipped")]

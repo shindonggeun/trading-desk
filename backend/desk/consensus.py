@@ -150,17 +150,19 @@ def _points(value) -> list[str]:
 def parse(text: str, final_state: dict, subject: str) -> dict:
     """The summariser's JSON, checked: unknown agents and stances dropped, text clipped, the fixed
     votes put over the model's. Raises ValueError when there is no JSON object to read."""
-    start, end = (text or "").find("{"), (text or "").rfind("}")
-    if start < 0 or end <= start:
+    start = (text or "").find("{")
+    if start < 0:
         raise ValueError("no JSON object in the summary")
-    data = json.loads(text[start:end + 1])   # "{...}" decodes to a dict or raises (a ValueError)
+    # the first object only: a note after it ('see {RSI}') must not spoil the parse
+    data, _ = json.JSONDecoder().raw_decode(text, start)   # a dict, or a ValueError
     spoke = speeches(final_state)
     by_agent: dict[str, dict] = {}
-    for vote in data.get("votes") or []:
+    votes_in = data.get("votes")
+    for vote in votes_in if isinstance(votes_in, list) else []:
         if not isinstance(vote, dict):
             continue
         agent, stance = vote.get("agent"), str(vote.get("stance") or "").lower()
-        if agent in _IDS and agent in spoke and stance in STANCES and agent not in by_agent:
+        if isinstance(agent, str) and agent in _IDS and agent in spoke and stance in STANCES and agent not in by_agent:
             by_agent[agent] = {"agent": agent, "stance": stance, "reason": _clip(vote.get("reason"), REASON_CHARS),
                                "fixed": False}
     for agent, stance in fixed_votes(final_state).items():

@@ -68,6 +68,28 @@ class Bar:
     volume: float
 
 
+# Investor classes of the KRX market-wide trading value (Toss Market Indicators group).
+INVESTORS = ("individual", "foreigner", "institution", "other_corporation")
+INSTITUTION_KINDS = ("financial_investment", "insurance", "trust", "private_equity_fund", "bank",
+                     "other_financial_institution", "pension_fund")
+
+
+@dataclass(frozen=True)
+class FlowRecord:
+    """One period of market-wide trading value by investor class, KRW integers."""
+    date: str                                   # the period's representative day, YYYY-MM-DD
+    updated_at: str                             # ISO 8601 with offset; today's row is provisional until the close
+    investors: dict[str, tuple[int, int]]       # INVESTORS -> (buy, sell)
+    institution_breakdown: dict[str, tuple[int, int]]  # INSTITUTION_KINDS -> (buy, sell)
+
+
+@dataclass(frozen=True)
+class IndexPrice:
+    symbol: str                                 # KOSPI | KOSDAQ
+    price: float
+    at: str | None                              # ISO 8601 with offset
+
+
 class Broker(ABC):
     name: str = "broker"
 
@@ -94,6 +116,17 @@ class Broker(ABC):
 
     async def usd_krw(self) -> float:
         """KRW per 1 USD now; desk.portfolio falls back on Yahoo without it."""
+        raise NotImplementedError
+
+    # Market-wide investor flow (desk.market_flow). Read-only market data, no account involved.
+    async def investor_flow(self, market: str, interval: str, count: int,
+                            until: date | None = None) -> tuple[list[FlowRecord], str | None]:
+        """Records of ``market`` (KOSPI | KOSDAQ) per ``interval`` (1d | 1w | 1mo | 1y), newest first,
+        and the ``until`` day of the next page (None when there is none)."""
+        raise NotImplementedError
+
+    async def index_prices(self, symbols: list[str]) -> list[IndexPrice]:
+        """Current level of market indices (KOSPI, KOSDAQ)."""
         raise NotImplementedError
 
     async def portfolio(self):

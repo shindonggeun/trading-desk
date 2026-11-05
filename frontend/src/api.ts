@@ -1,4 +1,4 @@
-import type { DeskConfig, Estimate, DeskEvent, Holding, Instrument, RegimeSnapshot, Run, RunPage } from "./types";
+import type { DeskConfig, DeskEvent, Estimate, Instrument, Portfolio, RegimeSnapshot, Run, RunPage } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -130,7 +130,7 @@ export const api = {
   deleteRun: (id: string) => call<void>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
   run: (id: string) => call<Run>(`/api/runs/${id}`),
   createRun: (body: NewRun) => call<Run>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
-  portfolio: () => call<{ broker: string; error?: string; holdings: Holding[] }>("/api/portfolio"),
+  portfolio: () => call<Portfolio>("/api/portfolio"),
   regime: () => call<RegimeSnapshot>("/api/regime"),
   /** 매매 복기(백엔드 desk/review.py): 최근 days 일 체결을 그때의 분석 계획과 묶는다. 읽기 전용. */
   review: (days: number) => call<ReviewResponse>(`/api/review?days=${days}`),
@@ -157,4 +157,47 @@ export function followRun(id: string, onEvent: (e: DeskEvent) => void): () => vo
     if (source.readyState === EventSource.CLOSED) api.me().catch(() => {});
   };
   return () => source.close();
+}
+
+export type StreamState = "live" | "lost";
+
+/** Live "내 투자" snapshots every few seconds (GET /api/portfolio/stream).
+ * EventSource retries a dropped connection by itself, but any non-200 answer (a 502 while
+ * the backend is redeployed, a 401 after logout) ends it for good. Then: ask the API once -
+ * a 401 shows the login screen through call(); anything else opens a new stream after a
+ * growing pause. ``onState`` lets the panel say it is reconnecting while it keeps the last numbers. */
+export function followPortfolio(onSnapshot: (p: Portfolio) => void, onState: (s: StreamState) => void): () => void {
+  let source: EventSource | null = null;
+  let timer: number | undefined;
+  let stopped = false;
+  let delay = 3000;
+
+  const retry = () => {
+    if (stopped) return;
+    timer = window.setTimeout(open, delay);
+    delay = Math.min(delay * 2, 60000);
+  };
+  function open() {
+    if (stopped) return;
+    const es = new EventSource("/api/portfolio/stream");
+    source = es;
+    es.onopen = () => {
+      delay = 3000;
+      onState("live");
+    };
+    es.onmessage = (msg) => onSnapshot(JSON.parse(msg.data));
+    es.onerror = () => {
+      onState("lost");
+      if (es.readyState !== EventSource.CLOSED) return; // the browser is retrying
+      api.me().then(retry, (e) => {
+        if (!(e instanceof Unauthorized)) retry();
+      });
+    };
+  }
+  open();
+  return () => {
+    stopped = true;
+    window.clearTimeout(timer);
+    source?.close();
+  };
 }

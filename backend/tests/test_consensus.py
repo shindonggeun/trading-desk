@@ -147,3 +147,57 @@ def test_a_failing_summary_still_finishes_the_run(db_url, monkeypatch):
     assert "consensus" not in run["plan"] and run["plan"]["consensus_error"].startswith("TimeoutError")
     said = [(e["type"], e["content"]) for e in events if e["agent"] == "consensus"]
     assert said == [("status", "thinking"), ("status", "skipped")]
+
+
+HOLD_PLAN = {**PLAN, "stop_loss": 171.0, "price_target": 205.0,
+             "support_resistance": {"levels": [{"kind": "support", "price": 176.4}, {"kind": "resistance", "price": 192.0}]}}
+
+
+def test_holder_levels_come_from_the_plan_and_the_zones():
+    assert consensus.holder_levels(HOLD_PLAN) == [170.0, 171.0, 176.4, 190.0, 192.0, 205.0]
+
+
+def test_holder_advice_snaps_to_desk_levels_and_keeps_the_cut_below_a_long():
+    h = consensus.parse_holder({"action": "TRIM", "cut_level": 176.0, "trim_level": 191.9, "reason": "r"},
+                               HOLD_PLAN, 181.0, {"quantity": 10, "average_price": 190.0})
+    assert h["action"] == "trim" and h["cut_level"] == 176.4 and h["trim_level"] == 192.0
+    assert h["position"] == {"quantity": 10.0, "average_price": 190.0, "pnl_pct": -4.74}
+    # a cut above the price (not a stop for a long), an invented price, an unknown action
+    h = consensus.parse_holder({"action": "exit", "cut_level": 192.0, "trim_level": 150}, HOLD_PLAN, 181.0, None)
+    assert h["cut_level"] is None and h["trim_level"] is None and h["position"] is None
+    assert consensus.parse_holder({"action": "pray"}, HOLD_PLAN, 181.0, None) is None
+    assert consensus.parse_holder("hold", HOLD_PLAN, 181.0, None) is None
+
+
+def test_the_prompt_tells_the_position_and_the_levels_to_choose_from():
+    ctx = ConsensusContext("NVDA", "NVDA", STATE, HOLD_PLAN, price=181.0,
+                           position={"quantity": 10, "average_price": 190.0})
+    prompt = build_prompt(ctx)
+    assert "10 units at average 190.0 (-4.7% now)" in prompt
+    assert "pick only from these): 170, 171, 176.4, 190, 192, 205" in prompt
+    assert "Do not default to hold" in prompt
+    assert "is not known" in build_prompt(ConsensusContext("NVDA", "NVDA", STATE, HOLD_PLAN, price=181.0))
+
+
+def test_render_says_what_a_holder_should_do():
+    text = _answer(holder={"action": "exit", "cut_level": 176.4, "trim_level": None, "reason": "추세 이탈"})
+    s = parse(text, STATE, "NVDA", HOLD_PLAN, 181.0)
+    assert "**보유 중이라면**: 손절 (176.4 이탈 시 전량 손절) — 추세 이탈" in render(s)
+
+
+def test_a_portfolio_run_gives_the_holder_its_average_price(db_url, monkeypatch):
+    from tests.test_api import _wait_done
+
+    seen = []
+
+    def summariser(ctx):
+        seen.append(ctx.position)
+        return consensus.fake_summariser(ctx)
+
+    with _client(db_url, monkeypatch, summariser) as client:
+        rid = client.post("/api/runs", json={"ticker": "NVDA", "trade_date": "2026-11-03",
+                                             "use_portfolio": True}).json()["id"]
+        run = _wait_done(client, rid)
+    assert seen and seen[0]["quantity"] == 12
+    holder = run["plan"]["consensus"]["holder"]
+    assert holder["action"] == "hold" and holder["position"]["quantity"] == 12

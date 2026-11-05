@@ -24,6 +24,7 @@ from .broker import make_broker
 from .db import make_engine, migrate, now
 from .estimate import BinanceEstimator
 from .indicators import INDICATORS
+from .leverage_analyst import fake_analyst, llm_analyst
 from .market_flow import MarketFlow
 from .portfolio import Portfolio
 from .prices import INTERVALS, PriceSource
@@ -171,7 +172,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         app.state.manager = RunManager(store, hub, runner, broker, settings.max_concurrent_runs,
                                        prices=None if settings.fake_runs else prices,
                                        # a scripted run stays offline, like its support/resistance
-                                       related=None if settings.fake_runs else collect_related)
+                                       related=None if settings.fake_runs else collect_related,
+                                       lever_analyst=fake_analyst if settings.fake_runs else llm_analyst)
 
         async def keep_listing_fresh():
             while True:

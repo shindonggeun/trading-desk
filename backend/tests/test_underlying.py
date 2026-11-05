@@ -1,7 +1,5 @@
 from datetime import timedelta
 
-import pytest
-
 from desk import underlying as under
 from desk.levels import fill_levels
 from desk.plan import parse_plan
@@ -76,66 +74,6 @@ def test_atr_fill_keeps_the_converted_marker():
     assert filled["levels_source"] == {"entry_price": "converted", "stop_loss": "atr", "price_target": "model"}
 
 
-def test_prompt_note_asks_for_both_sets_and_explains_inverse():
-    sr_u = {"reference_price": 450.0, "atr": 12.0,
-            "levels": [{"kind": "resistance", "price": 470.0, "timeframe": "1d"}]}
-    note = under.prompt_note("soxs", "SOXX", -3.0, False, sr_u, None)
-    assert "-3x daily product on SOXX" in note and "a long SOXS is a short on SOXX" in note
-    assert "Underlying Entry: <SOXX>" in note and "R 470.0 (1d)" in note
-    assert "proxy" in under.prompt_note("GDXU", "GDX", 3.0, True, None, None)
-    assert under.leverage_of("aapl") is None and under.leverage_of("SOXL") == ("SOXX", 3.0, False)
-
-
-def test_a_soxl_run_carries_both_sides(db_url, monkeypatch):
-    from fastapi.testclient import TestClient
-
-    from desk import api, runner
-    from desk.auth import Auth
-    from desk.db import make_engine
-    from desk.runner import RunResult
-    from desk.settings import Settings
-    from tests.test_api import OWNER, PASSWORD, _wait_done
-
-    def sr_for(_prices, ticker, _day, price=None, horizon=None):
-        close, atr, level = {"SOXL": (60.0, 4.0, 66.0), "SOXX": (450.0, 12.0, 470.0)}[ticker]
-        return {"reference_price": close, "reference": "close", "last_close": close, "atr": atr,
-                "levels": [{"kind": "resistance", "price": level, "timeframe": "1d", "basis": "swing", "strength": 2}]}
-
-    async def fake_sr(*args, **kwargs):
-        return sr_for(*args, **kwargs)
-
-    monkeypatch.setattr(runner, "support_resistance", fake_sr)
-    seen = []
-
-    def run(request, emit, portfolio):
-        seen.append(portfolio.render(request.ticker))
-        return RunResult(final_state=_decision(
-            "Underlying Entry: 450 / Underlying Stop: 438 / Underlying Target: 480"))
-
-    class Prices:
-        async def quote(self, _ticker):
-            raise AssertionError("past date: no quotes")
-
-    client = TestClient(api.create_app(Settings(database_url=db_url, fake_delay=0), runner=run, prices=Prices()),
-                        base_url="https://testserver")
-    engine = make_engine(db_url)
-    Auth(engine, timedelta(hours=1), timedelta(hours=1)).create_user(OWNER, PASSWORD)
-    engine.dispose()
-    with client:
-        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
-        done = _wait_done(client, client.post("/api/runs", json={"ticker": "SOXL", "trade_date": "2026-11-02"}).json()["id"])
-    plan = done["plan"]
-    assert "SOXL is a +3x daily product on SOXX" in seen[0] and "R 470.0 (1d)" in seen[0]
-    assert plan["entry_price"] == 60.0 and plan["stop_loss"] == 55.2 and plan["price_target"] == 75   # 75: model
-    assert plan["levels_source"] == {"entry_price": "converted", "stop_loss": "converted", "price_target": "model"}
-    sub = plan["underlying"]
-    assert sub["ticker"] == "SOXX" and sub["entry_price"] == 450 and sub["price_target"] == 480
-    assert sub["support_resistance"]["last_close"] == 450.0 and sub["reward_risk"] == 2.5
-    assert plan["conversion"]["anchor"]["source"] == "close"
-    assert "levels_mismatch" not in plan          # 75 vs 480 -> 72: within 10%
-    assert pytest.approx(plan["support_resistance"]["atr"]) == 4.0
-
-
 def test_two_sets_that_disagree_are_kept_and_flagged():
     plan = {"bias": "long", "entry_price": 60.0, "stop_loss": 55.0, "price_target": 90.0,
             "underlying_levels": {"entry_price": 450.0, "price_target": 480.0}}
@@ -164,7 +102,45 @@ def test_the_pms_underlying_level_beats_the_traders_draft():
     assert sub["entry_price"] == 444 and "levels_mismatch" not in product
 
 
-def _app(db_url, run, prices):
+# --- #82: the underlying is analysed, the leverage analyst calls the product ----------------------
+
+def test_prompt_note_says_whose_call_it_is():
+    note = under.prompt_note("soxs", "SOXX", -3.0, False)
+    assert "This run analyses SOXX" in note and "-3x daily inverse product" in note
+    assert "on SOXX prices only" in note and "Underlying Entry" not in note
+    assert "proxy" in under.prompt_note("GDXU", "GDX", 3.0, True)
+    assert under.leverage_of("aapl") is None and under.leverage_of("SOXL") == ("SOXX", 3.0, False)
+    assert [under.flip_rating(r) for r in ("Buy", "Overweight", "Hold", "Underweight", "Sell")] == \
+        ["Sell", "Underweight", "Hold", "Overweight", "Buy"]
+
+
+def _ctx(**kw):
+    from desk.leverage_analyst import LeverContext
+
+    base = {"product": "SOXL", "base": "SOXX", "leverage": 3.0, "proxy": False, "horizon": "swing", "holding": "one to three weeks",
+                "u_plan": {"rating": "Buy", "bias": "long", "entry_price": 450.0, "stop_loss": 438.0,
+                        "price_target": 480.0},
+                "u_decision": "**Rating**: Buy", "live": {"price": 60.0}, "live_u": {"price": 450.0},
+                "sr": {"atr": 4.0, "levels": [{"kind": "support", "price": 57.0}]}, "sr_u": {"atr": 12.0, "levels": []},
+                "beta": {"beta_20d": 2.99, "beta_60d": 2.98}, "daily_atr_u": 12.0}
+    base.update(kw)
+    return LeverContext(**base)
+
+
+def test_the_analyst_prompt_carries_the_facts_and_the_inverse_rule():
+    from desk.leverage_analyst import build_prompt, decay_per_day
+
+    assert decay_per_day(_ctx()) == 0.137                   # (9-3)/2 x (12/450/1.25)^2
+    assert decay_per_day(_ctx(leverage=-3.0)) == 0.273       # inverse 3x pays 6 sigma^2
+    assert decay_per_day(_ctx(daily_atr_u=None)) is None     # intraday bars: no daily sigma
+    prompt = build_prompt(_ctx())
+    assert "turn it into a decision on SOXL".lower() in prompt.lower() and "S 57.0" in prompt and "20d 2.99" in prompt
+    assert "**Entry Price**: <number>" in prompt and "about 0.137% per day" in prompt
+    inverse = build_prompt(_ctx(product="SOXS", leverage=-3.0, daily_atr_u=None))
+    assert "a bearish SOXX call is a reason to BUY SOXS" in inverse and "negligible within an intraday" in inverse
+
+
+def _app(db_url, run, prices, analyst, monkeypatch):
     from fastapi.testclient import TestClient
 
     from desk import api
@@ -173,71 +149,148 @@ def _app(db_url, run, prices):
     from desk.settings import Settings
     from tests.test_api import OWNER, PASSWORD
 
-    client = TestClient(api.create_app(Settings(database_url=db_url, fake_delay=0), runner=run, prices=prices),
-                        base_url="https://testserver")
+    monkeypatch.setattr(api, "llm_analyst", analyst)   # the manager is built at startup
+    app = api.create_app(Settings(database_url=db_url, fake_delay=0), runner=run, prices=prices)
+    client = TestClient(app, base_url="https://testserver")
     engine = make_engine(db_url)
     Auth(engine, timedelta(hours=1), timedelta(hours=1)).create_user(OWNER, PASSWORD)
     engine.dispose()
     return client
 
 
-def test_a_same_day_inverse_run_anchors_on_live_quotes_and_flips_the_underlying(db_url, monkeypatch):
-    from datetime import date
-
+def _run(db_url, monkeypatch, ticker, analyst, decision, day="2026-11-02", quotes=None, sr_fail=()):
     from desk import runner
     from desk.prices import Quote
     from desk.runner import RunResult
     from tests.test_api import OWNER, PASSWORD, _wait_done
 
+    closes = {"SOXL": (60.0, 4.0, 66.0), "SOXS": (20.0, 1.5, 22.0), "SOXX": (450.0, 12.0, 470.0)}
+
     async def fake_sr(_prices, ticker, _day, price=None, horizon=None):
-        close, atr = {"SOXS": (20.0, 1.5), "SOXX": (450.0, 12.0)}[ticker]
-        return {"ticker": ticker, "reference_price": price or close, "reference": "live", "last_close": close,
-                "atr": atr, "as_of": "2026-11-04T04:00:00+00:00", "levels": []}
+        if ticker in sr_fail:
+            raise TimeoutError("slow")
+        close, atr, level = closes[ticker]
+        return {"ticker": ticker, "reference_price": price or close, "reference": "close", "last_close": close,
+                "atr": atr, "as_of": "2026-11-02T04:00:00+00:00",
+                "levels": [{"kind": "resistance", "price": level, "timeframe": "1d", "basis": "swing", "strength": 2}]}
 
     class Prices:
-        async def quote(self, ticker):
-            return Quote(ticker, {"SOXS": 21.0, "SOXX": 440.0}[ticker], "USD", "toss", "2026-11-05T15:00:00+00:00")
+        async def quote(self, t):
+            if not quotes:
+                raise AssertionError("past date: no quotes")
+            return Quote(t, quotes[t], "USD", "toss", "2026-11-05T15:00:00+00:00")
 
     monkeypatch.setattr(runner, "support_resistance", fake_sr)
+    seen = []
 
     def run(request, emit, portfolio):
-        return RunResult(final_state=_decision("SOXS long. Entry Price: 21 / Stop Loss: 19.5", rating="Buy"))
+        seen.append((request.ticker, portfolio.render(request.ticker)))
+        return RunResult(final_state=decision)
 
-    with _app(db_url, run, Prices()) as client:
+    with _app(db_url, run, Prices(), analyst, monkeypatch) as client:
         client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
-        rid = client.post("/api/runs", json={"ticker": "SOXS", "trade_date": date.today().isoformat()}).json()["id"]
-        plan = _wait_done(client, rid)["plan"]
+        rid = client.post("/api/runs", json={"ticker": ticker, "trade_date": day}).json()["id"]
+        done = _wait_done(client, rid)
+    return done, seen, None
+
+
+def _soxx(rating: str, entry: float, stop: float, target: float) -> dict:
+    """The underlying run's final state: the PM's levels on SOXX in the summary and the target field."""
+    return {"final_rating": rating, "trader_investment_plan": "**Action**: " + rating,
+            "final_trade_decision": f"**Rating**: {rating}\n\n**Executive Summary**: SOXX 판단. "
+                                    f"Entry Price: {entry} / Stop Loss: {stop} / Price Target: {target}"
+                                    f"\n\n**Price Target**: {target}"}
+
+
+def _soxx_buy():
+    return _soxx("Buy", 450, 438, 480)
+
+
+def test_a_soxl_run_analyses_soxx_then_the_leverage_analyst_calls_soxl(db_url, monkeypatch):
+    asked = []
+
+    def analyst(ctx):
+        asked.append(ctx)
+        return ("**Rating**: Buy\n\n**Entry Price**: 60.5\n\n**Stop Loss**: 56\n\n**Time Horizon**: 5일 이내\n\n"
+                "**Position Sizing**: 자본의 15%\n\n**Executive Summary**: SOXX 지지 확인을 SOXL 로.")
+
+    done, seen, _ = _run(db_url, monkeypatch, "SOXL", analyst, _soxx_buy())
+    plan = done["plan"]
+    assert seen[0][0] == "SOXX" and "This run analyses SOXX" in seen[0][1] and "R 470.0" in seen[0][1]
+    assert asked[0].u_plan["entry_price"] == 450 and asked[0].sr["last_close"] == 60.0 and not asked[0].inverse
+    assert plan["rating"] == "Buy" and plan["entry_price"] == 60.5 and plan["stop_loss"] == 56
+    assert plan["price_target"] == 72.0 and plan["levels_source"]["price_target"] == "converted"   # 480 -> 72
+    assert plan["position_sizing"] == "자본의 15%" and plan["analysis_subject"] == "SOXX"
     sub = plan["underlying"]
-    assert plan["conversion"]["anchor"] == {"source": "live", "product": 21.0, "underlying": 440.0}
-    assert sub["bias"] == "short" and sub["entry_price"] == 440.0 and sub["stop_loss"] > sub["entry_price"]
-    assert sub["live_price"]["price"] == 440.0 and sub["entry_vs_live"]["kind"] == "now"
+    assert sub["ticker"] == "SOXX" and sub["rating"] == "Buy" and sub["entry_price"] == 450
+    assert sub["support_resistance"]["last_close"] == 450.0 and sub["levels_source"]["entry_price"] == "model"
+    assert done["status"] == "done" and "leverage_analyst_error" not in plan
 
 
-def test_without_the_underlyings_bars_the_models_underlying_levels_still_stand(db_url, monkeypatch):
-    from desk import runner
-    from desk.runner import RunResult
-    from tests.test_api import OWNER, PASSWORD, _wait_done
+def test_the_analysts_words_reach_the_chat(db_url, monkeypatch):
+    from sqlalchemy import select
 
-    async def only_soxl(_prices, ticker, _day, price=None, horizon=None):
-        if ticker == "SOXX":
-            raise TimeoutError("slow")
-        return {"ticker": ticker, "reference_price": 60.0, "reference": "close", "last_close": 60.0, "atr": 4.0,
-                "as_of": "2026-11-02T04:00:00+00:00", "levels": []}
+    from desk.db import events, make_engine
 
-    class Prices:
-        async def quote(self, _ticker):
-            raise AssertionError("past date")
+    done, _, _ = _run(db_url, monkeypatch, "SOXL", lambda ctx: "**Rating**: Hold\n\n**Executive Summary**: 관망",
+                      _soxx_buy())
+    engine = make_engine(db_url)
+    with engine.connect() as conn:
+        rows = conn.execute(select(events.c.type, events.c.agent).where(events.c.run_id == done["id"])
+                            .order_by(events.c.seq)).all()
+    engine.dispose()
+    speakers = [agent for kind, agent in rows if kind == "message"]
+    assert speakers[-1] == "leverage_analyst" and [kind for kind, _ in rows][-2:] == ["plan", "done"]
 
-    monkeypatch.setattr(runner, "support_resistance", only_soxl)
+
+def test_a_soxs_run_turns_a_soxx_sell_into_a_soxs_buy(db_url, monkeypatch):
+    asked = []
+
+    def analyst(ctx):
+        asked.append(ctx)
+        return "**Rating**: Buy\n\n**Entry Price**: 21\n\n**Stop Loss**: 19.5\n\n**Price Target**: 25"
+
+    sell = _soxx("Sell", 440, 452, 410)
+    done, _, _ = _run(db_url, monkeypatch, "SOXS", analyst, sell, day=_today(), quotes={"SOXS": 21.0, "SOXX": 440.0})
+    plan = done["plan"]
+    assert asked[0].inverse and asked[0].daily_atr_u == 12.0
+    assert plan["rating"] == "Buy" and plan["bias"] == "long"
+    assert plan["underlying"]["rating"] == "Sell" and plan["underlying"]["bias"] == "short"
+    assert plan["underlying"]["live_price"]["price"] == 440.0 and plan["live_price"]["price"] == 21.0
+
+
+def _today():
+    from datetime import date
+
+    return date.today().isoformat()
+
+
+def test_a_failing_analyst_leaves_the_flipped_call_and_converted_levels(db_url, monkeypatch):
+    def broken(_ctx):
+        raise ConnectionError("model down")
+
+    sell = _soxx("Sell", 440, 452, 410)
+    done, _, _ = _run(db_url, monkeypatch, "SOXS", broken, sell)
+    plan = done["plan"]
+    assert done["status"] == "done" and plan["rating"] == "Buy" and "model down" in plan["leverage_analyst_error"]
+    # SOXX 440 / 452 / 410 against the closes 450 (SOXX) and 20 (SOXS), -3x
+    assert plan["levels_source"] == {"entry_price": "converted", "stop_loss": "converted", "price_target": "converted"}
+    assert plan["entry_price"] == 21.33 and plan["stop_loss"] == 19.73 and plan["price_target"] == 25.33
+
+
+def test_a_typed_underlying_never_calls_the_leverage_analyst(db_url, monkeypatch):
+    def never(_ctx):
+        raise AssertionError("SOXX is not leveraged")
+
+    done, seen, _ = _run(db_url, monkeypatch, "SOXX", never, _soxx_buy())
+    assert seen[0][0] == "SOXX" and "This run analyses" not in seen[0][1]
+    assert "underlying" not in done["plan"] and done["plan"]["entry_price"] == 450
+
+
+def test_without_the_underlyings_bars_the_run_still_ends(db_url, monkeypatch):
     monkeypatch.setattr("desk.levels.last_close_and_atr", lambda *_: (450.0, 12.0))
-
-    def run(request, emit, portfolio):
-        return RunResult(final_state=_decision(
-            "Entry Price: 60 / Stop Loss: 55 / Underlying Entry: 450 / Underlying Stop: 440 / Underlying Target: 480"))
-
-    with _app(db_url, run, Prices()) as client:
-        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
-        rid = client.post("/api/runs", json={"ticker": "SOXL", "trade_date": "2026-11-02"}).json()["id"]
-        plan = _wait_done(client, rid)["plan"]
+    done, _, _ = _run(db_url, monkeypatch, "SOXL", lambda ctx: "**Rating**: Buy\n\n**Entry Price**: 60",
+                      _soxx_buy(), sr_fail=("SOXX",))
+    plan = done["plan"]
     assert plan["underlying"]["entry_price"] == 450 and "support_resistance" not in plan["underlying"]
-    assert "conversion" not in plan and "underlying_levels" not in plan
+    assert plan["entry_price"] == 60 and "conversion" not in plan     # no anchor without SOXX's close

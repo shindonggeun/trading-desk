@@ -96,6 +96,7 @@ export default function RunView({ runId }: { runId: string }) {
           {plan && (
             <PlanCard
               plan={plan}
+              symbol={run.ticker}
               ticker={run.options.name ? `${run.options.name} (${run.ticker})` : run.ticker}
               profile={PROFILE_LABEL[run.options.profile ?? ""]}
             />

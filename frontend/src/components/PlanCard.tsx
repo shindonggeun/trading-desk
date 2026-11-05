@@ -1,3 +1,5 @@
+import { type ReactNode, useEffect, useState } from "react";
+import { api } from "../api";
 import { price } from "../format";
 import { ACTION, BIAS, RATING, term } from "../korean";
 import type { Plan } from "../types";
@@ -50,7 +52,7 @@ function Ladder({ plan }: { plan: Plan }) {
   );
 }
 
-function Level({ plan, k }: { plan: Plan; k: LevelKey }) {
+function Level({ plan, k, after }: { plan: Plan; k: LevelKey; after?: ReactNode }) {
   const source = plan.levels_source?.[k];
   return (
     <dd>
@@ -61,7 +63,83 @@ function Level({ plan, k }: { plan: Plan; k: LevelKey }) {
         </span>
       )}
       {source === "model" && <span className="src">모델 제시</span>}
+      {after}
     </dd>
+  );
+}
+
+const ENTRY_KIND: Record<string, Record<Gap["kind"], string>> = {
+  long: { now: "지금 진입", limit: "눌림 대기 (지정가 매수)", stop: "돌파 확인 후 (스톱 매수)" },
+  short: { now: "지금 진입", limit: "반등 대기 (지정가 숏)", stop: "이탈 확인 후 (스톱 숏)" },
+};
+
+// backend desk/levels.py entry_vs_live 와 같은 기준
+const NOW_ATR = 0.5;
+const NOW_PCT = 0.01;
+const FAR_ATR = 2;
+const FAR_PCT = 0.05;
+const QUOTE_EVERY_MS = 15_000;
+
+type Gap = NonNullable<Plan["entry_vs_live"]>;
+
+/** 진입가 · 손절 · 목표가 지금 가격에 대해 어디 있는지. 롱 · 숏 계획이 아니면 null. */
+export function entryGap(plan: Plan, live: number | null): Gap | null {
+  const dir = plan.bias === "long" ? 1 : plan.bias === "short" ? -1 : 0;
+  const entry = plan.entry_price;
+  if (!dir || entry === null || !live) return null;
+  const atr = plan.support_resistance?.atr ?? plan.atr ?? null;
+  const gap = entry - live;
+  const gapAtr = atr ? Math.abs(gap) / atr : null;
+  const near = gapAtr !== null ? gapAtr <= NOW_ATR : Math.abs(gap) / live <= NOW_PCT;
+  const far = gapAtr !== null ? gapAtr > FAR_ATR : Math.abs(gap) / live > FAR_PCT;
+  return {
+    live,
+    gap,
+    gap_pct: (gap / live) * 100,
+    gap_atr: gapAtr !== null ? Math.round(gapAtr * 100) / 100 : null,
+    kind: near ? "now" : gap * dir < 0 ? "limit" : "stop",
+    far,
+    stop_passed: plan.stop_loss !== null && (live - plan.stop_loss) * dir <= 0,
+    target_passed: plan.price_target !== null && (plan.price_target - live) * dir <= 0,
+  };
+}
+
+interface Live {
+  price: number;
+  source: string;
+  fetched_at: string;
+}
+
+/** 카드가 열려 있는 동안 현재가를 주기적으로 다시 읽는다. 실패하면 계획에 저장된 값을 쓴다. */
+function useLiveQuote(symbol: string | undefined, fallback: Live | undefined, enabled: boolean): Live | null {
+  const [quote, setQuote] = useState<Live | null>(null);
+  useEffect(() => {
+    if (!symbol || !enabled) return;
+    let alive = true;
+    const load = () => {
+      if (document.hidden) return;
+      api.quote(symbol).then((q) => alive && setQuote(q), () => {});
+    };
+    load();
+    const timer = setInterval(load, QUOTE_EVERY_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [symbol, enabled]);
+  return quote ?? fallback ?? null;
+}
+
+/** 진입가가 지금 가격에서 얼마나 떨어져 있고, 어떤 주문이 되는지. */
+function EntryVsLive({ plan, g }: { plan: Plan; g: Gap | null }) {
+  if (!g) return null;
+  const kind = ENTRY_KIND[plan.bias]?.[g.kind];
+  return (
+    <span className={`muted small${g.far ? " entry-far" : ""}`}>
+      {" "}현재가 대비 {g.gap_pct > 0 ? "+" : ""}
+      {g.gap_pct.toFixed(1)}%{g.gap_atr !== null && ` (${g.gap_atr} ATR)`}
+      {kind && ` · ${kind}`}
+    </span>
   );
 }
 
@@ -71,7 +149,30 @@ function pct(from: number | null, to: number | null): string {
   return ` (${p > 0 ? "+" : ""}${p.toFixed(1)}%)`;
 }
 
-export default function PlanCard({ plan, ticker, profile }: { plan: Plan; ticker: string; profile?: string }) {
+/** 계획이 지금 가격과 어긋날 때: 진입이 멀거나, 손절 · 목표를 이미 지났을 때. */
+function LiveWarning({ g }: { g: Gap | null }) {
+  if (!g || !(g.far || g.stop_passed || g.target_passed)) return null;
+  const notes: string[] = [];
+  if (g.stop_passed) notes.push("현재가가 이미 손절가를 넘어섰습니다 — 이 계획은 지금 가격에서 유효하지 않습니다.");
+  else if (g.target_passed)
+    notes.push("현재가가 이미 목표가를 지났습니다 — 진입가까지 되돌아오지 않으면 이 계획은 성립하지 않습니다.");
+  if (g.far && !g.stop_passed)
+    notes.push(
+      `진입가가 현재가에서 ${Math.abs(g.gap_pct).toFixed(1)}% 떨어져 있습니다 — 그 가격이 올 때만 거는 조건부 주문이며, 오지 않으면 거래하지 않습니다.`,
+    );
+  return <p className="plan-warning">{notes.join(" ")}</p>;
+}
+
+export default function PlanCard({ plan, ticker, symbol, profile }: {
+  plan: Plan;
+  ticker: string;
+  /** 시세를 읽을 티커(NVDA, 005930.KS). 없으면 계획에 저장된 현재가만 쓴다. */
+  symbol?: string;
+  profile?: string;
+}) {
+  const directional = plan.bias === "long" || plan.bias === "short";
+  const live = useLiveQuote(symbol, plan.live_price, directional);
+  const g = entryGap(plan, live?.price ?? null);
   const rating = term(RATING, plan.rating);
   const action = term(ACTION, plan.trader_action);
   const anyAtr = Object.values(plan.levels_source ?? {}).includes("atr");
@@ -98,8 +199,20 @@ export default function PlanCard({ plan, ticker, profile }: { plan: Plan; ticker
       )}
       <div className="plan-body">
         <dl className="plan-grid">
+          {live && (
+            <>
+              <dt>현재가</dt>
+              <dd>
+                {price(live.price)}
+                <span className="src" title={`${live.fetched_at} 에 읽은 값 (${QUOTE_EVERY_MS / 1000}초마다 갱신)`}>
+                  {live.source === "toss" ? "토스" : "야후"} ·{" "}
+                  {new Date(live.fetched_at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              </dd>
+            </>
+          )}
           <dt>진입가</dt>
-          <Level plan={plan} k="entry_price" />
+          <Level plan={plan} k="entry_price" after={<EntryVsLive plan={plan} g={g} />} />
           <dt>손절가</dt>
           <Level plan={plan} k="stop_loss" />
           <dt>목표가</dt>
@@ -119,6 +232,7 @@ export default function PlanCard({ plan, ticker, profile }: { plan: Plan; ticker
         </dl>
         <Ladder plan={plan} />
       </div>
+      <LiveWarning g={g} />
       {plan.executive_summary && <p className="plan-summary">{plan.executive_summary}</p>}
       <p className="muted small">
         LLM 이 낸 계획이며 주문은 연결되어 있지 않습니다.

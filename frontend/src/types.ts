@@ -17,6 +17,21 @@ export interface Plan {
   atr?: number;
   last_close?: number;
   levels_error?: string;
+  /** The quote at the end of a same-day analysis (backend desk/runner.py). */
+  live_price?: { price: number; source: string; fetched_at: string };
+  /** Daily/weekly levels the agents were given (backend desk/sr.py); the card reads its ATR. */
+  support_resistance?: { atr?: number };
+  /** The entry against that quote (backend desk/levels.py entry_vs_live). */
+  entry_vs_live?: {
+    live: number;
+    gap: number;
+    gap_pct: number;
+    gap_atr: number | null;
+    kind: "now" | "limit" | "stop";
+    far: boolean;
+    stop_passed: boolean;
+    target_passed: boolean;
+  };
 }
 
 export interface RunPage {

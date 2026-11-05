@@ -314,8 +314,6 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 /* 차트 지지 · 저항 (#25) */
 :root { --sr-support: #39c5bb; --sr-resistance: #c297ff; }
 @media (prefers-color-scheme: light) { :root { --sr-support: #0f8a80; --sr-resistance: #8250df; } }
-.price-chart-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-.price-chart-tools .review-periods { align-items: center; }
 .sr-tip { position: absolute; z-index: 3; pointer-events: none; width: max-content; max-width: 260px; padding: 6px 9px; border-radius: 8px;
   background: var(--surface); border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0, 0, 0, .25); font-size: 12px; line-height: 1.45; }
 .sr-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; }
@@ -357,3 +355,14 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 @media (max-width: 760px) {
   .gl-tip, .gl-flip .gl-tip { position: fixed; left: 16px; right: 16px; top: auto; bottom: 16px; width: auto; max-width: none; }
 }
+/* 가격 차트 봉 주기 · 표시 켜기/끄기 · RSI (#61) */
+.chart-intervals { flex-wrap: wrap; }
+.chart-intervals button { padding: 5px 9px; }
+.chart-toggles { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 8px; }
+.chip { min-height: 26px; padding: 3px 10px; font-size: 12px; border-radius: 999px; background: none; color: var(--muted); border: 1px solid var(--border); }
+.chip-on { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.chip-sub { min-height: 24px; font-size: 11px; padding: 2px 8px; }
+.chart-sr-source { display: inline-flex; gap: 4px; margin-left: 2px; }
+.chart-limit { margin: 0 0 6px; }
+.price-chart-box.with-rsi { height: 470px; }
+@media (max-width: 760px) { .price-chart-box.with-rsi { height: 380px; } }

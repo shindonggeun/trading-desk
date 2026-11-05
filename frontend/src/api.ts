@@ -60,13 +60,22 @@ export interface Me {
   otp_available: boolean;
 }
 
+/** 봉 주기(backend desk/prices.py INTERVALS). 대소문자 구분: 1m = 1분, 1M = 월봉. */
+export type CandleInterval = "1m" | "5m" | "15m" | "30m" | "60m" | "240m" | "1d" | "1w" | "1M" | "1y";
+
 /** GET /api/candles — 봉은 오래된 것부터, at 은 봉 시작 시각(UTC ISO). */
 export interface Candles {
   ticker: string;
   interval: string;
   source: string;
   fetched_at: string;
-  bars: { at: string; open: number; high: number; low: number; close: number; volume: number }[];
+  /** rsi 는 indicators 에 rsi14 를 요청했을 때만(역사가 짧으면 앞쪽 null). */
+  bars: { at: string; open: number; high: number; low: number; close: number; volume: number; rsi?: number | null }[];
+  indicators?: string[];
+  /** 야후 분봉 보관 한도(일). 분봉이 아니면 null. */
+  history_limit_days?: number | null;
+  /** 요청한 개수보다 적게 왔다. 안내는 history_limit_days 가 있을 때만 — 년봉은 늘 적게 온다. */
+  truncated?: boolean;
 }
 
 export type Alignment = "with_plan" | "against_plan" | "plan_flat" | "no_plan";
@@ -148,8 +157,10 @@ export const api = {
       `/api/quote?ticker=${encodeURIComponent(ticker)}`,
     ),
   estimate: (ticker: string) => call<Estimate>(`/api/estimate?ticker=${encodeURIComponent(ticker)}`),
-  candles: (ticker: string, interval: "1d" | "1w", count: number) =>
-    call<Candles>(`/api/candles?ticker=${encodeURIComponent(ticker)}&interval=${interval}&count=${count}`),
+  candles: (ticker: string, interval: CandleInterval, count: number, rsi = false) =>
+    call<Candles>(
+      `/api/candles?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(interval)}&count=${count}${rsi ? "&indicators=rsi14" : ""}`,
+    ),
   /** 지지 · 저항(backend desk/sr.py) — 지금 봉 기준, 서버가 몇 분 캐시. */
   levels: (ticker: string) => call<SupportResistance>(`/api/levels?ticker=${encodeURIComponent(ticker)}`),
   instruments: (q: string) => call<Instrument[]>(`/api/instruments?q=${encodeURIComponent(q)}`),

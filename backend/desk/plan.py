@@ -111,10 +111,12 @@ def _prose_price(summary: str | None, key: str, references: list[float]) -> floa
 # A leveraged product's plan also carries levels on its underlying (desk.underlying):
 # "Underlying Entry: 251 / Underlying Stop: 243 / Underlying Target: 270". They are read first and
 # cut out, so "Underlying Entry Price: 251" never reads as the product's Entry Price.
+# "Underlying", optionally the underlying's ticker ("Underlying SOXX Entry Price").
+_UNDER = r"Underlying\s+(?:[A-Z0-9.^=-]{1,12}\s+)?"
 _UNDERLYING = {
-    "entry_price": r"Underlying\s+Entry(?:\s+Price)?",
-    "stop_loss": r"Underlying\s+Stop(?:[\s-]*Loss)?",
-    "price_target": r"Underlying\s+(?:Price\s+)?Target",
+    "entry_price": _UNDER + r"Entry(?:\s+Price)?",
+    "stop_loss": _UNDER + r"Stop(?:[\s-]*Loss)?",
+    "price_target": _UNDER + r"(?:Price\s+)?Target(?:\s+Price)?",
 }
 
 
@@ -131,7 +133,8 @@ def _split_underlying(text: str) -> tuple[dict[str, float], str]:
 
 def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
     trader = state.get("trader_investment_plan") or ""
-    underlying, decision = _split_underlying(state.get("final_trade_decision") or "")
+    original = state.get("final_trade_decision") or ""
+    underlying, decision = _split_underlying(original)   # the stripped copy is only for parsing
     summary = _field(decision, "Executive Summary")
     rating = _rating(state)
     levels: dict[str, float | None] = {}
@@ -168,7 +171,7 @@ def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
         "reward_risk": reward_risk(entry, stop, target),
         "time_horizon": _field(decision, "Time Horizon"),
         "position_sizing": _field(trader, "Position Sizing"),
-        "executive_summary": summary,
+        "executive_summary": _field(original, "Executive Summary"),   # as the PM wrote it
         "levels_origin": origin,
     }
     if trader_levels:

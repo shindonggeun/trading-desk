@@ -5,6 +5,7 @@ import LoginForm from "./components/LoginForm";
 import Dashboard from "./pages/Dashboard";
 import RunView from "./pages/RunView";
 import Review from "./pages/Review";
+import Live from "./pages/Live";
 import Settings from "./pages/Settings";
 
 function useHashRoute(): string {
@@ -50,6 +51,7 @@ export default function App() {
   const runMatch = route.match(/^#\/runs\/([\w-]+)/);
   const onSettings = route.startsWith("#/settings");
   const onReview = route.startsWith("#/review");
+  const onLive = route.startsWith("#/live");
 
   return (
     <div className="shell">
@@ -59,7 +61,8 @@ export default function App() {
         </a>
         {user && (
           <nav aria-label="메뉴">
-            <a href="#/" className={!runMatch && !onSettings && !onReview ? "active" : ""}>대시보드</a>
+            <a href="#/" className={!runMatch && !onSettings && !onReview && !onLive ? "active" : ""}>대시보드</a>
+            <a href="#/live" className={onLive ? "active" : ""}>실시간</a>
             <a href="#/review" className={onReview ? "active" : ""}>매매 복기</a>
             <a href="#/settings" className={onSettings ? "active" : ""}>설정</a>
           </nav>
@@ -79,6 +82,8 @@ export default function App() {
 
       {user === undefined ? null : user === null ? (
         <LoginForm onLoggedIn={(name) => { setOffline(false); setUser(name); }} />
+      ) : onLive ? (
+        <Live />
       ) : onReview ? (
         <Review />
       ) : onSettings ? (

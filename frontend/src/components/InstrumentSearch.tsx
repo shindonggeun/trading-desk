@@ -20,7 +20,14 @@ export interface Picked {
  * 종목 검색: 한글 이름 · 티커 · 종목코드 어느 쪽으로 쳐도 후보가 뜬다(백엔드 /api/instruments).
  * 목록에 없는 티커(BTC-USD 등)는 그대로 입력해도 된다 — 그때 name 은 비어 있다.
  */
-export default function InstrumentSearch({ value, onChange }: { value: Picked; onChange: (v: Picked) => void }) {
+export default function InstrumentSearch({ value, onChange, onPick, inputId, placeholder }: {
+  value: Picked;
+  onChange: (v: Picked) => void;
+  /** 목록에서 골랐을 때(직접 친 티커는 아님) — 대시보드 검색 줄이 "분석 시작" 으로 초점을 옮긴다(#100) */
+  onPick?: (v: Picked) => void;
+  inputId?: string;
+  placeholder?: string;
+}) {
   const [text, setText] = useState(value.name ? `${value.name} (${value.ticker})` : value.ticker);
   const [hits, setHits] = useState<Instrument[]>([]);
   const [open, setOpen] = useState(false);
@@ -53,6 +60,7 @@ export default function InstrumentSearch({ value, onChange }: { value: Picked; o
     onChange({ ticker: hit.ticker, name: hit.name });
     setText(`${hit.name} (${hit.ticker})`);
     setOpen(false);
+    onPick?.({ ticker: hit.ticker, name: hit.name });
   };
 
   const typed = (raw: string) => {
@@ -82,6 +90,7 @@ export default function InstrumentSearch({ value, onChange }: { value: Picked; o
   return (
     <div className="search">
       <input
+        id={inputId}
         role="combobox"
         aria-expanded={open && hits.length > 0}
         aria-controls={listId}
@@ -91,7 +100,7 @@ export default function InstrumentSearch({ value, onChange }: { value: Picked; o
         onFocus={() => setOpen(true)}
         onBlur={() => window.setTimeout(() => setOpen(false), 120)}
         onKeyDown={onKey}
-        placeholder="엔비디아 · 삼성전자 · NVDA · 005930"
+        placeholder={placeholder ?? "엔비디아 · 삼성전자 · NVDA · 005930"}
         autoComplete="off"
         spellCheck={false}
         required

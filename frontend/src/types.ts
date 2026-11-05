@@ -17,6 +17,8 @@ export interface Plan {
   atr?: number;
   last_close?: number;
   levels_error?: string;
+  /** The live quote was too far from the close to trust (backend desk/levels.py). */
+  levels_warning?: string;
   /** The quote at the end of a same-day analysis (backend desk/runner.py). */
   live_price?: { price: number; source: string; fetched_at: string };
   /** Daily/weekly levels the agents were given (backend desk/sr.py); the card reads its ATR. */

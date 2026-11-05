@@ -27,6 +27,14 @@ function toItems(events: DeskEvent[]): Item[] {
   return items;
 }
 
+// 계획의 보유 기간은 길어야 몇 주다. 그보다 오래된 · 과거 날짜 분석은 지금 시세로 판단하지 않는다.
+const LIVE_DAYS = 21;
+
+function stillOpen(tradeDate: string): boolean {
+  const days = (Date.now() - new Date(`${tradeDate}T00:00:00`).getTime()) / 86_400_000;
+  return days < LIVE_DAYS + 1;
+}
+
 export default function RunView({ runId }: { runId: string }) {
   const [run, setRun] = useState<Run | null>(null);
   const [events, setEvents] = useState<DeskEvent[]>([]);
@@ -96,7 +104,7 @@ export default function RunView({ runId }: { runId: string }) {
           {plan && (
             <PlanCard
               plan={plan}
-              symbol={run.ticker}
+              symbol={stillOpen(run.trade_date) ? run.ticker : undefined}
               ticker={run.options.name ? `${run.options.name} (${run.ticker})` : run.ticker}
               profile={PROFILE_LABEL[run.options.profile ?? ""]}
             />

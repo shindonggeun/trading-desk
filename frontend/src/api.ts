@@ -134,6 +134,10 @@ export const api = {
   regime: () => call<RegimeSnapshot>("/api/regime"),
   /** 매매 복기(백엔드 desk/review.py): 최근 days 일 체결을 그때의 분석 계획과 묶는다. 읽기 전용. */
   review: (days: number) => call<ReviewResponse>(`/api/review?days=${days}`),
+  quote: (ticker: string) =>
+    call<{ ticker: string; price: number; currency: string | null; source: string; fetched_at: string }>(
+      `/api/quote?ticker=${encodeURIComponent(ticker)}`,
+    ),
   instruments: (q: string) => call<Instrument[]>(`/api/instruments?q=${encodeURIComponent(q)}`),
   instrumentsStatus: () =>
     call<{ source: string; count: number; updated_at: string | null; error: string | null }>("/api/instruments/status"),

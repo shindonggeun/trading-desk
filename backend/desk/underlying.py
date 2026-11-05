@@ -45,7 +45,10 @@ def prompt_note(ticker: str, underlying: str, leverage: float, proxy: bool) -> s
             f"{'inverse ' if leverage < 0 else ''}product on {underlying}"
             + (" (it tracks its own index; the underlying is a close proxy)" if proxy else "")
             + f", on your call: a desk leverage analyst converts the decision to {product} afterwards. "
-            f"Set every level (entry, stop, target) on {underlying} prices only.")
+            f"Set every level (entry, stop, target) on {underlying} prices only and write "
+            f"'{underlying}' next to each price, so no one reads it as a {product} price. When the "
+            "decision is Hold, state the levels as a long trigger and a short trigger (which side "
+            "each one opens), not as one entry with a stop on the wrong side.")
 
 
 _FLIP = {"Buy": "Sell", "Overweight": "Underweight", "Hold": "Hold", "Underweight": "Overweight", "Sell": "Buy"}

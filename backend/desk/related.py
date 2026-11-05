@@ -94,6 +94,21 @@ LEVERAGED: dict[str, tuple[str, float]] = {
     "122630.KS": ("069500.KS", 2), "252670.KS": ("069500.KS", -2), "114800.KS": ("069500.KS", -1),
 }
 
+
+
+def inverse_pair(ticker: str) -> tuple[str, float] | None:
+    """The product on the same underlying in the other direction (SOXL -> SOXS, SOXS -> SOXL), the
+    same multiple first: what a bet against the product's direction is bought with (#109)."""
+    hit = LEVERAGED.get(ticker.upper())
+    if not hit:
+        return None
+    base, lev = hit
+    other = [(t, m) for t, (b, m) in LEVERAGED.items() if b == base and (m < 0) != (lev < 0)]
+    if not other:
+        return None
+    return min(other, key=lambda tm: (abs(abs(tm[1]) - abs(lev)), tm[0]))
+
+
 # Products on their own index, close to but not the same as the listed underlying.
 PROXY = {"GDXU", "GDXD", "USD", "SSG"}
 

@@ -24,6 +24,7 @@ from .broker import make_broker
 from .db import make_engine, migrate, now
 from .estimate import BinanceEstimator
 from .indicators import INDICATORS
+from .market_flow import MarketFlow
 from .portfolio import Portfolio
 from .prices import INTERVALS, PriceSource
 from .profile import PROFILES
@@ -128,7 +129,8 @@ def purge_expired_runs(store: Store, retention_days: int) -> int:
 
 
 def create_app(settings: Settings | None = None, runner=None, prices: PriceSource | None = None,
-               estimator: BinanceEstimator | None = None, book: Portfolio | None = None) -> FastAPI:
+               estimator: BinanceEstimator | None = None, book: Portfolio | None = None,
+               flow: MarketFlow | None = None) -> FastAPI:
     settings = settings or load()
     migrate(settings.database_url)
     engine = make_engine(settings.database_url)
@@ -147,6 +149,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     prices = prices or PriceSource(broker)
     estimator = estimator or BinanceEstimator()
     book = book or Portfolio(broker, prices)
+    flow = flow or MarketFlow(broker)
     if runner is None:
         runner = make_fake_runner(settings.fake_delay) if settings.fake_runs else run_tradingagents
 
@@ -502,6 +505,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         result = await review.build_review(window, store.done_runs_for, universe.lookup, daily, start, today)
         return {"supported": True, "source": broker.name, **result}
+
+    @app.get("/api/market/flow")
+    async def market_flow(market: str = "KOSPI", interval: str = "1d", count: int = 20):
+        """KOSPI / KOSDAQ trading value by investor class, newest first (desk.market_flow). Read-only;
+        a broker failure comes back as ``error`` with no records, not as a 5xx."""
+        try:
+            return await flow.get(market.upper(), interval, count)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
 
     @app.get("/api/portfolio")
     async def portfolio():

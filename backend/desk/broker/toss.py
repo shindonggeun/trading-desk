@@ -13,10 +13,11 @@ import base64
 import logging
 import time
 from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 
 import httpx
 
-from .base import Bar, Broker, Fill, Holding, Listing
+from .base import INSTITUTION_KINDS, Bar, Broker, Fill, FlowRecord, Holding, IndexPrice, Listing
 
 BASE_URL = "https://openapi.tossinvest.com"
 REFRESH_MARGIN_SEC = 300
@@ -41,6 +42,53 @@ def _retry_after(value: str | None) -> float:
     except ValueError:
         seconds = 1.0
     return min(max(seconds, 0.5), MAX_RETRY_AFTER_SEC)
+
+
+# Toss field names of the investor-trading record (spec 1.2.14) -> ours.
+_INVESTOR_FIELDS = {"individual": "individual", "foreigner": "foreigner",
+                    "institution": "institution", "otherCorporation": "other_corporation"}
+_BREAKDOWN_FIELDS = dict(zip(("financialInvestment", "insurance", "trust", "privateEquityFund", "bank",
+                              "otherFinancialInstitution", "pensionFund"), INSTITUTION_KINDS, strict=True))
+
+
+def _amount(value) -> int | None:
+    """A KRW integer sent as a decimal string ("5200000000000"), read exactly (a year of KOSPI is
+    in the 10^15 range, near float's integer limit). Negative, NaN, infinite or garbage -> None."""
+    try:
+        number = Decimal(str(value).replace(",", ""))
+    except (InvalidOperation, ValueError):
+        return None
+    if not number.is_finite() or number < 0:
+        return None
+    return int(number.to_integral_value())
+
+
+def _pair(node) -> tuple[int, int] | None:
+    if not isinstance(node, dict):
+        return None
+    buy, sell = _amount(node.get("buyAmount")), _amount(node.get("sellAmount"))
+    return None if buy is None or sell is None else (buy, sell)
+
+
+def _flow_record(row) -> FlowRecord | None:
+    """One Toss record, or None when a required part is missing (the rest of the page still shows)."""
+    if not isinstance(row, dict) or not row.get("date"):
+        return None
+    investors = {}
+    for field, ours in _INVESTOR_FIELDS.items():
+        pair = _pair(row.get(field))
+        if pair is None:
+            return None
+        investors[ours] = pair
+    breakdown = {}
+    raw = row["institution"].get("breakdown")          # _pair above checked institution is a dict
+    raw = raw if isinstance(raw, dict) else {}
+    for field, ours in _BREAKDOWN_FIELDS.items():
+        pair = _pair(raw.get(field))
+        if pair is not None:
+            breakdown[ours] = pair
+    return FlowRecord(date=str(row["date"])[:10], updated_at=str(row.get("updatedAt") or ""),
+                      investors=investors, institution_breakdown=breakdown)
 
 
 def _num(value) -> float | None:
@@ -185,6 +233,34 @@ class TossBroker(Broker):
         if not rate:
             raise TossError("Toss returned no USD/KRW rate")
         return rate
+
+    async def investor_flow(self, market: str, interval: str, count: int,
+                            until: date | None = None) -> tuple[list[FlowRecord], str | None]:
+        """GET /api/v1/market-indicators/{KOSPI|KOSDAQ}/investor-trading (Market Indicators group,
+        token only - no account header)."""
+        params: dict = {"interval": interval, "count": min(max(count, 1), 100)}
+        if until is not None:
+            params["until"] = until.isoformat()
+        result = await self._get(f"/api/v1/market-indicators/{market}/investor-trading", params=params) or {}
+        rows = (result.get("records") if isinstance(result, dict) else None) or []
+        rows = rows if isinstance(rows, list) else []
+        records = [rec for rec in (_flow_record(row) for row in rows) if rec is not None]
+        next_until = result.get("nextUntil") if isinstance(result, dict) else None
+        return records, (str(next_until)[:10] if next_until else None)
+
+    async def index_prices(self, symbols: list[str]) -> list[IndexPrice]:
+        """GET /api/v1/market-indicators/prices (KOSPI, KOSDAQ, KR_BOND_*)."""
+        rows = _rows(await self._get("/api/v1/market-indicators/prices", params={"symbols": ",".join(symbols)}), "prices")
+        out = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            price = _num(row.get("lastPrice"))
+            if row.get("symbol") and price:
+                at = row.get("timestamp")
+                out.append(IndexPrice(symbol=str(row["symbol"]).upper(), price=price,
+                                      at=at if isinstance(at, str) and at else None))
+        return out
 
     async def fills(self, start: date, end: date) -> list[Fill]:
         """Closed orders with a fill, from GET /api/v1/orders?status=CLOSED (read-only), paged by cursor."""

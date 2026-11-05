@@ -57,7 +57,7 @@ function scenario(side: Side, steps: TradeStep[]): ReactNode[] {
     );
   }
   if (t1) {
-    const heavy = t1.share === 50;
+    const heavy = !!t1.heavy;
     out.push(
       <>
         <strong>{price(t1.price)}</strong>({why(t1) || "1차 목표"}) 도달 시 <strong>{t1.share}%</strong> 익절
@@ -70,7 +70,7 @@ function scenario(side: Side, steps: TradeStep[]): ReactNode[] {
     out.push(
       <>
         {price(t1.price)} {up ? "돌파 · 종가 안착" : "이탈 · 종가 마감"} 시 <strong>{price(t2.price)}</strong>({why(t2) || "2차 목표"})까지 보유 → 나머지 익절
-        {t1.volume !== "thick" && t2.volume === "thin" ? " (사이가 얇아 빨리 갈 수 있음)" : ""}
+        {t2.gap_thin ? " (사이 매물대가 얇아 빨리 갈 수 있음)" : ""}
       </>,
     );
   }
@@ -84,7 +84,7 @@ function scenario(side: Side, steps: TradeStep[]): ReactNode[] {
   if (g2) {
     out.push(
       <>
-        <strong>{price(g2.price)}</strong>({why(g2) || ROLE[side].guard2})까지 밀리면 절반 이상 정리
+        <strong>{price(g2.price)}</strong>({why(g2) || ROLE[side].guard2})까지 {up ? "밀리면" : "올라오면"} 절반 이상 정리
       </>,
     );
   }
@@ -163,6 +163,12 @@ export default function TradeMap({ plan, ticker }: { plan: Plan; ticker: string 
             <h4>
               {m.side === "long" ? "롱" : "숏"} {m.origin === "trigger" ? (m.side === "long" ? "— 롱 조건 돌파 시" : "— 숏 조건 이탈 시") : "시나리오"}
             </h4>
+            {m.ignored && (m.ignored.stop_loss != null || m.ignored.price_target != null) && (
+              <p className="small tm-ignored">
+                계획의 {[m.ignored.stop_loss != null && `손절가 ${price(m.ignored.stop_loss)}`, m.ignored.price_target != null && `목표가 ${price(m.ignored.price_target)}`]
+                  .filter(Boolean).join(" · ")}는 진입가와 방향이 맞지 않아 빼고 차트 레벨로 채웠습니다.
+              </p>
+            )}
             <Ladder side={m.side} steps={m.steps} live={live} vp={vp} />
             <ol className="tm-steps small">
               {scenario(m.side, m.steps).map((line, i) => <li key={i}>{line}</li>)}

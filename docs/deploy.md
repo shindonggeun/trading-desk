@@ -105,6 +105,11 @@ docker run --rm -it -p 127.0.0.1:1455:1455 -v trading-desk-tradingagents-home:/h
 - `.env.runtime` 에 `DESK_BROKER=toss`, `TOSS_CLIENT_ID` · `TOSS_CLIENT_SECRET`(· `TOSS_ACCOUNT_SEQ`).
 - **토스 WTS → 설정 → Open API → 허용 IP** 에 홈랩 공인 IP(지금 `1.241.243.70`)를 등록한다. 등록되지 않은 IP 는 403 이다.
 - 공인 IP 는 SK브로드밴드 동적 IP 라 바뀔 수 있다. 바뀌면 대시보드 보유 종목 패널에 403 이 보인다 → WTS 에서 다시 등록.
+- **토큰은 키(client)당 1개만 유효하다.** 같은 키로 다른 곳에서 토큰을 받으면 서버 토큰이 즉시 무효화된다(401 `token-revoked`).
+  서버는 401 을 받으면 새로 받아 한 번 다시 부르지만(#50), 그 순간 다른 쪽 토큰이 죽는다. 그래서 **운영 점검은 앱 API**(`/api/quote` · `/api/portfolio` · `/api/review` …)로 하고,
+  컨테이너 안 스크립트에서 `TossBroker` 를 직접 만들지 않는다. PC 로컬 개발은 `DESK_BROKER=mock`(또는 별도 키)로 띄운다 —
+  PC 와 서버가 같은 공인 IP 라 허용 IP(403)로도 막히지 않는다. 다른 앱(semibot 등)에 토스를 붙일 때는 키를 따로 발급받는다.
+  두 곳이 같은 키를 계속 쓰면 서로 무효화를 반복한다(핑퐁) — 서버는 재발급을 1분에 한 번으로 묶고 로그에 `toss token revoked` 를 남긴다.
 - 시세 · 보유 정보를 다른 사람에게 보여주지 않는다(재배포 금지). 로그인이 소유자 한 명으로 막는 이유다.
 
 ## 7. 백업

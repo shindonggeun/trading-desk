@@ -668,7 +668,7 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 /* #95 — 분석 끝 결론 요약 카드 */
 .consensus h3 { margin: 0 0 8px; }
 .cs-action { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--border);
-  border-left-width: 4px; border-radius: 8px; background: var(--surface-2); }
+  border-left-width: 4px; border-radius: var(--radius); background: var(--surface-2); }
 .cs-action-label { font-size: 22px; font-weight: 700; }
 .cs-action.cs-long { border-left-color: var(--long); }
 .cs-action.cs-short { border-left-color: var(--short); }
@@ -678,7 +678,7 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .cs-action.cs-short .cs-action-label, strong.cs-short, span.cs-short { color: var(--short); }
 strong.cs-hold { color: var(--muted); }
 .cs-levels { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
-.cs-level { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+.cs-level { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-s);
   font-variant-numeric: tabular-nums; min-width: 0; }
 .cs-level-손절 strong { color: var(--short); }
 .cs-level-목표 strong { color: var(--long); }
@@ -686,14 +686,17 @@ strong.cs-hold { color: var(--muted); }
 .cs-triggers { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
 .cs-conclusion { margin: 10px 0 0; font-weight: 600; }
 .cs-votes-head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
-.cs-bar { display: flex; height: 22px; margin-top: 6px; border-radius: 6px; overflow: hidden; gap: 2px; }
-.cs-seg { display: flex; align-items: center; justify-content: center; min-width: 36px; font-size: 12px; color: #fff; opacity: 0.55; white-space: nowrap; }
-.cs-seg-top { opacity: 1; font-weight: 700; }
-.cs-seg-long { background: var(--long); }
-.cs-seg-short { background: var(--short); }
-.cs-seg-hold { background: var(--flat); }
+.cs-bar { display: flex; height: 22px; margin-top: 6px; border-radius: var(--radius-s); overflow: hidden; gap: 2px; }
+.cs-seg { display: flex; align-items: center; justify-content: center; min-width: 36px; font-size: var(--fs-s); color: var(--text); white-space: nowrap; }
+.cs-seg-top { font-weight: 700; }
+.cs-seg-long { background: color-mix(in srgb, var(--long) 28%, transparent); }
+.cs-seg-long.cs-seg-top { background: color-mix(in srgb, var(--long) 55%, transparent); }
+.cs-seg-short { background: color-mix(in srgb, var(--short) 28%, transparent); }
+.cs-seg-short.cs-seg-top { background: color-mix(in srgb, var(--short) 55%, transparent); }
+.cs-seg-hold { background: color-mix(in srgb, var(--flat) 28%, transparent); }
+.cs-seg-hold.cs-seg-top { background: color-mix(in srgb, var(--flat) 55%, transparent); }
 .cs-cases { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
-.cs-case { padding: 8px 10px; border: 1px solid var(--border); border-top-width: 3px; border-radius: 8px; min-width: 0; }
+.cs-case { padding: 8px 10px; border: 1px solid var(--border); border-top-width: 3px; border-radius: var(--radius); min-width: 0; }
 .cs-case-long { border-top-color: var(--long); }
 .cs-case-short { border-top-color: var(--short); }
 .cs-case h4 { margin: 0 0 4px; font-size: 14px; }
@@ -702,12 +705,12 @@ strong.cs-hold { color: var(--muted); }
 .cs-detail { margin-top: 10px; }
 .cs-detail summary { cursor: pointer; }
 .cs-vote-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; }
-.cs-chip { display: inline-block; min-width: 34px; margin-right: 6px; padding: 0 6px; border-radius: 4px; text-align: center; color: #fff; font-size: 12px; }
-.cs-chip-long { background: var(--long); }
-.cs-chip-short { background: var(--short); }
-.cs-chip-hold { background: var(--flat); }
+.cs-chip { display: inline-block; min-width: 34px; margin-right: 6px; padding: 0 6px; border-radius: var(--radius-s); text-align: center; border: 1px solid currentColor; font-size: var(--fs-s); }
+.cs-chip-long { color: var(--long); }
+.cs-chip-short { color: var(--short); }
+.cs-chip-hold { color: var(--flat); }
 @media (max-width: 560px) { .cs-levels { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cs-cases { grid-template-columns: 1fr; } }
-.cs-holder { margin-top: 12px; padding: 8px 12px; border: 1px dashed var(--border); border-radius: 8px; }
+.cs-holder { margin-top: 12px; padding: 8px 12px; border: 1px dashed var(--border); border-radius: var(--radius); }
 .cs-holder-head { display: flex; align-items: baseline; gap: 10px; }
 .cs-holder-label { font-size: 18px; }
 .cs-holder-hold .cs-holder-label { color: var(--long); }
@@ -780,7 +783,7 @@ span.cs-hold-text { color: var(--warn); }
 
 /* #99 — 분석 화면: 결론 줄 + 요약 · 차트 · 토론 · 근거 탭 */
 .run-bar { position: sticky; top: var(--topbar-h, 52px); z-index: 4; margin: 0 0 8px; background: var(--surface);
-  border: 1px solid var(--border); border-radius: 8px; }
+  border: 1px solid var(--border); border-radius: var(--radius); }
 .run-bar-main { display: flex; align-items: baseline; gap: 6px 14px; flex-wrap: wrap; padding: 10px 14px; }
 .run-bar-toggle { display: none; margin-left: auto; }
 .run-bar-error { flex: 1 1 200px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--short); }

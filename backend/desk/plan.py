@@ -100,6 +100,7 @@ def _labeled_price(text: str, label: str) -> float | None:
 def _prose_price(summary: str | None, key: str, references: list[float]) -> float | None:
     if not summary or not references:
         return None   # nothing to sanity-check a prose number against
+    summary = _ENTRY_LINE.sub("", summary)   # 'Entry: stop on a break of 186.5' names the entry, not a stop
     pattern = _PROSE.format(kw=_SUMMARY_KEYWORDS[key], num=_NUMBER.pattern)
     for match in re.finditer(pattern, summary, re.IGNORECASE):
         value = _number(match.group(1))
@@ -182,6 +183,7 @@ def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
     return plan
 
 
+_ENTRY_LINE = re.compile(r"\bEntry\s*\**\s*:\s*\**\s*(?:now|limit|stop)\b.*$", re.IGNORECASE | re.MULTILINE)
 _ENTRY_TYPE = re.compile(r"\bEntry\s*\**\s*:\s*\**\s*(now|limit|stop)\b", re.IGNORECASE)
 _INVALIDATION = re.compile(r"\bInvalidation\s*\**\s*:\s*\**\s*(.+?)\s*(?:/\s*\**\s*Exit by\b|$)",
                            re.IGNORECASE | re.MULTILINE)

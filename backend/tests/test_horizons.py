@@ -26,11 +26,27 @@ def test_four_horizons_with_swing_as_the_default():
 
 def test_mandate_weighs_three_directions_and_asks_for_entry_invalidation_exit():
     text = horizons.horizon_mandate(horizons.get("intraday"), atr=0.9)
-    assert "overrides any holding period" in text and "Long, short and Hold carry equal weight" in text
+    assert "For holding period and level spacing this overrides the investor mandate" in text
+    assert "rules on direction and sizing still apply" in text
+    assert "long, short and Hold carry equal weight" in text
+    assert "단타" not in text and "5분봉" not in text   # prompts stay English
     assert "'Entry: <now|limit|stop> / Invalidation: <text> / Exit by: <time or condition>'" in text
     assert "Right after the final levels line" in text   # the PM's levels line (desk.profile) stays as is
-    assert "5m" in text and "(0.9)" in text and "never overnight" in text
+    assert "5m bars and their ATR14 (0.9)" in text and "never overnight" in text
     assert "reference map, not a trigger" in horizons.horizon_mandate(horizons.get("scalp"))
+
+
+def test_swing_keeps_the_prompt_it_had_before_horizons():
+    assert horizons.horizon_mandate(horizons.get("swing"), atr=6.0) is None
+
+
+def test_mandate_follows_the_frame_the_levels_really_came_from():
+    scalp = horizons.get("scalp")
+    fell_back = horizons.horizon_mandate(scalp, atr=6.5, frame=horizons.get(None))
+    assert "1d bars and their ATR14 (6.5)" in fell_back and "1m bars were not available" in fell_back
+    assert "stop about 1.5 ATR" in fell_back   # daily ATR with daily multiples, not 2 x daily ATR
+    no_levels = horizons.horizon_mandate(scalp, levels_below=False)
+    assert "listed below" not in no_levels and "1m volatility" in no_levels
 
 
 def test_valid_until_counts_from_the_quote_the_agents_saw():
@@ -120,7 +136,8 @@ def test_levels_without_intraday_bars_use_daily_atr_with_swing_multiples():
         return 100.0, 6.0
     plan = fill_levels(_plan("short"), "NVDA", "2025-01-02", prices, horizon="scalp")
     assert (plan["stop_loss"], plan["price_target"]) == (109.0, 82.0)
-    assert "swing multiples" in plan["levels_warning"] and "atr_interval" not in plan
+    assert "swing multiples" in plan["atr_warning"] and "atr_interval" not in plan
+    assert "levels_warning" not in plan   # that key means "the live quote is not trusted"
 
 
 def test_summary_closing_line_is_parsed():
@@ -163,7 +180,8 @@ def test_runs_take_a_horizon_and_plans_carry_it(db_url):
 def test_every_horizon_has_a_mandate_and_a_dict(horizon):
     h = horizons.get(horizon)
     assert h.to_dict() == {"id": h.id, "label": h.label, "holding": h.holding}
-    assert h.holding_en in horizons.horizon_mandate(h)
+    mandate = horizons.horizon_mandate(h)
+    assert mandate is None if h.id == "swing" else h.holding_en in mandate
 
 
 def test_scalp_keeps_daily_zones_from_days_ago_alongside_minute_bars():
@@ -172,3 +190,32 @@ def test_scalp_keeps_daily_zones_from_days_ago_alongside_minute_bars():
     one = _intraday(200, 99.8, 100.2, 30, 1)
     result = sr.compute(one, DAILY, price=100.0, horizon="scalp")
     assert result["levels"] and result["atr"] < 1.0
+
+
+def test_prior_session_is_the_day_before_the_minute_bars_session_not_the_trade_date():
+    # KST 2026-11-06 01:00 = New York 11-05 12:00: the 11-05 daily bar is still trading.
+    sr._CACHE.clear()
+    five = [{"at": f"2026-11-05T{14 + i // 12:02d}:{(i % 12) * 5:02d}:00+00:00", "open": 100.0, "high": 100.2,
+             "low": 99.8, "close": 100.0, "volume": 1.0} for i in range(40)]
+    days = [{"at": f"2026-10-{d:02d}T04:00:00+00:00", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0,
+             "volume": 1.0} for d in range(10, 31)]
+    days += [{"at": "2026-11-04T05:00:00+00:00", "open": 100, "high": 104.0, "low": 96.0, "close": 100, "volume": 1},
+             {"at": "2026-11-05T05:00:00+00:00", "open": 100, "high": 130.0, "low": 70.0, "close": 100, "volume": 1}]
+
+    class Bars:
+        async def candles(self, ticker, interval, count):
+            return {"bars": five if interval == "5m" else days, "source": "yahoo"}
+    result = asyncio.run(sr.support_resistance(Bars(), "NVDA", "2026-11-06", horizon="intraday"))
+    bases = {lv["basis"] for lv in result["levels"]}
+    prices = {lv["price"] for lv in result["levels"]}
+    assert 130.0 not in prices and 70.0 not in prices              # today's unfinished bar is not "prior"
+    assert any("전일" in b for b in bases)
+
+
+def test_entry_line_with_stop_is_not_read_as_the_stop_loss():
+    plan = parse_plan({
+        "trader_investment_plan": "**Entry Price**: 186.5\n\n**Stop Loss**: 180",
+        "final_trade_decision": ("**Rating**: Buy\n\n**Executive Summary**: 돌파 매수, 손절 181. "
+                                 "Entry: stop on a break of 186.5 / Invalidation: 181 아래 / Exit by: 오늘\n\n"
+                                 "**Price Target**: 195")})
+    assert plan["stop_loss"] != 186.5 and plan["entry_type"] == "stop"

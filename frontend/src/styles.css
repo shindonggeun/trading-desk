@@ -664,3 +664,12 @@ strong.cs-hold { color: var(--muted); }
 .cs-chip-short { background: var(--short); }
 .cs-chip-hold { background: var(--flat); }
 @media (max-width: 560px) { .cs-levels { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cs-cases { grid-template-columns: 1fr; } }
+.cs-holder { margin-top: 12px; padding: 8px 12px; border: 1px dashed var(--border); border-radius: 8px; }
+.cs-holder-head { display: flex; align-items: baseline; gap: 10px; }
+.cs-holder-label { font-size: 18px; }
+.cs-holder-hold .cs-holder-label { color: var(--long); }
+.cs-holder-trim .cs-holder-label { color: var(--warn); }
+.cs-holder-exit .cs-holder-label { color: var(--short); }
+.cs-holder-exit { border-color: var(--short); }
+.cs-holder-pos, .cs-holder-reason { margin: 4px 0 0; }
+span.cs-hold-text { color: var(--warn); }

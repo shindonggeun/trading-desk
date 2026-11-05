@@ -79,6 +79,15 @@ export interface Consensus {
   short_case: string[];
   debate: string;
   conclusion: string;
+  /** 이미 보유한 사람에게: 버티기 · 약손절 · 손절. 레벨은 계획 · 지지 · 저항 중에서만 고른다. */
+  holder?: {
+    action: "hold" | "trim" | "exit";
+    cut_level: number | null;
+    trim_level: number | null;
+    reason: string;
+    /** "내 보유 종목 반영" 으로 돌렸고 이 종목을 갖고 있을 때만. */
+    position: { quantity: number; average_price: number | null; pnl_pct: number | null } | null;
+  } | null;
 }
 
 export type HorizonId = "scalp" | "intraday" | "short_swing" | "swing";

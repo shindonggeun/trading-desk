@@ -135,6 +135,45 @@ export interface SupportResistance {
   as_of: string;
   levels: SrLevel[];
   computed_at: string;
+  /** 추세선(#73) — 옛 분석 · 계산 실패면 없다 */
+  trendlines?: Trendline[];
+  fibonacci?: Fibonacci | null;
+  trend_error?: string;
+}
+
+export interface TrendPoint {
+  at: string;
+  price: number;
+}
+
+/** 로그 가격 × 봉 순서에서 직선(backend desk/trend.py). */
+export interface Trendline {
+  kind: "support" | "resistance";
+  /** 그 선을 그은 봉 주기(1d · 1w · 5m …) */
+  timeframe: string;
+  anchors: TrendPoint[];
+  /** 선의 지금 위치 */
+  end: TrendPoint;
+  touches: string[];
+  slope_pct_per_bar: number;
+  price_now: number;
+  /** 지금 가격 − 선, 주 시간축 ATR 단위 */
+  distance_atr: number;
+  state: "intact" | "testing" | "broken";
+}
+
+export interface FibLevel {
+  ratio: number;
+  price: number;
+  /** 겹치는 수평 지지 · 저항 구간 */
+  confluence?: { price: number; strength: number; basis: string };
+}
+
+export interface Fibonacci {
+  direction: "up" | "down";
+  from: TrendPoint;
+  to: TrendPoint;
+  levels: FibLevel[];
 }
 
 export interface RunPage {

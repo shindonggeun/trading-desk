@@ -9,16 +9,17 @@ import {
   PriceScaleMode,
   type IChartApi,
   type IPriceLine,
+  type MouseEventParams,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
   type SeriesMarker,
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles, type ReviewRow } from "../api";
 import { price } from "../format";
-import type { Plan, SrLevel, SupportResistance } from "../types";
+import type { FibLevel, Fibonacci, Plan, SrLevel, SupportResistance, Trendline } from "../types";
 
 export type Interval = Exclude<CandleInterval, "1m">;
 const INTERVALS: { iv: Interval; label: string; count: number }[] = [
@@ -39,9 +40,11 @@ const LOG_SCALE = new Set<Interval>(["1w", "1M", "1y"]);
 const LABEL = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.label])) as Record<Interval, string>;
 const COUNT = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.count])) as Record<Interval, number>;
 
-type Show = { levels: boolean; sr: boolean; fills: boolean; analysis: boolean; rsi: boolean };
-const SHOW_LABEL: Record<keyof Show, string> = { levels: "타점선", sr: "지지 · 저항", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI" };
-const DEFAULT_SHOW: Show = { levels: true, sr: true, fills: true, analysis: true, rsi: true };
+type Show = { levels: boolean; sr: boolean; trend: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean };
+const SHOW_LABEL: Record<keyof Show, string> = {
+  levels: "타점선", sr: "지지 · 저항", trend: "추세선", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
+};
+const DEFAULT_SHOW: Show = { levels: true, sr: true, trend: true, fib: true, fills: true, analysis: true, rsi: true };
 
 // 주기 · 표시 선택은 이 브라우저에 기억한다(사생활 모드 · 막힌 저장소에서도 화면은 그대로 동작).
 const PREFS_KEY = "desk.priceChart.v1";
@@ -129,6 +132,35 @@ function css(name: string, fallback: string): string {
 type SrMode = "plan" | "now";
 const SR_LABEL: Record<SrMode, string> = { plan: "분석 당시", now: "지금" };
 const TF_LABEL: Record<SrLevel["timeframe"], string> = { "1d": "일봉", "1w": "주봉" };
+/** 추세선의 봉 주기 — 분봉 지평이면 5m · 60m 도 온다. */
+function tfLabel(tf: string): string {
+  if (tf in TF_LABEL) return TF_LABEL[tf as SrLevel["timeframe"]];
+  const m = /^(\d+)m$/.exec(tf);
+  return m ? `${m[1]}분봉` : tf;
+}
+const TREND_NAME: Record<Trendline["kind"], string> = { support: "상승 지지선", resistance: "하락 저항선" };
+const TREND_STATE: Record<Trendline["state"], string> = { intact: "유지", testing: "시험 중", broken: "이탈" };
+const signed = (v: number) => `${v > 0 ? "+" : ""}${v}`;
+
+/**
+ * 추세선의 그 시각 가격. 선은 로그 가격에서 직선이라 앵커 · 끝 세 점 사이를 로그로 시간 비례해 잇는다 —
+ * 보는 차트 주기(주봉 · 분봉)가 선을 그은 주기와 달라도 같은 자리에 놓인다.
+ */
+function lineAt(t: Trendline, ms: number): number {
+  const pts = [...t.anchors, t.end]
+    .map((p) => ({ ms: Date.parse(p.at), lp: Math.log(p.price) }))
+    .sort((a, b) => a.ms - b.ms);
+  let [a, b] = [pts[0], pts[1]];
+  for (let i = 1; i < pts.length - 1; i++) if (ms > pts[i].ms) [a, b] = [pts[i], pts[i + 1]];
+  if (b.ms === a.ms) return Math.exp(b.lp);
+  return Math.exp(a.lp + ((b.lp - a.lp) * (ms - a.ms)) / (b.ms - a.ms));
+}
+
+type Hover = { x: number; y: number; key: string } & (
+  | { type: "sr"; level: SrLevel }
+  | { type: "trend"; line: Trendline }
+  | { type: "fib"; level: FibLevel; fib: Fibonacci }
+);
 
 /** 지지 · 저항은 그 계산의 기준가 위 · 아래로 나뉜다 — 어느 가격 기준인지 같이 적는다. */
 function srNote(mode: SrMode, src: Partial<SupportResistance> | null): string {
@@ -191,31 +223,39 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const [failed, setFailed] = useState(false);
   const [drawn, setDrawn] = useState<Drawn | null>(null);
   const box = useRef<HTMLDivElement>(null);
+  // 한 화면에 차트가 여럿(본주 · 레버리지)이어도 범례 id 가 겹치지 않게
+  const legendId = useId();
   // 지지 · 저항 — 기본은 그 분석이 에이전트에게 준 레벨(계획에 저장됨), 없으면(옛 분석) 지금 봉 기준.
   const saved = plan?.support_resistance?.levels?.length ? plan.support_resistance : null;
   const [srMode, setSrMode] = useState<SrMode | null>(null);
   const mode: SrMode = srMode ?? (saved ? "plan" : "now");
   const [nowSr, setNowSr] = useState<SupportResistance | null>(null);
   const [srFailed, setSrFailed] = useState(false);
-  const [hover, setHover] = useState<{ level: SrLevel; x: number; y: number } | null>(null);
+  const [hover, setHover] = useState<Hover | null>(null);
   // 매 렌더 새 배열이면 선을 계속 다시 그린다 — 근거가 바뀔 때만.
   const sr: SrLevel[] = useMemo(
     () => (!show.sr ? [] : mode === "plan" ? saved?.levels ?? [] : nowSr?.levels ?? []),
     [show.sr, mode, saved, nowSr],
   );
+  const srSource = mode === "plan" ? saved : nowSr;
+  // 추세선 · 피보나치(#73) — 지지 · 저항과 같은 출처(분석 당시 / 지금)
+  const trendLines: Trendline[] = useMemo(() => (show.trend ? srSource?.trendlines ?? [] : []), [show.trend, srSource]);
+  const fib: Fibonacci | null = show.fib ? srSource?.fibonacci ?? null : null;
+  const wantSr = show.sr || show.trend || show.fib;
+  const [trendDrawn, setTrendDrawn] = useState<{ line: Trendline; series: ISeriesApi<"Line"> }[]>([]);
 
   useEffect(() => savePrefs(interval, show), [interval, show]);
   const toggle = (k: keyof Show) => setShow((s) => ({ ...s, [k]: !s[k] }));
 
   useEffect(() => {
-    if (!show.sr || mode !== "now" || nowSr) return;
+    if (!wantSr || mode !== "now" || nowSr) return;
     let live = true;
     setSrFailed(false);
     api.levels(ticker).then((v) => live && setNowSr(v)).catch(() => live && setSrFailed(true));
     return () => {
       live = false;
     };
-  }, [show.sr, mode, nowSr, ticker]);
+  }, [wantSr, mode, nowSr, ticker]);
 
   // RSI 를 켜고 끄면 다시 받는다(서버가 30초 캐시) — RSI 는 봉과 같은 응답에 실린다.
   useEffect(() => {
@@ -375,7 +415,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   // 지지 · 저항선 — 주봉 근거는 굵은 긴 점선, 일봉은 가는 점선. 축 라벨은 계획선만 달아 겹치지 않게.
   useEffect(() => {
     if (!drawn) return;
-    const { chart, series } = drawn;
+    const { series } = drawn;
     const made = sr.map((lv) =>
       series.createPriceLine({
         price: lv.price,
@@ -386,36 +426,100 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         title: "", // 구역이 많아 제목은 겹친다 — 근거는 툴팁 · 목록에
       }),
     );
-    // 선 근처(5px)에 마우스를 올리면 근거를 띄운다.
-    const onMove = (param: { point?: { x: number; y: number }; paneIndex?: number }) => {
-      const pt = param.point;
-      // y 는 패널 기준 좌표다 — RSI 패널 위에서는 지지 · 저항을 찾지 않는다.
-      if (!pt || (param.paneIndex ?? 0) !== 0 || sr.length === 0) return setHover(null);
-      let best: { level: SrLevel; d: number } | null = null;
-      for (const level of sr) {
-        const y = series.priceToCoordinate(level.price);
-        if (y === null) continue;
-        const d = Math.abs(y - pt.y);
-        if (d <= 5 && (!best || d < best.d)) best = { level, d };
-      }
-      // 툴팁은 선의 높이에 붙이고, 다른 선으로 옮겨 갈 때만 다시 그린다(마우스 이동마다 렌더하지 않게).
-      const hit = best?.level ?? null;
-      setHover((prev) => {
-        if (!hit) return null;
-        if (prev?.level === hit) return prev;
-        return { level: hit, x: pt.x, y: series.priceToCoordinate(hit.price) ?? pt.y };
+    return () => {
+      if (drawn.alive.current) for (const line of made) series.removePriceLine(line);
+    };
+  }, [drawn, sr]);
+
+  // 추세선 — 앵커부터 오늘까지 잇는 선, 터치 봉에 번호, 이탈한 선은 흐린 점선. 축 범위엔 넣지 않는다(먼 선이 봉을 누르지 않게).
+  // 피보나치 — 비율 제목이 붙은 가는 가로선 + 스윙 구간(시작 → 끝) 점선.
+  useEffect(() => {
+    if (!drawn || (trendLines.length === 0 && !fib)) return;
+    const { chart, series, rows, intraday } = drawn;
+    const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
+    const keys = rows.map((r) => r.key);
+    const keyOf = (iso: string) => barFor(keys, intraday ? kstStamp(iso) : kstDay(iso));
+    const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, autoscaleInfoProvider: () => null };
+    const lines: { line: Trendline; series: ISeriesApi<"Line"> }[] = [];
+    const marks: { key: Key; m: Omit<SeriesMarker<Time>, "time"> }[] = [];
+    let swing: ISeriesApi<"Line"> | null = null;
+    const fibLines: IPriceLine[] = [];
+    const marked = new Set<string>(); // 같은 봉 · 같은 쪽엔 앞(더 강한) 선의 번호 하나만 — 비슷한 선끼리 겹쳐 찍지 않게
+    for (const line of trendLines) {
+      const start = Date.parse(line.anchors[0].at);
+      const data = rows.filter((r) => Date.parse(r.bar.at) >= start).map((r) => ({ time: time(r.key), value: lineAt(line, Date.parse(r.bar.at)) }));
+      if (data.length < 2) continue; // 선이 보는 기간 밖에서 시작해 끝났다
+      const base = css(line.kind === "support" ? "--sr-support" : "--sr-resistance", line.kind === "support" ? "#39c5bb" : "#c297ff");
+      const broken = line.state === "broken";
+      const s = chart.addSeries(LineSeries, { ...quiet, color: broken ? `${base}80` : base, lineWidth: 2, lineStyle: broken ? LineStyle.Dashed : LineStyle.Solid });
+      s.setData(data);
+      lines.push({ line, series: s });
+      line.touches.forEach((at, i) => {
+        const key = keyOf(at);
+        const spot = `${key}-${line.kind}`;
+        if (key == null || Date.parse(at) < Date.parse(rows[0].bar.at) || marked.has(spot)) return;
+        marked.add(spot);
+        marks.push({ key, m: { position: line.kind === "support" ? "belowBar" : "aboveBar", shape: "circle", color: base, text: String(i + 1), size: 0.6 } });
       });
+    }
+    if (fib) {
+      const color = css("--muted", "#8b96a5");
+      for (const lv of fib.levels) {
+        fibLines.push(series.createPriceLine({ price: lv.price, color, lineWidth: 1, lineStyle: LineStyle.SparseDotted, axisLabelVisible: true, axisLabelColor: color, title: String(lv.ratio) }));
+      }
+      const a = keyOf(fib.from.at);
+      const b = keyOf(fib.to.at);
+      if (a != null && b != null && a !== b && Date.parse(fib.from.at) >= Date.parse(rows[0].bar.at)) {
+        swing = chart.addSeries(LineSeries, { ...quiet, color, lineWidth: 1, lineStyle: LineStyle.Dashed });
+        swing.setData([{ time: time(a), value: fib.from.price }, { time: time(b), value: fib.to.price }].sort((x, y) => (x.time < y.time ? -1 : 1)));
+      }
+    }
+    marks.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    // 분석일 · 체결 마커와 따로 — 그 effect 를 건드리지 않고 같은 캔들에 번호만 얹는다.
+    const touchMarks = createSeriesMarkers(series, marks.map(({ key, m }) => ({ ...m, time: time(key) }) as SeriesMarker<Time>));
+    setTrendDrawn(lines);
+    return () => {
+      setTrendDrawn([]);
+      if (!drawn.alive.current) return;
+      touchMarks.detach();
+      for (const { series: s } of lines) chart.removeSeries(s);
+      if (swing) chart.removeSeries(swing);
+      for (const l of fibLines) series.removePriceLine(l);
+    };
+  }, [drawn, trendLines, fib]);
+
+  // 선 근처(5px)에 마우스를 올리면 근거 — 지지 · 저항 · 피보나치(가로선)와 추세선(그 봉에서의 선 높이).
+  useEffect(() => {
+    if (!drawn) return;
+    const { chart, series } = drawn;
+    const onMove = (param: MouseEventParams<Time>) => {
+      const pt = param.point;
+      // y 는 패널 기준 좌표다 — RSI 패널 위에서는 찾지 않는다.
+      if (!pt || (param.paneIndex ?? 0) !== 0) return setHover(null);
+      let best: { hit: Hover; d: number } | null = null;
+      const consider = (price: number, make: (y: number) => Hover) => {
+        const y = series.priceToCoordinate(price);
+        if (y === null) return;
+        const d = Math.abs(y - pt.y);
+        if (d <= 5 && (!best || d < best.d)) best = { hit: make(y), d };
+      };
+      for (const level of sr) consider(level.price, (y) => ({ type: "sr", level, key: `sr-${level.kind}-${level.price}`, x: pt.x, y }));
+      if (fib) for (const level of fib.levels) consider(level.price, (y) => ({ type: "fib", level, fib, key: `fib-${level.ratio}`, x: pt.x, y }));
+      for (const { line, series: s } of trendDrawn) {
+        const v = param.seriesData.get(s) as { value?: number } | undefined;
+        if (v?.value != null) consider(v.value, (y) => ({ type: "trend", line, key: `trend-${line.kind}-${line.anchors[0].at}-${line.anchors[1]?.at}`, x: pt.x, y }));
+      }
+      // 다른 선으로 옮겨 갈 때만 다시 그린다(마우스 이동마다 렌더하지 않게).
+      const hit = (best as { hit: Hover } | null)?.hit ?? null;
+      setHover((prev) => (!hit ? null : prev?.key === hit.key ? prev : hit));
     };
     chart.subscribeCrosshairMove(onMove);
     return () => {
       setHover(null);
-      if (!drawn.alive.current) return;
-      chart.unsubscribeCrosshairMove(onMove);
-      for (const line of made) series.removePriceLine(line);
+      if (drawn.alive.current) chart.unsubscribeCrosshairMove(onMove);
     };
-  }, [drawn, sr]);
+  }, [drawn, sr, fib, trendDrawn]);
 
-  const srSource = mode === "plan" ? saved : nowSr;
   const currency = isKorean(ticker) ? "원" : "달러";
   const levels = [...(plan ? [plan.entry_price, plan.stop_loss, plan.price_target] : []), ...(extraLines ?? []).map((l) => l.price)];
   const hasLevels = levels.some((v) => v != null);
@@ -443,8 +547,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
             {SHOW_LABEL[k]}
           </button>
         ))}
-        {show.sr && (
-          <span className="chart-sr-source" role="group" aria-label="지지 · 저항 기준">
+        {wantSr && (
+          <span className="chart-sr-source" role="group" aria-label="지지 · 저항 · 추세선 기준">
             {(["plan", "now"] as SrMode[]).filter((m) => m !== "plan" || saved).map((m) => (
               <button key={m} type="button" className={`chip chip-sub ${m === mode ? "chip-on" : ""}`} aria-pressed={m === mode} onClick={() => setSrMode(m)}>
                 {SR_LABEL[m]}
@@ -464,20 +568,36 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           className={`price-chart-box ${rsiOn ? "with-rsi" : ""}`}
           role="img"
           aria-label={`${ticker} ${LABEL[interval]}봉 가격 차트${rsiOn ? "와 RSI" : ""}${drawn ? `, 마지막 종가 ${price(drawn.lastClose)}` : ""}`}
-          aria-describedby={hasLevels && show.levels ? "price-chart-legend" : undefined}
+          aria-describedby={hasLevels && show.levels ? legendId : undefined}
         >
           {!candles && <p className="muted small">불러오는 중…</p>}
           {hover && (
             <div className="sr-tip" style={tipPosition(hover, box.current)}>
-              <strong>{hover.level.kind === "support" ? "지지" : "저항"} {price(hover.level.price)}</strong>{" "}
-              <span className="muted">{TF_LABEL[hover.level.timeframe]} · 강도 {hover.level.strength}</span>
-              <div>{hover.level.basis}</div>
+              {hover.type === "sr" ? (
+                <>
+                  <strong>{hover.level.kind === "support" ? "지지" : "저항"} {price(hover.level.price)}</strong>{" "}
+                  <span className="muted">{TF_LABEL[hover.level.timeframe] ?? hover.level.timeframe} · 강도 {hover.level.strength}</span>
+                  <div>{hover.level.basis}</div>
+                </>
+              ) : hover.type === "trend" ? (
+                <>
+                  <strong>{TREND_NAME[hover.line.kind]} {price(hover.line.price_now)}</strong>{" "}
+                  <span className="muted">{tfLabel(hover.line.timeframe)} · 터치 {hover.line.touches.length}회</span>
+                  <div>지금 가격은 선에서 {signed(hover.line.distance_atr)} ATR · {TREND_STATE[hover.line.state]}</div>
+                </>
+              ) : (
+                <>
+                  <strong>피보나치 {hover.level.ratio} {price(hover.level.price)}</strong>{" "}
+                  <span className="muted">{hover.fib.direction === "up" ? "상승" : "하락"} {price(hover.fib.from.price)} → {price(hover.fib.to.price)} 되돌림</span>
+                  {hover.level.confluence && <div>지지 · 저항 {price(hover.level.confluence.price)}(강도 {hover.level.confluence.strength})와 겹침</div>}
+                </>
+              )}
             </div>
           )}
         </div>
       )}
       {plan && hasLevels && show.levels && (
-        <p id="price-chart-legend" className="muted small price-chart-legend">
+        <p id={legendId} className="muted small price-chart-legend">
           <span className="lg lg-entry" /> 진입 {price(plan.entry_price)} · <span className="lg lg-stop" /> 손절 {price(plan.stop_loss)} ·{" "}
           <span className="lg lg-target" /> 목표 {price(plan.price_target)}
           {outOfRange && " · 현재가와 너무 먼 선은 축 범위에서 뺐습니다"}
@@ -492,12 +612,13 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           ].filter(Boolean).join(" · ")}
         </p>
       )}
+      {wantSr && srFailed && mode === "now" ? (
+        <p className="muted small">지지 · 저항 · 추세선을 계산하지 못했습니다.</p>
+      ) : wantSr && mode === "now" && !nowSr ? (
+        <p className="muted small">지지 · 저항 · 추세선 계산 중…</p>
+      ) : null}
       {show.sr && (
-        srFailed && mode === "now" ? (
-          <p className="muted small">지지 · 저항을 계산하지 못했습니다.</p>
-        ) : mode === "now" && !nowSr ? (
-          <p className="muted small">지지 · 저항 계산 중…</p>
-        ) : sr.length > 0 ? (
+        sr.length > 0 ? (
           <>
             <ul className="sr-list" aria-label="지지 · 저항 구역">
               {sr.map((lv) => (
@@ -512,6 +633,40 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
             <p className="muted small sr-note">{srNote(mode, srSource)}</p>
           </>
         ) : null
+      )}
+      {show.trend && srSource && (
+        trendLines.length > 0 ? (
+          <ul className="sr-list trend-list" aria-label="추세선">
+            {trendLines.map((t) => (
+              <li key={`${t.kind}-${t.timeframe}-${t.anchors[0].at}-${t.anchors[1]?.at}`} className={`sr-${t.kind} trend-${t.state}`}>
+                <span className="sr-kind">{t.kind === "support" ? "지지" : "저항"}</span>
+                <strong className="num">{price(t.price_now)}</strong>
+                <span className="muted small">{tfLabel(t.timeframe)} · 터치 {t.touches.length}회</span>
+                <span className="small">
+                  {TREND_NAME[t.kind]} · {kstDay(t.anchors[0].at)}부터 · 지금 가격 {signed(t.distance_atr)} ATR ·{" "}
+                  <strong className="trend-state">{TREND_STATE[t.state]}</strong>
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted small">
+            {srSource.trend_error
+              ? "추세선을 계산하지 못했습니다."
+              : srSource.trendlines === undefined
+                ? "이 분석에는 추세선 기록이 없습니다 — '지금' 기준으로 보세요."
+                : "조건(터치 3회 이상 · 종가 이탈 없음)을 채운 추세선이 없습니다."}
+          </p>
+        )
+      )}
+      {fib && (
+        <p className="muted small fib-note">
+          피보나치 되돌림 — {fib.direction === "up" ? "상승" : "하락"} {price(fib.from.price)}({kstDay(fib.from.at)}) → {price(fib.to.price)}({kstDay(fib.to.at)}):{" "}
+          {fib.levels.filter((lv) => lv.ratio > 0 && lv.ratio < 1).map((lv) => `${lv.ratio} ${price(lv.price)}${lv.confluence ? "(지지 · 저항과 겹침)" : ""}`).join(" · ")}
+        </p>
+      )}
+      {(show.trend || show.fib) && srSource && (trendLines.length > 0 || fib) && (
+        <p className="muted small sr-note">추세선은 로그 가격에서 직선, 번호는 선에 닿은 저점 · 고점 순서. 가격 기록의 계산이지 예측이 아닙니다.</p>
       )}
     </section>
   );

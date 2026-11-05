@@ -298,3 +298,15 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .pf .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 @keyframes pf-flash { from { background: color-mix(in srgb, var(--accent) 35%, transparent); } to { background: transparent; } }
 .flash { animation: pf-flash 0.9s ease-out; border-radius: 4px; }
+
+/* 분석 화면 가격 차트 (#18) */
+.price-chart { margin-bottom: 16px; }
+.price-chart-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.price-chart-head h3 { margin: 0; }
+.price-chart-box { height: 360px; position: relative; }
+@media (max-width: 760px) { .price-chart-box { height: 280px; } }
+.price-chart-legend { margin: 8px 0 0; }
+.price-chart-legend .lg { display: inline-block; width: 14px; height: 0; border-top: 2px solid; vertical-align: middle; }
+.lg-entry { border-color: var(--accent); }
+.lg-stop { border-color: var(--short); border-top-style: dashed !important; }
+.lg-target { border-color: var(--long); border-top-style: dashed !important; }

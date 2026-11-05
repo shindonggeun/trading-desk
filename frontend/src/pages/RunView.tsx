@@ -1,13 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { api, followRun } from "../api";
 import AgentRail from "../components/AgentRail";
 import { ChatMessage, SystemLine, ToolRow } from "../components/ChatMessage";
 import PlanCard from "../components/PlanCard";
+import SectionBoundary from "../components/SectionBoundary";
 
 // 백엔드 desk/profile.py 의 label 과 같다. 옛 분석(성향 없음)은 표시하지 않는다
 const PROFILE_LABEL: Record<string, string> = { aggressive_leverage: "공격형 · 레버리지", balanced: "균형형" };
 import { duration, STATUS_LABEL } from "../format";
 import type { DeskEvent, Plan, Run } from "../types";
+
+// 차트 라이브러리(~160kB)는 분석 화면에서만 받는다.
+const PriceChart = lazy(() => import("../components/PriceChart"));
 
 type Item = { kind: "event"; event: DeskEvent } | { kind: "tools"; events: DeskEvent[] };
 
@@ -88,6 +92,11 @@ export default function RunView({ runId }: { runId: string }) {
         <span className={`status status-${status}`}>{STATUS_LABEL[status]}</span>
         <span className="muted small">{duration(run.started_at, run.finished_at)}</span>
       </div>
+      <SectionBoundary key={run.id} fallback={<section className="card price-chart"><p className="muted small">차트를 불러오지 못했습니다. 새로고침해 보세요.</p></section>}>
+        <Suspense fallback={<section className="card price-chart"><p className="muted small">차트 불러오는 중…</p></section>}>
+          <PriceChart ticker={run.ticker} tradeDate={run.trade_date} plan={plan} />
+        </Suspense>
+      </SectionBoundary>
       <div className="run-body">
         <AgentRail events={events} status={status} analysts={run.options.analysts} />
         <div className="chat">

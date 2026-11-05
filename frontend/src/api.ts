@@ -60,6 +60,15 @@ export interface Me {
   otp_available: boolean;
 }
 
+/** GET /api/candles — 봉은 오래된 것부터, at 은 봉 시작 시각(UTC ISO). */
+export interface Candles {
+  ticker: string;
+  interval: string;
+  source: string;
+  fetched_at: string;
+  bars: { at: string; open: number; high: number; low: number; close: number; volume: number }[];
+}
+
 export type Alignment = "with_plan" | "against_plan" | "plan_flat" | "no_plan";
 
 export interface ReviewRow {
@@ -139,6 +148,8 @@ export const api = {
       `/api/quote?ticker=${encodeURIComponent(ticker)}`,
     ),
   estimate: (ticker: string) => call<Estimate>(`/api/estimate?ticker=${encodeURIComponent(ticker)}`),
+  candles: (ticker: string, interval: "1d" | "1w", count: number) =>
+    call<Candles>(`/api/candles?ticker=${encodeURIComponent(ticker)}&interval=${interval}&count=${count}`),
   instruments: (q: string) => call<Instrument[]>(`/api/instruments?q=${encodeURIComponent(q)}`),
   instrumentsStatus: () =>
     call<{ source: string; count: number; updated_at: string | null; error: string | null }>("/api/instruments/status"),

@@ -24,7 +24,8 @@ export default function Live() {
   const [active, setActive] = useState(0);
   const [pick, setPick] = useState<Picked>({ ticker: "" });
   const [runs, setRuns] = useState<Run[]>([]);
-  const [livePrice, setLivePrice] = useState<number | null>(null);
+  // the price with the ticker it belongs to: a tab switch must not hand one ticker's price to another's alerts
+  const [tick, setTick] = useState<{ ticker: string; price: number } | null>(null);
   const [permission, setPermission] = useState(notificationsAllowed());
   const tab = tabs[Math.min(active, tabs.length - 1)];
 
@@ -36,10 +37,11 @@ export default function Live() {
     }
   }, [tabs]);
 
+  // re-read on every tab switch: an analysis that finished meanwhile brings its levels
   useEffect(() => {
     api.runs(1, 100).then((p) => setRuns(p.items)).catch(() => setRuns([]));
-  }, []);
-  useEffect(() => setLivePrice(null), [tab?.ticker]);
+  }, [tab?.ticker]);
+  const livePrice = tick && tick.ticker === tab?.ticker ? tick.price : null;
 
   // 이 종목의 가장 최근 완료 분석
   const run = useMemo(
@@ -102,7 +104,7 @@ export default function Live() {
             )}
             {livePrice != null && <> · 현재가 <strong>{price(livePrice)}</strong></>}
           </div>
-          <LiveChart ticker={tab.ticker} plan={plan} onPrice={setLivePrice} />
+          <LiveChart ticker={tab.ticker} plan={plan} onPrice={(price) => setTick({ ticker: tab.ticker, price })} />
           {plan && (
             <section className="card live-alerts">
               <div className="live-alerts-head">

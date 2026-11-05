@@ -875,3 +875,37 @@ span.cs-hold-text { color: var(--warn); }
 /* 실시간 화면은 기본이 큰 차트 */
 .live-chart-box { height: max(420px, calc(100dvh - 330px)); }
 @media (max-width: 600px) { .live-chart-box { height: max(320px, calc(100dvh - 300px)); } }
+
+/* #107 — 요약 탭 매매 지도 (색은 토큰만) */
+.trade-map h3 { margin: 0; }
+.tm-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.tm-maps { display: grid; gap: 14px; }
+.tm-maps-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.tm-map { min-width: 0; }
+.tm-map h4 { margin: 0 0 6px; font-size: var(--fs-m); }
+.tm-long h4 { color: var(--long); }
+.tm-short h4 { color: var(--short); }
+.tm-ladder { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.tm-row { display: grid; grid-template-columns: 76px 84px 110px minmax(0, 1fr); align-items: center; gap: 8px;
+  padding: 7px 10px; border-top: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.tm-row:first-child { border-top: 0; }
+.tm-role { font-size: var(--fs-s); color: var(--muted); }
+.tm-price { font-size: var(--fs-m); }
+.tm-why { position: relative; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tm-why > .muted { position: relative; }
+.tm-vol { position: absolute; left: 0; top: 50%; height: 14px; transform: translateY(-50%); border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--muted) 22%, transparent); }
+.tm-target1 .tm-role, .tm-target2 .tm-role { color: var(--text); }
+.tm-long .tm-target1 .tm-price, .tm-long .tm-target2 .tm-price { color: var(--long); }
+.tm-short .tm-target1 .tm-price, .tm-short .tm-target2 .tm-price { color: var(--short); }
+.tm-entry { background: var(--surface-2); }
+.tm-entry .tm-role { color: var(--text); font-weight: 650; }
+.tm-stop .tm-role, .tm-stop .tm-price, .tm-stop-text { color: var(--danger); }
+.tm-live { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.tm-live .tm-role { color: var(--text); }
+.tm-steps { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 4px; }
+@media (max-width: 900px) { .tm-maps-two { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 560px) {
+  .tm-row { grid-template-columns: 64px 72px minmax(0, 1fr); }
+  .tm-why { grid-column: 1 / -1; white-space: normal; }
+}

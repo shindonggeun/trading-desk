@@ -44,7 +44,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("otp-key", help="print a new DESK_OTP_KEY (Fernet key) for the server env")
     for name in ("create-user", "set-password", "revoke-sessions", "disable-otp"):
         sub.add_parser(name).add_argument("username")
-    rescore = sub.add_parser("rescore", help="forget plan outcomes so the next pass scores them again")
+    rescore = sub.add_parser("rescore", help=(
+        "forget plan outcomes so the next pass scores them again; plans whose intraday bars are past "
+        "Yahoo's reach (1m 7 days, 5m 60 days) come back unscorable, so prefer --days"))
     rescore.add_argument("--days", type=int, default=None, help="only runs created in the last N days")
     args = parser.parse_args(argv)
     if args.command == "otp-key":

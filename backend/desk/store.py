@@ -124,7 +124,7 @@ class Store:
                 select(runs).where(runs.c.status == "done", runs.c.plan.is_not(None),
                                    runs.c.outcome_status.is_(None)
                                    | runs.c.outcome_status.in_(("waiting", "open", "error")))
-                .order_by(runs.c.created_at.desc()).limit(limit)
+                .order_by(runs.c.scored_at.asc().nulls_first(), runs.c.created_at.desc()).limit(limit)
             ).mappings().all()
         return [_run(row) for row in rows]
 

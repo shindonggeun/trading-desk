@@ -162,6 +162,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     book = book or Portfolio(broker, prices)
     flow = flow or MarketFlow(broker)
     live_streams: dict[str, int] = {}   # open /api/live/stream per session (token hash)
+    calendar = live.Calendar(broker)     # market holidays for the live stream, cached per market
     if runner is None:
         runner = make_fake_runner(settings.fake_delay) if settings.fake_runs else run_tradingagents
 
@@ -594,7 +595,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     # counting it as activity: an open tab must not keep the session from idling.
                     if await asyncio.to_thread(auth.resolve, token, False) is None:
                         return
-                    is_open = live.market_open(ticker)
+                    is_open = await live.is_open(calendar, ticker)
                     if is_open:
                         data = await live.frame(prices, ticker)
                         failing = failing + 1 if "quote" not in data and "bars" not in data else 0

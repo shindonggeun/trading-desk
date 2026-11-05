@@ -22,6 +22,7 @@ from .auth import COOKIE, Auth, Busy, LoginThrottle, User
 from .broker import make_broker
 from .db import make_engine, migrate, now
 from .estimate import BinanceEstimator
+from .portfolio import Portfolio
 from .prices import INTERVALS, PriceSource
 from .profile import PROFILES
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
@@ -121,7 +122,7 @@ def purge_expired_runs(store: Store, retention_days: int) -> int:
 
 
 def create_app(settings: Settings | None = None, runner=None, prices: PriceSource | None = None,
-               estimator: BinanceEstimator | None = None) -> FastAPI:
+               estimator: BinanceEstimator | None = None, book: Portfolio | None = None) -> FastAPI:
     settings = settings or load()
     migrate(settings.database_url)
     engine = make_engine(settings.database_url)
@@ -139,6 +140,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     broker = make_broker(settings)
     prices = prices or PriceSource(broker)
     estimator = estimator or BinanceEstimator()
+    book = book or Portfolio(broker, prices)
     if runner is None:
         runner = make_fake_runner(settings.fake_delay) if settings.fake_runs else run_tradingagents
 
@@ -453,11 +455,27 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     @app.get("/api/portfolio")
     async def portfolio():
-        try:
-            holdings = await broker.holdings()
-        except Exception as exc:  # noqa: BLE001 - a broker outage shows in the panel, not as a 500
-            return {"broker": broker.name, "error": f"{type(exc).__name__}: {exc}", "holdings": []}
-        return {"broker": broker.name, "holdings": [h.to_dict() for h in holdings]}
+        """Holdings at live prices in KRW and USD (desk.portfolio). Failures land in ``error``."""
+        return await book.snapshot()
+
+    @app.get("/api/portfolio/stream")
+    async def portfolio_stream(request: Request):
+        """The same snapshot every DESK_PORTFOLIO_STREAM_SEC seconds, as SSE."""
+        token = request.cookies.get(COOKIE)
+        interval = min(max(settings.portfolio_stream_sec, 2.0), 60.0)
+
+        async def frames():
+            yield f"retry: {int(interval * 1000)}\n\n"
+            while not await request.is_disconnected():
+                # Re-check every round: logout, revoke or expiry ends an open stream too.
+                if await asyncio.to_thread(auth.resolve, token) is None:
+                    return
+                snap = await book.snapshot()
+                yield f"data: {json.dumps(snap, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(interval)
+
+        return StreamingResponse(frames(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.get("/api/quote")
     async def quote(ticker: str):

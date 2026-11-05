@@ -53,6 +53,10 @@ class Settings:
     # Toss gives a bare 6-digit code for KR listings; Yahoo needs .KS (KOSPI) or .KQ (KOSDAQ).
     kosdaq_symbols: list[str] = field(default_factory=lambda: _list("DESK_KOSDAQ_SYMBOLS"))
 
+    # Seconds between snapshots on GET /api/portfolio/stream (clamped to 2..60).
+    portfolio_stream_sec: float = field(
+        default_factory=lambda: float(os.getenv("DESK_PORTFOLIO_STREAM_SEC", "5")))
+
     # semibot's SQLite (regime/trigger log), read-only. Empty = panel hidden.
     semibot_db_path: str = field(default_factory=lambda: os.getenv("SEMIBOT_DB_PATH", ""))
 

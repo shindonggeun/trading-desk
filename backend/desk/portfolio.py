@@ -1,0 +1,194 @@
+"""The "내 투자" panel: holdings valued at live prices and the live USD/KRW rate, in both
+currencies, for GET /api/portfolio and its SSE stream.
+
+Prices come from desk.prices (Toss, else Yahoo, cached ~10 s); the rate from the broker
+(Toss /api/v1/exchange-rate, the mid rate) else Yahoo ``KRW=X``, cached the same way.
+One Portfolio object serves every open tab, so N streams cost the same Toss calls as one.
+
+When a price, the rate or the holdings call fails, the last good value stays and the
+snapshot carries ``error`` - the panel keeps its numbers and says why they stopped moving.
+
+Cost is converted at today's rate too: Toss reports no purchase-time rate, so the KRW
+P/L of a US holding is the USD P/L at today's rate (the rate's own move is not in it), and
+the P/L rate is the same in both currencies.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
+
+from .broker.base import Broker, Holding
+from .prices import PriceSource
+
+log = logging.getLogger(__name__)
+
+FX_TTL_SEC = 10.0
+HOLDINGS_TTL_SEC = 10.0
+SNAPSHOT_TTL_SEC = 1.0     # concurrent streams in the same second share one snapshot
+YAHOO_FX_TICKER = "KRW=X"  # KRW per 1 USD
+
+
+@dataclass(frozen=True)
+class FxRate:
+    usd_krw: float
+    source: str        # toss | yahoo
+    at: str            # when the desk read it (UTC)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def yahoo_usd_krw() -> float:
+    import yfinance as yf
+
+    info = yf.Ticker(YAHOO_FX_TICKER).fast_info
+    rate = info.get("lastPrice") or info.get("last_price")
+    if not rate:
+        raise ValueError("Yahoo has no USD/KRW rate")
+    return float(rate)
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _krw(value: float) -> float:
+    return float(round(value))
+
+
+def _usd(value: float) -> float:
+    return round(value, 2)
+
+
+def _rate(pnl: float | None, cost: float | None) -> float | None:
+    if pnl is None or not cost:
+        return None
+    return round(pnl / cost * 100, 2)
+
+
+def value_row(holding: Holding, price: float | None, usd_krw: float | None) -> dict:
+    """One holding in both currencies. Amounts are rounded per row (whole won, cents) so
+    the totals are exactly the sum of what the panel shows."""
+    native_value = price * holding.quantity if price is not None else None
+    native_cost = holding.average_price * holding.quantity if holding.average_price is not None else None
+    usd_native = holding.currency.upper() == "USD"
+
+    def both(amount: float | None) -> dict:
+        if amount is None:
+            return {"krw": None, "usd": None}
+        if usd_native:
+            return {"krw": _krw(amount * usd_krw) if usd_krw else None, "usd": _usd(amount)}
+        return {"krw": _krw(amount), "usd": _usd(amount / usd_krw) if usd_krw else None}
+
+    value, cost = both(native_value), both(native_cost)
+    pnl = {k: (round(value[k] - cost[k], 2) if value[k] is not None and cost[k] is not None else None)
+           for k in ("krw", "usd")}
+    native_pnl = native_value - native_cost if native_value is not None and native_cost is not None else None
+    return {
+        **holding.to_dict(),
+        "last_price": price,
+        "profit_rate": _rate(native_pnl, native_cost),
+        "value": value,
+        "cost": cost,
+        "pnl": pnl,
+        "pnl_rate": _rate(native_pnl, native_cost),
+    }
+
+
+def totals(rows: list[dict]) -> dict:
+    def total(field: str, currency: str) -> float | None:
+        parts = [row[field][currency] for row in rows]
+        if any(part is None for part in parts):
+            return None
+        amount = sum(parts)
+        return _krw(amount) if currency == "krw" else _usd(amount)
+
+    out = {"krw": total("value", "krw"), "usd": total("value", "usd"),
+           "pnl_krw": total("pnl", "krw"), "pnl_usd": total("pnl", "usd")}
+    cost_krw, cost_usd = total("cost", "krw"), total("cost", "usd")
+    out["pnl_rate"] = _rate(out["pnl_krw"], cost_krw) if cost_krw is not None else _rate(out["pnl_usd"], cost_usd)
+    return out
+
+
+class Portfolio:
+    def __init__(self, broker: Broker, prices: PriceSource, yahoo_fx=yahoo_usd_krw,
+                 clock=time.monotonic) -> None:
+        self.broker = broker
+        self.prices = prices
+        self._yahoo_fx = yahoo_fx
+        self._clock = clock
+        self._lock = asyncio.Lock()
+        self._fx: tuple[float, FxRate] | None = None
+        self._holdings: tuple[float, list[Holding]] | None = None
+        self._last_price: dict[str, tuple[float, str, str]] = {}   # ticker -> (price, source, at)
+        self._snapshot: tuple[float, dict] | None = None
+
+    async def usd_krw(self) -> FxRate:
+        if self._fx and self._clock() - self._fx[0] < FX_TTL_SEC:
+            return self._fx[1]
+        try:
+            fx = FxRate(round(await self.broker.usd_krw(), 4), self.broker.name, _now())
+        except Exception as exc:  # noqa: BLE001 - any broker miss falls back to Yahoo
+            if not isinstance(exc, NotImplementedError):
+                log.info("broker USD/KRW failed, using Yahoo: %s", exc)
+            fx = FxRate(round(await asyncio.to_thread(self._yahoo_fx), 4), "yahoo", _now())
+        self._fx = (self._clock(), fx)
+        return fx
+
+    async def snapshot(self) -> dict:
+        async with self._lock:
+            if self._snapshot and self._clock() - self._snapshot[0] < SNAPSHOT_TTL_SEC:
+                return self._snapshot[1]
+            snap = await self._build()
+            self._snapshot = (self._clock(), snap)
+            return snap
+
+    async def _build(self) -> dict:
+        errors: list[str] = []
+
+        if self._holdings and self._clock() - self._holdings[0] < HOLDINGS_TTL_SEC:
+            holdings = self._holdings[1]
+        else:
+            try:
+                holdings = await self.broker.holdings()
+                self._holdings = (self._clock(), holdings)
+            except Exception as exc:  # noqa: BLE001 - an outage shows in the panel, not as a 500
+                errors.append(f"holdings: {type(exc).__name__}: {exc}")
+                holdings = self._holdings[1] if self._holdings else []
+
+        fx: FxRate | None
+        try:
+            fx = await self.usd_krw()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"fx: {type(exc).__name__}: {exc}")
+            fx = self._fx[1] if self._fx else None
+
+        quotes = await asyncio.gather(*(self.prices.quote(h.yahoo_ticker) for h in holdings),
+                                      return_exceptions=True)
+        rows, groups = [], {}
+        for holding, quote in zip(holdings, quotes, strict=True):
+            if isinstance(quote, BaseException):
+                errors.append(f"price {holding.yahoo_ticker}: {type(quote).__name__}: {quote}")
+                last = self._last_price.get(holding.yahoo_ticker)
+                price, source, at = last if last else (holding.last_price, self.broker.name, None)
+            else:
+                price, source, at = quote.price, quote.source, quote.fetched_at
+                self._last_price[holding.yahoo_ticker] = (price, source, at)
+            row = value_row(replace(holding, last_price=price), price, fx.usd_krw if fx else None)
+            row["price_source"], row["price_at"] = source, at
+            rows.append(row)
+            groups.setdefault(holding.market or "ETC", []).append(row)
+
+        return {
+            "broker": self.broker.name,
+            "fx": fx.to_dict() if fx else None,
+            "total": totals(rows),
+            "groups": groups,
+            "holdings": rows,      # flat list, the shape the panel read before groups existed
+            "updated_at": _now(),
+            "error": "; ".join(errors) or None,
+        }

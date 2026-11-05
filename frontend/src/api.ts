@@ -49,11 +49,31 @@ export interface NewRun {
   max_debate_rounds?: number;
 }
 
+/** 1단계 응답. OTP 를 켠 계정이면 세션 대신 challenge 가 온다(docs/security.md §6). */
+export type LoginStep = { otp_required: true; challenge: string } | undefined;
+
+export interface Me {
+  username: string;
+  otp_enabled: boolean;
+  recovery_codes_left: number | null;
+  /** 서버에 DESK_OTP_KEY 가 있는지 — 없으면 OTP 를 켤 수 없다. */
+  otp_available: boolean;
+}
+
 export const api = {
   login: (username: string, password: string) =>
-    call<void>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+    call<LoginStep>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+  /** 2단계: 6자리 코드 또는 복구 코드. 맞으면 세션 쿠키가 생긴다. */
+  loginCode: (challenge: string, code: string) =>
+    call<void>("/api/auth/login", { method: "POST", body: JSON.stringify({ challenge, code }) }),
   logout: () => call<void>("/api/auth/logout", { method: "POST" }),
-  me: () => call<{ username: string }>("/api/auth/me"),
+  me: () => call<Me>("/api/auth/me"),
+  otpSetup: (password: string) =>
+    call<{ secret: string; uri: string }>("/api/auth/otp/setup", { method: "POST", body: JSON.stringify({ password }) }),
+  otpEnable: (code: string) =>
+    call<{ recovery_codes: string[] }>("/api/auth/otp/enable", { method: "POST", body: JSON.stringify({ code }) }),
+  otpDisable: (password: string, code: string) =>
+    call<void>("/api/auth/otp/disable", { method: "POST", body: JSON.stringify({ password, code }) }),
   config: () => call<DeskConfig>("/api/config"),
   runs: (page = 1, size = 50) => call<RunPage>(`/api/runs?page=${page}&size=${size}`),
   deleteRun: (id: string) => call<void>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),

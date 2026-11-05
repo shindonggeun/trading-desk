@@ -210,7 +210,7 @@ export interface ExtraLine {
  * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
  * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
  */
-export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval }: {
+export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true }: {
   ticker: string;
   tradeDate: string;
   plan: Plan | null;
@@ -219,6 +219,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   extraLines?: ExtraLine[];
   /** 처음 봉 주기 — 분석 결과 차트는 계획의 시간축에 맞춘다. 없으면 마지막으로 고른 주기. */
   initialInterval?: Interval;
+  /** 차트 아래 지지 · 저항 · 추세선 · 피보나치 글 목록. 분석 화면(#99)은 근거 탭에 따로 보여 주고 끈다. */
+  lists?: boolean;
 }) {
   const [prefs] = useState(loadPrefs);
   const [interval, setBarInterval] = useState<Interval>(initialInterval ?? prefs.interval);
@@ -671,7 +673,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       ) : wantSr && mode === "now" && !nowSr ? (
         <p className="muted small">지지 · 저항 · 추세선 계산 중…</p>
       ) : null}
-      {show.sr && (
+      {lists && show.sr && (
         sr.length > 0 ? (
           <>
             <ul className="sr-list" aria-label="지지 · 저항 구역">
@@ -688,7 +690,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           </>
         ) : null
       )}
-      {show.trend && srSource && (
+      {lists && show.trend && srSource && (
         trendLines.length > 0 ? (
           <ul className="sr-list trend-list" aria-label="추세선">
             {trendLines.map((t) => (
@@ -713,13 +715,13 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           </p>
         )
       )}
-      {fib && (
+      {lists && fib && (
         <p className="muted small fib-note">
           피보나치 되돌림 — {fib.direction === "up" ? "상승" : "하락"} {price(fib.from.price)}({kstDay(fib.from.at)}) → {price(fib.to.price)}({kstDay(fib.to.at)}):{" "}
           {fib.levels.filter((lv) => lv.ratio > 0 && lv.ratio < 1).map((lv) => `${lv.ratio} ${price(lv.price)}${lv.confluence ? "(지지 · 저항과 겹침)" : ""}`).join(" · ")}
         </p>
       )}
-      {(show.trend || show.fib) && srSource && (trendLines.length > 0 || fib) && (
+      {lists && (show.trend || show.fib) && srSource && (trendLines.length > 0 || fib) && (
         <p className="muted small sr-note">추세선은 로그 가격에서 직선, 번호는 선에 닿은 저점 · 고점 순서. 가격 기록의 계산이지 예측이 아닙니다.</p>
       )}
     </section>

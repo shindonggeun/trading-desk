@@ -22,7 +22,7 @@ export interface Plan {
   /** The quote at the end of a same-day analysis (backend desk/runner.py). */
   live_price?: { price: number; source: string; fetched_at: string };
   /** Daily/weekly levels the agents were given (backend desk/sr.py); the card reads its ATR. */
-  support_resistance?: { atr?: number };
+  support_resistance?: Partial<SupportResistance>;
   /** The entry against that quote (backend desk/levels.py entry_vs_live). */
   entry_vs_live?: {
     live: number;
@@ -34,6 +34,27 @@ export interface Plan {
     stop_passed: boolean;
     target_passed: boolean;
   };
+}
+
+/** 지지 · 저항 한 구역(backend desk/sr.py compute). */
+export interface SrLevel {
+  price: number;
+  kind: "support" | "resistance";
+  timeframe: "1d" | "1w";
+  strength: number;
+  /** 근거 — 예: "weekly swing low ×3 · 52w low" */
+  basis: string;
+}
+
+/** GET /api/levels, 그리고 분석 때 에이전트가 받은 것(plan.support_resistance). */
+export interface SupportResistance {
+  ticker: string;
+  reference_price: number;
+  reference: "live" | "close";
+  atr: number | null;
+  as_of: string;
+  levels: SrLevel[];
+  computed_at: string;
 }
 
 export interface RunPage {

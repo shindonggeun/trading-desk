@@ -53,12 +53,12 @@ export default function LiveChart({ ticker, plan, onPrice }: {
     const el = box.current;
     if (!el) return;
     let alive = true;
-    const up = css("--up", "#e5534b");
-    const down = css("--down", "#4f8cff");
-    const grid = css("--border", "#2a3240");
+    const up = css("--up", "#f2464b");
+    const down = css("--down", "#3a86f8");
+    const grid = css("--border", "#2a3038");
     const chart = createChart(el, {
       autoSize: true,
-      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: css("--muted", "#8b96a5") },
+      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: css("--muted", "#8c939d") },
       grid: { vertLines: { color: grid }, horzLines: { color: grid } },
       rightPriceScale: { borderColor: grid },
       timeScale: { borderColor: grid, timeVisible: true, secondsVisible: false },
@@ -162,11 +162,11 @@ export default function LiveChart({ ticker, plan, onPrice }: {
     const c = chartRef.current;
     if (!c) return;
     const lines: [number | null | undefined, string, string, LineStyle][] = [
-      [plan?.entry_price, "진입", css("--accent", "#4f8cff"), LineStyle.Solid],
-      [plan?.stop_loss, "손절", css("--short", "#e5534b"), LineStyle.Dashed],
-      [plan?.price_target, "목표", css("--long", "#2ea043"), LineStyle.Dashed],
-      [plan?.long_trigger, "롱 조건", css("--long", "#2ea043"), LineStyle.Dotted],
-      [plan?.short_trigger, "숏 조건", css("--short", "#e5534b"), LineStyle.Dotted],
+      [plan?.entry_price, "진입", css("--accent", "#c9d1db"), LineStyle.Solid],
+      [plan?.stop_loss, "손절", css("--short", "#3a86f8"), LineStyle.Dashed],
+      [plan?.price_target, "목표", css("--long", "#f2464b"), LineStyle.Dashed],
+      [plan?.long_trigger, "롱 조건", css("--long", "#f2464b"), LineStyle.Dotted],
+      [plan?.short_trigger, "숏 조건", css("--short", "#3a86f8"), LineStyle.Dotted],
       ...(plan?.support_resistance?.levels ?? []).slice(0, 8).map(
         (lv): [number, string, string, LineStyle] => [
           lv.price, lv.kind === "resistance" ? "저항" : "지지",

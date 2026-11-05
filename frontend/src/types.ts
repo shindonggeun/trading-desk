@@ -119,13 +119,18 @@ export interface TradeStep {
   volume: "thick" | "thin" | null;
   action: "enter" | "take_partial" | "take_rest" | "hold_check" | "reduce" | "exit";
   share?: number;
+  /** 1차 목표가 두꺼운 벽(강도 높음 · 매물대 두꺼움) — 더 많이 던다 */
+  heavy?: boolean;
+  /** 1차와 2차 사이가 얇아 빨리 지나갈 수 있다 */
+  gap_thin?: boolean | null;
   then_stop?: number;
   rr?: number | null;
   entry_type?: "now" | "limit" | "stop" | null;
 }
 
 export interface TradeMap {
-  maps: { side: "long" | "short"; origin: "plan" | "trigger"; steps: TradeStep[] }[];
+  /** ignored: 방향과 반대편에 있어 지도에서 뺀 계획 값(롱인데 손절이 진입 위 등) */
+  maps: { side: "long" | "short"; origin: "plan" | "trigger"; steps: TradeStep[]; ignored?: { stop_loss?: number; price_target?: number } }[];
   reference_price: number | null;
   atr: number;
   volume_profile: boolean;

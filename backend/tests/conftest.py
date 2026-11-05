@@ -33,4 +33,7 @@ def no_yahoo_network(monkeypatch):
 
     monkeypatch.setattr(prices, "yahoo_quote", offline)
     monkeypatch.setattr(prices, "yahoo_candles", offline)
+    from desk import related
+    for name in ("yahoo_daily", "yahoo_news", "yahoo_holdings"):
+        monkeypatch.setattr(related, name, offline)
     sr._CACHE.clear()

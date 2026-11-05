@@ -394,17 +394,19 @@ class RunManager:
         return plan
 
     async def _consensus(self, run_id: str, request: RunRequest, subject: str, final_state: dict,
-                         plan: dict) -> None:
+                         plan: dict, price: float | None = None, book: Any = None) -> None:
         """#94: the closing summary into ``plan["consensus"]``; a failure only leaves
         ``consensus_error`` — the run still ends with its plan."""
         if self.summariser is None:
             return
         self._publish(run_id, {"type": "status", "agent": "consensus", "content": "thinking"})
+        held = book.position_in(request.ticker) if book is not None else None
+        position = {"quantity": held.quantity, "average_price": held.average_price} if held else None
         ctx = ConsensusContext(ticker=request.ticker, subject=subject, final_state=final_state, plan=plan,
-                               language=request.output_language)
+                               language=request.output_language, price=price, position=position)
         try:   # the HTTP call has its own timeout; this is the backstop for the thread
             text = await asyncio.wait_for(asyncio.to_thread(self.summariser, ctx), CONSENSUS_TIMEOUT_SEC + 30)
-            summary = parse_consensus(text, final_state, subject)
+            summary = parse_consensus(text, final_state, subject, plan, price, position)
         except Exception as exc:  # noqa: BLE001 - incl. timeout and unreadable JSON
             log.warning("consensus failed for %s: %s", request.ticker, exc)
             plan["consensus_error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -478,7 +480,8 @@ class RunManager:
                     plan["support_resistance"] = sr
                 if related:
                     plan["related"] = related
-                await self._consensus(run_id, request, subject.ticker, result.final_state, plan)
+                price = (live or {}).get("price") or (sr or {}).get("last_close")
+                await self._consensus(run_id, request, subject.ticker, result.final_state, plan, price, book)
                 self.store.mark_done(run_id, plan, result.report_path)
                 self._publish(run_id, {"type": "plan", "agent": "portfolio_manager", "data": plan})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "done"})

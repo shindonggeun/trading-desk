@@ -177,6 +177,16 @@ def prompt_note(sr: dict | None) -> str | None:
             + ("\n\n" + trend_note if trend_note else ""))
 
 
+def _bars_behind(last: str, now: str, bar_days: int) -> float:
+    """How many secondary bars the primary bars' last one is past the last secondary bar: a
+    finished weekly bar a week and a half before today is 1.5 bars behind; a prior-session
+    daily bar under intraday bars is one session behind."""
+    days = (date.fromisoformat(now[:10]) - date.fromisoformat(last[:10])).days
+    if days <= 0:
+        return 0.0
+    return days / bar_days if bar_days >= 7 else 1.0
+
+
 def add_trend(result: dict, days: list[dict], weeks: list[dict], h: horizons.Horizon,
               price: float | None) -> None:
     """Trendlines on both timeframes and the primary bars' retracement (desk.trend) onto a
@@ -185,7 +195,10 @@ def add_trend(result: dict, days: list[dict], weeks: list[dict], h: horizons.Hor
         atr = result["atr"] or (_atr(days) or 0.0)
         reference = price or days[-1]["close"]
         lines = trend.trendlines(days, h.primary, h.primary_k, reference, atr)
-        lines += trend.trendlines(weeks, h.secondary, h.secondary_k, reference, atr, _atr(weeks))
+        if weeks:
+            lines += trend.trendlines(weeks, h.secondary, h.secondary_k, reference, atr, _atr(weeks),
+                                      extend=_bars_behind(weeks[-1]["at"], days[-1]["at"], h.secondary_days),
+                                      now_at=days[-1]["at"])
         result["trendlines"] = lines
         result["fibonacci"] = trend.fibonacci(days, result["levels"], max(0.5 * atr, h.tolerance_pct * reference))
     except Exception as exc:  # noqa: BLE001 - the levels stand without the lines
@@ -271,7 +284,8 @@ async def _frame(prices, ticker: str, trade_date: str | None, price: float | Non
         weeks = [b for b in weeks if _local_day(b["at"], ticker) < session]
         complete = True
     result = compute(days, weeks, price, weekly_complete=complete, horizon=h.id)
-    add_trend(result, days, weeks, h, price)
+    # pairs of swings × bars: off the event loop so it never stalls the streams
+    await asyncio.to_thread(add_trend, result, days, weeks, h, price)
     result.update(ticker=ticker, sources={h.primary: primary["source"], h.secondary: secondary["source"]},
                   intervals={"primary": h.primary, "secondary": h.secondary},
                   computed_at=datetime.now(UTC).isoformat(timespec="seconds"))

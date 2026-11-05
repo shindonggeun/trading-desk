@@ -65,7 +65,10 @@ def test_a_line_closed_through_in_the_middle_is_not_a_trendline():
     bars = _rising()
     for x in range(49, 52):
         bars[x] = _bar(x, _line_at(x) * 0.95)
-    lines = trend.trendlines(bars, "1d", 3, bars[-1]["close"], sr._atr(bars))
+    atr = sr._atr(bars)
+    assert any(t["touches"][0].startswith(str(START + timedelta(days=19)))
+               for t in trend.trendlines(_rising(), "1d", 3, _rising()[-1]["close"], atr))   # the line exists unbroken
+    lines = trend.trendlines(bars, "1d", 3, bars[-1]["close"], atr)
     assert all(not t["touches"][0].startswith(str(START + timedelta(days=19))) for t in lines)
 
 
@@ -138,3 +141,75 @@ def test_levels_response_carries_trendlines_and_fibonacci():
     result = asyncio.run(sr.support_resistance(source, "NVDA"))
     assert "trendlines" in result and isinstance(result["trendlines"], list)
     assert result["fibonacci"]["levels"][0]["ratio"] == 0.0
+
+
+def test_a_close_through_the_price_has_taken_back_is_not_a_break():
+    bars = _rising()
+    atr = sr._atr(bars)
+    bars[97] = _bar(97, _line_at(97) - 0.4 * atr)                 # closed through …
+    bars[98] = _bar(98, _line_at(98) + 1.0 * atr)                 # … and back above
+    bars[99] = _bar(99, _line_at(99) + 1.2 * atr)
+    line = trend.trendlines(bars, "1d", 3, bars[-1]["close"], atr)[0]
+    assert line["kind"] == "support" and line["state"] == "intact" and line["distance_atr"] > 1
+    # a live price back on the line after a close through it is a test, not yet a break
+    bars[99] = _bar(99, _line_at(99) - 0.4 * atr)
+    line = trend.trendlines(bars, "1d", 3, _line_at(99) - 0.1 * atr, atr)[0]
+    assert line["state"] == "testing"
+    assert trend.trendlines(bars, "1d", 3, _line_at(99) - 0.4 * atr, atr)[0]["state"] == "broken"
+
+
+def test_falling_resistance_broken_on_a_close_above():
+    bars = _falling()
+    atr = sr._atr(bars)
+    line_now = 200 * math.exp(-0.002 * 99) * 1.005
+    bars[99] = _bar(99, line_now + 2 * atr)
+    lines = [t for t in trend.trendlines(bars, "1d", 3, bars[-1]["close"], atr) if t["kind"] == "resistance"]
+    assert lines and lines[0]["state"] == "broken" and lines[0]["distance_atr"] > 0
+
+
+def test_a_weekly_line_is_judged_on_weekly_volatility_and_distance_is_in_daily_atr():
+    bars = _rising()
+    weekly_atr = sr._atr(bars)
+    daily_atr = weekly_atr / 2.5
+    price = _line_at(99) - 0.2 * weekly_atr                        # inside the line's own touch band
+    line = trend.trendlines(bars, "1w", 3, price, daily_atr, weekly_atr)[0]
+    assert line["state"] == "testing"
+    assert abs(line["distance_atr"] - (price - line["price_now"]) / daily_atr) < 0.02
+    # far in daily ATR but near in the line's own: kept
+    assert trend.trendlines(bars, "1w", 3, _line_at(99) + 6 * weekly_atr, daily_atr, weekly_atr)
+    assert trend.trendlines(bars, "1w", 3, _line_at(99) + 9 * weekly_atr, daily_atr, weekly_atr) == []
+
+
+def test_extend_projects_the_line_to_today():
+    bars = _rising()
+    atr = sr._atr(bars)
+    base = trend.trendlines(bars, "1w", 3, bars[-1]["close"], atr)[0]
+    ahead = trend.trendlines(bars, "1w", 3, bars[-1]["close"], atr, extend=1.5, now_at="2026-05-01T00:00:00+00:00")[0]
+    assert abs(ahead["price_now"] - base["price_now"] * math.exp(0.002 * 1.5)) < 0.02
+    assert ahead["end"] == {"at": "2026-05-01T00:00:00+00:00", "price": ahead["price_now"]}
+    assert sr._bars_behind("2026-10-26T00:00:00+00:00", "2026-11-05T00:00:00+00:00", 7) == 10 / 7
+    assert sr._bars_behind("2026-10-30T00:00:00+00:00", "2026-11-02T00:00:00+00:00", 1) == 1.0
+    assert sr._bars_behind("2026-11-02T00:00:00+00:00", "2026-11-02T00:00:00+00:00", 7) == 0.0
+
+
+def test_near_duplicate_lines_are_one_and_each_kind_keeps_two():
+    lines = [trend._Line("support", 0, 10, 0.0, 0.001, [0, 10, 20]),
+             trend._Line("support", 1, 10, 0.0001, 0.001, [1, 10, 20]),      # the same line, one bar on
+             trend._Line("support", 0, 30, -0.05, 0.002, [0, 30, 40, 50]),
+             trend._Line("support", 0, 30, 0.1, 0.0005, [0, 30, 60])]
+    kept = trend._pick(lines, 100, 0.01)
+    assert len(kept) == trend.PER_KIND and kept[0].touches == [0, 30, 40, 50]
+    assert sum(1 for k in kept if k.touches[-1] == 20) <= 1
+
+
+def test_one_bar_with_both_extremes_has_no_retracement():
+    assert trend.fibonacci([_bar(0, 100.0, 0.5), _bar(1, 100.0, 0.1)]) is None
+
+
+def test_the_swing_fallback_and_cache_keep_the_lines():
+    from tests.test_horizons import _Prices
+    sr._CACHE.clear()
+    first = asyncio.run(sr.support_resistance(_Prices([]), "NVDA", horizon="scalp"))
+    assert first["fallback"] and "trendlines" in first and first["fibonacci"]
+    again = asyncio.run(sr.support_resistance(_Prices([]), "NVDA", horizon="scalp"))
+    assert again is first

@@ -17,10 +17,11 @@ from datetime import datetime, timedelta
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.engine import Engine
 
-from .db import aware, now, sessions, users
+from . import otp
+from .db import aware, now, recovery_codes, sessions, users
 
 # __Host-: Secure, Path=/, no Domain — a sibling *.8llow8llowme.com app cannot plant or shadow it.
 COOKIE = "__Host-desk_session"
@@ -144,6 +145,98 @@ class Auth:
             with self.engine.begin() as conn:
                 conn.execute(delete(sessions).where(sessions.c.token_hash == hash_token(token)))
 
+    # --- second factor (desk.otp) ------------------------------------------------------
+
+    def otp_enabled(self, user_id: int) -> bool:
+        with self.engine.connect() as conn:
+            return conn.execute(select(users.c.totp_secret).where(users.c.id == user_id)).scalar() is not None
+
+    def otp_begin(self, user_id: int, box: otp.SecretBox, account: str) -> dict:
+        """Start (or restart) enrolment: a new pending secret, live only after otp_enable."""
+        secret = otp.new_secret()
+        with self.engine.begin() as conn:
+            conn.execute(update(users).where(users.c.id == user_id)
+                         .values(totp_pending=box.seal(secret), totp_pending_at=now()))
+        return {"secret": secret, "uri": otp.provisioning_uri(secret, account)}
+
+    def otp_enable(self, user_id: int, code: str, box: otp.SecretBox, keep_token: str | None) -> list[str] | None:
+        """Confirm the pending secret with a code. Returns the recovery codes (shown once), or None.
+        Every other session is signed out: they were opened without the second factor."""
+        with self.engine.connect() as conn:
+            row = conn.execute(select(users.c.totp_pending, users.c.totp_pending_at)
+                               .where(users.c.id == user_id)).first()
+        pending, started = (row.totp_pending, aware(row.totp_pending_at)) if row else (None, None)
+        if pending is None or started is None or now() - started > timedelta(seconds=otp.PENDING_TTL_SEC):
+            return None
+        secret = box.open(pending)
+        step = otp.matching_step(secret, code, None)
+        if step is None:
+            return None
+        codes = otp.new_recovery_codes()
+        keep = hash_token(keep_token) if keep_token else ""
+        with self.engine.begin() as conn:
+            conn.execute(update(users).where(users.c.id == user_id).values(
+                totp_secret=pending, totp_pending=None, totp_pending_at=None, totp_enabled_at=now(),
+                totp_last_step=step))
+            conn.execute(delete(recovery_codes).where(recovery_codes.c.user_id == user_id))
+            conn.execute(recovery_codes.insert(), [{"user_id": user_id, "code_hash": otp.hash_recovery(c)}
+                                                   for c in codes])
+            conn.execute(delete(sessions).where(sessions.c.user_id == user_id, sessions.c.token_hash != keep))
+        return codes
+
+    def otp_verify(self, user_id: int, code: str, box: otp.SecretBox) -> bool:
+        """A 6-digit code (once per step) or an unused recovery code (once, ever)."""
+        code = code.strip()
+        if otp.is_totp_code(code):
+            with self.engine.connect() as conn:
+                row = conn.execute(select(users.c.totp_secret, users.c.totp_last_step)
+                                   .where(users.c.id == user_id)).first()
+            if row is None or row.totp_secret is None:
+                return False
+            step = otp.matching_step(box.open(row.totp_secret), code, row.totp_last_step)
+            if step is None:
+                return False
+            # Compare-and-set: two requests racing with the same code cannot both win.
+            last = users.c.totp_last_step
+            with self.engine.begin() as conn:
+                won = conn.execute(update(users).where(users.c.id == user_id, or_(last.is_(None), last < step))
+                                   .values(totp_last_step=step)).rowcount
+            return won == 1
+        with self.engine.begin() as conn:
+            spent = conn.execute(update(recovery_codes).where(
+                recovery_codes.c.user_id == user_id, recovery_codes.c.code_hash == otp.hash_recovery(code),
+                recovery_codes.c.used_at.is_(None)).values(used_at=now())).rowcount
+        return spent == 1
+
+    def otp_disable(self, user_id: int, keep_token: str | None = None) -> None:
+        """Turning the factor off is often a response to a compromise: other sessions go too."""
+        keep = hash_token(keep_token) if keep_token else ""
+        with self.engine.begin() as conn:
+            conn.execute(update(users).where(users.c.id == user_id).values(
+                totp_secret=None, totp_pending=None, totp_pending_at=None, totp_enabled_at=None,
+                totp_last_step=None))
+            conn.execute(delete(recovery_codes).where(recovery_codes.c.user_id == user_id))
+            conn.execute(delete(sessions).where(sessions.c.user_id == user_id, sessions.c.token_hash != keep))
+
+    def otp_disable_by_name(self, username: str) -> bool:
+        """CLI recovery when the phone is lost. Signs every browser out too."""
+        with self.engine.begin() as conn:
+            user_id = conn.execute(select(users.c.id).where(users.c.username == username)).scalar()
+        if user_id is None:
+            return False
+        self.otp_disable(user_id)            # no session kept: the CLI has none
+        return True
+
+    def recovery_left(self, user_id: int) -> int:
+        with self.engine.connect() as conn:
+            return conn.execute(select(func.count()).select_from(recovery_codes).where(
+                recovery_codes.c.user_id == user_id, recovery_codes.c.used_at.is_(None))).scalar_one()
+
+    def user_by_id(self, user_id: int) -> User | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(select(users.c.id, users.c.username).where(users.c.id == user_id)).first()
+        return User(row.id, row.username) if row else None
+
 
 def _check_password(password: str) -> None:
     if len(password) < MIN_PASSWORD:
@@ -183,3 +276,14 @@ class LoginThrottle:
     def succeeded(self, ip: str) -> None:
         with self._lock:
             self._attempts.pop(ip, None)
+
+    def blocked_for(self, key: str) -> int:
+        """Like attempt() but records nothing: seconds until ``key`` is under the limit again."""
+        stamp = time.monotonic()
+        with self._lock:
+            attempts = self._attempts.get(key)
+            while attempts and attempts[0] < stamp - self.window:
+                attempts.popleft()
+            if not attempts or len(attempts) < self.per_ip:
+                return 0
+            return max(1, int(attempts[0] + self.window - stamp) + 1)

@@ -84,6 +84,21 @@ users = Table(
     Column("password_hash", Text, nullable=False),
     Column("created_at", Timestamp, nullable=False),
     Column("password_changed_at", Timestamp, nullable=False),
+    # TOTP (desk.otp). Secrets are Fernet-sealed with DESK_OTP_KEY: a copy of the table mints no codes.
+    Column("totp_secret", Text),                         # active secret; NULL = OTP off
+    Column("totp_pending", Text),                        # secret being enrolled, until a code confirms it
+    Column("totp_pending_at", Timestamp),                # enrolment expires PENDING_TTL after this
+    Column("totp_enabled_at", Timestamp),
+    Column("totp_last_step", Integer),                   # last accepted 30 s step: a code works once
+)
+
+# One-time codes for when the phone is gone. Only SHA-256 is stored; used_at marks a spent code.
+recovery_codes = Table(
+    "recovery_codes", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True),
+    Column("code_hash", String(64), nullable=False),
+    Column("used_at", Timestamp),
 )
 
 # The cookie holds a random token; only its SHA-256 is stored, so a leaked table logs no one in.

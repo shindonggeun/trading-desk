@@ -27,7 +27,7 @@ def test_login_sets_a_strict_httponly_cookie_and_logout_kills_it(db_url):
         for flag in ("HttpOnly", "Secure", "SameSite=strict", "Path=/"):
             assert flag.lower() in cookie.lower(), flag
         token = client.cookies.get(COOKIE)
-        assert client.get("/api/auth/me").json() == {"username": OWNER}
+        assert client.get("/api/auth/me").json()["username"] == OWNER
 
         engine = make_engine(db_url)
         with engine.connect() as conn:  # only the hash is stored

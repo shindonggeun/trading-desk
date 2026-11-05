@@ -25,6 +25,8 @@ x-backend-environment: &backend_environment
   DESK_SESSION_IDLE_HOURS: ${DESK_SESSION_IDLE_HOURS:-12}
   DESK_COOKIE_SECURE: "true"
   DESK_ENABLE_DOCS: "false"
+  # OTP 비밀값 봉인 키(docs/security.md §6). 비면 OTP 를 켤 수 없고, OTP 가 켜진 계정은 로그인이 503 으로 막힌다
+  DESK_OTP_KEY: ${DESK_OTP_KEY:-}
   # 투자 성향 기본값(desk/profile.py): aggressive_leverage | balanced
   DESK_INVESTOR_PROFILE: ${DESK_INVESTOR_PROFILE:-aggressive_leverage}
   # 브로커: mock | toss. toss 는 서버 공인 IP 를 토스 WTS 허용 IP 에 등록해야 한다(docs/deploy.md 6절)

@@ -4,6 +4,8 @@
     python -m desk.cli create-user <username>        # asks for the password twice
     python -m desk.cli set-password <username>       # also signs every browser out
     python -m desk.cli revoke-sessions <username>
+    python -m desk.cli disable-otp <username>        # phone lost: turns OTP off, signs everyone out
+    python -m desk.cli otp-key                       # prints a new DESK_OTP_KEY value
 
 In Docker: ``docker compose exec backend python -m desk.cli create-user <name>``.
 For scripts, DESK_NEW_PASSWORD supplies the password instead of the prompt.
@@ -19,6 +21,7 @@ from datetime import timedelta
 
 from sqlalchemy.exc import IntegrityError
 
+from . import otp
 from .auth import MIN_PASSWORD, Auth
 from .db import make_engine, migrate
 from .settings import load
@@ -38,9 +41,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m desk.cli")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("migrate", help="bring the database schema to head")
-    for name in ("create-user", "set-password", "revoke-sessions"):
+    sub.add_parser("otp-key", help="print a new DESK_OTP_KEY (Fernet key) for the server env")
+    for name in ("create-user", "set-password", "revoke-sessions", "disable-otp"):
         sub.add_parser(name).add_argument("username")
     args = parser.parse_args(argv)
+    if args.command == "otp-key":
+        print(otp.new_key())
+        return 0
 
     settings = load()
     migrate(settings.database_url)
@@ -60,6 +67,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"password changed; every session of {args.username} signed out")
         elif args.command == "revoke-sessions":
             print(f"signed out {auth.revoke_all(args.username)} session(s)")
+        elif args.command == "disable-otp":
+            if not auth.otp_disable_by_name(args.username):
+                sys.exit(f"no such user: {args.username}")
+            print(f"OTP off for {args.username}; recovery codes deleted, every session signed out")
     except ValueError as exc:
         sys.exit(str(exc))
     except IntegrityError:

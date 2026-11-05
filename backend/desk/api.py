@@ -15,10 +15,10 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import regime
-from .auth import COOKIE, Auth, Busy, LoginThrottle
+from . import otp, regime
+from .auth import COOKIE, Auth, Busy, LoginThrottle, User
 from .broker import make_broker
 from .db import make_engine, migrate, now
 from .estimate import BinanceEstimator
@@ -37,8 +37,34 @@ UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
 class LoginIn(BaseModel):
-    username: str = Field(min_length=1, max_length=64)
+    """Step 1: username + password. Step 2 (OTP on): the challenge step 1 returned + a code.
+    Both steps use the one route so the ingress fail2ban rule (login 401s) covers code guessing too."""
+
+    username: str | None = Field(default=None, min_length=1, max_length=64)
+    password: str | None = Field(default=None, min_length=1, max_length=256)
+    challenge: str | None = Field(default=None, min_length=1, max_length=128)
+    code: str | None = Field(default=None, min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def _one_step(self):
+        if (self.username is None) != (self.password is None) or (self.challenge is None) != (self.code is None):
+            raise ValueError("send username + password, or challenge + code")
+        if (self.username is None) == (self.challenge is None):
+            raise ValueError("send username + password, or challenge + code")
+        return self
+
+
+class PasswordIn(BaseModel):
     password: str = Field(min_length=1, max_length=256)
+
+
+class CodeIn(BaseModel):
+    code: str = Field(min_length=1, max_length=32)
+
+
+class DisableOtpIn(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+    code: str = Field(min_length=1, max_length=32)
 
 
 def clean_ticker(v: str) -> str:
@@ -102,6 +128,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     store = Store(engine)
     auth = Auth(engine, timedelta(hours=settings.session_max_hours), timedelta(hours=settings.session_idle_hours))
     throttle = LoginThrottle()
+    otp_box = otp.SecretBox(settings.otp_key)
+    if otp_box.error:
+        log.error("%s — OTP accounts cannot log in until it is fixed", otp_box.error)
+    challenges = otp.Challenges()
+    # Failed codes per account, across IPs (docs/security.md §6).
+    otp_fails = LoginThrottle(per_ip=otp.USER_FAILS, window_sec=otp.USER_FAIL_WINDOW_SEC)
     universe = Universe(engine)
     hub = Hub()
     broker = make_broker(settings)
@@ -173,6 +205,24 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if wait:
             return JSONResponse({"detail": "too many failed logins", "retry_after": wait},
                                 status_code=429, headers={"Retry-After": str(wait)})
+        if body.challenge is not None:                      # step 2: the second factor
+            user_id = challenges.user_for(body.challenge)
+            user = auth.user_by_id(user_id) if user_id is not None else None
+            try:
+                passed = user is not None and auth.otp_verify(user.id, body.code, otp_box)
+            except otp.OtpUnavailable as exc:
+                log.error("otp check impossible: %s", exc)
+                return JSONResponse({"detail": "OTP is not available on the server"}, status_code=503)
+            if not passed:
+                if user is not None:
+                    otp_fails.attempt(f"user:{user.id}")
+                log.warning("login otp failed ip=%s", ip)
+                return JSONResponse({"detail": "invalid or expired code"}, status_code=401)
+            challenges.close(body.challenge)
+            throttle.succeeded(ip)
+            otp_fails.succeeded(f"user:{user.id}")
+            return _signed_in(user, ip, request)
+
         try:
             user = auth.authenticate(body.username, body.password)
         except Busy:
@@ -180,7 +230,24 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if user is None:
             log.warning("login failed ip=%s", ip)   # fail2ban reads the ingress log; this is for us
             return JSONResponse({"detail": "invalid username or password"}, status_code=401)
+        if auth.otp_enabled(user.id):
+            if not otp_box.available:                       # fail closed: never skip the second factor
+                log.error("user %s has OTP on but the OTP key is unusable: %s", user.username,
+                          otp_box.error or "DESK_OTP_KEY is missing")
+                return JSONResponse({"detail": "OTP is not available on the server"}, status_code=503)
+            # Spread over many IPs, code guessing is still capped per account. Reaching the cap means
+            # someone holds the password: say so loudly.
+            wait = otp_fails.blocked_for(f"user:{user.id}")
+            if wait:
+                log.error("otp failures for user %s over the limit; the password may be known", user.username)
+                return JSONResponse({"detail": "too many failed codes", "retry_after": wait},
+                                    status_code=429, headers={"Retry-After": str(wait)})
+            # No session yet, and the IP's attempt count stays: the code is still to be guessed.
+            return JSONResponse({"otp_required": True, "challenge": challenges.issue(user.id)})
         throttle.succeeded(ip)
+        return _signed_in(user, ip, request)
+
+    def _signed_in(user: User, ip: str, request: Request) -> Response:
         auth.close_session(request.cookies.get(COOKIE))   # never keep a token issued before this login
         token = auth.open_session(user, ip, request.headers.get("user-agent"))
         log.info("login ok user=%s ip=%s", user.username, ip)
@@ -188,6 +255,77 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         response.set_cookie(COOKIE, token, max_age=int(settings.session_max_hours * 3600), path="/",
                             secure=settings.cookie_secure, httponly=True, samesite="strict")
         return response
+
+    def _count_attempt(request: Request) -> JSONResponse | None:
+        """Every call that changes the second factor is one attempt for this IP, and none of them
+        clears the count — only a full login does. 403 (not 401) on a wrong answer: 401 means
+        "session ended" to the page."""
+        wait = throttle.attempt(_client_ip(request))
+        if wait:
+            return JSONResponse({"detail": "too many failed attempts", "retry_after": wait},
+                                status_code=429, headers={"Retry-After": str(wait)})
+        return None
+
+    def _recheck_password(request: Request, password: str) -> JSONResponse | None:
+        """Changing the second factor asks for the password again (a borrowed session is not enough)."""
+        refused = _count_attempt(request)
+        if refused:
+            return refused
+        try:
+            ok = auth.authenticate(request.state.user.username, password) is not None
+        except Busy:
+            return JSONResponse({"detail": "busy, try again"}, status_code=503, headers={"Retry-After": "5"})
+        if not ok:
+            log.warning("otp change: wrong password ip=%s", _client_ip(request))
+            return JSONResponse({"detail": "wrong password"}, status_code=403)
+        return None
+
+    @app.post("/api/auth/otp/setup")
+    def otp_setup(body: PasswordIn, request: Request):
+        """New pending secret + otpauth:// address for the QR code. OTP stays off until enable."""
+        user = request.state.user
+        if not otp_box.available:
+            return JSONResponse({"detail": "OTP is not configured on the server (DESK_OTP_KEY)"}, status_code=503)
+        if auth.otp_enabled(user.id):
+            return JSONResponse({"detail": "OTP is already on; disable it first"}, status_code=409)
+        refused = _recheck_password(request, body.password)
+        if refused:
+            return refused
+        return auth.otp_begin(user.id, otp_box, user.username)
+
+    @app.post("/api/auth/otp/enable")
+    def otp_enable(body: CodeIn, request: Request):
+        """Confirm with one code; returns the recovery codes, shown only this once."""
+        user = request.state.user
+        refused = _count_attempt(request)
+        if refused:
+            return refused
+        try:
+            codes = auth.otp_enable(user.id, body.code.strip(), otp_box, request.cookies.get(COOKIE))
+        except otp.OtpUnavailable:
+            return JSONResponse({"detail": "OTP is not configured on the server (DESK_OTP_KEY)"}, status_code=503)
+        if codes is None:
+            log.warning("otp enable: code refused ip=%s", _client_ip(request))
+            return JSONResponse({"detail": "code does not match, or setup expired (10 min); start setup again"},
+                                status_code=403)
+        log.info("otp enabled user=%s", user.username)
+        return {"recovery_codes": codes}
+
+    @app.post("/api/auth/otp/disable", status_code=204)
+    def otp_disable(body: DisableOtpIn, request: Request):
+        user = request.state.user
+        refused = _recheck_password(request, body.password)
+        if refused:
+            return refused
+        try:
+            if not auth.otp_verify(user.id, body.code, otp_box):
+                log.warning("otp disable: code refused ip=%s", _client_ip(request))
+                return JSONResponse({"detail": "invalid code"}, status_code=403)
+        except otp.OtpUnavailable:
+            return JSONResponse({"detail": "OTP is not available on the server"}, status_code=503)
+        auth.otp_disable(user.id, keep_token=request.cookies.get(COOKIE))
+        log.info("otp disabled user=%s", user.username)
+        return Response(status_code=204)
 
     @app.post("/api/auth/logout", status_code=204)
     def logout(request: Request):
@@ -198,7 +336,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     @app.get("/api/auth/me")
     def me(request: Request):
-        return {"username": request.state.user.username}
+        user = request.state.user
+        enabled = auth.otp_enabled(user.id)
+        return {"username": user.username, "otp_enabled": enabled,
+                "recovery_codes_left": auth.recovery_left(user.id) if enabled else None,
+                "otp_available": otp_box.available}
 
     # --- desk --------------------------------------------------------------------------
 

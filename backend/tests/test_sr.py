@@ -151,7 +151,7 @@ def test_run_finishes_without_levels_when_the_lookup_fails_or_hangs(monkeypatch)
     class Request:
         ticker, trade_date = "NVDA", "2026-11-04"
 
-    async def hang(*_args):
+    async def hang(*_args, **_kw):
         await asyncio.sleep(60)
 
     manager = runner.RunManager.__new__(runner.RunManager)
@@ -160,7 +160,7 @@ def test_run_finishes_without_levels_when_the_lookup_fails_or_hangs(monkeypatch)
     monkeypatch.setattr(runner, "support_resistance", hang)
     assert asyncio.run(manager._support_resistance(Request())) is None
 
-    async def boom(*_args):
+    async def boom(*_args, **_kw):
         raise ConnectionError("down")
     monkeypatch.setattr(runner, "support_resistance", boom)
     assert asyncio.run(manager._support_resistance(Request())) is None
@@ -170,3 +170,21 @@ def test_live_note_puts_the_current_price_in_front_of_the_agents():
     note = sr.live_note({"price": 200.13, "source": "toss", "fetched_at": "2026-11-05T15:00:00+00:00"}, 6.0)
     assert "200.13" in note and "ATR14 6.0" in note and "conditional" in note
     assert sr.live_note(None) is None
+
+
+def test_a_hanging_quote_does_not_hold_the_run(monkeypatch):
+    from datetime import date
+
+    from desk import runner
+
+    class Request:
+        ticker, trade_date = "NVDA", date.today().isoformat()
+
+    class Hanging:
+        async def quote(self, _ticker):
+            await asyncio.sleep(60)
+
+    manager = runner.RunManager.__new__(runner.RunManager)
+    manager.prices = Hanging()
+    monkeypatch.setattr(runner, "QUOTE_TIMEOUT_SEC", 0.05)
+    assert asyncio.run(manager._live_quote(Request())) is None

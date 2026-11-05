@@ -195,6 +195,8 @@ class Hub:
 # The levels are a reference, not a prerequisite: a slow Toss (429 retries) or Yahoo must not
 # hold the run — and the queue behind it — at "running" with nothing on screen.
 SR_TIMEOUT_SEC = 20.0
+# The same for the quote, now fetched before the run as well as after it.
+QUOTE_TIMEOUT_SEC = 10.0
 
 
 class RunManager:
@@ -222,8 +224,8 @@ class RunManager:
         if self.prices is None or request.trade_date != dt.date.today().isoformat():
             return None
         try:
-            quote = await self.prices.quote(request.ticker)
-        except Exception as exc:  # noqa: BLE001 - levels then start from the last close
+            quote = await asyncio.wait_for(self.prices.quote(request.ticker), QUOTE_TIMEOUT_SEC)
+        except Exception as exc:  # noqa: BLE001 - incl. timeout: levels then start from the last close
             log.warning("no live quote for %s: %s", request.ticker, exc)
             return None
         return {"price": quote.price, "source": quote.source, "fetched_at": quote.fetched_at}

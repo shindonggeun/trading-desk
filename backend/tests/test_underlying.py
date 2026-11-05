@@ -96,7 +96,7 @@ def test_a_soxl_run_carries_both_sides(db_url, monkeypatch):
     from desk.settings import Settings
     from tests.test_api import OWNER, PASSWORD, _wait_done
 
-    def sr_for(_prices, ticker, _day, price=None):
+    def sr_for(_prices, ticker, _day, price=None, horizon=None):
         close, atr, level = {"SOXL": (60.0, 4.0, 66.0), "SOXX": (450.0, 12.0, 470.0)}[ticker]
         return {"reference_price": close, "reference": "close", "last_close": close, "atr": atr,
                 "levels": [{"kind": "resistance", "price": level, "timeframe": "1d", "basis": "swing", "strength": 2}]}
@@ -189,7 +189,7 @@ def test_a_same_day_inverse_run_anchors_on_live_quotes_and_flips_the_underlying(
     from desk.runner import RunResult
     from tests.test_api import OWNER, PASSWORD, _wait_done
 
-    async def fake_sr(_prices, ticker, _day, price=None):
+    async def fake_sr(_prices, ticker, _day, price=None, horizon=None):
         close, atr = {"SOXS": (20.0, 1.5), "SOXX": (450.0, 12.0)}[ticker]
         return {"ticker": ticker, "reference_price": price or close, "reference": "live", "last_close": close,
                 "atr": atr, "as_of": "2026-11-04T04:00:00+00:00", "levels": []}
@@ -218,7 +218,7 @@ def test_without_the_underlyings_bars_the_models_underlying_levels_still_stand(d
     from desk.runner import RunResult
     from tests.test_api import OWNER, PASSWORD, _wait_done
 
-    async def only_soxl(_prices, ticker, _day, price=None):
+    async def only_soxl(_prices, ticker, _day, price=None, horizon=None):
         if ticker == "SOXX":
             raise TimeoutError("slow")
         return {"ticker": ticker, "reference_price": 60.0, "reference": "close", "last_close": 60.0, "atr": 4.0,

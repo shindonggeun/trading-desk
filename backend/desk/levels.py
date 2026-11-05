@@ -24,7 +24,8 @@ LEVELS = ("entry_price", "stop_loss", "price_target")
 # the daily bars have not caught, another currency) than a move; levels then use the close.
 LIVE_MAX_GAP = 0.25
 
-PriceFn = Callable[[str, str], tuple[float, float]]
+# (ticker, trade_date[, interval]) -> (last close, ATR14); the interval only for intraday horizons.
+PriceFn = Callable[..., tuple[float, float]]
 
 
 # Days of Yahoo history fetched per bar interval: enough for ATR14, inside its intraday limits.
@@ -92,8 +93,8 @@ def fill_levels(plan: dict, ticker: str, trade_date: str, prices: PriceFn = last
         else:
             if used.primary != "1d":
                 plan["atr_interval"] = used.primary
-            if fallback:
-                plan["levels_warning"] = fallback
+            if fallback:   # not levels_warning: that one means "the live quote is not trusted"
+                plan["atr_warning"] = fallback
             use_live = bool(live) and abs(live["price"] - close) <= LIVE_MAX_GAP * close
             if live and not use_live:
                 plan["levels_warning"] = (f"live price {live['price']} is over {LIVE_MAX_GAP:.0%} "

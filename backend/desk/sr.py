@@ -244,7 +244,15 @@ async def _frame(prices, ticker: str, trade_date: str | None, price: float | Non
     days, weeks = primary["bars"], secondary["bars"]
     if trade_date:
         days, weeks = _until(days, weeks, ticker, trade_date, secondary_days=h.secondary_days)
-    result = compute(days, weeks, price, weekly_complete=bool(trade_date), horizon=h.id)
+    complete = bool(trade_date)
+    if h.secondary == "1d" and days:
+        # "Prior session" = the last daily bar before the session the intraday bars are in. A KST
+        # trade date runs ahead of a US session (KST 01:00 = ET noon), so cutting by the trade date
+        # would keep today's still-trading daily bar.
+        session = _local_day(days[-1]["at"], ticker)
+        weeks = [b for b in weeks if _local_day(b["at"], ticker) < session]
+        complete = True
+    result = compute(days, weeks, price, weekly_complete=complete, horizon=h.id)
     result.update(ticker=ticker, sources={h.primary: primary["source"], h.secondary: secondary["source"]},
                   intervals={"primary": h.primary, "secondary": h.secondary},
                   computed_at=datetime.now(UTC).isoformat(timespec="seconds"))

@@ -112,24 +112,35 @@ def get(horizon: str | None) -> Horizon:
     return HORIZONS[horizon or DEFAULT_HORIZON]
 
 
-def horizon_mandate(horizon: Horizon, atr: float | None = None) -> str:
-    """Instructions for the deciding agents. Long, short and Hold are weighed alike, and
-    every call names how it is entered, what voids it and when it is closed."""
-    atr_part = f" ({atr})" if atr else ""
+def horizon_mandate(horizon: Horizon, atr: float | None = None, *, frame: Horizon | None = None,
+                    levels_below: bool = True) -> str | None:
+    """Instructions for the deciding agents; None for swing, whose prompt stays as before
+    horizons. ``frame`` is the horizon whose bars the desk's levels actually came from (swing
+    when the intraday bars were missing); ``levels_below`` says whether a levels note follows.
+    The investor mandate keeps the last word on direction (e.g. reducing instead of shorting)."""
+    if horizon.id == DEFAULT_HORIZON:
+        return None
+    frame = frame or horizon
+    name = horizon.id.replace("_", " ")
+    if levels_below:
+        bars = (f"Use the desk's {frame.primary} bars and their ATR14{f' ({atr})' if atr else ''} listed below"
+                + ("" if frame is horizon else f" (the {horizon.primary} bars were not available, so these are "
+                                               "daily-frame levels)"))
+    else:
+        bars = f"Size levels to {frame.primary} volatility (ATR14)"
     text = (
-        f"Trading horizon chosen by the owner for this run: {horizon.label} ({horizon.holding_en}). "
-        "This overrides any holding period in the investor mandate above. Judge the setup on this horizon "
-        "only: a thesis that needs more time is Hold, not a smaller Buy. Long, short and Hold carry equal "
-        "weight - pick what the evidence on this horizon supports and say what would have made you choose "
-        f"each of the other two. Use the desk's {horizon.primary_label} ({horizon.primary}) bars and their "
-        f"ATR14{atr_part} below: stop about {horizon.stop_atr:g} ATR and target at least "
-        f"{horizon.target_atr:g} ATR from the entry (reward:risk at least {horizon.min_rr:g}), moved only to "
-        "sit beyond or before a listed zone. Every call, Hold included, states the entry type (now / limit "
-        "at a level / stop on the break of a level, and what confirms it), the invalidation (the price or "
-        f"event that voids the thesis before the stop) and the exit ({horizon.exit_by}). The Time Horizon "
-        f"field states this holding ({horizon.holding_en}). Right after the final levels line that ends "
-        "the Executive Summary, add one more line 'Entry: <now|limit|stop> / Invalidation: <text> / "
-        "Exit by: <time or condition>' (keep these English labels in any output language)."
+        f"Trading horizon chosen by the owner for this run: {name} ({horizon.holding_en}). For holding period "
+        "and level spacing this overrides the investor mandate above; its rules on direction and sizing still "
+        "apply. Judge the setup on this horizon only: a thesis that needs more time is Hold, not a smaller Buy. "
+        "Within what the investor mandate allows, long, short and Hold carry equal weight - pick what the "
+        "evidence on this horizon supports and say what would have made you choose each of the others. "
+        f"{bars}: stop about {frame.stop_atr:g} ATR and target at least {frame.target_atr:g} ATR from the entry "
+        f"(reward:risk at least {frame.min_rr:g}), moved only to sit beyond or before a listed zone. Every call, "
+        "Hold included, states the entry type (now / limit at a level / stop on the break of a level, and what "
+        "confirms it), the invalidation (the price or event that voids the thesis before the stop) and the exit "
+        f"({horizon.exit_by}). The Time Horizon field states this holding ({horizon.holding_en}). Right after the "
+        "final levels line that ends the Executive Summary, add one more line 'Entry: <now|limit|stop> / "
+        "Invalidation: <text> / Exit by: <time or condition>' (keep these English labels in any output language)."
     )
     return f"{text} {horizon.note}" if horizon.note else text
 

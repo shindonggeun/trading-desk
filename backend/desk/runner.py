@@ -332,8 +332,9 @@ class RunManager:
                 note = "\n\n".join(part for part in (live_note(start, sr and sr.get("atr")), prompt_note(sr),
                                                      lever_note, related_note(related)) if part) or None
                 horizon = horizons.get(request.horizon)
-                portfolio = desk_portfolio(request.profile, book, note,
-                                           horizon_mandate=horizons.horizon_mandate(horizon, sr and sr.get("atr")))
+                frame = horizons.get(None) if sr and sr.get("fallback") else horizon
+                mandate = horizons.horizon_mandate(horizon, sr and sr.get("atr"), frame=frame, levels_below=bool(sr))
+                portfolio = desk_portfolio(request.profile, book, note, horizon_mandate=mandate)
                 result = await asyncio.to_thread(self.runner, request, emit, portfolio)
                 # The model may still leave a level out; fill it from ATR and mark it as computed.
                 fresh, fresh_u = await asyncio.gather(

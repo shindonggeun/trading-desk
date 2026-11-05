@@ -41,6 +41,25 @@ export function percent(v: number | null | undefined): string {
   return `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
 }
 
+/** 큰 원화 금액을 조 · 억 · 만 단위로("+1.25조", "-3,450억"). signed 면 + 도 붙인다. */
+export function krwShort(v: number | null | undefined, signed = true): string {
+  if (v === null || v === undefined || !Number.isFinite(v)) return "—";
+  const abs = Math.abs(v);
+  // 경계는 반올림 뒤 기준 — 9,999.5억은 "10,000억"이 아니라 "1조"
+  let body: string;
+  if (abs >= 1e12 - 0.5e8) body = `${trimZeros((abs / 1e12).toFixed(abs >= 1e13 ? 1 : 2)).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}조`;
+  else if (abs >= 1e8 - 0.5e4) body = `${Math.round(abs / 1e8).toLocaleString("ko-KR")}억`;
+  else if (abs >= 1e4 - 0.5) body = `${Math.round(abs / 1e4).toLocaleString("ko-KR")}만`;
+  else body = `${Math.round(abs).toLocaleString("ko-KR")}원`;
+  if (body === "0원") return body;
+  const sign = v < 0 ? "-" : signed && v > 0 ? "+" : "";
+  return sign + body;
+}
+
+function trimZeros(s: string): string {
+  return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
+}
+
 /** Korean convention: red up, blue down. */
 export function tone(v: number | null | undefined): string {
   return v === null || v === undefined || v === 0 ? "" : v > 0 ? "up" : "down";

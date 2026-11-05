@@ -134,6 +134,45 @@ export interface Portfolio {
   error: string | null;
 }
 
+export type FlowMarket = "KOSPI" | "KOSDAQ";
+export type FlowInterval = "1d" | "1w" | "1mo" | "1y";
+export type Investor = "individual" | "foreigner" | "institution" | "other_corporation";
+export type InstitutionKind =
+  | "financial_investment" | "insurance" | "trust" | "private_equity_fund" | "bank"
+  | "other_financial_institution" | "pension_fund";
+
+/** 원화 정수. net = buy − sell (음수면 순매도). */
+export interface FlowSide {
+  buy: number;
+  sell: number;
+  net: number;
+}
+
+export interface FlowRecord {
+  /** 기간의 대표 일자 YYYY-MM-DD */
+  date: string;
+  updated_at: string | null;
+  /** 기간이 오늘을 포함 — 뒤 거래일이 더 쌓인다 */
+  in_progress: boolean;
+  /** 오늘 장중 값 — 저녁 확정 전에 바뀔 수 있다 */
+  provisional: boolean;
+  investors: Partial<Record<Investor, FlowSide>>;
+  /** 토스가 빠뜨리면 일부만 온다 */
+  institution_breakdown: Partial<Record<InstitutionKind, FlowSide>>;
+}
+
+/** GET /api/market/flow (backend desk/market_flow.py, #76) — records 는 최신순. */
+export interface MarketFlow {
+  market: FlowMarket;
+  interval: FlowInterval;
+  source: string;
+  fetched_at: string;
+  supported: boolean;
+  index: { price: number; at: string | null } | null;
+  records: FlowRecord[];
+  error: string | null;
+}
+
 export interface RegimeSnapshot {
   enabled: boolean;
   error?: string;

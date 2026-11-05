@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import MarketFlowPanel from "../components/MarketFlowPanel";
 import NewRunForm from "../components/NewRunForm";
 import PortfolioPanel from "../components/PortfolioPanel";
 import RunsCard from "../components/RunsCard";
@@ -45,6 +46,7 @@ export default function Dashboard() {
       <NewRunForm />
       <RunsCard />
       <div className="side">
+        <MarketFlowPanel />
         <PortfolioPanel />
         <RegimePanel />
       </div>

@@ -1,6 +1,7 @@
 import QRCode from "qrcode";
 import { useEffect, useState } from "react";
 import { api, ApiError, type Me } from "../api";
+import MarketListEditor from "../components/MarketListEditor";
 
 type Step =
   | { kind: "idle" }
@@ -210,6 +211,7 @@ export default function Settings() {
           </form>
         )}
       </section>
+      <MarketListEditor />
     </div>
   );
 }

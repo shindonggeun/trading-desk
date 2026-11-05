@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import MarketBoard from "../components/MarketBoard";
 import MarketFlowPanel from "../components/MarketFlowPanel";
 import NewRunForm from "../components/NewRunForm";
 import PlanStatsCard from "../components/PlanStatsCard";
@@ -44,6 +45,7 @@ function RegimePanel() {
 export default function Dashboard() {
   return (
     <main className="dashboard">
+      <MarketBoard />
       <NewRunForm />
       <RunsCard />
       <div className="side">

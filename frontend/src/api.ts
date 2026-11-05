@@ -60,6 +60,57 @@ export interface Me {
   otp_available: boolean;
 }
 
+export type Alignment = "with_plan" | "against_plan" | "plan_flat" | "no_plan";
+
+export interface ReviewRow {
+  order_id: string;
+  symbol: string;
+  ticker: string;
+  name: string | null;
+  side: "BUY" | "SELL" | string;
+  quantity: number;
+  price: number;
+  fee: number;
+  currency: string;
+  filled_at: string;
+  plan: {
+    run_id: string;
+    trade_date: string;
+    rating: string | null;
+    bias: string | null;
+    entry_price: number | null;
+    stop_loss: number | null;
+    price_target: number | null;
+  } | null;
+  alignment: Alignment;
+  entry_gap_pct: number | null;
+  outcome: { result: "target" | "stop" | "both" | "open"; on: string | null } | null;
+  realized: {
+    matched_quantity: number;
+    unmatched_quantity: number;
+    realized_pnl: number | null;
+    realized_rate: number | null;
+  } | null;
+}
+
+export interface ReviewResponse {
+  supported: boolean;
+  source: string;
+  from?: string;
+  to?: string;
+  fills: ReviewRow[];
+  summary: {
+    fills: number;
+    with_plan: number;
+    against_plan: number;
+    plan_flat: number;
+    no_plan: number;
+    outcomes: Record<"target" | "stop" | "both" | "open", number>;
+    realized_pnl: Record<string, number>;
+  } | null;
+  errors: string[];
+}
+
 export const api = {
   login: (username: string, password: string) =>
     call<LoginStep>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
@@ -81,6 +132,8 @@ export const api = {
   createRun: (body: NewRun) => call<Run>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
   portfolio: () => call<{ broker: string; error?: string; holdings: Holding[] }>("/api/portfolio"),
   regime: () => call<RegimeSnapshot>("/api/regime"),
+  /** 매매 복기(백엔드 desk/review.py): 최근 days 일 체결을 그때의 분석 계획과 묶는다. 읽기 전용. */
+  review: (days: number) => call<ReviewResponse>(`/api/review?days=${days}`),
   instruments: (q: string) => call<Instrument[]>(`/api/instruments?q=${encodeURIComponent(q)}`),
   instrumentsStatus: () =>
     call<{ source: string; count: number; updated_at: string | null; error: string | null }>("/api/instruments/status"),

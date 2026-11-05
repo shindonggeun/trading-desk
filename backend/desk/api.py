@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import otp, regime, review
+from . import horizons, otp, regime, review
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User
 from .broker import make_broker
 from .db import make_engine, migrate, now
@@ -88,6 +88,8 @@ class RunIn(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     # Investing style (desk.profile.PROFILES); the server default when absent.
     profile: str | None = None
+    # Trading horizon (desk.horizons.HORIZONS); swing when absent.
+    horizon: str | None = None
     trade_date: date | None = None
     analysts: list[str] = Field(default_factory=lambda: list(ANALYSTS))
     use_portfolio: bool = False
@@ -105,6 +107,13 @@ class RunIn(BaseModel):
     def _profile(cls, v: str | None) -> str | None:
         if v is not None and v not in PROFILES:
             raise ValueError(f"unknown profile; choose from {list(PROFILES)}")
+        return v
+
+    @field_validator("horizon")
+    @classmethod
+    def _horizon(cls, v: str | None) -> str | None:
+        if v is not None and v not in horizons.HORIZONS:
+            raise ValueError(f"unknown horizon; choose from {list(horizons.HORIZONS)}")
         return v
 
     @field_validator("analysts")
@@ -369,6 +378,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             "broker": broker.name,
             "profiles": [{"id": key, "label": value["label"]} for key, value in PROFILES.items()],
             "default_profile": settings.investor_profile,
+            "horizons": [h.to_dict() for h in horizons.HORIZONS.values()],
+            "default_horizon": horizons.DEFAULT_HORIZON,
         }
 
     @app.post("/api/runs", status_code=201)
@@ -378,6 +389,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             ticker=body.ticker,
             name=body.name or (listed or {}).get("name"),
             profile=body.profile or settings.investor_profile,
+            horizon=body.horizon or horizons.DEFAULT_HORIZON,   # stored explicitly, never left implicit
             trade_date=(body.trade_date or date.today()).isoformat(),
             analysts=body.analysts,
             use_portfolio=body.use_portfolio,
@@ -572,14 +584,17 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(503, f"no candles for {ticker}") from None
 
     @app.get("/api/levels")
-    async def levels(ticker: str):
-        """Support/resistance zones from daily and weekly bars (desk.sr), cached a few minutes."""
+    async def levels(ticker: str, horizon: str | None = None):
+        """Support/resistance zones (desk.sr) from the horizon's bars - daily and weekly by
+        default - cached a minute or a few."""
         try:
             ticker = clean_ticker(ticker)
+            if horizon is not None and horizon not in horizons.HORIZONS:
+                raise ValueError(f"horizon must be one of {', '.join(horizons.HORIZONS)}")
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         try:
-            return await support_resistance(prices, ticker)
+            return await support_resistance(prices, ticker, horizon=horizon)
         except Exception as exc:  # noqa: BLE001 - no bars or too few
             log.warning("levels for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no levels for {ticker}") from None

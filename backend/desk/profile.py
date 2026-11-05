@@ -67,10 +67,11 @@ class DeskPortfolio(PortfolioContext):
 
 
 def desk_portfolio(profile: str | None, book: PortfolioContext | None,
-                   levels_note: str | None = None) -> DeskPortfolio | None:
-    """``levels_note`` is the desk's support/resistance reference (desk.sr.prompt_note)."""
+                   levels_note: str | None = None, *, horizon_mandate: str | None = None) -> DeskPortfolio | None:
+    """``levels_note`` is the desk's support/resistance reference (desk.sr.prompt_note);
+    ``horizon_mandate`` the run's trading horizon (desk.horizons), placed after the style."""
     mandate = PROFILES.get(profile or "", {}).get("mandate")
-    mandate = "\n\n".join(part for part in (mandate, levels_note) if part) or None
+    mandate = "\n\n".join(part for part in (mandate, horizon_mandate, levels_note) if part) or None
     if book is None and mandate is None:
         return None
     data = book.model_dump() if book is not None else {}

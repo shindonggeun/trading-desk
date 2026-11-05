@@ -178,4 +178,24 @@ def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
         plan["trader_levels"] = trader_levels
     if underlying:
         plan["underlying_levels"] = underlying
+    plan.update(_entry_terms(decision))
     return plan
+
+
+_ENTRY_TYPE = re.compile(r"\bEntry\s*\**\s*:\s*\**\s*(now|limit|stop)\b", re.IGNORECASE)
+_INVALIDATION = re.compile(r"\bInvalidation\s*\**\s*:\s*\**\s*(.+?)\s*(?:/\s*\**\s*Exit by\b|$)",
+                           re.IGNORECASE | re.MULTILINE)
+_EXIT_BY = re.compile(r"\bExit by\s*\**\s*:\s*\**\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def _entry_terms(decision: str) -> dict[str, str | None]:
+    """The horizon mandate's closing line (desk.horizons): 'Entry: <now|limit|stop> /
+    Invalidation: <text> / Exit by: <text>'. The last occurrence wins; missing parts are None."""
+    def last(pattern: re.Pattern) -> str | None:
+        found = pattern.findall(decision or "")
+        if not found:
+            return None
+        return found[-1].strip(" *") or None
+    entry_type = last(_ENTRY_TYPE)
+    return {"entry_type": entry_type.lower() if entry_type else None,
+            "invalidation": last(_INVALIDATION), "exit_by": last(_EXIT_BY)}

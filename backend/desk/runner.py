@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from . import horizons
 from . import underlying as under
 from .broker.base import Broker
 from .events import StateDiffer
@@ -38,6 +39,8 @@ class RunRequest:
     name: str | None = None
     # desk.profile.PROFILES key: the owner's style, handed to the deciding agents.
     profile: str | None = None
+    # desk.horizons.HORIZONS key: how long the trade is meant to live. None (older runs) = swing.
+    horizon: str | None = None
     analysts: list[str] = field(default_factory=lambda: list(ANALYSTS))
     use_portfolio: bool = False
     output_language: str | None = None
@@ -109,6 +112,27 @@ def run_tradingagents(request: RunRequest, emit: Emit, portfolio: Any) -> RunRes
 
 # --- a scripted run, for building the UI without spending quota ----------------------
 
+# A made-up ATR per horizon so a scripted intraday plan has intraday-sized levels.
+_FAKE_ATR = {"scalp": 0.4, "intraday": 0.9, "short_swing": 3.0}
+
+
+def _fake_decision(request: RunRequest) -> dict:
+    h = horizons.get(request.horizon)
+    if h.id not in _FAKE_ATR:   # swing: the original script, unchanged
+        text = ("**Rating**: Overweight\n\n**Executive Summary**: 182.5 부근 분할 진입, 171 손절, 목표 205.\n\n"
+                "**Investment Thesis**: 수주 모멘텀과 이익 성장, 밸류 부담은 비중으로 관리.\n\n"
+                "**Price Target**: 205\n\n**Time Horizon**: 2-4주")
+        return {"final_trade_decision": text, "final_rating": "Overweight"}
+    atr, entry = _FAKE_ATR[h.id], 182.5
+    stop, target = round(entry - h.stop_atr * atr, 2), round(entry + h.target_atr * atr, 2)
+    text = (f"**Rating**: Overweight\n\n**Executive Summary**: {entry} 눌림 지정가 진입. "
+            f"Entry Price: {entry} / Stop Loss: {stop} / Price Target: {target}\n"
+            f"Entry: limit / Invalidation: {stop} 아래 마감 / Exit by: {h.holding} 안에\n\n"
+            f"**Investment Thesis**: {h.label} 기준 구조상 지지 위.\n\n"
+            f"**Price Target**: {target}\n\n**Time Horizon**: {h.holding}")
+    return {"final_trade_decision": text, "final_rating": "Overweight"}
+
+
 def make_fake_runner(delay: float) -> Runner:
     def run_fake(request: RunRequest, emit: Emit, portfolio: Any) -> RunResult:
         t = request.ticker
@@ -146,11 +170,7 @@ def make_fake_runner(delay: float) -> Runner:
             ([], {"risk_debate_state": {"aggressive_history": "Aggressive Analyst: 모멘텀 구간이라 8%까지 늘려도 됩니다.",
                                         "conservative_history": "Conservative Analyst: 실적 발표 전이므로 3%로 시작해야 합니다.",
                                         "neutral_history": "Neutral Analyst: 5%로 시작해 171 이탈 시 정리하는 안이 균형적입니다."}}),
-            ([], {"final_trade_decision": (
-                "**Rating**: Overweight\n\n**Executive Summary**: 182.5 부근 분할 진입, 171 손절, 목표 205.\n\n"
-                "**Investment Thesis**: 수주 모멘텀과 이익 성장, 밸류 부담은 비중으로 관리.\n\n"
-                "**Price Target**: 205\n\n**Time Horizon**: 2-4주"),
-                  "final_rating": "Overweight"}),
+            ([], _fake_decision(request)),
         ]
 
         differ = StateDiffer()
@@ -252,7 +272,8 @@ class RunManager:
         try:
             return await asyncio.wait_for(
                 support_resistance(self.prices, ticker, request.trade_date,
-                                   price=live["price"] if live else None), SR_TIMEOUT_SEC)
+                                   price=live["price"] if live else None, horizon=request.horizon),
+                SR_TIMEOUT_SEC)
         except Exception as exc:  # noqa: BLE001 - incl. timeout: the analysis runs without the reference
             log.warning("no support/resistance for %s: %s", ticker, exc)
             return None
@@ -310,7 +331,9 @@ class RunManager:
                 lever_note = under.prompt_note(request.ticker, *lever, sr_u, start_u) if lever else None
                 note = "\n\n".join(part for part in (live_note(start, sr and sr.get("atr")), prompt_note(sr),
                                                      lever_note, related_note(related)) if part) or None
-                portfolio = desk_portfolio(request.profile, book, note)
+                horizon = horizons.get(request.horizon)
+                portfolio = desk_portfolio(request.profile, book, note,
+                                           horizon_mandate=horizons.horizon_mandate(horizon, sr and sr.get("atr")))
                 result = await asyncio.to_thread(self.runner, request, emit, portfolio)
                 # The model may still leave a level out; fill it from ATR and mark it as computed.
                 fresh, fresh_u = await asyncio.gather(
@@ -319,12 +342,16 @@ class RunManager:
                 plan, sub = parse_plan(result.final_state), None
                 if lever:   # the anchor stays the pre-run pair: what the agents saw
                     plan, sub = under.split(plan, *lever, under.anchors(start, start_u, sr, sr_u))
-                plan = await asyncio.to_thread(self.levels, plan, request.ticker, request.trade_date, live=live)
+                plan = await asyncio.to_thread(self.levels, plan, request.ticker, request.trade_date, live=live,
+                                               horizon=horizon.id)
                 plan = entry_vs_live(plan, sr and sr.get("atr"))
                 if sub is not None:
                     plan["underlying"] = await self._underlying_plan(sub, request, sr_u, live_u)
                 # only a non-leveraged run gets here with them (its model wrote the line anyway)
                 plan.pop("underlying_levels", None)
+                # The entry is valid from the price the agents saw, so the minutes spent analysing count.
+                plan["horizon"] = horizon.id
+                plan["valid_until"] = horizons.valid_until(horizon, start["fetched_at"] if start else None)
                 if sr:
                     plan["support_resistance"] = sr
                 if related:

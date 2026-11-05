@@ -621,3 +621,46 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .market-list-actions { display: flex; gap: 10px; flex-shrink: 0; }
 .market-add { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; }
 @media (max-width: 480px) { .mb-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .market-add { grid-template-columns: 1fr; } }
+
+/* #95 — 분석 끝 결론 요약 카드 */
+.consensus h3 { margin: 0 0 8px; }
+.cs-action { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--border);
+  border-left-width: 4px; border-radius: 8px; background: var(--surface-2); }
+.cs-action-label { font-size: 22px; font-weight: 700; }
+.cs-action.cs-long { border-left-color: var(--long); }
+.cs-action.cs-short { border-left-color: var(--short); }
+.cs-action.cs-hold { border-left-color: var(--flat); }
+.cs-action.cs-review { border-left-color: var(--warn); }
+.cs-action.cs-long .cs-action-label, strong.cs-long, span.cs-long { color: var(--long); }
+.cs-action.cs-short .cs-action-label, strong.cs-short, span.cs-short { color: var(--short); }
+strong.cs-hold { color: var(--muted); }
+.cs-levels { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.cs-level { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  font-variant-numeric: tabular-nums; min-width: 0; }
+.cs-level-손절 strong { color: var(--short); }
+.cs-level-목표 strong { color: var(--long); }
+.cs-ref { margin-top: 8px; opacity: 0.8; }
+.cs-triggers { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.cs-conclusion { margin: 10px 0 0; font-weight: 600; }
+.cs-votes-head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.cs-bar { display: flex; height: 22px; margin-top: 6px; border-radius: 6px; overflow: hidden; gap: 2px; }
+.cs-seg { display: flex; align-items: center; justify-content: center; min-width: 36px; font-size: 12px; color: #fff; opacity: 0.55; white-space: nowrap; }
+.cs-seg-top { opacity: 1; font-weight: 700; }
+.cs-seg-long { background: var(--long); }
+.cs-seg-short { background: var(--short); }
+.cs-seg-hold { background: var(--flat); }
+.cs-cases { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+.cs-case { padding: 8px 10px; border: 1px solid var(--border); border-top-width: 3px; border-radius: 8px; min-width: 0; }
+.cs-case-long { border-top-color: var(--long); }
+.cs-case-short { border-top-color: var(--short); }
+.cs-case h4 { margin: 0 0 4px; font-size: 14px; }
+.cs-case ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
+.cs-debate { margin: 10px 0 0; }
+.cs-detail { margin-top: 10px; }
+.cs-detail summary { cursor: pointer; }
+.cs-vote-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; }
+.cs-chip { display: inline-block; min-width: 34px; margin-right: 6px; padding: 0 6px; border-radius: 4px; text-align: center; color: #fff; font-size: 12px; }
+.cs-chip-long { background: var(--long); }
+.cs-chip-short { background: var(--short); }
+.cs-chip-hold { background: var(--flat); }
+@media (max-width: 560px) { .cs-levels { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cs-cases { grid-template-columns: 1fr; } }

@@ -3,6 +3,7 @@ import { api, followRun } from "../api";
 import AgentRail from "../components/AgentRail";
 import { ChatMessage, SystemLine, ToolRow } from "../components/ChatMessage";
 import { GlossaryPanel, GlossaryProvider } from "../components/Glossary";
+import ConsensusCard from "../components/ConsensusCard";
 import PlanCard from "../components/PlanCard";
 import AnalysisResult from "../components/AnalysisResult";
 import SectionBoundary from "../components/SectionBoundary";
@@ -126,6 +127,7 @@ export default function RunView({ runId }: { runId: string }) {
             />
           )}
           {plan && status === "done" && <AnalysisResult plan={plan} ticker={run.ticker} tradeDate={run.trade_date} />}
+          {plan && status === "done" && <ConsensusCard plan={plan} ticker={run.ticker} />}
           <div ref={bottom} />
         </div>
         <GlossaryPanel events={events} focusId={glossary.id} focusSeq={glossary.seq} />

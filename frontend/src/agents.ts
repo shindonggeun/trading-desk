@@ -24,6 +24,7 @@ export const AGENTS: AgentInfo[] = [
   { id: "neutral_analyst", name: "중립형 리스크", short: "NE", team: "risk" },
   { id: "portfolio_manager", name: "포트폴리오 매니저", short: "PM", team: "portfolio" },
   { id: "leverage_analyst", name: "레버리지 분석가", short: "LV", team: "portfolio", onlyIfSpoken: true },
+  { id: "consensus", name: "결론 정리", short: "CS", team: "portfolio", onlyIfSpoken: true },
 ];
 
 export const TEAM_LABEL: Record<Team, string> = {

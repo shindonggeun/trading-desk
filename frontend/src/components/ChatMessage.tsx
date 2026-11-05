@@ -58,7 +58,8 @@ export function ToolRow({ events }: { events: DeskEvent[] }) {
 }
 
 export function SystemLine({ event }: { event: DeskEvent }) {
-  const text: Record<string, string> = { queued: "대기열에 등록됨", running: "분석 시작", thinking: "레버리지 분석가가 본주 판단을 상품 기준으로 옮기는 중", done: "분석 완료", failed: "분석 실패" };
+  const thinking = event.agent === "consensus" ? "결론 정리가 토론 전체를 한 장으로 요약하는 중" : "레버리지 분석가가 본주 판단을 상품 기준으로 옮기는 중";
+  const text: Record<string, string> = { queued: "대기열에 등록됨", running: "분석 시작", thinking, done: "분석 완료", failed: "분석 실패" };
   return (
     <div className={`sys-line ${event.type === "error" ? "sys-error" : ""}`}>
       {event.type === "error" ? event.content : text[event.content ?? ""] ?? event.content}

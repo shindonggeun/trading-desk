@@ -35,6 +35,8 @@ x-backend-environment: &backend_environment
   TOSS_CLIENT_SECRET: ${TOSS_CLIENT_SECRET:-}
   TOSS_ACCOUNT_SEQ: ${TOSS_ACCOUNT_SEQ:-}
   DESK_KOSDAQ_SYMBOLS: ${DESK_KOSDAQ_SYMBOLS:-}
+  # 내 투자 패널 SSE 갱신 주기(초, 2~60). 시세 · 환율은 서버에서 ~10초 캐시를 공유한다
+  DESK_PORTFOLIO_STREAM_SEC: ${DESK_PORTFOLIO_STREAM_SEC:-5}
   # semibot 은 PC 에서 돈다. 서버에서는 레짐 패널이 빈다
   SEMIBOT_DB_PATH: ""
   # TradingAgents 가 직접 읽는 키

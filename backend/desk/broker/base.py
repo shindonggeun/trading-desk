@@ -72,6 +72,10 @@ class Broker(ABC):
         """Up to ``count`` bars of ``interval`` (1m | 1d), oldest first."""
         raise NotImplementedError
 
+    async def usd_krw(self) -> float:
+        """KRW per 1 USD now; desk.portfolio falls back on Yahoo without it."""
+        raise NotImplementedError
+
     async def portfolio(self):
         """Holdings as TradingAgents' PortfolioContext, so the trader and the managers
         decide against the actual book. Cash stays unknown: one cash figure cannot

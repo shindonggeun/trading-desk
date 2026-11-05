@@ -149,6 +149,16 @@ class TossBroker(Broker):
             bars.append(Bar(_iso(stamp), *values, _num(row.get("volume")) or 0.0))
         return sorted(bars, key=lambda bar: bar.at)
 
+    async def usd_krw(self) -> float:
+        # Refreshed once a minute on Toss' side. midRate (매매기준율), not rate: rate is the
+        # buy-side rate with Toss' spread on top, which would overstate a USD holding in won.
+        result = await self._get("/api/v1/exchange-rate",
+                                 params={"baseCurrency": "USD", "quoteCurrency": "KRW"}) or {}
+        rate = _num(result.get("midRate")) or _num(result.get("rate"))
+        if not rate:
+            raise TossError("Toss returned no USD/KRW rate")
+        return rate
+
 
 def _rows(payload, key: str) -> list[dict]:
     """``result`` may be the list itself or an object holding it under ``key``/``items``."""

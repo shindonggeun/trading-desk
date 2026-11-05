@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 
-from . import horizons, trend
+from . import horizons, trend, volume_profile
 
 DAILY_BARS = 200
 WEEKLY_BARS = 156          # three years
@@ -160,6 +160,11 @@ def compute(daily: list[dict], weekly: list[dict], price: float | None = None,
 def prompt_note(sr: dict | None) -> str | None:
     """The levels as a short reference block for the agents' prompts."""
     trend_note = trend.prompt_note(sr)
+    vp_line = volume_profile.prompt_line((sr or {}).get("volume_profile"))
+    if vp_line:
+        trend_note = "\n\n".join(part for part in (vp_line + " Thick nodes above the entry are where to take "
+                                                     "partial profit; a thin gap beyond a broken level is where "
+                                                     "price can run to the next zone.", trend_note) if part)
     if not sr or not sr.get("levels"):
         return trend_note
     lines = [f"- {'R' if lv['kind'] == 'resistance' else 'S'} {lv['price']} "
@@ -204,6 +209,16 @@ def add_trend(result: dict, days: list[dict], weeks: list[dict], h: horizons.Hor
     except Exception as exc:  # noqa: BLE001 - the levels stand without the lines
         result["trendlines"], result["fibonacci"] = [], None
         result["trend_error"] = f"{type(exc).__name__}: {exc}"
+
+
+def add_volume_profile(result: dict, days: list[dict], h: horizons.Horizon) -> None:
+    """The primary bars' volume profile (desk.volume_profile, #106) onto a ``compute`` result;
+    None when the bars carry no volume (an index), a failure leaves the levels as they are."""
+    try:
+        result["volume_profile"] = volume_profile.profile(days, result.get("atr"), h.primary)
+    except Exception as exc:  # noqa: BLE001
+        result["volume_profile"] = None
+        result["volume_profile_error"] = f"{type(exc).__name__}: {exc}"
 
 
 def live_note(live: dict | None, atr: float | None = None) -> str | None:
@@ -286,6 +301,7 @@ async def _frame(prices, ticker: str, trade_date: str | None, price: float | Non
     result = compute(days, weeks, price, weekly_complete=complete, horizon=h.id)
     # pairs of swings × bars: off the event loop so it never stalls the streams
     await asyncio.to_thread(add_trend, result, days, weeks, h, price)
+    await asyncio.to_thread(add_volume_profile, result, days, h)
     result.update(ticker=ticker, sources={h.primary: primary["source"], h.secondary: secondary["source"]},
                   intervals={"primary": h.primary, "secondary": h.secondary},
                   computed_at=datetime.now(UTC).isoformat(timespec="seconds"))

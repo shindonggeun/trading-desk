@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from . import horizons, verdict
+from . import horizons, trade_map, verdict
 from . import underlying as under
 from .broker.base import Broker
 from .consensus import CONSENSUS_TIMEOUT_SEC, ConsensusContext, llm_summariser
@@ -511,6 +511,11 @@ class RunManager:
                 plan = verdict.apply(plan, horizon)   # opinion + filter; rating, bias and levels stay
                 if sr:
                     plan["support_resistance"] = sr
+                # #106: entry → targets → guards → stop from the plan, the zones and the volume profile
+                try:
+                    plan["trade_map"] = trade_map.build(plan, sr)
+                except Exception as exc:  # noqa: BLE001 - the plan stands without its map
+                    log.warning("no trade map for %s: %s", request.ticker, exc)
                 if related:
                     plan["related"] = related
                 price = (live or {}).get("price") or (sr or {}).get("last_close")

@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import horizons, otp, outcome, regime, review, verdict
+from . import horizons, live, otp, outcome, regime, review, verdict
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User
 from .broker import make_broker
 from .db import make_engine, migrate, now
@@ -40,6 +40,7 @@ KST = timezone(timedelta(hours=9))   # Toss dates (order history from/to) are KS
 REVIEW_CACHE_SEC = 60
 REVIEW_FAIL_CACHE_SEC = 30
 log = logging.getLogger(__name__)
+NL2 = "\n\n"   # ends an SSE frame
 HEARTBEAT_SEC = 15
 OPEN_PATHS = frozenset({"/api/health", "/api/auth/login"})
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -565,6 +566,38 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 snap = await book.snapshot()
                 yield f"data: {json.dumps(snap, ensure_ascii=False)}\n\n"
                 await asyncio.sleep(interval)
+
+        return StreamingResponse(frames(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.get("/api/live/stream")
+    async def live_stream(request: Request, ticker: str):
+        """The live chart's feed (desk.live): quote + newest 1-minute bars every few seconds while the
+        ticker's market is open, one ``closed`` frame and a clock check a minute while it is not."""
+        try:
+            ticker = clean_ticker(ticker)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        token = request.cookies.get(COOKIE)
+
+        async def frames():
+            yield f"retry: {int(live.TICK_SEC * 1000)}" + NL2
+            was_open = None
+            while not await request.is_disconnected():
+                # Re-check every round: logout, revoke or expiry ends an open stream too.
+                if await asyncio.to_thread(auth.resolve, token) is None:
+                    return
+                is_open = live.market_open(ticker)
+                if is_open:
+                    data = await live.frame(prices, ticker)
+                elif was_open is not False:
+                    data = {"state": "closed", "ticker": ticker}
+                else:
+                    data = None
+                # a comment frame keeps proxies from dropping an idle stream
+                yield (f"data: {json.dumps(data, ensure_ascii=False)}" if data is not None else ": closed") + NL2
+                was_open = is_open
+                await asyncio.sleep(live.TICK_SEC if is_open else live.CLOSED_SEC)
 
         return StreamingResponse(frames(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

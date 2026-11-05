@@ -175,6 +175,7 @@ def test_same_day_run_records_the_live_quote_in_its_plan(db_url):
         assert done["status"] == "done"
         assert done["plan"]["live_price"]["price"] == 181.5
         assert done["plan"]["live_price"]["source"] == "toss"
+        assert done["plan"]["entry_vs_live"]["live"] == 181.5   # the fake plan enters at 182.5
 
 
 def test_past_date_run_does_not_fetch_a_quote(db_url):

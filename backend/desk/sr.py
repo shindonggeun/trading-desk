@@ -149,6 +149,21 @@ def prompt_note(sr: dict | None) -> str | None:
             "They are arithmetic from price history, not a forecast.")
 
 
+def live_note(live: dict | None, atr: float | None = None) -> str | None:
+    """The current price for the deciding agents, so levels start from where the market is now
+    rather than from a close days old or a zone the price left long ago."""
+    if not live:
+        return None
+    atr_part = f", ATR14 {atr}" if atr else ""
+    return (f"Current market price (live quote from {live['source']} at {live['fetched_at']} UTC): "
+            f"{live['price']}{atr_part}. This is where the trade starts. An Entry Price within about "
+            "half an ATR of it is an entry now; one further away is a conditional order (a limit on a "
+            "pullback or rally, or a stop on a breakout/breakdown) — say which, what confirms it, and "
+            "what the owner does if the price never gets there. Do not anchor the entry on an old "
+            "zone the price has already moved well away from; prefer a level the price can reach "
+            "within the holding period, and keep stop and target consistent with the current price.")
+
+
 def _local_day(at: str, ticker: str) -> date:
     """The market's own date of a bar. Korean bars open at local midnight, which is 15:00 UTC the
     day before; US bars (midnight New York = 04:00/05:00 UTC) already carry their own date."""

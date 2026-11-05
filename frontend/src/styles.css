@@ -366,3 +366,101 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .chart-limit { margin: 0 0 6px; }
 .price-chart-box.with-rsi { height: 470px; }
 @media (max-width: 760px) { .price-chart-box.with-rsi { height: 380px; } }
+
+/* ── 모바일 반응형 (#79) ─────────────────────────────────────────────── */
+.topbar nav a { white-space: nowrap; }
+/* 그리드 칸이 안의 표 · 긴 문장에 밀려 넓어지지 않게 */
+.dashboard > *, .review > *, .run-body > *, .side > *, .settings > * { min-width: 0; }
+.shell { padding-bottom: env(safe-area-inset-bottom); }
+
+@media (max-width: 760px) {
+  /* 상단 바: 두 줄 — 위는 로고 · 상태 · 로그아웃, 아래는 메뉴 탭 */
+  .topbar { flex-wrap: wrap; gap: 6px 10px; padding: max(8px, env(safe-area-inset-top)) 16px 0; }
+  .brand { font-size: 15px; }
+  .topbar nav {
+    order: 3; display: flex; gap: 0; width: calc(100% + 32px); margin: 0 -16px;
+    border-top: 1px solid var(--border); overflow-x: auto; scrollbar-width: none;
+  }
+  .topbar nav a { flex: 1; text-align: center; padding: 10px 8px; border-bottom: 2px solid transparent; }
+  .topbar nav a.active { border-bottom-color: var(--accent); }
+  .topbar-right { gap: 6px; }
+  .topbar-right .pill-broker, .topbar-right .pill-user { display: none; }
+  .topbar-right .logout { min-height: 32px; padding: 4px 12px; }
+
+  /* iOS 는 16px 미만 입력칸에 초점이 가면 화면을 확대한다 */
+  input, select, textarea { font-size: 16px; }
+
+  .login-card { margin: 32px 16px; max-width: none; }
+  .review, .settings { padding: 12px 16px; }
+  .review-title { align-items: flex-start; }
+  .review-pnl { grid-column: 1 / -1; }
+
+  /* 분석 화면: 에이전트 목록은 줄바꿈되는 칩으로 */
+  .rail { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 10px 12px; }
+  .rail-team { display: contents; }
+  .rail-team-label { display: none; }
+  .rail-agent { font-size: 12px; padding: 2px 0; }
+  .run-head { gap: 6px 10px; }
+  .run-head h1 { font-size: 19px; width: 100%; }
+  .plan-rating { font-size: 22px; }
+  .msg { grid-template-columns: 28px minmax(0, 1fr); gap: 8px; }
+  .md table { font-size: 12px; }
+  .gl-tip, .gl-flip .gl-tip { bottom: calc(16px + env(safe-area-inset-bottom)); }
+}
+
+/* 표 → 카드: 좁은 화면에서 한 행을 칸 이름이 붙은 카드 한 장으로 */
+@media (max-width: 640px) {
+  .stack-table thead { display: none; }
+  .stack-table, .stack-table tbody { display: block; width: 100%; }
+  .stack-table tr {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px;
+    padding: 12px 4px; border-bottom: 1px solid var(--border);
+  }
+  table.stack-table td { display: block; padding: 0; border: 0; white-space: normal; text-align: left; min-width: 0; }
+  table.stack-table td[data-label]::before { content: attr(data-label); display: block; font-size: 11px; font-weight: 400; color: var(--muted); }
+  .stack-table td.stack-wide { grid-column: 1 / -1; }
+  table.stack-table td.stack-action { grid-column: 1 / -1; text-align: right; }
+  .stack-table td:empty { display: none; }
+  .runs .ticker { font-size: 15px; }
+}
+
+/* 손가락으로 누르는 기기: 누르는 곳을 넉넉하게 */
+@media (pointer: coarse) {
+  input, select, textarea { font-size: 16px; }
+  button, .chip, select { min-height: 36px; }
+  button.link { min-height: 32px; }
+  .chip-sub { min-height: 32px; }
+  .gl-term { padding: 2px 0; }
+  .brand, a.link { display: inline-flex; align-items: center; min-height: 32px; }
+  input[type="checkbox"], .new-run label.inline input[type="checkbox"] { width: 18px; height: 18px; }
+}
+@media (max-width: 640px) {
+  /* 짧은 숫자 칸은 한 줄에 넷 — 카드 한 장이 길어지지 않게 */
+  .runs.stack-table tr, .review-table.stack-table tr { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .runs.stack-table td[data-label="기준일"], .runs.stack-table td[data-label="판단"],
+  .runs.stack-table td[data-label="상태"], .runs.stack-table td[data-label="요청"] { grid-column: span 2; }
+  .review-table.stack-table td[data-label="체결가"], .review-table.stack-table td[data-label="계획과"],
+  .review-table.stack-table td[data-label="진입가 대비"], .review-table.stack-table td[data-label="이후 결과"],
+  .review-table.stack-table td[data-label="실현 손익"] { grid-column: span 2; }
+}
+/* 터치 기기에서는 누른 뒤 남는 :hover 강조를 지운다 */
+@media (hover: none) { .runs tbody tr:hover, .review-table tbody tr:hover { background: none; } }
+/* 넓은 화면: 판단 · 요청 칸은 줄바꿈을 허용해 표가 카드 안에 들어오게 */
+@media (min-width: 641px) {
+  .runs td[data-label="판단"], .runs td[data-label="요청"] { white-space: normal; }
+  .runs td[data-label="판단"] { min-width: 120px; }
+}
+/* 표 안의 .sr-only(absolute)가 문서 폭을 늘리지 않게 — 스크롤 상자를 기준으로 */
+.table-wrap { position: relative; }
+
+/* viewport-fit=cover: 가로 모드 iPhone 의 노치 · 둥근 모서리 쪽 여백 */
+.topbar { padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20px, env(safe-area-inset-right)); }
+.dashboard, .review, .settings, .run { padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20px, env(safe-area-inset-right)); }
+@media (max-width: 760px) {
+  .topbar { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+  .topbar nav {
+    width: calc(100% + max(16px, env(safe-area-inset-left)) + max(16px, env(safe-area-inset-right)));
+    margin: 0 calc(-1 * max(16px, env(safe-area-inset-right))) 0 calc(-1 * max(16px, env(safe-area-inset-left)));
+  }
+  .dashboard, .review, .settings, .run { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+}

@@ -90,38 +90,38 @@ export default function RunsCard() {
         <p className="muted">아직 분석이 없습니다. 왼쪽에서 첫 분석을 시작하세요.</p>
       ) : (
         <div className={stale ? "table-wrap stale" : "table-wrap"} aria-busy={stale}>
-          <table className="runs">
-            <thead>
-              <tr>
-                <th>종목</th>
-                <th>기준일</th>
-                <th>판단</th>
-                <th className="num">진입</th>
-                <th className="num">손절</th>
-                <th className="num">목표</th>
-                <th className="num">손익비</th>
-                <th>상태</th>
-                <th>요청</th>
-                <th><span className="sr-only">삭제</span></th>
+          <table role="table" className="runs stack-table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader">종목</th>
+                <th role="columnheader">기준일</th>
+                <th role="columnheader">판단</th>
+                <th role="columnheader" className="num">진입</th>
+                <th role="columnheader" className="num">손절</th>
+                <th role="columnheader" className="num">목표</th>
+                <th role="columnheader" className="num">손익비</th>
+                <th role="columnheader">상태</th>
+                <th role="columnheader">요청</th>
+                <th role="columnheader"><span className="sr-only">삭제</span></th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               {runs.map((r) => {
                 const label = r.options.name ? `${r.options.name}(${r.ticker})` : r.ticker;
                 return (
-                <tr key={r.id} onClick={() => (window.location.hash = `#/runs/${r.id}`)}>
-                  <td className="ticker">
+                <tr role="row" key={r.id} onClick={() => (window.location.hash = `#/runs/${r.id}`)}>
+                  <td role="cell" className="ticker stack-wide" data-label="종목">
                     {r.options.name ? <>{r.options.name} <span className="muted small">{r.ticker}</span></> : r.ticker}
                   </td>
-                  <td>{r.trade_date}</td>
-                  <td>{r.plan ? <><RatingText rating={r.plan.rating} /> <BiasBadge plan={r.plan} /></> : "—"}</td>
-                  <td className="num">{price(r.plan?.entry_price)}</td>
-                  <td className="num">{price(r.plan?.stop_loss)}</td>
-                  <td className="num">{price(r.plan?.price_target)}</td>
-                  <td className="num">{r.plan?.reward_risk ?? "—"}</td>
-                  <td><span className={`status status-${r.status}`}>{STATUS_LABEL[r.status]}</span></td>
-                  <td className="muted">{time(r.created_at)}</td>
-                  <td>
+                  <td role="cell" data-label="기준일">{r.trade_date}</td>
+                  <td role="cell" data-label="판단">{r.plan ? <><RatingText rating={r.plan.rating} /> <BiasBadge plan={r.plan} /></> : "—"}</td>
+                  <td role="cell" className="num" data-label="진입">{price(r.plan?.entry_price)}</td>
+                  <td role="cell" className="num" data-label="손절">{price(r.plan?.stop_loss)}</td>
+                  <td role="cell" className="num" data-label="목표">{price(r.plan?.price_target)}</td>
+                  <td role="cell" className="num" data-label="손익비">{r.plan?.reward_risk ?? "—"}</td>
+                  <td role="cell" data-label="상태"><span className={`status status-${r.status}`}>{STATUS_LABEL[r.status]}</span></td>
+                  <td role="cell" className="muted" data-label="요청">{time(r.created_at)}</td>
+                  <td role="cell" className="stack-action">
                     <button
                       type="button"
                       className="link run-delete"

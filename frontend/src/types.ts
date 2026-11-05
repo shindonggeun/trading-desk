@@ -20,6 +20,8 @@ export interface Plan {
   analysis_subject?: string;
   /** #109: a move against a leveraged product is traded by buying its pair (SOXL → SOXS), in the pair's prices. */
   pair?: PairTrade;
+  /** #109: where someone already holding the product reduces or exits, in the product's price. */
+  holder_exit?: number | null;
   /** The leverage analyst failed; the plan is the underlying's call (flipped for inverse) with converted levels. */
   leverage_analyst_error?: string;
   atr?: number;
@@ -212,8 +214,9 @@ export interface PairTrade {
   stop_loss: number;
   price_target: number;
   reward_risk: number | null;
-  /** the pair's price when the analysis ran (same-day only) */
+  /** the pair's price the levels were checked against: live, or the last close up to the analysis date */
   price: number | null;
+  price_source?: string | null;
 }
 
 export interface SupportResistance {

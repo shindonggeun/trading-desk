@@ -16,7 +16,9 @@ import type { Plan } from "../types";
 
 // 분봉 시각은 한국 시각으로 보인다(PriceChart 와 같은 방식).
 const KST_SEC = 9 * 3600;
-const HISTORY = 300;
+// Toss serves at most 200 bars; asking for more sends the history to Yahoo (KRX 1-minute data lags
+// 15+ minutes there) while the stream's bars come from Toss — two sources and a gap.
+const HISTORY = 200;
 type Bar = Candles["bars"][number];
 
 function css(name: string, fallback: string): string {
@@ -91,18 +93,28 @@ export default function LiveChart({ ticker, plan, onPrice }: {
     };
 
     let stop: (() => void) | undefined;
-    api
-      .candles(ticker, "1m", HISTORY)
+    let wasLost = false;
+    const history = () => api.candles(ticker, "1m", HISTORY);
+    // After the stream was lost (sleep, network), the minutes in between come only from a fresh history.
+    const refill = () =>
+      history()
+        .then((c) => alive && load(c))
+        .catch(() => {});
+    const load = (c: Candles) => {
+      const seen = new Map<number, Bar>();
+      for (const b of c.bars) seen.set(toTime(b.at), b); // 같은 시각은 마지막 봉만
+      const rows = [...seen.entries()].sort((a, b) => a[0] - b[0]);
+      series.setData(rows.map(([t, b]) => ({ time: t as UTCTimestamp, open: b.open, high: b.high, low: b.low, close: b.close })));
+      volume.setData(rows.map(([t, b]) => ({ time: t as UTCTimestamp, value: b.volume, color: (b.close >= b.open ? up : down) + "55" })));
+      const end = rows[rows.length - 1];
+      last.current = end ? { time: end[0] as UTCTimestamp, bar: end[1] } : null;
+      setSource(c.source);
+      return end;
+    };
+    history()
       .then((c) => {
         if (!alive) return;
-        const seen = new Map<number, Bar>();
-        for (const b of c.bars) seen.set(toTime(b.at), b); // 같은 시각은 마지막 봉만
-        const rows = [...seen.entries()].sort((a, b) => a[0] - b[0]);
-        series.setData(rows.map(([t, b]) => ({ time: t as UTCTimestamp, open: b.open, high: b.high, low: b.low, close: b.close })));
-        volume.setData(rows.map(([t, b]) => ({ time: t as UTCTimestamp, value: b.volume, color: (b.close >= b.open ? up : down) + "55" })));
-        const end = rows[rows.length - 1];
-        last.current = end ? { time: end[0] as UTCTimestamp, bar: end[1] } : null;
-        setSource(c.source);
+        const end = load(c);
         chart.timeScale().fitContent();
         if (end) onPriceRef.current?.(end[1].close);
       })
@@ -126,7 +138,15 @@ export default function LiveChart({ ticker, plan, onPrice }: {
               setSource(f.quote.source);
             }
           },
-          setStream,
+          (s: StreamState) => {
+            if (!alive) return;
+            if (s === "lost") wasLost = true;
+            else if (wasLost) {
+              wasLost = false;
+              refill();
+            }
+            setStream(s);
+          },
         );
       });
     return () => {
@@ -141,13 +161,12 @@ export default function LiveChart({ ticker, plan, onPrice }: {
   useEffect(() => {
     const c = chartRef.current;
     if (!c) return;
-    const t = plan as (Plan & { long_trigger?: number | null; short_trigger?: number | null }) | null;
     const lines: [number | null | undefined, string, string, LineStyle][] = [
       [plan?.entry_price, "진입", css("--accent", "#4f8cff"), LineStyle.Solid],
       [plan?.stop_loss, "손절", css("--short", "#e5534b"), LineStyle.Dashed],
       [plan?.price_target, "목표", css("--long", "#2ea043"), LineStyle.Dashed],
-      [t?.long_trigger, "롱 조건", css("--long", "#2ea043"), LineStyle.Dotted],
-      [t?.short_trigger, "숏 조건", css("--short", "#e5534b"), LineStyle.Dotted],
+      [plan?.long_trigger, "롱 조건", css("--long", "#2ea043"), LineStyle.Dotted],
+      [plan?.short_trigger, "숏 조건", css("--short", "#e5534b"), LineStyle.Dotted],
       ...(plan?.support_resistance?.levels ?? []).slice(0, 8).map(
         (lv): [number, string, string, LineStyle] => [
           lv.price, lv.kind === "resistance" ? "저항" : "지지", lv.kind === "resistance" ? "#a371f7" : "#2da44e", LineStyle.LargeDashed,

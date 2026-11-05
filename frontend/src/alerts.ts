@@ -11,17 +11,14 @@ export interface PriceAlert {
   at: string;
 }
 
-type Triggers = { long_trigger?: number | null; short_trigger?: number | null };
-
 function levelsOf(plan: Plan | null): { key: string; label: string; level: number }[] {
   if (!plan) return [];
-  const t = plan as Plan & Triggers;
   return [
     { key: "entry", label: "진입가", level: plan.entry_price },
     { key: "stop", label: "손절가", level: plan.stop_loss },
     { key: "target", label: "목표가", level: plan.price_target },
-    { key: "long", label: "롱 조건", level: t.long_trigger ?? null },
-    { key: "short", label: "숏 조건", level: t.short_trigger ?? null },
+    { key: "long", label: "롱 조건", level: plan.long_trigger ?? null },
+    { key: "short", label: "숏 조건", level: plan.short_trigger ?? null },
   ].filter((l): l is { key: string; label: string; level: number } => l.level != null);
 }
 
@@ -37,6 +34,8 @@ export function notificationsAllowed(): boolean {
 export function usePriceAlerts(id: string, title: string, plan: Plan | null, price: number | null): PriceAlert[] {
   const [alerts, setAlerts] = useState<PriceAlert[]>([]);
   const prev = useRef<number | null>(null);
+  // whose price ``prev`` is: a price from another ticker or plan is never a "before" (tab switch)
+  const prevId = useRef<string | null>(null);
   const fired = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -47,8 +46,9 @@ export function usePriceAlerts(id: string, title: string, plan: Plan | null, pri
 
   useEffect(() => {
     if (price == null) return;
-    const before = prev.current;
+    const before = prevId.current === id ? prev.current : null;
     prev.current = price;
+    prevId.current = id;
     if (before == null || before === price) return;
     const lo = Math.min(before, price);
     const hi = Math.max(before, price);

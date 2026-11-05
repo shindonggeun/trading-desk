@@ -565,3 +565,9 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .related-news { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
 .related-news li { margin: 2px 0; }
 .table-scroll { overflow-x: auto; }
+
+/* 추세선 · 피보나치 (#74) — 선 색은 지지 · 저항 토큰, 이탈한 선은 흐리게 */
+.trend-list li.trend-broken { opacity: 0.65; }
+.trend-testing .trend-state { color: var(--warn); }
+.trend-broken .trend-state { text-decoration: line-through; }
+.fib-note { margin: 8px 0 0; }

@@ -122,6 +122,7 @@ def test_candles_and_levels_endpoints(db_url):
         assert client.get("/api/candles?ticker=NVDA&interval=7m").status_code == 422
         levels = client.get("/api/levels?ticker=NVDA").json()
         assert levels["levels"] and {"price", "kind", "timeframe", "strength", "basis"} <= set(levels["levels"][0])
+        assert isinstance(levels["trendlines"], list) and levels["fibonacci"]["levels"]   # desk.trend (#73)
 
 
 def test_korean_bars_are_cut_on_the_korean_date_and_past_dates_use_finished_weeks():

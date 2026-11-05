@@ -95,21 +95,29 @@ def _pick(lines: list[_Line], n: int, unit: float) -> list[_Line]:
     return kept
 
 
-def _state(line: _Line, bars: list[dict], reference: float, atr: float) -> tuple[float, float, str]:
-    n = len(bars)
+def _state(line: _Line, bars: list[dict], reference: float, tol_atr: float, at: float) -> tuple[float, float, str]:
+    """The line's price at bar position ``at``, the price's distance from it in the line's own
+    bars' ATR, and its state. Broken means the price — and the last close — are beyond the line
+    now; a close through it that the price has since taken back is a test, not a break."""
     sign = 1 if line.kind == "support" else -1
-    now = math.exp(line.at(n - 1))
-    distance = (reference - now) / atr if atr else 0.0
-    broken = sign * distance < -BREAK_ATR or any(
-        sign * (bars[x]["close"] - math.exp(line.at(x))) < -BREAK_ATR * atr for x in range(max(0, n - STATE_BARS), n))
-    state = "broken" if broken else "testing" if abs(distance) <= TEST_ATR else "intact"
-    return now, distance, state
+    now = math.exp(line.at(at))
+    own = (reference - now) / tol_atr
+    last = len(bars) - 1
+    closed_through = sign * (bars[last]["close"] - math.exp(line.at(last))) < -BREAK_ATR * tol_atr
+    broken = sign * own < -BREAK_ATR and (closed_through or sign * own < -TEST_ATR)
+    state = "broken" if broken else "testing" if abs(own) <= TEST_ATR else "intact"
+    return now, own, state
 
 
 def trendlines(bars: list[dict], timeframe: str, k: int, reference: float, atr: float,
-               bar_atr: float | None = None) -> list[dict]:
-    """Lines over ``bars`` (oldest first). ``atr`` is the primary ATR the distances are in;
-    ``bar_atr`` is these bars' own ATR for the break and touch tolerances (defaults to ``atr``)."""
+               bar_atr: float | None = None, *, extend: float = 0.0, now_at: str | None = None) -> list[dict]:
+    """Lines over ``bars`` (oldest first).
+
+    ``bar_atr`` is these bars' own ATR (defaults to ``atr``): the break, touch and testing
+    tolerances and the distance filter are in it, so a weekly line is judged on weekly
+    volatility. ``distance_atr`` is reported in ``atr`` (the horizon's primary ATR, the one the
+    agents size levels with). ``extend`` bars past the last one (a finished weekly bar is days
+    behind today) is where "now" is on the line, dated ``now_at``."""
     tol_atr = bar_atr or atr
     if len(bars) < 4 * k + 2 or not atr or not tol_atr or any(b["low"] <= 0 or b["close"] <= 0 for b in bars):
         return []
@@ -118,13 +126,14 @@ def trendlines(bars: list[dict], timeframe: str, k: int, reference: float, atr: 
     out = []
     for kind in ("support", "resistance"):
         for ln in _pick(_lines(bars, k, kind, tol_atr), n, unit):
-            now, distance, state = _state(ln, bars, reference, atr)
-            if abs(distance) > MAX_DISTANCE_ATR:
+            now, own, state = _state(ln, bars, reference, tol_atr, n - 1 + extend)
+            if abs(own) > MAX_DISTANCE_ATR:
                 continue
+            distance = (reference - now) / atr
             out.append({
                 "kind": kind, "timeframe": timeframe,
                 "anchors": [{"at": bars[x]["at"], "price": _round(math.exp(ln.at(x)))} for x in (ln.i, ln.j)],
-                "end": {"at": bars[-1]["at"], "price": _round(now)},
+                "end": {"at": now_at or bars[-1]["at"], "price": _round(now)},
                 "touches": [bars[x]["at"] for x in ln.touches],
                 "slope_pct_per_bar": round((math.exp(ln.slope) - 1) * 100, 3),
                 "price_now": _round(now), "distance_atr": round(distance, 2), "state": state,
@@ -135,13 +144,14 @@ def trendlines(bars: list[dict], timeframe: str, k: int, reference: float, atr: 
 def fibonacci(bars: list[dict], zones: list[dict] | None = None, tolerance: float = 0.0) -> dict | None:
     """Retracement of the move between the highest high and lowest low of ``bars``: ratio 0 is
     where the move ended, 1 where it started. A level within ``tolerance`` of a zone in
-    ``zones`` (desk.sr levels) carries it as ``confluence``."""
+    ``zones`` (desk.sr levels) carries the strongest such zone as ``confluence`` — the weight is
+    shown to the agents next to the level, the zones themselves are not re-scored."""
     if len(bars) < 2:
         return None
     hi = max(range(len(bars)), key=lambda x: bars[x]["high"])
     lo = min(range(len(bars)), key=lambda x: bars[x]["low"])
     high, low = bars[hi]["high"], bars[lo]["low"]
-    if high <= low:
+    if high <= low or hi == lo:   # one bar holds both extremes: no move to retrace
         return None
     up = lo < hi
     start, end = ((bars[lo]["at"], low), (bars[hi]["at"], high)) if up else ((bars[hi]["at"], high), (bars[lo]["at"], low))
@@ -159,7 +169,7 @@ def fibonacci(bars: list[dict], zones: list[dict] | None = None, tolerance: floa
             "levels": levels}
 
 
-_STATE_EN = {"intact": "holding", "testing": "testing it", "broken": "just closed through it"}
+_STATE_EN = {"intact": "holding", "testing": "testing it", "broken": "closed through it"}
 
 
 def prompt_note(sr: dict | None) -> str | None:

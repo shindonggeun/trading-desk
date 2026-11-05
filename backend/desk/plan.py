@@ -108,9 +108,30 @@ def _prose_price(summary: str | None, key: str, references: list[float]) -> floa
     return None
 
 
+# A leveraged product's plan also carries levels on its underlying (desk.underlying):
+# "Underlying Entry: 251 / Underlying Stop: 243 / Underlying Target: 270". They are read first and
+# cut out, so "Underlying Entry Price: 251" never reads as the product's Entry Price.
+_UNDERLYING = {
+    "entry_price": r"Underlying\s+Entry(?:\s+Price)?",
+    "stop_loss": r"Underlying\s+Stop(?:[\s-]*Loss)?",
+    "price_target": r"Underlying\s+(?:Price\s+)?Target",
+}
+
+
+def _split_underlying(text: str) -> tuple[dict[str, float], str]:
+    found: dict[str, float] = {}
+    for key, label in _UNDERLYING.items():
+        pattern = _LABELED.format(label=label, num=_NUMBER.pattern)
+        hits = re.findall(pattern, text, re.IGNORECASE)
+        if hits and (value := _number(hits[-1])) is not None:
+            found[key] = value
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+    return found, text
+
+
 def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
     trader = state.get("trader_investment_plan") or ""
-    decision = state.get("final_trade_decision") or ""
+    underlying, decision = _split_underlying(state.get("final_trade_decision") or "")
     summary = _field(decision, "Executive Summary")
     rating = _rating(state)
     levels: dict[str, float | None] = {}
@@ -152,4 +173,6 @@ def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
     }
     if trader_levels:
         plan["trader_levels"] = trader_levels
+    if underlying:
+        plan["underlying_levels"] = underlying
     return plan

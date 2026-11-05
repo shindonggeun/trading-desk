@@ -133,6 +133,7 @@ def compute(daily: list[dict], weekly: list[dict], price: float | None = None,
         picked += side[:PER_SIDE]
     picked.sort(key=lambda lv: -lv["price"])
     return {"reference_price": _round(reference), "reference": "live" if price else "close",
+            "last_close": _round(daily[-1]["close"]),
             "atr": _round(atr), "as_of": daily[-1]["at"], "levels": picked}
 
 

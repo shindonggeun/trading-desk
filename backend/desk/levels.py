@@ -56,7 +56,8 @@ def fill_levels(plan: dict, ticker: str, trade_date: str, prices: PriceFn = last
     ``live`` ({"price", "source", "fetched_at"}) is the quote at the end of a same-day analysis;
     when given, a computed entry starts from it instead of the last daily close."""
     plan = dict(plan)
-    source = {key: "model" for key in LEVELS if plan.get(key) is not None}
+    # a level that already says where it came from (desk.underlying: "converted") keeps it
+    source = {key: (plan.get("levels_source") or {}).get(key, "model") for key in LEVELS if plan.get(key) is not None}
     direction = {"long": 1, "short": -1}.get(plan.get("bias"))
     missing = [key for key in LEVELS if plan.get(key) is None]
     if live:

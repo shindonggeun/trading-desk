@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from . import underlying as under
 from .broker.base import Broker
 from .events import StateDiffer
 from .levels import entry_vs_live, fill_levels
@@ -178,6 +179,10 @@ class _FakeToolCall:
 
 # --- orchestration -------------------------------------------------------------------
 
+async def _none() -> None:
+    return None
+
+
 class Hub:
     """Wakes SSE readers when a run gets a new event. Take ``listen()`` before reading
     the store, so an event written in between still wakes the reader."""
@@ -224,28 +229,32 @@ class RunManager:
         task.add_done_callback(self._tasks.discard)
         return run_id
 
-    async def _live_quote(self, request: RunRequest) -> dict | None:
-        """The current quote for a same-day analysis; None for a past date or no price."""
+    async def _live_quote(self, request: RunRequest, ticker: str | None = None) -> dict | None:
+        """The current quote of ``ticker`` (default: the run's) for a same-day analysis; None for a
+        past date or no price."""
+        ticker = ticker or request.ticker
         if self.prices is None or request.trade_date != dt.date.today().isoformat():
             return None
         try:
-            quote = await asyncio.wait_for(self.prices.quote(request.ticker), QUOTE_TIMEOUT_SEC)
+            quote = await asyncio.wait_for(self.prices.quote(ticker), QUOTE_TIMEOUT_SEC)
         except Exception as exc:  # noqa: BLE001 - incl. timeout: levels then start from the last close
-            log.warning("no live quote for %s: %s", request.ticker, exc)
+            log.warning("no live quote for %s: %s", ticker, exc)
             return None
         return {"price": quote.price, "source": quote.source, "fetched_at": quote.fetched_at}
 
-    async def _support_resistance(self, request: RunRequest, live: dict | None = None) -> dict | None:
-        """Daily/weekly support and resistance up to the analysis date, sided around the live
-        price when there is one; None without prices."""
+    async def _support_resistance(self, request: RunRequest, live: dict | None = None,
+                                  ticker: str | None = None) -> dict | None:
+        """Daily/weekly support and resistance of ``ticker`` (default: the run's) up to the analysis
+        date, sided around the live price when there is one; None without prices."""
+        ticker = ticker or request.ticker
         if self.prices is None:
             return None
         try:
             return await asyncio.wait_for(
-                support_resistance(self.prices, request.ticker, request.trade_date,
+                support_resistance(self.prices, ticker, request.trade_date,
                                    price=live["price"] if live else None), SR_TIMEOUT_SEC)
         except Exception as exc:  # noqa: BLE001 - incl. timeout: the analysis runs without the reference
-            log.warning("no support/resistance for %s: %s", request.ticker, exc)
+            log.warning("no support/resistance for %s: %s", ticker, exc)
             return None
 
     async def _related(self, request: RunRequest) -> dict | None:
@@ -258,6 +267,15 @@ class RunManager:
         except Exception as exc:  # noqa: BLE001 - incl. timeout: the analysis runs without it
             log.warning("no related instruments for %s: %s", request.ticker, exc)
             return None
+
+    async def _underlying_plan(self, sub: dict, request: RunRequest, sr_u: dict, live_u: dict | None) -> dict:
+        """The underlying side, ATR-filled from its own bars and checked against its own price."""
+        def bars(*_args):
+            return sr_u["last_close"], sr_u["atr"]
+        sub = await asyncio.to_thread(self.levels, sub, sub["ticker"], request.trade_date, prices=bars, live=live_u)
+        sub = entry_vs_live(sub, sr_u.get("atr"))
+        sub["support_resistance"] = sr_u
+        return sub
 
     def _publish(self, run_id: str, event: dict) -> None:
         self.store.append_event(run_id, event)
@@ -276,18 +294,30 @@ class RunManager:
             try:
                 book = await self.broker.portfolio() if request.use_portfolio else None
                 # The agents set levels against the price now, not only a close days old.
-                start = await self._live_quote(request)
-                sr, related = await asyncio.gather(self._support_resistance(request, start),
-                                                   self._related(request))
+                # A leveraged/inverse product is also read on its underlying (desk.underlying).
+                lever = under.leverage_of(request.ticker)
+                base = lever[0] if lever else None
+                start, start_u = await asyncio.gather(
+                    self._live_quote(request), self._live_quote(request, base) if base else _none())
+                sr, sr_u, related = await asyncio.gather(
+                    self._support_resistance(request, start),
+                    self._support_resistance(request, start_u, base) if base else _none(),
+                    self._related(request))
+                lever_note = under.prompt_note(request.ticker, *lever, sr_u, start_u) if lever else None
                 note = "\n\n".join(part for part in (live_note(start, sr and sr.get("atr")), prompt_note(sr),
-                                                     related_note(related)) if part) or None
+                                                     lever_note, related_note(related)) if part) or None
                 portfolio = desk_portfolio(request.profile, book, note)
                 result = await asyncio.to_thread(self.runner, request, emit, portfolio)
                 # The model may still leave a level out; fill it from ATR and mark it as computed.
                 live = await self._live_quote(request) or start
-                plan = await asyncio.to_thread(self.levels, parse_plan(result.final_state),
-                                               request.ticker, request.trade_date, live=live)
+                plan, sub = parse_plan(result.final_state), None
+                if lever and sr_u:
+                    plan, sub = under.split(plan, *lever, under.anchors(start, start_u, sr, sr_u))
+                plan = await asyncio.to_thread(self.levels, plan, request.ticker, request.trade_date, live=live)
                 plan = entry_vs_live(plan, sr and sr.get("atr"))
+                if sub is not None:
+                    plan["underlying"] = await self._underlying_plan(sub, request, sr_u, start_u)
+                plan.pop("underlying_levels", None)   # a non-leveraged run whose model wrote them anyway
                 if sr:
                     plan["support_resistance"] = sr
                 if related:

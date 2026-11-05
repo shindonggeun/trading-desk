@@ -143,8 +143,10 @@ function useTiles(markets: MarketSymbol[], mode: BoardMode, enabled: boolean): R
 }
 
 /** 대시보드 위 "시장" 패널(#75): 지수 · 선물 · 환율 미니 차트, 누르면 확인 뒤 분석을 시작한다. */
-export default function MarketBoard() {
-  const [open, setOpen] = useState(loadOpen);
+/** ``embedded``: 대시보드 구역(#100)이 제목 · 접기를 맡는다 — 자기 제목 · 접기를 빼고 늘 펼친다. */
+export default function MarketBoard({ embedded = false }: { embedded?: boolean } = {}) {
+  const [savedOpen, setOpen] = useState(loadOpen);
+  const open = embedded || savedOpen;
   const [mode, setMode] = useState<BoardMode>(loadMode);
   const [markets, setMarkets] = useState<MarketSymbol[]>(loadMarkets);
   const [config, setConfig] = useState<DeskConfig | null>(null);
@@ -219,9 +221,13 @@ export default function MarketBoard() {
   return (
     <section className={`card market-board${open ? "" : " market-board-closed"}`}>
       <div className="mb-head">
-        <h2>
-          시장 <span className="muted small">{markets.length}종목 · 누르면 분석</span>
-        </h2>
+        {embedded ? (
+          <span className="muted small">{markets.length}종목 · 누르면 분석</span>
+        ) : (
+          <h2>
+            시장 <span className="muted small">{markets.length}종목 · 누르면 분석</span>
+          </h2>
+        )}
         {open && (
           <div className="chips" role="group" aria-label="차트 주기">
             {(["1d", "5m"] as const).map((m) => (
@@ -232,9 +238,11 @@ export default function MarketBoard() {
             ))}
           </div>
         )}
-        <button type="button" className="link" aria-expanded={open} onClick={toggle}>
-          {open ? "접기" : "펼치기"}
-        </button>
+        {!embedded && (
+          <button type="button" className="link" aria-expanded={open} onClick={toggle}>
+            {open ? "접기" : "펼치기"}
+          </button>
+        )}
       </div>
       {open && markets.length === 0 && (
         <p className="muted small">표시할 종목이 없습니다. 설정에서 추가하세요.</p>

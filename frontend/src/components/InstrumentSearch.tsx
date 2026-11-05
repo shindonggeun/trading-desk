@@ -72,6 +72,9 @@ export default function InstrumentSearch({ value, onChange, onPick, inputId, pla
   };
 
   const onKey = (e: React.KeyboardEvent) => {
+    // 한글 조합 중 Enter(Windows 는 조합 끝 Enter 를 두 번 보낸다)를 고르기로 받으면, 두 번째 Enter 가
+    // "분석 시작" 으로 넘어가 의도하지 않은 분석이 시작될 수 있다
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (!open || hits.length === 0) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();

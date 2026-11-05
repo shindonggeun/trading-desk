@@ -10,12 +10,13 @@ import { time } from "../format";
 import type { RegimeSnapshot } from "../types";
 
 function RegimePanel() {
-  const [data, setData] = useState<RegimeSnapshot | null | undefined>(undefined);
+  const [data, setData] = useState<RegimeSnapshot | "error" | undefined>(undefined);
   useEffect(() => {
-    api.regime().then(setData).catch(() => setData(null));
+    api.regime().then(setData).catch(() => setData("error"));
   }, []);
   if (data === undefined) return <p className="empty-state">불러오는 중…</p>;
-  if (!data?.enabled) return <p className="empty-state">semibot 레짐 데이터가 연결되지 않았습니다.</p>;
+  if (data === "error") return <p className="empty-state">레짐을 불러오지 못했습니다. 잠시 뒤 새로 고쳐 주세요.</p>;
+  if (!data.enabled) return <p className="empty-state">semibot 레짐 데이터가 연결되지 않았습니다.</p>;
   return (
     <section className="card">
       <h3>semibot 레짐 <span className="muted small">실시간 층</span></h3>
@@ -46,7 +47,7 @@ function RegimePanel() {
 type SectionId = "market" | "portfolio" | "recent" | "stats" | "flow" | "regime";
 /** 구역 — 순서는 이슈 #100 의 기본값. wide 는 넓은 화면에서 한 줄을 다 쓴다. */
 const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () => ReactNode }> = {
-  market: { title: "시장 · 지수 · 선물", wide: true, render: () => <MarketBoard /> },
+  market: { title: "시장 · 지수 · 선물", wide: true, render: () => <MarketBoard embedded /> },
   portfolio: { title: "내 투자", render: () => <PortfolioPanel /> },
   recent: { title: "최근 분석", render: () => <RecentRuns /> },
   stats: { title: "적중률", render: () => <PlanStatsCard /> },
@@ -61,7 +62,7 @@ type Prefs = { order: SectionId[]; closed: SectionId[] };
 function loadPrefs(): Prefs {
   try {
     const raw = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}");
-    const known = (v: unknown): v is SectionId => typeof v === "string" && v in SECTIONS;
+    const known = (v: unknown): v is SectionId => typeof v === "string" && Object.hasOwn(SECTIONS, v);
     const saved = Array.isArray(raw.order) ? raw.order.filter(known) : [];
     const order = [...new Set<SectionId>([...saved, ...DEFAULT_ORDER])];
     const closed = Array.isArray(raw.closed) ? raw.closed.filter(known) : [];
@@ -89,7 +90,10 @@ export default function Dashboard() {
     set();
     const ro = new ResizeObserver(set);
     ro.observe(bar);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      document.documentElement.style.removeProperty("--topbar-h");
+    };
   }, []);
   const update = (next: Prefs) => {
     savePrefs(next);
@@ -105,7 +109,10 @@ export default function Dashboard() {
     [order[i], order[j]] = [order[j], order[i]];
     update({ ...prefs, order });
     // 옮긴 구역의 같은 버튼에 초점을 남겨 연달아 옮길 수 있게
-    window.setTimeout(() => document.getElementById(`dash-move-${id}-${by}`)?.focus(), 0);
+    window.setTimeout(() => {
+      const same = document.getElementById(`dash-move-${id}-${by}`) as HTMLButtonElement | null;
+      (same && !same.disabled ? same : document.getElementById(`dash-move-${id}-${-by}`))?.focus();
+    }, 0);
   };
 
   return (
@@ -121,10 +128,13 @@ export default function Dashboard() {
           return (
             <section key={id} className={`dash-section${s.wide ? " dash-wide" : ""}${open ? "" : " dash-closed"}`} aria-labelledby={`${bodyId}-title`}>
               <header className="dash-head">
-                <button type="button" className="dash-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => flip(id)}>
-                  <span className="dash-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
-                  <h2 id={`${bodyId}-title`}>{s.title}</h2>
-                </button>
+                <h2 id={`${bodyId}-title`} className="dash-title">
+                  <button type="button" className="dash-toggle" aria-expanded={open} aria-controls={open ? bodyId : undefined}
+                    onClick={() => flip(id)}>
+                    <span className="dash-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+                    {s.title}
+                  </button>
+                </h2>
                 <span className="dash-order" role="group" aria-label={`${s.title} 순서`}>
                   <button type="button" id={`dash-move-${id}--1`} className="dash-move" disabled={i === 0}
                     aria-label={`${s.title} 위로`} onClick={() => move(id, -1)}>↑</button>

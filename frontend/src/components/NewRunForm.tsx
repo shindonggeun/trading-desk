@@ -119,7 +119,7 @@ export default function NewRunForm() {
   const profileLabel = profiles.find((p) => p.id === profile)?.label;
   const horizonInfo = horizons.find((h) => h.id === horizon);
   const custom = date !== today() || analysts.length !== ANALYST_CHOICES.length || language !== "Korean" || !usePortfolio;
-  const ready = !!instrument.ticker.trim() && analysts.length > 0;
+  const ready = !!instrument.ticker.trim() && analysts.length > 0 && !!date;
 
   return (
     <form className="card quick-run" onSubmit={submit} aria-label="새 분석">

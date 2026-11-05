@@ -78,6 +78,7 @@ const NOW_ATR = 0.5;
 const NOW_PCT = 0.01;
 const FAR_ATR = 2;
 const FAR_PCT = 0.05;
+const LIVE_MAX_GAP = 0.25;
 const QUOTE_EVERY_MS = 15_000;
 
 type Gap = NonNullable<Plan["entry_vs_live"]>;
@@ -86,8 +87,11 @@ type Gap = NonNullable<Plan["entry_vs_live"]>;
 export function entryGap(plan: Plan, live: number | null): Gap | null {
   const dir = plan.bias === "long" ? 1 : plan.bias === "short" ? -1 : 0;
   const entry = plan.entry_price;
-  if (!dir || entry === null || !live) return null;
-  const atr = plan.support_resistance?.atr ?? plan.atr ?? null;
+  if (!dir || entry === null || !live || plan.levels_warning) return null;
+  // 분할 · 다른 통화로 단위가 어긋난 시세와는 비교하지 않는다(백엔드 LIVE_MAX_GAP)
+  const anchor = plan.last_close || entry;
+  if (Math.abs(live - anchor) > LIVE_MAX_GAP * anchor) return null;
+  const atr = plan.support_resistance?.atr || plan.atr || null;
   const gap = entry - live;
   const gapAtr = atr ? Math.abs(gap) / atr : null;
   const near = gapAtr !== null ? gapAtr <= NOW_ATR : Math.abs(gap) / live <= NOW_PCT;
@@ -122,9 +126,11 @@ function useLiveQuote(symbol: string | undefined, fallback: Live | undefined, en
     };
     load();
     const timer = setInterval(load, QUOTE_EVERY_MS);
+    document.addEventListener("visibilitychange", load); // 탭으로 돌아오면 바로
     return () => {
       alive = false;
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", load);
     };
   }, [symbol, enabled]);
   return quote ?? fallback ?? null;
@@ -166,7 +172,7 @@ function LiveWarning({ g }: { g: Gap | null }) {
 export default function PlanCard({ plan, ticker, symbol, profile }: {
   plan: Plan;
   ticker: string;
-  /** 시세를 읽을 티커(NVDA, 005930.KS). 없으면 계획에 저장된 현재가만 쓴다. */
+  /** 시세를 읽을 티커(NVDA, 005930.KS). 없으면 계획에 저장된 현재가만 쓴다 — 오래된 · 과거 날짜 분석. */
   symbol?: string;
   profile?: string;
 }) {

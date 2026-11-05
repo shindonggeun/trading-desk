@@ -1,7 +1,7 @@
 import { lazy, Suspense, useMemo } from "react";
-import { price } from "../format";
+import { price, time } from "../format";
 import type { Plan } from "../types";
-import type { ExtraLine } from "./PriceChart";
+import type { ExtraLine, Interval } from "./PriceChart";
 import SectionBoundary from "./SectionBoundary";
 
 const PriceChart = lazy(() => import("./PriceChart"));
@@ -39,17 +39,24 @@ const ROLE: Record<RelatedRow["role"], string> = { self: "이 종목", underlyin
 function triggerLines(plan: Plan): ExtraLine[] {
   const t = plan as Plan & Triggers;
   const lines: ExtraLine[] = [];
-  if (t.long_trigger != null) lines.push({ price: t.long_trigger, label: "롱 조건", color: "#2ea043", dashed: true });
-  if (t.short_trigger != null) lines.push({ price: t.short_trigger, label: "숏 조건", color: "#e5534b", dashed: true });
+  const css = (name: string, fallback: string) =>
+    getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+  if (t.long_trigger != null) lines.push({ price: t.long_trigger, label: "롱 조건", color: css("--long", "#2ea043"), dashed: true });
+  if (t.short_trigger != null) lines.push({ price: t.short_trigger, label: "숏 조건", color: css("--short", "#e5534b"), dashed: true });
   return lines;
 }
 
+// 계획의 시간축(#63)에 맞는 봉: 스캘핑 · 단타는 5분봉, 2~3일은 1시간봉, 스윙은 일봉.
+const HORIZON_INTERVAL: Record<string, Interval> = { scalp: "5m", intraday: "5m", short_swing: "60m", swing: "1d" };
+
 function Chart({ ticker, tradeDate, plan, title }: { ticker: string; tradeDate: string; plan: Plan; title: string }) {
   const extra = useMemo(() => triggerLines(plan), [plan]);
+  const horizon = (plan as Plan & { horizon?: string }).horizon;
   return (
     <SectionBoundary fallback={<section className="card price-chart"><p className="muted small">{title} 차트를 불러오지 못했습니다.</p></section>}>
       <Suspense fallback={<section className="card price-chart"><p className="muted small">{title} 차트 불러오는 중…</p></section>}>
-        <PriceChart ticker={ticker} tradeDate={tradeDate} plan={plan} title={title} extraLines={extra} />
+        <PriceChart ticker={ticker} tradeDate={tradeDate} plan={plan} title={title} extraLines={extra}
+          initialInterval={HORIZON_INTERVAL[horizon ?? "swing"] ?? "1d"} />
       </Suspense>
     </SectionBoundary>
   );
@@ -77,14 +84,14 @@ function RelatedTable({ related }: { related: Related }) {
         <table className="related-table">
           <thead>
             <tr>
-              <th>구분</th>
-              <th>종목</th>
-              <th className="num">가격</th>
-              <th className="num">1일</th>
-              <th className="num">5일</th>
-              <th className="num">20일</th>
-              <th className="num">20일선 대비</th>
-              <th className="num">상관(60일)</th>
+              <th scope="col">구분</th>
+              <th scope="col">종목</th>
+              <th scope="col" className="num">가격</th>
+              <th scope="col" className="num">1일</th>
+              <th scope="col" className="num">5일</th>
+              <th scope="col" className="num">20일</th>
+              <th scope="col" className="num">20일선 대비</th>
+              <th scope="col" className="num">상관(60일)</th>
             </tr>
           </thead>
           <tbody>
@@ -107,7 +114,7 @@ function RelatedTable({ related }: { related: Related }) {
         <ul className="related-news">
           {related.news.slice(0, 6).map((n) => (
             <li key={n.title}>
-              <span className="muted small">{n.at.slice(5, 16).replace("T", " ")} · {n.ticker}</span> {n.title}
+              <span className="muted small">{time(n.at)} · {n.ticker}</span> {n.title}
               {n.source && <span className="muted small"> ({n.source})</span>}
             </li>
           ))}

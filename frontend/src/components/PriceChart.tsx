@@ -20,7 +20,7 @@ import { api, type CandleInterval, type Candles, type ReviewRow } from "../api";
 import { price } from "../format";
 import type { Plan, SrLevel, SupportResistance } from "../types";
 
-type Interval = Exclude<CandleInterval, "1m">;
+export type Interval = Exclude<CandleInterval, "1m">;
 const INTERVALS: { iv: Interval; label: string; count: number }[] = [
   // 분봉은 야후 보관 한도 안에서(5 · 15 · 30분 60일, 1 · 4시간 730일), 일봉 이상은 백엔드 최대 500개 안에서.
   { iv: "5m", label: "5분", count: 300 },
@@ -161,10 +161,6 @@ type Drawn = {
   alive: { current: boolean };
 };
 
-/**
- * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
- * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
- */
 /** 계획의 진입 · 손절 · 목표 말고 더 그을 가로선(관망 계획의 롱 · 숏 진입 조건 등, #68). */
 export interface ExtraLine {
   price: number;
@@ -173,16 +169,22 @@ export interface ExtraLine {
   dashed?: boolean;
 }
 
-export default function PriceChart({ ticker, tradeDate, plan, title, extraLines }: {
+/**
+ * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
+ * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
+ */
+export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval }: {
   ticker: string;
   tradeDate: string;
   plan: Plan | null;
   /** 머리글 이름(기본 "가격 차트") — 분석 결과 차트가 본주 · 레버리지를 구분한다. */
   title?: string;
   extraLines?: ExtraLine[];
+  /** 처음 봉 주기 — 분석 결과 차트는 계획의 시간축에 맞춘다. 없으면 마지막으로 고른 주기. */
+  initialInterval?: Interval;
 }) {
   const [prefs] = useState(loadPrefs);
-  const [interval, setBarInterval] = useState<Interval>(prefs.interval);
+  const [interval, setBarInterval] = useState<Interval>(initialInterval ?? prefs.interval);
   const [show, setShow] = useState<Show>(prefs.show);
   const [candles, setCandles] = useState<Candles | null>(null);
   const [fills, setFills] = useState<ReviewRow[]>([]);
@@ -415,7 +417,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines 
 
   const srSource = mode === "plan" ? saved : nowSr;
   const currency = isKorean(ticker) ? "원" : "달러";
-  const levels = plan ? [plan.entry_price, plan.stop_loss, plan.price_target] : [];
+  const levels = [...(plan ? [plan.entry_price, plan.stop_loss, plan.price_target] : []), ...(extraLines ?? []).map((l) => l.price)];
   const hasLevels = levels.some((v) => v != null);
   const outOfRange = show.levels && !!drawn && levels.some((v) => v != null && Math.abs(v - drawn.lastClose) / drawn.lastClose > AUTOSCALE_MAX_GAP);
   // 보관 한도 안내는 분봉일 때만 — 년봉은 늘 요청보다 적게 오지만 한도 탓이 아니다.

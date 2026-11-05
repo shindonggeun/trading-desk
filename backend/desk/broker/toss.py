@@ -17,7 +17,7 @@ from decimal import Decimal, InvalidOperation
 
 import httpx
 
-from .base import INSTITUTION_KINDS, Bar, Broker, Fill, FlowRecord, Holding, IndexPrice, Listing
+from .base import INSTITUTION_KINDS, Bar, Broker, Fill, FlowRecord, Holding, IndexPrice, Listing, MarketDay
 
 BASE_URL = "https://openapi.tossinvest.com"
 REFRESH_MARGIN_SEC = 300
@@ -247,6 +247,29 @@ class TossBroker(Broker):
         records = [rec for rec in (_flow_record(row) for row in rows) if rec is not None]
         next_until = result.get("nextUntil") if isinstance(result, dict) else None
         return records, (str(next_until)[:10] if next_until else None)
+
+    async def market_calendar(self, market: str) -> list[MarketDay]:
+        """GET /api/v1/market-calendar/{KR|US} (Market Info group, token only). KR: the integrated
+        (KRX+NXT) regular session; US: the regular session. A holiday has no session (null)."""
+        result = await self._get(f"/api/v1/market-calendar/{market}") or {}
+        days = []
+        for key in ("previousBusinessDay", "today", "nextBusinessDay"):
+            node = result.get(key) if isinstance(result, dict) else None
+            if not isinstance(node, dict) or not node.get("date"):
+                continue
+            hours = node.get("integrated") if market == "KR" else node
+            regular = hours.get("regularMarket") if isinstance(hours, dict) else None
+            try:
+                day = date.fromisoformat(str(node["date"])[:10])
+                opens = closes = None
+                if isinstance(regular, dict) and regular.get("startTime") and regular.get("endTime"):
+                    opens = datetime.fromisoformat(str(regular["startTime"]))
+                    closes = datetime.fromisoformat(str(regular["endTime"]))
+            except ValueError:
+                log.warning("Toss %s calendar: unreadable day %s", market, node.get("date"))
+                continue
+            days.append(MarketDay(day=day, opens=opens, closes=closes))
+        return days
 
     async def index_prices(self, symbols: list[str]) -> list[IndexPrice]:
         """GET /api/v1/market-indicators/prices (KOSPI, KOSDAQ, KR_BOND_*)."""

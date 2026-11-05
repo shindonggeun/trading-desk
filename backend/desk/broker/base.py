@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 
@@ -90,6 +90,15 @@ class IndexPrice:
     at: str | None                              # ISO 8601 with offset
 
 
+@dataclass(frozen=True)
+class MarketDay:
+    """One trading day of a market's regular session (desk.live). Closed all day: both None."""
+
+    day: date                                   # the market's own date (KST · New York)
+    opens: datetime | None
+    closes: datetime | None
+
+
 class Broker(ABC):
     name: str = "broker"
 
@@ -127,6 +136,11 @@ class Broker(ABC):
 
     async def index_prices(self, symbols: list[str]) -> list[IndexPrice]:
         """Current level of market indices (KOSPI, KOSDAQ)."""
+        raise NotImplementedError
+
+    async def market_calendar(self, market: str) -> list[MarketDay]:
+        """The regular session of ``market`` (KR | US) on the previous, current and next business
+        day as the broker publishes them — holidays and shortened days included."""
         raise NotImplementedError
 
     async def portfolio(self):

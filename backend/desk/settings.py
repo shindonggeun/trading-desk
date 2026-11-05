@@ -41,6 +41,8 @@ class Settings:
     otp_key: str = field(default_factory=lambda: os.getenv("DESK_OTP_KEY", ""))
     # Finished runs (and their events) older than this are deleted at start and once a day. 0 keeps all.
     retention_days: int = field(default_factory=lambda: int(os.getenv("DESK_RETENTION_DAYS", "90")))
+    # Seconds between passes that score finished plans against later bars (desk.outcome). 0 = off.
+    score_interval_sec: int = field(default_factory=lambda: int(os.getenv("DESK_SCORE_INTERVAL_SEC", "3600")))
     cors_origins: list[str] = field(default_factory=lambda: _list("DESK_CORS_ORIGINS"))
 
     # Default investing style for new runs (desk.profile.PROFILES).

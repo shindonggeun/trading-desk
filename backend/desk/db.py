@@ -50,7 +50,13 @@ runs = Table(
     Column("created_at", Timestamp, nullable=False),
     Column("started_at", Timestamp),
     Column("finished_at", Timestamp),
+    # How the plan played out on later bars (desk.outcome): target | stop | both | expired | unfilled |
+    # open | waiting | invalid | unscorable | error. NULL = not scored yet.
+    Column("outcome", Json),
+    Column("outcome_status", String(16)),
+    Column("scored_at", Timestamp),
     Index("ix_runs_created_at", "created_at"),
+    Index("ix_runs_outcome_status", "outcome_status"),
 )
 
 events = Table(

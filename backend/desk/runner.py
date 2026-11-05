@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from . import horizons
+from . import horizons, verdict
 from . import underlying as under
 from .broker.base import Broker
 from .events import StateDiffer
@@ -119,8 +119,9 @@ _FAKE_ATR = {"scalp": 0.4, "intraday": 0.9, "short_swing": 3.0}
 def _fake_decision(request: RunRequest) -> dict:
     h = horizons.get(request.horizon)
     if h.id not in _FAKE_ATR:   # swing: the original script, unchanged
-        text = ("**Rating**: Overweight\n\n**Executive Summary**: 182.5 부근 분할 진입, 171 손절, 목표 205.\n\n"
-                "**Investment Thesis**: 수주 모멘텀과 이익 성장, 밸류 부담은 비중으로 관리.\n\n"
+        text = ("**Rating**: Overweight\n\n**Executive Summary**: 182.5 부근 분할 진입, 171 손절, 목표 205.\n"
+                f"{verdict.FAKE_SUMMARY_LINE}\n\n"
+                f"**Investment Thesis**: 수주 모멘텀과 이익 성장, 밸류 부담은 비중으로 관리.\n{verdict.FAKE_THESIS_LINE}\n\n"
                 "**Price Target**: 205\n\n**Time Horizon**: 2-4주")
         return {"final_trade_decision": text, "final_rating": "Overweight"}
     atr, entry = _FAKE_ATR[h.id], 182.5
@@ -128,7 +129,8 @@ def _fake_decision(request: RunRequest) -> dict:
     text = (f"**Rating**: Overweight\n\n**Executive Summary**: {entry} 눌림 지정가 진입. "
             f"Entry Price: {entry} / Stop Loss: {stop} / Price Target: {target}\n"
             f"Entry: limit / Invalidation: {stop} 아래 마감 / Exit by: {h.holding} 안에\n\n"
-            f"**Investment Thesis**: {h.label} 기준 구조상 지지 위.\n\n"
+            f"{verdict.FAKE_SUMMARY_LINE}\n\n"
+            f"**Investment Thesis**: {h.label} 기준 구조상 지지 위.\n{verdict.FAKE_THESIS_LINE}\n\n"
             f"**Price Target**: {target}\n\n**Time Horizon**: {h.holding}")
     return {"final_trade_decision": text, "final_rating": "Overweight"}
 
@@ -336,6 +338,8 @@ class RunManager:
                 horizon = horizons.get(request.horizon)
                 frame = horizons.get(None) if sr and sr.get("fallback") else horizon
                 mandate = horizons.horizon_mandate(horizon, sr and sr.get("atr"), frame=frame, levels_below=bool(sr))
+                # #64: the symmetric checklist and high-probability filter, swing included
+                mandate = "\n\n".join(part for part in (mandate, verdict.mandate(horizon)) if part)
                 portfolio = desk_portfolio(request.profile, book, note, horizon_mandate=mandate)
                 result = await asyncio.to_thread(self.runner, request, emit, portfolio)
                 # The model may still leave a level out; fill it from ATR and mark it as computed.
@@ -355,6 +359,7 @@ class RunManager:
                 # The entry is valid from the price the agents saw, so the minutes spent analysing count.
                 plan["horizon"] = horizon.id
                 plan["valid_until"] = horizons.valid_until(horizon, start["fetched_at"] if start else None)
+                plan = verdict.apply(plan, horizon)   # opinion + filter; rating, bias and levels stay
                 if sr:
                     plan["support_resistance"] = sr
                 if related:

@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from . import verdict
+
 _RATINGS = ("Buy", "Overweight", "Hold", "Underweight", "Sell")
 
 # How the desk reads a rating. "short" means "short or reduce": whether a real short
@@ -180,6 +182,7 @@ def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
     if underlying:
         plan["underlying_levels"] = underlying
     plan.update(_entry_terms(decision))
+    plan.update(verdict.parse(decision))   # #64: win probability, checklist, triggers
     return plan
 
 

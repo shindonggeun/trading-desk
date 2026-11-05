@@ -23,7 +23,7 @@ from sqlalchemy.exc import IntegrityError
 
 from . import otp
 from .auth import MIN_PASSWORD, Auth
-from .db import make_engine, migrate
+from .db import make_engine, migrate, now
 from .settings import load
 
 
@@ -44,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("otp-key", help="print a new DESK_OTP_KEY (Fernet key) for the server env")
     for name in ("create-user", "set-password", "revoke-sessions", "disable-otp"):
         sub.add_parser(name).add_argument("username")
+    rescore = sub.add_parser("rescore", help="forget plan outcomes so the next pass scores them again")
+    rescore.add_argument("--days", type=int, default=None, help="only runs created in the last N days")
     args = parser.parse_args(argv)
     if args.command == "otp-key":
         print(otp.new_key())
@@ -56,6 +58,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     engine = make_engine(settings.database_url)
+    if args.command == "rescore":
+        from .store import Store
+
+        since = now() - timedelta(days=args.days) if args.days else None
+        print(f"cleared {Store(engine).clear_outcomes(since)} outcome(s); the server rescores them next pass")
+        return 0
     auth = Auth(engine, timedelta(hours=settings.session_max_hours), timedelta(hours=settings.session_idle_hours))
     try:
         if args.command == "create-user":

@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import horizons, otp, regime, review
+from . import horizons, otp, outcome, regime, review, verdict
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User
 from .broker import make_broker
 from .db import make_engine, migrate, now
@@ -186,10 +186,26 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.exception("retention sweep failed")
                 await asyncio.sleep(24 * 3600)
 
+        async def score_plans():
+            # How each plan played out, on the bars that came after it (desk.outcome). Starts at boot.
+            while True:
+                try:
+                    scored = await outcome.sweep(store, prices)
+                    if scored:
+                        log.info("scored %d plan(s)", scored)
+                except Exception:  # a failed pass must not stop the next one
+                    log.exception("plan scoring failed")
+                await asyncio.sleep(settings.score_interval_sec)
+
         refresher = asyncio.create_task(keep_listing_fresh())
+        # Scripted runs have made-up levels; scoring them against real bars means nothing.
+        scorer = (asyncio.create_task(score_plans())
+                  if settings.score_interval_sec > 0 and not settings.fake_runs else None)
         purger = asyncio.create_task(purge_old_runs()) if settings.retention_days > 0 else None
         yield
         refresher.cancel()
+        if scorer:
+            scorer.cancel()
         if purger:
             purger.cancel()
         await estimator.aclose()
@@ -582,6 +598,19 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except Exception as exc:  # noqa: BLE001 - both sources failed
             log.warning("candles for %s %s failed: %s", ticker, interval, exc)
             raise HTTPException(503, f"no candles for {ticker}") from None
+
+    @app.get("/api/stats/plans")
+    def plan_stats(days: int = 90):
+        """How the plans of the last ``days`` played out (desk.outcome): by horizon, rating,
+        direction, the desk's opinion and analyst set, plus a win-probability calibration.
+        Runs older than the retention are gone, so the window stops there."""
+        limit = settings.retention_days if settings.retention_days > 0 else 365
+        days = min(max(days, 1), limit)
+        since = now() - timedelta(days=days)
+        result = outcome.stats(store.scored_since(since))
+        return {"days": days, "from": iso(since), "to": iso(now()),
+                "thresholds": {"win_probability": verdict.MIN_PROBABILITY, "agreeing": verdict.MIN_AGREEING},
+                **result}
 
     @app.get("/api/levels")
     async def levels(ticker: str, horizon: str | None = None):

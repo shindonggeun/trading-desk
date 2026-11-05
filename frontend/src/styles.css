@@ -733,4 +733,44 @@ span.cs-hold-text { color: var(--warn); }
   .dash-search .quick-run { padding: 10px 12px; box-shadow: 0 6px 12px -8px rgba(0, 0, 0, .5); }
   .quick-run-summary { font-size: 11px; }
   .recent-runs { grid-template-columns: minmax(0, 1fr); }
+
+/* #99 — 분석 화면: 결론 줄 + 요약 · 차트 · 토론 · 근거 탭 */
+.run-bar { position: sticky; top: var(--topbar-h, 52px); z-index: 4; margin: 0 0 8px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; }
+.run-bar-main { display: flex; align-items: baseline; gap: 6px 14px; flex-wrap: wrap; width: 100%; padding: 10px 14px;
+  background: none; border: 0; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.run-bar-name { font-weight: 650; }
+.run-bar-op { font-size: 18px; font-weight: 700; }
+.run-bar-op.opinion-buy { color: var(--long); }
+.run-bar-op.opinion-sell { color: var(--short); }
+.run-bar-op.opinion-hold { color: var(--flat); }
+.run-bar-op.opinion-review { color: var(--warn); }
+.run-bar-prob { color: var(--muted); }
+.run-bar-levels { font-variant-numeric: tabular-nums; }
+.run-bar .lv-stop { color: var(--short); }
+.run-bar .lv-target { color: var(--long); }
+.run-bar-now { color: var(--muted); }
+.run-bar-more { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 0 14px 10px; }
+.run-tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
+.run-tab { position: relative; background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted);
+  padding: 10px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+.run-tab:hover { color: var(--text); }
+.run-tab-on { color: var(--text); border-bottom-color: var(--accent); }
+.run-tab-live { display: inline-block; width: 7px; height: 7px; margin-left: 6px; border-radius: 50%; background: var(--warn);
+  vertical-align: middle; animation: pulse 1.2s infinite; }
+.run-summary, .run-evidence, .result-chart { display: grid; gap: 14px; min-width: 0; }
+.result-chart-switch { margin-bottom: 2px; }
+.run-empty p { margin: 0; }
+@media (max-width: 1199px) { .run-debate-glossary { display: none; } }
+@media (max-width: 760px) {
+  .run-tabbed { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  .run-tabbed .run-head h1 { font-size: 18px; }
+  .run-bar-main { padding: 8px 12px; gap: 2px 10px; }
+  .run-bar-op { font-size: 16px; }
+  .run-bar-levels { font-size: 13px; }
+  .run-bar:not(.run-bar-open) .run-bar-more { display: none; }
+  .run-tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; margin: 0; gap: 0; background: var(--surface);
+    border-top: 1px solid var(--border); border-bottom: 0; padding-bottom: env(safe-area-inset-bottom); }
+  .run-tab { flex: 1; padding: 12px 4px; border-bottom: 0; border-top: 2px solid transparent; }
+  .run-tab-on { border-top-color: var(--accent); }
 }

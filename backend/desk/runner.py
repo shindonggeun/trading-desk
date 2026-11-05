@@ -19,11 +19,12 @@ from .consensus import parse as parse_consensus
 from .consensus import render as render_consensus
 from .events import StateDiffer
 from .levels import LEVELS, entry_vs_live, fill_levels
-from .leverage_analyst import LEVER_TIMEOUT_SEC, LeverContext, llm_analyst
+from .leverage_analyst import LEVER_TIMEOUT_SEC, LeverContext, llm_analyst, parse_pair
 from .plan import BIAS, parse_plan
 from .prices import CRYPTO_SUFFIXES, PriceSource, is_market_symbol
 from .profile import desk_portfolio
 from .related import collect as collect_related
+from .related import inverse_pair
 from .related import prompt_note as related_note
 from .sr import live_note, prompt_note, support_resistance
 from .store import Store
@@ -329,13 +330,16 @@ class RunManager:
         underlying = await self._underlying_plan({**u_plan, "ticker": base, "leverage": leverage, "proxy": proxy},
                                                  request, sr_u, live_u)
         daily = sr_u and (sr_u.get("fallback") or horizon.primary == "1d")
+        pair = inverse_pair(request.ticker)
+        live_pair = await self._live_quote(request, pair[0]) if pair else None
         ctx = LeverContext(
             product=request.ticker, base=base, leverage=leverage, proxy=proxy, horizon=horizon.id,
             holding=horizon.holding_en, u_plan=u_plan,
             u_decision=result.final_state.get("final_trade_decision") or "", live=live, live_u=live_u,
             sr=sr, sr_u=sr_u, beta=(related or {}).get("tracking"),
             language=request.output_language, daily_atr_u=sr_u["atr"] if daily else None,
-            intraday=horizon.flat_by_close)
+            intraday=horizon.flat_by_close,
+            pair=pair and pair[0], pair_leverage=pair and pair[1], live_pair=live_pair)
         text, error = None, None
         expected = under.flip_rating(u_plan["rating"]) if leverage < 0 else u_plan["rating"]
         if self.lever_analyst is not None:
@@ -391,6 +395,8 @@ class RunManager:
         plan = entry_vs_live(plan, sr and sr.get("atr"))
         plan["underlying"] = underlying
         plan["analysis_subject"] = base
+        if paired := parse_pair(text or "", ctx):   # #109: the bet against the product, in its pair
+            plan["pair"] = paired
         return plan
 
     async def _consensus(self, run_id: str, request: RunRequest, subject: str, final_state: dict,

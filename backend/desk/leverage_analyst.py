@@ -13,6 +13,7 @@ The analyst is injected into RunManager: the default calls the TradingAgents pro
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
@@ -40,6 +41,9 @@ class LeverContext:
     language: str | None = None          # None: the TradingAgents output_language setting
     intraday: bool = False                # the horizon closes the position the same session
     daily_atr_u: float | None = field(default=None)   # only from daily bars: decay needs a daily sigma
+    pair: str | None = None               # the product the other way on the same underlying (#109)
+    pair_leverage: float | None = None
+    live_pair: dict | None = None
 
     @property
     def inverse(self) -> bool:
@@ -102,6 +106,8 @@ def build_prompt(ctx: LeverContext) -> str:
         f"- Realized multiple of {p} to {b}: 20d {beta.get('beta_20d', 'n/a')}, 60d {beta.get('beta_60d', 'n/a')}.",
         f"- {decay_line}",
         f"- Holding horizon: {ctx.holding}.",
+        *([(f"- {ctx.pair} is the {ctx.pair_leverage:+g}x {'inverse ' if (ctx.pair_leverage or 0) < 0 else ''}"
+           f"product on {b}: price {_price(ctx.live_pair, None)}.")] if ctx.pair else []),
         "",
         "## How to decide",
         (f"- {p} is inverse: a bearish {b} call is a reason to BUY {p}, a bullish one to sell or avoid it. "
@@ -113,6 +119,7 @@ def build_prompt(ctx: LeverContext) -> str:
         ("- If decay or the holding period makes the product a poor vehicle for the call, say so: Hold "
         "with the condition under which you would enter, or a shorter holding period."),
         f"- If the {b} decision is Hold, give Hold with the long and short trigger levels on {p}.",
+        *_pair_rules(ctx, p, b),
         "",
         f"## Output (answer in {ctx.language or 'English'}; keep these English labels exactly, numbers in {p} prices)",
         "**Rating**: one of Buy / Overweight / Hold / Underweight / Sell",
@@ -126,8 +133,56 @@ def build_prompt(ctx: LeverContext) -> str:
          "Exit by: <time or condition>'."),
         (f"And one more: 'Win Probability: <% that the {p} target is reached before the stop> / "
          f"Long Trigger: <{p} price or none> / Short Trigger: <{p} price or none>'."),
+        *([(f"And a last one: 'Inverse Pair: {ctx.pair} / Pair Entry: <{ctx.pair} price> / Pair Stop: "
+           f"<{ctx.pair} price> / Pair Target: <{ctx.pair} price>' when buying {ctx.pair} is the trade "
+           f"for a {b} move against {p}, else 'Inverse Pair: none'.")] if ctx.pair else []),
     ]
     return "\n".join(lines)
+
+
+def _pair_rules(ctx: LeverContext, p: str, b: str) -> list[str]:
+    """How a move against the product is traded: not by shorting it but by buying its pair."""
+    if not ctx.pair:
+        return []
+    against = "bullish" if ctx.inverse else "bearish"
+    return [
+        (f"- A {against} {b} call (Underweight/Sell, or Hold with a {'long' if ctx.inverse else 'short'} trigger "
+         f"on {b}) is not a short of {p}. For someone holding {p}, the Short Trigger and Stop Loss are the {p} "
+         f"prices to reduce or exit. A new trade on that move is a BUY of {ctx.pair}: give its entry, stop and "
+         f"target in {ctx.pair} prices on the Inverse Pair line (stop below entry, target above)."),
+        f"- Never write a {b} or {ctx.pair} price in a {p} field; each number belongs to the ticker named next to it.",
+    ]
+
+
+_NUM = r"\**\s*([0-9][0-9,]*(?:\.[0-9]+)?)"
+_PAIR_LINE = re.compile(
+    r"Inverse\s+Pair\**\s*:\**\s*([A-Za-z0-9.^=-]+)\s*/\s*\**Pair\s+Entry\**\s*:" + _NUM
+    + r"\s*/\s*\**Pair\s+Stop\**\s*:" + _NUM + r"\s*/\s*\**Pair\s+Target\**\s*:" + _NUM,
+    re.IGNORECASE)
+# a pair level this far from the pair's price is another ticker's number
+PAIR_IMPLAUSIBLE = 0.5
+
+
+def parse_pair(text: str, ctx: LeverContext) -> dict | None:
+    """The 'Inverse Pair' line as a buy setup on the pair, or None (no pair, 'none', unreadable,
+    another ticker, levels that are not a buy — stop below entry below target — or far from its price)."""
+    if not ctx.pair or not text:
+        return None
+    hits = _PAIR_LINE.findall(text)
+    if not hits:
+        return None
+    ticker, *raw = hits[-1]
+    if ticker.upper() != ctx.pair.upper():
+        return None
+    entry, stop, target = (float(v.replace(",", "")) for v in raw)
+    if not stop < entry < target:
+        return None
+    ref = (ctx.live_pair or {}).get("price")
+    if ref and any(abs(v - ref) > PAIR_IMPLAUSIBLE * ref for v in (entry, stop, target)):
+        return None
+    return {"ticker": ctx.pair, "leverage": ctx.pair_leverage, "entry_price": entry, "stop_loss": stop,
+            "price_target": target, "reward_risk": round((target - entry) / (entry - stop), 2),
+            "price": ref}
 
 
 def llm_analyst(ctx: LeverContext) -> str:
@@ -151,8 +206,16 @@ def fake_analyst(ctx: LeverContext) -> str:
     price = (ctx.live or {}).get("price") or (ctx.sr or {}).get("last_close") or 50.0
     long = rating in ("Buy", "Overweight")
     stop, target = (price * 0.94, price * 1.12) if long else (price * 1.06, price * 0.88)
-    return (f"**Rating**: {rating}\n\n**Entry Price**: {price:.2f}\n\n**Stop Loss**: {stop:.2f}\n\n"
+    text = (f"**Rating**: {rating}\n\n**Entry Price**: {price:.2f}\n\n**Stop Loss**: {stop:.2f}\n\n"
             f"**Price Target**: {target:.2f}\n\n**Time Horizon**: 3-5일\n\n"
             f"**Position Sizing**: 자본의 15%, 손절 시 손실 약 1%\n\n"
             f"**Executive Summary**: {ctx.base} 판단({ctx.u_plan.get('rating')})을 {ctx.product} "
             f"{ctx.leverage:+g}배로 옮겼습니다. 변동성 감쇠 때문에 보유는 짧게.")
+    if ctx.pair:
+        if long:
+            text += "\n\nInverse Pair: none"
+        else:   # against the product: its pair is the trade
+            pp = (ctx.live_pair or {}).get("price") or 30.0
+            text += (f"\n\nInverse Pair: {ctx.pair} / Pair Entry: {pp:.2f} / Pair Stop: {pp * 0.94:.2f} / "
+                     f"Pair Target: {pp * 1.12:.2f}")
+    return text

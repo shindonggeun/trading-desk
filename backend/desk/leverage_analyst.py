@@ -18,8 +18,8 @@ from dataclasses import dataclass, field, replace
 
 LEVER_TIMEOUT_SEC = 180.0
 DECISION_CHARS = 6000
-# ATR over a roughly normal day is ~1.25 sigma; enough for a rough decay figure.
-ATR_PER_SIGMA = 1.25
+# A day's true range averages ~1.6 sigma for a random walk (a little more with gaps); rough is enough.
+ATR_PER_SIGMA = 1.6
 
 
 @dataclass
@@ -38,6 +38,7 @@ class LeverContext:
     sr_u: dict | None = None
     beta: dict | None = None           # related.tracking: realized multiple
     language: str | None = None          # None: the TradingAgents output_language setting
+    intraday: bool = False                # the horizon closes the position the same session
     daily_atr_u: float | None = field(default=None)   # only from daily bars: decay needs a daily sigma
 
     @property
@@ -57,6 +58,15 @@ def decay_per_day(ctx: LeverContext) -> float | None:
     return round((ctx.leverage ** 2 - ctx.leverage) / 2 * sigma ** 2 * 100, 3)
 
 
+def _price(live: dict | None, sr: dict | None) -> str:
+    """The live quote, else the last close the levels were computed from (a past-date analysis)."""
+    if live and live.get("price"):
+        return f"{live['price']} (live)"
+    if sr and sr.get("last_close"):
+        return f"{sr['last_close']} (last close)"
+    return "n/a"
+
+
 def _levels(sr: dict | None) -> str:
     if not sr or not sr.get("levels"):
         return "n/a"
@@ -66,11 +76,14 @@ def _levels(sr: dict | None) -> str:
 def build_prompt(ctx: LeverContext) -> str:
     p, b, u = ctx.product.upper(), ctx.base, ctx.u_plan
     decay = decay_per_day(ctx)
-    decay_line = (f"Estimated volatility decay of a {ctx.leverage:+g}x daily product at the current volatility: "
-                  f"about {decay}% per day of holding (rough; larger in choppy markets)."
-                  if decay is not None else
-                  "Volatility decay is negligible within an intraday hold; do not hold the product overnight "
-                  "unless the horizon says so.")
+    if ctx.intraday:
+        decay_line = "Volatility decay is negligible within an intraday hold; close the position the same session."
+    elif decay is not None:
+        decay_line = (f"Estimated volatility decay of a {ctx.leverage:+g}x daily product at the current "
+                      f"volatility: about {decay}% per day of holding (rough; larger in choppy markets).")
+    else:
+        decay_line = ("Volatility decay: not measured for this run, but it is real for a multi-day hold of a "
+                      f"{ctx.leverage:+g}x daily product — keep the hold short and the stop honest.")
     beta = ctx.beta or {}
     lines = [
         f"You are the desk's leverage analyst. The owner trades {p}, a {ctx.leverage:+g}x daily "
@@ -83,8 +96,8 @@ def build_prompt(ctx: LeverContext) -> str:
         ctx.u_decision[:DECISION_CHARS],
         "",
         "## Facts",
-        f"- {b} price {(ctx.live_u or {}).get('price', 'n/a')}; support/resistance: {_levels(ctx.sr_u)}.",
-        (f"- {p} price {(ctx.live or {}).get('price', 'n/a')}; support/resistance: {_levels(ctx.sr)}; "
+        f"- {b} price {_price(ctx.live_u, ctx.sr_u)}; support/resistance: {_levels(ctx.sr_u)}.",
+        (f"- {p} price {_price(ctx.live, ctx.sr)}; support/resistance: {_levels(ctx.sr)}; "
         f"ATR {(ctx.sr or {}).get('atr', 'n/a')}."),
         f"- Realized multiple of {p} to {b}: 20d {beta.get('beta_20d', 'n/a')}, 60d {beta.get('beta_60d', 'n/a')}.",
         f"- {decay_line}",
@@ -94,7 +107,7 @@ def build_prompt(ctx: LeverContext) -> str:
         (f"- {p} is inverse: a bearish {b} call is a reason to BUY {p}, a bullish one to sell or avoid it. "
          f"Your rating is about {p}, not {b}." if ctx.inverse else
          f"- Your rating is about {p}. A bullish {b} call is a reason to buy {p}, a bearish one to sell or avoid it."),
-        (f"- Translate the {b} entry, stop and target to {p} prices with the multiple from today's prices, then "
+        (f"- Translate the {b} entry, stop and target to {p} prices with the multiple from the prices above, then "
         f"adjust to {p}'s own support/resistance. Keep reward:risk at least 2 and the loss at the stop within "
         "2-3% of capital — size the position for the multiple."),
         ("- If decay or the holding period makes the product a poor vehicle for the call, say so: Hold "
@@ -109,6 +122,8 @@ def build_prompt(ctx: LeverContext) -> str:
         "**Time Horizon**: <maximum holding period>",
         "**Position Sizing**: <share of capital, and the loss at the stop>",
         f"**Executive Summary**: <the call on {p}, how to act, and where it differs from the {b} call and why>",
+        (f"End with one line: 'Entry: now|limit|stop / Invalidation: <{p} price or event> / "
+        "Exit by: <time or condition>'."),
     ]
     return "\n".join(lines)
 
@@ -121,7 +136,8 @@ def llm_analyst(ctx: LeverContext) -> str:
     config = build_default_config()
     if not ctx.language:   # the same language the research team answered in
         ctx = replace(ctx, language=config.get("output_language"))
-    llm = create_tier_client(config, "deep", timeout=LEVER_TIMEOUT_SEC).get_llm()
+    # one attempt: the SDK's retries would multiply the timeout past the runner's backstop
+    llm = create_tier_client(config, "deep", timeout=LEVER_TIMEOUT_SEC, max_retries=0).get_llm()
     return llm.invoke(build_prompt(ctx)).content
 
 

@@ -6,6 +6,8 @@ type State = "done" | "speaking" | "waiting" | "skipped";
 /** Who has spoken, who spoke last, and who is still to come. */
 export default function AgentRail({ events, status, analysts }: { events: DeskEvent[]; status: RunStatus; analysts: string[] }) {
   const spoken = new Set(events.filter((e) => e.type === "message").map((e) => e.agent));
+  // an agent that announced itself ("thinking") before its first word: the leverage analyst
+  const started = new Set(events.filter((e) => e.type === "status" && e.agent !== "system").map((e) => e.agent));
   const last = [...events].reverse().find((e) => e.type === "message")?.agent;
   const skipped = new Set(ANALYST_CHOICES.filter((c) => !analysts.includes(c.key)).map((c) => c.agent));
   const anyBeyondAnalysts = AGENTS.some((a) => a.team !== "analyst" && spoken.has(a.id));
@@ -16,6 +18,7 @@ export default function AgentRail({ events, status, analysts }: { events: DeskEv
       // Analysts all work at once, so each is "speaking" until its report lands.
       if (team === "analyst" && !spoken.has(id) && !anyBeyondAnalysts) return "speaking";
       if (id === last) return "speaking";
+      if (started.has(id) && !spoken.has(id)) return "speaking";
     }
     return spoken.has(id) ? "done" : "waiting";
   };
@@ -26,7 +29,7 @@ export default function AgentRail({ events, status, analysts }: { events: DeskEv
       {teams.map((team) => (
         <div key={team} className="rail-team">
           <div className="rail-team-label">{TEAM_LABEL[team]}</div>
-          {AGENTS.filter((a) => a.team === team && (!a.onlyIfSpoken || spoken.has(a.id))).map((a) => {
+          {AGENTS.filter((a) => a.team === team && (!a.onlyIfSpoken || spoken.has(a.id) || started.has(a.id))).map((a) => {
             const s = stateOf(a.id, a.team);
             return (
               <div key={a.id} className={`rail-agent rail-${s}`}>

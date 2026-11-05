@@ -1,3 +1,4 @@
+import sys
 from datetime import timedelta
 
 from desk import underlying as under
@@ -130,13 +131,13 @@ def _ctx(**kw):
 def test_the_analyst_prompt_carries_the_facts_and_the_inverse_rule():
     from desk.leverage_analyst import build_prompt, decay_per_day
 
-    assert decay_per_day(_ctx()) == 0.137                   # (9-3)/2 x (12/450/1.25)^2
-    assert decay_per_day(_ctx(leverage=-3.0)) == 0.273       # inverse 3x pays 6 sigma^2
+    assert decay_per_day(_ctx()) == 0.083                   # (9-3)/2 x (12/450/1.6)^2
+    assert decay_per_day(_ctx(leverage=-3.0)) == 0.167       # inverse 3x pays 6 sigma^2
     assert decay_per_day(_ctx(daily_atr_u=None)) is None     # intraday bars: no daily sigma
     prompt = build_prompt(_ctx())
     assert "turn it into a decision on SOXL".lower() in prompt.lower() and "S 57.0" in prompt and "20d 2.99" in prompt
-    assert "**Entry Price**: <number>" in prompt and "about 0.137% per day" in prompt
-    inverse = build_prompt(_ctx(product="SOXS", leverage=-3.0, daily_atr_u=None))
+    assert "**Entry Price**: <number>" in prompt and "about 0.083% per day" in prompt
+    inverse = build_prompt(_ctx(product="SOXS", leverage=-3.0, intraday=True))
     assert "a bearish SOXX call is a reason to BUY SOXS" in inverse and "negligible within an intraday" in inverse
 
 
@@ -288,9 +289,85 @@ def test_a_typed_underlying_never_calls_the_leverage_analyst(db_url, monkeypatch
 
 
 def test_without_the_underlyings_bars_the_run_still_ends(db_url, monkeypatch):
-    monkeypatch.setattr("desk.levels.last_close_and_atr", lambda *_: (450.0, 12.0))
+    monkeypatch.setitem(sys.modules, "yfinance", None)    # the product ATR fill has no Yahoo either
     done, _, _ = _run(db_url, monkeypatch, "SOXL", lambda ctx: "**Rating**: Buy\n\n**Entry Price**: 60",
                       _soxx_buy(), sr_fail=("SOXX",))
     plan = done["plan"]
     assert plan["underlying"]["entry_price"] == 450 and "support_resistance" not in plan["underlying"]
     assert plan["entry_price"] == 60 and "conversion" not in plan     # no anchor without SOXX's close
+
+
+def test_an_analyst_that_turns_against_the_underlying_gets_no_borrowed_setup(db_url, monkeypatch):
+    # SOXX Buy, the analyst says Sell SOXL without levels: no long levels converted onto a short call
+    monkeypatch.setitem(sys.modules, "yfinance", None)     # and no Yahoo for the ATR fill
+    done, _, _ = _run(db_url, monkeypatch, "SOXL", lambda ctx: "**Rating**: Sell\n\n**Executive Summary**: 감쇠가 크다",
+                      _soxx_buy())
+    plan = done["plan"]
+    assert plan["rating"] == "Sell" and plan["bias"] == "short"
+    assert "conversion" not in plan and plan["levels_source"] == {} and "levels_error" in plan
+
+
+def test_a_free_written_rating_is_still_read(db_url, monkeypatch):
+    done, _, _ = _run(db_url, monkeypatch, "SOXL", lambda ctx: "**Rating**: 매수 (**Buy**)\n\n**Entry Price**: 60",
+                      _soxx_buy())
+    assert done["plan"]["rating"] == "Buy" and "leverage_analyst_warning" not in done["plan"]
+
+
+def test_an_unreadable_rating_falls_back_to_the_underlyings_call(db_url, monkeypatch):
+    sell = _soxx("Sell", 440, 452, 410)
+    done, _, _ = _run(db_url, monkeypatch, "SOXS", lambda ctx: "**Rating**: 적극 진입\n\n**Entry Price**: 21", sell)
+    assert done["plan"]["rating"] == "Buy" and "leverage_analyst_warning" in done["plan"]
+
+
+def test_an_underlying_price_in_a_product_slot_is_set_aside(db_url, monkeypatch):
+    done, _, _ = _run(db_url, monkeypatch, "SOXL",
+                      lambda ctx: "**Rating**: Buy\n\n**Entry Price**: 450\n\n**Stop Loss**: 56", _soxx_buy())
+    plan = done["plan"]
+    assert plan["implausible_levels"] == {"entry_price": 450.0}
+    assert plan["entry_price"] == 60.0 and plan["levels_source"]["entry_price"] == "converted"
+    assert plan["stop_loss"] == 56
+
+
+def test_a_slow_analyst_is_cut_off_and_the_run_ends(db_url, monkeypatch):
+    import time
+
+    from desk import runner
+
+    monkeypatch.setattr(runner, "LEVER_TIMEOUT_SEC", -29.9)    # backstop = 0.1 s
+    done, _, _ = _run(db_url, monkeypatch, "SOXL", lambda ctx: time.sleep(1) or "**Rating**: Buy", _soxx_buy())
+    assert done["status"] == "done" and "TimeoutError" in done["plan"]["leverage_analyst_error"]
+
+
+def test_a_past_date_prompt_uses_the_closes_and_the_horizon_picks_the_decay_line():
+    from desk.leverage_analyst import build_prompt
+
+    past = build_prompt(_ctx(live=None, live_u=None, sr={"atr": 4.0, "last_close": 60.0, "levels": []},
+                             sr_u={"atr": 12.0, "last_close": 450.0, "levels": []}))
+    assert "SOXL price 60.0 (last close)" in past and "SOXX price 450.0 (last close)" in past
+    assert "negligible" in build_prompt(_ctx(intraday=True))
+    unmeasured = build_prompt(_ctx(daily_atr_u=None))
+    assert "not measured" in unmeasured and "negligible" not in unmeasured
+    assert "Exit by:" in unmeasured
+
+
+def test_a_fake_run_of_a_leveraged_product_goes_end_to_end(db_url):
+    from fastapi.testclient import TestClient
+
+    from desk.api import create_app
+    from desk.auth import Auth
+    from desk.db import make_engine
+    from desk.runner import make_fake_runner
+    from desk.settings import Settings
+    from tests.test_api import OWNER, PASSWORD, _wait_done
+
+    client = TestClient(create_app(Settings(database_url=db_url, fake_delay=0, fake_runs=True),
+                                   runner=make_fake_runner(0)), base_url="https://testserver")
+    engine = make_engine(db_url)
+    Auth(engine, timedelta(hours=1), timedelta(hours=1)).create_user(OWNER, PASSWORD)
+    engine.dispose()
+    with client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        done = _wait_done(client, client.post("/api/runs", json={"ticker": "SOXL", "trade_date": "2026-11-02"}).json()["id"])
+    plan = done["plan"]
+    assert done["status"] == "done" and plan["analysis_subject"] == "SOXX" and plan["underlying"]["ticker"] == "SOXX"
+    assert plan["rating"] == plan["underlying"]["rating"] and plan["entry_price"] is not None

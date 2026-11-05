@@ -17,6 +17,8 @@ underlying side's bias is flipped for an inverse product.
 
 from __future__ import annotations
 
+import re
+
 from .levels import LEVELS, LIVE_MAX_GAP
 from .related import LEVERAGED, PROXY
 
@@ -47,6 +49,16 @@ def prompt_note(ticker: str, underlying: str, leverage: float, proxy: bool) -> s
 
 
 _FLIP = {"Buy": "Sell", "Overweight": "Underweight", "Hold": "Hold", "Underweight": "Overweight", "Sell": "Buy"}
+
+
+_RATING_WORD = re.compile(r"\b(Buy|Overweight|Hold|Underweight|Sell)\b", re.IGNORECASE)
+
+
+def loose_rating(text: str) -> str | None:
+    """The rating in a free-written '**Rating**:' line ('**Buy**', '매수 (Buy)', 'SOXL Buy')."""
+    match = re.search(r"\*\*Rating\*\*\s*:\s*(.+)", text or "")
+    found = _RATING_WORD.search(match.group(1)) if match else None
+    return found.group(1).capitalize() if found else None
 
 
 def flip_rating(rating: str) -> str:

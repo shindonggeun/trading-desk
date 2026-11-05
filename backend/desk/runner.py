@@ -225,6 +225,8 @@ class Hub:
 # The levels are a reference, not a prerequisite: a slow Toss (429 retries) or Yahoo must not
 # hold the run — and the queue behind it — at "running" with nothing on screen.
 SR_TIMEOUT_SEC = 20.0
+# A leverage-analyst level further than this from the product's price is not a product price.
+IMPLAUSIBLE = 0.5
 # The same for the quote, now fetched before the run as well as after it.
 QUOTE_TIMEOUT_SEC = 10.0
 # And for the related instruments (desk.related): one Yahoo download plus a few news lists.
@@ -326,9 +328,13 @@ class RunManager:
             holding=horizon.holding_en, u_plan=u_plan,
             u_decision=result.final_state.get("final_trade_decision") or "", live=live, live_u=live_u,
             sr=sr, sr_u=sr_u, beta=(related or {}).get("tracking"),
-            language=request.output_language, daily_atr_u=sr_u["atr"] if daily else None)
+            language=request.output_language, daily_atr_u=sr_u["atr"] if daily else None,
+            intraday=horizon.flat_by_close)
         text, error = None, None
+        expected = under.flip_rating(u_plan["rating"]) if leverage < 0 else u_plan["rating"]
         if self.lever_analyst is not None:
+            # the rail shows who is working while the call runs
+            self._publish(run_id, {"type": "status", "agent": "leverage_analyst", "content": "thinking"})
             try:   # the HTTP call has its own timeout; this is the backstop for the thread
                 text = await asyncio.wait_for(asyncio.to_thread(self.lever_analyst, ctx), LEVER_TIMEOUT_SEC + 30)
             except Exception as exc:  # noqa: BLE001 - incl. timeout: the run ends on the underlying's call
@@ -339,15 +345,30 @@ class RunManager:
                                    "data": None})
             plan = parse_plan({"final_trade_decision": text, "trader_investment_plan": text})
             plan.pop("underlying_levels", None)
+            if plan["rating"] == "REVIEW":   # '**Rating**: 매수 (Buy)', '**Buy**' ...
+                loose = under.loose_rating(text)
+                rating = loose or expected
+                plan["rating"], plan["bias"] = rating, BIAS.get(rating, "review")
+                if not loose:
+                    plan["leverage_analyst_warning"] = "rating not readable; the underlying's call is used"
+            # A level far from the product's price is the underlying's number in the wrong slot
+            # ('Entry Price: 450' for a $60 product): set aside, conversion fills it.
+            ref = (live or {}).get("price") or (sr or {}).get("last_close")
+            for key in LEVELS:
+                if ref and plan.get(key) is not None and abs(plan[key] - ref) > IMPLAUSIBLE * ref:
+                    plan.setdefault("implausible_levels", {})[key] = plan[key]
+                    plan[key] = None
         else:
-            rating = under.flip_rating(u_plan["rating"]) if leverage < 0 else u_plan["rating"]
+            rating = expected
             plan = {"rating": rating, "bias": BIAS.get(rating, "review"), "trader_action": None,
                     "entry_price": None, "stop_loss": None, "price_target": None, "reward_risk": None,
                     "time_horizon": u_plan.get("time_horizon"), "position_sizing": None,
                     "executive_summary": None, "levels_origin": {},
                     "leverage_analyst_error": error or "no answer"}
-        # gaps in the analyst's levels: converted from the underlying's (anchor = the pre-run pair)
-        plan["underlying_levels"] = {k: u_plan[k] for k in LEVELS if u_plan.get(k) is not None}
+        # Gaps in the analyst's levels: converted from the underlying's (anchor = the pre-run pair) —
+        # only when the analyst kept the underlying's direction; a Sell SOXL must not get a long setup.
+        if plan["bias"] == BIAS.get(expected) and plan["bias"] in ("long", "short"):
+            plan["underlying_levels"] = {k: u_plan[k] for k in LEVELS if u_plan.get(k) is not None}
         plan, _ = under.split(plan, base, leverage, proxy, under.anchors(start, start_u, sr, sr_u))
         plan = await asyncio.to_thread(self.levels, plan, request.ticker, request.trade_date, live=live,
                                        horizon=horizon.id)

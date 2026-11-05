@@ -13,11 +13,11 @@ from typing import Any
 
 from .broker.base import Broker
 from .events import StateDiffer
-from .levels import fill_levels
+from .levels import entry_vs_live, fill_levels
 from .plan import parse_plan
 from .prices import PriceSource
 from .profile import desk_portfolio
-from .sr import prompt_note, support_resistance
+from .sr import live_note, prompt_note, support_resistance
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -228,13 +228,15 @@ class RunManager:
             return None
         return {"price": quote.price, "source": quote.source, "fetched_at": quote.fetched_at}
 
-    async def _support_resistance(self, request: RunRequest) -> dict | None:
-        """Daily/weekly support and resistance up to the analysis date; None without prices."""
+    async def _support_resistance(self, request: RunRequest, live: dict | None = None) -> dict | None:
+        """Daily/weekly support and resistance up to the analysis date, sided around the live
+        price when there is one; None without prices."""
         if self.prices is None:
             return None
         try:
             return await asyncio.wait_for(
-                support_resistance(self.prices, request.ticker, request.trade_date), SR_TIMEOUT_SEC)
+                support_resistance(self.prices, request.ticker, request.trade_date,
+                                   price=live["price"] if live else None), SR_TIMEOUT_SEC)
         except Exception as exc:  # noqa: BLE001 - incl. timeout: the analysis runs without the reference
             log.warning("no support/resistance for %s: %s", request.ticker, exc)
             return None
@@ -255,13 +257,18 @@ class RunManager:
 
             try:
                 book = await self.broker.portfolio() if request.use_portfolio else None
-                sr = await self._support_resistance(request)
-                portfolio = desk_portfolio(request.profile, book, prompt_note(sr))
+                # The agents set levels against the price now, not only a close days old.
+                start = await self._live_quote(request)
+                sr = await self._support_resistance(request, start)
+                note = "\n\n".join(part for part in (live_note(start, sr and sr.get("atr")), prompt_note(sr))
+                                   if part) or None
+                portfolio = desk_portfolio(request.profile, book, note)
                 result = await asyncio.to_thread(self.runner, request, emit, portfolio)
                 # The model may still leave a level out; fill it from ATR and mark it as computed.
-                live = await self._live_quote(request)
+                live = await self._live_quote(request) or start
                 plan = await asyncio.to_thread(self.levels, parse_plan(result.final_state),
                                                request.ticker, request.trade_date, live=live)
+                plan = entry_vs_live(plan, sr and sr.get("atr"))
                 if sr:
                     plan["support_resistance"] = sr
                 self.store.mark_done(run_id, plan, result.report_path)

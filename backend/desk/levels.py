@@ -86,3 +86,45 @@ def fill_levels(plan: dict, ticker: str, trade_date: str, prices: PriceFn = last
     plan["levels_source"] = source
     plan["reward_risk"] = reward_risk(plan.get("entry_price"), plan.get("stop_loss"), plan.get("price_target"))
     return plan
+
+
+# Within this many ATR (or this fraction of the price, without an ATR) the entry is "now".
+NOW_ATR = 0.5
+NOW_PCT = 0.01
+# Further than this the entry needs a move the holding period may never bring.
+FAR_ATR = 2.0
+FAR_PCT = 0.05
+
+
+def entry_vs_live(plan: dict, atr: float | None = None) -> dict:
+    """How the plan's levels sit against the live price: the gap to the entry, what kind of
+    order that entry is, and whether the stop or target has already been passed.
+
+    kind: now | limit (long below / short above the price: waits for a pullback or rally)
+          | stop (long above / short below: waits for a breakout or breakdown)."""
+    live = (plan.get("live_price") or {}).get("price")
+    entry = plan.get("entry_price")
+    direction = {"long": 1, "short": -1}.get(plan.get("bias"))
+    # a quote fill_levels already distrusted (a split, another currency) frames nothing
+    if not live or entry is None or direction is None or plan.get("levels_warning"):
+        return plan
+    plan = dict(plan)
+    atr = atr or plan.get("atr")
+    gap = entry - live
+    gap_atr = abs(gap) / atr if atr else None
+    near = gap_atr <= NOW_ATR if gap_atr is not None else abs(gap) / live <= NOW_PCT
+    far = gap_atr > FAR_ATR if gap_atr is not None else abs(gap) / live > FAR_PCT
+    kind = "now" if near else ("limit" if gap * direction < 0 else "stop")
+    stop, target = plan.get("stop_loss"), plan.get("price_target")
+    plan["entry_vs_live"] = {
+        "live": live,
+        "gap": _round(gap),
+        "gap_pct": round(gap / live * 100, 2),
+        "gap_atr": round(gap_atr, 2) if gap_atr is not None else None,
+        "kind": kind,
+        "far": far,
+        # live already beyond the stop or the target: the level no longer frames a trade from here
+        "stop_passed": stop is not None and (live - stop) * direction <= 0,
+        "target_passed": target is not None and (target - live) * direction <= 0,
+    }
+    return plan

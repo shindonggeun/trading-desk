@@ -164,3 +164,9 @@ def test_run_finishes_without_levels_when_the_lookup_fails_or_hangs(monkeypatch)
         raise ConnectionError("down")
     monkeypatch.setattr(runner, "support_resistance", boom)
     assert asyncio.run(manager._support_resistance(Request())) is None
+
+
+def test_live_note_puts_the_current_price_in_front_of_the_agents():
+    note = sr.live_note({"price": 200.13, "source": "toss", "fetched_at": "2026-11-05T15:00:00+00:00"}, 6.0)
+    assert "200.13" in note and "ATR14 6.0" in note and "conditional" in note
+    assert sr.live_note(None) is None

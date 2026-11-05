@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { price, STATUS_LABEL, time } from "../format";
+import { HORIZON, OPINION, OUTCOME } from "../korean";
 import type { Run, RunPage } from "../types";
 import { BiasBadge, RatingText } from "./PlanCard";
 
 const PAGE_SIZE = 20;
+
+/** 예전 run(시간축 없음)은 스윙이다(backend desk/horizons.py DEFAULT_HORIZON). */
+function horizonOf(r: Run): string {
+  return r.plan?.horizon ?? r.options.horizon ?? "swing";
+}
 
 function isActive(r: Run) {
   return r.status === "queued" || r.status === "running";
@@ -27,6 +33,7 @@ export default function RunsCard() {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [horizon, setHorizon] = useState<string>("all");
   const pageRef = useRef(page);
   pageRef.current = page;
   const seqRef = useRef(0); // 마지막에 보낸 요청만 반영 — 늦게 온 폴링 응답이 삭제 뒤 목록을 덮지 않게
@@ -74,7 +81,8 @@ export default function RunsCard() {
     }
   }
 
-  const runs = data?.items ?? [];
+  const all = data?.items ?? [];
+  const runs = horizon === "all" ? all : all.filter((r) => horizonOf(r) === horizon);
   const pages = data ? Math.max(1, Math.ceil(data.total / data.size)) : 1;
   const stale = data !== null && data.page !== page; // 쪽을 바꾼 뒤 응답 전
 
@@ -84,10 +92,20 @@ export default function RunsCard() {
         분석 기록 {data && <span className="muted small">{data.total}건</span>}
       </h2>
       <p className="muted small">끝난 분석 기록은 90일 보관한 뒤 자동으로 지웁니다.</p>
+      <div className="chips" role="group" aria-label="시간축 필터">
+        {[["all", "전체"], ...Object.entries(HORIZON).map(([id, h]) => [id, h.ko])].map(([id, label]) => (
+          <button key={id} type="button" className={`chip ${horizon === id ? "chip-on" : ""}`} aria-pressed={horizon === id} onClick={() => setHorizon(id)}>
+            {label}
+          </button>
+        ))}
+        {horizon !== "all" && <span className="muted small">이 쪽(현재 페이지) {all.length}건 중 {runs.length}건</span>}
+      </div>
       {error && <p className="error small" role="alert">{error}</p>}
       {loadFailed && <p className="error small" role="alert">분석 기록을 불러오지 못했습니다. 5초 뒤 다시 시도합니다.</p>}
-      {data && runs.length === 0 ? (
+      {data && all.length === 0 ? (
         <p className="muted">아직 분석이 없습니다. 왼쪽에서 첫 분석을 시작하세요.</p>
+      ) : data && runs.length === 0 ? (
+        <p className="muted">이 쪽에 {HORIZON[horizon]?.ko ?? horizon} 분석이 없습니다.</p>
       ) : (
         <div className={stale ? "table-wrap stale" : "table-wrap"} aria-busy={stale}>
           <table role="table" className="runs stack-table">
@@ -95,6 +113,7 @@ export default function RunsCard() {
               <tr role="row">
                 <th role="columnheader">종목</th>
                 <th role="columnheader">기준일</th>
+                <th role="columnheader">시간축</th>
                 <th role="columnheader">판단</th>
                 <th role="columnheader" className="num">진입</th>
                 <th role="columnheader" className="num">손절</th>
@@ -114,7 +133,19 @@ export default function RunsCard() {
                     {r.options.name ? <>{r.options.name} <span className="muted small">{r.ticker}</span></> : r.ticker}
                   </td>
                   <td role="cell" data-label="기준일">{r.trade_date}</td>
-                  <td role="cell" data-label="판단">{r.plan ? <><RatingText rating={r.plan.rating} /> <BiasBadge plan={r.plan} /></> : "—"}</td>
+                  <td role="cell" data-label="시간축">{HORIZON[horizonOf(r)]?.ko ?? horizonOf(r)}</td>
+                  <td role="cell" data-label="판단">{r.plan ? <><RatingText rating={r.plan.rating} /> <BiasBadge plan={r.plan} />
+                    {r.plan.opinion && (
+                      <span className={`opinion-tag opinion-${r.plan.opinion}`} title={OPINION[r.plan.opinion]?.desc}>
+                        {OPINION[r.plan.opinion]?.ko}
+                        {r.plan.win_probability != null && ` ${Math.round(r.plan.win_probability * 100)}%`}
+                      </span>
+                    )}
+                    {(r.plan.bias === "long" || r.plan.bias === "short") && r.outcome_status && OUTCOME[r.outcome_status] && (
+                      <span className={`outcome-tag outcome-${r.outcome_status}`} title={OUTCOME[r.outcome_status].desc}>
+                        {OUTCOME[r.outcome_status].ko}
+                      </span>
+                    )}</> : "—"}</td>
                   <td role="cell" className="num" data-label="진입">{price(r.plan?.entry_price)}</td>
                   <td role="cell" className="num" data-label="손절">{price(r.plan?.stop_loss)}</td>
                   <td role="cell" className="num" data-label="목표">{price(r.plan?.price_target)}</td>

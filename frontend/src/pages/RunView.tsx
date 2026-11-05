@@ -120,6 +120,8 @@ export default function RunView({ runId }: { runId: string }) {
               symbol={stillOpen(run.trade_date) ? run.ticker : undefined}
               ticker={run.options.name ? `${run.options.name} (${run.ticker})` : run.ticker}
               profile={PROFILE_LABEL[run.options.profile ?? ""]}
+              outcome={run.outcome}
+              outcomeStatus={run.outcome_status}
             />
           )}
           <div ref={bottom} />

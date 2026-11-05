@@ -1,8 +1,8 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { api } from "../api";
 import { price } from "../format";
-import { ACTION, BIAS, RATING, term } from "../korean";
-import type { Estimate, Plan } from "../types";
+import { ACTION, BIAS, FACTOR, HORIZON, OPINION, OUTCOME, RATING, term } from "../korean";
+import type { Estimate, Outcome, OutcomeStatus, Plan } from "../types";
 
 export function BiasBadge({ plan }: { plan: Plan }) {
   const b = BIAS[plan.bias];
@@ -214,12 +214,134 @@ function LiveWarning({ g, basis }: { g: Gap | null; basis: string }) {
   return <p className="plan-warning">{notes.join(" ")}</p>;
 }
 
-export default function PlanCard({ plan, ticker, symbol, profile }: {
+/** 30초마다 바뀌는 지금 시각 — 진입 유효 시간이 지났는지 볼 때. */
+function useNow(enabled: boolean): number {
+  const [t, setT] = useState(Date.now());
+  useEffect(() => {
+    if (!enabled) return;
+    const timer = setInterval(() => setT(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [enabled]);
+  return t;
+}
+
+function stamp(iso: string): string {
+  const d = new Date(iso);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay
+    ? hhmm(iso)
+    : d.toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+const pctText = (p: number) => `${Math.round(p * 100)}%`;
+
+/** 필터가 관망으로 돌린 이유 — 서버 문구 대신 계획 값과 기준으로 한국어로 다시 쓴다. */
+function filterReasons(plan: Plan): string[] {
+  const f = plan.filter;
+  if (!f || f.passed !== false) return [];
+  const th = f.thresholds;
+  const out: string[] = [];
+  const p = plan.win_probability;
+  if (p == null || p < th.win_probability) out.push(`승률 ${p != null ? pctText(p) : "—"} < 기준 ${pctText(th.win_probability)}`);
+  const rr = plan.reward_risk;
+  if (rr == null || rr < th.reward_risk) out.push(`손익비 ${rr ?? "—"} < 기준 ${th.reward_risk}`);
+  const dir = plan.bias === "long" || plan.bias === "short" ? plan.bias : null;
+  const agree = dir ? plan.score?.[dir] ?? 0 : 0;
+  if (agree < th.agreeing) out.push(`같은 방향 근거 ${agree}개 < 기준 ${th.agreeing}개`);
+  if (plan.entry_vs_live?.far) out.push("진입가가 지금 가격에서 너무 멀어 제때 체결되기 어렵습니다");
+  // 백엔드가 새 기준을 더하면 여기서 못 맞출 수 있다 — 그때는 서버 문구를 그대로
+  return out.length ? out : f.reasons;
+}
+
+/** 카드 맨 위: 매수 · 매도 · 관망 · 확인 필요. 진입 조건(롱 · 숏)을 나란히. */
+function OpinionBanner({ plan }: { plan: Plan }) {
+  const op = plan.opinion;
+  if (!op) return null;
+  const t = OPINION[op];
+  if (!t) return null; // 모르는 의견 값은 카드를 깨지 않고 건너뛴다
+  const reasons = filterReasons(plan);
+  const demoted = plan.filter?.passed === false; // 등급은 방향인데 필터가 관망으로
+  const triggers = plan.long_trigger != null || plan.short_trigger != null;
+  return (
+    <div className={`opinion opinion-${op}`}>
+      <div className="opinion-head">
+        <span className="opinion-label" title={t.desc}>{t.ko}</span>
+        {plan.win_probability != null && (
+          <span className="opinion-prob" title="손절보다 목표에 먼저 닿을 확률 — 모델 추정">
+            승률 추정 <strong>{pctText(plan.win_probability)}</strong>
+          </span>
+        )}
+      </div>
+      <p className="small opinion-desc">
+        {demoted
+          ? `등급은 ${plan.bias === "long" ? "롱" : "숏"} 쪽이지만 고확률 기준에 못 미쳐 관망으로 둡니다.`
+          : t.desc}
+      </p>
+      {reasons.length > 0 && (
+        <ul className="opinion-reasons small">
+          {reasons.map((r) => <li key={r}>{r}</li>)}
+        </ul>
+      )}
+      {triggers && (
+        <div className="triggers-row">
+          <div className="trigger trigger-long">
+            <span className="muted small">롱 진입 조건</span>
+            <strong>{plan.long_trigger != null ? `${price(plan.long_trigger)} 회복 · 돌파` : "없음"}</strong>
+          </div>
+          <div className="trigger trigger-short">
+            <span className="muted small">숏 · 축소 조건</span>
+            <strong>{plan.short_trigger != null ? `${price(plan.short_trigger)} 이탈` : "없음"}</strong>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const SIDE_KO: Record<string, string> = { long: "롱", short: "숏", neutral: "중립" };
+
+/** 여섯 근거의 롱 · 숏 · 중립. */
+function Checklist({ plan }: { plan: Plan }) {
+  const c = plan.checklist;
+  if (!c) return null;
+  return (
+    <div className="checklist" aria-label="판단 근거">
+      {Object.entries(FACTOR).map(([k, ko]) => {
+        const side = c[k as keyof typeof c];
+        return (
+          <span key={k} className={`factor factor-${side ?? "none"}`}>
+            {ko} <strong>{side ? SIDE_KO[side] : "—"}</strong>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/** 서버 채점 결과(1시간마다). */
+function OutcomeLine({ outcome, status }: { outcome?: Outcome | null; status?: OutcomeStatus | null }) {
+  const st = status ?? outcome?.status;
+  if (!st) return null;
+  const t = OUTCOME[st];
+  const r = outcome?.r;
+  return (
+    <p className={`outcome outcome-${st} small`}>
+      채점: <strong title={t?.desc}>{t?.ko ?? st}</strong>
+      {r != null && ` · ${r > 0 ? "+" : ""}${r}R`}
+      {outcome?.late && " · 분석이 진입 유효 시간보다 늦게 끝났습니다"}
+      {outcome?.exited_at && <span className="muted"> · {stamp(outcome.exited_at)}</span>}
+    </p>
+  );
+}
+
+export default function PlanCard({ plan, ticker, symbol, profile, outcome, outcomeStatus }: {
   plan: Plan;
   ticker: string;
   /** 시세를 읽을 티커(NVDA, 005930.KS). 없으면 계획에 저장된 현재가만 쓴다 — 오래된 · 과거 날짜 분석. */
   symbol?: string;
   profile?: string;
+  outcome?: Outcome | null;
+  outcomeStatus?: OutcomeStatus | null;
 }) {
   const directional = plan.bias === "long" || plan.bias === "short";
   const live = useLiveQuote(symbol, plan.live_price, directional);
@@ -230,13 +352,18 @@ export default function PlanCard({ plan, ticker, symbol, profile }: {
   const rating = term(RATING, plan.rating);
   const action = term(ACTION, plan.trader_action);
   const anyAtr = Object.values(plan.levels_source ?? {}).includes("atr");
+  const horizon = plan.horizon ? HORIZON[plan.horizon] : null; // 예전 run 은 시간축이 없다 = 스윙
+  const now = useNow(!!plan.valid_until);
+  const expired = !!plan.valid_until && Date.parse(plan.valid_until) <= now;
+  const dir = plan.bias === "long" || plan.bias === "short" ? plan.bias : null;
   return (
-    <section className="card plan-card">
+    <section className={`card plan-card${expired ? " plan-expired" : ""}`}>
       <div className="plan-head">
         <div>
           <div className="muted small">
             최종 판단 · {ticker}
             {profile && ` · ${profile}`}
+            {horizon && ` · ${horizon.ko}(${horizon.holding})`}
           </div>
           <div className="plan-rating">
             {rating ? rating.ko : plan.rating}
@@ -245,6 +372,14 @@ export default function PlanCard({ plan, ticker, symbol, profile }: {
         </div>
         <BiasBadge plan={plan} />
       </div>
+      <OpinionBanner plan={plan} />
+      {plan.valid_until && (
+        <p className={`small ${expired ? "plan-expired-note" : "muted"}`}>
+          {expired
+            ? `진입 유효 시간이 지났습니다(${stamp(plan.valid_until)}까지) — 아래 레벨은 기록용입니다. 새로 분석하세요.`
+            : `진입 유효: ${stamp(plan.valid_until)}까지`}
+        </p>
+      )}
       {rating && <p className="plan-explain">{rating.desc}</p>}
       {action && (
         <p className="muted small">
@@ -299,6 +434,29 @@ export default function PlanCard({ plan, ticker, symbol, profile }: {
               {plan.price_target !== null && ` 목표${pct(plan.entry_price, plan.price_target)}`}
             </span>
           </dd>
+          {plan.score && (
+            <>
+              <dt>근거 일치</dt>
+              <dd>
+                롱 {plan.score.long} · 숏 {plan.score.short}
+                <span className="muted small">
+                  {" "}/ {Object.keys(plan.checklist ?? {}).length || 6}{dir && plan.filter && ` (기준: 같은 방향 ${plan.filter.thresholds.agreeing}개 이상)`}
+                </span>
+              </dd>
+            </>
+          )}
+          {plan.invalidation && (
+            <>
+              <dt>무효화</dt>
+              <dd>{plan.invalidation}</dd>
+            </>
+          )}
+          {plan.exit_by && (
+            <>
+              <dt>청산 기한</dt>
+              <dd>{plan.exit_by}</dd>
+            </>
+          )}
           <dt>보유 기간</dt>
           <dd>{plan.time_horizon ?? "—"}</dd>
           <dt>포지션 크기</dt>
@@ -306,6 +464,9 @@ export default function PlanCard({ plan, ticker, symbol, profile }: {
         </dl>
         <Ladder plan={plan} />
       </div>
+      <Checklist plan={plan} />
+      {/* 관망 · 판단 보류도 서버가 invalid 로 채점해 두지만, 레벨 오류처럼 보이지 않게 숨긴다 */}
+      {directional && <OutcomeLine outcome={outcome} status={outcomeStatus} />}
       <LiveWarning g={g} basis={basis} />
       {plan.executive_summary && <p className="plan-summary">{plan.executive_summary}</p>}
       <p className="muted small">

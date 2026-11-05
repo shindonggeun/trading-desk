@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ANALYST_CHOICES } from "../agents";
 import { api } from "../api";
+import { HORIZON } from "../korean";
 import InstrumentSearch, { type Picked } from "./InstrumentSearch";
 
 function today(): string {
@@ -16,6 +17,10 @@ export default function NewRunForm() {
   const [language, setLanguage] = useState("Korean");
   const [profiles, setProfiles] = useState<{ id: string; label: string }[]>([]);
   const [profile, setProfile] = useState("");
+  const [horizons, setHorizons] = useState(
+    Object.entries(HORIZON).map(([id, h]) => ({ id, label: h.ko, holding: h.holding })),
+  );
+  const [horizon, setHorizon] = useState("swing");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -24,6 +29,8 @@ export default function NewRunForm() {
       .then((c) => {
         setProfiles(c.profiles);
         setProfile(c.default_profile);
+        if (c.horizons?.length) setHorizons(c.horizons);
+        if (c.default_horizon) setHorizon(c.default_horizon);
       })
       .catch(() => {});
   }, []);
@@ -41,6 +48,7 @@ export default function NewRunForm() {
         ticker: instrument.ticker,
         name: instrument.name,
         profile: profile || undefined,
+        horizon,
         trade_date: date,
         analysts,
         use_portfolio: usePortfolio,
@@ -88,6 +96,23 @@ export default function NewRunForm() {
           <span className="muted small">트레이더 · 리스크 토론 · 최종 판단에 지침으로 들어갑니다</span>
         </label>
       )}
+      <fieldset>
+        <legend>매매 시간축</legend>
+        <div className="chips" role="radiogroup" aria-label="매매 시간축">
+          {horizons.map((h) => (
+            <label key={h.id} className={`chip ${horizon === h.id ? "chip-on" : ""}`} title={`보유 ${h.holding}`}>
+              <input type="radio" name="horizon" value={h.id} checked={horizon === h.id} onChange={() => setHorizon(h.id)} />
+              {h.label}
+              {h.id === "scalp" && <span className="muted small">&nbsp;(참고)</span>}
+            </label>
+          ))}
+        </div>
+        <span className="muted small">
+          {horizon === "scalp"
+            ? "참고용 — 분석에 수 분이 걸리고 지표는 일봉이라, 계획이 도착했을 때 가격이 진입가 근처일 때만 씁니다(15분 유효)."
+            : `보유 ${horizons.find((h) => h.id === horizon)?.holding ?? ""} · 지지 · 저항과 손절 · 목표 폭이 이 시간축의 봉으로 정해집니다`}
+        </span>
+      </fieldset>
       <label>
         보고서 언어
         <select value={language} onChange={(e) => setLanguage(e.target.value)}>

@@ -17,6 +17,8 @@ from .levels import entry_vs_live, fill_levels
 from .plan import parse_plan
 from .prices import PriceSource
 from .profile import desk_portfolio
+from .related import collect as collect_related
+from .related import prompt_note as related_note
 from .sr import live_note, prompt_note, support_resistance
 from .store import Store
 
@@ -197,12 +199,15 @@ class Hub:
 SR_TIMEOUT_SEC = 20.0
 # The same for the quote, now fetched before the run as well as after it.
 QUOTE_TIMEOUT_SEC = 10.0
+# And for the related instruments (desk.related): one Yahoo download plus a few news lists.
+RELATED_TIMEOUT_SEC = 30.0
 
 
 class RunManager:
     def __init__(self, store: Store, hub: Hub, runner: Runner, broker: Broker, max_concurrent: int,
-                 levels=fill_levels, prices: PriceSource | None = None) -> None:
+                 levels=fill_levels, prices: PriceSource | None = None, related=collect_related) -> None:
         self.levels = levels
+        self.related = related
         self.prices = prices
         self.store = store
         self.hub = hub
@@ -243,6 +248,17 @@ class RunManager:
             log.warning("no support/resistance for %s: %s", request.ticker, exc)
             return None
 
+    async def _related(self, request: RunRequest) -> dict | None:
+        """Underlying, peers, drivers and their headlines; None when Yahoo has nothing or is slow."""
+        if self.related is None:
+            return None
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self.related, request.ticker, request.trade_date), RELATED_TIMEOUT_SEC)
+        except Exception as exc:  # noqa: BLE001 - incl. timeout: the analysis runs without it
+            log.warning("no related instruments for %s: %s", request.ticker, exc)
+            return None
+
     def _publish(self, run_id: str, event: dict) -> None:
         self.store.append_event(run_id, event)
         self.hub.notify(run_id)
@@ -261,9 +277,10 @@ class RunManager:
                 book = await self.broker.portfolio() if request.use_portfolio else None
                 # The agents set levels against the price now, not only a close days old.
                 start = await self._live_quote(request)
-                sr = await self._support_resistance(request, start)
-                note = "\n\n".join(part for part in (live_note(start, sr and sr.get("atr")), prompt_note(sr))
-                                   if part) or None
+                sr, related = await asyncio.gather(self._support_resistance(request, start),
+                                                   self._related(request))
+                note = "\n\n".join(part for part in (live_note(start, sr and sr.get("atr")), prompt_note(sr),
+                                                     related_note(related)) if part) or None
                 portfolio = desk_portfolio(request.profile, book, note)
                 result = await asyncio.to_thread(self.runner, request, emit, portfolio)
                 # The model may still leave a level out; fill it from ATR and mark it as computed.
@@ -273,6 +290,8 @@ class RunManager:
                 plan = entry_vs_live(plan, sr and sr.get("atr"))
                 if sr:
                     plan["support_resistance"] = sr
+                if related:
+                    plan["related"] = related
                 self.store.mark_done(run_id, plan, result.report_path)
                 self._publish(run_id, {"type": "plan", "agent": "portfolio_manager", "data": plan})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "done"})

@@ -116,6 +116,38 @@ class Store:
             ).mappings().all()
         return [_run(row) for row in rows]
 
+    def runs_to_score(self, limit: int) -> list[dict]:
+        """Finished directional-or-not runs without a final outcome yet (desk.outcome.RETRY),
+        newest first."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(runs).where(runs.c.status == "done", runs.c.plan.is_not(None),
+                                   runs.c.outcome_status.is_(None)
+                                   | runs.c.outcome_status.in_(("waiting", "open", "error")))
+                .order_by(runs.c.created_at.desc()).limit(limit)
+            ).mappings().all()
+        return [_run(row) for row in rows]
+
+    def set_outcome(self, run_id: str, outcome: dict) -> None:
+        self._update(run_id, outcome=outcome, outcome_status=outcome.get("status"), scored_at=now())
+
+    def scored_since(self, since: datetime) -> list[dict]:
+        """Finished runs created since ``since`` with their outcomes, for the statistics."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(runs).where(runs.c.status == "done", runs.c.created_at >= since)
+                .order_by(runs.c.created_at.desc())
+            ).mappings().all()
+        return [_run(row) for row in rows]
+
+    def clear_outcomes(self, since: datetime | None = None) -> int:
+        """Forget outcomes (rules changed) so the next sweep scores them again."""
+        stmt = update(runs).values(outcome=None, outcome_status=None, scored_at=None)
+        if since is not None:
+            stmt = stmt.where(runs.c.created_at >= since)
+        with self.engine.begin() as conn:
+            return conn.execute(stmt).rowcount
+
     def count_runs(self) -> int:
         with self.engine.connect() as conn:
             return conn.execute(select(func.count()).select_from(runs)).scalar_one()
@@ -160,4 +192,7 @@ def _run(row: RowMapping) -> dict:
         "created_at": iso(row["created_at"]),
         "started_at": iso(row["started_at"]),
         "finished_at": iso(row["finished_at"]),
+        "outcome": row["outcome"],
+        "outcome_status": row["outcome_status"],
+        "scored_at": iso(row["scored_at"]),
     }

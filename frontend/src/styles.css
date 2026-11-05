@@ -737,8 +737,12 @@ span.cs-hold-text { color: var(--warn); }
 /* #99 — 분석 화면: 결론 줄 + 요약 · 차트 · 토론 · 근거 탭 */
 .run-bar { position: sticky; top: var(--topbar-h, 52px); z-index: 4; margin: 0 0 8px; background: var(--surface);
   border: 1px solid var(--border); border-radius: 8px; }
-.run-bar-main { display: flex; align-items: baseline; gap: 6px 14px; flex-wrap: wrap; width: 100%; padding: 10px 14px;
-  background: none; border: 0; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.run-bar-main { display: flex; align-items: baseline; gap: 6px 14px; flex-wrap: wrap; padding: 10px 14px; }
+.run-bar-toggle { display: none; margin-left: auto; }
+.run-bar-error { flex: 1 1 200px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--short); }
+/* 토론 탭: 에이전트 목록 · 용어 사전은 고정된 결론 줄 아래에 붙는다 */
+.run-tabbed .rail, .run-tabbed .glossary { top: calc(var(--topbar-h, 52px) + var(--runbar-h, 80px) + 12px); }
+.run-tabbed .glossary { max-height: calc(100vh - var(--topbar-h, 52px) - var(--runbar-h, 80px) - 28px); }
 .run-bar-name { font-weight: 650; }
 .run-bar-op { font-size: 18px; font-weight: 700; }
 .run-bar-op.opinion-buy { color: var(--long); }
@@ -761,6 +765,7 @@ span.cs-hold-text { color: var(--warn); }
 .run-summary, .run-evidence, .result-chart { display: grid; gap: 14px; min-width: 0; }
 .result-chart-switch { margin-bottom: 2px; }
 .run-empty p { margin: 0; }
+.run-debate-glossary { display: contents; }
 @media (max-width: 1199px) { .run-debate-glossary { display: none; } }
 @media (max-width: 760px) {
   .run-tabbed { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
@@ -769,6 +774,9 @@ span.cs-hold-text { color: var(--warn); }
   .run-bar-op { font-size: 16px; }
   .run-bar-levels { font-size: 13px; }
   .run-bar:not(.run-bar-open) .run-bar-more { display: none; }
+  .run-bar-toggle { display: inline; }
+  /* 용어 툴팁(화면 아래 고정)이 아래 탭 막대에 가리지 않게 */
+  .run-tabbed .gl-tip, .run-tabbed .gl-flip .gl-tip { bottom: calc(72px + env(safe-area-inset-bottom)); }
   .run-tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; margin: 0; gap: 0; background: var(--surface);
     border-top: 1px solid var(--border); border-bottom: 0; padding-bottom: env(safe-area-inset-bottom); }
   .run-tab { flex: 1; padding: 12px 4px; border-bottom: 0; border-top: 2px solid transparent; }

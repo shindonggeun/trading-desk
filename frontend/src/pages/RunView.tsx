@@ -8,6 +8,7 @@ import EvidenceLevels from "../components/Evidence";
 import { GlossaryPanel, GlossaryProvider } from "../components/Glossary";
 import PlanCard from "../components/PlanCard";
 import RunSummaryBar from "../components/RunSummaryBar";
+import TradeMap from "../components/TradeMap";
 import { duration, STATUS_LABEL } from "../format";
 import type { DeskEvent, Plan, Run } from "../types";
 
@@ -196,6 +197,7 @@ export default function RunView({ runId }: { runId: string }) {
             plan ? (
               <div className="run-summary">
                 {status === "done" && <ConsensusCard plan={plan} ticker={run.ticker} />}
+                <TradeMap plan={plan} ticker={run.ticker} />
                 <PlanCard
                   plan={plan}
                   symbol={stillOpen(run.trade_date) ? run.ticker : undefined}

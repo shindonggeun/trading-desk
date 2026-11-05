@@ -58,6 +58,8 @@ export interface Plan {
   /** #94 결론 정리(desk/consensus.py): 에이전트별 투표 · 양쪽 관점 · 토론 요지. 예전 run · 실패면 없다. */
   consensus?: Consensus;
   consensus_error?: string;
+  /** #106 매매 지도(desk/trade_map.py): 진입 · 1차 / 2차 목표 · 지지 · 손절 — 숫자는 계산값. 예전 run 엔 없다. */
+  trade_map?: TradeMap | null;
   filter?: {
     passed: boolean | null;
     reasons: string[];
@@ -88,6 +90,46 @@ export interface Consensus {
     /** "내 보유 종목 반영" 으로 돌렸고 이 종목을 갖고 있을 때만. */
     position: { quantity: number; average_price: number | null; pnl_pct: number | null } | null;
   } | null;
+}
+
+export interface VolumeProfile {
+  interval: string | null;
+  bars: number;
+  low: number;
+  high: number;
+  bin_width: number;
+  bins: { price: number; volume: number; share: number }[];
+  /** 가장 많이 거래된 가격 */
+  poc: number;
+  /** 거래량 70% 가 몰린 구간 */
+  value_area: { low: number; high: number };
+  nodes: { price: number; kind: "thick" | "thin"; share: number }[];
+}
+
+export type TradeRole = "target2" | "target1" | "entry" | "guard1" | "guard2" | "stop";
+
+export interface TradeStep {
+  role: TradeRole;
+  price: number;
+  /** 대표 근거: 계획 값 · 지지 / 저항 구역 · 매물대 · ATR 계산 · (관망) 진입 조건 */
+  source: "plan" | "sr" | "volume" | "atr" | "trigger";
+  sources: string[];
+  strength: number | null;
+  basis: string | null;
+  volume: "thick" | "thin" | null;
+  action: "enter" | "take_partial" | "take_rest" | "hold_check" | "reduce" | "exit";
+  share?: number;
+  then_stop?: number;
+  rr?: number | null;
+  entry_type?: "now" | "limit" | "stop" | null;
+}
+
+export interface TradeMap {
+  maps: { side: "long" | "short"; origin: "plan" | "trigger"; steps: TradeStep[] }[];
+  reference_price: number | null;
+  atr: number;
+  volume_profile: boolean;
+  levels: boolean;
 }
 
 export type HorizonId = "scalp" | "intraday" | "short_swing" | "swing";
@@ -168,6 +210,8 @@ export interface SupportResistance {
   /** 추세선(#73) — 옛 분석 · 계산 실패면 없다 */
   trendlines?: Trendline[];
   fibonacci?: Fibonacci | null;
+  /** #106 매물대(desk/volume_profile.py) — 거래량 없는 지수 · 예전 run 은 없다 */
+  volume_profile?: VolumeProfile | null;
   trend_error?: string;
 }
 

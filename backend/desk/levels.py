@@ -124,7 +124,40 @@ FAR_ATR = 2.0
 FAR_PCT = 0.05
 
 
-def entry_vs_live(plan: dict, atr: float | None = None) -> dict:
+TRIGGER_FAR_ATR = 3.0
+FAR_MAX_PCT = 0.15      # whatever the ATR says (one shock bar can swell it), this far is far (#151)
+NO_ANCHOR_GAP = 0.6     # with no last close to compare, only a gap this big is taken for a split / currency
+
+
+def _gap(level: float, live: float, atr: float | None) -> dict:
+    gap = level - live
+    gap_atr = abs(gap) / atr if atr else None
+    return {"price": _round(level), "gap": _round(gap), "gap_pct": round(gap / live * 100, 2),
+            "gap_atr": round(gap_atr, 2) if gap_atr is not None else None}
+
+
+def triggers_vs_live(plan: dict, atr: float | None = None, far_pct: float = FAR_MAX_PCT) -> dict:
+    """The model's conditional triggers (Long / Short Trigger) against the live price: a trigger
+    further than TRIGGER_FAR_ATR ATR or ``far_pct`` (the horizon's reach, desk.playbook.MAX_ZONE_PCT)
+    is a level to watch (``reachable: false``), not one to act on soon."""
+    live = (plan.get("live_price") or {}).get("price")
+    if not live or plan.get("levels_warning"):
+        return plan
+    atr = atr or plan.get("atr")
+    out = {}
+    for side in ("long", "short"):
+        level = plan.get(f"{side}_trigger")
+        if level is None:
+            continue
+        g = _gap(level, live, atr)
+        g["far"] = abs(level - live) > far_pct * live or bool(g["gap_atr"] and g["gap_atr"] > TRIGGER_FAR_ATR)
+        g["reachable"] = not g["far"]
+        g["reason"] = "too_far" if g["far"] else None
+        out[side] = g
+    return {**plan, "triggers_vs_live": out} if out else plan
+
+
+def entry_vs_live(plan: dict, atr: float | None = None, last_close: float | None = None) -> dict:
     """How the plan's levels sit against the live price: the gap to the entry, what kind of
     order that entry is, and whether the stop or target has already been passed.
 
@@ -136,16 +169,20 @@ def entry_vs_live(plan: dict, atr: float | None = None) -> dict:
     # a quote fill_levels already distrusted (a split, another currency) frames nothing
     if not live or entry is None or direction is None or plan.get("levels_warning"):
         return plan
-    # nor one that far from the plan's own levels when fill_levels had nothing to fill
-    anchor = plan.get("last_close") or entry
-    if abs(live - anchor) > LIVE_MAX_GAP * anchor:
+    # nor one that far from the last close (a split, another listing). The entry is no anchor:
+    # after a -30% day the plan's entry can be far from the price by design - that is what "far" says
+    anchor = plan.get("last_close") or last_close
+    if anchor and abs(live - anchor) > LIVE_MAX_GAP * anchor:
+        return plan
+    if not anchor and abs(live - entry) > NO_ANCHOR_GAP * entry:
         return plan
     plan = dict(plan)
     atr = atr or plan.get("atr")
     gap = entry - live
     gap_atr = abs(gap) / atr if atr else None
     near = gap_atr <= NOW_ATR if gap_atr is not None else abs(gap) / live <= NOW_PCT
-    far = gap_atr > FAR_ATR if gap_atr is not None else abs(gap) / live > FAR_PCT
+    far = (gap_atr > FAR_ATR if gap_atr is not None else abs(gap) / live > FAR_PCT) or abs(gap) > FAR_MAX_PCT * live
+    near = near and not far           # an ATR of a third of the price (a shock on a 3x product) is no "near"
     kind = "now" if near else ("limit" if gap * direction < 0 else "stop")
     stop, target = plan.get("stop_loss"), plan.get("price_target")
     plan["entry_vs_live"] = {

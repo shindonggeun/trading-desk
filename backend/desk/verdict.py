@@ -16,12 +16,17 @@ from __future__ import annotations
 import re
 
 from . import horizons
+from .playbook import MAX_ZONE_PCT
 
 FACTORS = ("trend", "location", "momentum", "volume", "catalyst", "regime")
 MIN_PROBABILITY = 0.70      # the owner's target is a high hit rate: below this the desk says hold
 MIN_AGREEING = 3            # factors that must point with the call
 
 # The swing horizon's holding is in English for the agents already (desk.horizons).
+
+
+def _reach_pct(horizon: horizons.Horizon) -> str:
+    return f"{MAX_ZONE_PCT.get(horizon.id, 0.15):.0%}"
 
 
 def mandate(horizon: horizons.Horizon) -> str:
@@ -40,7 +45,11 @@ def mandate(horizon: horizons.Horizon) -> str:
         f"{MIN_AGREEING} factors point with the call, and the entry can be reached soon (within about 2 ATR "
         "of the current price, or now). Otherwise rate Hold - still with levels and a conditional plan. Every "
         "call, Hold included, names a Long Trigger (the price whose reclaim or break would make you buy) and a "
-        "Short Trigger (the price whose loss would make you short or reduce), or 'none'. Write two lines with "
+        "Short Trigger (the price whose loss would make you short or reduce), or 'none'. A trigger is a price the "
+        f"current price can reach within {horizon.holding_en} (about 3 ATR and {_reach_pct(horizon)} at most): "
+        "after a crash or squeeze "
+        "session use the levels that session made (its low, mid, open, high, the gap) - an old range the price "
+        "left far behind is a watch level, not a trigger. Write two lines with "
         "English labels in any output language: at the end of the Investment Thesis 'Checklist: trend=<long|"
         "short|neutral>, location=<...>, momentum=<...>, volume=<...>, catalyst=<...>, regime=<...>'; and as "
         "the last line of the Executive Summary, after the final levels line (and after the Entry line when the "

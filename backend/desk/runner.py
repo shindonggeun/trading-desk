@@ -18,7 +18,7 @@ from .consensus import CONSENSUS_TIMEOUT_SEC, ConsensusContext, llm_summariser
 from .consensus import parse as parse_consensus
 from .consensus import render as render_consensus
 from .events import StateDiffer
-from .levels import LEVELS, entry_vs_live, fill_levels
+from .levels import LEVELS, entry_vs_live, fill_levels, triggers_vs_live
 from .leverage_analyst import (
     LEVER_TIMEOUT_SEC,
     LeverContext,
@@ -401,7 +401,7 @@ class RunManager:
         if sr_u:
             kwargs["prices"] = lambda *_args: (sr_u["last_close"], sr_u["atr"])
         sub = await asyncio.to_thread(self.levels, sub, sub["ticker"], request.trade_date, **kwargs)
-        sub = entry_vs_live(sub, sr_u and sr_u.get("atr"))
+        sub = entry_vs_live(sub, sr_u and sr_u.get("atr"), sr_u and sr_u.get("last_close"))
         if sr_u:
             sub["support_resistance"] = sr_u
         return sub
@@ -483,7 +483,7 @@ class RunManager:
         plan, _ = under.split(plan, base, leverage, proxy, under.anchors(start, start_u, sr, sr_u))
         plan = await asyncio.to_thread(self.levels, plan, request.ticker, request.trade_date, live=live,
                                        horizon=horizon.id)
-        plan = entry_vs_live(plan, sr and sr.get("atr"))
+        plan = entry_vs_live(plan, sr and sr.get("atr"), sr and sr.get("last_close"))
         plan["underlying"] = underlying
         plan["analysis_subject"] = base
         # #109: the bet against the product, bought in its pair; a holder's exit in the product's price
@@ -578,10 +578,12 @@ class RunManager:
                     plan.pop("underlying_levels", None)   # a model that wrote the line anyway
                     plan = await asyncio.to_thread(self.levels, plan, request.ticker, request.trade_date,
                                                    live=live, horizon=horizon.id)
-                    plan = entry_vs_live(plan, sr and sr.get("atr"))
+                    plan = entry_vs_live(plan, sr and sr.get("atr"), sr and sr.get("last_close"))
                 # The entry is valid from the price the agents saw, so the minutes spent analysing count.
                 plan["horizon"] = horizon.id
                 plan["valid_until"] = horizons.valid_until(horizon, start["fetched_at"] if start else None)
+                # #151: a trigger beyond the horizon's reach is a watch level (the playbooks' cap)
+                plan = triggers_vs_live(plan, sr and sr.get("atr"), playbook.MAX_ZONE_PCT[horizon.id])
                 plan = verdict.apply(plan, horizon)   # opinion + filter; rating, bias and levels stay
                 if sr:
                     plan["support_resistance"] = sr

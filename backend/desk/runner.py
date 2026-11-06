@@ -251,10 +251,13 @@ class RunManager:
                  levels=fill_levels, prices: PriceSource | None = None, related=collect_related,
                  lever_analyst=llm_analyst, summariser=llm_summariser,
                  macro: Callable[[str], str | None] | None = None,
-                 filings: Callable[[str], Awaitable[str | None]] | None = None) -> None:
+                 filings: Callable[[str], Awaitable[str | None]] | None = None,
+                 calendar: Callable[[], str | None] | None = None) -> None:
         self.levels = levels
-        # #148: recent SEC filings of a US company (desk.filings.note_for) - None leaves them out
+        # #148: recent SEC filings of a US company (desk.filings.note_for) and the economic calendar
+        # (desk.events_calendar.prompt_note). Both read "now": same-day runs only. None leaves them out.
         self.filings = filings
+        self.calendar = calendar
         # #115: the world news-flow note (desk.macro_news.prompt_note) - None leaves it out
         self.macro = macro
         self.summariser = summariser
@@ -322,6 +325,15 @@ class RunManager:
                       if bias else None}
         convert = (lambda p: under.to_product(p, anchor, leverage)) if anchor else (lambda _p: None)
         return playbook.merge(playbook.refresh(pb, live), parsed, convert=convert)
+
+    def _calendar_note(self) -> str | None:
+        if self.calendar is None:
+            return None
+        try:
+            return self.calendar()
+        except Exception:  # background cache; never fails a run
+            log.exception("economic calendar note failed")
+            return None
 
     def _macro_note(self, ticker: str) -> str | None:
         if self.macro is None:
@@ -544,15 +556,17 @@ class RunManager:
                 # The agents set levels against the price now, not only a close days old.
                 start, start_u = await asyncio.gather(
                     self._live_quote(request), self._live_quote(request, base) if base else _none())
+                same_day = request.trade_date == dt.date.today().isoformat()
                 sr, sr_u, related, filings_note = await asyncio.gather(
                     self._support_resistance(request, start),
                     self._support_resistance(request, start_u, base) if base else _none(),
                     self._related(request),
-                    self.filings(base or request.ticker) if self.filings else _none())
+                    self.filings(base or request.ticker) if self.filings and same_day else _none())
                 # The run's own instrument: the underlying for a leveraged product.
                 main_live, main_sr = (start_u, sr_u) if lever else (start, sr)
                 lever_note = under.prompt_note(request.ticker, *lever) if lever else None
                 macro_note = self._macro_note(base or request.ticker)
+                calendar_note = self._calendar_note() if same_day else None
                 horizon = horizons.get(request.horizon)
                 frame = horizons.get(None) if main_sr and main_sr.get("fallback") else horizon
                 # #116: both playbooks from the bars the levels came from - the run's own instrument
@@ -561,7 +575,7 @@ class RunManager:
                 pb_note = playbook.prompt_note(pb_main)
                 note = "\n\n".join(part for part in (live_note(main_live, main_sr and main_sr.get("atr")),
                                                      prompt_note(main_sr), pb_note, lever_note,
-                                                     related_note(related), macro_note, filings_note)
+                                                     related_note(related), macro_note, calendar_note, filings_note)
                                    if part) or None
                 mandate = horizons.horizon_mandate(horizon, main_sr and main_sr.get("atr"), frame=frame,
                                                    levels_below=bool(main_sr))

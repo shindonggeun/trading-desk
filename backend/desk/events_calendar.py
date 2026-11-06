@@ -78,12 +78,17 @@ def parse_fomc(html: str) -> list[Event]:
         rows = re.findall(r'fomc-meeting__month[^>]*>\s*<strong>([^<]+)</strong>.*?fomc-meeting__date[^>]*>([^<]+)<',
                           body, flags=re.DOTALL)
         for month_text, days_text in rows:
+            # unscheduled meetings and notation votes come at any hour: not a 14:00 decision
+            if re.search(r"unscheduled|notation", days_text, flags=re.IGNORECASE):
+                continue
             months = [MONTHS.get(_month(m)) for m in month_text.split("/")]
             days = re.findall(r"\d+", days_text)
-            if not days or not months or months[-1] is None:
+            if not days or not months or None in months:
                 continue
+            # a meeting that runs into January ("Dec/Jan", "31-1") ends in the next year
+            end_year = year + 1 if months[-1] < months[0] else year
             try:
-                last = date(year, months[-1], int(days[-1]))
+                last = date(end_year, months[-1], int(days[-1]))
             except ValueError:
                 continue
             at = datetime.combine(last, FOMC_DECISION, ET).astimezone(UTC)
@@ -103,14 +108,15 @@ def parse_bls(ics: str) -> list[Event]:
     events = []
     for block in ics.split("BEGIN:VEVENT")[1:]:
         summary = re.search(r"^SUMMARY:(.*)$", block, flags=re.MULTILINE)
-        start = re.search(r"^DTSTART[^:\n]*:(\d{8}T\d{6})", block, flags=re.MULTILINE)
+        start = re.search(r"^DTSTART[^:\n]*:(\d{8}T\d{6})(Z?)", block, flags=re.MULTILINE)
         if not summary or not start:
             continue
         keep = BLS_KEEP.get(summary.group(1).strip())
         if keep is None:
             continue
-        local = datetime.strptime(start.group(1), "%Y%m%dT%H%M%S").replace(tzinfo=ET)   # TZID=US-Eastern
-        events.append(Event(keep[0], keep[1], local.astimezone(UTC), keep[2], "bls"))
+        # TZID=US-Eastern today; a trailing Z would mean UTC
+        stamp = datetime.strptime(start.group(1), "%Y%m%dT%H%M%S").replace(tzinfo=UTC if start.group(2) else ET)
+        events.append(Event(keep[0], keep[1], stamp.astimezone(UTC), keep[2], "bls"))
     return sorted(set(events), key=lambda e: e.at)
 
 
@@ -133,13 +139,15 @@ class Calendar:
         own = client is None
         client = client or httpx.AsyncClient(timeout=TIMEOUT_SEC)
         failures, ok = [], 0
+        # built aside and swapped in whole: a request reading events() never sees the dict change
+        fresh = dict(self.by_source)
         try:
             for source, url, parse in (("fed", FOMC_URL, parse_fomc), ("bls", BLS_URL, parse_bls)):
                 try:
                     events = parse(await _get(client, url))
                     if not events:
                         raise ValueError("no events parsed")
-                    self.by_source[source] = events
+                    fresh[source] = events
                     ok += 1
                 except Exception as exc:  # noqa: BLE001 - one source down keeps its last events
                     failures.append(f"{source}: {type(exc).__name__}")
@@ -147,6 +155,7 @@ class Calendar:
         finally:
             if own:
                 await client.aclose()
+        self.by_source = fresh
         if ok:
             self.refreshed_at = (now or datetime.now(UTC)).isoformat()
         self.error = "; ".join(failures) or None

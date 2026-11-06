@@ -362,7 +362,9 @@ class Cache:
                     except Exception as exc:  # noqa: BLE001 - 429, timeout, outage: Google News instead
                         use_gdelt = False
                         if isinstance(exc, RateLimited):
-                            self.gdelt_resume_at = start + timedelta(seconds=RATE_LIMIT_COOL_SEC)
+                            # from the refusal itself. With the default 30-minute pass interval the next
+                            # pass is past it anyway; it matters for shorter intervals and manual refreshes.
+                            self.gdelt_resume_at = at + timedelta(seconds=RATE_LIMIT_COOL_SEC)
                         log.info("GDELT unavailable (%s); macro news falls back to Google News RSS",
                                  type(exc.__cause__ or exc).__name__)
                 fresh[theme.id] = await rss(theme, at)

@@ -170,6 +170,10 @@ class KisStream:
         self._approval_asked = -APPROVAL_MIN_GAP_SEC
         self._refused_key = False
         self.connected = False
+        # #143: what GET /api/live/kis shows. Kept across reconnects; nothing here is a key.
+        self._last_tick: dict[str, str | None] = {"KR": None, "US": None}   # wall-clock ISO of the last trade
+        self._connected_at: str | None = None
+        self._last_drop: dict | None = None            # {at, error (exception type)}
 
     # --- what the pages use ------------------------------------------------------------------
 
@@ -190,7 +194,14 @@ class KisStream:
         return tick if tick is not None and self._clock() - tick.seen <= FRESH_SEC else None
 
     def status(self) -> dict:
-        return {"connected": self.connected, "subscribed": len(self._subs), "watched": len(self._live_wants())}
+        """Connection health for the owner (GET /api/live/kis). Never the app key, secret or
+        approval key: only counts, ticker symbols, times and exception type names."""
+        now = self._clock()
+        return {"connected": self.connected, "subscribed": len(self._subs), "watched": len(self._live_wants()),
+                "tickers": sorted(self._subs), "last_tick": dict(self._last_tick),
+                "refused": sorted(t for t, until in self._rejected.items() if until > now),
+                "approval_refused": self._refused_key, "connected_at": self._connected_at,
+                "last_drop": dict(self._last_drop) if self._last_drop else None}
 
     # --- the connection ----------------------------------------------------------------------
 
@@ -208,6 +219,7 @@ class KisStream:
                 connect = self._connect or _default_connect
                 async with connect(self._ws_url) as ws:
                     self.connected = True
+                    self._connected_at = _now_iso()
                     backoff = BACKOFF_START_SEC
                     log.info("kis stream connected")
                     await self._session(ws, key)
@@ -215,6 +227,7 @@ class KisStream:
                 raise
             except Exception as exc:  # noqa: BLE001 - logged by type only: messages may carry a request
                 failed = True
+                self._last_drop = {"at": _now_iso(), "error": type(exc).__name__}
                 log.warning("kis stream dropped: %s", type(exc).__name__)
             finally:
                 self.connected = False
@@ -348,6 +361,7 @@ class KisStream:
                     ticker = self._codes.get((tr_id, code))
                     if ticker and ticker in self._subs:
                         self._ticks[ticker] = Tick(price, rate, stamp, seen)
+                        self._last_tick["KR" if tr_id == KR else "US"] = stamp
                 continue
             self._control(raw)
             if '"PINGPONG"' in raw:
@@ -374,6 +388,10 @@ class KisStream:
                 self._drop(ticker)
                 self._rejected[ticker] = self._clock() + REJECT_SEC
                 log.warning("kis stream refused %s: %s", ticker, reason)
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _code_key(target: tuple[str, str]) -> tuple[str, str]:

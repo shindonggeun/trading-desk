@@ -12,7 +12,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { api, followLive, type Candles, type LiveFrame, type StreamState } from "../api";
 import { price } from "../format";
-import { mergeAxisLabels, nearestLevels, planBands, PriceBands, srBands } from "./chartBands";
+import { keepAxisLabelsApart, nearestLevels, planBands, PriceBands, srBands } from "./chartBands";
 import type { Plan } from "../types";
 
 // 분봉 시각은 한국 시각으로 보인다(PriceChart 와 같은 방식).
@@ -173,7 +173,8 @@ export default function LiveChart({ ticker, plan, onPrice }: {
     for (const [value, title, color, lineStyle] of lines) {
       if (value != null) made.push(c.series.createPriceLine({ price: value, title, color, lineWidth: 1, lineStyle, axisLabelVisible: true }));
     }
-    const frame = requestAnimationFrame(() => chartRef.current?.series === c.series && mergeAxisLabels(c.series, made));
+    // 1분봉이 늦게 와도 · 새 봉으로 축척이 움직여도 다시 맞춘다
+    const stopLabels = keepAxisLabelsApart(c.chart, c.series, made);
     // 지지 · 저항은 축 라벨 없는 띠 — 기준가에서 가까운 3개씩
     const sr = plan?.support_resistance;
     const bands = new PriceBands(`11px ${getComputedStyle(document.body).fontFamily}`);
@@ -189,8 +190,9 @@ export default function LiveChart({ ticker, plan, onPrice }: {
       [],
     );
     return () => {
-      cancelAnimationFrame(frame);
-      if (chartRef.current?.series === c.series) {
+      const alive = chartRef.current?.series === c.series;
+      stopLabels(alive);
+      if (alive) {
         for (const l of made) c.series.removePriceLine(l);
         c.series.detachPrimitive(bands);
       }

@@ -219,6 +219,17 @@ async def _none() -> None:
     return None
 
 
+def _background_note(read: Callable[[], str | None] | None, name: str) -> str | None:
+    """A note read from a background cache; a failure leaves it out and never fails a run."""
+    if read is None:
+        return None
+    try:
+        return read()
+    except Exception:
+        log.exception("%s note failed", name)
+        return None
+
+
 class Hub:
     """Wakes SSE readers when a run gets a new event. Take ``listen()`` before reading
     the store, so an event written in between still wakes the reader."""
@@ -253,7 +264,8 @@ class RunManager:
                  macro: Callable[[str], str | None] | None = None,
                  filings: Callable[[str], Awaitable[str | None]] | None = None,
                  positioning: Callable[[str], Awaitable[str | None]] | None = None,
-                 calendar: Callable[[], str | None] | None = None) -> None:
+                 calendar: Callable[[], str | None] | None = None,
+                 credit: Callable[[], str | None] | None = None) -> None:
         self.levels = levels
         # #148: recent SEC filings of a US company (desk.filings.note_for) and the economic calendar
         # (desk.events_calendar.prompt_note). Both read "now": same-day runs only. None leaves them out.
@@ -261,6 +273,8 @@ class RunManager:
         # #154: short volume and option positioning of a US ticker (desk.positioning.note_for), same day
         self.positioning = positioning
         self.calendar = calendar
+        # #155: Korean margin debt vs investor deposits (desk.credit.prompt_note) - Korean tickers, same day
+        self.credit = credit
         # #115: the world news-flow note (desk.macro_news.prompt_note) - None leaves it out
         self.macro = macro
         self.summariser = summariser
@@ -330,13 +344,12 @@ class RunManager:
         return playbook.merge(playbook.refresh(pb, live), parsed, convert=convert)
 
     def _calendar_note(self) -> str | None:
-        if self.calendar is None:
+        return _background_note(self.calendar, "economic calendar")
+
+    def _credit_note(self, ticker: str) -> str | None:
+        if not ticker.upper().endswith((".KS", ".KQ")):
             return None
-        try:
-            return self.calendar()
-        except Exception:  # background cache; never fails a run
-            log.exception("economic calendar note failed")
-            return None
+        return _background_note(self.credit, "KOFIA credit")
 
     def _macro_note(self, ticker: str) -> str | None:
         if self.macro is None:
@@ -571,6 +584,7 @@ class RunManager:
                 lever_note = under.prompt_note(request.ticker, *lever) if lever else None
                 macro_note = self._macro_note(base or request.ticker)
                 calendar_note = self._calendar_note() if same_day else None
+                credit_note = self._credit_note(base or request.ticker) if same_day else None
                 horizon = horizons.get(request.horizon)
                 frame = horizons.get(None) if main_sr and main_sr.get("fallback") else horizon
                 # #116: both playbooks from the bars the levels came from - the run's own instrument
@@ -579,8 +593,8 @@ class RunManager:
                 pb_note = playbook.prompt_note(pb_main)
                 note = "\n\n".join(part for part in (live_note(main_live, main_sr and main_sr.get("atr")),
                                                      prompt_note(main_sr), pb_note, lever_note,
-                                                     related_note(related), macro_note, calendar_note, filings_note,
-                                                     positioning_note)
+                                                     related_note(related), macro_note, calendar_note, credit_note,
+                                                     filings_note, positioning_note)
                                    if part) or None
                 mandate = horizons.horizon_mandate(horizon, main_sr and main_sr.get("atr"), frame=frame,
                                                    levels_below=bool(main_sr))

@@ -48,9 +48,10 @@ def test_summary_percentile_level_changes_and_stress():
     assert s["date"] == "2026-11-05" and s["ratio_percentile_1y"] == 100 and s["level"] == "hot"
     assert s["ratio_change_1w"] > 0 and s["ratio_change_1m"] > s["ratio_change_1w"]
     assert s["forced_sale_eok"] == 84.2 and not s["stress"]
-    assert s["verdict"].startswith("빚투 과열 구간")
+    assert s["verdict"] == "빚투 과열 구간(1년 최고 수준)"
     cold = credit.summarise(credit.merge(*_tables(last_ratio_bump=-0.2, forced_pct=3.1)))
     assert cold["level"] == "cold" and cold["stress"] and "반대매매 비중 3.1%" in cold["verdict"]
+    assert cold["verdict"].startswith("빚투 위축 구간(1년 최저 수준)")
     assert credit.summarise([]) is None
 
 
@@ -97,3 +98,32 @@ def test_credit_api(db_url, monkeypatch):
         body = client.get("/api/market/credit", params={"days": 9999}).json()
         assert body["summary"]["level"] == "hot" and len(body["series"]) == 260
         assert len(client.get("/api/market/credit", params={"days": 1}).json()["series"]) <= 6   # at least 7 days
+
+
+def test_kofia_string_numbers_and_gaps():
+    funds = [{"TMPV1": "20261105", "TMPV2": "88,533,870", "TMPV5": "904064", "TMPV6": "8420", "TMPV7": ""},
+             {"TMPV1": "20261104", "TMPV2": "NaN"}, {"TMPV1": "20261103", "TMPV2": "-"}]
+    loans = [{"TMPV1": "20261105", "TMPV2": "28771509", "TMPV3": "22320468", "TMPV4": "6451041"},
+             {"TMPV1": "20261104", "TMPV2": "28644621"}, {"TMPV1": "20261103", "TMPV2": "1"}]
+    rows = credit.merge(funds, loans)
+    assert [r["date"] for r in rows] == ["2026-11-05"] and rows[0]["ratio"] == 32.5
+    s = credit.summarise(rows)
+    assert s["ratio_change_1w"] is None and s["credit_change_1m_pct"] is None   # too little history
+    note = credit.prompt_note(credit.CreditCache(series=rows))
+    assert "None" not in note and "Change:" not in note and "Forced sales 8.42bn KRW" in note
+
+
+def test_mid_range_percentile_and_limits():
+    rows = [{"date": (date(2026, 1, 1) + timedelta(days=i)).isoformat(), "ratio": float(r), "credit": 1.0,
+             "credit_kospi": 1.0, "credit_kosdaq": 0.0, "deposits": 1.0, "forced_sale": 0, "forced_sale_pct": 0.1}
+            for i, r in enumerate([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])]
+    assert credit.summarise(rows[:8])["ratio_percentile_1y"] == 100
+    mid = credit.summarise(rows + [{**rows[4], "date": "2026-01-20"}])           # ties count: 5 of 11 at or below
+    assert mid["ratio_percentile_1y"] == 55 and mid["level"] == "normal"
+    hot = credit.summarise(rows[:5] + [{**rows[3], "date": "2026-01-20"}])      # 5 of 6 -> 83
+    assert hot["level"] == "hot" and hot["verdict"] == "빚투 과열 구간(1년 중 상위 17%)"
+
+
+def test_an_empty_or_failed_cache_still_answers():
+    view = credit.CreditCache(error="HTTPStatusError").view()
+    assert view == {"summary": None, "series": [], "source": "kofia", "refreshed_at": None, "error": "HTTPStatusError"}

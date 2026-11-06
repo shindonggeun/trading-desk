@@ -57,6 +57,7 @@ CALENDAR_INTERVAL_SEC = 6 * 3600   # economic calendar re-read (#148)
 POSITIONING_PARALLEL = 3   # Cboe chains are ~2 MB each (#154)
 POSITIONING_QUOTE_SEC = 5.0
 CREDIT_INTERVAL_SEC = 6 * 3600   # KOFIA posts the day's numbers the next business day (#155)
+CREDIT_RETRY_SEC = 15 * 60
 BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
 KST = timezone(timedelta(hours=9))   # Toss dates (order history from/to) are KST
 REVIEW_CACHE_SEC = 60
@@ -274,12 +275,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         async def refresh_credit():
             # #155: margin loans and investor deposits (KOFIA) - a few reads a day catch the new day
             while True:
+                ok = False
                 try:
                     ok = await credit.CACHE.refresh()
                     log.info("KOFIA credit: %s", "refreshed" if ok else f"failed ({credit.CACHE.error})")
                 except Exception:  # a failed pass must not stop the next one
                     log.exception("KOFIA credit refresh failed")
-                await asyncio.sleep(CREDIT_INTERVAL_SEC)
+                # a failure (KOFIA slow at boot) is retried soon: the cache lives in memory only
+                await asyncio.sleep(CREDIT_INTERVAL_SEC if ok else CREDIT_RETRY_SEC)
 
         refresher = asyncio.create_task(keep_listing_fresh())
         # the same switch as the news flow: off in tests and scripted runs

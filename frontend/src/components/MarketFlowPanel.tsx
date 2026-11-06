@@ -247,12 +247,13 @@ export default function MarketFlowPanel() {
 
   useEffect(() => {
     if (!spotMarket) return; // 선물 탭은 FuturesFlowView 가 따로 부른다
+    let alive = true;          // 탭 · 시장을 바꾼 뒤 늦게 온 응답이 타이머를 다시 만들지 않게
     let timer: number | undefined;
     const load = () => {
       const mine = ++seq.current;
       api.marketFlow(spotMarket, prefs.interval, COUNT)
         .then((d) => {
-          if (mine !== seq.current) return; // 늦게 온 이전 시장 · 단위 응답
+          if (!alive || mine !== seq.current) return; // 늦게 온 이전 시장 · 단위 · 탭 응답
           // 서버가 실패를 error 로 주면 마지막 값을 그대로 두고 알림만
           if (d.error && d.records.length === 0) setFailed(d.error);
           else {
@@ -265,7 +266,7 @@ export default function MarketFlowPanel() {
             }
           }
         })
-        .catch((e) => mine === seq.current && setFailed(e instanceof Error ? e.message : "불러오지 못했습니다."));
+        .catch((e) => alive && mine === seq.current && setFailed(e instanceof Error ? e.message : "불러오지 못했습니다."));
     };
     const visible = () => document.visibilityState === "visible";
     const schedule = () => {
@@ -281,6 +282,8 @@ export default function MarketFlowPanel() {
     schedule();
     document.addEventListener("visibilitychange", onVisible);
     return () => {
+      alive = false;
+      seq.current++;
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };

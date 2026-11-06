@@ -1058,3 +1058,19 @@ span.cs-hold-text { color: var(--warn); }
 .pb-stats td:first-child { white-space: normal; min-width: 140px; }
 .pb-stats th[scope="row"] { font-weight: 400; text-align: left; white-space: normal; min-width: 140px; }
 .pb-stats-note { margin: 4px 0 0; }
+
+/* #135 즐겨찾기 — 별 버튼 · 대시보드 즐겨찾기 시세 */
+.fav-star { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 28px; padding: 0 4px;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-s); color: var(--muted); font-size: var(--fs-l);
+  line-height: 1; cursor: pointer; vertical-align: middle; }
+.fav-star:hover { border-color: var(--border); color: var(--text); }
+.fav-on { color: var(--warn); }
+.fav-star:disabled { opacity: .5; cursor: default; }
+h1 .fav-star { font-size: var(--fs-xl); }
+.fav-panel { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); }
+.fav-tile { text-decoration: none; }
+.fav-tile .spark { height: 36px; }
+.fav-spark-est { stroke-dasharray: 3 3; opacity: .7; }
+.fav-spark-flat path { stroke: var(--muted); }
+.fav-spark-none { display: flex; align-items: center; }
+.fav-tools { display: flex; justify-content: flex-end; gap: 4px; margin-top: 4px; }

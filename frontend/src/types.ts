@@ -606,3 +606,10 @@ export type Estimate =
       market_state: "open" | "closed";
       fetched_at: string;
     };
+
+/** #134 즐겨찾기 한 줄(GET /api/favorites) — position 0 이 맨 앞 */
+export interface Favorite {
+  ticker: string;
+  name: string | null;
+  position: number;
+}

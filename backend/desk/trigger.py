@@ -7,11 +7,14 @@ the previous bar's high, the session VWAP is taken back, a volume spike's low ho
 low forms (mirrored for a short) - the trigger is a stop order just past that signal bar, and the
 invalidation the turn's extreme less 0.25 of the lower bars' ATR, or the plan's stop when that is
 nearer. ``scan`` is one pass over bars, so the live page (desk.playbook_live) and the backtest
-(desk.backtest ``compare_triggers``) run the same rule.
+(desk.trigger_bt) run the same rule.
 
 States: ``armed`` (the zone was touched; waiting for a signal, or for the price to reach the
-trigger) and ``triggered`` (the trigger traded). A signal whose turn extreme is broken before it
-triggers is dropped and the scan looks for the next one. Everything is arithmetic on bars.
+trigger), ``triggered`` (the trigger traded) and ``invalid`` (the plan's stop traded first, or -
+live - a filled trigger's invalidation broke since). A signal whose turn extreme is broken before
+it triggers is dropped and the scan looks for the next one. One bar that reaches both sides is read
+against the trade (the break first) unless it opens through the trigger. Everything is arithmetic
+on bars.
 """
 
 from __future__ import annotations
@@ -26,10 +29,11 @@ CHASE_ATR = 1.0           # a trigger further than this (plan ATR) past the zone
 SPIKE = 2.0               # volume this many times the 20-bar average makes an absorption bar
 SIGNALS = ("break", "vwap_reclaim", "absorption", "higher_low")
 # Which side should wait for the trigger rather than take the zone's limit ladder. The basket
-# comparison (desk.trigger_bt, swing plans on 60m bars 2024-11~, 6 tickers, costs in): shorts went
-# -0.11R -> -0.02R on the trigger (MAE 0.64 -> 0.52 ATR); longs did better buying the zone
-# (+0.038R vs +0.016R, +0.06 vs +0.00 ATR a fill). The ladder is unchanged; the page says which.
-PREFERRED = {"long": False, "short": True}
+# comparison (desk.trigger_bt, swing plans on 60m bars 2024-11~, 6 tickers, 10bp a side): the
+# trigger made +0.026R a fill against the touch's -0.054R (held-out 30%: +0.067R vs -0.003R),
+# MAE 0.56 vs 0.69 ATR, shorts -0.13R -> +0.02R, longs -0.01R -> +0.03R, at 42% filled vs 74%.
+# The ladder stays as the plan's levels; the page says to wait for the trigger.
+PREFERRED = {"long": True, "short": True}
 
 
 def atr(bars: list[dict], n: int = 14) -> float | None:
@@ -63,7 +67,8 @@ def _signal(bars: list[dict], i: int, up: bool, vwaps: list[float | None], turn_
     if sgn * (b["close"] - (p["high"] if up else p["low"])) > 0 and sgn * (b["close"] - b["open"]) > 0:
         return "break"
     v, pv = vwaps[i], vwaps[i - 1]
-    if v is not None and pv is not None and sgn * (p["close"] - pv) < 0 < sgn * (b["close"] - v):
+    same_session = p["at"][:10] == b["at"][:10]          # a session's first bar has no VWAP to take back
+    if same_session and v is not None and pv is not None and sgn * (p["close"] - pv) < 0 < sgn * (b["close"] - v):
         return "vwap_reclaim"
     if i - turn_at >= 2:
         t = bars[turn_at]
@@ -80,13 +85,15 @@ def _signal(bars: list[dict], i: int, up: bool, vwaps: list[float | None], turn_
     return None
 
 
-def scan(bars: list[dict], side: dict, up: bool, plan_atr: float, lower_atr: float | None = None) -> dict | None:
-    """Walk ``bars`` (oldest first) against one playbook side. None before the zone is touched
-    (or for a side with no zone); else {"state": armed|triggered|invalid, "price", "invalidation",
-    "signal", "signal_at", "touched_at", "filled_at", "fill", "rr_t1"}. ``invalid`` = the plan's
-    stop traded before a trigger."""
+def scan(bars: list[dict], side: dict, up: bool, plan_atr: float, lower_atr: float | None = None,
+         touched: bool = False) -> dict | None:
+    """Walk ``bars`` (oldest first) against one playbook side. None for a side with no zone, no
+    bars or no ATR; else {"state": None (not touched yet) | armed | triggered | invalid, "price",
+    "invalidation", "signal", "signal_at", "touched_at", "filled_at", "fill", "rr_t1"}. ``invalid``
+    = the plan's stop traded before a trigger. ``touched``: the zone was reached before these bars
+    (the live page's window starts after it), so the first bar is already armed."""
     zone = side.get("zone") if side else None
-    if not zone or side.get("setup") in (None, "none") or not bars:
+    if not zone or side.get("setup") in (None, "none") or not bars or not plan_atr:
         return None
     stop = side.get("stop")
     vwaps = _vwaps(bars)
@@ -98,22 +105,27 @@ def scan(bars: list[dict], side: dict, up: bool, plan_atr: float, lower_atr: flo
     turn = None                          # index of the extreme since the touch
     for i, b in enumerate(bars):
         far = b["low"] if up else b["high"]
+        near = b["high"] if up else b["low"]
         if out["state"] is None:
-            if sgn * (far - edge) > 0:
+            if not touched and sgn * (far - edge) > 0:
                 continue
             out.update(state="armed", touched_at=b["at"])
             turn = i
+        pending = out["price"] is not None and i > _index(bars, out["signal_at"])
+        # a bar opening through a pending trigger fills at the open, whatever it does after
+        if pending and sgn * (b["open"] - out["price"]) >= 0:
+            out.update(state="triggered", filled_at=b["at"], fill=_round(b["open"]))
+            return _with_rr(out, side, up)
+        # otherwise a bar reaching both sides is read against the trade: the break first
         if stop is not None and sgn * (far - stop) <= 0:
             out.update(state="invalid", price=None, signal=None, signal_at=None, invalidation=None)
             return out
-        # a pending trigger trades on this bar (a gap through it fills at the open)
-        if out["price"] is not None and i > _index(bars, out["signal_at"]):
-            if sgn * ((b["high"] if up else b["low"]) - out["price"]) >= 0:
-                fill = max(out["price"], b["open"]) if up else min(out["price"], b["open"])
-                out.update(state="triggered", filled_at=b["at"], fill=_round(fill))
-                return out
-            if sgn * (far - out["invalidation"]) <= 0:         # the turn failed before it triggered
-                out.update(price=None, invalidation=None, signal=None, signal_at=None)
+        if pending and sgn * (far - out["invalidation"]) <= 0:          # the turn failed before it triggered
+            out.update(price=None, invalidation=None, signal=None, signal_at=None)
+            pending = False
+        if pending and sgn * (near - out["price"]) >= 0:
+            out.update(state="triggered", filled_at=b["at"], fill=out["price"])
+            return _with_rr(out, side, up)
         if sgn * (far - (bars[turn]["low"] if up else bars[turn]["high"])) < 0:
             turn = i
         if out["price"] is not None:
@@ -132,8 +144,12 @@ def scan(bars: list[dict], side: dict, up: bool, plan_atr: float, lower_atr: flo
             inval = max(inval, stop) if up else min(inval, stop)   # the nearer of the two
         out.update(price=_round(trigger), invalidation=_round(inval), signal=sig, signal_at=b["at"],
                    lower_atr=round(la, 6))
+    return _with_rr(out, side, up)
+
+
+def _with_rr(out: dict, side: dict, up: bool) -> dict:
     if out["price"] is not None:
-        out["rr_t1"] = _rr(side, out["price"], out["invalidation"], up)
+        out["rr_t1"] = _rr(side, out["fill"] or out["price"], out["invalidation"], up)
     return out
 
 
@@ -155,18 +171,30 @@ def _round(price: float | None) -> float | None:
     return round(price, 2) if abs(price) >= 1 else round(price, 4)
 
 
-def live(side: dict, lower: list[dict], up: bool, plan_atr: float, price: float | None) -> dict | None:
-    """The trigger for the page now: ``scan`` over the recent lower bars, then the live price - a
-    pending trigger the quote has reached reads ``triggered``. Kept small for the response."""
-    res = scan(lower, side, up, plan_atr)
-    if res is None or res["state"] == "invalid":
-        return res and {"state": "invalid", "price": None, "invalidation": None, "signal": None,
-                        "signal_at": None, "touched_at": res["touched_at"], "filled_at": None, "rr_t1": None,
-                        "preferred": PREFERRED["long" if up else "short"]}
+_KEYS = ("state", "price", "invalidation", "signal", "signal_at", "touched_at", "filled_at", "rr_t1")
+
+
+def live(side: dict, lower: list[dict], up: bool, plan_atr: float, price: float | None,
+         touched: bool = False) -> dict | None:
+    """The trigger for the page now, or None before the zone is touched. The forming last bar is
+    not a signal bar (its close is not one yet), only the price now: a pending trigger the quote
+    has reached reads ``triggered``; a filled trigger whose invalidation has broken since (a bar
+    after the fill, or the quote) reads ``invalid`` - that trade is over."""
+    finished = lower[:-1] if len(lower) > 1 else lower
+    res = scan(finished, side, up, plan_atr, touched=touched)
+    if res is None or res["state"] is None:
+        return None
+    pref = PREFERRED["long" if up else "short"]
+    if res["state"] == "invalid":
+        return {**{k: None for k in _KEYS}, "state": "invalid", "touched_at": res["touched_at"], "preferred": pref}
+    sgn = 1 if up else -1
     if res["state"] == "armed" and res["price"] is not None and price is not None \
-            and (price >= res["price"] if up else price <= res["price"]):
+            and sgn * (price - res["price"]) >= 0:
         res["state"] = "triggered"
-    if res["state"] == "triggered" and res["rr_t1"] is None and res["price"] is not None:
-        res["rr_t1"] = _rr(side, res["price"], res["invalidation"], up)
-    return {**{k: res[k] for k in ("state", "price", "invalidation", "signal", "signal_at", "touched_at",
-                                    "filled_at", "rr_t1")}, "preferred": PREFERRED["long" if up else "short"]}
+    if res["state"] == "triggered":
+        # filled by the quote: only the forming bar is after it; filled on a finished bar: the bars since
+        after = lower[-1:] if res["filled_at"] is None else [b for b in lower if b["at"] > res["filled_at"]]
+        worst = [b["low"] if up else b["high"] for b in after] + ([price] if price is not None else [])
+        if any(sgn * (w - res["invalidation"]) <= 0 for w in worst):
+            res["state"] = "invalid"
+    return {**{k: res[k] for k in _KEYS}, "preferred": pref}

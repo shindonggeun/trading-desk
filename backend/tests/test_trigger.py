@@ -25,8 +25,11 @@ DOWN_INTO_ZONE = [(104, 104.5, 102.5, 103), (103, 103.2, 101.5, 101.8), (101.8, 
 
 
 def test_no_touch_no_trigger_and_a_touch_arms_it():
-    assert trigger.scan(_bars(DOWN_INTO_ZONE[:2]), LONG, True, 2.0) == {
-        **trigger.scan(_bars(DOWN_INTO_ZONE[:2]), LONG, True, 2.0), "state": None}
+    untouched = trigger.scan(_bars(DOWN_INTO_ZONE[:2]), LONG, True, 2.0)
+    assert untouched["state"] is None and untouched["touched_at"] is None
+    # touched before the window (the live page): armed from the first bar
+    assert trigger.scan(_bars(DOWN_INTO_ZONE[:2]), LONG, True, 2.0, touched=True)["state"] == "armed"
+    assert trigger.scan(_bars(DOWN_INTO_ZONE), LONG, True, 0) is None          # no ATR: no trigger
     armed = trigger.scan(_bars(DOWN_INTO_ZONE), LONG, True, 2.0)
     assert armed["state"] == "armed" and armed["price"] is None and armed["touched_at"].startswith("2026-11-02T16")
     assert trigger.scan([], LONG, True, 2.0) is None and trigger.scan(_bars(DOWN_INTO_ZONE), {"setup": "none"}, True, 2) is None
@@ -77,12 +80,45 @@ def test_the_short_mirrors_and_a_run_away_turn_is_not_chased():
 
 
 def test_live_reads_the_quote_past_the_trigger_as_triggered():
-    turn = _bars(DOWN_INTO_ZONE + [(98.5, 99.4, 98.4, 99.3)])
+    turn = _bars(DOWN_INTO_ZONE + [(98.5, 99.4, 98.4, 99.3), (99.3, 99.35, 99.0, 99.1)])   # + the forming bar
     armed = trigger.live(LONG, turn, True, 2.0, price=99.3)
     assert armed["state"] == "armed" and set(armed) >= {"price", "invalidation", "signal", "rr_t1"}
-    assert armed["preferred"] is False and trigger.PREFERRED["short"] is True     # the backtest's verdict
+    assert armed["preferred"] is True and trigger.PREFERRED["short"] is True      # the backtest's verdict
     assert trigger.live(LONG, turn, True, 2.0, price=armed["price"] + 0.01)["state"] == "triggered"
-    assert trigger.live(LONG, _bars(DOWN_INTO_ZONE[:2]), True, 2.0, price=101)["state"] is None
+    assert trigger.live(LONG, _bars(DOWN_INTO_ZONE[:2]), True, 2.0, price=101) is None      # not touched
+
+
+def test_live_ignores_the_forming_bar_as_a_signal_and_ends_a_stopped_trigger():
+    forming = _bars(DOWN_INTO_ZONE + [(98.5, 99.4, 98.4, 99.3)])
+    assert trigger.live(LONG, forming, True, 2.0, price=99.3)["price"] is None      # its close is not one yet
+    turn = DOWN_INTO_ZONE + [(98.5, 99.4, 98.4, 99.3), (99.3, 99.35, 98.9, 99.0)]
+    armed = trigger.live(LONG, _bars(turn), True, 2.0, price=99.0)
+    assert armed["state"] == "armed" and armed["price"] is not None
+    # filled by a finished bar, then broke the invalidation: that trade is over
+    done = turn + [(99.3, 100.4, 99.2, 100.2), (100.2, 100.3, 97.0, 97.2), (97.2, 97.5, 97.0, 97.3)]
+    assert trigger.live(LONG, _bars(done), True, 2.0, price=97.3)["state"] == "invalid"
+    # filled by the quote, the quote back under the invalidation
+    assert trigger.live(LONG, _bars(turn), True, 2.0, price=armed["invalidation"] - 0.01)["state"] == "armed"
+
+
+def test_a_bar_reaching_both_sides_is_read_against_the_trade_unless_it_opens_through():
+    la = 0.5
+    turn = DOWN_INTO_ZONE + [(98.5, 99.4, 98.4, 99.3)]
+    res = trigger.scan(_bars(turn), LONG, True, 2.0, la)
+    both = trigger.scan(_bars(turn + [(99.0, 100.0, 97.0, 99.8)]), LONG, True, 2.0, la)   # dips under, then up
+    assert both["state"] == "armed" and both["signal_at"] != res["signal_at"]      # dropped, a new turn armed
+    gap = trigger.scan(_bars(turn + [(99.8, 100.0, 97.0, 97.5)]), LONG, True, 2.0, la)     # opens over the trigger
+    assert gap["state"] == "triggered" and gap["fill"] == 99.8
+
+
+def test_vwap_is_not_taken_back_across_sessions_and_a_higher_low_signals():
+    # a close under the VWAP at the session's end and a new session's first bar: no reclaim
+    bars = _bars(DOWN_INTO_ZONE) + _bars([(98.6, 98.7, 98.4, 98.65)], start=datetime(2026, 11, 3, 14, 30))
+    assert trigger._signal(bars, len(bars) - 1, True, trigger._vwaps(bars), 4) is None
+    # the turn low 98.2, a bar down to 98.4 (above it) and a close over that bar's high on a red bar
+    hl = DOWN_INTO_ZONE + [(98.5, 98.8, 98.5, 98.7), (98.7, 98.75, 98.4, 98.45), (98.85, 98.9, 98.6, 98.8)]
+    res = trigger.scan(_bars(hl), LONG, True, 2.0, 0.5)
+    assert res["signal"] == "higher_low" and res["price"] == round(98.9 + 0.05, 2)
 
 
 def test_the_live_playbooks_carry_a_trigger_from_the_lower_bars(monkeypatch):
@@ -102,11 +138,24 @@ def test_the_live_playbooks_carry_a_trigger_from_the_lower_bars(monkeypatch):
     real = src.candles
     monkeypatch.setattr(src, "candles", candles)
     out = asyncio.run(playbook_live.current(src, "NVDA", "swing"))
-    for side in ("long", "short"):
-        if out[side].get("state") in ("near", "in_zone", "confirmed"):
-            assert "trigger" in out[side] and asked == [trigger.LOOKBACK["60m"]]
-        else:
-            assert out[side].get("trigger") is None
+    wanted = [s for s in ("long", "short") if out[s].get("state") in ("near", "in_zone", "confirmed")]
+    assert wanted, "the crash fixture should put a side near its zone"
+    assert asked == [trigger.LOOKBACK["60m"]] and out["frame"]["trigger_interval"] == "60m"
+    for s in ("long", "short"):
+        assert "trigger" in out[s]
+        if s not in wanted:
+            assert out[s]["trigger"] is None
+    assert out["long"]["trigger"] is None or out["long"]["trigger"]["preferred"] is True
+
+    async def broken(ticker, interval="1d", count=120, indicators=()):
+        if interval == "60m":
+            raise RuntimeError("yahoo down")
+        return await real(ticker, interval, count, indicators)
+
+    playbook_live._CACHE.clear()
+    monkeypatch.setattr(src, "candles", broken)
+    out = asyncio.run(playbook_live.current(src, "NVDA", "swing"))
+    assert all(out[s]["trigger"] is None for s in ("long", "short")) and out["long"]["state"] is not None
 
 
 def test_the_backtest_compares_both_arms_on_the_same_plan():
@@ -127,5 +176,16 @@ def test_the_backtest_compares_both_arms_on_the_same_plan():
     assert touch.filled and touch.took_t1 and touch.r > 0
     res = trigger.scan(rest, side, True, pb["frame"]["atr"])
     assert res["state"] == "triggered"
-    rows = trigger_bt.tally([touch])
-    assert rows["fill_rate"] == 1.0 and rows["t1_rate"] == 1.0
+    trig = trigger_bt._arm("trigger", "X", "d", "long", True, res["fill"], res["invalidation"], res["filled_at"], side,
+                           rest, pb["frame"]["atr"], 0)
+    assert trig.filled and trig.risk_atr < touch.risk_atr
+    rows = trigger_bt.tally([touch, trig])
+    assert rows["fill_rate"] == 1.0
+
+
+def test_the_fill_bar_counts_its_stop_but_not_a_target_that_may_have_come_first():
+    bars = _bars([(102.5, 102.6, 99.5, 100.5), (100.5, 101.0, 100.2, 100.8)])
+    out, took, _ = trigger_bt._exit(bars, True, 100.0, 98.0, 102.0, 104.0)
+    assert not took and out == 100.8                       # T1's 102 on the fill bar was before the fill
+    out, took, _ = trigger_bt._exit(_bars([(100.5, 100.6, 97.5, 98.0)]), True, 100.0, 98.0, 102.0, 104.0)
+    assert out == 98.0 and not took

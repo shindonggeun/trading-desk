@@ -1148,3 +1148,11 @@ h1 .fav-star { font-size: var(--fs-xl); }
   .sector-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .se-new { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* #158 분석 화면 포지션 카드 · 대시보드 빚투 · 예탁금 */
+.positioning-card, .credit-panel { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); }
+.pc-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 10px; }
+.pc-head h3 { margin: 0; }
+.credit-trend { margin: 0; display: grid; gap: 2px; }
+.credit-trend .spark { height: 48px; }
+.spark-flat path { stroke: var(--accent); }

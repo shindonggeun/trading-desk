@@ -214,6 +214,7 @@ def judge_playbook(side: dict, direction: int, bars: list[dict], horizon: horizo
     sign = 1 if direction > 0 else -1
     filled: list[dict] = []          # entries with the price they actually filled at
     stop, took_t1, last_fill, first_limit, armed_at = stop0, False, None, None, None
+    first_fill = None                # the bar of the first fill (for excursions, desk.backtest)
     bars_limit = (side.get("time_stop") or {}).get("bars")
     flat = bool(side.get("flat_by_close")) and not daily
     lone_stop = len(entries) == 1 and entries[0]["kind"] == "stop"
@@ -234,7 +235,9 @@ def judge_playbook(side: dict, direction: int, bars: list[dict], horizon: horizo
             pnl = (exit_price - a) if exit_price is not None else 0.0
         r = round(sign * pnl / risk, 2)
         return {**base, "status": status, "filled_shares": shares, "avg_fill": round(a, 4),
-                "exited_at": at, "r": r, "r_size": round(r * shares, 2), "took_t1": took_t1, **extra}
+                "exited_at": at, "r": r, "r_size": round(r * shares, 2), "took_t1": took_t1,
+                "steps": [e["step"] for e in filled],
+                "first_fill_at": after[first_fill]["at"] if first_fill is not None else None, **extra}
 
     for i, bar in enumerate(after):
         window_open = (until is None or _at(bar["at"]) <= until) and (until is not None or sessions[i] < entry_sessions)
@@ -261,6 +264,8 @@ def judge_playbook(side: dict, direction: int, bars: list[dict], horizon: horizo
                 if hit:
                     filled.append({**e, "fill": fill})
                     last_fill = i
+                    if first_fill is None:
+                        first_fill = i
                     if e["kind"] == "limit" and first_limit is None:
                         first_limit = i
         if not filled:

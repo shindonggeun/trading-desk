@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from desk import backtest, cli, horizons, playbook
+from desk import backtest, cli, horizons, outcome, playbook
 
 SWING = horizons.get("swing")
 
@@ -68,20 +68,21 @@ def test_the_week_still_trading_at_t_is_not_seen():
 
 def test_a_run_reports_baseline_breakdowns_and_a_split():
     daily = _bars(330)
-    report = backtest.run(["SOXL"], "swing", fetch=_fetch(daily))
+    report = backtest.run(["SOXL"], "swing", fetch=_fetch(daily), vix=None)
     base = report.baseline
     assert base["plans"] > 0 and base["plans"] == sum(v["plans"] for v in report.by_setup.values())
     assert base["filled"] <= base["plans"] and base["settled"] <= base["filled"]
-    assert set(report.split) == {"cut", "train", "valid"}
-    assert report.split["train"]["plans"] + report.split["valid"]["plans"] == base["plans"]
+    assert set(report.split) == {"cut", "embargo_days", "train", "valid"}
+    # the embargo leaves out the training plans right before the cut
+    assert 0 < report.split["train"]["plans"] + report.split["valid"]["plans"] < base["plans"]
     assert any(k.startswith("long:") for k in report.by_setup)
     assert report.notes and report.horizon == "swing"
 
 
 def test_costs_lower_the_net_r():
     daily = _bars(330)
-    free = backtest.run(["SOXL"], "swing", costs=backtest.Costs(0.0), fetch=_fetch(daily))
-    paid = backtest.run(["SOXL"], "swing", costs=backtest.Costs(50.0), fetch=_fetch(daily))
+    free = backtest.run(["SOXL"], "swing", costs=backtest.Costs(0.0), fetch=_fetch(daily), vix=None)
+    paid = backtest.run(["SOXL"], "swing", costs=backtest.Costs(50.0), fetch=_fetch(daily), vix=None)
     if free.baseline["expectancy_r"] is None:
         pytest.skip("no settled trade in the synthetic series")
     assert paid.baseline["expectancy_r"] < free.baseline["expectancy_r"]
@@ -108,17 +109,75 @@ def test_patched_restores_on_error():
     assert playbook.LONG_STOP_ATR == old
 
 
-def test_steps_follow_the_ladder_order():
-    side = {"entries": [{"share": 0.25}, {"share": 0.25}, {"share": 0.5}]}
-    assert [backtest._steps(side, f) for f in (0.25, 0.5, 1.0, 0.0)] == [1, 2, 3, 0]
+def _ladder():
+    return {"setup": "dip_catch", "zone": {"low": 95.0, "high": 100.0, "mid": 97.5},
+            "entries": [{"step": 1, "price": 100.0, "share": 0.25, "kind": "limit"},
+                        {"step": 2, "price": 97.5, "share": 0.25, "kind": "limit"},
+                        {"step": 3, "price": 101.0, "share": 0.5, "kind": "stop"}],
+            "stop": 93.0, "targets": [{"role": "t1", "price": 110.0}, {"role": "t2", "price": 120.0}],
+            "time_stop": {"bars": 3}, "flat_by_close": False}
+
+
+def _day(i, o, h, lo, c):
+    return {"at": (datetime(2024, 3, 4, 5, tzinfo=UTC) + timedelta(days=i)).isoformat(),
+            "open": o, "high": h, "low": lo, "close": c, "volume": 1}
+
+
+def test_steps_come_from_the_actual_fills_not_the_share_sum():
+    # step 1 fills, the price never reaches step 2, the confirmation (step 3) fills the next bar
+    bars = [_day(0, 102, 102, 99.5, 100.5), _day(1, 100.5, 101.5, 100.2, 101.2), _day(2, 101.2, 103, 100.8, 102.5)]
+    res = outcome.judge_playbook(_ladder(), 1, bars, SWING, "2024-03-04T00:00:00+00:00")
+    assert res["steps"] == [1, 3] and backtest._steps(res["steps"]) == "1+3"
+    assert res["first_fill_at"] == bars[0]["at"]
+
+
+def test_excursions_start_at_the_first_fill():
+    # a fade must first reach its zone: the bounce before the fill is not adverse excursion
+    future = [_day(0, 100, 106, 99, 105), _day(1, 105, 105.5, 103.5, 104), _day(2, 104, 104.2, 98, 99)]
+    mae, mfe = backtest._excursions(-1, future, 104.0, future[1]["at"], None, 2.0)
+    assert mae == 0.75 and mfe == 3.0
+
+
+def test_the_entry_window_follows_the_live_valid_until():
+    five = horizons.get("intraday")
+    plan_at = "2024-03-04T14:30:00+00:00"
+    bars = [{"at": (datetime(2024, 3, 4, 14, 30, tzinfo=UTC) + timedelta(minutes=5 * i)).isoformat(),
+             "open": 105, "high": 105.5, "low": 104.5 if i < 20 else 99, "close": 105, "volume": 1} for i in range(40)]
+    side = {**_ladder(), "time_stop": {"bars": 12}}
+    # the price reaches the ladder only after 100 minutes: past the 60-minute window of an intraday plan
+    late = outcome.judge_playbook(side, 1, bars, five, plan_at, valid_until=horizons.valid_until(five, plan_at))
+    assert late["status"] == "unfilled"
+    assert outcome.judge_playbook(side, 1, bars, five, plan_at)["status"] != "unfilled"
+
+
+def test_korean_plans_are_dated_by_the_market_day():
+    assert backtest.local_day("2024-01-01T15:00:00+00:00", "005930.KS") == "2024-01-02"
+    assert backtest.local_day("2024-01-02T05:00:00+00:00", "SOXL") == "2024-01-02"
+
+
+def test_a_ticker_that_fails_is_noted_and_the_rest_run():
+    daily = _bars(330)
+
+    def fetch(ticker, h, start):
+        if ticker == "BAD":
+            raise RuntimeError("no data")
+        return daily, _weekly(daily), []
+
+    report = backtest.run(["BAD", "SOXL"], "swing", fetch=fetch, vix=None)
+    assert any(n.startswith("BAD:") for n in report.notes) and report.baseline["plans"] > 0
+
+
+def test_an_open_trade_is_marked_not_dropped():
+    t = backtest.Trade("X", "2024-01-02", "long", "dip_catch", "crash", 50, "open", filled_shares=0.5,
+                       took_t1=True, r_size=0.4, r_net=0.39)
+    agg = backtest.aggregate([t])
+    assert agg["settled"] == 1 and agg["marked"] == 1 and agg["t1_first_rate"] == 1.0
 
 
 def test_cli_backtest_writes_a_report(tmp_path, monkeypatch, capsys):
     daily = _bars(300)
     monkeypatch.setattr(backtest, "history", _fetch(daily))
-    # run() binds the fetcher at definition; route through the module attribute
-    real_run = backtest.run
-    monkeypatch.setattr(backtest, "run", lambda *a, **k: real_run(*a, fetch=_fetch(daily), **k))
+    monkeypatch.setattr(backtest, "vix_closes", lambda start: {"2023-06-01": 31.0})
     out = tmp_path / "r.json"
     assert cli.main(["backtest", "soxl", "--horizon", "swing", "--out", str(out)]) == 0
     data = json.loads(out.read_text(encoding="utf-8"))

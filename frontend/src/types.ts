@@ -205,7 +205,6 @@ export interface SrLevel {
   basis: string;
 }
 
-/** GET /api/levels, 그리고 분석 때 에이전트가 받은 것(plan.support_resistance). */
 /** backend desk/leverage_analyst.parse_pair — always a buy of the pair (stop < entry < target). */
 export interface PairTrade {
   ticker: string;
@@ -219,6 +218,7 @@ export interface PairTrade {
   price_source?: string | null;
 }
 
+/** GET /api/levels, 그리고 분석 때 에이전트가 받은 것(plan.support_resistance). */
 export interface SupportResistance {
   ticker: string;
   reference_price: number;

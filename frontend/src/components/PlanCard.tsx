@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ANALYST_CHOICES } from "../agents";
 import { api } from "../api";
 import { price } from "../format";
@@ -258,19 +258,26 @@ function filterReasons(plan: Plan): string[] {
  * #110: 상품과 반대로 걸 때는 그 상품을 공매도하지 않고 짝(SOXL ↔ SOXS)을 산다 — 짝 가격의 진입 · 손절 · 목표.
  * 분석 시작은 확인을 한 번 거친다(구독 플랜 사용량).
  */
-function PairBlock({ plan, ticker }: { plan: Plan; ticker: string }) {
+function PairBlock({ plan, code, profileId }: { plan: Plan; code: string; profileId?: string }) {
   const pair = plan.pair;
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const startRef = useRef<HTMLButtonElement>(null);
+  // "따로 분석하기" 가 사라지면 초점을 확인 줄의 "시작" 으로(키보드 · 화면낭독기가 위치를 잃지 않게)
+  useEffect(() => {
+    if (confirm) startRef.current?.focus();
+  }, [confirm]);
   if (!pair) return null;
-  const against = (pair.leverage ?? -1) < 0 ? "하락" : "상승";
+  // 배수를 모르면 방향을 짐작하지 않는다
+  const title = pair.leverage == null ? `${pair.ticker} 매수` : `${pair.leverage < 0 ? "하락" : "상승"}에 걸 때 — ${pair.ticker} 매수`;
   const start = async () => {
     setBusy(true);
     setError(null);
     try {
       const run = await api.createRun({
         ticker: pair.ticker, horizon: plan.horizon ?? undefined, output_language: "Korean",
+        profile: profileId || undefined,   // 원래 분석과 같은 투자 성향 — 두 계획을 나란히 비교하게
         analysts: ANALYST_CHOICES.map((c) => c.key), use_portfolio: true,
       });
       window.location.hash = `#/runs/${run.id}`;
@@ -280,13 +287,13 @@ function PairBlock({ plan, ticker }: { plan: Plan; ticker: string }) {
     }
   };
   return (
-    <div className="pair-block" aria-label={`${against}에 걸 때 — ${pair.ticker} 매수`}>
+    <section className="pair-block" aria-label={title}>
       <div className="pair-head">
-        <span className="pair-title">{against}에 걸 때 — <strong>{pair.ticker} 매수</strong></span>
+        <span className="pair-title"><strong>{title}</strong></span>
         {pair.leverage != null && <span className="muted small">{pair.leverage > 0 ? "+" : ""}{pair.leverage}배</span>}
       </div>
       <p className="muted small pair-note">
-        {ticker} 를 공매도하지 않고 {pair.ticker} 를 삽니다. 아래 숫자는 모두 {pair.ticker} 가격입니다
+        {code} 를 공매도하지 않고 {pair.ticker} 를 삽니다. 아래 숫자는 모두 {pair.ticker} 가격입니다
         {pair.price != null ? ` (분석 때 ${pair.price_source === "close" ? "종가" : "현재가"} ${price(pair.price)})` : ""}.
       </p>
       <dl className="pair-levels">
@@ -298,14 +305,14 @@ function PairBlock({ plan, ticker }: { plan: Plan; ticker: string }) {
       {confirm ? (
         <div className="pair-confirm">
           <span className="small">{pair.ticker} 분석을 시작할까요? 수 분이 걸리고 사용량이 차감됩니다.</span>
-          <button type="button" onClick={start} disabled={busy}>{busy ? "등록 중…" : "시작"}</button>
+          <button ref={startRef} type="button" onClick={start} disabled={busy}>{busy ? "등록 중…" : "시작"}</button>
           <button type="button" className="secondary" onClick={() => setConfirm(false)} disabled={busy}>취소</button>
         </div>
       ) : (
         <button type="button" className="secondary pair-start" onClick={() => setConfirm(true)}>{pair.ticker} 따로 분석하기</button>
       )}
-      {error && <p className="error small">{error}</p>}
-    </div>
+      {error && <p className="error small" role="alert">{error}</p>}
+    </section>
   );
 }
 
@@ -390,9 +397,13 @@ function OutcomeLine({ outcome, status }: { outcome?: Outcome | null; status?: O
   );
 }
 
-export default function PlanCard({ plan, ticker, symbol, profile, outcome, outcomeStatus }: {
+export default function PlanCard({ plan, ticker, code, symbol, profile, profileId, outcome, outcomeStatus }: {
   plan: Plan;
   ticker: string;
+  /** 가격 옆에 붙이는 티커만(SOXL) — ticker 는 "이름 (SOXL)" 표시용이라 길다. 없으면 ticker */
+  code?: string;
+  /** 투자 성향 id — 짝 분석을 같은 성향으로 돌린다(profile 은 표시 라벨) */
+  profileId?: string;
   /** 시세를 읽을 티커(NVDA, 005930.KS). 없으면 계획에 저장된 현재가만 쓴다 — 오래된 · 과거 날짜 분석. */
   symbol?: string;
   profile?: string;
@@ -428,19 +439,19 @@ export default function PlanCard({ plan, ticker, symbol, profile, outcome, outco
         </div>
         <BiasBadge plan={plan} />
       </div>
-      {plan.analysis_subject && plan.analysis_subject !== ticker && (
+      {plan.analysis_subject && plan.analysis_subject !== (code ?? ticker) && (
         <p className="muted small plan-basis">
-          분석은 {plan.analysis_subject}(본주)로 했고, 이 카드의 가격은 모두 {ticker} 기준입니다. 본주 가격은 결과 차트의 "본주" 에서 봅니다.
+          분석은 {plan.analysis_subject}(본주)로 했고, 이 카드의 가격은 모두 {code ?? ticker} 기준입니다. 본주 가격은 결과 차트의 "본주" 에서 봅니다.
         </p>
       )}
-      <OpinionBanner plan={plan} ticker={ticker} />
+      <OpinionBanner plan={plan} ticker={code ?? ticker} />
       {plan.holder_exit != null && (
         <p className="holder-exit">
           <span className="muted small">이미 보유 중이라면</span>{" "}
-          <strong>{ticker} {price(plan.holder_exit)}</strong> 에서 축소 · 청산
+          <strong>{code ?? ticker} {price(plan.holder_exit)}</strong> 에서 축소 · 청산
         </p>
       )}
-      <PairBlock plan={plan} ticker={ticker} />
+      <PairBlock plan={plan} code={code ?? ticker} profileId={profileId} />
       {plan.valid_until && (
         <p className={`small ${expired ? "plan-expired-note" : "muted"}`}>
           {expired

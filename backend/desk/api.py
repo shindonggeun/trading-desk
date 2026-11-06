@@ -680,7 +680,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.get("/api/live/kis")
-    def kis_status():
+    async def kis_status():   # on the loop thread: status() reads dicts the stream mutates there
         """#143: is the KIS realtime feed (#125) connected, what it streams and when the last trade
         came per market. No keys: counts, symbols, times and error type names only."""
         if kis_feed is None:

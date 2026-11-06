@@ -396,7 +396,7 @@ def test_status_shows_last_trade_per_market_refusals_and_drops_but_no_keys():
         await _until(lambda: h.stream.status()["refused"] == ["NVDA"])
         s = h.stream.status()
         assert s["connected"] and s["tickers"] == ["005930.KS", "SOXL"] and s["connected_at"]
-        assert s["approval_refused"] is False
+        assert s["approval_refused_at"] is None
 
         await sock.inbox.put(ConnectionError(f"boom {APPROVAL}"))
         await _until(lambda: h.stream.status()["last_drop"] is not None)
@@ -405,6 +405,30 @@ def test_status_shows_last_trade_per_market_refusals_and_drops_but_no_keys():
         text = json.dumps(s)
         for secret in (APP_KEY, APP_SECRET, APPROVAL):
             assert secret not in text
+        assert s["connected_at"] is None or h.stream.connected   # only for the live session
+
+        # a refused approval key stays visible after the reconnect resets the flag
+        h.stream.want("005930.KS")
+        await _until(lambda: len(h.sockets) >= 2 and h.sockets[-1].subs())
+        await h.sockets[-1].inbox.put(json.dumps({"header": {"tr_id": KR, "tr_key": "005930"},
+                                                  "body": {"rt_cd": "1", "msg1": "invalid approval key"}}))
+        await _until(lambda: h.stream.status()["approval_refused_at"] is not None)
+        await _until(lambda: h.stream.status()["last_drop"]["error"] == "ApprovalError")
+        task.cancel()
+
+    asyncio.run(go())
+
+
+def test_a_planned_key_rotation_is_not_recorded_as_a_drop():
+    async def go():
+        h = Harness()
+        task = asyncio.create_task(h.stream.run())
+        h.stream.want("005930.KS")
+        await _until(lambda: h.sockets and h.sockets[0].subs())
+        h.now[0] += kis_stream.APPROVAL_TTL_SEC + 1
+        h.stream.want("005930.KS")
+        await _until(lambda: len(h.sockets) >= 2)
+        assert h.stream.status()["last_drop"] is None
         task.cancel()
 
     asyncio.run(go())
@@ -436,4 +460,4 @@ def test_status_api_needs_a_session_and_never_returns_keys(db_url):
         client.post("/api/auth/login", json={"username": "owner", "password": "correct horse battery"})
         body = client.get("/api/live/kis")
         assert body.status_code == 200 and body.json()["enabled"] is True and body.json()["connected"] is False
-        assert APP_KEY not in body.text and APP_SECRET not in body.text
+        assert APP_KEY not in body.text and APP_SECRET not in body.text and APPROVAL not in body.text

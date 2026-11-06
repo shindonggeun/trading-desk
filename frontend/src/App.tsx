@@ -10,6 +10,7 @@ import History from "./pages/History";
 import { navigation } from "./nav";
 import ChartView from "./pages/ChartView";
 import Settings from "./pages/Settings";
+import { resetFavorites } from "./favorites";
 
 function safeDecode(v: string): string {
   try {
@@ -50,6 +51,12 @@ export default function App() {
         setUser(null);
       });
   }, []);
+
+  // 로그아웃 · 세션 만료면 즐겨찾기를 비운다 — 다음 로그인(다른 계정이어도)이 처음부터 읽는다(#135).
+  // 로그인 쪽에서 비우면 이미 읽기 시작한 화면(자식 효과가 먼저 돈다)의 읽기를 버리게 된다.
+  useEffect(() => {
+    if (user === null) resetFavorites();
+  }, [user]);
 
   useEffect(() => {
     if (user) api.config().then(setConfig).catch(() => setConfig(null));

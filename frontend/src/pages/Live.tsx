@@ -30,13 +30,14 @@ function weekendKst(): boolean {
 export default function Live() {
   const { list, error: favError } = useFavorites();
   const tabs: Picked[] = useMemo(() => (list ?? []).map((f) => ({ ticker: f.ticker, name: f.name ?? undefined })), [list]);
-  const [active, setActive] = useState(0);
+  // 고른 탭은 순서가 아니라 종목으로 기억한다 — 다른 기기 · 되돌리기로 목록이 바뀌어도 같은 종목을 본다
+  const [active, setActive] = useState<string | null>(null);
   const [pick, setPick] = useState<Picked>({ ticker: "" });
   const [runs, setRuns] = useState<Run[]>([]);
   // the price with the ticker it belongs to: a tab switch must not hand one ticker's price to another's alerts
   const [tick, setTick] = useState<{ ticker: string; price: number } | null>(null);
   const [permission, setPermission] = useState(notificationsAllowed());
-  const tab = tabs[Math.min(active, tabs.length - 1)];
+  const tab = tabs.find((t) => t.ticker === active) ?? tabs[0];
   // 주말 묶음에서 고른 종목(관심 종목 탭이 아닌 것) — 차트만 보여 준다
   const [focus, setFocus] = useState<BoardTicker | null>(null);
   const [view, setView] = useState<"live" | "bars">(() => {
@@ -57,9 +58,8 @@ export default function Live() {
     }
   };
   const pickTile = (t: BoardTicker) => {
-    const i = tabs.findIndex((x) => x.ticker === t.ticker);
-    if (i >= 0) {
-      setActive(i);
+    if (tabs.some((x) => x.ticker === t.ticker)) {
+      setActive(t.ticker);
       setFocus(null);
     } else setFocus(t);
   };
@@ -74,9 +74,8 @@ export default function Live() {
   }, []);
   useEffect(() => {
     if (!linked || list === null) return;
-    const i = tabs.findIndex((x) => x.ticker === linked);
-    if (i >= 0) {
-      setActive(i);
+    if (tabs.some((x) => x.ticker === linked)) {
+      setActive(linked);
       setFocus(null);
     } else setFocus({ ticker: linked });
     setLinked(null);
@@ -101,18 +100,14 @@ export default function Live() {
   const add = () => {
     const t = pick.ticker.trim().toUpperCase();
     if (!t) return;
-    const at = tabs.findIndex((x) => x.ticker === t);
     setFocus(null);
-    if (at >= 0) setActive(at);
-    else {
-      addFavorite(t, pick.name);
-      setActive(tabs.length);
-    }
+    if (!tabs.some((x) => x.ticker === t)) addFavorite(t, pick.name);
+    setActive(t);
     setPick({ ticker: "" });
   };
-  const remove = (i: number) => {
-    removeFavorite(tabs[i].ticker);
-    setActive(0);
+  const remove = (ticker: string) => {
+    removeFavorite(ticker);
+    if (ticker === tab?.ticker) setActive(null);   // 보던 탭을 빼면 첫 탭으로, 다른 탭이면 그대로
   };
   const askPermission = () => {
     if (typeof Notification === "undefined") return;
@@ -136,12 +131,12 @@ export default function Live() {
         <p className="empty-state">즐겨찾기가 없습니다. 위에서 종목을 찾아 추가하거나, 타일을 고른 뒤 ☆ 를 누르세요.</p>
       )}
       <div className="live-tabs" role="tablist" aria-label="관심 종목(즐겨찾기)">
-        {tabs.map((t, i) => (
+        {tabs.map((t) => (
           <span key={t.ticker} className={`live-tab ${t === tab ? "live-tab-on" : ""}`}>
-            <button type="button" role="tab" aria-selected={!focus && t === tab} onClick={() => { setActive(i); setFocus(null); }}>
+            <button type="button" role="tab" aria-selected={!focus && t === tab} onClick={() => { setActive(t.ticker); setFocus(null); }}>
               {t.name ? `${t.name} ` : ""}<span className="muted small">{t.ticker}</span>
             </button>
-            <button type="button" className="link live-tab-x" aria-label={`${t.name ?? t.ticker} 즐겨찾기에서 빼기`} title="즐겨찾기에서 빼기" onClick={() => remove(i)}>×</button>
+            <button type="button" className="link live-tab-x" aria-label={`${t.name ?? t.ticker} 즐겨찾기에서 빼기`} title="즐겨찾기에서 빼기" onClick={() => remove(t.ticker)}>×</button>
           </span>
         ))}
       </div>

@@ -7,16 +7,22 @@ import type { BoardItem, EstimatedCandles } from "../types";
 const POLL_MS = 15_000;      // 시세판과 같은 주기
 const SPARK_MS = 120_000;    // 작은 차트는 2분마다
 const MAX_QUOTES = 30;       // /api/estimates 한 번에 30종목
+const SPARK_STAGGER_MS = 250; // 타일 i 의 첫 차트는 i × 0.25초 뒤
 
 type Line = { real: number[]; est: number[] };
 
-/** 최근 5분봉 종가 + 장외면 그 뒤의 추정 봉 종가 */
-function useSpark(ticker: string): Line | null | "none" {
+/** 최근 5분봉 종가 + 장외면 그 뒤의 추정 봉 종가. 타일마다 시작을 조금씩 늦춰 한꺼번에 몰리지 않게 한다. */
+function useSpark(ticker: string, order: number): Line | null | "none" {
   const [line, setLine] = useState<Line | null | "none">(null);
   useEffect(() => {
     let alive = true;
+    let missed = false;
     const load = async () => {
-      if (document.hidden) return;
+      if (document.hidden) {
+        missed = true;   // 가려진 동안 건너뛴 차례는 다시 보일 때 바로 채운다
+        return;
+      }
+      missed = false;
       const [real, est] = await Promise.allSettled([api.candles(ticker, "5m", 78), api.estimateCandles(ticker, "5m")]);
       if (!alive) return;
       const bars = real.status === "fulfilled" ? real.value.bars : [];
@@ -26,18 +32,24 @@ function useSpark(ticker: string): Line | null | "none" {
       const next = { real: bars.map((b) => b.close), est: estBars.map((b) => b.close) };
       setLine(next.real.length + next.est.length >= 2 ? next : "none");
     };
-    load();
+    const first = window.setTimeout(load, order * SPARK_STAGGER_MS);
     const t = window.setInterval(load, SPARK_MS);
+    const onShow = () => {
+      if (!document.hidden && missed) load();
+    };
+    document.addEventListener("visibilitychange", onShow);
     return () => {
       alive = false;
+      window.clearTimeout(first);
       window.clearInterval(t);
+      document.removeEventListener("visibilitychange", onShow);
     };
-  }, [ticker]);
+  }, [ticker, order]);
   return line;
 }
 
-function Spark({ ticker, tone }: { ticker: string; tone: "up" | "down" | "" }) {
-  const line = useSpark(ticker);
+function Spark({ ticker, tone, order }: { ticker: string; tone: "up" | "down" | ""; order: number }) {
+  const line = useSpark(ticker, order);
   if (line === null) return <span className="spark spark-empty" />;
   if (line === "none") return <span className="spark spark-empty fav-spark-none muted small">차트 없음</span>;
   const all = [...line.real, ...line.est];
@@ -60,8 +72,8 @@ function Spark({ ticker, tone }: { ticker: string; tone: "up" | "down" | "" }) {
   );
 }
 
-function Tile({ ticker, name, it, first, last, editing }: {
-  ticker: string; name: string; it: BoardItem | undefined; first: boolean; last: boolean; editing: boolean;
+function Tile({ ticker, name, it, first, last, editing, order }: {
+  ticker: string; name: string; it: BoardItem | undefined; first: boolean; last: boolean; editing: boolean; order: number;
 }) {
   const ch = it?.change_pct;
   const tone = ch == null ? "" : ch > 0 ? "up" : ch < 0 ? "down" : "";
@@ -78,7 +90,7 @@ function Tile({ ticker, name, it, first, last, editing }: {
           {it?.price != null ? price(it.price) : "—"}
           <span className={`small ${tone}`}>{ch != null ? ` ${ch > 0 ? "+" : ""}${ch.toFixed(2)}%` : ""}</span>
         </span>
-        <Spark ticker={ticker} tone={tone} />
+        <Spark ticker={ticker} tone={tone} order={order} />
         <span className="qb-sub muted small">
           {ticker}
           {it?.close != null && ` · 기준 ${price(it.close)}${it.close_date ? `(${it.close_date.slice(5)})` : ""}`}
@@ -148,7 +160,7 @@ export default function FavoritesPanel() {
             <span className="muted small">
               {updated ? `${time(updated)} 갱신` : "불러오는 중"}
               {failedAt && ` · ${time(failedAt)} 갱신 실패 — 마지막 값`}
-              {list.length > MAX_QUOTES && ` · 앞 ${MAX_QUOTES}개만 시세를 읽습니다`}
+              {list.length > MAX_QUOTES && ` · 앞 ${MAX_QUOTES}개만 보입니다(나머지는 시세판 탭에서 보고 뺄 수 있습니다)`}
             </span>
             <button type="button" className="link small" aria-pressed={editing} onClick={() => setEditing((v) => !v)}>
               {editing ? "편집 끝" : "순서 · 빼기"}
@@ -157,7 +169,7 @@ export default function FavoritesPanel() {
           <div className="qb-grid fav-grid">
             {shown.map((f, i) => (
               <Tile key={f.ticker} ticker={f.ticker} name={f.name ?? f.ticker} it={items[f.ticker]}
-                first={i === 0} last={i === shown.length - 1} editing={editing} />
+                first={i === 0} last={i === list.length - 1} editing={editing} order={i} />
             ))}
           </div>
           <p className="muted small qb-note">추정가 · 점선은 바이낸스 무기한 선물로 낸 장외 추정이며 실제 체결가가 아닙니다.</p>

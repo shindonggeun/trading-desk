@@ -5,7 +5,8 @@ JSON POST per table. Two daily tables, amounts in million won, posted the next b
 
 - STATSCU0100000060BO 증시자금 추이: TMPV2 투자자예탁금 (investor deposits), TMPV3 장내파생상품 거래예수금,
   TMPV4 RP 매도잔고, TMPV5 위탁매매 미수금 (unpaid purchases), TMPV6 실제 반대매매금액 (forced sales),
-  TMPV7 미수금 대비 반대매매 비중 (%). The API shows forced sales in 억원 (100 million won).
+  TMPV7 미수금 대비 반대매매 비중 (%). KOFIA sends million won; the desk API (/api/market/credit)
+  divides by 100 to show forced sales in 억원 (100 million won).
 - STATSCU0100000070BO 신용공여 잔고 추이: TMPV2 신용거래융자 합계 (margin loans) = TMPV3 유가증권(KOSPI)
   + TMPV4 코스닥, TMPV5..7 신용거래대주, TMPV8 청약자금대출, TMPV9 예탁증권담보융자.
 
@@ -17,6 +18,7 @@ API and runs read it. Read as crowd positioning, not a timing signal.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
@@ -47,10 +49,12 @@ async def fetch_table(client: httpx.AsyncClient, obj: str, start: date, end: dat
 
 
 def _num(value) -> float | None:
+    """KOFIA numbers come as numbers or strings ("88533870", "28,771,509", "-", "")."""
     try:
-        return float(value)
+        v = float(str(value).replace(",", "").strip())
     except (TypeError, ValueError):
         return None
+    return v if math.isfinite(v) else None
 
 
 def merge(funds: list[dict], credit: list[dict]) -> list[dict]:
@@ -119,7 +123,9 @@ def summarise(series: list[dict]) -> dict | None:
 
 
 def verdict(level: str, pct: int, stress: bool, last: dict) -> str:
-    head = {"hot": f"빚투 과열 구간(1년 중 상위 {100 - pct}%)", "cold": f"빚투 위축 구간(1년 중 하위 {pct}%)",
+    top = "1년 최고 수준" if pct >= 100 else f"1년 중 상위 {100 - pct}%"
+    low = "1년 최저 수준" if pct <= 1 else f"1년 중 하위 {pct}%"
+    head = {"hot": f"빚투 과열 구간({top})", "cold": f"빚투 위축 구간({low})",
             "normal": f"빚투 보통 수준(1년 백분위 {pct})"}[level]
     tail = f" · 반대매매 비중 {last['forced_sale_pct']}% — 투매 압력" if stress else ""
     return head + tail
@@ -154,14 +160,15 @@ class CreditCache:
         return True
 
     def view(self, days: int = 90) -> dict:
-        """GET /api/market/credit."""
-        cut = (date.fromisoformat(self.series[-1]["date"]) - timedelta(days=days)).isoformat() if self.series else ""
+        """GET /api/market/credit. One snapshot of the series: a refresh swapping it mid-way cannot mix two."""
+        refreshed_at, error, series = self.refreshed_at, self.error, self.series
+        cut = (date.fromisoformat(series[-1]["date"]) - timedelta(days=days)).isoformat() if series else ""
         rows = [{"date": r["date"], "credit_trillion": round(r["credit"] / 1e6, 2),
                  "deposits_trillion": round(r["deposits"] / 1e6, 2), "ratio": r["ratio"],
                  "forced_sale_eok": round((r.get("forced_sale") or 0) / 100, 1),
-                 "forced_sale_pct": r.get("forced_sale_pct")} for r in self.series if r["date"] >= cut]
-        return {"summary": summarise(self.series), "series": rows, "source": "kofia",
-                "refreshed_at": self.refreshed_at, "error": self.error}
+                 "forced_sale_pct": r.get("forced_sale_pct")} for r in series if r["date"] >= cut]
+        return {"summary": summarise(series), "series": rows, "source": "kofia",
+                "refreshed_at": refreshed_at, "error": error}
 
 
 CACHE = CreditCache()
@@ -188,6 +195,6 @@ def prompt_note(cache: CreditCache | None = None) -> str | None:
     if None not in moves:
         lines.append(f"- Change: ratio {moves[0]:+} pt over 1 week, {moves[1]:+} pt over 1 month; margin loans "
                      f"{moves[2]:+}% and deposits {moves[3]:+}% over 1 month")
-    lines.append(f"- Forced sales {s['forced_sale_eok'] / 10:g}bn KRW, {s['forced_sale_pct']}% of unpaid purchases"
-                 + (" - STRESS" if s["stress"] else ""))
+    share = f", {s['forced_sale_pct']}% of unpaid purchases" if s["forced_sale_pct"] is not None else ""
+    lines.append(f"- Forced sales {s['forced_sale_eok'] / 10:g}bn KRW{share}" + (" - STRESS" if s["stress"] else ""))
     return "\n".join(lines)

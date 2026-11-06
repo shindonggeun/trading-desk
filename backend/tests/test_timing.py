@@ -40,6 +40,29 @@ def test_stages_and_agent_turns_with_parallel_analysts():
     assert "total 330.0s" in w.line()
 
 
+def test_openers_arriving_together_are_one_step():
+    """With the library's parallel first rounds, a debate's openers come out of one state update."""
+    clock = _Clock()
+    w = timing.Stopwatch(clock)
+    w.mark("desk_pre")
+    for agent, at in (("market_analyst", 60.0), ("bull_researcher", 100.0), ("bear_researcher", 100.002),
+                      ("research_manager", 160.0), ("trader", 180.0), ("aggressive_analyst", 220.0),
+                      ("conservative_analyst", 220.001), ("neutral_analyst", 220.003),
+                      ("portfolio_manager", 280.0)):
+        clock.t = at
+        w.message({"type": "message", "agent": agent})
+    r = w.result()
+    rows = {a["agent"]: a for a in r["agents"]}
+    assert (rows["bull_researcher"]["took"], rows["bear_researcher"]["took"]) == (40.0, 40.0)
+    assert [rows[a]["took"] for a in ("aggressive_analyst", "conservative_analyst", "neutral_analyst")] == [40.0] * 3
+    assert all(rows[a].get("together") for a in ("bull_researcher", "bear_researcher", "aggressive_analyst",
+                                                 "conservative_analyst", "neutral_analyst"))
+    assert not rows["research_manager"].get("together") and rows["research_manager"]["took"] == 60.0
+    assert rows["bull_researcher"]["includes_join"] and "includes_join" not in rows["bear_researcher"]
+    assert r["critical_path"] == ["market_analyst", "bear_researcher", "research_manager", "trader",
+                                  "neutral_analyst", "portfolio_manager"]
+
+
 def test_turns_are_numbered_and_summed_per_run():
     clock = _Clock()
     w = timing.Stopwatch(clock)

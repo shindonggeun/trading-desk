@@ -15,7 +15,11 @@ Caveats when reading the numbers:
   agent's ``took`` (marked ``includes_join``);
 - the graph's start is just before the worker thread: building the graph and the run state (a few
   seconds) is in every analyst's ``took`` and in the ``graph`` stage;
-- ``turn`` numbers an agent's turns (debate rounds > 1 give bull/bear several).
+- ``turn`` numbers an agent's turns (debate rounds > 1 give bull/bear several);
+- with the library's parallel first rounds on (``TRADINGAGENTS_*_PARALLEL_FIRST_ROUND``), a debate's
+  openers arrive in one state update, milliseconds apart: serial messages within ``TOGETHER_GAP`` of
+  each other are one step (``together``), each timed from before that step, and the step counts
+  once in the critical path.
 ``summarize`` turns recent plans' timings into averages for ``python -m desk.cli timing``.
 """
 
@@ -28,6 +32,8 @@ from collections.abc import Callable, Iterable
 STAGES = ("desk_pre", "graph", "leverage", "desk_post", "consensus")   # leverage: leveraged products only
 # The graph's analysts start together (TradingAgents graph/setup.py); everyone after them is in series.
 PARALLEL = {"market_analyst", "sentiment_analyst", "news_analyst", "fundamentals_analyst"}
+# A model turn takes seconds; serial messages closer than this came out of one graph step.
+TOGETHER_GAP = 1.0
 
 
 class Stopwatch:
@@ -54,22 +60,32 @@ class Stopwatch:
 
     def result(self) -> dict:
         start = self._graph_start if self._graph_start is not None else self._start
-        agents, previous, turns, joined = [], start, {}, False
+        agents, previous, base, turns, joined = [], start, start, {}, False
+        steps: list[list[dict]] = []                 # serial steps: one speaker, or openers together
         for agent, at in sorted(self._arrivals, key=lambda a: a[1]):
             parallel = agent in PARALLEL
-            took = at - start if parallel else at - previous
             turns[agent] = turns.get(agent, 0) + 1
+            together = (not parallel and bool(steps) and agents[-1] is steps[-1][-1]
+                        and at - previous < TOGETHER_GAP)
+            if not parallel and not together:
+                base = previous                      # a new serial step starts after the last message
             row = {"agent": agent, "turn": turns[agent], "at": round(at - start, 1),
-                   "took": round(max(took, 0.0), 1), "parallel": parallel}
+                   "took": round(max(at - start if parallel else at - base, 0.0), 1), "parallel": parallel}
+            if together:
+                steps[-1][-1]["together"] = row["together"] = True
+                steps[-1].append(row)
+            elif not parallel:
+                steps.append([row])
             if not parallel and not joined:
                 row["includes_join"] = True     # waited for every parallel node (Memory Log too)
                 joined = True
             agents.append(row)
             previous = at
-        # the serial chain that set the graph's length: the slowest analyst, then everyone after
+        # the serial chain that set the graph's length: the slowest analyst, then each serial step
+        # (for openers together, the last to finish)
         first = [a for a in agents if a["parallel"]]
         chain = ([max(first, key=lambda a: a["took"])["agent"]] if first else []) + \
-            [a["agent"] for a in agents if not a["parallel"]]
+            [step[-1]["agent"] for step in steps]
         return {"total": round(self._last - self._start, 1),
                 "stages": {k: round(v, 1) for k, v in self._stages.items()},
                 "agents": agents, "critical_path": chain}

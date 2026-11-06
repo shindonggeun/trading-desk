@@ -62,6 +62,7 @@ SSE(`EventSource`)도 쿠키로 인증된다. URL 에 토큰을 싣지 않는다
 | ChatGPT 로그인 | 볼륨 `trading-desk-tradingagents-home` 의 `chatgpt-auth.json` | 없음 |
 | 한국투자증권(KIS) 앱키 · 앱시크릿 | 서버 `.env.runtime` 의 `DESK_KIS_APP_KEY` · `DESK_KIS_APP_SECRET` | `.env.example` 에 이름만 |
 | KIS 웹소켓 접속키(approval key) | 백엔드 프로세스 메모리(12시간마다 새로 발급) | 없음 |
+| KIS REST 접근 토큰(access token) | 백엔드 프로세스 메모리(20시간마다 새로 발급, 1분에 1번 이하) | 없음 |
 
 ### KIS 실시간 시세 키 (#125)
 
@@ -77,6 +78,13 @@ SSE(`EventSource`)도 쿠키로 인증된다. URL 에 토큰을 싣지 않는다
   KIS 쪽에서는 발급 후 약 하루 동안 유효하다.
   키가 채팅 · 메일 · 이슈처럼 저장소 밖에 한 번이라도 평문으로 남았다면 바로 재발급한다.
 - **끄기:** 두 값 중 하나라도 비면 웹소켓을 열지 않고, 실시간 화면은 토스 5초 폴링으로 동작한다.
+
+### KIS REST 접근 토큰 — 코스피200 선물 현황 (#160)
+
+- **용도:** `desk.futures_flow` 가 `/oauth2/tokenP` 로 접근 토큰을 받아 **시세 조회 두 개**(선물 현재가 `FHMIF10000000` · 시장별 투자자 동향 `FHPTJ04030000`)만 부른다. 주문 · 잔고 · 계좌 API 는 부르지 않는다.
+- **보관:** 토큰은 프로세스 메모리에만 두고 20시간 뒤 새로 받는다. KIS 는 발급 때마다 알림을 보내고 잦은 발급을 막으므로 1분에 1번 이하로만 묻는다. 만료 응답(`EGW00123`)을 받으면 한 번만 새로 받는다.
+- **로그 · 응답:** 키 · 시크릿 · 토큰은 로그 · 오류 응답에 넣지 않는다. 실패는 TR 코드 · HTTP 상태 · KIS 의 짧은 사유(`msg1` 80자)만 남긴다. `KisRest` 의 `repr` 에도 URL 만 나온다.
+- **전송 구간 · 끄기:** 웹소켓과 같은 키 · `DESK_KIS_REST_URL` 을 쓴다. 키가 없거나 URL 이 `https://` 가 아니면 부르지 않고 `/api/market/futures` 는 `supported: false` 를 준다. 가짜 실행(`DESK_FAKE_RUNS`)에서도 부르지 않는다.
 
 ## 6. OTP 2단계 인증 (#6)
 

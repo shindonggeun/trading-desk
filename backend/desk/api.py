@@ -38,6 +38,8 @@ from .consensus import fake_summariser, llm_summariser
 from .db import make_engine, migrate, now
 from .estimate import CANDLE_INTERVALS, BinanceEstimator
 from .favorites import Conflict, Favorites, TooMany
+from .futures_flow import FuturesFlow
+from .futures_flow import make as make_kis_rest
 from .indicators import INDICATORS
 from .leverage_analyst import fake_analyst, llm_analyst
 from .market_flow import MarketFlow
@@ -176,7 +178,7 @@ def purge_expired_runs(store: Store, retention_days: int) -> int:
 
 def create_app(settings: Settings | None = None, runner=None, prices: PriceSource | None = None,
                estimator: BinanceEstimator | None = None, book: Portfolio | None = None,
-               flow: MarketFlow | None = None) -> FastAPI:
+               flow: MarketFlow | None = None, futures: FuturesFlow | None = None) -> FastAPI:
     settings = settings or load()
     migrate(settings.database_url)
     engine = make_engine(settings.database_url)
@@ -198,6 +200,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     estimator = estimator or BinanceEstimator()
     book = book or Portfolio(broker, prices)
     flow = flow or MarketFlow(broker)
+    # KOSPI200 futures from KIS REST (#160); without the KIS keys it answers supported: false
+    futures = futures or FuturesFlow(make_kis_rest(settings) if not settings.fake_runs else None, flow)
     live_streams: dict[str, int] = {}   # open /api/live/stream per session (token hash)
     calendar = live.Calendar(broker)     # market holidays for the live stream, cached per market
     if runner is None:
@@ -299,6 +303,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if purger:
             purger.cancel()
         await estimator.aclose()
+        await futures.aclose()
         engine.dispose()
 
     docs = settings.enable_docs
@@ -632,6 +637,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             return await flow.get(market.upper(), interval, count)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
+
+    @app.get("/api/market/futures")
+    async def market_futures():
+        """KOSPI200 front-month futures: price, open interest, basis, net contracts by investor
+        class, and the foreign spot/futures split (desk.futures_flow). A KIS failure or missing
+        keys come back as ``error`` / ``supported: false``, not as a 5xx."""
+        return await futures.get()
 
     @app.get("/api/portfolio")
     async def portfolio():

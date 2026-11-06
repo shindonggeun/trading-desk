@@ -639,3 +639,84 @@ export interface Favorite {
   name: string | null;
   position: number;
 }
+
+/** #156 섹터 탭(GET /api/sectors) — 계정별, position 0 이 맨 앞. 종목 이름은 없을 수 있다(null). */
+export interface Sector {
+  id: number;
+  name: string;
+  position: number;
+  tickers: { ticker: string; name: string | null }[];
+}
+
+/** #154 공매도 · 옵션 포지션(GET /api/positioning) — 미국 상장 종목만, 나머지는 supported: false */
+export interface PositioningWall {
+  strike: number;
+  oi: number;
+  distance_pct: number;
+}
+export interface Positioning {
+  ticker: string;
+  supported: boolean;
+  reason: string | null;
+  short: {
+    interest: { pct_float: number | null; days_to_cover: number | null; shares: number | null; change_pct: number | null; as_of: string | null } | null;
+    days: number;
+    volume_ratio?: number;
+    volume_ratio_5d?: number;
+    volume_ratio_20d?: number;
+    as_of?: string;
+    trend?: "rising" | "falling" | "steady";
+    history?: { date: string; ratio: number }[];
+    crowded: boolean;
+  } | null;
+  options: {
+    spot: number;
+    expiries: string[];
+    put_call_oi: number | null;
+    put_call_volume: number | null;
+    near: { expiry: string; put_call_oi: number | null; put_call_volume: number | null };
+    call_oi: number;
+    put_oi: number;
+    call_walls: PositioningWall[];
+    put_walls: PositioningWall[];
+    max_pain: { expiry: string; strike: number | null; distance_pct: number | null };
+    implied_move: {
+      expiry?: string; days?: number; iv_pct?: number; move_pct?: number; low?: number; high?: number;
+      iv30_pct?: number; move_30d_pct?: number;
+    } | null;
+    lean: "put_heavy" | "call_heavy" | "balanced" | null;
+    source: string;
+  } | null;
+  verdict: string | null;
+  errors: string[] | null;
+  sources: string[];
+  fetched_at: string;
+}
+
+/** #155 빚투 · 예탁금(GET /api/market/credit, 금융투자협회) — 조원 · 억원 */
+export interface CreditView {
+  summary: {
+    date: string;
+    credit_trillion: number;
+    credit_kospi_trillion: number;
+    credit_kosdaq_trillion: number;
+    deposits_trillion: number;
+    ratio: number;
+    ratio_change_1w: number | null;
+    ratio_change_1m: number | null;
+    credit_change_1w_pct: number | null;
+    credit_change_1m_pct: number | null;
+    deposits_change_1w_pct: number | null;
+    deposits_change_1m_pct: number | null;
+    ratio_percentile_1y: number;
+    level: "hot" | "normal" | "cold";
+    forced_sale_eok: number;
+    forced_sale_pct: number | null;
+    stress: boolean;
+    verdict: string;
+  } | null;
+  series: { date: string; credit_trillion: number; deposits_trillion: number; ratio: number; forced_sale_eok: number; forced_sale_pct: number | null }[];
+  source: string;
+  refreshed_at: string | null;
+  error: string | null;
+}

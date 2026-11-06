@@ -6,6 +6,7 @@ import Dashboard from "./pages/Dashboard";
 import RunView from "./pages/RunView";
 import Review from "./pages/Review";
 import Live from "./pages/Live";
+import Sectors from "./pages/Sectors";
 import History from "./pages/History";
 import { navigation } from "./nav";
 import ChartView from "./pages/ChartView";
@@ -74,6 +75,7 @@ export default function App() {
   const onReview = route.startsWith("#/review");
   const onLive = route.startsWith("#/live");
   const onHistory = route.startsWith("#/history");
+  const onSectors = route.startsWith("#/sectors");
   // 큰 차트(#97): #/chart/<티커>?run=…&interval=…
   const chartMatch = route.match(/^#\/chart\/([^?]+)(?:\?(.*))?$/);
 
@@ -85,9 +87,10 @@ export default function App() {
         </a>
         {user && (
           <nav aria-label="메뉴">
-            <a href="#/" className={!runMatch && !onSettings && !onReview && !onLive && !onHistory ? "active" : ""}>대시보드</a>
+            <a href="#/" className={!runMatch && !onSettings && !onReview && !onLive && !onHistory && !onSectors ? "active" : ""}>대시보드</a>
             <a href="#/history" className={onHistory ? "active" : ""}>분석 기록</a>
             <a href="#/live" className={onLive ? "active" : ""}>시세판</a>
+            <a href="#/sectors" className={onSectors ? "active" : ""}>섹터</a>
             <a href="#/review" className={onReview ? "active" : ""}>매매 복기</a>
             <a href="#/settings" className={onSettings ? "active" : ""}>설정</a>
           </nav>
@@ -113,6 +116,8 @@ export default function App() {
         <History />
       ) : onLive ? (
         <Live />
+      ) : onSectors ? (
+        <Sectors />
       ) : onReview ? (
         <Review />
       ) : onSettings ? (

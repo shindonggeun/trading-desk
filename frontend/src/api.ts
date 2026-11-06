@@ -1,4 +1,4 @@
-import type { DeskConfig, Favorite, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
+import type { CreditView, DeskConfig, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -170,6 +170,20 @@ export const api = {
   /** #123 시세판: 여러 종목(최대 30)의 실시간 · 추정가 */
   board: (tickers: string[]) =>
     call<{ items: BoardItem[] }>(`/api/estimates?tickers=${encodeURIComponent(tickers.join(","))}`),
+  /** #156 섹터 탭(계정별). 처음 읽으면 기본 섹터가 생긴다 — 쓰기 전에 먼저 읽는다. */
+  sectors: () => call<Sector[]>("/api/sectors"),
+  createSector: (name: string, tickers: { ticker: string; name?: string | null }[] = []) =>
+    call<Sector>("/api/sectors", { method: "POST", body: JSON.stringify({ name, tickers }) }),
+  updateSector: (id: number, patch: { name?: string; tickers?: { ticker: string; name?: string | null }[] }) =>
+    call<Sector>(`/api/sectors/${id}`, { method: "PUT", body: JSON.stringify(patch) }),
+  reorderSectors: (ids: number[]) => call<Sector[]>("/api/sectors/order", { method: "PUT", body: JSON.stringify({ ids }) }),
+  deleteSector: (id: number) => call<void>(`/api/sectors/${id}`, { method: "DELETE" }),
+  /** #154 공매도 · 옵션 포지션 — 미국 종목만(나머지 supported: false) */
+  positioning: (ticker: string) => call<Positioning>(`/api/positioning?ticker=${encodeURIComponent(ticker)}`),
+  positioningBatch: (tickers: string[]) =>
+    call<{ items: Positioning[] }>(`/api/positioning/batch?tickers=${encodeURIComponent(tickers.join(","))}`),
+  /** #155 빚투 · 예탁금(금융투자협회) */
+  credit: (days = 90) => call<CreditView>(`/api/market/credit?days=${days}`),
   /** #134 즐겨찾기(계정별 · 순서대로). 추가 · 교체도 전체 목록을 돌려준다. */
   favorites: () => call<Favorite[]>("/api/favorites"),
   addFavorite: (ticker: string, name?: string) =>

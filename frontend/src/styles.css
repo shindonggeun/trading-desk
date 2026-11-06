@@ -1086,3 +1086,62 @@ h1 .fav-star { font-size: var(--fs-xl); }
 @media (max-width: 560px) {
   .fut-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* #157 섹터 탭 — 칩 가로 넘김 · 요약 · 2열 타일 · 아래 시트(휴대폰 한 손) */
+.sectors { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); max-width: 1200px; margin: 0 auto; padding: 8px 16px 24px; }
+.sector-chips { position: sticky; top: var(--topbar-h, 0px); z-index: 5; display: flex; gap: 6px; overflow-x: auto;
+  padding: 8px 0; background: var(--bg); scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.sector-chips::-webkit-scrollbar { display: none; }
+.sector-chips .chip { flex: none; min-height: 36px; padding: 6px 14px; font-size: var(--fs-m); white-space: nowrap; }
+.sector-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.ss-item { display: grid; gap: 2px; min-width: 0; }
+.ss-item strong { font-size: var(--fs-l); }
+.sector-sort { align-items: center; gap: 6px; }
+.sector-sort .chip { min-height: 32px; }
+.sector-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.sector-tile { min-height: 44px; }
+.sector-badges { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 18px; }
+.sector-badge { font-size: var(--fs-xs); padding: 0 6px; border: 1px solid currentColor; border-radius: var(--radius-s); }
+.sector-badge.warn, .pv .warn { color: var(--warn); }
+.se-new, .sector-editor { display: grid; gap: 8px; }
+.se-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.se-row input, .se-new input { flex: 1 1 180px; min-width: 0; min-height: 40px; }
+.se-row .search { flex: 1 1 220px; min-width: 0; }
+.se-move { display: inline-flex; gap: 4px; }
+.se-tickers { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.se-tickers li { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--surface-2);
+  border-radius: var(--radius-s); }
+.se-tickers .link { min-width: 28px; min-height: 28px; }
+.se-danger { color: var(--danger); justify-self: start; }
+.se-new { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+/* 아래 시트 */
+.sheet-backdrop { position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-end; justify-content: center;
+  background: color-mix(in srgb, var(--bg) 60%, transparent); }
+.sheet { width: min(640px, 100%); max-height: 85dvh; overflow-y: auto; display: grid; gap: 10px; padding: 8px 16px 20px;
+  background: var(--surface); border: 1px solid var(--border); border-bottom: 0; border-radius: var(--radius) var(--radius) 0 0;
+  outline: none; }
+.sheet-grip { justify-self: center; width: 40px; height: 4px; border-radius: var(--radius-s); background: var(--border); }
+.sheet-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.sheet-head h3 { margin: 0; }
+.sheet-head-tools { display: inline-flex; gap: 4px; align-items: center; }
+.sheet-close { min-width: 40px; min-height: 40px; font-size: var(--fs-l); }
+.sheet-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.sheet-actions > * { flex: 1 1 120px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+.sheet-actions .button { border: 1px solid var(--border); border-radius: var(--radius-s); color: var(--text); text-decoration: none; }
+/* 포지션 요약(#154) · 빚투 요약(#155) — 섹터 시트와 분석 · 차트 카드(#158)가 같이 쓴다 */
+.pv { display: grid; gap: 8px; min-width: 0; }
+.pv-verdict { margin: 0; font-weight: 600; }
+.pv-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; }
+.pv-big { font-size: var(--fs-xl); font-variant-numeric: tabular-nums; }
+.pv-side { text-align: right; }
+.pv-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 36px; flex: 0 1 140px; }
+.pv-bar { flex: 1; min-width: 3px; background: var(--muted); border-radius: 1px; }
+.pv-walls { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.pv-wall { white-space: nowrap; }
+.pv-note { margin: 0; }
+.credit-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+@media (max-width: 600px) {
+  .sector-summary, .credit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sector-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .se-new { grid-template-columns: minmax(0, 1fr); }
+}

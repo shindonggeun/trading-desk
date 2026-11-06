@@ -7,6 +7,22 @@
  */
 import type { Bias } from "./types";
 
+/**
+ * 시세 출처(backend prices.Quote.source · 봉의 source) — 실시간인지 지연 시세인지 헷갈리지 않게 한 곳에서.
+ * kis = 한국투자증권 웹소켓 체결가(#125), toss = 토스증권 조회, yahoo = 야후(15분 이상 지연될 수 있다).
+ */
+export const QUOTE_SOURCE: Record<string, string> = {
+  kis: "실시간(한투)",
+  toss: "토스",
+  yahoo: "야후(지연 가능)",
+  mock: "모의",
+};
+
+export function quoteSourceText(source: string | null | undefined): string {
+  if (!source) return "";
+  return QUOTE_SOURCE[source] ?? source;
+}
+
 export interface Term {
   ko: string;
   desc: string;

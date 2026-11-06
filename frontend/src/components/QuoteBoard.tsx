@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { price, time } from "../format";
 import type { BoardItem } from "../types";
+import { quoteSourceText } from "../korean";
 
 export type BoardTicker = { ticker: string; name?: string };
 
@@ -51,7 +52,7 @@ function isWeekendKst(now = new Date()): boolean {
 }
 
 function sourceText(it: BoardItem): string {
-  if (it.state === "live") return it.quote_source === "toss" ? "토스 실시간" : "실시간";
+  if (it.state === "live") return quoteSourceText(it.quote_source) || "실시간";
   const s = it.source;
   if (!s) return "";
   if (s.kind === "leveraged") return `${s.basis} 추정 × ${s.multiple > 0 ? s.multiple : `(${s.multiple})`}`;

@@ -82,6 +82,9 @@ PROXIES = {
 CANDLE_INTERVALS = {"5m": "5m", "10m": "5m", "15m": "15m", "1h": "1h", "1d": "1d", "1w": "1w"}
 CANDLES_TTL_SEC = 60.0
 CANDLE_LIMIT = 1000
+CANDLE_PAGES = 4         # 5-minute bars: 4 pages cover ~13 days of closed market
+MARKS_TTL_SEC = 5.0      # one premiumIndex call returns every contract's mark
+MIN_FRACTION = 0.01      # a leveraged estimate floors at 1% of the close (the fund cannot go negative)
 
 
 @dataclass(frozen=True)
@@ -117,7 +120,7 @@ DailyCloses = Callable[[str], list[tuple[date, float]]]
 
 
 CLOSES_TTL_SEC = 300.0
-_CLOSES: dict[str, tuple[float, list[tuple[date, float]]]] = {}
+_CLOSES: dict[str, tuple[float, list[tuple[date, float]], datetime]] = {}
 
 
 def yahoo_daily_closes(ticker: str) -> list[tuple[date, float]]:
@@ -129,13 +132,17 @@ def yahoo_daily_closes(ticker: str) -> list[tuple[date, float]]:
     last hourly bar that started before that day's close moment."""
     import yfinance as yf
 
+    session = session_of(ticker)
     hit = _CLOSES.get(ticker)
+    now = datetime.now(UTC)
     if hit and time.monotonic() - hit[0] < CLOSES_TTL_SEC:
-        return hit[1]
+        # rows read before today's close still hold an intraday price for today: read again
+        today_close = session.close_moment(now.astimezone(session.zone).date())
+        if not (hit[2] < today_close <= now):
+            return hit[1]
     t = yf.Ticker(ticker)
     frame = t.history(period="15d", interval="1d", auto_adjust=False)
     rows = [(index.date(), float(row["Close"])) for index, row in frame.iterrows()]
-    session = session_of(ticker)
     if rows and (session.futures or not math.isfinite(rows[-1][1])):
         try:
             hourly = t.history(period="5d", interval="60m", auto_adjust=False)
@@ -145,7 +152,7 @@ def yahoo_daily_closes(ticker: str) -> list[tuple[date, float]]:
             bars = []
         fixed = []
         for i, (day, close) in enumerate(rows):
-            if i == len(rows) - 1 or not math.isfinite(close):
+            if session.futures or i == len(rows) - 1 or not math.isfinite(close):
                 end = session.close_moment(day)
                 before = [c for at, c in bars if end - timedelta(hours=24) <= at < end]
                 if before:
@@ -154,7 +161,7 @@ def yahoo_daily_closes(ticker: str) -> list[tuple[date, float]]:
         rows = fixed
     if len(_CLOSES) > 256:
         _CLOSES.clear()
-    _CLOSES[ticker] = (time.monotonic(), rows)
+    _CLOSES[ticker] = (time.monotonic(), rows, now)
     return rows
 
 
@@ -220,6 +227,8 @@ class BinanceEstimator:
         # ticker -> (stamp, Estimate | None for "no contract" | Exception for a recent failure)
         self._cache: dict[str, tuple[float, object]] = {}
         self._anchors: dict[tuple[str, int], float] = {}
+        self._marks: tuple[float, dict[str, float]] = (-MARKS_TTL_SEC, {})
+        self._marks_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -267,6 +276,18 @@ class BinanceEstimator:
         is_open = (local.weekday() < 5 and opens <= local.time() < closes
                    and any(d == local.date() for d, _ in bars))
         return day, close, session.close_moment(day), is_open
+
+    async def _mark_now(self, contract: str) -> float:
+        """The contract's mark price now. All marks come in one call (no symbol) and are shared
+        for a few seconds, so a board of 30 tickers costs Binance one request, not thirty."""
+        async with self._marks_lock:
+            if self._clock() - self._marks[0] >= MARKS_TTL_SEC:
+                rows = await self._get("/fapi/v1/premiumIndex")
+                self._marks = (self._clock(), {r["symbol"]: float(r["markPrice"]) for r in rows if "markPrice" in r})
+        mark = self._marks[1].get(contract)
+        if mark is None:
+            raise ValueError(f"Binance has no mark price for {contract}")
+        return mark
 
     async def _mark_at(self, contract: str, moment: datetime) -> float:
         """Close of the 1-minute mark-price bar that ends at ``moment``."""
@@ -335,10 +356,10 @@ class BinanceEstimator:
         session = session_of(ticker)
         day, close, close_at, is_open = await asyncio.to_thread(self._anchor_close, ticker, session, now)
         anchor = await self._mark_at(contract, close_at)
-        mark = float((await self._get("/fapi/v1/premiumIndex", {"symbol": contract}))["markPrice"])
+        mark = await self._mark_now(contract)
         move = multiple * (mark / anchor - 1)
         return Estimate(
-            ticker=ticker, estimate=_round(close * (1 + move)), change_pct=round(move * 100, 2),
+            ticker=ticker, estimate=_round(close * max(1 + move, MIN_FRACTION)), change_pct=round(move * 100, 2),
             last_close=_round(close), last_close_date=day.isoformat(), close_at=_iso(close_at),
             contract=contract, contract_price=mark, contract_price_at_close=anchor,
             market_state="open" if is_open else "closed", fetched_at=_iso(now),
@@ -374,12 +395,19 @@ class BinanceEstimator:
         now = self._now()
         day, close, close_at, is_open = await asyncio.to_thread(self._anchor_close, ticker, session_of(ticker), now)
         anchor = await self._mark_at(contract, close_at)
-        rows = await self._get("/fapi/v1/markPriceKlines", {
-            "symbol": contract, "interval": CANDLE_INTERVALS[interval],
-            "startTime": int(close_at.timestamp() * 1000), "limit": CANDLE_LIMIT})
+        rows: list = []
+        start = int(close_at.timestamp() * 1000)
+        for _ in range(CANDLE_PAGES):
+            page = await self._get("/fapi/v1/markPriceKlines", {
+                "symbol": contract, "interval": CANDLE_INTERVALS[interval], "startTime": start, "limit": CANDLE_LIMIT})
+            rows += page
+            if len(page) < CANDLE_LIMIT:
+                break
+            start = int(page[-1][0]) + 1
+        rows = rows[-CANDLE_LIMIT * 2:]   # a chart needs the latest stretch, not all of a holiday week
 
         def price(p: str) -> float:
-            return close * (1 + multiple * (float(p) / anchor - 1))
+            return close * max(1 + multiple * (float(p) / anchor - 1), MIN_FRACTION)
 
         bars = []
         for r in rows:

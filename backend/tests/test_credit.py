@@ -127,3 +127,45 @@ def test_mid_range_percentile_and_limits():
 def test_an_empty_or_failed_cache_still_answers():
     view = credit.CreditCache(error="HTTPStatusError").view()
     assert view == {"summary": None, "series": [], "source": "kofia", "refreshed_at": None, "error": "HTTPStatusError"}
+
+
+def test_the_credit_note_reaches_korean_same_day_runs_only(db_url):
+    import time
+    from datetime import timedelta as td
+
+    from fastapi.testclient import TestClient
+
+    from desk.api import create_app
+    from desk.auth import Auth
+    from desk.db import make_engine
+    from desk.runner import make_fake_runner
+    from desk.settings import Settings
+
+    rendered = []
+    fake = make_fake_runner(0)
+
+    def runner(request, emit, portfolio):
+        rendered.append((request.ticker, portfolio.render(request.ticker) if portfolio is not None else ""))
+        return fake(request, emit, portfolio)
+
+    app = create_app(Settings(database_url=db_url, fake_runs=True, fake_delay=0), runner=runner)
+    engine = make_engine(db_url)
+    Auth(engine, td(hours=1), td(hours=1)).create_user("owner", "correct horse battery")
+    engine.dispose()
+    with TestClient(app, base_url="https://testserver") as client:
+        client.post("/api/auth/login", json={"username": "owner", "password": "correct horse battery"})
+        client.app.state.manager.credit = lambda: "CREDIT NOTE: ratio 32.5%"
+
+        def run(body):
+            run_id = client.post("/api/runs", json=body).json()["id"]
+            for _ in range(200):
+                if client.get(f"/api/runs/{run_id}").json()["status"] in ("done", "failed"):
+                    return
+                time.sleep(0.02)
+
+        run({"ticker": "005930.KS"})
+        run({"ticker": "NVDA"})
+        run({"ticker": "000660.KS", "trade_date": "2026-01-05"})
+    notes = dict(rendered)
+    assert "CREDIT NOTE" in notes["005930.KS"]
+    assert "CREDIT NOTE" not in notes["NVDA"] and "CREDIT NOTE" not in notes["000660.KS"]

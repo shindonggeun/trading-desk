@@ -4,6 +4,7 @@ import AgentRail from "../components/AgentRail";
 import { RelatedTable, ResultChart, type Related } from "../components/AnalysisResult";
 import { ChatMessage, SystemLine, ToolRow } from "../components/ChatMessage";
 import ConsensusCard from "../components/ConsensusCard";
+import PlaybookCard from "../components/PlaybookCard";
 import EvidenceLevels from "../components/Evidence";
 import { GlossaryPanel, GlossaryProvider } from "../components/Glossary";
 import PlanCard from "../components/PlanCard";
@@ -197,6 +198,7 @@ export default function RunView({ runId }: { runId: string }) {
             plan ? (
               <div className="run-summary">
                 {status === "done" && <ConsensusCard plan={plan} ticker={run.ticker} />}
+                <PlaybookCard plan={plan} symbol={stillOpen(run.trade_date) ? run.ticker : undefined} outcome={run.outcome} />
                 <TradeMap plan={plan} ticker={run.ticker} />
                 <PlanCard
                   plan={plan}

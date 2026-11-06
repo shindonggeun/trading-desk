@@ -12,7 +12,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { api, followLive, type Candles, type LiveFrame, type StreamState } from "../api";
 import { price } from "../format";
-import { keepAxisLabelsApart, nearestLevels, planBands, PriceBands, srBands } from "./chartBands";
+import { keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands } from "./chartBands";
 import type { Plan } from "../types";
 
 // 분봉 시각은 한국 시각으로 보인다(PriceChart 와 같은 방식).
@@ -179,15 +179,20 @@ export default function LiveChart({ ticker, plan, onPrice }: {
     const sr = plan?.support_resistance;
     const bands = new PriceBands(`11px ${getComputedStyle(document.body).fontFamily}`);
     c.series.attachPrimitive(bands);
+    // 플레이북 구역 · 사다리 · 손절 · 목표(#117) — 실시간으로 구역에 다가가는 것을 본다
+    const book = plan?.playbooks
+      ? playbookDrawing(plan.playbooks, { long: css("--long", "#f2464b"), short: css("--short", "#3a86f8") }, price)
+      : { bands: [], marks: [] };
     bands.set(
       [
+        ...book.bands,
         ...planBands(plan, null, { loss: css("--danger", css("--up", "#f2464b")), profit: css("--ok", "#3fb68b") }),
         ...srBands(
           sr?.reference_price != null ? nearestLevels(sr.levels ?? [], sr.reference_price, 3, false) : [],
           sr?.atr, { support: css("--sr-support", "#2bb3a3"), resistance: css("--sr-resistance", "#b58cf0") },
         ),
       ],
-      [],
+      book.marks,
     );
     return () => {
       const alive = chartRef.current?.series === c.series;

@@ -123,7 +123,7 @@ interface Live {
 }
 
 /** 카드가 열려 있는 동안 현재가를 주기적으로 다시 읽는다. 실패하면 계획에 저장된 값을 쓴다. */
-function useLiveQuote(symbol: string | undefined, fallback: Live | undefined, enabled: boolean): Live | null {
+export function useLiveQuote(symbol: string | undefined, fallback: Live | undefined, enabled: boolean): Live | null {
   const [quote, setQuote] = useState<Live | null>(null);
   useEffect(() => {
     if (!symbol || !enabled) return;
@@ -147,7 +147,7 @@ function useLiveQuote(symbol: string | undefined, fallback: Live | undefined, en
 type ClosedEstimate = Extract<Estimate, { supported: true }>;
 
 /** 장이 닫혀 있는 동안의 추정가(바이낸스 주식 무기한 선물). 계약이 없거나 장중 · 실패면 null. */
-function useEstimate(symbol: string | undefined, enabled: boolean): ClosedEstimate | null {
+export function useEstimate(symbol: string | undefined, enabled: boolean): ClosedEstimate | null {
   const [est, setEst] = useState<Estimate | null>(null);
   useEffect(() => {
     setEst(null);

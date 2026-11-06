@@ -17,6 +17,7 @@ from .broker.base import Broker
 from .consensus import CONSENSUS_TIMEOUT_SEC, ConsensusContext, llm_summariser
 from .consensus import parse as parse_consensus
 from .consensus import render as render_consensus
+from .direction import prompt_note as direction_note
 from .events import StateDiffer
 from .levels import LEVELS, entry_vs_live, fill_levels, triggers_vs_live
 from .leverage_analyst import (
@@ -596,7 +597,8 @@ class RunManager:
                 pb_note = playbook.prompt_note(pb_main)
                 note = "\n\n".join(part for part in (live_note(main_live, main_sr and main_sr.get("atr")),
                                                      prompt_note(main_sr), recent_note((main_sr or {}).get("recent")),
-                                                     pb_note, lever_note,
+                                                     pb_note, direction_note((pb_main or {}).get("direction")),
+                                                     lever_note,
                                                      related_note(related), macro_note, calendar_note, credit_note,
                                                      filings_note, positioning_note)
                                    if part) or None

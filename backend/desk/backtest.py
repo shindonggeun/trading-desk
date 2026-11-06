@@ -94,6 +94,7 @@ class Trade:
     r_net: float | None = None        # r_size after costs
     mae_atr: float | None = None      # worst move against the average fill, in the frame's ATR
     mfe_atr: float | None = None      # best move for it
+    direction: str = "neutral"        # with | against | neutral: the side against desk.direction (#166)
 
 
 @dataclass
@@ -116,6 +117,7 @@ class Report:
     by_ticker: dict
     crash_windows: dict
     split: dict
+    by_direction: dict = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     sweep: list[dict] = field(default_factory=list)
     generated_at: str = ""
@@ -235,7 +237,8 @@ def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: C
         # the entry stays valid as long as a live plan's would (scalp 15 min, intraday 1 h, 2~3 days 1 day)
         res = outcome.judge_playbook(side, direction, future, h, snap.plan_at, opens,
                                      horizons.valid_until(h, snap.plan_at))
-        trade = Trade(snap.ticker, snap.day, side_name, side["setup"], regime, side.get("score"), res["status"])
+        trade = Trade(snap.ticker, snap.day, side_name, side["setup"], regime, side.get("score"), res["status"],
+                      direction=side.get("direction") or "neutral")
         if res.get("filled_shares"):
             avg = res["avg_fill"]
             trade.filled_shares = res["filled_shares"]
@@ -319,6 +322,7 @@ def summarize(trades: list[Trade], h: horizons.Horizon, cut: str | None) -> dict
         "by_regime": _by(trades, lambda t: f"{t.side}:{t.setup}:{t.regime}"),
         "by_steps": _by([t for t in trades if t.filled_shares], lambda t: f"{t.side}:{t.setup}:{t.steps}"),
         "by_ticker": _by(trades, lambda t: t.ticker),
+        "by_direction": _by(trades, lambda t: f"{t.side}:{t.setup}:{t.direction}"),
         "crash_windows": {name: aggregate([t for t in trades if _in(t.at, lo, hi)])
                           for name, (lo, hi) in CRASH_WINDOWS.items()},
         "split": {"cut": cut, "embargo_days": EMBARGO_DAYS[h.id], "train": aggregate(train), "valid": aggregate(valid)},
@@ -463,7 +467,7 @@ def print_summary(report: Report, out=None) -> None:
     print(f"backtest {report.horizon} {','.join(report.tickers)} {report.start or ''}~{report.end or ''} "
           f"(cost {report.costs['bps_per_side']}bp/side)", file=out)
     print("group".ljust(34) + "".join(c[:12].rjust(13) for c in cols), file=out)
-    rows = [("ALL", report.baseline), *report.by_setup.items(), *report.by_regime.items(),
+    rows = [("ALL", report.baseline), *report.by_setup.items(), *report.by_regime.items(), *report.by_direction.items(),
             *((f"split:{k}", v) for k, v in report.split.items() if isinstance(v, dict)),
             *((f"crash:{k}", v) for k, v in report.crash_windows.items() if v["plans"])]
     for name, agg in rows:

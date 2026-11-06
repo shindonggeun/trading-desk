@@ -14,9 +14,11 @@ back (``parse``) and accepted only where they stay sane (``merge``). Scoring is 
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import UTC, datetime
 from itertools import pairwise
+from statistics import median
 
 from . import horizons
 from .indicators import rsi
@@ -29,6 +31,13 @@ MERGE_ATR = 0.5
 ZONE_WIDTH_ATR = 1.0     # a zone never spans more than this: dense levels make several zones, not one range
 MIN_GAP_ATR = 0.3
 MAX_ZONE_ATR = {"scalp": 3.0, "intraday": 3.0, "short_swing": 4.0, "swing": 6.0}
+# ...and never further than this share of the price (#151): after a -32% day an ATR swollen by that
+# one bar times 6 reaches back into the range the price fell out of, +50% away
+MAX_ZONE_PCT = {"scalp": 0.03, "intraday": 0.06, "short_swing": 0.12, "swing": 0.25}
+CALM_TR = 1.25           # zones, stops and distances use min(ATR, this x the median true range as a share
+#                          of the price, at today's price): a shock bar does not stretch them, and after a
+#                          fall from 9 to 5 a dollar ATR from the 9s does not either
+SHOCK_PCT, SHOCK_ATR, SHOCK_BARS = 0.08, 2.0, 5    # a recent day that moved this much leaves its own levels
 LONG_STOP_ATR = 0.5
 SHORT_STOP_ATR = 0.3
 CONFIRM_ATR = 0.25
@@ -235,6 +244,66 @@ def candidates(sr: dict, primary: list[dict], intraday: bool) -> list[dict]:
     return out
 
 
+def _calm_atr(bars: list[dict], atr: float, ref: float | None = None, n: int = 20) -> float:
+    """``atr`` unless the recent true ranges say it is swollen by a shock bar or two, or (with
+    ``ref``) was earned at a much higher price: the median true range as a share of the price
+    before it, times ``ref``."""
+    pairs = [(p, b) for p, b in pairwise(bars[-(n + 1):]) if p["close"]]
+    if len(pairs) < 5:
+        return atr
+    tr = [max(b["high"] - b["low"], abs(b["high"] - p["close"]), abs(b["low"] - p["close"])) for p, b in pairs]
+    if ref:
+        typical = median(t / p["close"] for t, (p, _b) in zip(tr, pairs, strict=True)) * ref
+    else:
+        typical = median(tr)
+    return min(atr, CALM_TR * typical) if typical > 0 else atr
+
+
+def shock(daily: list[dict], atr: float) -> dict | None:
+    """The most recent of the last SHOCK_BARS sessions that moved SHOCK_PCT and SHOCK_ATR ATR
+    (a crash or a squeeze): {"bar", "prev", "down", "change"}."""
+    for i in range(len(daily) - 1, max(0, len(daily) - 1 - SHOCK_BARS), -1):
+        bar, prev = daily[i], daily[i - 1]
+        if not prev["close"]:
+            continue
+        before = _atr(daily[:i])                       # the ATR before the bar, not swollen by it
+        before = _calm_atr(daily[:i], before) if before else atr
+        change = bar["close"] / prev["close"] - 1
+        gap = abs(bar["open"] - prev["close"])
+        if abs(change) >= SHOCK_PCT and (abs(change) * prev["close"] >= SHOCK_ATR * before or gap >= before):
+            return {"bar": bar, "prev": prev, "down": change < 0, "change": round(change, 4)}
+    return None
+
+
+def shock_candidates(s: dict | None) -> list[dict]:
+    """A crash day's own levels: its low (where the dip catch starts), mid, open and high (where a
+    bounce stalls), and the gap it left (filled first on the way back). Source "sr", the basis says which."""
+    if not s:
+        return []
+    bar, prev, down = s["bar"], s["prev"], s["down"]
+    word = "급락일" if down else "급등일"
+    out = [{"price": bar["low"], "source": "sr", "weight": 2.0 if down else 1.0, "basis": f"{word} 저가", "tag": "shock"},
+           {"price": bar["high"], "source": "sr", "weight": 1.0 if down else 2.0, "basis": f"{word} 고가", "tag": "shock"},
+           {"price": (bar["high"] + bar["low"]) / 2, "source": "sr", "weight": 1.0, "basis": f"{word} 중간값", "tag": "shock"},
+           {"price": bar["open"], "source": "sr", "weight": 1.0, "basis": f"{word} 시가", "tag": "shock"},
+           {"price": prev["close"], "source": "sr", "weight": 1.0, "basis": f"{word} 전 종가", "tag": "shock"}]
+    if down and prev["low"] > bar["high"]:
+        out.append({"price": prev["low"], "source": "sr", "weight": 1.5, "basis": "갭 상단(전일 저가)", "tag": "shock"})
+    if not down and prev["high"] < bar["low"]:
+        out.append({"price": prev["high"], "source": "sr", "weight": 1.5, "basis": "갭 하단(전일 고가)", "tag": "shock"})
+    return out
+
+
+def round_levels(ref: float, cap: float) -> list[dict]:
+    """Two round numbers each side of the price within ``cap`` (5.13 -> 4.5 5.0 / 5.5 6.0)."""
+    mag = 10 ** math.floor(math.log10(ref))
+    step = mag * (0.5 if ref / mag >= 3 else 0.1)
+    base = math.floor(ref / step) * step
+    prices = [base - step, base, base + step, base + 2 * step]
+    return [{"price": round(p, 6), "source": "sr", "weight": 0.5, "basis": "라운드 넘버", "tag": "round"}
+            for p in prices if p > 0 and p != ref and abs(p - ref) <= cap]
+
+
 def zones(cands: list[dict], ref: float, atr: float, below: bool, max_atr: float) -> list[dict]:
     """Levels on one side of ``ref`` merged within MERGE_ATR, ranked by score / distance."""
     side = sorted((c for c in cands if (c["price"] < ref if below else c["price"] > ref)
@@ -250,7 +319,10 @@ def zones(cands: list[dict], ref: float, atr: float, below: bool, max_atr: float
             groups.append([c])
     out = []
     for g in groups:
-        prices = [c["price"] for c in g]
+        if all(c.get("tag") == "round" for c in g):
+            continue                       # a round number adds to a zone, it is never one by itself
+        # round numbers add to the score but do not move the edges
+        prices = [c["price"] for c in g if c.get("tag") != "round"]
         low, high = min(prices), max(prices)
         if high - low < 0.2 * atr:         # a single level still has a little width
             low, high = low - 0.1 * atr, high + 0.1 * atr
@@ -272,10 +344,12 @@ def _fallback_zone(ref: float, atr: float, below: bool) -> dict:
                                                             "basis": "ATR 대체", "weight": 0.0}]}
 
 
-def _next_level(cands: list[dict], above: float, up: bool, atr: float, prefer=("vwap", "ma", "sr", "vp", "trend")) -> dict | None:
-    """The nearest candidate beyond ``above`` (by MIN_GAP_ATR) in the trade's direction."""
+def _next_level(cands: list[dict], above: float, up: bool, atr: float, prefer=("vwap", "ma", "sr", "vp", "trend"),
+                within: float | None = None, ref: float | None = None) -> dict | None:
+    """The nearest candidate beyond ``above`` (by MIN_GAP_ATR) in the trade's direction, and with
+    ``within`` no further than that from ``ref`` (the price now)."""
     ahead = [c for c in cands if (c["price"] - above if up else above - c["price"]) > MIN_GAP_ATR * atr
-             and c["source"] in prefer]
+             and c["source"] in prefer and (within is None or abs(c["price"] - (ref or above)) <= within)]
     return min(ahead, key=lambda c: abs(c["price"] - above)) if ahead else None
 
 
@@ -373,40 +447,47 @@ def _none_side(reason: str, size_hint: str, flat_by_close: bool) -> dict:
 
 
 def _long(regime: dict, cands: list[dict], primary: list[dict], ref: float, atr: float, h: horizons.Horizon,
-          fib: dict | None) -> dict:
+          fib: dict | None, zatr: float | None = None, cap: float | None = None, low: dict | None = None) -> dict:
     rid = regime["id"]
+    zatr = zatr or atr
+    cap = cap if cap is not None else MAX_ZONE_ATR[h.id] * zatr
     setup = {"crash": "dip_catch", "downtrend": "dip_catch", "unknown": "range_low", "range": "range_low",
              "uptrend": "pullback"}[rid]
-    found = zones(cands, ref, atr, below=True, max_atr=MAX_ZONE_ATR[h.id])
-    zone = found[0] if found else _fallback_zone(ref, atr, below=True)
+    found = zones(cands, ref, zatr, below=True, max_atr=cap / zatr)
+    weak = not found or (rid == "downtrend" and found[0]["score"] < 3)
+    if setup == "dip_catch" and weak and low and (rid == "crash" or low.get("shock") or regime["flags"]["oversold"]):
+        # nothing to catch below (a new low): the dip catch starts at the low just made (#151)
+        return _reclaim_long(regime, cands, primary, ref, atr, zatr, h, low)
+    zone = found[0] if found else _fallback_zone(ref, zatr, below=True)
     if setup == "dip_catch" and rid == "downtrend" and zone["score"] < 3:
         return _none_side("하락 추세에서 받칠 만한 구역(합류 점수 3 이상)이 없음", SIZE[rid], h.flat_by_close)
     shares = SHARES["crash"] if rid == "crash" else SHARES["default"]
     entries = [{"step": 1, "price": zone["high"], "share": shares[0], "kind": "limit"},
                {"step": 2, "price": zone["mid"], "share": shares[1], "kind": "limit"},
-               {"step": 3, "price": _round(zone["high"] + CONFIRM_ATR * atr), "share": shares[2], "kind": "stop",
+               {"step": 3, "price": _round(zone["high"] + CONFIRM_ATR * zatr), "share": shares[2], "kind": "stop",
                 "after": ["reclaim", "higher_low"]}]
     if setup != "dip_catch":     # a range low / pullback is two limit steps
         entries = [{"step": 1, "price": zone["high"], "share": 0.5, "kind": "limit"},
                    {"step": 2, "price": zone["mid"], "share": 0.5, "kind": "limit"}]
     avg = (entries[0]["price"] * entries[0]["share"] + entries[1]["price"] * entries[1]["share"]) / \
         (entries[0]["share"] + entries[1]["share"])
-    stop = _round(zone["low"] - LONG_STOP_ATR * atr)
-    t1c = _next_level(cands, max(avg, zone["high"]), True, atr)
+    stop = _round(zone["low"] - LONG_STOP_ATR * zatr)
+    ups = [c for c in cands if c.get("tag") != "round"]
+    t1c = _next_level(ups, max(avg, zone["high"]), True, zatr, within=2 * cap, ref=ref)
     t1 = _target("t1", t1c["price"], t1c["basis"], "desk", avg, stop, True, action="take_half", then_stop=_round(avg)) \
-        if t1c else _target("t1", avg + FILL_T1_ATR * atr, "ATR 대체", "atr", avg, stop, True, action="take_half",
+        if t1c else _target("t1", avg + FILL_T1_ATR * zatr, "ATR 대체", "atr", avg, stop, True, action="take_half",
                             then_stop=_round(avg))
     t2_price, t2_basis, t2_source = None, None, "desk"
     if fib and fib.get("direction") == "down":
         lv = next((x for x in fib.get("levels") or [] if x.get("ratio") == 0.382), None)
-        if lv and lv["price"] - t1["price"] > MIN_GAP_ATR * atr:
+        if lv and MIN_GAP_ATR * atr < lv["price"] - t1["price"] and lv["price"] - ref <= 2 * cap:
             t2_price, t2_basis = lv["price"], "하락폭 38.2% 되돌림"
     if t2_price is None:
-        nxt = _next_level(cands, t1["price"], True, atr)
+        nxt = _next_level(ups, t1["price"], True, zatr, within=2 * cap, ref=ref)
         if nxt:
             t2_price, t2_basis = nxt["price"], nxt["basis"]
     if t2_price is None:
-        t2_price, t2_basis, t2_source = avg + FILL_T2_ATR * atr, "ATR 대체", "atr"
+        t2_price, t2_basis, t2_source = avg + FILL_T2_ATR * zatr, "ATR 대체", "atr"
     t2 = _target("t2", t2_price, t2_basis, t2_source, avg, stop, True, action="take_rest")
     conditions = _long_conditions(zone, primary, ref, atr, h.primary_k, regime["flags"]["climax_recent"])
     return {"setup": setup, "reason": None, "size_hint": SIZE[rid], "flat_by_close": h.flat_by_close,
@@ -418,31 +499,110 @@ def _long(regime: dict, cands: list[dict], primary: list[dict], ref: float, atr:
             "source": {k: "desk" for k in ("zone", "entries", "stop", "t1", "t2", "time_stop")}, "model": None}
 
 
+def _reclaim_long(regime: dict, cands: list[dict], primary: list[dict], ref: float, atr: float, zatr: float,
+                  h: horizons.Horizon, low: dict) -> dict:
+    """The dip catch at a new low (#151): a zone around the low just made; limit steps at its top and
+    at the low, the last half only on a reclaim / higher low. Below the low already: buy the reclaim."""
+    level = low["price"]
+    zone = {"low": _round(level - 0.25 * zatr), "high": _round(level + 0.25 * zatr), "mid": _round(level)}
+    members = [c for c in cands if abs(c["price"] - level) <= 0.5 * zatr]
+    if not any(c.get("basis") == low["basis"] for c in members):
+        members.insert(0, {"price": level, "source": "sr", "weight": 2.0, "basis": low["basis"]})
+    score = round(sum(c["weight"] for c in members), 2)
+    distance = abs(level - ref) / zatr
+    zone.update(score=score, distance_atr=round(distance, 2), rank=score / (1 + distance / 2),
+                members=[{"price": _round(c["price"]), "source": c["source"], "basis": c["basis"],
+                          "weight": c["weight"]} for c in members])
+    shares = SHARES["crash"]
+    if ref >= level:
+        # a buy limit never sits above the price: it would fill at once
+        entries = [{"step": 1, "price": _round(min(zone["high"], ref)), "share": shares[0], "kind": "limit"},
+                   {"step": 2, "price": _round(min(zone["mid"], ref)), "share": shares[1], "kind": "limit"},
+                   {"step": 3, "price": _round(max(zone["high"], ref) + CONFIRM_ATR * zatr), "share": shares[2],
+                    "kind": "stop", "after": ["reclaim", "higher_low"]}]
+        stop = _round(zone["low"] - 0.25 * zatr)
+    else:   # under the low already: nothing is bought until it is taken back - both steps are stops above
+        entries = [{"step": 1, "price": zone["high"], "share": 0.5, "kind": "stop", "after": ["reclaim"]},
+                   {"step": 2, "price": _round(zone["high"] + CONFIRM_ATR * zatr), "share": 0.5, "kind": "stop",
+                    "after": ["reclaim", "higher_low"]}]
+        stop = _round(min(zone["low"], ref, *(b["low"] for b in primary[-3:])) - 0.25 * zatr)
+    avg = (entries[0]["price"] * entries[0]["share"] + entries[1]["price"] * entries[1]["share"]) / \
+        (entries[0]["share"] + entries[1]["share"])
+    ups = [c for c in cands if c.get("tag") != "round"]
+    within = 2 * min(MAX_ZONE_ATR[h.id] * zatr, MAX_ZONE_PCT[h.id] * ref)
+    t1c = _next_level(ups, max(avg, zone["high"]), True, zatr, within=within, ref=ref)
+    t1 = _target("t1", t1c["price"], t1c["basis"], "desk", avg, stop, True, action="take_half", then_stop=_round(avg)) \
+        if t1c else _target("t1", avg + FILL_T1_ATR * zatr, "ATR 대체", "atr", avg, stop, True, action="take_half",
+                            then_stop=_round(avg))
+    t2c = _next_level(ups, t1["price"], True, zatr, within=within, ref=ref)
+    t2 = _target("t2", t2c["price"], t2c["basis"], "desk", avg, stop, True, action="take_rest") if t2c else \
+        _target("t2", avg + FILL_T2_ATR * zatr, "ATR 대체", "atr", avg, stop, True, action="take_rest")
+    conditions = _long_conditions(zone, primary, ref, atr, h.primary_k, regime["flags"]["climax_recent"])
+    return {"setup": "dip_catch", "variant": "reclaim", "reason": None, "size_hint": "half",
+            "flat_by_close": h.flat_by_close, "zone": zone, "entries": entries, "avg_entry": _round(avg), "stop": stop,
+            "risk": _round(avg - stop), "targets": [t1, t2],
+            "time_stop": {"bars": TIME_STOP_BARS[h.id], "interval": h.primary, "required": True,
+                          "rule": f"마지막 체결 뒤 {TIME_STOP_BARS[h.id]}봉 안에 평단 + 0.5 ATR 을 못 넘으면 정리"},
+            "conditions": conditions, "score": _score(zone["score"], conditions),
+            "source": {k: "desk" for k in ("zone", "entries", "stop", "t1", "t2", "time_stop")}, "model": None}
+
+
+def reach(side: dict | None, ref: float, cap: float, atr: float, up: bool) -> dict | None:
+    """How far the side's first entry is from the price and whether it can come within the horizon
+    (inside the zone cap); ``reason`` says why not. A target on the near side of the price is no
+    reason: a ladder below waits for the pullback, and its targets count from the fill."""
+    if not side or side.get("setup") in (None, "none") or not side.get("entries") or not ref:
+        return None
+    entry = side["entries"][0]["price"]
+    gap = entry - ref
+    far = abs(gap) > cap
+    return {"entry": entry, "gap_pct": round(gap / ref * 100, 2), "gap_atr": round(abs(gap) / atr, 2) if atr else None,
+            "reachable": not far, "cap_pct": round(cap / ref * 100, 2), "reason": "too_far" if far else None}
+
+
+def _reach_again(pb: dict, ref: float) -> None:
+    """``reach`` at a newer price (refresh / track), on the cap the playbooks were built with."""
+    frame = pb.get("frame") or {}
+    cap_pct, zatr = frame.get("zone_cap_pct"), frame.get("atr_zone") or frame.get("atr")
+    if not cap_pct or not ref:
+        return
+    for name, up in (("long", True), ("short", False)):
+        side = pb.get(name)
+        if side and side.get("reach") is not None:
+            pb[name] = {**side, "reach": reach(side, ref, cap_pct / 100 * ref, zatr, up)}
+
+
 def _short(regime: dict, sr: dict, cands: list[dict], primary: list[dict], ref: float, atr: float,
-           h: horizons.Horizon, vwap: float | None, sma20: float | None) -> dict:
+           h: horizons.Horizon, vwap: float | None, sma20: float | None, zatr: float | None = None,
+           cap: float | None = None) -> dict:
     rid = regime["id"]
+    zatr = zatr or atr
+    cap = cap if cap is not None else MAX_ZONE_ATR[h.id] * zatr
     if rid == "uptrend" and not regime["flags"]["overextended"]:
         return _none_side("상승 추세에 과열 신호가 없음 — 숏은 쉬어 간다", SIZE[rid], True)
     # a strong support just above the price = a breakdown to retest; else fade the bounce
-    broken = [lv for lv in sr.get("levels") or [] if lv["price"] > ref and lv["price"] - ref <= atr
+    broken = [lv for lv in sr.get("levels") or [] if lv["price"] > ref and lv["price"] - ref <= zatr
               and (lv.get("strength") or 0) >= 2 and lv.get("kind") == "support"]
     setup = "breakdown" if rid in ("crash", "downtrend") and broken else "fade"
-    found = zones(cands, ref, atr, below=False, max_atr=MAX_ZONE_ATR[h.id])
-    zone = found[0] if found else _fallback_zone(ref, atr, below=False)
+    found = zones(cands, ref, zatr, below=False, max_atr=cap / zatr)
+    zone = found[0] if found else _fallback_zone(ref, zatr, below=False)
     if setup == "breakdown":
         lv = min(broken, key=lambda x: x["price"])
-        zone = {**zone, "low": _round(max(lv["price"] - 0.1 * atr, ref)), "high": _round(lv["price"] + 0.2 * atr),
+        zone = {**zone, "low": _round(max(lv["price"] - 0.1 * zatr, ref)), "high": _round(lv["price"] + 0.2 * zatr),
                 "mid": _round(lv["price"])}
         trigger = {"price": zone["low"], "kind": "limit", "text": "지지 종가 이탈 + 거래량 동반 뒤 되돌림에 매도"}
     else:
-        trigger = {"price": _round(zone["low"] - TRIGGER_ATR * atr), "kind": "stop",
+        trigger = {"price": _round(zone["low"] - TRIGGER_ATR * zatr), "kind": "stop",
                    "text": "구역에서 거절 봉 · 낮아진 고점 확인 뒤 구역 아래로 내려오면 매도"}
     entry = trigger["price"]
-    stop = _round(zone["high"] + SHORT_STOP_ATR * atr)
-    t1c = _next_level(cands, entry, False, atr, prefer=("sr", "vp", "trend", "vwap", "ma"))
-    t1p, t1b, t1s = (t1c["price"], t1c["basis"], "desk") if t1c else (entry - FILL_T1_ATR * atr, "ATR 대체", "atr")
-    t2c = _next_level(cands, t1p, False, atr, prefer=("sr", "vp", "trend"))
-    t2p, t2b, t2s = (t2c["price"], t2c["basis"], "desk") if t2c else (entry - FILL_T2_ATR * atr, "ATR 대체", "atr")
+    stop = _round(zone["high"] + SHORT_STOP_ATR * zatr)
+    downs = [c for c in cands if c.get("tag") != "round"]
+    t1c = _next_level(downs, entry, False, zatr, prefer=("sr", "vp", "trend", "vwap", "ma"), within=2 * cap, ref=ref)
+    t1p, t1b, t1s = (t1c["price"], t1c["basis"], "desk") if t1c else \
+        (max(entry - FILL_T1_ATR * zatr, entry * (1 - MAX_ZONE_PCT[h.id])), "ATR 대체", "atr")
+    t2c = _next_level(downs, t1p, False, zatr, prefer=("sr", "vp", "trend"), within=2 * cap, ref=ref)
+    t2p, t2b, t2s = (t2c["price"], t2c["basis"], "desk") if t2c else \
+        (max(t1p - (FILL_T2_ATR - FILL_T1_ATR) * zatr, entry * (1 - 1.5 * MAX_ZONE_PCT[h.id])), "ATR 대체", "atr")
     targets = [t for t in (_target("t1", t1p, t1b, t1s, entry, stop, False, action="take_half", then_stop=entry),
                            _target("t2", t2p, t2b, t2s, entry, stop, False, action="take_rest")) if t["price"] > 0]
     conditions = _short_conditions(zone, primary, ref, atr, h.primary_k, vwap, sma20, setup)
@@ -489,19 +649,45 @@ def build(sr: dict | None, daily: list[dict], primary: list[dict], h: horizons.H
     f = features(daily, primary if h.primary != "1d" else None, vix=vix, today=today)
     regime = detect_regime(f)
     intraday = h.primary != "1d"
-    cands = candidates(sr, primary, intraday)
+    zatr = _calm_atr(primary, atr, ref)
+    cap = min(MAX_ZONE_ATR[h.id] * zatr, MAX_ZONE_PCT[h.id] * ref)
+    jolt = shock(daily, _calm_atr(daily, _atr(daily) or atr)) if len(daily) > 21 else None
+    if jolt and abs(jolt["bar"]["close"] - ref) > 2 * cap:
+        jolt = None                                   # a shock the price has long left behind
+    cands = [*candidates(sr, primary, intraday), *shock_candidates(jolt), *round_levels(ref, cap)]
+    low = None
+    recent_low = min(b["low"] for b in primary[-3:]) if primary else None
+    if jolt and jolt["down"]:
+        # the crash low, unless the days after it went lower: the new low is where the catch starts
+        if recent_low is not None and recent_low < jolt["bar"]["low"]:
+            low = {"price": recent_low, "basis": "급락 뒤 신저가", "shock": True}
+        else:
+            low = {"price": jolt["bar"]["low"], "basis": "급락일 저가", "shock": True}
+    elif recent_low is not None:
+        low = {"price": recent_low, "basis": "최근 저점", "shock": False}
+    if low and abs(low["price"] - ref) > cap:
+        low = None
     closes = [b["close"] for b in primary]
     vwap = _vwap(primary) if intraday else None
     sma20 = _sma(closes, 20)
     fib = sr.get("fibonacci")
+    long_side = _long(regime, cands, primary, ref, atr, h, fib, zatr=zatr, cap=cap, low=low)
+    short_side = _short(regime, sr, cands, primary, ref, atr, h, vwap, sma20, zatr=zatr, cap=cap)
+    for side, up in ((long_side, True), (short_side, False)):
+        if side.get("setup") not in (None, "none"):
+            side["reach"] = reach(side, ref, cap, zatr, up)
     return {
         "version": VERSION, "computed_at": now or datetime.now(UTC).isoformat(timespec="seconds"),
         "frame": {"primary": h.primary, "daily": "1d", "atr": _round(atr), "atr_daily": (f or {}).get("atr_daily"),
+                  "atr_zone": _round(zatr), "zone_cap_pct": round(cap / ref * 100, 2),
                   "reference_price": _round(ref), "fallback": (sr.get("fallback") or {}).get("from")},
         "regime": regime,
+        "shock": ({"at": jolt["bar"]["at"], "change": jolt["change"], "down": jolt["down"],
+                   "open": _round(jolt["bar"]["open"]), "high": _round(jolt["bar"]["high"]),
+                   "low": _round(jolt["bar"]["low"]), "prev_close": _round(jolt["prev"]["close"])} if jolt else None),
         "bias_note": _desk_bias(regime, macro),
-        "long": _long(regime, cands, primary, ref, atr, h, fib),
-        "short": _short(regime, sr, cands, primary, ref, atr, h, vwap, sma20),
+        "long": long_side,
+        "short": short_side,
     }
 
 
@@ -527,6 +713,7 @@ def refresh(playbooks: dict | None, live: dict | None) -> dict | None:
                          "value": round((zone["low"] - price) / atr, 2)}
             conditions.append(c)
         out[side] = {**pb, "conditions": conditions, "score": _score(zone.get("score") or 0, conditions)}
+    _reach_again(out, price)
     return out
 
 
@@ -560,6 +747,14 @@ def prompt_note(pb: dict | None) -> str | None:
         bits.append(f"VIX {f['vix']:.0f}")
     lines = [f"Desk-computed two-sided playbook candidates (arithmetic from the bars, not a forecast). "
              f"Regime: {reg['id']}" + (f" - {', '.join(bits)}." if bits else ".")]
+    jolt = pb.get("shock")
+    if jolt:
+        lines.append(f"Shock session {jolt['at'][:10]}: {jolt['change'] * 100:+.1f}% (open {_fmt(jolt['open'])}, "
+                     f"high {_fmt(jolt['high'])}, low {_fmt(jolt['low'])}, prior close {_fmt(jolt['prev_close'])}). "
+                     f"Levels from before it are far from the price now; trade the levels it made.")
+    cap = (pb.get("frame") or {}).get("zone_cap_pct")
+    if cap:
+        lines.append(f"Reach: levels further than {cap:g}% from the price are watch levels, not entries or triggers.")
     for side in ("long", "short"):
         s = pb.get(side) or {}
         if s.get("setup") in (None, "none"):
@@ -573,8 +768,9 @@ def prompt_note(pb: dict | None) -> str | None:
         tg = s.get("targets") or []
         met = ", ".join(f"{c['id']} {'yes' if c['met'] else 'no'}" for c in s["conditions"] if c["how"] == "computed"
                         and c["met"] is not None)
+        name = "reclaim of the new low" if s.get("variant") == "reclaim" else _SETUP_EN[s["setup"]]
         lines.append(
-            f"{side.upper()} {_SETUP_EN[s['setup']]}: zone {_fmt(z['low'])}-{_fmt(z['high'])} ({members}), "
+            f"{side.upper()} {name}: zone {_fmt(z['low'])}-{_fmt(z['high'])} ({members}), "
             f"entries {entries} ({shares}%), stop {_fmt(s['stop'])}, "
             + ", ".join(f"{t['role'].upper()} {_fmt(t['price'])} ({t['basis']})" for t in tg)
             + f", time stop {s['time_stop']['bars']} x {s['time_stop']['interval']} bars, size {s['size_hint']}"
@@ -591,7 +787,9 @@ def mandate() -> str:
         "stop <N bars>', 'Short Playbook: zone <low>-<high> / entry <price> / confirm <the rejection or breakdown you "
         "need to see> / stop <price> / T1 <price> / T2 <price> / time stop <N bars>', and 'Playbook Bias: <long|short|"
         "both|none> - <one sentence>'. Start from the desk's candidate levels; move a price only to another listed "
-        "level and say why in the confirm text. The Playbook Bias weighs the two sides using the regime and the macro "
+        "level and say why in the confirm text. Prefer levels the price can reach within the horizon: right after a "
+        "shock session (a crash or squeeze day) use the levels that session made (its low, mid, open, high, the gap), "
+        "not the old range the price left. The Playbook Bias weighs the two sides using the regime and the macro "
         "& policy backdrop; it is a weighting, never a price. Write 'none' for a side with no setup."
     )
 
@@ -793,4 +991,5 @@ def track(fresh: dict, run_pb: dict | None, primary: list[dict], h: horizons.Hor
             s = {**s, "conditions": conditions, "score": _score(zone.get("score") or 0, conditions)}
         s["state"] = side_state(s, up, ref, atr)
         out[side] = s
+    _reach_again(out, ref)
     return out

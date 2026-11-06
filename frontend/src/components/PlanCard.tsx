@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ANALYST_CHOICES } from "../agents";
 import { api } from "../api";
 import { price } from "../format";
-import { ACTION, BIAS, FACTOR, HORIZON, OPINION, OUTCOME, RATING, term } from "../korean";
+import { ACTION, BIAS, FACTOR, HORIZON, OPINION, OUTCOME, quoteSourceText, RATING, term } from "../korean";
 import type { Estimate, Outcome, OutcomeStatus, Plan } from "../types";
 
 export function BiasBadge({ plan }: { plan: Plan }) {
@@ -473,7 +473,7 @@ export default function PlanCard({ plan, ticker, code, symbol, profile, profileI
               <dd>
                 {price(live.price)}
                 <span className="src" title={`${live.fetched_at} 에 읽은 값 (${QUOTE_EVERY_MS / 1000}초마다 갱신)`}>
-                  {live.source === "toss" ? "토스" : "야후"} ·{" "}
+                  {quoteSourceText(live.source) || "출처 미상"} ·{" "}
                   {hhmm(live.fetched_at)}
                 </span>
                 {est && <span className="muted small"> 장 마감</span>}

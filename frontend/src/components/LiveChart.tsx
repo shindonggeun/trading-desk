@@ -14,6 +14,7 @@ import { api, followLive, type Candles, type LiveFrame, type StreamState } from 
 import { price } from "../format";
 import { keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands } from "./chartBands";
 import type { Plan } from "../types";
+import { quoteSourceText } from "../korean";
 
 // 분봉 시각은 한국 시각으로 보인다(PriceChart 와 같은 방식).
 const KST_SEC = 9 * 3600;
@@ -216,7 +217,7 @@ export default function LiveChart({ ticker, plan, onPrice }: {
         <span className={`live-dot live-${state === "open" && stream === "live" ? "on" : "off"}`} aria-hidden />
         <span className="small">{label}</span>
         <span className="muted small">
-          {source && ` · ${source}`}
+          {source && ` · ${quoteSourceText(source)}`}
           {updated && ` · ${new Date(updated).toLocaleTimeString("ko-KR")} 갱신`}
         </span>
       </div>

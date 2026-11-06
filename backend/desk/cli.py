@@ -8,6 +8,7 @@
     python -m desk.cli otp-key                       # prints a new DESK_OTP_KEY value
     python -m desk.cli backtest SOXL --horizon swing --from 2018-01-01 [--sweep] [--out report.json]
     python -m desk.cli backtest --basket             # the reference basket (desk.backtest.BASKET)
+    python -m desk.cli backtest --basket --triggers  # touch entry vs the lower-bar trigger (#149)
     python -m desk.cli timing [--last 20]            # where recent analyses spent their time (#171)
 
 In Docker: ``docker compose exec backend python -m desk.cli create-user <name>``.
@@ -88,6 +89,16 @@ def _backtest(args) -> int:
     if args.horizon is not None and args.horizon not in horizons.HORIZONS:
         sys.exit(f"horizon must be one of {', '.join(horizons.HORIZONS)}")
     costs = backtest.Costs(args.cost_bps) if args.cost_bps is not None else backtest.Costs()
+    if args.triggers:
+        from . import trigger_bt
+
+        rep = trigger_bt.run(tickers, args.horizon or "swing", args.start, costs.bps_per_side,
+                             progress=lambda msg: print(msg, file=sys.stderr))
+        trigger_bt.print_report(rep)
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as f:
+                json.dump(rep, f, ensure_ascii=False, indent=1)
+        return 0
     report = backtest.run(tickers, args.horizon, args.start, args.end, args.step, costs, args.sweep,
                           progress=lambda msg: print(msg, file=sys.stderr))
     backtest.print_summary(report)
@@ -120,6 +131,8 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--cost-bps", type=float, default=None, help="commission + slippage per side (bp)")
     bt.add_argument("--sweep", action="store_true", help="also try the parameters one at a time")
     bt.add_argument("--out", default=None, help="write the full JSON report here")
+    bt.add_argument("--triggers", action="store_true",
+                    help="compare the zone-touch entry with the lower-bar trigger entry (#149; ~2 years of 60m bars)")
     tm = sub.add_parser("timing", help="average time per stage and per agent over the latest finished runs")
     tm.add_argument("--last", type=int, default=20, help="how many recent finished runs (default 20)")
     args = parser.parse_args(argv)

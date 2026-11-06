@@ -19,6 +19,7 @@ import {
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles, type ReviewRow } from "../api";
 import { price } from "../format";
+import { mergeAxisLabels, nearestLevels, planBands, PriceBands, srBands, withAlpha, zoneHalfWidth } from "./chartBands";
 import type { FibLevel, Fibonacci, Plan, SrLevel, SupportResistance, Trendline } from "../types";
 
 export type Interval = Exclude<CandleInterval, "1m">;
@@ -40,11 +41,15 @@ const LOG_SCALE = new Set<Interval>(["1w", "1M", "1y"]);
 const LABEL = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.label])) as Record<Interval, string>;
 const COUNT = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.count])) as Record<Interval, number>;
 
-type Show = { levels: boolean; sr: boolean; trend: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean };
+type Show = { levels: boolean; sr: boolean; all: boolean; trend: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean };
 const SHOW_LABEL: Record<keyof Show, string> = {
-  levels: "타점선", sr: "지지 · 저항", trend: "추세선", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
+  levels: "타점선", sr: "지지 · 저항", all: "모든 지지 · 저항", trend: "추세선", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
 };
-const DEFAULT_SHOW: Show = { levels: true, sr: true, trend: true, fib: true, fills: true, analysis: true, rsi: true };
+// #98: 지지 · 저항은 가까운 3개씩만, 피보나치는 켤 때만 — 차트가 선으로 덮이지 않게
+const DEFAULT_SHOW: Show = { levels: true, sr: true, all: false, trend: true, fib: false, fills: true, analysis: true, rsi: true };
+const NEAR_LEVELS = 3;
+/** RSI 패널 높이 — 낮은 화면(가로 모드 · 크게 보기)에서 가격 패널을 누르지 않게 차트 높이에 비례 */
+const rsiHeight = (h: number) => Math.round(Math.min(110, Math.max(56, h * 0.22)));
 
 // 주기 · 표시 선택은 이 브라우저에 기억한다(사생활 모드 · 막힌 저장소에서도 화면은 그대로 동작).
 const PREFS_KEY = "desk.priceChart.v1";
@@ -253,6 +258,11 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     [show.sr, mode, saved, nowSr],
   );
   const srSource = mode === "plan" ? saved : nowSr;
+  // 차트에 띠로 그릴 구역 — 기준가에서 가까운 지지 · 저항 3개씩(표시 메뉴 "모든 지지 · 저항" 이면 전부). 목록은 전부.
+  const srShown: SrLevel[] = useMemo(
+    () => (srSource?.reference_price != null ? nearestLevels(sr, srSource.reference_price, NEAR_LEVELS, show.all) : sr),
+    [sr, srSource, show.all],
+  );
   // 추세선 · 피보나치(#73) — 지지 · 저항과 같은 출처(분석 당시 / 지금)
   const trendLines: Trendline[] = useMemo(() => (show.trend ? srSource?.trendlines ?? [] : []), [show.trend, srSource]);
   const fib: Fibonacci | null = show.fib ? srSource?.fibonacci ?? null : null;
@@ -460,7 +470,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         rsi.setData(rows.flatMap(({ key, bar }) => (bar.rsi == null ? [] : [{ time: time(key), value: bar.rsi }])));
         const muted = css("--muted", "#8c939d");
         for (const lv of [70, 30]) rsi.createPriceLine({ price: lv, color: muted, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "" });
-        chart.panes()[1]?.setHeight(110);
+        chart.panes()[1]?.setHeight(rsiHeight(el.clientHeight));
       }
 
       chart.timeScale().fitContent();
@@ -485,8 +495,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const lines: [number | null | undefined, string, string, LineStyle][] = show.levels
       ? [
           [plan?.entry_price, "진입", css("--accent", "#c9d1db"), LineStyle.Solid],
-          [plan?.stop_loss, "손절", css("--short", "#3a86f8"), LineStyle.Dashed],
-          [plan?.price_target, "목표", css("--long", "#f2464b"), LineStyle.Dashed],
+          [plan?.stop_loss, "손절", css("--short", "#3a86f8"), LineStyle.Solid],
+          [plan?.price_target, "목표", css("--long", "#f2464b"), LineStyle.Solid],
           ...(extraLines ?? []).map(
             (l): [number, string, string, LineStyle] => [l.price, l.label, l.color, l.dashed ? LineStyle.Dotted : LineStyle.Solid],
           ),
@@ -496,6 +506,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     for (const [value, title, color, lineStyle] of lines) {
       if (value != null) made.push(series.createPriceLine({ price: value, title, color, lineWidth: 2, lineStyle, axisLabelVisible: true }));
     }
+    // 오른쪽 축의 가까운 라벨은 하나로(좌표는 그려진 뒤에 나온다)
+    const frame = requestAnimationFrame(() => drawn.alive.current && mergeAxisLabels(series, made));
     const near = lines.map(([v]) => v).filter((v): v is number => v != null && Math.abs(v - lastClose) / lastClose <= AUTOSCALE_MAX_GAP);
     series.applyOptions({
       autoscaleInfoProvider: (base: () => { priceRange: { minValue: number; maxValue: number } } | null) => {
@@ -536,28 +548,45 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     markers.setMarkers(list.map(({ key, m }) => ({ ...m, time: time(key) }) as SeriesMarker<Time>));
     return () => {
       // 봉이 바뀌면 차트 effect 가 먼저 chart.remove() 한다 — 그때는 지울 선도 이미 없다.
+      cancelAnimationFrame(frame);
       if (drawn.alive.current) for (const line of made) series.removePriceLine(line);
     };
   }, [drawn, plan, fills, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines]);
 
-  // 지지 · 저항선 — 주봉 근거는 굵은 긴 점선, 일봉은 가는 점선. 축 라벨은 계획선만 달아 겹치지 않게.
+  // 지지 · 저항 구역 띠 · 타점의 손실 · 이익 영역 · 피보나치(#98) — 캔들 아래에 칠하고 축 라벨은 달지 않는다.
   useEffect(() => {
     if (!drawn) return;
-    const { series } = drawn;
-    const made = sr.map((lv) =>
-      series.createPriceLine({
-        price: lv.price,
-        color: css(lv.kind === "support" ? "--sr-support" : "--sr-resistance", lv.kind === "support" ? "#2bb3a3" : "#b58cf0"),
-        lineWidth: lv.timeframe === "1w" ? 2 : 1,
-        lineStyle: lv.timeframe === "1w" ? LineStyle.LargeDashed : LineStyle.Dotted,
-        axisLabelVisible: false,
-        title: "", // 구역이 많아 제목은 겹친다 — 근거는 툴팁 · 목록에
-      }),
+    const { series, rows, intraday } = drawn;
+    const bands = new PriceBands(`11px ${getComputedStyle(document.body).fontFamily}`);
+    series.attachPrimitive(bands);
+    const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
+    // 타점 영역은 분석한 날의 봉부터(분봉은 그날 첫 봉) — 분석일 마커와 같은 규칙
+    const day = intraday ? barFor(rows.map((r) => r.day), tradeDate) : null;
+    const at = intraday ? (day == null ? null : rows.find((r) => r.day === day)?.key ?? null) : barFor(rows.map((r) => r.key), tradeDate);
+    const muted = css("--muted", "#8c939d");
+    bands.set(
+      [
+        ...(show.levels ? planBands(plan, at == null ? null : time(at), { loss: css("--danger", css("--up", "#f2464b")), profit: css("--ok", "#3fb68b") }) : []),
+        ...srBands(srShown, srSource?.atr, { support: css("--sr-support", "#2bb3a3"), resistance: css("--sr-resistance", "#b58cf0") }),
+      ],
+      (fib?.levels ?? []).filter((lv) => Number.isFinite(lv.price)).map((lv) => ({ price: lv.price, color: withAlpha(muted, 0.85), label: String(lv.ratio) })),
     );
     return () => {
-      if (drawn.alive.current) for (const line of made) series.removePriceLine(line);
+      if (drawn.alive.current) series.detachPrimitive(bands);
     };
-  }, [drawn, sr]);
+  }, [drawn, srShown, srSource, plan, fib, show.levels, tradeDate]);
+
+  // RSI 패널은 차트 높이(크게 보기 · 가로 모드 · 창 크기)에 맞춰 다시 잰다
+  useEffect(() => {
+    const el = box.current;
+    if (!drawn?.rsi || !el) return;
+    const apply = () => {
+      if (drawn.alive.current) drawn.chart.panes()[1]?.setHeight(rsiHeight(el.clientHeight));
+    };
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [drawn]);
 
   // 추세선 — 앵커부터 오늘까지 잇는 선, 터치 봉에 번호, 이탈한 선은 흐린 점선. 축 범위엔 넣지 않는다(먼 선이 봉을 누르지 않게).
   // 피보나치 — 비율 제목이 붙은 가는 가로선 + 스윙 구간(시작 → 끝) 점선.
@@ -581,7 +610,6 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const lines: { line: Trendline; series: ISeriesApi<"Line"> }[] = [];
     const marks: { key: Key; m: Omit<SeriesMarker<Time>, "time"> }[] = [];
     let swing: ISeriesApi<"Line"> | null = null;
-    const fibLines: IPriceLine[] = [];
     const marked = new Set<string>(); // 같은 봉 · 같은 쪽엔 앞(더 강한) 선의 번호 하나만 — 비슷한 선끼리 겹쳐 찍지 않게
     const sameFrame = (tf: string) => tf === drawn.interval;
     for (const line of trendLines) {
@@ -629,13 +657,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     }
     if (fib) {
       try {
-        const color = css("--muted", "#8c939d");
-        for (const lv of fib.levels) {
-          if (!Number.isFinite(lv.price)) continue;
-          // 축 라벨은 0 < 비율 < 1 만 — 0 · 1(스윙 끝점)까지 달면 계획선 라벨과 겹친다
-          const inner = lv.ratio > 0 && lv.ratio < 1;
-          fibLines.push(series.createPriceLine({ price: lv.price, color, lineWidth: 1, lineStyle: LineStyle.SparseDotted, axisLabelVisible: inner, axisLabelColor: color, title: inner ? String(lv.ratio) : "" }));
-        }
+        const color = css("--muted", "#8c939d");   // 비율 가로선은 띠 effect 가 왼쪽 글자와 함께 그린다
         const tf = srSource?.intervals?.primary ?? "1d";
         const a = keyOf(fib.from.at, tf);
         const b = keyOf(fib.to.at, tf);
@@ -657,7 +679,6 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       touchMarks.detach();
       for (const { series: s } of lines) chart.removeSeries(s);
       if (swing) chart.removeSeries(swing);
-      for (const l of fibLines) series.removePriceLine(l);
     };
   }, [drawn, trendLines, fib, ticker, srSource]);
 
@@ -676,7 +697,19 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         const d = Math.abs(y - pt.y);
         if (d <= 5 && (!best || d < best.d)) best = { hit: make(y), d };
       };
-      for (const level of sr) consider(level.price, (y) => ({ type: "sr", level, key: `sr-${level.kind}-${level.price}`, x: pt.x, y }));
+      for (const level of srShown) {
+        // 띠 안에 커서가 있으면 그 구역(띠 밖이면 가운데 선 근처)
+        const hw = zoneHalfWidth(level, srSource?.atr);
+        const a = series.priceToCoordinate(level.price + hw);
+        const b = series.priceToCoordinate(level.price - hw);
+        const make = (y: number): Hover => ({ type: "sr", level, key: `sr-${level.kind}-${level.price}`, x: pt.x, y });
+        if (a != null && b != null && pt.y >= Math.min(a, b) && pt.y <= Math.max(a, b)) {
+          const d = Math.abs((a + b) / 2 - pt.y) / 100;   // 겹친 띠는 가운데에 가까운 쪽
+          if (!best || d < best.d) best = { hit: make((a + b) / 2), d };
+        } else {
+          consider(level.price, make);
+        }
+      }
       if (fib) for (const level of fib.levels) consider(level.price, (y) => ({ type: "fib", level, fib, key: `fib-${level.ratio}`, x: pt.x, y }));
       for (const { line, series: s } of trendDrawn) {
         const v = param.seriesData.get(s) as { value?: number } | undefined;
@@ -691,7 +724,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       setHover(null);
       if (drawn.alive.current) chart.unsubscribeCrosshairMove(onMove);
     };
-  }, [drawn, sr, fib, trendDrawn]);
+  }, [drawn, srShown, srSource, fib, trendDrawn]);
 
   const currency = isKorean(ticker) ? "원" : "달러";
   const levels = [...(plan ? [plan.entry_price, plan.stop_loss, plan.price_target] : []), ...(extraLines ?? []).map((l) => l.price)];
@@ -807,7 +840,10 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       ) : wantSr && mode === "now" && !nowSr ? (
         <p className="muted small">지지 · 저항 · 추세선 계산 중…</p>
       ) : null}
-      {lists && show.sr && (
+      {lists && srSource && (show.sr || show.trend || !!fib) && (
+        <details className="level-list">
+          <summary>레벨 목록 <span className="muted small">지지 · 저항 · 추세선{fib ? " · 피보나치" : ""}</span></summary>
+      {show.sr && (
         sr.length > 0 ? (
           <>
             <ul className="sr-list" aria-label="지지 · 저항 구역">
@@ -824,7 +860,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           </>
         ) : null
       )}
-      {lists && show.trend && srSource && (
+      {show.trend && (
         trendLines.length > 0 ? (
           <ul className="sr-list trend-list" aria-label="추세선">
             {trendLines.map((t) => (
@@ -849,14 +885,16 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           </p>
         )
       )}
-      {lists && fib && (
+      {fib && (
         <p className="muted small fib-note">
           피보나치 되돌림 — {fib.direction === "up" ? "상승" : "하락"} {price(fib.from.price)}({kstDay(fib.from.at)}) → {price(fib.to.price)}({kstDay(fib.to.at)}):{" "}
           {fib.levels.filter((lv) => lv.ratio > 0 && lv.ratio < 1).map((lv) => `${lv.ratio} ${price(lv.price)}${lv.confluence ? "(지지 · 저항과 겹침)" : ""}`).join(" · ")}
         </p>
       )}
-      {lists && (show.trend || show.fib) && srSource && (trendLines.length > 0 || fib) && (
+      {(show.trend || show.fib) && (trendLines.length > 0 || fib) && (
         <p className="muted small sr-note">추세선은 로그 가격에서 직선, 번호는 선에 닿은 저점 · 고점 순서. 가격 기록의 계산이지 예측이 아닙니다.</p>
+      )}
+        </details>
       )}
     </section>
   );

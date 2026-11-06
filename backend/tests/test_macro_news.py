@@ -27,9 +27,10 @@ def test_spike_compares_the_last_day_with_the_average_day_before_it():
 
 def test_tone_and_headlines_read_gdelt_shapes():
     assert m.tone([{"value": -4.0}, {"value": -2.0}]) == -3.0
-    rows = m.headlines({"articles": [{"title": " AI spending fears ", "url": "u1", "domain": "x.com",
-                                      "seendate": _stamp(NOW), "sourcecountry": "US"}, {"title": "", "url": "u2"}]})
-    assert rows == [{"title": "AI spending fears", "url": "u1", "domain": "x.com", "country": "US",
+    rows = m.headlines({"articles": [{"title": " AI spending fears ", "url": "https://x.com/1", "domain": "x.com",
+                                      "seendate": _stamp(NOW), "sourcecountry": "US"}, {"title": "", "url": "https://x.com/2"},
+                                     {"title": "bad link", "url": "javascript:alert(1)"}]})
+    assert rows == [{"title": "AI spending fears", "url": "https://x.com/1", "domain": "x.com", "country": "US",
                      "seen": NOW.isoformat()}]
 
 

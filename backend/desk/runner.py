@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from . import horizons, trade_map, verdict
+from . import horizons, macro_news, playbook, trade_map, verdict
 from . import underlying as under
 from .broker.base import Broker
 from .consensus import CONSENSUS_TIMEOUT_SEC, ConsensusContext, llm_summariser
@@ -33,7 +33,7 @@ from .profile import desk_portfolio
 from .related import collect as collect_related
 from .related import inverse_pair
 from .related import prompt_note as related_note
-from .sr import live_note, prompt_note, support_resistance
+from .sr import frame_bars, live_note, prompt_note, support_resistance
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -134,7 +134,7 @@ def _fake_decision(request: RunRequest) -> dict:
     h = horizons.get(request.horizon)
     if h.id not in _FAKE_ATR:   # swing: the original script, unchanged
         text = ("**Rating**: Overweight\n\n**Executive Summary**: 182.5 부근 분할 진입, 171 손절, 목표 205.\n"
-                f"{verdict.FAKE_SUMMARY_LINE}\n\n"
+                f"{verdict.FAKE_SUMMARY_LINE}\n{playbook.FAKE_LINES}\n\n"
                 f"**Investment Thesis**: 수주 모멘텀과 이익 성장, 밸류 부담은 비중으로 관리.\n{verdict.FAKE_THESIS_LINE}\n\n"
                 "**Price Target**: 205\n\n**Time Horizon**: 2-4주")
         return {"final_trade_decision": text, "final_rating": "Overweight"}
@@ -143,7 +143,7 @@ def _fake_decision(request: RunRequest) -> dict:
     text = (f"**Rating**: Overweight\n\n**Executive Summary**: {entry} 눌림 지정가 진입. "
             f"Entry Price: {entry} / Stop Loss: {stop} / Price Target: {target}\n"
             f"Entry: limit / Invalidation: {stop} 아래 마감 / Exit by: {h.holding} 안에\n\n"
-            f"{verdict.FAKE_SUMMARY_LINE}\n\n"
+            f"{verdict.FAKE_SUMMARY_LINE}\n{playbook.FAKE_LINES}\n\n"
             f"**Investment Thesis**: {h.label} 기준 구조상 지지 위.\n{verdict.FAKE_THESIS_LINE}\n\n"
             f"**Price Target**: {target}\n\n**Time Horizon**: {h.holding}")
     return {"final_trade_decision": text, "final_rating": "Overweight"}
@@ -264,6 +264,51 @@ class RunManager:
         self.broker = broker
         self._slots = asyncio.Semaphore(max(1, max_concurrent))
         self._tasks: set[asyncio.Task] = set()
+
+    async def _playbooks(self, request: RunRequest, sr: dict | None, live: dict | None, h: horizons.Horizon,
+                         related: dict | None, ticker: str) -> dict | None:
+        """desk.playbook from the frame's bars (a cache hit right after the levels). None without
+        prices or levels; a failure is logged and the run goes on without playbooks."""
+        if self.prices is None or not sr:
+            return None
+        try:
+            primary, secondary, _complete, _p, _s = await asyncio.wait_for(
+                frame_bars(self.prices, ticker, request.trade_date, h), SR_TIMEOUT_SEC)
+            daily = primary if h.primary == "1d" else secondary
+            today = None
+            if h.primary != "1d" and primary:
+                day = primary[-1]["at"][:10]
+                session = [b for b in primary if b["at"][:10] == day]
+                today = {"at": session[0]["at"], "open": session[0]["open"], "close": session[-1]["close"],
+                         "high": max(b["high"] for b in session), "low": min(b["low"] for b in session),
+                         "volume": sum(b.get("volume") or 0 for b in session)}
+            vix = next((row.get("price") for row in (related or {}).get("instruments") or []
+                        if row.get("ticker") == "^VIX"), None)
+            macro = macro_news.CACHE.brief(ticker) if self.macro is not None else None
+            return await asyncio.to_thread(playbook.build, sr, daily, primary, h, live=live, vix=vix,
+                                           macro=macro, today=today)
+        except Exception as exc:  # noqa: BLE001 - incl. timeout
+            log.warning("playbooks for %s failed: %s", ticker, exc)
+            return None
+
+    async def _product_playbooks(self, request: RunRequest, lever, pb_main: dict | None, sr: dict | None,
+                                 frame: horizons.Horizon, related: dict | None, live: dict | None,
+                                 final_state: dict, starts: tuple, srs: tuple) -> dict | None:
+        """The playbooks on the traded instrument's prices: the main ones for an ordinary run, the
+        product's own bars for a leveraged one (the model's lines, in the underlying's prices, are
+        converted through the same anchors as its levels, or set aside)."""
+        parsed = playbook.parse((final_state or {}).get("final_trade_decision") or "")
+        if not lever:
+            return playbook.merge(playbook.refresh(pb_main, live), parsed)
+        pb = await self._playbooks(request, sr, live, frame, related, request.ticker)
+        if not pb:
+            return None
+        anchor = under.anchors(*starts, *srs)
+        leverage = lever[1]
+        if leverage < 0:   # an inverse product: the underlying's long is the product's short
+            parsed = {**parsed, "long": parsed.get("short"), "short": parsed.get("long")}
+        convert = (lambda p: under.to_product(p, anchor, leverage)) if anchor else (lambda _p: None)
+        return playbook.merge(playbook.refresh(pb, live), parsed, convert=convert)
 
     def _macro_note(self, ticker: str) -> str | None:
         if self.macro is None:
@@ -494,16 +539,21 @@ class RunManager:
                 main_live, main_sr = (start_u, sr_u) if lever else (start, sr)
                 lever_note = under.prompt_note(request.ticker, *lever) if lever else None
                 macro_note = self._macro_note(base or request.ticker)
-                note = "\n\n".join(part for part in (live_note(main_live, main_sr and main_sr.get("atr")),
-                                                     prompt_note(main_sr), lever_note, related_note(related),
-                                                     macro_note)
-                                   if part) or None
                 horizon = horizons.get(request.horizon)
                 frame = horizons.get(None) if main_sr and main_sr.get("fallback") else horizon
+                # #116: both playbooks from the bars the levels came from - the run's own instrument
+                # for the agents (the underlying of a leveraged product)
+                pb_main = await self._playbooks(request, main_sr, main_live, frame, related, base or request.ticker)
+                pb_note = playbook.prompt_note(pb_main)
+                note = "\n\n".join(part for part in (live_note(main_live, main_sr and main_sr.get("atr")),
+                                                     prompt_note(main_sr), pb_note, lever_note,
+                                                     related_note(related), macro_note)
+                                   if part) or None
                 mandate = horizons.horizon_mandate(horizon, main_sr and main_sr.get("atr"), frame=frame,
                                                    levels_below=bool(main_sr))
                 # #64: the symmetric checklist and high-probability filter, swing included
-                mandate = "\n\n".join(part for part in (mandate, verdict.mandate(horizon)) if part)
+                mandate = "\n\n".join(part for part in (mandate, verdict.mandate(horizon),
+                                                       playbook.mandate() if pb_note else None) if part)
                 portfolio = desk_portfolio(request.profile, book, note, horizon_mandate=mandate)
                 result = await asyncio.to_thread(self.runner, subject, emit, portfolio)
                 # The model may still leave a level out; fill it from ATR and mark it as computed.
@@ -525,6 +575,14 @@ class RunManager:
                 plan = verdict.apply(plan, horizon)   # opinion + filter; rating, bias and levels stay
                 if sr:
                     plan["support_resistance"] = sr
+                # #116: the product's playbooks (its own bars), the model's three lines merged when sane
+                try:
+                    plan_pb = await self._product_playbooks(request, lever, pb_main, sr, frame, related, live,
+                                                            result.final_state, (start, start_u), (sr, sr_u))
+                    if plan_pb:
+                        plan["playbooks"] = plan_pb
+                except Exception as exc:  # noqa: BLE001 - the plan stands without its playbooks
+                    log.warning("no playbooks for %s: %s", request.ticker, exc)
                 # #106: entry → targets → guards → stop from the plan, the zones and the volume profile
                 try:
                     plan["trade_map"] = trade_map.build(plan, sr)

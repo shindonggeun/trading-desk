@@ -284,8 +284,11 @@ async def support_resistance(prices, ticker: str, trade_date: str | None = None,
     return result
 
 
-async def _frame(prices, ticker: str, trade_date: str | None, price: float | None,
-                 h: horizons.Horizon) -> dict:
+async def frame_bars(prices, ticker: str, trade_date: str | None, h: horizons.Horizon
+                     ) -> tuple[list[dict], list[dict], bool, dict, dict]:
+    """The horizon's primary and secondary bars up to ``trade_date`` - the same requests (and so
+    the same desk.prices cache entries) the levels are computed from (#116 reuses them).
+    (primary, secondary, secondary_complete, primary_candles, secondary_candles)."""
     primary, secondary = await asyncio.gather(prices.candles(ticker, h.primary, h.primary_bars),
                                               prices.candles(ticker, h.secondary, h.secondary_bars))
     days, weeks = primary["bars"], secondary["bars"]
@@ -299,6 +302,12 @@ async def _frame(prices, ticker: str, trade_date: str | None, price: float | Non
         session = _local_day(days[-1]["at"], ticker)
         weeks = [b for b in weeks if _local_day(b["at"], ticker) < session]
         complete = True
+    return days, weeks, complete, primary, secondary
+
+
+async def _frame(prices, ticker: str, trade_date: str | None, price: float | None,
+                 h: horizons.Horizon) -> dict:
+    days, weeks, complete, primary, secondary = await frame_bars(prices, ticker, trade_date, h)
     result = compute(days, weeks, price, weekly_complete=complete, horizon=h.id)
     # pairs of swings × bars: off the event loop so it never stalls the streams
     await asyncio.to_thread(add_trend, result, days, weeks, h, price)

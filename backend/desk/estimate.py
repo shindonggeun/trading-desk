@@ -14,8 +14,24 @@ close, and the current mark), so the ratio cancels the contract's basis to the s
 and the KRW/USD rate at the anchor; no FX feed is needed. Public endpoints only (no
 key). Binance refuses US IPs; the homelab in Korea is fine.
 
+Beyond the stock contracts (issue #123):
+
+- Commodities (``underlyingType=COMMODITY``): Yahoo futures CL=F, GC=F ... map to CLUSDT,
+  XAUUSDT ... and anchor on the CME session end (17:00 New York).
+- Proxies: an index with no contract moves with an ETF that has one (^NDX / NQ=F with QQQ,
+  ^GSPC / ES=F with SPY, SOXX with SMH, KOSPI 200 with KODEX 200) — the "weekend Nasdaq".
+- Leveraged and inverse ETFs Binance does not list (SOXS, SQQQ ...) are the base's move times
+  the daily multiple (desk.related.LEVERAGED). Over a long close (a weekend) that is an
+  approximation: the fund resets daily, the estimate does not.
+
+``candles`` turns the contract's mark-price bars since the anchor into estimated bars of the
+ticker (5m / 10m / 15m / 1h / 1d / 1w), the same ratio bar by bar, so a chart can continue past
+the last real bar.
+
 Limits: only tickers Binance lists; thin overnight books can make the mark jumpy; days
 with unusual hours need an entry in SPECIAL_HOURS or the anchor lands on the wrong minute.
+To add a Korean name: look for ``underlyingType=KR_EQUITY`` in /fapi/v1/exchangeInfo and add
+its KRX code to KR_CONTRACTS.
 """
 
 from __future__ import annotations
@@ -53,6 +69,21 @@ KR_CONTRACTS = {
 }
 
 
+# Yahoo futures -> Binance commodity perpetuals.
+COMMODITY_CONTRACTS = {
+    "CL=F": "CLUSDT", "BZ=F": "BZUSDT", "NG=F": "NATGASUSDT", "HG=F": "COPPERUSDT",
+    "GC=F": "XAUUSDT", "SI=F": "XAGUSDT", "PL=F": "XPTUSDT", "PA=F": "XPDUSDT",
+}
+# No contract of its own: moves with this ticker's contract (an index with its ETF).
+PROXIES = {
+    "^NDX": "QQQ", "NQ=F": "QQQ", "^IXIC": "QQQ", "^GSPC": "SPY", "ES=F": "SPY", "^RUT": "IWM",
+    "SOXX": "SMH", "^SOX": "SMH", "^KS200": "069500.KS", "^KS11": "069500.KS",
+}
+CANDLE_INTERVALS = {"5m": "5m", "10m": "5m", "15m": "15m", "1h": "1h", "1d": "1d", "1w": "1w"}
+CANDLES_TTL_SEC = 60.0
+CANDLE_LIMIT = 1000
+
+
 @dataclass(frozen=True)
 class Session:
     zone: ZoneInfo
@@ -61,6 +92,8 @@ class Session:
     # Days that open or close at other times: date -> (opens, closes). Keep it current —
     # a missing early close anchors on minutes the stock never traded.
     special: dict[date, tuple[clock_time, clock_time]] = field(default_factory=dict)
+    # CME Globex: Sunday 18:00 to Friday 17:00 New York, an hour's break each day at 17:00
+    futures: bool = False
 
     def hours(self, day: date) -> tuple[clock_time, clock_time]:
         return self.special.get(day, (self.opens, self.closes))
@@ -90,8 +123,22 @@ def yahoo_daily_closes(ticker: str) -> list[tuple[date, float]]:
     return [(index.date(), float(row["Close"])) for index, row in frame.iterrows()]
 
 
+FUTURES = Session(ZoneInfo("America/New_York"), clock_time(18, 0), clock_time(17, 0), futures=True)
+
+
 def session_of(ticker: str) -> Session:
-    return KRX if ticker.upper().endswith((".KS", ".KQ")) else US
+    t = ticker.upper()
+    if t.endswith((".KS", ".KQ")) or t.startswith(("^KS", "^KQ")):
+        return KRX
+    return FUTURES if t.endswith("=F") else US
+
+
+def futures_open(now: datetime) -> bool:
+    ny = now.astimezone(FUTURES.zone)
+    day, hour = ny.weekday(), ny.hour
+    if day == 5 or (day == 6 and hour < 18) or (day == 4 and hour >= 17):
+        return False
+    return hour != 17
 
 
 def _round(price: float) -> float:
@@ -116,7 +163,9 @@ class Estimate:
     market_state: str              # open | closed
     fetched_at: str
     supported: bool = True
-    method: str = "binance_perp_mark"
+    method: str = "binance_perp_mark"   # binance_perp_mark | proxy | leveraged
+    basis: str | None = None            # the ticker whose contract moved it (proxy / leveraged base)
+    multiple: float = 1.0               # leveraged: the daily multiple applied to the base's move
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -151,6 +200,10 @@ class BinanceEstimator:
         ticker = ticker.upper()
         if ticker.endswith((".KS", ".KQ")):
             return KR_CONTRACTS.get(ticker[:-3])
+        if ticker in COMMODITY_CONTRACTS:
+            return COMMODITY_CONTRACTS[ticker]
+        if ticker.startswith("^") or "=" in ticker:
+            return None
         async with self._contracts_lock:
             if self._clock() - self._us_loaded >= CONTRACTS_TTL_SEC:
                 info = await self._get("/fapi/v1/exchangeInfo")
@@ -171,6 +224,8 @@ class BinanceEstimator:
         if not finished:
             raise ValueError(f"no finished daily bar for {ticker}")
         day, close = finished[-1]
+        if session.futures:
+            return day, close, session.close_moment(day), futures_open(now)
         local = now.astimezone(session.zone)
         opens, closes = session.hours(local.date())
         # Open = a weekday inside today's hours with a bar for today (a holiday has none).
@@ -214,22 +269,103 @@ class BinanceEstimator:
             self._cache.clear()
         self._cache[ticker] = (self._clock(), value)
 
+    async def resolve(self, ticker: str) -> tuple[str, str, str | None, float] | None:
+        """(contract, method, basis ticker, multiple) for ``ticker``, or None: its own contract,
+        else a proxy's, else (a leveraged ETF) its base's — own or proxy — with the multiple."""
+        from .related import LEVERAGED
+
+        ticker = ticker.upper()
+        own = await self.contract_for(ticker)
+        if own:
+            return own, "binance_perp_mark", None, 1.0
+        proxy = PROXIES.get(ticker)
+        if proxy:
+            contract = await self.contract_for(proxy)
+            return (contract, "proxy", proxy, 1.0) if contract else None
+        lever = LEVERAGED.get(ticker)
+        if lever:
+            base, multiple = lever
+            contract = await self.contract_for(base)
+            if not contract and PROXIES.get(base):
+                contract = await self.contract_for(PROXIES[base])
+            return (contract, "leveraged", base, float(multiple)) if contract else None
+        return None
+
     async def _compute(self, ticker: str) -> Estimate | None:
-        contract = await self.contract_for(ticker)
-        if contract is None:
+        found = await self.resolve(ticker)
+        if found is None:
             return None
+        contract, method, basis, multiple = found
         now = self._now()
         session = session_of(ticker)
         day, close, close_at, is_open = await asyncio.to_thread(self._anchor_close, ticker, session, now)
         anchor = await self._mark_at(contract, close_at)
         mark = float((await self._get("/fapi/v1/premiumIndex", {"symbol": contract}))["markPrice"])
-        ratio = mark / anchor
+        move = multiple * (mark / anchor - 1)
         return Estimate(
-            ticker=ticker, estimate=_round(close * ratio), change_pct=round((ratio - 1) * 100, 2),
+            ticker=ticker, estimate=_round(close * (1 + move)), change_pct=round(move * 100, 2),
             last_close=_round(close), last_close_date=day.isoformat(), close_at=_iso(close_at),
             contract=contract, contract_price=mark, contract_price_at_close=anchor,
             market_state="open" if is_open else "closed", fetched_at=_iso(now),
+            method=method, basis=basis, multiple=multiple,
         )
 
+    async def candles(self, ticker: str, interval: str) -> dict | None:
+        """Estimated bars of ``ticker`` since its last close: the contract's mark-price bars,
+        each moved by the same anchor ratio (times the multiple for a leveraged ETF). None when
+        there is no contract. 10-minute bars are two 5-minute ones."""
+        if interval not in CANDLE_INTERVALS:
+            raise ValueError(f"interval must be one of {', '.join(CANDLE_INTERVALS)}")
+        ticker = ticker.upper()
+        key = f"candles:{ticker}:{interval}"
+        cached = self._cache.get(key)
+        if cached and self._clock() - cached[0] < CANDLES_TTL_SEC:
+            if isinstance(cached[1], Exception):
+                raise cached[1]
+            return cached[1]
+        try:
+            result = await self._candles(ticker, interval)
+        except Exception as exc:
+            self._remember(key, exc)
+            raise
+        self._remember(key, result)
+        return result
 
-__all__ = ["KRX", "KR_CONTRACTS", "US", "BinanceEstimator", "Estimate"]
+    async def _candles(self, ticker: str, interval: str) -> dict | None:
+        found = await self.resolve(ticker)
+        if found is None:
+            return None
+        contract, method, basis, multiple = found
+        now = self._now()
+        day, close, close_at, is_open = await asyncio.to_thread(self._anchor_close, ticker, session_of(ticker), now)
+        anchor = await self._mark_at(contract, close_at)
+        rows = await self._get("/fapi/v1/markPriceKlines", {
+            "symbol": contract, "interval": CANDLE_INTERVALS[interval],
+            "startTime": int(close_at.timestamp() * 1000), "limit": CANDLE_LIMIT})
+
+        def price(p: str) -> float:
+            return close * (1 + multiple * (float(p) / anchor - 1))
+
+        bars = []
+        for r in rows:
+            o, h, lo, c = price(r[1]), price(r[2]), price(r[3]), price(r[4])
+            bars.append({"t": int(r[0]), "open": o, "high": max(h, lo), "low": min(h, lo), "close": c})
+        if interval == "10m":   # two 5-minute bars into one, on 10-minute boundaries
+            merged: dict[int, dict] = {}
+            for b in bars:
+                k = b["t"] - b["t"] % 600_000
+                m = merged.get(k)
+                if m is None:
+                    merged[k] = {**b, "t": k}
+                else:
+                    m.update(high=max(m["high"], b["high"]), low=min(m["low"], b["low"]), close=b["close"])
+            bars = list(merged.values())
+        out = [{"at": _iso(datetime.fromtimestamp(b["t"] / 1000, UTC)), "open": _round(b["open"]),
+                "high": _round(b["high"]), "low": _round(b["low"]), "close": _round(b["close"]),
+                "volume": 0, "estimated": True} for b in bars]
+        return {"ticker": ticker, "interval": interval, "close": _round(close), "close_date": day.isoformat(),
+                "close_at": _iso(close_at), "market_state": "open" if is_open else "closed",
+                "contract": contract, "method": method, "basis": basis, "multiple": multiple, "bars": out}
+
+
+__all__ = ["COMMODITY_CONTRACTS", "FUTURES", "KRX", "KR_CONTRACTS", "PROXIES", "US", "BinanceEstimator", "Estimate"]

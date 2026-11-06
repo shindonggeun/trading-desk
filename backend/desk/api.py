@@ -23,7 +23,7 @@ from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
 from .broker import make_broker
 from .consensus import fake_summariser, llm_summariser
 from .db import make_engine, migrate, now
-from .estimate import BinanceEstimator
+from .estimate import CANDLE_INTERVALS, BinanceEstimator
 from .indicators import INDICATORS
 from .leverage_analyst import fake_analyst, llm_analyst
 from .market_flow import MarketFlow
@@ -37,6 +37,8 @@ from .sr import support_resistance
 from .store import TERMINAL, Store, iso
 from .universe import Universe
 
+MAX_BOARD = 30          # tickers per /api/estimates call
+BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
 KST = timezone(timedelta(hours=9))   # Toss dates (order history from/to) are KST
 REVIEW_CACHE_SEC = 60
 REVIEW_FAIL_CACHE_SEC = 30
@@ -751,6 +753,66 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             log.warning("estimate for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no estimate for {ticker}") from None
         return result.to_dict() if result else {"ticker": ticker, "supported": False}
+
+    @app.get("/api/estimates")
+    async def estimates(tickers: str):
+        """The quote board (#123/#124): for each ticker the live price while its market is open,
+        else the off-hours estimate (own Binance contract, a proxy, or a leveraged base x multiple),
+        else "unavailable". One ticker failing does not fail the others."""
+        names = [t for t in (x.strip() for x in tickers.split(",")) if t]
+        if not names or len(names) > MAX_BOARD:
+            raise HTTPException(422, f"between 1 and {MAX_BOARD} tickers")
+        try:
+            names = list(dict.fromkeys(clean_ticker(t) for t in names))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        gate = asyncio.Semaphore(BOARD_PARALLEL)
+
+        async def one(ticker: str) -> dict:
+            async with gate:
+                est, err = None, None
+                try:
+                    est = await estimator.estimate(ticker)
+                except Exception as exc:  # noqa: BLE001 - Binance or Yahoo down for this one
+                    err = type(exc).__name__
+                    log.warning("board estimate for %s failed: %s", ticker, exc)
+                is_open = est.market_state == "open" if est else await live.is_open(calendar, ticker)
+                row: dict = {"ticker": ticker, "close": est.last_close if est else None,
+                             "close_date": est.last_close_date if est else None,
+                             "source": ({"kind": est.method, "contract": est.contract, "basis": est.basis,
+                                         "multiple": est.multiple} if est else None)}
+                if is_open:
+                    try:
+                        q = await prices.quote(ticker)
+                        change = (round((q.price / est.last_close - 1) * 100, 2) if est and est.last_close else None)
+                        return {**row, "state": "live", "price": q.price, "change_pct": change,
+                                "quote_source": q.source, "fetched_at": q.fetched_at}
+                    except Exception as exc:  # noqa: BLE001 - fall back to the estimate below
+                        log.warning("board quote for %s failed: %s", ticker, exc)
+                if est:
+                    return {**row, "state": "estimate", "price": est.estimate, "change_pct": est.change_pct,
+                            "fetched_at": est.fetched_at}
+                return {**row, "state": "unavailable", "price": None, "change_pct": None, "error": err,
+                        "fetched_at": None}
+
+        return {"items": await asyncio.gather(*(one(t) for t in names))}
+
+    @app.get("/api/estimate/candles")
+    async def estimate_candles(ticker: str, interval: str = "5m"):
+        """Estimated bars since the last regular close (desk.estimate.candles) to continue a chart
+        past the last real bar; ``supported: false`` when there is no contract to follow."""
+        try:
+            ticker = clean_ticker(ticker)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if interval not in CANDLE_INTERVALS:
+            raise HTTPException(422, f"interval must be one of {', '.join(CANDLE_INTERVALS)}")
+        try:
+            result = await estimator.candles(ticker, interval)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("estimated candles for %s failed: %s", ticker, exc)
+            raise HTTPException(503, f"no estimated candles for {ticker}") from None
+        return result if result else {"ticker": ticker, "supported": False}
 
     @app.get("/api/regime")
     def regime_view():

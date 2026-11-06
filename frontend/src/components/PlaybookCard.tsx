@@ -1,6 +1,49 @@
+import { useEffect, useState } from "react";
+import { api } from "../api";
 import { price } from "../format";
-import type { Outcome, Plan, PlaybookOutcome, PlaybookSide, Playbooks, RegimeId } from "../types";
+import type { HorizonId, LivePlaybooks, LivePlaybookSide, Outcome, Plan, PlaybookOutcome, PlaybookSide, Playbooks, RegimeId } from "../types";
 import { useEstimate, useLiveQuote } from "./PlanCard";
+
+/** 서버 캐시 TTL(desk/horizons.py sr_ttl_sec)에 맞춘 폴링 간격 — 더 자주 불러도 같은 값이다 */
+const POLL_MS: Record<HorizonId, number> = { scalp: 30_000, intraday: 60_000, short_swing: 120_000, swing: 300_000 };
+
+/**
+ * #132: 아직 열린 거래일 run 의 플레이북을 지금 값으로(#128). 탭이 숨으면 쉬고 돌아오면 바로 부른다.
+ * 실패하면 마지막으로 받은 값을 그대로 둔다(없으면 null — 카드는 분석 당시 값으로).
+ */
+export function useLivePlaybooks(runId: string | undefined, horizon: HorizonId | undefined, enabled: boolean): LivePlaybooks | null {
+  const [data, setData] = useState<LivePlaybooks | null>(null);
+  useEffect(() => {
+    setData(null);
+    if (!runId || !enabled) return;
+    let alive = true;
+    const load = () => {
+      if (document.hidden) return;
+      api.livePlaybooks(runId).then((d) => alive && setData(d), () => {});
+    };
+    load();
+    const timer = setInterval(load, POLL_MS[horizon ?? "swing"] ?? POLL_MS.swing);
+    document.addEventListener("visibilitychange", load);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", load);
+    };
+  }, [runId, horizon, enabled]);
+  return data;
+}
+
+/** "3분째" · "2시간째" — 상태가 이어진 시간 */
+function since(iso: string | null, now: number): string | null {
+  if (!iso) return null;
+  const min = Math.floor((now - Date.parse(iso)) / 60_000);
+  if (!Number.isFinite(min) || min < 1) return "방금";
+  if (min < 60) return `${min}분째`;
+  const h = Math.floor(min / 60);
+  return h < 24 ? `${h}시간째` : `${Math.floor(h / 24)}일째`;
+}
+
+const hhmm = (iso: string) => new Date(iso).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
 
 /** 롱(하따) · 숏(단타) 플레이북(#116 · #117) — 국면, 두 방향의 구역 · 사다리 · 확인 신호 · 손절 · 목표, 지금 가격 기준 상태. */
 
@@ -79,8 +122,9 @@ export function playbookState(side: PlaybookSide, dir: "long" | "short", p: numb
   return dist <= atr ? "near" : "waiting";
 }
 
-function Side({ side, dir, state, result }: {
+function Side({ side, dir, state, result, live }: {
   side: PlaybookSide; dir: "long" | "short"; state: PlaybookState; result?: PlaybookOutcome;
+  live?: { since: string | null; stale: boolean };
 }) {
   const name = dir === "long" ? "롱" : "숏";
   if (!has(side)) {
@@ -99,6 +143,12 @@ function Side({ side, dir, state, result }: {
         <strong>{name} · {SETUP[side.setup] ?? side.setup}</strong>
         <span className={`pb-state pb-state-${state}`}>{STATE[state]}</span>
       </div>
+      {live && (live.since || live.stale) && (
+        <p className="muted small pb-live">
+          {live.since && <>이 상태 {live.since}</>}
+          {live.stale && <span className="pb-stale">{live.since ? " · " : ""}시세 실패 — 마지막 종가 기준</span>}
+        </p>
+      )}
       {side.reason && <p className="small pb-reason">{side.reason}</p>}
       <dl className="pb-grid">
         {side.zone && (
@@ -162,21 +212,39 @@ function Side({ side, dir, state, result }: {
   );
 }
 
-export default function PlaybookCard({ plan, symbol, outcome }: { plan: Plan; symbol?: string; outcome?: Outcome | null }) {
-  const pb: Playbooks | undefined = plan.playbooks;
+export default function PlaybookCard({ plan, symbol, outcome, runId }: {
+  plan: Plan; symbol?: string; outcome?: Outcome | null; runId?: string;
+}) {
+  const saved: Playbooks | undefined = plan.playbooks;
   // 15초 현재가, 장 마감 중이면 추정가(#42) — 훅은 카드가 숨을 때도 같은 순서로
-  const live = useLiveQuote(symbol, plan.live_price, !!pb);
-  const est = useEstimate(symbol, !!pb);
-  if (!pb) return null;
+  const live = useLiveQuote(symbol, plan.live_price, !!saved);
+  const est = useEstimate(symbol, !!saved);
+  // #132: 열린 거래일(symbol 있음)에만 지금 값으로 — 지난 run 은 부르지 않는다
+  const fresh = useLivePlaybooks(runId, plan.horizon, !!saved && !!symbol);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!fresh) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, [fresh]);
+  if (!saved) return null;
+  // levels_from "fresh" 는 분석의 레벨이 아니라 새로 계산한 것 — 이 카드(분석의 플레이북)에는 쓰지 않는다
+  const cur: LivePlaybooks | null = fresh && fresh.levels_from === "run" ? fresh : null;
+  const pb: Playbooks = cur ?? saved;
   // 지난 거래일 run(symbol 없음)은 useLiveQuote 가 분석 당시 값을 돌려주므로 기준가로 "분석 당시" 라 적는다
   const p = symbol ? est?.estimate ?? live?.price ?? pb.frame.reference_price ?? null : pb.frame.reference_price ?? null;
   const basis = !symbol ? "분석 당시" : est ? "추정가" : live ? "현재가" : "기준가";
   const atr = pb.frame.atr;
   const res = outcome?.playbooks;
-  const states = {
-    long: playbookState(pb.long, "long", p, atr, res?.long),
-    short: playbookState(pb.short, "short", p, atr, res?.short),
+  // 채점이 끝난 방향은 채점 결과, 아니면 서버의 지금 상태, 없으면(실패 · null) 화면 계산
+  const stateOf = (dir: "long" | "short"): PlaybookState => {
+    const local = playbookState(pb[dir], dir, p, atr, res?.[dir]);
+    if (local === "none" || local === "closed" || (res?.[dir] && LOST.has(res[dir]!.status))) return local;
+    return cur?.[dir].state ?? local;
   };
+  const states = { long: stateOf("long"), short: stateOf("short") };
+  const liveOf = (s: LivePlaybookSide) => ({ since: since(s.state_since, now), stale: s.stale });
   const hits = pb.regime.evidence.filter((e) => e.hit);
   const misses = pb.regime.evidence.filter((e) => !e.hit && e.value != null);
   return (
@@ -185,6 +253,7 @@ export default function PlaybookCard({ plan, symbol, outcome }: { plan: Plan; sy
         <h3 id="pb-title">플레이북</h3>
         <span className={`pb-regime pb-regime-${pb.regime.id}`}>{REGIME[pb.regime.id] ?? pb.regime.id}</span>
         {p != null && <span className="muted small">{basis} {price(p)} · {pb.frame.primary} 봉 기준</span>}
+        {cur && <span className="muted small pb-asof">조건 · 상태 {hhmm(cur.as_of)} 기준</span>}
       </div>
       {hits.length > 0 && <p className="muted small pb-evidence">국면 근거: {hits.map((e) => evidenceText(e).text).join(" · ")}</p>}
       {misses.length > 0 && (
@@ -200,8 +269,8 @@ export default function PlaybookCard({ plan, symbol, outcome }: { plan: Plan; sy
       )}
       {pb.bias_note?.text && <p className="small pb-bias">거시 · 정책: {pb.bias_note.text}</p>}
       <div className="pb-sides">
-        <Side side={pb.long} dir="long" state={states.long} result={outcome?.playbooks?.long} />
-        <Side side={pb.short} dir="short" state={states.short} result={outcome?.playbooks?.short} />
+        <Side side={pb.long} dir="long" state={states.long} result={outcome?.playbooks?.long} live={cur ? liveOf(cur.long) : undefined} />
+        <Side side={pb.short} dir="short" state={states.short} result={outcome?.playbooks?.short} live={cur ? liveOf(cur.short) : undefined} />
       </div>
       <p className="muted small pb-note">가격은 계산이지 예측이 아닙니다. ◌ 는 직접 지켜볼 신호, – 는 데이터가 없어 판단하지 못한 신호입니다.</p>
     </section>

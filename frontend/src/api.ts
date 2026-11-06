@@ -1,4 +1,4 @@
-import type { DeskConfig, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FlowMarket, Instrument, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
+import type { DeskConfig, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -177,6 +177,8 @@ export const api = {
       `/api/candles?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(interval)}&count=${count}${rsi ? "&indicators=rsi14" : ""}`,
     ),
   /** 지지 · 저항(backend desk/sr.py) — 지금 봉 기준, 서버가 몇 분 캐시. */
+  /** #128: 분석(run)의 구역 · 사다리 · 손절 · 목표는 그대로, 조건 · 점수 · 상태만 지금 값. ticker · horizon 은 run 에서 */
+  livePlaybooks: (run: string) => call<LivePlaybooks>(`/api/playbooks?run=${encodeURIComponent(run)}`),
   levels: (ticker: string) => call<SupportResistance>(`/api/levels?ticker=${encodeURIComponent(ticker)}`),
   instruments: (q: string) => call<Instrument[]>(`/api/instruments?q=${encodeURIComponent(q)}`),
   instrumentsStatus: () =>

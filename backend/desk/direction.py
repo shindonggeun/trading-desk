@@ -17,7 +17,8 @@ LEAN = 30          # |score| from here: one side is "with" the trend
 STRONG = 60        # "strong" on the page and in the note
 SWING_K = 3
 WEIGHTS = {"ma_stack": 1.5, "slope50": 1.0, "structure": 1.0, "ret20": 0.5}
-APPLY = True       # the backtest measures with this off first (desk.backtest)
+APPLY = True       # set False to re-measure the counter-trend rows (desk.backtest by_direction)
+APPLY_HORIZONS = ("swing",)   # the backtest that decided the rule ran on swing; other horizons are only marked
 
 
 def _sma(values: list[float], n: int) -> float | None:
@@ -28,10 +29,19 @@ def _clip(x: float) -> float:
     return max(-1.0, min(1.0, x))
 
 
+def _sign(x: float) -> int:
+    return (x > 0) - (x < 0)
+
+
 def _pivots(values: list[float], high: bool) -> list[int]:
+    """Swing points, strict on the left: of two equal highs a few bars apart only the first counts
+    (a plateau is one swing, not a lower high)."""
     k = SWING_K
+    if high:
+        return [i for i in range(k, len(values) - k)
+                if values[i] > max(values[i - k:i]) and values[i] >= max(values[i + 1:i + k + 1])]
     return [i for i in range(k, len(values) - k)
-            if values[i] == (max if high else min)(values[i - k:i + k + 1])]
+            if values[i] < min(values[i - k:i]) and values[i] <= min(values[i + 1:i + k + 1])]
 
 
 def score(daily: list[dict]) -> dict | None:
@@ -43,8 +53,9 @@ def score(daily: list[dict]) -> dict | None:
     sma20, sma50, sma200 = _sma(closes, 20), _sma(closes, 50), _sma(closes, 200)
     parts = []
 
-    votes = [close > sma20, close > sma50, sma20 > sma50] + ([sma50 > sma200] if sma200 else [])
-    stack = sum(1 if v else -1 for v in votes) / len(votes)
+    # a tie votes neither way: a halted or flat stock is no downtrend
+    votes = [_sign(close - sma20), _sign(close - sma50), _sign(sma20 - sma50)] + ([_sign(sma50 - sma200)] if sma200 else [])
+    stack = sum(votes) / len(votes)
     parts.append({"id": "ma_stack", "value": round(stack, 2),
                   "text": f"이평 배열 {'위' if stack > 0 else '아래' if stack < 0 else '혼조'}"
                           f"(종가 {'>' if close > sma20 else '<'} 20일선, 20일선 {'>' if sma20 > sma50 else '<'} 50일선)"})
@@ -59,8 +70,8 @@ def score(daily: list[dict]) -> dict | None:
     highs, lows = [b["high"] for b in window], [b["low"] for b in window]
     ph, pl = _pivots(highs, True), _pivots(lows, False)
     if len(ph) >= 2 and len(pl) >= 2:
-        hh, hl = highs[ph[-1]] > highs[ph[-2]], lows[pl[-1]] > lows[pl[-2]]
-        value = 1.0 if hh and hl else -1.0 if not hh and not hl else 0.0
+        legs = _sign(highs[ph[-1]] - highs[ph[-2]]) + _sign(lows[pl[-1]] - lows[pl[-2]])
+        value = legs / 2                               # +1 higher highs and lows, -1 lower, 0 mixed or equal
         # a close through the last swing high / low says more than the old swings
         if close > highs[ph[-1]]:
             value = max(value, 0.5)
@@ -68,6 +79,8 @@ def score(daily: list[dict]) -> dict | None:
             value = min(value, -0.5)
         parts.append({"id": "structure", "value": value,
                       "text": "고점 · 저점 높이는 중" if value > 0.5 else "고점 · 저점 낮추는 중" if value < -0.5
+                      else "직전 고점 돌파" if value >= 0.5 and close > highs[ph[-1]]
+                      else "직전 저점 이탈" if value <= -0.5 and close < lows[pl[-1]]
                       else "고점 · 저점 엇갈림"})
 
     if len(closes) > 20:
@@ -87,13 +100,15 @@ def side_vs(direction: dict | None, side: str) -> str:
     return "with" if (direction["bias"] == "long") == (side == "long") else "against"
 
 
-def apply(pb: dict, direction: dict | None, h: horizons.Horizon) -> dict:
+def apply(pb: dict, direction: dict | None, h: horizons.Horizon, empty=None) -> dict:
     """Mark each side with / against the trend; with APPLY a SHORT against an uptrend (score
     >= LEAN) is dropped. A long against a downtrend is only marked. The basket backtest (swing, 6
     tickers, 2019-, costs in) decided it: counter-trend shorts averaged -0.38R, and even halved
     ones (score 30-60) -0.23R, while counter-trend dip catches made -0.10R, better than the average
     plan - catching the crash is what the long is for. Dropping them took the whole book from
-    -0.177R to -0.143R (the validation 30% from -0.200R to -0.151R). Pure: returns a new dict."""
+    -0.177R to -0.143R (the validation 30% from -0.200R to -0.151R). Only on APPLY_HORIZONS (swing):
+    elsewhere the sides are marked, not changed. ``empty(reason)`` makes the empty side (desk.playbook
+    passes its own, so the page keeps one side shape). Pure: returns a new dict."""
     if not pb:
         return pb
     out = {**pb, "direction": direction}
@@ -103,9 +118,9 @@ def apply(pb: dict, direction: dict | None, h: horizons.Horizon) -> dict:
             continue
         rel = side_vs(direction, name)
         side = {**side, "direction": rel}
-        if APPLY and rel == "against" and name == "short" and side.get("setup") not in (None, "none"):
-            side = {**_none(side, h), "direction": rel,
-                    "reason": f"방향 판정 롱 우세({direction['score']:+d}) — 상승 추세를 거스르는 숏은 쉼"}
+        if APPLY and h.id in APPLY_HORIZONS and rel == "against" and name == "short"                 and side.get("setup") not in (None, "none"):
+            reason = f"방향 판정 롱 우세({direction['score']:+d}) — 상승 추세를 거스르는 숏은 쉼"
+            side = {**(empty(reason) if empty else _none(side, h)), "direction": rel, "reason": reason}
         out[name] = side
     return out
 

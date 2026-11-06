@@ -65,3 +65,36 @@ def test_the_note_names_the_lean_and_asks_for_a_reason_against_it():
     note = direction.prompt_note(d)
     assert "SHORT-leaning" in note and "needs a stated reason" in note
     assert direction.prompt_note(None) is None
+
+
+def _flat_bars(closes, start=date(2025, 1, 1)):
+    return [{"at": (start + timedelta(days=i)).isoformat() + "T05:00:00+00:00", "open": c, "high": c, "low": c,
+             "close": c, "volume": 1000} for i, c in enumerate(closes)]
+
+
+def test_ties_vote_neither_way():
+    assert direction.score(_flat_bars([100.0] * 200))["score"] == 0                 # a halted stock
+    stair_up = direction.score(_flat_bars([round(100 + 0.1 * i) for i in range(200)]))
+    stair_down = direction.score(_flat_bars([round(120 - 0.1 * i) for i in range(200)]))
+    assert stair_up["bias"] == "long" and stair_down["bias"] == "short"           # plateaus are no lower highs
+
+
+def test_an_uptrend_drops_the_short_through_build_on_swing_only():
+    daily = _days([50 * 1.004 ** i for i in range(230)], wiggle=0.01)
+    ref = daily[-1]["close"]
+    sr = {"atr": ref * 0.02, "reference_price": ref, "levels": [
+        {"price": ref * 1.05, "kind": "resistance", "strength": 2.0, "basis": "저항"},
+        {"price": ref * 0.95, "kind": "support", "strength": 2.0, "basis": "지지"}]}
+    pb = playbook.build(sr, daily, daily, SWING, live={"price": ref, "source": "t", "fetched_at": "x"})
+    assert pb["direction"]["bias"] == "long"
+    assert pb["short"]["setup"] == "none" and "롱 우세" in pb["short"]["reason"] and "reach" not in pb["short"]
+    assert pb["long"]["setup"] != "none" and pb["long"]["direction"] == "with"
+    # refresh and a model line do not bring the dropped short back
+    assert playbook.refresh(pb, {"price": ref * 1.01})["short"]["setup"] == "none"
+    merged = playbook.merge(pb, playbook.parse("Short Playbook: zone 1-2 / entry 1.5 / confirm x / stop 2.2 / "
+                                                "T1 1 / T2 0.8 / time stop 2 bars"))
+    assert merged["short"]["setup"] == "none"
+    # the other horizons are marked, not changed (the rule was measured on swing)
+    marked = direction.apply({"short": {"setup": "fade", "entries": [{"price": 1}]}}, pb["direction"],
+                             horizons.get("intraday"))
+    assert marked["short"]["setup"] == "fade" and marked["short"]["direction"] == "against"

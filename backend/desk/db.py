@@ -134,7 +134,8 @@ favorites = Table(
 sector_groups = Table(
     "sector_groups", metadata,
     Column("id", Integer, primary_key=True),
-    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True),
+    # the (user_id, name) unique index also serves lookups by account
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
     Column("name", String(40), nullable=False),
     Column("position", Integer, nullable=False),
     Column("tickers", Json, nullable=False),

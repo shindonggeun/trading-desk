@@ -11,9 +11,11 @@ import os
 import time
 from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime, timedelta, timezone
+from typing import Annotated
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi import Path as FastPath
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -181,8 +183,11 @@ class SectorPatch(BaseModel):
     tickers: list[FavoriteIn] | None = Field(default=None, max_length=200)
 
 
+SectorId = Annotated[int, Field(ge=1, le=2**31 - 1)]   # a huge number is a 422, not a driver overflow
+
+
 class SectorOrderIn(BaseModel):
-    ids: list[int] = Field(max_length=50)
+    ids: list[SectorId] = Field(max_length=50)
 
 
 def purge_expired_runs(store: Store, retention_days: int) -> int:
@@ -211,7 +216,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # Failed codes per account, across IPs (docs/security.md §6).
     otp_fails = LoginThrottle(per_ip=otp.USER_FAILS, window_sec=otp.USER_FAIL_WINDOW_SEC)
     universe = Universe(engine)
-    favorites = Favorites(engine, lambda ticker: (universe.lookup(ticker) or {}).get("name"))
+
+    def listing_name(ticker: str) -> str | None:
+        return (universe.lookup(ticker) or {}).get("name")
+
+    favorites = Favorites(engine, listing_name)
     sectors = Sectors(engine)
     hub = Hub()
     broker = make_broker(settings)
@@ -1044,10 +1053,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     def _sector_body(name: str | None, items: list[FavoriteIn] | None):
         try:
             clean = clean_name(name) if name is not None else None
-            tickers = clean_tickers([(i.ticker, i.name) for i in items]) if items is not None else None
-        except TooMany as exc:
-            raise HTTPException(422, str(exc)) from None
-        except ValueError as exc:
+            tickers = (clean_tickers([(i.ticker, i.name) for i in items], listing_name)
+                       if items is not None else None)
+        except ValueError as exc:   # TooMany too: the body itself is over the cap
             raise HTTPException(422, str(exc)) from None
         return clean, tickers
 
@@ -1076,13 +1084,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return _sector_call(sectors.reorder, request.state.user.id, body.ids)
 
     @app.put("/api/sectors/{sector_id}")
-    def update_sector(sector_id: int, body: SectorPatch, request: Request):
+    def update_sector(sector_id: Annotated[int, FastPath(ge=1, le=2**31 - 1)], body: SectorPatch, request: Request):
         name, tickers = _sector_body(body.name, body.tickers)
         return _sector_call(sectors.update, request.state.user.id, sector_id, name, tickers)
 
     @app.delete("/api/sectors/{sector_id}", status_code=204)
-    def delete_sector(sector_id: int, request: Request):
-        sectors.remove(request.state.user.id, sector_id)
+    def delete_sector(sector_id: Annotated[int, FastPath(ge=1, le=2**31 - 1)], request: Request):
+        _sector_call(sectors.remove, request.state.user.id, sector_id)
 
     @app.get("/api/regime")
     def regime_view():

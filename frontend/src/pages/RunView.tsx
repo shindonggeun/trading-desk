@@ -11,6 +11,7 @@ import PlanCard from "../components/PlanCard";
 import FavoriteStar from "../components/FavoriteStar";
 import RunSummaryBar from "../components/RunSummaryBar";
 import TradeMap from "../components/TradeMap";
+import PositioningCard from "../components/PositioningCard";
 import { duration, STATUS_LABEL } from "../format";
 import type { DeskEvent, Plan, Run } from "../types";
 
@@ -202,6 +203,8 @@ export default function RunView({ runId }: { runId: string }) {
                 {status === "done" && <ConsensusCard plan={plan} ticker={run.ticker} />}
                 <PlaybookCard plan={plan} symbol={stillOpen(run.trade_date) ? run.ticker : undefined} outcome={run.outcome} runId={run.id} horizon={plan.horizon ?? run.options.horizon ?? undefined} />
                 <TradeMap plan={plan} ticker={run.ticker} />
+                {/* #158 미국: 공매도 · 옵션, 국내: 빚투 · 예탁금(레버리지 상품은 본주 기준) */}
+                <PositioningCard ticker={plan.underlying?.ticker ?? run.ticker} />
                 <PlanCard
                   plan={plan}
                   symbol={stillOpen(run.trade_date) ? run.ticker : undefined}

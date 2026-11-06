@@ -20,7 +20,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles, type ReviewRow } from "../api";
 import { price } from "../format";
 import { keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands, volumeProfileDrawing, withAlpha, zoneHalfWidth } from "./chartBands";
-import type { FibLevel, Fibonacci, Plan, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
+import type { FibLevel, Fibonacci, Plan, Positioning, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 
 export type Interval = Exclude<CandleInterval, "1m">;
 const INTERVALS: { iv: Interval; label: string; count: number }[] = [
@@ -41,12 +41,17 @@ const LOG_SCALE = new Set<Interval>(["1w", "1M", "1y"]);
 const LABEL = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.label])) as Record<Interval, string>;
 const COUNT = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.count])) as Record<Interval, number>;
 
-type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean };
+type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean };
 const SHOW_LABEL: Record<keyof Show, string> = {
   levels: "타점선", pb: "플레이북", sr: "지지 · 저항", all: "모든 지지 · 저항", vp: "매물대", trend: "추세선", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
+  opt: "옵션 벽 · 맥스 페인",
 };
+// #158 옵션 벽: 미국 상장 종목만(Cboe), 현재가에서 이 범위 안의 벽만 그린다(멀리 있는 벽이 가격 축을 늘이지 않게)
+const US_TICKER = /^[A-Z]{1,6}(?:[.-][A-Z])?$/;
+const WALL_RANGE = 0.15;
+const WALLS_SHOWN = 2;
 // #98: 지지 · 저항은 가까운 3개씩만, 피보나치는 켤 때만 — 차트가 선으로 덮이지 않게
-const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, fib: false, fills: true, analysis: true, rsi: true };
+const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, fib: false, fills: true, analysis: true, rsi: true, opt: true };
 const NEAR_LEVELS = 3;
 /** RSI 패널 높이 — 낮은 화면(가로 모드 · 크게 보기)에서 가격 패널을 누르지 않게 차트 높이에 비례 */
 const rsiHeight = (h: number) => Math.round(Math.min(110, Math.max(56, h * 0.22)));
@@ -280,6 +285,16 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   useEffect(() => savePrefs(interval, show), [interval, show]);
   const toggle = (k: keyof Show) => setShow((s) => ({ ...s, [k]: !s[k] }));
 
+  // #158 옵션 벽 · 맥스 페인(#154 positioning) — 켤 때만 읽는다
+  const [optionData, setOptionData] = useState<Positioning["options"] | null>(null);
+  useEffect(() => {
+    setOptionData(null);
+    if (!show.opt || !US_TICKER.test(ticker)) return;
+    let alive = true;
+    api.positioning(ticker).then((p) => alive && setOptionData(p.options), () => {});
+    return () => { alive = false; };
+  }, [ticker, show.opt]);
+
   // 크게 보기(#97): 브라우저 전체 화면을 쓰고, 안 되면(iOS Safari 등) 화면을 꽉 채운 고정 레이어로.
   const section = useRef<HTMLElement>(null);
   const [expanded, setExpanded] = useState(startExpanded);
@@ -498,7 +513,17 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   useEffect(() => {
     if (!drawn) return;
     const { series, markers, rows, intraday, lastClose } = drawn;
-    const lines: [number | null | undefined, string, string, LineStyle][] = show.levels
+    const nearPrice = (v: number) => Math.abs(v - lastClose) / lastClose <= WALL_RANGE;
+    const optionLines: [number, string, string, LineStyle][] = show.opt && optionData ? [
+      ...optionData.call_walls.filter((w) => nearPrice(w.strike)).slice(0, WALLS_SHOWN)
+        .map((w): [number, string, string, LineStyle] => [w.strike, "콜벽", css("--sr-resistance", "#b58cf0"), LineStyle.Dashed]),
+      ...optionData.put_walls.filter((w) => nearPrice(w.strike)).slice(0, WALLS_SHOWN)
+        .map((w): [number, string, string, LineStyle] => [w.strike, "풋벽", css("--sr-support", "#2bb3a3"), LineStyle.Dashed]),
+      ...(optionData.max_pain.strike != null && nearPrice(optionData.max_pain.strike)
+        ? [[optionData.max_pain.strike, "맥스페인", css("--warn", "#e5a23a"), LineStyle.SparseDotted] as [number, string, string, LineStyle]]
+        : []),
+    ] : [];
+    const planLines: [number | null | undefined, string, string, LineStyle][] = show.levels
       ? [
           [plan?.entry_price, "진입", css("--accent", "#c9d1db"), LineStyle.Solid],
           [plan?.stop_loss, "손절", css("--short", "#3a86f8"), LineStyle.Solid],
@@ -508,6 +533,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           ),
         ]
       : [];
+    const lines = [...optionLines, ...planLines];
     const made: IPriceLine[] = [];
     for (const [value, title, color, lineStyle] of lines) {
       if (value != null) made.push(series.createPriceLine({ price: value, title, color, lineWidth: 2, lineStyle, axisLabelVisible: true }));
@@ -557,7 +583,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       stopLabels(drawn.alive.current);
       if (drawn.alive.current) for (const line of made) series.removePriceLine(line);
     };
-  }, [drawn, plan, fills, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines]);
+  }, [drawn, plan, fills, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines, show.opt, optionData]);
 
   // 지지 · 저항 구역 띠 · 타점의 손실 · 이익 영역 · 피보나치(#98) — 캔들 아래에 칠하고 축 라벨은 달지 않는다.
   useEffect(() => {

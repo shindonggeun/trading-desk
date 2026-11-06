@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { api } from "../api";
 import FavoritesPanel from "../components/FavoritesPanel";
+import CreditPanel from "../components/CreditPanel";
 import MacroBrief from "../components/MacroBrief";
 import MarketBoard from "../components/MarketBoard";
 import MarketFlowPanel from "../components/MarketFlowPanel";
@@ -46,7 +47,7 @@ function RegimePanel() {
   );
 }
 
-type SectionId = "macro" | "favorites" | "market" | "portfolio" | "recent" | "stats" | "flow" | "regime";
+type SectionId = "macro" | "favorites" | "market" | "portfolio" | "recent" | "stats" | "flow" | "credit" | "regime";
 /** 구역 — 순서는 이슈 #100 의 기본값. wide 는 넓은 화면에서 한 줄을 다 쓴다. */
 const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () => ReactNode }> = {
   macro: { title: "오늘의 거시 · 정책 브리핑", wide: true, render: () => <MacroBrief /> },
@@ -56,6 +57,7 @@ const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () =>
   recent: { title: "최근 분석", render: () => <RecentRuns /> },
   stats: { title: "적중률", render: () => <PlanStatsCard /> },
   flow: { title: "시장 수급", render: () => <MarketFlowPanel /> },
+  credit: { title: "빚투 · 예탁금", render: () => <CreditPanel /> },
   regime: { title: "레짐", render: () => <RegimePanel /> },
 };
 const DEFAULT_ORDER = Object.keys(SECTIONS) as SectionId[];

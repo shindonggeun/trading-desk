@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from itertools import pairwise
 from statistics import median
 
-from . import horizons
+from . import direction, horizons
 from .indicators import rsi
 
 VERSION = 1
@@ -676,7 +676,7 @@ def build(sr: dict | None, daily: list[dict], primary: list[dict], h: horizons.H
     for side, up in ((long_side, True), (short_side, False)):
         if side.get("setup") not in (None, "none"):
             side["reach"] = reach(side, ref, cap, zatr, up)
-    return {
+    built = {
         "version": VERSION, "computed_at": now or datetime.now(UTC).isoformat(timespec="seconds"),
         "frame": {"primary": h.primary, "daily": "1d", "atr": _round(atr), "atr_daily": (f or {}).get("atr_daily"),
                   "atr_zone": _round(zatr), "zone_cap_pct": round(cap / ref * 100, 2),
@@ -689,6 +689,8 @@ def build(sr: dict | None, daily: list[dict], primary: list[dict], h: horizons.H
         "long": long_side,
         "short": short_side,
     }
+    # #166: the trend's side at full size, the other halved or dropped
+    return direction.apply(built, direction.score(daily), h)
 
 
 def refresh(playbooks: dict | None, live: dict | None) -> dict | None:

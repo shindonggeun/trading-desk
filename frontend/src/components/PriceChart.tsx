@@ -19,7 +19,7 @@ import {
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles, type ReviewRow } from "../api";
 import { price } from "../format";
-import { keepAxisLabelsApart, nearestLevels, planBands, PriceBands, srBands, volumeProfileDrawing, withAlpha, zoneHalfWidth } from "./chartBands";
+import { keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands, volumeProfileDrawing, withAlpha, zoneHalfWidth } from "./chartBands";
 import type { FibLevel, Fibonacci, Plan, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 
 export type Interval = Exclude<CandleInterval, "1m">;
@@ -41,12 +41,12 @@ const LOG_SCALE = new Set<Interval>(["1w", "1M", "1y"]);
 const LABEL = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.label])) as Record<Interval, string>;
 const COUNT = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.count])) as Record<Interval, number>;
 
-type Show = { levels: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean };
+type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean };
 const SHOW_LABEL: Record<keyof Show, string> = {
-  levels: "타점선", sr: "지지 · 저항", all: "모든 지지 · 저항", vp: "매물대", trend: "추세선", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
+  levels: "타점선", pb: "플레이북", sr: "지지 · 저항", all: "모든 지지 · 저항", vp: "매물대", trend: "추세선", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
 };
 // #98: 지지 · 저항은 가까운 3개씩만, 피보나치는 켤 때만 — 차트가 선으로 덮이지 않게
-const DEFAULT_SHOW: Show = { levels: true, sr: true, all: false, vp: true, trend: true, fib: false, fills: true, analysis: true, rsi: true };
+const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, fib: false, fills: true, analysis: true, rsi: true };
 const NEAR_LEVELS = 3;
 /** RSI 패널 높이 — 낮은 화면(가로 모드 · 크게 보기)에서 가격 패널을 누르지 않게 차트 높이에 비례 */
 const rsiHeight = (h: number) => Math.round(Math.min(110, Math.max(56, h * 0.22)));
@@ -573,22 +573,28 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const profile = vp
       ? volumeProfileDrawing(vp, { bar: muted, thick: css("--warn", "#e5a23a"), poc: css("--warn", "#e5a23a"), label: muted }, price)
       : { bands: [], marks: [], bars: [] };
+    // 플레이북(#117) — 분석 당시 계획의 값(지금 기준으로 다시 계산하지 않는다)
+    const book = show.pb && plan?.playbooks
+      ? playbookDrawing(plan.playbooks, { long: css("--long", "#f2464b"), short: css("--short", "#3a86f8") }, price)
+      : { bands: [], marks: [] };
     bands.set(
       [
         ...profile.bands,
+        ...book.bands,
         ...(show.levels ? planBands(plan, at == null ? null : time(at), { loss: css("--danger", css("--up", "#f2464b")), profit: css("--ok", "#3fb68b") }) : []),
         ...srBands(srShown, srSource?.atr, { support: css("--sr-support", "#2bb3a3"), resistance: css("--sr-resistance", "#b58cf0") }),
       ],
       [
         ...(fib?.levels ?? []).filter((lv) => Number.isFinite(lv.price)).map((lv) => ({ price: lv.price, color: withAlpha(muted, 0.85), label: String(lv.ratio) })),
         ...profile.marks,
+        ...book.marks,
       ],
       profile.bars,
     );
     return () => {
       if (drawn.alive.current) series.detachPrimitive(bands);
     };
-  }, [drawn, srShown, srSource, plan, fib, vp, show.levels, tradeDate]);
+  }, [drawn, srShown, srSource, plan, fib, vp, show.levels, show.pb, tradeDate]);
 
   // RSI 패널은 차트 높이(크게 보기 · 가로 모드 · 창 크기)에 맞춰 다시 잰다
   useEffect(() => {

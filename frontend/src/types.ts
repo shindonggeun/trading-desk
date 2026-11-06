@@ -22,6 +22,8 @@ export interface Plan {
   pair?: PairTrade;
   /** #109: where someone already holding the product reduces or exits, in the product's price. */
   holder_exit?: number | null;
+  /** #116: 롱(하따) · 숏(단타) 플레이북 — 예전 run 은 없다. 가격은 상품 기준 */
+  playbooks?: Playbooks;
   /** The leverage analyst failed; the plan is the underlying's call (flipped for inverse) with converted levels. */
   leverage_analyst_error?: string;
   atr?: number;
@@ -184,6 +186,58 @@ export type OutcomeStatus =
   | "target" | "stop" | "both" | "expired" | "unfilled" | "invalid" | "unscorable"
   | "open" | "waiting" | "error";
 
+export type RegimeId = "crash" | "downtrend" | "range" | "uptrend" | "unknown";
+export type PlaybookSetup = "dip_catch" | "range_low" | "pullback" | "fade" | "breakdown" | "none";
+
+/** backend desk/playbook.py (#116) — plan.playbooks */
+export interface Playbooks {
+  version: number;
+  computed_at: string;
+  frame: { primary: string; daily: string; atr: number; atr_daily: number; reference_price: number; fallback: string | null };
+  regime: {
+    id: RegimeId;
+    features: Record<string, number | boolean | null | undefined>;
+    evidence: { key: string; value: number | boolean | null; threshold: number | null; hit: boolean }[];
+    flags: { oversold?: boolean; overextended?: boolean; climax_recent?: boolean };
+  };
+  bias_note: { side: "long" | "short" | "both" | "none"; text: string; source: "model" | "desk" } | null;
+  long: PlaybookSide;
+  short: PlaybookSide;
+}
+
+export interface PlaybookSide {
+  setup: PlaybookSetup;
+  reason: string | null;
+  size_hint: "half" | "normal";
+  flat_by_close: boolean;
+  zone: {
+    low: number; high: number; mid: number; score: number;
+    members: { price: number; source: "sr" | "vp" | "fib" | "trend" | "ma" | "vwap" | "atr"; basis: string; weight: number }[];
+  } | null;
+  entries: { step: 1 | 2 | 3; price: number; share: number; kind: "limit" | "stop"; after?: string[] }[];
+  trigger?: { price: number; kind: "stop" | "limit"; text: string } | null;
+  avg_entry: number | null;
+  stop: number | null;
+  risk: number | null;
+  targets: { role: "t1" | "t2"; price: number; basis: string; source: "desk" | "model" | "atr"; rr: number | null; action: "take_half" | "take_rest"; then_stop?: number }[];
+  time_stop: { bars: number; interval: string; required: boolean; rule: string } | null;
+  conditions: { id: string; met: boolean | null; how: "computed" | "watch"; value?: number | string | boolean | null }[];
+  score: number;
+  source?: Record<string, "desk" | "model" | "converted">;
+  model?: { raw?: string; confirm_text?: string; ignored?: Record<string, unknown> } | null;
+}
+
+export type PlaybookOutcomeStatus =
+  | "waiting" | "open" | "t1" | "t2" | "t1_be" | "stop" | "time_stop" | "flat" | "expired" | "unfilled" | "invalid" | "unscorable";
+
+export interface PlaybookOutcome {
+  status: PlaybookOutcomeStatus;
+  filled_shares?: number;
+  avg_fill?: number | null;
+  r?: number | null;
+  exited_at?: string | null;
+}
+
 export interface Outcome {
   status: OutcomeStatus;
   detail?: string;
@@ -194,6 +248,8 @@ export interface Outcome {
   r?: number | null;
   late?: boolean;
   partial_first_session?: boolean;
+  /** #116 플레이북 채점 */
+  playbooks?: { version: number; long?: PlaybookOutcome; short?: PlaybookOutcome };
 }
 
 /** GET /api/stats/plans 의 한 묶음(desk/outcome.py _group). */

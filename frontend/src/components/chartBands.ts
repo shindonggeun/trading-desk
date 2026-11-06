@@ -189,6 +189,38 @@ export function volumeProfileDrawing(vp: VolumeProfileLike, colors: { bar: strin
   };
 }
 
+interface PlaybookSideLike {
+  setup: string;
+  zone: { low: number; high: number } | null;
+  entries: { step: number; price: number }[];
+  trigger?: { price: number } | null;
+  stop: number | null;
+  targets: { role: string; price: number }[];
+}
+
+/**
+ * 플레이북(#117): 롱 구역은 옅은 빨강, 숏 구역은 옅은 파랑 띠, 사다리 · 트리거 · 손절 · T1/T2 는 오른쪽 글자가 붙은 가는 선
+ * ("롱 1차", "숏 손절") — 왼쪽은 지지 · 저항 글자 자리라 오른쪽에.
+ */
+export function playbookDrawing(pb: { long: PlaybookSideLike; short: PlaybookSideLike }, colors: { long: string; short: string },
+  fmt: (v: number) => string): { bands: Band[]; marks: Mark[] } {
+  const bands: Band[] = [];
+  const marks: Mark[] = [];
+  for (const [dir, side] of [["long", pb.long], ["short", pb.short]] as const) {
+    if (side.setup === "none") continue;
+    const c = colors[dir];
+    const name = dir === "long" ? "롱" : "숏";
+    if (side.zone) {
+      bands.push({ top: side.zone.high, bottom: side.zone.low, fill: withAlpha(c, 0.12), label: `${name} 구역 ${fmt(side.zone.low)} ~ ${fmt(side.zone.high)}`, labelColor: withAlpha(c, 0.95) });
+    }
+    for (const e of side.entries) marks.push({ price: e.price, color: withAlpha(c, 0.75), label: `${name} ${e.step}차`, right: true });
+    if (side.trigger) marks.push({ price: side.trigger.price, color: withAlpha(c, 0.9), label: `${name} 트리거`, right: true });
+    if (side.stop != null) marks.push({ price: side.stop, color: withAlpha(c, 0.9), label: `${name} 손절`, right: true });
+    for (const t of side.targets) marks.push({ price: t.price, color: withAlpha(c, 0.75), label: `${name} ${t.role.toUpperCase()}`, right: true });
+  }
+  return { bands, marks };
+}
+
 /** 지지 · 저항 구역의 반폭 — 서버가 구역을 묶는 폭(반 ATR)의 절반에 가깝게, ATR 이 없으면 가격의 0.15%(근사). */
 export function zoneHalfWidth(level: SrLevel, atr: number | null | undefined): number {
   return Math.max((atr ?? 0) * 0.25, level.price * 0.0015);

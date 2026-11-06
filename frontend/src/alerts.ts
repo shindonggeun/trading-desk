@@ -11,6 +11,24 @@ export interface PriceAlert {
   at: string;
 }
 
+/** 플레이북(#117)의 알림 가격 — 구역 들어감(롱은 구역 위쪽, 숏은 아래쪽 가장자리) · 사다리 · 트리거 · 손절 · T1. */
+function playbookLevels(plan: Plan): { key: string; label: string; level: number | null }[] {
+  const pb = plan.playbooks;
+  if (!pb) return [];
+  const out: { key: string; label: string; level: number | null }[] = [];
+  for (const [dir, side] of [["long", pb.long], ["short", pb.short]] as const) {
+    if (side.setup === "none") continue;
+    const name = dir === "long" ? "롱" : "숏";
+    if (side.zone) out.push({ key: `pb-${dir}-zone`, label: `${name} 구역 진입`, level: dir === "long" ? side.zone.high : side.zone.low });
+    for (const e of side.entries) out.push({ key: `pb-${dir}-e${e.step}`, label: `${name} ${e.step}차 진입가`, level: e.price });
+    if (side.trigger) out.push({ key: `pb-${dir}-trigger`, label: `${name} 트리거`, level: side.trigger.price });
+    out.push({ key: `pb-${dir}-stop`, label: `${name} 손절가`, level: side.stop });
+    const t1 = side.targets.find((t) => t.role === "t1");
+    if (t1) out.push({ key: `pb-${dir}-t1`, label: `${name} T1`, level: t1.price });
+  }
+  return out;
+}
+
 function levelsOf(plan: Plan | null): { key: string; label: string; level: number }[] {
   if (!plan) return [];
   return [
@@ -19,6 +37,7 @@ function levelsOf(plan: Plan | null): { key: string; label: string; level: numbe
     { key: "target", label: "목표가", level: plan.price_target },
     { key: "long", label: "롱 조건", level: plan.long_trigger ?? null },
     { key: "short", label: "숏 조건", level: plan.short_trigger ?? null },
+    ...playbookLevels(plan),
   ].filter((l): l is { key: string; label: string; level: number } => l.level != null);
 }
 

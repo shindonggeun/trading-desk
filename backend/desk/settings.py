@@ -43,6 +43,8 @@ class Settings:
     retention_days: int = field(default_factory=lambda: int(os.getenv("DESK_RETENTION_DAYS", "90")))
     # Seconds between passes that score finished plans against later bars (desk.outcome). 0 = off.
     score_interval_sec: int = field(default_factory=lambda: int(os.getenv("DESK_SCORE_INTERVAL_SEC", "3600")))
+    # Seconds between refreshes of the world news-flow themes from GDELT (desk.macro_news). 0 = off.
+    macro_interval_sec: int = field(default_factory=lambda: int(os.getenv("DESK_MACRO_INTERVAL_SEC", "1800")))
     cors_origins: list[str] = field(default_factory=lambda: _list("DESK_CORS_ORIGINS"))
 
     # Default investing style for new runs (desk.profile.PROFILES).

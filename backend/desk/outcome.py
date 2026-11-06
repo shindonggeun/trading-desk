@@ -190,9 +190,11 @@ PB_PENDING = ("waiting", "open", "error")
 def judge_playbook(side: dict, direction: int, bars: list[dict], horizon: horizons.Horizon, plan_at: str,
                    opens_after: timedelta = timedelta(hours=9, minutes=30),
                    valid_until: str | None = None) -> dict:
-    """One playbook's outcome: ladder fills (limits first, a stop step only after one of them),
-    then stop / T1 (stop to break-even) / T2, the time stop, and the close for a flat-by-close
-    side. R is the filled shares' weighted result over the planned risk. Pure function."""
+    """One playbook's outcome: ladder fills (limits first; a stop entry only on a later bar - the
+    long's confirmation step after a limit fill, a lone stop entry (the short fade) after the price
+    has reached its zone), then stop / T1 (stop to break-even) / T2, the time stop, and the close
+    for a flat-by-close side. ``r`` is per filled share over the planned risk; ``r_size`` scales
+    it by the filled share of the full position. Pure function."""
     base = {"rules_version": PLAYBOOK_RULES_VERSION, "setup": side.get("setup")}
     entries = side.get("entries") or []
     stop0, targets = side.get("stop"), side.get("targets") or []
@@ -200,6 +202,7 @@ def judge_playbook(side: dict, direction: int, bars: list[dict], horizon: horizo
         return {**base, "status": "invalid", "detail": "no playbook"}
     t1 = targets[0]["price"]
     t2 = targets[1]["price"] if len(targets) > 1 else None
+    zone = side.get("zone") or {}
     start = _at(plan_at)
     daily = horizon.primary in ("1d", "1w", "1M")
     after = [b for b in bars if (_at(b["at"]) + opens_after >= start if daily else _at(b["at"]) >= start)]
@@ -209,14 +212,15 @@ def judge_playbook(side: dict, direction: int, bars: list[dict], horizon: horizo
     until = _at(valid_until) if valid_until else None
     entry_sessions = ENTRY_SESSIONS.get(horizon.id, 1)
     sign = 1 if direction > 0 else -1
-    filled: list[dict] = []
-    stop, took_t1, last_fill, first_limit = stop0, False, None, None
+    filled: list[dict] = []          # entries with the price they actually filled at
+    stop, took_t1, last_fill, first_limit, armed_at = stop0, False, None, None, None
     bars_limit = (side.get("time_stop") or {}).get("bars")
     flat = bool(side.get("flat_by_close")) and not daily
+    lone_stop = len(entries) == 1 and entries[0]["kind"] == "stop"
 
     def avg() -> float:
         total = sum(e["share"] for e in filled)
-        return sum(e["price"] * e["share"] for e in filled) / total
+        return sum(e["fill"] * e["share"] for e in filled) / total
 
     def result(status: str, exit_price: float | None, at: str, **extra) -> dict:
         shares = round(sum(e["share"] for e in filled), 4)
@@ -224,28 +228,38 @@ def judge_playbook(side: dict, direction: int, bars: list[dict], horizon: horizo
         risk = abs(a - stop0) or 1e-9
         if status == "t2":
             pnl = 0.5 * (t1 - a) + 0.5 * (t2 - a)
-        elif status == "t1_be":
-            pnl = 0.5 * (t1 - a)
-        elif took_t1 and exit_price is not None:
+        elif took_t1 and exit_price is not None:    # half at T1, the rest where it left (t1_be incl. a gap)
             pnl = 0.5 * (t1 - a) + 0.5 * (exit_price - a)
         else:
             pnl = (exit_price - a) if exit_price is not None else 0.0
+        r = round(sign * pnl / risk, 2)
         return {**base, "status": status, "filled_shares": shares, "avg_fill": round(a, 4),
-                "exited_at": at, "r": round(sign * pnl / risk, 2), "took_t1": took_t1, **extra}
+                "exited_at": at, "r": r, "r_size": round(r * shares, 2), "took_t1": took_t1, **extra}
 
     for i, bar in enumerate(after):
         window_open = (until is None or _at(bar["at"]) <= until) and (until is not None or sessions[i] < entry_sessions)
+        # the fade sells a failed bounce: the price has to reach the resistance zone first
+        if lone_stop and armed_at is None and zone and (
+                (bar["low"] <= zone.get("high", float("inf"))) if sign > 0
+                else (bar["high"] >= zone.get("low", float("-inf")))):
+            armed_at = i
         if window_open and not took_t1:
             for e in entries:
-                if e in filled:
+                if any(f["step"] == e["step"] for f in filled):
                     continue
                 if e["kind"] == "limit":
                     hit = bar["low"] <= e["price"] if sign > 0 else bar["high"] >= e["price"]
-                else:   # a stop step: the confirmation comes on a later bar than a limit fill
-                    ready = (first_limit is not None and first_limit < i) or len(entries) == 1
+                    fill = e["price"]
+                else:
+                    if lone_stop:
+                        ready = armed_at is not None and armed_at < i if zone else True
+                    else:   # the confirmation step comes on a later bar than a limit fill
+                        ready = first_limit is not None and first_limit < i
                     hit = ready and (bar["high"] >= e["price"] if sign > 0 else bar["low"] <= e["price"])
+                    # a gap through a stop entry fills at the open, not at the better trigger
+                    fill = max(e["price"], bar["open"]) if sign > 0 else min(e["price"], bar["open"])
                 if hit:
-                    filled.append(e)
+                    filled.append({**e, "fill": fill})
                     last_fill = i
                     if e["kind"] == "limit" and first_limit is None:
                         first_limit = i
@@ -390,7 +404,8 @@ _PB_COUNTED = ("t1", "t2", "t1_be", "stop", "time_stop", "flat", "unfilled", "op
 
 def _playbook_stats(runs: list[dict]) -> list[dict]:
     """By "<side>:<setup>:<regime>": how the desk's playbooks played out (#116). hit_rate =
-    (t1 + t2 + t1_be) over the settled trades (those + stop + time_stop + flat)."""
+    (t1 + t2 + t1_be) over the settled trades (those + stop + time_stop + flat); avg_r is over the
+    settled trades, each scaled by its filled share of the position."""
     groups: dict[str, list[dict]] = {}
     for run in runs:
         pb_plan = (run.get("plan") or {}).get("playbooks") or {}
@@ -401,7 +416,7 @@ def _playbook_stats(runs: list[dict]) -> list[dict]:
             if not setup or setup == "none":
                 continue
             groups.setdefault(f"{side}:{setup}:{regime}", []).append(
-                {"status": (scored.get(side) or {}).get("status"), "r": (scored.get(side) or {}).get("r"),
+                {"status": (scored.get(side) or {}).get("status"), "r": (scored.get(side) or {}).get("r_size"),
                  "filled": (scored.get(side) or {}).get("filled_shares"), "score": (pb_plan.get(side) or {}).get("score")})
     out = []
     for key in sorted(groups):
@@ -409,7 +424,8 @@ def _playbook_stats(runs: list[dict]) -> list[dict]:
         counts = {k: sum(1 for i in items if i["status"] == k) for k in _PB_COUNTED}
         won = counts["t1"] + counts["t2"] + counts["t1_be"]
         settled = won + counts["stop"] + counts["time_stop"] + counts["flat"]
-        rs = [i["r"] for i in items if i["r"] is not None and i["status"] not in ("open", "waiting", None)]
+        # settled trades only, each R scaled by how much of the position actually filled
+        rs = [i["r"] for i in items if i["r"] is not None and i["status"] in ("t2", "t1_be", "stop", "time_stop", "flat")]
         scores = [i["score"] for i in items if i["score"] is not None]
         out.append({"key": key, "plans": len(items), "filled": sum(1 for i in items if i["filled"]), **counts,
                     "hit_rate": round(won / settled, 3) if settled else None,

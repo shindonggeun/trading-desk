@@ -195,6 +195,8 @@ def _run(row: RowMapping) -> dict:
         "started_at": iso(row["started_at"]),
         "finished_at": iso(row["finished_at"]),
         "outcome": row["outcome"],
-        "outcome_status": row["outcome_status"],
+        # the plan's own status for the page; the column is the sweep's key (a pending playbook
+        # keeps a settled plan in the sweep, #116)
+        "outcome_status": (row["outcome"] or {}).get("status") or row["outcome_status"],
         "scored_at": iso(row["scored_at"]),
     }

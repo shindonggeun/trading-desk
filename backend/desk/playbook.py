@@ -137,7 +137,11 @@ def detect_regime(f: dict | None) -> dict:
     def ev(key, threshold, hit):
         return {"key": key, "value": f.get(key), "threshold": threshold, "hit": bool(hit)}
 
-    dd_hit = (f["dd20"] is not None and f["dd20"] <= CRASH_DD) or (f["dd20_atr"] is not None and f["dd20_atr"] <= CRASH_DD_ATR)
+    # -10% is a crash for a stock and an ordinary pullback for a 3x product: the % bar widens with
+    # the instrument's daily ATR (2.5 ATR at least)
+    vol_dd = -2.5 * f["atr_daily"] / f["close"] if f.get("atr_daily") and f.get("close") else 0.0
+    dd_hit = (f["dd20"] is not None and f["dd20"] <= min(CRASH_DD, vol_dd)) or \
+        (f["dd20_atr"] is not None and f["dd20_atr"] <= CRASH_DD_ATR)
     others = [
         ev("down_streak", STREAK, f["down_streak"] >= STREAK),
         ev("rsi_d", OVERSOLD_RSI, f["rsi_d"] is not None and f["rsi_d"] <= OVERSOLD_RSI),
@@ -247,6 +251,8 @@ def zones(cands: list[dict], ref: float, atr: float, below: bool, max_atr: float
         low, high = min(prices), max(prices)
         if high - low < 0.2 * atr:         # a single level still has a little width
             low, high = low - 0.1 * atr, high + 0.1 * atr
+            # ...but never across the price: a long's limit above it would fill at once
+            low, high = (low, min(high, ref)) if below else (max(low, ref), high)
         score = round(sum(c["weight"] for c in g), 2)
         distance = abs((high + low) / 2 - ref) / atr
         out.append({"low": _round(low), "high": _round(high), "mid": _round((low + high) / 2), "score": score,
@@ -383,7 +389,7 @@ def _long(regime: dict, cands: list[dict], primary: list[dict], ref: float, atr:
     avg = (entries[0]["price"] * entries[0]["share"] + entries[1]["price"] * entries[1]["share"]) / \
         (entries[0]["share"] + entries[1]["share"])
     stop = _round(zone["low"] - LONG_STOP_ATR * atr)
-    t1c = _next_level(cands, avg, True, atr)
+    t1c = _next_level(cands, max(avg, zone["high"]), True, atr)
     t1 = _target("t1", t1c["price"], t1c["basis"], "desk", avg, stop, True, action="take_half", then_stop=_round(avg)) \
         if t1c else _target("t1", avg + FILL_T1_ATR * atr, "ATR 대체", "atr", avg, stop, True, action="take_half",
                             then_stop=_round(avg))
@@ -422,7 +428,7 @@ def _short(regime: dict, sr: dict, cands: list[dict], primary: list[dict], ref: 
     zone = found[0] if found else _fallback_zone(ref, atr, below=False)
     if setup == "breakdown":
         lv = min(broken, key=lambda x: x["price"])
-        zone = {**zone, "low": _round(lv["price"] - 0.1 * atr), "high": _round(lv["price"] + 0.2 * atr),
+        zone = {**zone, "low": _round(max(lv["price"] - 0.1 * atr, ref)), "high": _round(lv["price"] + 0.2 * atr),
                 "mid": _round(lv["price"])}
         trigger = {"price": zone["low"], "kind": "limit", "text": "지지 종가 이탈 + 거래량 동반 뒤 되돌림에 매도"}
     else:
@@ -517,7 +523,7 @@ def refresh(playbooks: dict | None, live: dict | None) -> dict | None:
                     c = {**c, "met": zone["low"] - 0.25 * atr <= price <= zone["high"],
                          "value": round((zone["low"] - price) / atr, 2)}
             conditions.append(c)
-        out[side] = {**pb, "conditions": conditions}
+        out[side] = {**pb, "conditions": conditions, "score": _score(zone.get("score") or 0, conditions)}
     return out
 
 
@@ -603,13 +609,18 @@ def _nums(text: str) -> list[float]:
     return out
 
 
+_ALIASES = {"구역": "zone", "진입": "entries", "확인": "confirm", "손절": "stop", "stop-loss": "stop",
+            "stoploss": "stop", "목표1": "t1", "목표2": "t2", "1차": "t1", "2차": "t2", "시간": "time",
+            "time-stop": "time"}
+
+
 def _parse_side(body: str) -> dict | None:
     if re.match(r"\s*\**\s*none\b", body, re.IGNORECASE):
         return None
     out: dict = {"raw": body.strip()[:400]}
     for part in body.split("/"):
-        key, _, rest = part.strip().partition(" ")
-        key = key.lower().strip("*:")
+        key, _, rest = part.strip().strip("*").strip().partition(" ")
+        key = _ALIASES.get(key.lower().strip("*: "), key.lower().strip("*: "))
         if key == "zone":
             n = [float(x.replace(",", "")) for x in re.findall(r"\d[\d,]*(?:\.\d+)?", rest)]   # "178-180" is a range
             if len(n) >= 2:
@@ -673,7 +684,11 @@ def merge(pb: dict | None, parsed: dict, *, convert=None) -> dict | None:
                 return _round(v)
             ignored[name] = value
             return None
-        stop = take("stop", model.get("stop"), lambda v, s=s, up=up: (v < s["avg_entry"]) if up else (v > s["avg_entry"]))
+        lowest = min(e["price"] for e in s["entries"] if e["kind"] == "limit") if any(
+            e["kind"] == "limit" for e in s["entries"]) else s["avg_entry"]
+        highest = max(e["price"] for e in s["entries"])
+        stop = take("stop", model.get("stop"),
+                    lambda v, up=up, lo=lowest, hi=highest: (v < lo) if up else (v > hi))
         if stop is not None:
             s["stop"] = stop
             s["risk"] = _round(abs(s["avg_entry"] - stop))
@@ -686,9 +701,19 @@ def merge(pb: dict | None, parsed: dict, *, convert=None) -> dict | None:
             risk = abs(s["avg_entry"] - s["stop"]) or 1e-9
             t = {**t, "rr": round(((t["price"] - s["avg_entry"]) if up else (s["avg_entry"] - t["price"])) / risk, 2)}
             targets.append(t)
-        if len(targets) == 2 and ((targets[0]["price"] >= targets[1]["price"]) if up else (targets[0]["price"] <= targets[1]["price"])):
+        def ordered(a, b, up=up):
+            return a["price"] < b["price"] if up else a["price"] > b["price"]
+        if len(targets) == 2 and not ordered(targets[0], targets[1]):
             ignored["t2_order"] = targets[1]["price"]
-            targets[1] = desk["targets"][1] if len(desk.get("targets") or []) > 1 else targets[1]
+            back = desk["targets"][1] if len(desk.get("targets") or []) > 1 else None
+            if back and ordered(targets[0], back):
+                risk = abs(s["avg_entry"] - s["stop"]) or 1e-9
+                targets[1] = {**back, "rr": round(((back["price"] - s["avg_entry"]) if up
+                                                   else (s["avg_entry"] - back["price"])) / risk, 2)}
+                s["source"]["t2"] = back.get("source", "desk")
+            else:
+                targets = targets[:1]
+                s["source"]["t2"] = "desk"
         s["targets"] = targets
         if model.get("time_stop") and 1 <= model["time_stop"] <= 200:
             s["time_stop"] = {**s["time_stop"], "bars": model["time_stop"]}

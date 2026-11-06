@@ -218,3 +218,52 @@ def test_a_hold_plans_playbooks_keep_the_run_in_the_sweep_and_feed_by_playbook()
     stats = outcome.stats([{**run, "outcome": result, "outcome_status": result["sweep_status"]}])
     row = stats["by_playbook"][0]
     assert row["key"] == "long:dip_catch:crash" and row["open"] == 1 and stats["total"]["plans"] == 0
+
+
+FADE = {"setup": "fade", "stop": 105.6, "flat_by_close": False, "zone": {"low": 104.0, "high": 105.0},
+        "entries": [{"step": 1, "price": 103.8, "share": 1.0, "kind": "stop"}],
+        "targets": [{"role": "t1", "price": 100.0}, {"role": "t2", "price": 97.0}],
+        "time_stop": {"bars": 10, "interval": "1d"}}
+
+
+def test_a_fade_short_waits_for_the_bounce_into_its_zone():
+    assert _judge([(100, 100.5, 99.5, 100)], side=FADE, direction=-1)["status"] == "waiting"
+    hit = _judge([(100, 104.5, 99.8, 104.2), (104.2, 104.3, 103.0, 103.2), (103, 103.1, 96.5, 97)],
+                 side=FADE, direction=-1)
+    assert hit["status"] == "t2" and hit["avg_fill"] == 103.8
+
+
+def test_a_gap_through_a_stop_entry_fills_at_the_open():
+    hit = _judge([(100, 104.5, 99.8, 104.2), (102, 102.5, 101, 101.5)], side=FADE, direction=-1)
+    assert hit["avg_fill"] == 102.0
+
+
+def test_a_model_stop_between_the_ladder_steps_is_refused():
+    bars = _crash()
+    pb = playbook.build(_crash_sr(bars[-1]["close"]), bars, bars, SWING)
+    step2 = pb["long"]["entries"][1]["price"]
+    between = round((pb["long"]["entries"][0]["price"] + step2) / 2, 2)
+    merged = playbook.merge(pb, {"long": {"raw": "x", "stop": between}, "short": None, "bias": None})
+    assert merged["long"]["stop"] == pb["long"]["stop"] and merged["long"]["model"]["ignored"]["stop"] == between
+
+
+def test_a_volatile_products_ordinary_pullback_is_not_a_crash():
+    # a 3x product: daily ranges about 7%, down 12% from its high in three sessions
+    closes = [100 + (6 if i % 2 else -6) for i in range(197)] + [98, 94, 92]
+    bars = [{"at": (datetime(2026, 3, 2, tzinfo=UTC) + timedelta(days=i)).isoformat(), "open": c, "high": c + 4,
+             "low": c - 4, "close": c, "volume": 1_000_000} for i, c in enumerate(closes)]
+    f = playbook.features(bars)
+    assert f["dd20"] <= -0.10 and playbook.detect_regime(f)["id"] != "crash"
+
+
+def test_the_runs_outcome_status_is_the_plans_own(db_url):
+    from desk.db import make_engine, migrate
+    from desk.store import Store
+
+    migrate(db_url)
+    store = Store(make_engine(db_url))
+    run_id = store.create_run("NVDA", "2026-11-02", {})
+    store.mark_done(run_id, {"bias": "long"}, None)
+    store.set_outcome(run_id, {"status": "target", "sweep_status": "open", "playbooks": {}})
+    assert store.get_run(run_id)["outcome_status"] == "target"
+    assert run_id in [r["id"] for r in store.runs_to_score(10)]       # the sweep still looks

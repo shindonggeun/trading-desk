@@ -278,8 +278,11 @@ class RunManager:
             today = None
             if h.primary != "1d" and primary:
                 day = primary[-1]["at"][:10]
-                session = [b for b in primary if b["at"][:10] == day]
-                today = {"at": session[0]["at"], "open": session[0]["open"], "close": session[-1]["close"],
+                first = next(i for i, b in enumerate(primary) if b["at"][:10] == day)
+                session = primary[first:]
+                # only when the window reaches back past the session's start; else its "open" is
+                # just the first bar fetched and a gap would be invented
+                today = None if first == 0 else {"at": session[0]["at"], "open": session[0]["open"], "close": session[-1]["close"],
                          "high": max(b["high"] for b in session), "low": min(b["low"] for b in session),
                          "volume": sum(b.get("volume") or 0 for b in session)}
             vix = next((row.get("price") for row in (related or {}).get("instruments") or []
@@ -300,13 +303,20 @@ class RunManager:
         parsed = playbook.parse((final_state or {}).get("final_trade_decision") or "")
         if not lever:
             return playbook.merge(playbook.refresh(pb_main, live), parsed)
-        pb = await self._playbooks(request, sr, live, frame, related, request.ticker)
+        # the product's own frame: its levels may have fallen back to daily bars when the
+        # underlying's did not (or the other way round)
+        own = horizons.get(None) if sr and sr.get("fallback") else horizons.get(request.horizon)
+        pb = await self._playbooks(request, sr, live, own, related, request.ticker)
         if not pb:
             return None
         anchor = under.anchors(*starts, *srs)
         leverage = lever[1]
         if leverage < 0:   # an inverse product: the underlying's long is the product's short
-            parsed = {**parsed, "long": parsed.get("short"), "short": parsed.get("long")}
+            bias = parsed.get("bias")
+            flip = {"long": "short", "short": "long"}
+            parsed = {**parsed, "long": parsed.get("short"), "short": parsed.get("long"),
+                      "bias": {**bias, "side": flip.get(bias["side"], bias["side"]), "source": "converted"}
+                      if bias else None}
         convert = (lambda p: under.to_product(p, anchor, leverage)) if anchor else (lambda _p: None)
         return playbook.merge(playbook.refresh(pb, live), parsed, convert=convert)
 

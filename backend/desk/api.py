@@ -33,6 +33,7 @@ from . import (
     positioning,
     regime,
     review,
+    risk_regime,
     verdict,
 )
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
@@ -226,6 +227,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     broker = make_broker(settings)
     kis_feed = kis_stream.make(settings) if prices is None else None   # tests bring their own prices
     prices = prices or PriceSource(broker, stream=kis_feed)
+    # #146: the market's selling score from the same Yahoo source as the prices (cached ~15 min)
+    risk = None if settings.fake_runs else risk_regime.Cache(
+        fetcher=lambda symbols: risk_regime.fetch(symbols, candles=prices._yahoo_candles)).current
     estimator = estimator or BinanceEstimator()
     book = book or Portfolio(broker, prices)
     flow = flow or MarketFlow(broker)
@@ -258,7 +262,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        # #148: SEC 8-K / Form 4 of a US company, fetched per run (one or two calls)
                                        filings=None if settings.fake_runs else filings.note_for,
                                        # #154: short volume + options of a US ticker (cached ~15 min)
-                                       positioning=None if settings.fake_runs else positioning.note_for)
+                                       positioning=None if settings.fake_runs else positioning.note_for,
+                                       risk=risk)
 
         async def keep_listing_fresh():
             while True:
@@ -894,7 +899,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         try:
-            return await playbook_live.current(prices, ticker, horizon, run, run_pb)
+            return await playbook_live.current(prices, ticker, horizon, run, run_pb,
+                                               risk=risk)
         except Exception as exc:  # noqa: BLE001 - no bars, too few, or a source down
             log.warning("live playbooks for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no playbooks for {ticker}") from None

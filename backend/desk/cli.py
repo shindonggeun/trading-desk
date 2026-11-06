@@ -100,7 +100,7 @@ def _backtest(args) -> int:
                 json.dump(rep, f, ensure_ascii=False, indent=1)
         return 0
     report = backtest.run(tickers, args.horizon, args.start, args.end, args.step, costs, args.sweep,
-                          progress=lambda msg: print(msg, file=sys.stderr))
+                          progress=lambda msg: print(msg, file=sys.stderr), risk=not args.no_risk or None)
     backtest.print_summary(report)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
@@ -133,6 +133,8 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--out", default=None, help="write the full JSON report here")
     bt.add_argument("--triggers", action="store_true",
                     help="compare the zone-touch entry with the lower-bar trigger entry (#149; ~2 years of 60m bars)")
+    bt.add_argument("--no-risk", action="store_true",
+                    help="leave out the market's selling-score rule (#146) and its on/off comparison")
     tm = sub.add_parser("timing", help="average time per stage and per agent over the latest finished runs")
     tm.add_argument("--last", type=int, default=20, help="how many recent finished runs (default 20)")
     args = parser.parse_args(argv)

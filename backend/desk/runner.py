@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from . import horizons, macro_news, playbook, timing, trade_map, verdict
+from . import horizons, macro_news, playbook, risk_regime, timing, trade_map, verdict
 from . import underlying as under
 from .broker.base import Broker
 from .consensus import CONSENSUS_TIMEOUT_SEC, ConsensusContext, llm_summariser
@@ -267,8 +267,12 @@ class RunManager:
                  filings: Callable[[str], Awaitable[str | None]] | None = None,
                  positioning: Callable[[str], Awaitable[str | None]] | None = None,
                  calendar: Callable[[], str | None] | None = None,
-                 credit: Callable[[], str | None] | None = None) -> None:
+                 credit: Callable[[], str | None] | None = None,
+                 risk: Callable[[str, str | None], dict | None] | None = None) -> None:
         self.levels = levels
+        # #146: the market-wide selling score (desk.risk_regime.Cache.current: ticker, trade date) that
+        # gates the dip-catch ladder and the short - None leaves the playbooks as built
+        self.risk = risk
         # #148: recent SEC filings of a US company (desk.filings.note_for) and the economic calendar
         # (desk.events_calendar.prompt_note). Both read "now": same-day runs only. None leaves them out.
         self.filings = filings
@@ -313,10 +317,21 @@ class RunManager:
             vix = next((row.get("price") for row in (related or {}).get("instruments") or []
                         if row.get("ticker") == "^VIX"), None)
             macro = macro_news.CACHE.brief(ticker) if self.macro is not None else None
-            return await asyncio.to_thread(playbook.build, sr, daily, primary, h, live=live, vix=vix,
-                                           macro=macro, today=today)
+            pb = await asyncio.to_thread(playbook.build, sr, daily, primary, h, live=live, vix=vix,
+                                         macro=macro, today=today)
         except Exception as exc:  # noqa: BLE001 - incl. timeout
             log.warning("playbooks for %s failed: %s", ticker, exc)
+            return None
+        return risk_regime.apply(pb, await self._risk(ticker, request.trade_date)) if pb else pb
+
+    async def _risk(self, ticker: str, trade_date: str) -> dict | None:
+        """#146: the market's selling score on the run's date; a failure leaves the playbooks ungated."""
+        if self.risk is None:
+            return None
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(self.risk, ticker, trade_date), RELATED_TIMEOUT_SEC)
+        except Exception as exc:  # noqa: BLE001 - incl. timeout
+            log.warning("risk regime for %s failed: %s", ticker, exc)
             return None
 
     async def _product_playbooks(self, request: RunRequest, lever, pb_main: dict | None, sr: dict | None,
@@ -600,7 +615,8 @@ class RunManager:
                                                      pb_note, direction_note((pb_main or {}).get("direction")),
                                                      lever_note,
                                                      related_note(related), macro_note, calendar_note, credit_note,
-                                                     filings_note, positioning_note)
+                                                     filings_note, positioning_note,
+                                                     risk_regime.prompt_note((pb_main or {}).get("risk_regime")))
                                    if part) or None
                 mandate = horizons.horizon_mandate(horizon, main_sr and main_sr.get("atr"), frame=frame,
                                                    levels_below=bool(main_sr))

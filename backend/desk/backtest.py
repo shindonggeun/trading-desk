@@ -13,10 +13,14 @@ the rules, not a tradable equity curve.
 
     python -m desk.cli backtest SOXL --horizon swing --from 2018-01-01
     python -m desk.cli backtest --basket --sweep --out report.json
+
+With the market's indices loaded (#146, ``desk.risk_regime``) the playbooks are gated the way a live
+run gates them, and ``risk_gate`` puts the same plans ungated next to them.
 """
 
 from __future__ import annotations
 
+import bisect
 import statistics
 import sys
 from collections.abc import Callable, Iterable, Iterator
@@ -24,7 +28,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
-from . import horizons, outcome, playbook, playbook_live, sr
+from . import horizons, outcome, playbook, playbook_live, risk_regime, sr
 
 VERSION = 1
 BASKET = ("SOXL", "TQQQ", "NVDA", "QQQ", "005930.KS", "000660.KS")
@@ -75,6 +79,7 @@ class Snapshot:
     window: list[dict]
     today: dict | None = None         # the forming session on intraday frames (as the live run builds)
     vix: float | None = None          # ^VIX close on that day
+    risk: dict | None = None          # desk.risk_regime.score on that day (#146)
 
 
 @dataclass
@@ -89,6 +94,7 @@ class Trade:
     filled_shares: float = 0.0
     steps: str = ""                   # the filled ladder steps in fill order, e.g. "1+3"
     took_t1: bool = False
+    risk_phase: str = "unknown"       # desk.risk_regime phase on the plan's day (#146)
     r: float | None = None            # per filled share over the planned risk (desk.outcome)
     r_size: float | None = None       # scaled by the filled share of the position
     r_net: float | None = None        # r_size after costs
@@ -121,6 +127,8 @@ class Report:
     notes: list[str] = field(default_factory=list)
     sweep: list[dict] = field(default_factory=list)
     generated_at: str = ""
+    by_risk: dict = field(default_factory=dict)
+    risk_gate: dict = field(default_factory=dict)   # the same plans with the #146 rule on / off
 
 
 # ---------------------------------------------------------------- data
@@ -161,7 +169,7 @@ def local_day(at: str, ticker: str) -> str:
 
 
 def snapshot(ticker: str, h: horizons.Horizon, primary: list[dict], secondary: list[dict], t: int,
-             vix: dict[str, float] | None = None) -> Snapshot | None:
+             vix: dict[str, float] | None = None, market: MarketRisk | None = None) -> Snapshot | None:
     """The levels an analysis at the close of ``primary[t]`` could have computed; None when the
     window is too short or the levels fail. Only ``primary[:t+1]`` and finished secondary bars are read."""
     if t + 1 >= len(primary):
@@ -182,7 +190,8 @@ def snapshot(ticker: str, h: horizons.Horizon, primary: list[dict], secondary: l
     daily = window if h.primary == "1d" else sec
     day = cut.isoformat()
     return Snapshot(ticker, t, primary[t]["at"], day, _plan_at(primary[t + 1], h, ticker), levels, daily, window,
-                    today=playbook_live.today(window, h), vix=_vix_on(vix, day))
+                    today=playbook_live.today(window, h), vix=_vix_on(vix, day),
+                    risk=market.on(day, ticker) if market else None)
 
 
 def _vix_on(vix: dict[str, float] | None, day: str) -> float | None:
@@ -194,6 +203,38 @@ def _vix_on(vix: dict[str, float] | None, day: str) -> float | None:
         if d <= day and (best is None or d > best[0]):
             best = (d, v)
     return best[1] if best else None
+
+
+class MarketRisk:
+    """desk.risk_regime's indices over the whole history, scored as of a plan's day (each day once
+    per market: the basket's tickers share them)."""
+
+    def __init__(self, series: risk_regime.Series) -> None:
+        self.series = series
+        self._days = {k: [b["day"] for b in v] for k, v in series.items()}
+        self._memo: dict[tuple[str, bool], dict | None] = {}
+
+    def on(self, day: str, ticker: str) -> dict | None:
+        korean = risk_regime.is_korean(ticker)
+        key = (day, korean)
+        if key not in self._memo:
+            cut = {}
+            for symbol, bars in self.series.items():
+                days = self._days[symbol]
+                # a Korean plan sees the US session of the day before (as risk_regime.as_of)
+                strict = korean and symbol not in risk_regime.SAME_DAY_KR
+                end = bisect.bisect_left(days, day) if strict else bisect.bisect_right(days, day)
+                if end:
+                    cut[symbol] = bars[max(0, end - risk_regime.HISTORY_BARS): end]
+            main = risk_regime.main_index(cut, korean)
+            self._memo[key] = risk_regime.score(cut, korean) if main else None
+        return self._memo[key]
+
+
+def market_risk(start: str | None, tickers: list[str]) -> MarketRisk:
+    days_back = (date.today() - date.fromisoformat(start)).days if start else 365 * 3
+    symbols = risk_regime.symbols_for_all(tickers)
+    return MarketRisk(risk_regime.fetch(symbols, count=_count_for("1d", days_back) + 300))
 
 
 # ---------------------------------------------------------------- one plan
@@ -220,9 +261,13 @@ def _excursions(direction: int, future: list[dict], avg: float, first_fill_at: s
     return round(max(mae, 0.0), 2), round(max(mfe, 0.0), 2)
 
 
-def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: Costs) -> list[Trade]:
-    """Build the snapshot's playbooks and judge each side on the bars after it."""
+def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: Costs,
+              gate: bool = True) -> list[Trade]:
+    """Build the snapshot's playbooks and judge each side on the bars after it. ``gate`` applies
+    the market's selling rule (#146) when the snapshot has a score."""
     pb = playbook.build(snap.sr, snap.daily, snap.window, h, now=snap.plan_at, today=snap.today, vix=snap.vix)
+    if gate:
+        pb = risk_regime.apply(pb, snap.risk)
     if not pb:
         return []
     future = primary[snap.t + 1: snap.t + 1 + LOOKAHEAD[h.id]]
@@ -251,6 +296,7 @@ def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: C
                 trade.r_net = round(trade.r_size - cost_r, 3)
             trade.mae_atr, trade.mfe_atr = _excursions(direction, future, avg, res.get("first_fill_at"),
                                                        res.get("exited_at"), atr)
+        trade.risk_phase = (snap.risk or {}).get("phase") or "unknown"
         out.append(trade)
     return out
 
@@ -325,8 +371,33 @@ def summarize(trades: list[Trade], h: horizons.Horizon, cut: str | None) -> dict
         "by_direction": _by(trades, lambda t: f"{t.side}:{t.setup}:{t.direction}"),
         "crash_windows": {name: aggregate([t for t in trades if _in(t.at, lo, hi)])
                           for name, (lo, hi) in CRASH_WINDOWS.items()},
+        "by_risk": _by(trades, lambda t: f"{t.side}:{t.setup}:{t.risk_phase}"),
         "split": {"cut": cut, "embargo_days": EMBARGO_DAYS[h.id], "train": aggregate(train), "valid": aggregate(valid)},
     }
+
+
+def losing_streak(trades: list[Trade]) -> int:
+    """The longest run of losing settled trades in plan order (ties by ticker)."""
+    best = n = 0
+    for t in sorted(trades, key=lambda t: (t.at, t.ticker, t.side)):
+        if t.r_net is None or t.status not in SETTLED + MARKED:
+            continue
+        n = n + 1 if t.r_net < 0 else 0
+        best = max(best, n)
+    return best
+
+
+def gate_view(trades: list[Trade], cut: str | None, h: horizons.Horizon) -> dict:
+    """What the #146 rule changes: the dip catch, the short, the held-out dates and the crashes."""
+    _, valid = split(trades, cut, h)
+    dip = [t for t in trades if t.side == "long" and t.setup == "dip_catch"]
+    view = {"all": aggregate(trades), "valid": aggregate(valid), "long:dip_catch": aggregate(dip),
+            "short": aggregate([t for t in trades if t.side == "short"]),
+            "losing_streak": losing_streak(trades)}
+    for name, (lo, hi) in CRASH_WINDOWS.items():
+        view[f"crash:{name}"] = aggregate([t for t in trades if _in(t.at, lo, hi)])
+        view[f"crash:{name}:long:dip_catch"] = aggregate([t for t in dip if _in(t.at, lo, hi)])
+    return view
 
 
 # ---------------------------------------------------------------- runs
@@ -334,7 +405,8 @@ def summarize(trades: list[Trade], h: horizons.Horizon, cut: str | None) -> dict
 
 def snapshots(ticker: str, h: horizons.Horizon, primary: list[dict], secondary: list[dict],
               start: str | None = None, end: str | None = None, step: int | None = None,
-              progress: Callable[[str], None] | None = None, vix: dict[str, float] | None = None) -> Iterator[Snapshot]:
+              progress: Callable[[str], None] | None = None, vix: dict[str, float] | None = None,
+              market: MarketRisk | None = None) -> Iterator[Snapshot]:
     """Every ``step`` bars from the first full window to the last bar that still has a full
     look-ahead after it (a later plan would be cut short and read as still open)."""
     step = step or STEP[h.id]
@@ -344,7 +416,7 @@ def snapshots(ticker: str, h: horizons.Horizon, primary: list[dict], secondary: 
         day = local_day(primary[t]["at"], ticker)
         if (start and day < start) or (end and day > end):
             continue
-        snap = snapshot(ticker, h, primary, secondary, t, vix)
+        snap = snapshot(ticker, h, primary, secondary, t, vix, market)
         if snap:
             yield snap
         if progress and t % (step * 100) < step:
@@ -366,11 +438,11 @@ def patched(name: str, value) -> Iterator[None]:
 
 
 def evaluate(snaps: Iterable[tuple[Snapshot, list[dict]]], h: horizons.Horizon, costs: Costs,
-             min_score: int = 0, notes: list[str] | None = None) -> list[Trade]:
+             min_score: int = 0, notes: list[str] | None = None, gate: bool = True) -> list[Trade]:
     out, failed = [], {}
     for snap, primary in snaps:
         try:
-            trades = trades_at(snap, primary, h, costs)
+            trades = trades_at(snap, primary, h, costs, gate)
         except Exception as exc:  # noqa: BLE001 - one odd bar (a flat series) does not end the run
             failed.setdefault(snap.ticker, f"{snap.day} {type(exc).__name__}: {exc}")
             continue
@@ -409,8 +481,10 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
         step: int | None = None, costs: Costs | None = None, do_sweep: bool = False,
         fetch: Callable[[str, horizons.Horizon, str | None], tuple[list[dict], list[dict], list[str]]] | None = None,
         progress: Callable[[str], None] | None = None,
-        vix: dict[str, float] | None | bool = True) -> Report:
-    """``vix=True`` loads ^VIX daily closes (the regime's fear evidence); a dict supplies them; None skips."""
+        vix: dict[str, float] | None | bool = True, risk: MarketRisk | None | bool = None) -> Report:
+    """``vix=True`` loads ^VIX daily closes (the regime's fear evidence); a dict supplies them; None skips.
+    ``risk=True`` loads the market's indices for the selling score (#146, desk.risk_regime; the CLI
+    does); a MarketRisk supplies them; None leaves the playbooks ungated."""
     h = horizons.get(horizon)
     costs = costs or Costs()
     fetch = fetch or history
@@ -421,12 +495,21 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
         except Exception as exc:  # noqa: BLE001 - the regime reads without VIX, as a live run would
             notes.append(f"^VIX 를 받지 못해 국면 판정에서 뺌 — {type(exc).__name__}: {exc}")
             vix = None
+    if risk is True:
+        risk = market_risk(start, tickers)
+        missing = [s for s in risk_regime.symbols_for_all(tickers) if s not in risk.series]
+        if not risk.series:
+            notes.append("시장 투매 지표를 하나도 받지 못해 #146 규칙을 뺌")
+            risk = None
+        elif missing:
+            notes.append(f"시장 투매 지표 일부 없음(남은 지표로 계산): {', '.join(missing)}")
     snaps: list[tuple[Snapshot, list[dict]]] = []
     for ticker in tickers:
         try:
             primary, secondary, more = fetch(ticker, h, start)
             notes += [f"{ticker}: {n}" for n in more]
-            got = [(s, primary) for s in snapshots(ticker, h, primary, secondary, start, end, step, progress, vix or None)]
+            got = [(s, primary) for s in snapshots(ticker, h, primary, secondary, start, end, step, progress, vix or None,
+                                                    risk or None)]
         except Exception as exc:  # noqa: BLE001 - one ticker failing leaves the others
             notes.append(f"{ticker}: 건너뜀 — {type(exc).__name__}: {exc}")
             continue
@@ -442,6 +525,9 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
     notes.append("사다리 비중(SHARES) 스윕은 하따(dip_catch)에만 영향 — 박스 하단 · 눌림목은 50/50 고정")
     report = Report(VERSION, h.id, list(tickers), start, end, asdict(costs), **summarize(trades, h, cut), notes=notes,
                     generated_at=datetime.now(UTC).isoformat(timespec="seconds"))
+    if risk:
+        report.risk_gate = {"on": gate_view(trades, cut, h),
+                            "off": gate_view(evaluate(snaps, h, costs, gate=False), cut, h)}
     if do_sweep:
         report.sweep = sweep(snaps, h, costs)
     return report
@@ -472,6 +558,16 @@ def print_summary(report: Report, out=None) -> None:
             *((f"crash:{k}", v) for k, v in report.crash_windows.items() if v["plans"])]
     for name, agg in rows:
         print(name[:33].ljust(34) + "".join(_fmt(agg.get(c)).rjust(13) for c in cols), file=out)
+    for name, agg in report.by_risk.items():
+        print(f"risk:{name}"[:33].ljust(34) + "".join(_fmt(agg.get(c)).rjust(13) for c in cols), file=out)
+    for key, on in (report.risk_gate.get("on") or {}).items():
+        off = report.risk_gate["off"][key]
+        if key == "losing_streak":
+            print(f"gate {key}: on {on} / off {off}", file=out)
+        elif on["plans"] or off["plans"]:
+            print(f"gate {key}: expectancy on {_fmt(on['expectancy_r'])} / off {_fmt(off['expectancy_r'])}"
+                  f" · per plan {_fmt(on['expectancy_per_plan_r'])} / {_fmt(off['expectancy_per_plan_r'])}"
+                  f" (settled {on['settled']} / {off['settled']})", file=out)
     for row in report.sweep[:12]:
         print(f"sweep {row['param']}={row['value']}{' (now)' if row['current'] else ''}: "
               f"train {_fmt(row['train']['expectancy_r'])} / valid {_fmt(row['valid']['expectancy_r'])}"

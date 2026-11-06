@@ -178,6 +178,7 @@ def test_cli_backtest_writes_a_report(tmp_path, monkeypatch, capsys):
     daily = _bars(300)
     monkeypatch.setattr(backtest, "history", _fetch(daily))
     monkeypatch.setattr(backtest, "vix_closes", lambda start: {"2023-06-01": 31.0})
+    monkeypatch.setattr(backtest, "market_risk", lambda start, tickers: backtest.MarketRisk({}))
     out = tmp_path / "r.json"
     assert cli.main(["backtest", "soxl", "--horizon", "swing", "--out", str(out)]) == 0
     data = json.loads(out.read_text(encoding="utf-8"))

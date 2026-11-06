@@ -267,3 +267,42 @@ def test_the_runs_outcome_status_is_the_plans_own(db_url):
     store.set_outcome(run_id, {"status": "target", "sweep_status": "open", "playbooks": {}})
     assert store.get_run(run_id)["outcome_status"] == "target"
     assert run_id in [r["id"] for r in store.runs_to_score(10)]       # the sweep still looks
+
+
+def _event_cache(at: datetime):
+    from desk import events_calendar
+    cal = events_calendar.Calendar()
+    cal.by_source = {"bls": [events_calendar.Event(id="cpi", label="CPI", at=at, importance=2, source="bls")]}
+    return cal
+
+
+def test_a_release_hours_away_holds_the_ladder_on_a_live_playbook(monkeypatch):
+    from desk import events_calendar
+    bars = _crash()
+    ref = bars[-1]["close"]
+    monkeypatch.setattr(events_calendar, "CACHE", _event_cache(datetime.now(UTC) + timedelta(hours=3)))
+    calm = playbook.build(_crash_sr(ref), bars, bars, SWING)                       # no live quote: no calendar
+    assert calm.get("event_hold") is None and not any(e.get("held") for e in calm["long"]["entries"])
+    pb = playbook.build(_crash_sr(ref), bars, bars, SWING, live={"price": ref})
+    hold = pb["event_hold"]
+    assert hold["label"] == "CPI" and hold["until"] > hold["at"]
+    long = pb["long"]
+    assert [e.get("held") for e in long["entries"]] == [None, "event", "event"]
+    assert long["conditions"][-1] == {"id": "event_clear", "met": False, "how": "computed", "value": "CPI"}
+    assert long["score"] <= calm["long"]["score"]        # one more unmet condition
+    assert "Event window: CPI" in playbook.prompt_note(pb)
+    # tracked later, after the window: the marks come off
+    monkeypatch.setattr(events_calendar, "CACHE", _event_cache(datetime.now(UTC) - timedelta(days=2)))
+    fresh = playbook.build(_crash_sr(ref), bars, bars, SWING, live={"price": ref})
+    assert fresh["event_hold"] is None
+    later = playbook.track(fresh, pb, bars, SWING)
+    assert later["event_hold"] is None and not any(e.get("held") for e in later["long"]["entries"])
+    assert all(c["id"] != "event_clear" for c in later["long"]["conditions"])
+
+
+def test_a_release_far_away_or_minor_does_not_hold(monkeypatch):
+    from desk import events_calendar
+    bars = _crash()
+    ref = bars[-1]["close"]
+    monkeypatch.setattr(events_calendar, "CACHE", _event_cache(datetime.now(UTC) + timedelta(days=2)))
+    assert playbook.build(_crash_sr(ref), bars, bars, SWING, live={"price": ref})["event_hold"] is None

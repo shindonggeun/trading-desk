@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import horizons, live, otp, outcome, regime, review, verdict
+from . import horizons, live, macro_news, otp, outcome, regime, review, verdict
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
 from .broker import make_broker
 from .consensus import fake_summariser, llm_summariser
@@ -178,7 +178,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        # a scripted run stays offline, like its support/resistance
                                        related=None if settings.fake_runs else collect_related,
                                        lever_analyst=fake_analyst if settings.fake_runs else llm_analyst,
-                                       summariser=fake_summariser if settings.fake_runs else llm_summariser)
+                                       summariser=fake_summariser if settings.fake_runs else llm_summariser,
+                                       # world news flow: the background cache below, never fetched in a run
+                                       macro=None if settings.fake_runs else macro_news.prompt_note)
 
         async def keep_listing_fresh():
             while True:
@@ -204,13 +206,28 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.exception("plan scoring failed")
                 await asyncio.sleep(settings.score_interval_sec)
 
+        async def refresh_macro():
+            # GDELT allows one request every five seconds: a full pass takes a couple of minutes,
+            # so it runs here in the background and runs read the snapshot (desk.macro_news).
+            while True:
+                try:
+                    ok = await macro_news.CACHE.refresh()
+                    log.info("macro news: %d/%d theme(s) refreshed", ok, len(macro_news.THEMES))
+                except Exception:  # a failed pass must not stop the next one
+                    log.exception("macro news refresh failed")
+                await asyncio.sleep(settings.macro_interval_sec)
+
         refresher = asyncio.create_task(keep_listing_fresh())
+        macro = (asyncio.create_task(refresh_macro())
+                 if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
         # Scripted runs have made-up levels; scoring them against real bars means nothing.
         scorer = (asyncio.create_task(score_plans())
                   if settings.score_interval_sec > 0 and not settings.fake_runs else None)
         purger = asyncio.create_task(purge_old_runs()) if settings.retention_days > 0 else None
         yield
         refresher.cancel()
+        if macro:
+            macro.cancel()
         if scorer:
             scorer.cancel()
         if purger:
@@ -649,6 +666,17 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except Exception as exc:  # noqa: BLE001 - both sources failed
             log.warning("candles for %s %s failed: %s", ticker, interval, exc)
             raise HTTPException(503, f"no candles for {ticker}") from None
+
+    @app.get("/api/macro/brief")
+    def macro_brief(ticker: str | None = None):
+        """World news-flow themes (GDELT, refreshed in the background): article count in 24h,
+        surge against the week, average tone and headlines; with ``ticker`` its themes first."""
+        if ticker is not None:
+            try:
+                ticker = clean_ticker(ticker)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
+        return macro_news.CACHE.brief(ticker)
 
     @app.get("/api/stats/plans")
     def plan_stats(days: int = 90):

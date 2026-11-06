@@ -249,8 +249,11 @@ RELATED_TIMEOUT_SEC = 30.0
 class RunManager:
     def __init__(self, store: Store, hub: Hub, runner: Runner, broker: Broker, max_concurrent: int,
                  levels=fill_levels, prices: PriceSource | None = None, related=collect_related,
-                 lever_analyst=llm_analyst, summariser=llm_summariser) -> None:
+                 lever_analyst=llm_analyst, summariser=llm_summariser,
+                 macro: Callable[[str], str | None] | None = None) -> None:
         self.levels = levels
+        # #115: the world news-flow note (desk.macro_news.prompt_note) - None leaves it out
+        self.macro = macro
         self.summariser = summariser
         self.lever_analyst = lever_analyst
         self.related = related
@@ -261,6 +264,15 @@ class RunManager:
         self.broker = broker
         self._slots = asyncio.Semaphore(max(1, max_concurrent))
         self._tasks: set[asyncio.Task] = set()
+
+    def _macro_note(self, ticker: str) -> str | None:
+        if self.macro is None:
+            return None
+        try:
+            return self.macro(ticker)
+        except Exception:  # background context; never fails a run
+            log.exception("macro note for %s failed", ticker)
+            return None
 
     def submit(self, request: RunRequest) -> str:
         run_id = self.store.create_run(request.ticker, request.trade_date, asdict(request))
@@ -481,8 +493,10 @@ class RunManager:
                 # The run's own instrument: the underlying for a leveraged product.
                 main_live, main_sr = (start_u, sr_u) if lever else (start, sr)
                 lever_note = under.prompt_note(request.ticker, *lever) if lever else None
+                macro_note = self._macro_note(base or request.ticker)
                 note = "\n\n".join(part for part in (live_note(main_live, main_sr and main_sr.get("atr")),
-                                                     prompt_note(main_sr), lever_note, related_note(related))
+                                                     prompt_note(main_sr), lever_note, related_note(related),
+                                                     macro_note)
                                    if part) or None
                 horizon = horizons.get(request.horizon)
                 frame = horizons.get(None) if main_sr and main_sr.get("fallback") else horizon

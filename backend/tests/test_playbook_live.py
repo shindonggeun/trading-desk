@@ -55,3 +55,10 @@ def test_the_api_needs_a_session_validates_and_caches(db_url):
         assert first["long"]["state_since"] and first["ticker"] == "NVDA" and first["horizon"] == "swing"
         again = client.get("/api/playbooks", params={"ticker": "NVDA"}).json()
         assert again["as_of"] == first["as_of"]                    # one computation per TTL
+
+
+def test_dense_levels_make_several_narrow_zones_not_one_range():
+    # SOXL-like: levels every 0.4 ATR from 64 down to 45 (ATR 5)
+    cands = [{"price": 64.0 - 2.0 * i, "source": "sr", "weight": 1.0, "basis": "x"} for i in range(10)]
+    found = playbook.zones(cands, ref=66.7, atr=5.0, below=True, max_atr=6.0)
+    assert len(found) >= 2 and all(z["high"] - z["low"] <= 5.0 + 1e-9 for z in found)

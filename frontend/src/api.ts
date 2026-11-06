@@ -1,4 +1,4 @@
-import type { DeskConfig, DeskEvent, Estimate, FlowInterval, FlowMarket, Instrument, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
+import type { DeskConfig, DeskEvent, Estimate, FlowInterval, FlowMarket, Instrument, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -151,6 +151,8 @@ export const api = {
   createRun: (body: NewRun) => call<Run>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
   portfolio: () => call<Portfolio>("/api/portfolio"),
   regime: () => call<RegimeSnapshot>("/api/regime"),
+  /** #115 거시 · 정책 뉴스 흐름 — 서버가 30분마다 새로 모은다. */
+  macroBrief: () => call<MacroBrief>("/api/macro/brief"),
   /** 계획 채점 통계(#64 desk/outcome.py) — 서버가 보관 기간까지로 자른다. */
   planStats: (days = 90) => call<PlanStats>(`/api/stats/plans?days=${days}`),
   /** 코스피 · 코스닥 투자자별 매매대금(#76). 장중 60초 · 장 밖 10분 서버 캐시. */

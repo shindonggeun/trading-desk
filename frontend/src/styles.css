@@ -938,3 +938,37 @@ span.cs-hold-text { color: var(--warn); }
 
 /* #108 매물대 — 범례 POC 표시(경고색 실선) */
 .lg-poc { border-color: var(--warn); border-top-style: solid !important; }
+
+/* #118 — 대시보드 오늘의 거시 · 정책 브리핑 (색은 토큰만) */
+.macro-brief { display: grid; gap: 8px; }
+.mx-meta { margin: 0; }
+.mx-themes { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.mx-theme { border-top: 1px solid var(--border); }
+.mx-theme:first-child { border-top: 0; }
+.mx-row { display: grid; grid-template-columns: 150px 56px 64px 110px minmax(0, 1fr); align-items: center; gap: 10px; width: 100%;
+  padding: 9px 12px; background: none; border: 0; border-radius: 0; color: var(--text); font: inherit; font-weight: 400; text-align: left; cursor: pointer; }
+.mx-row:hover { background: var(--surface-2); }
+.mx-label { font-weight: 600; }
+.mx-count, .mx-spike { color: var(--muted); }
+.mx-spike-hot { color: var(--warn); font-weight: 650; }
+.mx-hot .mx-label::after { content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%;
+  background: var(--warn); vertical-align: middle; }
+.mx-stale { opacity: .7; }
+.mx-head { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mx-tone { display: inline-flex; align-items: center; gap: 6px; }
+.mx-tone-track { position: relative; width: 56px; height: 6px; border-radius: var(--radius-s); background: var(--surface-2); overflow: hidden; }
+.mx-tone-track::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--border); }
+.mx-tone-bar { position: absolute; top: 0; bottom: 0; }
+.mx-tone-pos { background: var(--up); }
+.mx-tone-neg { background: var(--down); }
+.mx-detail { display: grid; gap: 8px; padding: 0 12px 12px; }
+.mx-headlines { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.mx-run { align-items: center; }
+.mx-confirm { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
+.mx-confirm p { margin: 0 0 6px; }
+.mx-confirm-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .mx-row { grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px 10px; }
+  .mx-tone { grid-column: 1 / 2; }
+  .mx-head { grid-column: 1 / -1; white-space: normal; }
+}

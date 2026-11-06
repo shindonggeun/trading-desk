@@ -48,7 +48,7 @@ function useSpark(ticker: string, order: number): Line | null | "none" {
   return line;
 }
 
-function Spark({ ticker, tone, order }: { ticker: string; tone: "up" | "down" | ""; order: number }) {
+export function Spark({ ticker, tone, order }: { ticker: string; tone: "up" | "down" | ""; order: number }) {
   const line = useSpark(ticker, order);
   if (line === null) return <span className="spark spark-empty" />;
   if (line === "none") return <span className="spark spark-empty fav-spark-none muted small">차트 없음</span>;

@@ -42,22 +42,22 @@ function PlaybookTable({ groups }: { groups: PlaybookStatsGroup[] }) {
         <table className="stats-table pb-stats">
           <thead>
             <tr>
-              <th>셋업 · 국면</th>
-              <th className="num" title="체결 · 미체결 · 대기를 모두 센 플레이북 수">계획</th>
-              <th className="num" title="한 번이라도 체결된 것">체결</th>
-              <th className="num" title="T1 · T2 · T1 뒤 본전">목표</th>
-              <th className="num" title="손절 + 시간 손절">손절</th>
-              <th className="num" title="그날 안에 청산(목표 · 손절 전)">청산</th>
-              <th className="num" title="(T1 + T2 + 본전) ÷ (그것 + 손절 + 시간 손절 + 청산)">적중률</th>
-              <th className="num" title="확정된 건의 평균 R(체결 비중 반영)">평균 R</th>
-              <th className="num" title="분석 당시 플레이북 점수 평균">점수</th>
+              <th scope="col">셋업 · 국면</th>
+              <th scope="col" className="num" title="셋업이 붙은 플레이북 전체(채점 전 · 채점 불가 포함)">계획</th>
+              <th scope="col" className="num" title="한 번이라도 체결된 것">체결</th>
+              <th scope="col" className="num" title="T2 · T1 뒤 본전">목표</th>
+              <th scope="col" className="num" title="손절 + 시간 손절">손절</th>
+              <th scope="col" className="num" title="그날 마감에 청산(T2 · 손절 전, T1 뒤 청산 포함 — 적중에 안 셈)">청산</th>
+              <th scope="col" className="num">적중률</th>
+              <th scope="col" className="num">평균 R</th>
+              <th scope="col" className="num" title="분석 당시 플레이북 점수 평균">점수</th>
             </tr>
           </thead>
           <tbody>
             {groups.map((g) => (
               <tr key={g.key}>
-                <td>{playbookLabel(g.key)}</td>
-                <td className="num" title={`미체결 ${g.unfilled} · 보유 중 ${g.open} · 대기 ${g.waiting}`}>{g.plans}</td>
+                <th scope="row">{playbookLabel(g.key)}</th>
+                <td className="num" title={`미체결 ${g.unfilled} · 보유 중 ${g.open} · 대기 ${g.waiting} · 그 밖(채점 전 · 불가) ${Math.max(0, g.plans - g.unfilled - g.open - g.waiting - (g.t1 + g.t2 + g.t1_be + g.stop + g.time_stop + g.flat))}`}>{g.plans}</td>
                 <td className="num">{g.filled}</td>
                 <td className="num" title={`T1 ${g.t1} · T2 ${g.t2} · 본전 ${g.t1_be}`}>{g.t1 + g.t2 + g.t1_be}</td>
                 <td className="num" title={`손절 ${g.stop} · 시간 손절 ${g.time_stop}`}>{g.stop + g.time_stop}</td>
@@ -70,6 +70,9 @@ function PlaybookTable({ groups }: { groups: PlaybookStatsGroup[] }) {
           </tbody>
         </table>
       </div>
+      <p className="muted small pb-stats-note">
+        적중률 = 목표 ÷ (목표 + 손절 + 청산). 평균 R 은 끝난 건만, 체결된 비중만큼 반영합니다.
+      </p>
     </>
   );
 }
@@ -136,20 +139,23 @@ export default function PlanStatsCard() {
       {stats && !hasAny && <p className="muted small">아직 롱 · 숏 계획이 없습니다.</p>}
       {stats && hasAny && (
         <>
-          <p className="small">
-            {stats.days !== days && `최근 ${stats.days}일(보관 기간) · `}계획 {stats.total.plans}건 · 채점 끝 {stats.total.scored} · 진행 중 {stats.total.waiting}
+          {view !== "playbook" && stats.total.plans === 0 && (
+            <p className="muted small">아직 롱 · 숏 계획이 없습니다 — 관망 계획의 플레이북 채점은 "플레이북" 보기에서 볼 수 있습니다.</p>
+          )}
+          {(view === "playbook" || stats.total.plans > 0) && <p className="small">
+            {view === "playbook" ? "방향 " : ""}{stats.days !== days && `최근 ${stats.days}일(보관 기간) · `}계획 {stats.total.plans}건 · 채점 끝 {stats.total.scored} · 진행 중 {stats.total.waiting}
             {stats.total.unscorable > 0 && ` · 채점 불가 ${stats.total.unscorable}`}
             {stats.total.errors > 0 && ` · 오류 ${stats.total.errors}`}
-          </p>
+          </p>}
           {view === "playbook" && (stats.by_playbook?.length
             ? <PlaybookTable groups={stats.by_playbook} />
             : <p className="muted small">아직 채점된 플레이북이 없습니다 — 플레이북이 붙은 분석이 채점되면 여기에 쌓입니다.</p>)}
-          {view !== "playbook" && resolved < MIN_RESOLVED && (
+          {view !== "playbook" && stats.total.plans > 0 && resolved < MIN_RESOLVED && (
             <p className="muted small">
               목표 · 손절로 끝난 계획이 {resolved}건뿐입니다 — {MIN_RESOLVED}건이 쌓이기 전 적중률은 참고만 하세요.
             </p>
           )}
-          {view !== "playbook" && <div className="table-wrap">
+          {view !== "playbook" && stats.total.plans > 0 && <div className="table-wrap">
             <table className="stats-table">
               <thead>
                 <tr>
@@ -177,7 +183,7 @@ export default function PlanStatsCard() {
               </tbody>
             </table>
           </div>}
-          {stats.calibration.some((c) => c.resolved > 0) && (
+          {view !== "playbook" && stats.calibration.some((c) => c.resolved > 0) && (
             <>
               <h4 className="small">추정 승률 대비 실제</h4>
               <div className="calibration">

@@ -1089,15 +1089,18 @@ h1 .fav-star { font-size: var(--fs-xl); }
 
 /* #157 섹터 탭 — 칩 가로 넘김 · 요약 · 2열 타일 · 아래 시트(휴대폰 한 손) */
 .sectors { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); max-width: 1200px; margin: 0 auto; padding: 8px 16px 24px; }
-.sector-chips { position: sticky; top: var(--topbar-h, 0px); z-index: 5; display: flex; gap: 6px; overflow-x: auto;
-  padding: 8px 0; background: var(--bg); scrollbar-width: none; -webkit-overflow-scrolling: touch; }
-.sector-chips::-webkit-scrollbar { display: none; }
-.sector-chips .chip { flex: none; min-height: 36px; padding: 6px 14px; font-size: var(--fs-m); white-space: nowrap; }
+.sector-chips { position: sticky; top: var(--topbar-h, 0px); z-index: 4; display: flex; gap: 6px; align-items: center;
+  padding: 8px 0; background: var(--bg); }
+.sector-chip-list { display: flex; gap: 6px; overflow-x: auto; flex: 1 1 auto; min-width: 0; scrollbar-width: none;
+  -webkit-overflow-scrolling: touch; }
+.sector-chip-list::-webkit-scrollbar { display: none; }
+.sector-chips .chip { flex: none; min-height: 44px; padding: 6px 14px; font-size: var(--fs-m); white-space: nowrap; }
+.sector-edit { flex: none; }
 .sector-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .ss-item { display: grid; gap: 2px; min-width: 0; }
 .ss-item strong { font-size: var(--fs-l); }
 .sector-sort { align-items: center; gap: 6px; }
-.sector-sort .chip { min-height: 32px; }
+.sector-sort .chip { min-height: 44px; }
 .sector-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
 .sector-tile { min-height: 44px; }
 .sector-badges { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 18px; }
@@ -1111,7 +1114,7 @@ h1 .fav-star { font-size: var(--fs-xl); }
 .se-tickers { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .se-tickers li { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--surface-2);
   border-radius: var(--radius-s); }
-.se-tickers .link { min-width: 28px; min-height: 28px; }
+.se-tickers .link { min-width: 44px; min-height: 44px; }
 .se-danger { color: var(--danger); justify-self: start; }
 .se-new { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
 /* 아래 시트 */
@@ -1135,7 +1138,7 @@ h1 .fav-star { font-size: var(--fs-xl); }
 .pv-big { font-size: var(--fs-xl); font-variant-numeric: tabular-nums; }
 .pv-side { text-align: right; }
 .pv-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 36px; flex: 0 1 140px; }
-.pv-bar { flex: 1; min-width: 3px; background: var(--muted); border-radius: 1px; }
+.pv-bar { flex: 1; min-width: 3px; background: var(--muted); }
 .pv-walls { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
 .pv-wall { white-space: nowrap; }
 .pv-note { margin: 0; }

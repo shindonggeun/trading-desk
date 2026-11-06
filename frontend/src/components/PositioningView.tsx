@@ -13,7 +13,7 @@ const TREND: Record<string, { text: string; tone: string }> = {
 };
 
 /** 타일에 붙는 짧은 배지(풋 쏠림 · 콜 쏠림 · 공매도↑ · 숏 스퀴즈) */
-export function positioningBadges(p: Positioning | undefined): { text: string; tone: string }[] {
+export function positioningBadges(p: Positioning | null | undefined): { text: string; tone: string }[] {
   if (!p?.supported) return [];
   const out: { text: string; tone: string }[] = [];
   const lean = p.options?.lean;
@@ -86,7 +86,7 @@ export default function PositioningView({ p }: { p: Positioning | null | undefin
         <>
           <div className="pv-row">
             <div>
-              <div className="muted small">풋/콜 미결제약정 <span className="muted">(~{o.expiries[o.expiries.length - 1]})</span></div>
+              <div className="muted small">풋/콜 미결제약정{o.expiries.length > 0 && <span className="muted"> (~{o.expiries[o.expiries.length - 1]})</span>}</div>
               <div className="pv-big num">
                 {o.put_call_oi ?? "—"} {o.lean && <span className={`small ${LEAN[o.lean].tone}`}>{LEAN[o.lean].text}</span>}
               </div>

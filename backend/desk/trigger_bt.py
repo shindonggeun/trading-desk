@@ -39,15 +39,19 @@ class Arm:
 
 
 def _exit(bars: list[dict], up: bool, entry: float, stop: float, t1: float | None, t2: float | None) -> tuple[float, bool, float]:
-    """(average exit, took T1, worst move against the entry) over ``bars`` starting at the fill bar."""
+    """(average exit, took T1, worst move against the entry) over ``bars`` starting at the fill bar.
+    On the fill bar only the stop counts (its range before the fill is unknown: a target reached
+    there may have come before the entry; a stop is read against the trade, as everywhere here)."""
     sgn = 1 if up else -1
     half, worst, cur_stop = None, 0.0, stop
-    for b in bars:
+    for n, b in enumerate(bars):
         worst = max(worst, sgn * (entry - (b["low"] if up else b["high"])))
         far, near = (b["low"], b["high"]) if up else (b["high"], b["low"])
         if sgn * (far - cur_stop) <= 0:
             out = cur_stop
             return ((half + out) / 2 if half is not None else out), half is not None, worst
+        if n == 0:
+            continue
         if half is None and t1 is not None and sgn * (near - t1) >= 0:
             half, cur_stop = t1, entry
         if half is not None and t2 is not None and sgn * (near - t2) >= 0:
@@ -91,7 +95,9 @@ def plan_arms(snap: backtest.Snapshot, primary: list[dict], lower: list[dict], h
     if len(rest) < 2:
         return []
     window = rest[:ENTRY_LOWER_BARS[trigger.LOWER[h.primary]]]
-    atr = pb["frame"]["atr"] or 0.0
+    atr = pb["frame"]["atr"]
+    if not atr:
+        return []
     out = []
     for side_name, up in (("long", True), ("short", False)):
         side = pb[side_name]

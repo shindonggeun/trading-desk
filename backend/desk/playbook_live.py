@@ -75,17 +75,19 @@ async def _triggers(prices, ticker: str, out: dict, frame: horizons.Horizon, liv
     for s in ("long", "short"):
         if out.get(s) is not None:
             out[s]["trigger"] = None
-    if not lower or not wanted:
+    atr = out["frame"].get("atr")
+    if not lower or not wanted or not atr:
         return
+    out["frame"] = {**out["frame"], "trigger_interval": lower}
     try:
         bars = (await prices.candles(ticker, lower, trigger.LOOKBACK[lower]))["bars"]
     except Exception:  # noqa: BLE001 - the trigger is an extra; the zone state still stands
         return
-    atr = out["frame"].get("atr") or 0.0
     price = live["price"] if live else None
     for s in wanted:
-        out[s]["trigger"] = trigger.live(out[s], bars, s == "long", atr, price)
-    out["frame"] = {**out["frame"], "trigger_interval": lower}
+        # in the zone now: it was touched, perhaps before the window the lower bars cover
+        touched = out[s]["state"] in ("in_zone", "confirmed")
+        out[s]["trigger"] = trigger.live(out[s], bars, s == "long", atr, price, touched=touched)
 
 
 async def current(prices, ticker: str, horizon: str | None = None, run_id: str | None = None,

@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from itertools import pairwise
 from statistics import median
 
-from . import direction, horizons
+from . import direction, events_calendar, horizons
 from .indicators import rsi
 
 VERSION = 1
@@ -690,8 +690,34 @@ def build(sr: dict | None, daily: list[dict], primary: list[dict], h: horizons.H
         "short": short_side,
     }
     # #166: the trend's side at full size, the other halved or dropped
-    return direction.apply(built, direction.score(daily), h,
-                           empty=lambda reason: _none_side(reason, "half", True))
+    out = direction.apply(built, direction.score(daily), h,
+                          empty=lambda reason: _none_side(reason, "half", True))
+    # #148: only a same-day (live) playbook looks at the calendar — a past date or a backtest has no "now"
+    if out and live:
+        hit = events_calendar.CACHE.blackout()
+        hold_for_event(out, {**hit.to_dict(), "until": (hit.at + events_calendar.BLACKOUT_AFTER).isoformat()}
+                       if hit else None)
+    return out
+
+
+def hold_for_event(pb: dict, event: dict | None) -> dict:
+    """#148: a market-wide release (FOMC · CPI · jobs) is hours away or just out — no fresh entry
+    until it passes: every side gets an unmet ``event_clear`` condition (its score drops) and only the
+    first ladder step stays live, the later ones are marked ``held``. ``pb["event_hold"]`` names it.
+    With no event the marks of an earlier hold come off (a tracked analysis outlives its window)."""
+    pb["event_hold"] = event
+    for side in ("long", "short"):
+        s = pb.get(side) or {}
+        if s.get("setup") in (None, "none") or not s.get("entries"):
+            continue
+        entries = [{k: v for k, v in e.items() if k != "held"} for e in s["entries"]]
+        conditions = [c for c in s.get("conditions") or [] if c["id"] != "event_clear"]
+        if event:
+            entries = [e if e["step"] == 1 else {**e, "held": "event"} for e in entries]
+            conditions.append({"id": "event_clear", "met": False, "how": "computed", "value": event["label"]})
+        s["entries"], s["conditions"] = entries, conditions
+        s["score"] = _score((s.get("zone") or {}).get("score") or 0, conditions)
+    return pb
 
 
 def refresh(playbooks: dict | None, live: dict | None) -> dict | None:
@@ -755,6 +781,10 @@ def prompt_note(pb: dict | None) -> str | None:
         lines.append(f"Shock session {jolt['at'][:10]}: {jolt['change'] * 100:+.1f}% (open {_fmt(jolt['open'])}, "
                      f"high {_fmt(jolt['high'])}, low {_fmt(jolt['low'])}, prior close {_fmt(jolt['prev_close'])}). "
                      f"Levels from before it are far from the price now; trade the levels it made.")
+    hold = pb.get("event_hold")
+    if hold:
+        lines.append(f"Event window: {hold['label']} at {hold['at_et']} - no fresh entry before it passes; "
+                     f"only the first ladder step, the later steps wait for the reaction.")
     cap = (pb.get("frame") or {}).get("zone_cap_pct")
     if cap:
         lines.append(f"Reach: levels further than {cap:g}% from the price are watch levels, not entries or triggers.")
@@ -997,4 +1027,6 @@ def track(fresh: dict, run_pb: dict | None, primary: list[dict], h: horizons.Hor
     _reach_again(out, ref)
     # the run's sides keep the run's direction; the trend now is shown beside it (#166)
     out["direction_now"] = fresh.get("direction")
+    if run_pb:
+        hold_for_event(out, fresh.get("event_hold"))     # the calendar now, not at the analysis (#148)
     return out

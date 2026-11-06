@@ -36,7 +36,8 @@ SSE(`EventSource`)도 쿠키로 인증된다. URL 에 토큰을 싣지 않는다
   나머지는 경로 이름과 상관없이 401 이다 — 새 라우트를 만들어도 기본이 닫힘이다.
 - FastAPI `/docs` · `/openapi.json` 은 기본으로 꺼져 있고(`DESK_ENABLE_DOCS`), 켜도 로그인 뒤다.
 - `POST`/`PUT`/`PATCH`/`DELETE` 는 `Origin` 이 있으면 자기 `Host` 와 같아야 한다(로그인 CSRF 포함). `SameSite=Strict` 와 이중 방어다.
-- 계정별 데이터(즐겨찾기 `favorites`, #134)는 세션의 `request.state.user.id` 로만 범위를 정한다 — 경로 · 본문의 사용자 id 는 받지 않는다.
+- 계정별 데이터(즐겨찾기 `favorites` #134, 섹터 탭 `sector_groups` #156)는 세션의 `request.state.user.id` 로만 범위를 정한다 — 경로 · 본문의 사용자 id 는 받지 않는다.
+  경로 · 본문의 자원 id(섹터 id 등)는 언제나 `user_id` 와 함께 찾고, 남의 것이면 없는 것과 똑같이 답한다(수정 404, 삭제 204).
 
 ## 4. 로그인 시도 제한
 

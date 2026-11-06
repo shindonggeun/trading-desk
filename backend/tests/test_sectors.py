@@ -86,10 +86,14 @@ def test_names_limits_and_errors(db_url):
         assert client.post("/api/sectors", json={"name": "x" * 41}).status_code == 422
         too_many = [{"ticker": f"T{i}"} for i in range(MAX_TICKERS + 1)]
         assert client.post("/api/sectors", json={"name": "big", "tickers": too_many}).status_code == 422
+        assert client.put(f"/api/sectors/{base[0]['id']}", json={"tickers": too_many}).status_code == 422
         assert client.post("/api/sectors", json={"name": "ok", "tickers": too_many[:MAX_TICKERS] * 2}).status_code == 201
         assert client.post("/api/sectors", json={"name": "bad", "tickers": [{"ticker": "삼성"}]}).status_code == 422
         assert client.put("/api/sectors/999999", json={"name": "nope"}).status_code == 404
         assert client.put("/api/sectors/abc", json={"name": "nope"}).status_code == 422
+        assert client.put(f"/api/sectors/{10**20}", json={"name": "nope"}).status_code == 422   # not a driver overflow
+        assert client.delete(f"/api/sectors/{10**20}").status_code == 422
+        assert client.put("/api/sectors/order", json={"ids": [10**20]}).status_code == 422
         for i in range(MAX_SECTORS - len(base) - 1):
             assert client.post("/api/sectors", json={"name": f"s{i}"}).status_code == 201
         assert client.post("/api/sectors", json={"name": "one more"}).status_code == 409
@@ -106,6 +110,8 @@ def test_accounts_are_separate_login_and_origin(db_url):
         mine = owner.post("/api/sectors", json={"name": "내 섹터"}).json()
         assert "내 섹터" not in _names(other)
         assert other.put(f"/api/sectors/{mine['id']}", json={"name": "뺏기"}).status_code == 404
+        theirs = other.get("/api/sectors").json()[0]["name"]
+        assert other.put(f"/api/sectors/{mine['id']}", json={"name": theirs}).status_code == 404   # not 409
         assert other.delete(f"/api/sectors/{mine['id']}").status_code == 204       # not theirs: nothing happens
         assert "내 섹터" in _names(owner)
         other_ids = [s["id"] for s in other.get("/api/sectors").json()]

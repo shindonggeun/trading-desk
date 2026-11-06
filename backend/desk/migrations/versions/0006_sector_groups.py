@@ -33,9 +33,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name="pk_sector_groups"),
         sa.UniqueConstraint("user_id", "name", name="uq_sector_groups_user_id_name"),
     )
-    op.create_index("ix_sector_groups_user_id", "sector_groups", ["user_id"])
 
 
 def downgrade() -> None:
-    op.drop_index("ix_sector_groups_user_id", table_name="sector_groups")
     op.drop_table("sector_groups")

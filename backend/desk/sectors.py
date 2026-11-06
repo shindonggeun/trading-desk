@@ -1,7 +1,8 @@
 """Sector tabs per account (#156): named, ordered groups of tickers for the sector screen (#157).
 
 An account with no sectors gets DEFAULTS on its first read (so deleting every sector brings the
-defaults back next time). Writes take the account's ``users`` row first, like favorites (#134), so
+defaults back next time). The screen reads before it writes; a create on an account that was never
+read starts it with that one sector instead. Writes take the account's ``users`` row first, like favorites (#134), so
 two tabs editing at once run one after the other; a collision that still happens is Conflict (409).
 Tickers arrive cleaned (api.clean_ticker); names are display text only.
 """
@@ -59,14 +60,15 @@ def clean_name(name: str | None) -> str:
     return text
 
 
-def clean_tickers(rows: list[tuple[str, str | None]]) -> list[dict]:
-    """[(cleaned ticker, display name)] -> [{ticker, name}], first place kept for a repeat, capped."""
+def clean_tickers(rows: list[tuple[str, str | None]], name_of=None) -> list[dict]:
+    """[(cleaned ticker, display name)] -> [{ticker, name}], first place kept for a repeat, capped.
+    A missing name comes from ``name_of`` (the listing) and stays null when the listing has none."""
     seen: dict[str, str | None] = {}
     for ticker, name in rows:
         seen.setdefault(ticker, _name(name))
     if len(seen) > MAX_TICKERS:
         raise TooMany(f"at most {MAX_TICKERS} tickers in a sector")
-    return [{"ticker": t, "name": n} for t, n in seen.items()]
+    return [{"ticker": t, "name": n or (name_of(t) if name_of else None)} for t, n in seen.items()]
 
 
 def _row(r) -> dict:
@@ -85,7 +87,14 @@ class Sectors:
     def list(self, user_id: int) -> list[dict]:
         with self.engine.connect() as conn:
             rows = self._rows(conn, user_id)
-        return rows or self._seed(user_id)
+        if rows:
+            return rows
+        try:
+            return self._seed(user_id)
+        except Conflict:
+            # two first reads at once (SQLite has no row lock): the other one seeded - read it
+            with self.engine.connect() as conn:
+                return self._rows(conn, user_id)
 
     def _seed(self, user_id: int) -> list[dict]:
         try:
@@ -131,6 +140,9 @@ class Sectors:
             with self.engine.begin() as conn:
                 _lock(conn, user_id)
                 mine = sector_groups.c.user_id == user_id
+                # ownership first: another account's id is "not found" whatever the body says
+                if not conn.execute(select(sector_groups.c.id).where(mine, sector_groups.c.id == sector_id)).first():
+                    raise NotFound(f"no sector {sector_id}")
                 if name is not None and conn.execute(select(sector_groups.c.id).where(
                         mine, sector_groups.c.name == name, sector_groups.c.id != sector_id)).first():
                     raise Duplicate(f"a sector named {name} exists")
@@ -144,9 +156,13 @@ class Sectors:
             raise Conflict("sectors changed meanwhile") from exc
 
     def remove(self, user_id: int, sector_id: int) -> bool:
-        with self.engine.begin() as conn:
-            return bool(conn.execute(delete(sector_groups).where(
-                sector_groups.c.user_id == user_id, sector_groups.c.id == sector_id)).rowcount)
+        try:
+            with self.engine.begin() as conn:
+                _lock(conn, user_id)
+                return bool(conn.execute(delete(sector_groups).where(
+                    sector_groups.c.user_id == user_id, sector_groups.c.id == sector_id)).rowcount)
+        except OperationalError as exc:
+            raise Conflict("sectors changed meanwhile") from exc
 
     def reorder(self, user_id: int, ids: list[int]) -> list[dict]:
         """``ids`` must be exactly the account's sectors, in the new order."""

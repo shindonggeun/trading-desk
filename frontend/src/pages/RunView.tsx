@@ -204,7 +204,7 @@ export default function RunView({ runId }: { runId: string }) {
                 <PlaybookCard plan={plan} symbol={stillOpen(run.trade_date) ? run.ticker : undefined} outcome={run.outcome} runId={run.id} horizon={plan.horizon ?? run.options.horizon ?? undefined} />
                 <TradeMap plan={plan} ticker={run.ticker} />
                 {/* #158 미국: 공매도 · 옵션, 국내: 빚투 · 예탁금(레버리지 상품은 본주 기준) */}
-                <PositioningCard ticker={plan.underlying?.ticker ?? run.ticker} />
+                <PositioningCard ticker={run.ticker} underlying={plan.underlying?.ticker} />
                 <PlanCard
                   plan={plan}
                   symbol={stillOpen(run.trade_date) ? run.ticker : undefined}

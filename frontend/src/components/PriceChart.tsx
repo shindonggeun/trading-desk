@@ -533,14 +533,21 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           ),
         ]
       : [];
-    const lines = [...optionLines, ...planLines];
     const made: IPriceLine[] = [];
-    for (const [value, title, color, lineStyle] of lines) {
-      if (value != null) made.push(series.createPriceLine({ price: value, title, color, lineWidth: 2, lineStyle, axisLabelVisible: true }));
+    const labelled: IPriceLine[] = [];
+    for (const [value, title, color, lineStyle] of planLines) {
+      if (value == null) continue;
+      const line = series.createPriceLine({ price: value, title, color, lineWidth: 2, lineStyle, axisLabelVisible: true });
+      made.push(line);
+      labelled.push(line);
+    }
+    // 옵션 벽은 축 라벨 없이 선 위 제목만 — 타점 라벨을 가리지 않고, 가격 축도 늘이지 않는다(분봉에서 봉이 납작해진다)
+    for (const [value, title, color, lineStyle] of optionLines) {
+      made.push(series.createPriceLine({ price: value, title, color, lineWidth: 1, lineStyle, axisLabelVisible: false }));
     }
     // 오른쪽 축의 가까운 라벨은 하나로(좌표는 그려진 뒤에 나온다)
-    const stopLabels = keepAxisLabelsApart(drawn.chart, series, made);
-    const near = lines.map(([v]) => v).filter((v): v is number => v != null && Math.abs(v - lastClose) / lastClose <= AUTOSCALE_MAX_GAP);
+    const stopLabels = keepAxisLabelsApart(drawn.chart, series, labelled);
+    const near = planLines.map(([v]) => v).filter((v): v is number => v != null && Math.abs(v - lastClose) / lastClose <= AUTOSCALE_MAX_GAP);
     series.applyOptions({
       autoscaleInfoProvider: (base: () => { priceRange: { minValue: number; maxValue: number } } | null) => {
         const r = base();
@@ -799,7 +806,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         <details ref={menu} className="chart-menu">
           <summary>표시</summary>
           <div className="chart-menu-body" role="group" aria-label="차트 표시">
-            {(Object.keys(SHOW_LABEL) as (keyof Show)[]).map((k) => (
+            {(Object.keys(SHOW_LABEL) as (keyof Show)[]).filter((k) => k !== "opt" || US_TICKER.test(ticker)).map((k) => (
               <label key={k} className="chart-menu-item">
                 <input type="checkbox" checked={show[k]} onChange={() => toggle(k)} />
                 {SHOW_LABEL[k]}

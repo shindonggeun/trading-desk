@@ -153,6 +153,9 @@ export default function BoardChart({ ticker, name }: { ticker: string; name?: st
       alive = false;
       window.clearTimeout(fit);
       window.clearInterval(t);
+      // 주기를 바꿀 때 이전 기준 종가 선을 지운다(차트는 종목이 바뀔 때만 새로 만든다)
+      const c = ref.current;
+      if (c && line) c.real.removePriceLine(line);
     };
   }, [ticker, interval]);
 

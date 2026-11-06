@@ -27,14 +27,15 @@ export const WEEKEND_DEFAULT: BoardTicker[] = [
   { ticker: "GC=F", name: "금" },
 ];
 
-function load<T>(key: string, fallback: T): T {
+function load<T>(key: string, fallback: T, ok: (v: unknown) => boolean): T {
   try {
     const raw = JSON.parse(localStorage.getItem(key) ?? "null");
-    return raw ?? fallback;
+    return ok(raw) ? (raw as T) : fallback;
   } catch {
     return fallback;
   }
 }
+const isList = (v: unknown) => Array.isArray(v) && v.every((x) => x && typeof (x as BoardTicker).ticker === "string");
 function save(key: string, value: unknown) {
   try {
     localStorage.setItem(key, JSON.stringify(value));
@@ -93,26 +94,29 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
 }) {
   const onPriceRef = useRef(onPrice);
   onPriceRef.current = onPrice;
-  const [bundle, setBundle] = useState<BoardTicker[]>(() => load(BUNDLE_KEY, WEEKEND_DEFAULT));
-  const [bundleOpen, setBundleOpen] = useState<boolean>(() => load(OPEN_KEY, true));
+  const [bundle, setBundle] = useState<BoardTicker[]>(() => load(BUNDLE_KEY, WEEKEND_DEFAULT, isList));
+  const [bundleOpen, setBundleOpen] = useState<boolean>(() => load(OPEN_KEY, true, (v) => typeof v === "boolean"));
   const [items, setItems] = useState<Record<string, BoardItem>>({});
   const [failedAt, setFailedAt] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const weekend = isWeekendKst();
   const watchLive = watch.some((w) => items[w.ticker]?.state === "live");
   // 주말이거나, 관심 종목이 하나도 장중이 아니면(장 마감) 주말 추정 묶음을 보인다
-  const closedMode = weekend || (watch.length > 0 && watch.every((w) => items[w.ticker]) && !watchLive);
+  // 관심 종목이 비었으면 묶음을 늘 보인다
+  const closedMode = weekend || watch.length === 0 || (watch.every((w) => items[w.ticker]) && !watchLive);
   const tickers = useMemo(() => {
-    const all = [...watch, ...(closedMode || weekend ? bundle : [])].map((t) => t.ticker);
+    // 접힌 묶음은 읽지 않는다
+    const all = [...watch, ...(closedMode && bundleOpen ? bundle : [])].map((t) => t.ticker);
     return [...new Set(all)].slice(0, 30);
-  }, [watch, bundle, closedMode, weekend]);
+  }, [watch, bundle, closedMode, bundleOpen]);
   const key = tickers.join(",");
 
   useEffect(() => {
     if (!tickers.length) return;
     let alive = true;
-    const load = () =>
-      api.board(tickers)
+    const load = () => {
+      if (document.hidden) return Promise.resolve();   // 탭이 가려져 있으면 쉰다
+      return api.board(tickers)
         .then((r) => {
           if (!alive) return;
           setItems((cur) => ({ ...cur, ...Object.fromEntries(r.items.map((it) => [it.ticker, it])) }));
@@ -120,6 +124,7 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
           setFailedAt(null);
         })
         .catch(() => alive && setFailedAt(new Date().toISOString()));
+    };
     load();
     const t = window.setInterval(load, POLL_MS);
     return () => {
@@ -152,12 +157,12 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
           {failedAt && ` · ${time(failedAt)} 갱신 실패 — 마지막 값`}
         </span>
       </div>
-      {(closedMode || weekend) && (
+      {closedMode && (
         <div className="qb-group">
           <div className="qb-group-head">
             <button type="button" className="dash-toggle" aria-expanded={bundleOpen} onClick={flipBundle}>
               <span className="dash-caret" aria-hidden="true">{bundleOpen ? "▾" : "▸"}</span>
-              {weekend ? "주말 추정" : "장 마감 추정"} <span className="muted small">{bundle.length}종목</span>
+              주말 · 장 마감 추정 <span className="muted small">{bundle.length}종목</span>
             </button>
             {bundleOpen && (
               <span className="qb-group-tools">

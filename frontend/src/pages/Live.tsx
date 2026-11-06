@@ -87,7 +87,9 @@ export default function Live() {
     [runs, tab?.ticker],
   );
   const plan = run?.plan ?? null;
-  const alerts = usePriceAlerts(`${tab?.ticker}:${run?.id ?? ""}`, tab?.name ?? tab?.ticker ?? "", plan, livePrice);
+  // 보기(1분 실시간 / 봉 · 추정)마다 따로 센다 — 추정가와 실제가를 섞어 거짓 "도달" 이 나지 않게
+  const alerts = usePriceAlerts(`${tab?.ticker}:${run?.id ?? ""}:${view}`,
+    `${tab?.name ?? tab?.ticker ?? ""}${view === "bars" ? " (시세판 · 장외면 추정가)" : ""}`, plan, livePrice);
 
   const add = () => {
     const t = pick.ticker.trim().toUpperCase();

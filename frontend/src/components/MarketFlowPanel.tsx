@@ -2,12 +2,16 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { krwShort, price } from "../format";
 import type { FlowInterval, FlowMarket, FlowRecord, FlowSide, InstitutionKind, Investor, MarketFlow } from "../types";
+import FuturesFlowView from "./FuturesFlowView";
 
 // 메인 화면 "시장 수급"(#78): 코스피 · 코스닥에서 개인 · 외국인 · 기관 · 기타법인이 얼마를 사고팔았는지.
 // 막대 색은 극성(순매수 빨강 · 순매도 파랑, 한국식), 추이 선 색은 주체(외국인 · 기관 · 개인) —
 // 두 쓰임을 섞지 않으려고 선에는 빨강 · 파랑을 쓰지 않는다(색은 dataviz 검증 통과: styles.css --flow-*).
 
 const MARKETS: { key: FlowMarket; label: string }[] = [{ key: "KOSPI", label: "코스피" }, { key: "KOSDAQ", label: "코스닥" }];
+// 탭: 현물 두 시장 + 코스피200 선물(#161)
+type Tab = FlowMarket | "FUTURES";
+const TABS: { key: Tab; label: string }[] = [...MARKETS, { key: "FUTURES", label: "선물" }];
 const INTERVALS: { key: FlowInterval; label: string }[] = [
   { key: "1d", label: "일" }, { key: "1w", label: "주" }, { key: "1mo", label: "월" }, { key: "1y", label: "년" },
 ];
@@ -32,13 +36,13 @@ const REFRESH_LIVE_MS = 60_000;
 const REFRESH_IDLE_MS = 300_000;
 const PREFS = "desk.marketFlow.v1";
 
-type Prefs = { market: FlowMarket; interval: FlowInterval; series: Record<string, boolean>; table: boolean };
+type Prefs = { market: Tab; interval: FlowInterval; series: Record<string, boolean>; table: boolean };
 
 function loadPrefs(): Prefs {
   const base: Prefs = { market: "KOSPI", interval: "1d", series: { foreigner: true, institution: true, individual: true }, table: false };
   try {
     const raw = JSON.parse(localStorage.getItem(PREFS) ?? "{}");
-    if (MARKETS.some((m) => m.key === raw.market)) base.market = raw.market;
+    if (TABS.some((m) => m.key === raw.market)) base.market = raw.market;
     if (INTERVALS.some((i) => i.key === raw.interval)) base.interval = raw.interval;
     for (const s of SERIES) if (typeof raw.series?.[s.key] === "boolean") base.series[s.key] = raw.series[s.key];
     if (typeof raw.table === "boolean") base.table = raw.table;
@@ -239,11 +243,14 @@ export default function MarketFlowPanel() {
     return next;
   });
 
+  const spotMarket: FlowMarket | null = prefs.market === "FUTURES" ? null : prefs.market;
+
   useEffect(() => {
+    if (!spotMarket) return; // 선물 탭은 FuturesFlowView 가 따로 부른다
     let timer: number | undefined;
     const load = () => {
       const mine = ++seq.current;
-      api.marketFlow(prefs.market, prefs.interval, COUNT)
+      api.marketFlow(spotMarket, prefs.interval, COUNT)
         .then((d) => {
           if (mine !== seq.current) return; // 늦게 온 이전 시장 · 단위 응답
           // 서버가 실패를 error 로 주면 마지막 값을 그대로 두고 알림만
@@ -277,25 +284,26 @@ export default function MarketFlowPanel() {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [prefs.market, prefs.interval]);
+  }, [spotMarket, prefs.interval]);
 
   const latest = data?.records[0];
   const max = latest ? Math.max(...INVESTORS.map((i) => Math.abs(latest.investors[i.key]?.net ?? 0)), 1) : 1;
   const kinds = latest ? KINDS.filter((k) => latest.institution_breakdown[k.key]) : [];
   const kindMax = latest ? Math.max(...kinds.map((k) => Math.abs(latest.institution_breakdown[k.key]!.net)), 1) : 1;
-  const marketLabel = MARKETS.find((m) => m.key === prefs.market)!.label;
+  const marketLabel = TABS.find((m) => m.key === prefs.market)!.label;
 
   return (
     <section className="card flow" aria-label="시장 수급">
       <div className="flow-head">
         <h3>시장 수급</h3>
         <div className="seg" role="group" aria-label="시장">
-          {MARKETS.map((m) => (
+          {TABS.map((m) => (
             <button key={m.key} type="button" className={m.key === prefs.market ? "on" : ""} aria-pressed={m.key === prefs.market}
               onClick={() => update({ market: m.key })}>{m.label}</button>
           ))}
         </div>
       </div>
+      {!spotMarket ? <FuturesFlowView /> : <>
       <div className="flow-sub">
         <div className="flow-index">
           {data?.index ? <><strong>{price(data.index.price)}</strong> <span className="muted small">{marketLabel}</span></> : <span className="muted small">{marketLabel}</span>}
@@ -370,6 +378,7 @@ export default function MarketFlowPanel() {
           <p className="muted small flow-note">순매수 = 매수 − 매도(거래대금, 원). 4분류 합은 시장 전체에서 0 입니다.</p>
         </>
       )}
+      </>}
     </section>
   );
 }

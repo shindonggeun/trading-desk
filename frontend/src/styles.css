@@ -971,6 +971,7 @@ span.cs-hold-text { color: var(--warn); }
   .mx-row { grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px 10px; }
   .mx-tone { grid-column: 1 / 2; }
   .mx-head { grid-column: 1 / -1; white-space: normal; }
+}
 
 /* #117 플레이북 카드 — 롱 · 숏 두 칸(모바일은 위아래), 상태 배지, 확인 신호 */
 .playbook { display: grid; gap: 8px; }

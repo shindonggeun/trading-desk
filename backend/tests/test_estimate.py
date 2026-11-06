@@ -58,8 +58,8 @@ class FakeBinance:
                 return httpx.Response(200, json=[])
             price = ANCHOR[key]
             return httpx.Response(200, json=[[start, price, price, price, price, "10"]])
-        if path == "/fapi/v1/premiumIndex":
-            return httpx.Response(200, json={"symbol": params["symbol"], "markPrice": MARK[params["symbol"]]})
+        if path == "/fapi/v1/premiumIndex":   # no symbol: every contract's mark in one list
+            return httpx.Response(200, json=[{"symbol": k, "markPrice": v} for k, v in MARK.items()])
         return httpx.Response(404)
 
 
@@ -129,7 +129,7 @@ def test_estimates_are_cached_and_the_contract_list_is_read_once():
     clock.t += 16
     asyncio.run(est.estimate("NVDA"))
     asyncio.run(est.estimate("BRK-B"))
-    assert binance.calls.count("/fapi/v1/premiumIndex") == 3
+    assert binance.calls.count("/fapi/v1/premiumIndex") == 2   # BRK-B shares the marks NVDA just read (#123)
     assert binance.calls.count("/fapi/v1/exchangeInfo") == 1
     assert binance.calls.count("/fapi/v1/markPriceKlines") == 2                # one anchor per contract and close
 
@@ -258,8 +258,8 @@ class WideBinance(FakeBinance):
             prices = [("250", "250", "250", "250"), ("250", "260", "245", "255"),
                       ("255", "255", "252.5", "252.5"), ("252.5", "255", "252.5", "255")]
             return httpx.Response(200, json=[[start + i * step, *p, "0"] for i, p in enumerate(prices)])
-        if path == "/fapi/v1/premiumIndex" and params["symbol"] in WIDE_MARK:
-            return httpx.Response(200, json={"symbol": params["symbol"], "markPrice": WIDE_MARK[params["symbol"]]})
+        if path == "/fapi/v1/premiumIndex":
+            return httpx.Response(200, json=[{"symbol": k, "markPrice": v} for k, v in {**MARK, **WIDE_MARK}.items()])
         return super().__call__(request)
 
 
@@ -353,3 +353,89 @@ def test_yahoo_gaps_are_filled_from_the_hourly_bars(monkeypatch):
     rows = estimate.yahoo_daily_closes("NVDA")
     assert rows == [(date(2026, 11, 4), 200.0), (date(2026, 11, 5), 181.57)]   # the 15:30 bar, not the after-hours one
     estimate._CLOSES.clear()
+
+
+def test_futures_closes_all_come_from_the_hourly_bar_before_17h(monkeypatch):
+    import sys
+    import types
+
+    import pandas as pd
+
+    from desk import estimate
+
+    ny = "America/New_York"
+    daily = pd.DataFrame({"Close": [88.0, 91.5]},   # Yahoo's settlement-ish daily closes
+                         index=pd.DatetimeIndex(["2026-11-04", "2026-11-05"]).tz_localize(ny))
+    hourly = pd.DataFrame({"Close": [88.12, 90.0, 91.2, 91.3]},
+                          index=pd.DatetimeIndex(["2026-11-04 16:00", "2026-11-05 15:00", "2026-11-05 16:00",
+                                                  "2026-11-05 18:00"]).tz_localize(ny))
+
+    class Ticker:
+        def __init__(self, t):
+            pass
+
+        def history(self, period, interval, auto_adjust):
+            return daily if interval == "1d" else hourly
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=Ticker))
+    estimate._CLOSES.clear()
+    assert estimate.yahoo_daily_closes("CL=F") == [(date(2026, 11, 4), 88.12), (date(2026, 11, 5), 91.2)]
+    estimate._CLOSES.clear()
+
+
+def test_long_closes_page_past_the_bar_limit_and_leverage_never_goes_negative(monkeypatch):
+    from desk import estimate
+
+    monkeypatch.setattr(estimate, "CANDLE_LIMIT", 3)
+
+    class Paged(WideBinance):
+        def __call__(self, request):
+            params = request.url.params
+            if request.url.path == "/fapi/v1/markPriceKlines" and params["interval"] == "5m":
+                start = int(params["startTime"])
+                n = 3 if start < 1_800_000_000_000 and not hasattr(self, "_paged") else 1
+                self._paged = True
+                return httpx.Response(200, json=[[start + i * 300_000, "250", "250", "100", "250", "0"] for i in range(n)])
+            return super().__call__(request)
+
+    est, _ = _estimator(SATURDAY_KST_10AM, closes=WIDE_CLOSES, binance=Paged())
+    bars = asyncio.run(est.candles("SOXS", "5m"))["bars"]
+    assert len(bars) == 4                                  # 3 + the second page's 1
+    assert all(b["low"] > 0 for b in bars)
+
+
+def test_a_leveraged_estimate_floors_above_zero(monkeypatch):
+    monkeypatch.setitem(WIDE_MARK, "SMHUSDT", "400.00")    # SMH +60% -> SOXS x -3 = -180%
+    e = asyncio.run(_wide().estimate("SOXS"))
+    assert e.change_pct == -180.0 and e.estimate == 0.1     # 1% of the 10.0 close, never negative
+
+
+def test_board_live_path_and_one_failure(db_url, monkeypatch):
+    from desk import live
+    from desk.prices import Quote
+
+    est = _wide()
+    real = est.estimate
+
+    async def flaky(t):
+        if t == "NVDA":
+            raise RuntimeError("Binance down")
+        return await real(t)
+
+    monkeypatch.setattr(est, "estimate", flaky)
+
+    async def is_open(_cal, ticker, now=None):
+        return ticker == "NVDA"
+
+    monkeypatch.setattr(live, "is_open", is_open)
+    with _client(db_url, est) as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        from desk import api as api_mod  # noqa: F401 - the app holds its own PriceSource
+
+        async def quote(self, t):
+            return Quote(t, 190.0, "USD", "toss", "2026-11-07T01:00:00+00:00")
+
+        monkeypatch.setattr("desk.prices.PriceSource.quote", quote)
+        rows = {r["ticker"]: r for r in client.get("/api/estimates?tickers=NVDA,SOXS").json()["items"]}
+    assert rows["NVDA"]["state"] == "live" and rows["NVDA"]["price"] == 190.0 and rows["NVDA"]["change_pct"] is None
+    assert rows["SOXS"]["state"] == "estimate"

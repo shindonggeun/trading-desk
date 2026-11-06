@@ -141,6 +141,40 @@ export interface TradeMap {
   levels: boolean;
 }
 
+/** #115 거시 · 정책 뉴스 흐름(backend desk/macro_news.py, GET /api/macro/brief). */
+export type MacroThemeId = "us_politics" | "fed" | "tariffs" | "ai_capex" | "chips" | "china" | "korea" | "geopolitics";
+
+export interface MacroTheme {
+  id: MacroThemeId;
+  label: string;
+  articles_24h: number;
+  /** RSS 100건이 꽉 찼다 — "100+" 로 */
+  saturated?: boolean;
+  spike: number | null;
+  /** week = 평소 주간 대비(GDELT), themes = 다른 테마 대비(RSS) */
+  spike_kind: "week" | "themes";
+  /** -10 .. +10 */
+  tone: number | null;
+  /** headline-words = 헤드라인 단어로 센 대략값 */
+  tone_kind: "gdelt" | "headline-words";
+  headlines: { title: string; url: string; domain: string | null; country: string | null; seen: string | null }[];
+  why: string;
+  source: "gdelt" | "google-news";
+  fetched_at: string;
+  relevance?: 0 | 1 | 2 | null;
+  /** 6시간 넘은 값 */
+  stale: boolean;
+}
+
+export interface MacroBrief {
+  ticker: string | null;
+  sources: ("gdelt" | "google-news")[];
+  /** 마지막 성공 회차. 기동 직후 첫 회차 전엔 null + themes [] */
+  refreshed_at: string | null;
+  error: string | null;
+  themes: MacroTheme[];
+}
+
 export type HorizonId = "scalp" | "intraday" | "short_swing" | "swing";
 export type Factor = "trend" | "location" | "momentum" | "volume" | "catalyst" | "regime";
 export type Opinion = "buy" | "sell" | "hold" | "review";

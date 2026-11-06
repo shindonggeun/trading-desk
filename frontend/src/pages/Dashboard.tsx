@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { api } from "../api";
+import MacroBrief from "../components/MacroBrief";
 import MarketBoard from "../components/MarketBoard";
 import MarketFlowPanel from "../components/MarketFlowPanel";
 import NewRunForm from "../components/NewRunForm";
@@ -44,9 +45,10 @@ function RegimePanel() {
   );
 }
 
-type SectionId = "market" | "portfolio" | "recent" | "stats" | "flow" | "regime";
+type SectionId = "macro" | "market" | "portfolio" | "recent" | "stats" | "flow" | "regime";
 /** 구역 — 순서는 이슈 #100 의 기본값. wide 는 넓은 화면에서 한 줄을 다 쓴다. */
 const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () => ReactNode }> = {
+  macro: { title: "오늘의 거시 · 정책 브리핑", wide: true, render: () => <MacroBrief /> },
   market: { title: "시장 · 지수 · 선물", wide: true, render: () => <MarketBoard embedded /> },
   portfolio: { title: "내 투자", render: () => <PortfolioPanel /> },
   recent: { title: "최근 분석", render: () => <RecentRuns /> },
@@ -64,7 +66,11 @@ function loadPrefs(): Prefs {
     const raw = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}");
     const known = (v: unknown): v is SectionId => typeof v === "string" && Object.hasOwn(SECTIONS, v);
     const saved = Array.isArray(raw.order) ? raw.order.filter(known) : [];
-    const order = [...new Set<SectionId>([...saved, ...DEFAULT_ORDER])];
+    // 새로 생긴 구역(예: #118 브리핑은 맨 위)은 저장된 순서 끝이 아니라 기본 자리(몇 번째)에 끼운다
+    const order = [...new Set<SectionId>(saved)];
+    DEFAULT_ORDER.forEach((id, i) => {
+      if (!order.includes(id)) order.splice(Math.min(i, order.length), 0, id);
+    });
     const closed = Array.isArray(raw.closed) ? raw.closed.filter(known) : [];
     return { order, closed };
   } catch {

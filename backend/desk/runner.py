@@ -30,6 +30,7 @@ from .leverage_analyst import (
 from .plan import BIAS, parse_plan
 from .prices import CRYPTO_SUFFIXES, PriceSource, is_market_symbol
 from .profile import desk_portfolio
+from .recent import prompt_note as recent_note
 from .related import collect as collect_related
 from .related import inverse_pair
 from .related import prompt_note as related_note
@@ -592,7 +593,8 @@ class RunManager:
                 pb_main = await self._playbooks(request, main_sr, main_live, frame, related, base or request.ticker)
                 pb_note = playbook.prompt_note(pb_main)
                 note = "\n\n".join(part for part in (live_note(main_live, main_sr and main_sr.get("atr")),
-                                                     prompt_note(main_sr), pb_note, lever_note,
+                                                     prompt_note(main_sr), recent_note((main_sr or {}).get("recent")),
+                                                     pb_note, lever_note,
                                                      related_note(related), macro_note, calendar_note, credit_note,
                                                      filings_note, positioning_note)
                                    if part) or None

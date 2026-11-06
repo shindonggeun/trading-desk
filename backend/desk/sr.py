@@ -17,8 +17,9 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
+from zoneinfo import ZoneInfo
 
-from . import horizons, trend, volume_profile
+from . import horizons, recent, trend, volume_profile
 
 DAILY_BARS = 200
 WEEKLY_BARS = 156          # three years
@@ -30,6 +31,8 @@ PER_SIDE = 4
 MAX_DISTANCE_ATR = 6.0
 MAX_DISTANCE_PCT = 0.35
 HALF_LIFE_DAYS = 365.0     # a swing a year old counts half: an old, busy range must not outrank today
+BROKEN_ATR = 1.0           # a close this far through a swing level broke it: it counts half (#152)
+BROKEN_FACTOR = 0.5
 CACHE_TTL_SEC = 300.0
 _CACHE: dict[tuple[str, str | None], tuple[float, dict]] = {}
 
@@ -68,19 +71,70 @@ def _ages(bars: list[dict], timeframe: str, half_life: timedelta) -> list[float]
 
 
 def _swings(bars: list[dict], k: int, timeframe: str, label: str, weight: float,
-            half_life: timedelta = timedelta(days=HALF_LIFE_DAYS)) -> list[_Candidate]:
+            half_life: timedelta = timedelta(days=HALF_LIFE_DAYS), atr: float | None = None) -> list[_Candidate]:
+    """Swing highs and lows, decayed by age. With ``atr``, a level a later close went through by
+    BROKEN_ATR counts BROKEN_FACTOR: the market already voted on it (its side flips with the price)."""
     out = []
     ages = _ages(bars, timeframe, half_life)
+    # the highest / lowest close after each bar, once (today's ATR judges: a break by 1 ATR now)
+    hi_after, lo_after = [float("-inf")] * (len(bars) + 1), [float("inf")] * (len(bars) + 1)
+    for j in range(len(bars) - 1, -1, -1):
+        hi_after[j] = max(hi_after[j + 1], bars[j]["close"])
+        lo_after[j] = min(lo_after[j + 1], bars[j]["close"])
     for i in range(k, len(bars) - k):
         window = bars[i - k:i + k + 1]
         decayed = weight * 0.5 ** ages[i]
         if decayed < 1e-6:   # long forgotten: also keeps a zone's total weight above zero
             continue
         if bars[i]["high"] == max(b["high"] for b in window):
-            out.append(_Candidate(bars[i]["high"], timeframe, f"{label} 스윙 고점", decayed))
+            broken = bool(atr and hi_after[i + 1] > bars[i]["high"] + BROKEN_ATR * atr)
+            out.append(_Candidate(bars[i]["high"], timeframe, f"{label} 스윙 고점" + (" (돌파됨)" if broken else ""),
+                                  decayed * (BROKEN_FACTOR if broken else 1.0)))
         if bars[i]["low"] == min(b["low"] for b in window):
-            out.append(_Candidate(bars[i]["low"], timeframe, f"{label} 스윙 저점", decayed))
+            broken = bool(atr and lo_after[i + 1] < bars[i]["low"] - BROKEN_ATR * atr)
+            out.append(_Candidate(bars[i]["low"], timeframe, f"{label} 스윙 저점" + (" (이탈됨)" if broken else ""),
+                                  decayed * (BROKEN_FACTOR if broken else 1.0)))
     return out
+
+
+def day_bars(daily: list[dict], weekly: list[dict], h: horizons.Horizon) -> list[dict] | None:
+    """The horizon's daily bars: the primary on a swing, the secondary under intraday bars."""
+    if h.primary == "1d":
+        return daily
+    return weekly if h.secondary == "1d" else None
+
+
+def forming(daily: list[dict], ticker: str, now: datetime | None = None) -> bool:
+    """The last daily bar is today's (on the exchange's calendar): still forming while it trades."""
+    if not daily:
+        return False
+    zone = ZoneInfo("Asia/Seoul" if ticker.upper().endswith((".KS", ".KQ")) else "America/New_York")
+    return _local_day(daily[-1]["at"], ticker) == (now or datetime.now(UTC)).astimezone(zone).date()
+
+
+def _recent(days: list[dict] | None, h: horizons.Horizon, partial: bool = False) -> list[_Candidate]:
+    """The last completed sessions' highs and lows as levels of their own (#152): a swing needs k
+    bars on both sides, so the last k sessions - yesterday's low after a crash - are never swings.
+    Swing only (the horizon the basket backtest measured; the intraday horizons already carry the
+    prior day's high / low and the daily range). A forming session (``partial``) is not a level:
+    its high and low still move with the price. One candidate per price: the 5-day low that is
+    also yesterday's low counts once, at the larger weight, with both names."""
+    if h.primary != "1d" or not days:
+        return []
+    done = days[:-1] if partial else days
+    if len(done) < 2:
+        return []
+    named = [(done[-1]["high"], "최근 일봉 고가", 1.5), (done[-1]["low"], "최근 일봉 저가", 1.5),
+             (done[-2]["high"], "그 전 일봉 고가", 1.0), (done[-2]["low"], "그 전 일봉 저가", 1.0)]
+    for n in (5, 20):
+        if len(done) >= n:
+            named += [(max(b["high"] for b in done[-n:]), f"{n}일 고가", 1.0),
+                      (min(b["low"] for b in done[-n:]), f"{n}일 저가", 1.0)]
+    by_price: dict[float, tuple[float, list[str]]] = {}
+    for price, name, weight in named:
+        w, names = by_price.get(price, (0.0, []))
+        by_price[price] = (max(w, weight), [*names, name])
+    return [_Candidate(p, "1d", " = ".join(names), w) for p, (w, names) in by_price.items()]
 
 
 def _round(price: float) -> float:
@@ -88,17 +142,21 @@ def _round(price: float) -> float:
 
 
 def compute(daily: list[dict], weekly: list[dict], price: float | None = None,
-            weekly_complete: bool = False, *, horizon: str | None = None) -> dict:
+            weekly_complete: bool = False, *, horizon: str | None = None, partial: bool = False) -> dict:
     """``daily``/``weekly`` are bars oldest first ({"at","open","high","low","close","volume"}):
     the horizon's primary and secondary bars (desk.horizons; swing = daily and weekly).
-    ``weekly_complete``: the last secondary bar has ended (otherwise it may still be trading)."""
+    ``weekly_complete``: the last secondary bar has ended (otherwise it may still be trading).
+    ``partial``: the last daily bar is today's session, still trading (desk.sr.forming)."""
     h = horizons.get(horizon)
     if len(daily) < ATR_DAYS + 1:
         raise ValueError(f"not enough {h.primary} bars for support/resistance")
     atr = _atr(daily) or 0.0
     reference = price if price else daily[-1]["close"]
-    candidates = _swings(daily, h.primary_k, h.primary, h.primary_label, 1.0, h.half_life)
-    candidates += _swings(weekly, h.secondary_k, h.secondary, h.secondary_label, 2.0, h.secondary_half_life)
+    candidates = _swings(daily, h.primary_k, h.primary, h.primary_label, 1.0, h.half_life, atr)
+    candidates += _swings(weekly, h.secondary_k, h.secondary, h.secondary_label, 2.0, h.secondary_half_life,
+                          _atr(weekly))
+    sessions = day_bars(daily, weekly, h)
+    candidates += _recent(sessions, h, partial and h.primary == "1d")
     closes = [b["close"] for b in daily]
     for days in (20, 50, 200):
         if len(closes) >= days:
@@ -154,7 +212,8 @@ def compute(daily: list[dict], weekly: list[dict], price: float | None = None,
     picked.sort(key=lambda lv: -lv["price"])
     return {"reference_price": _round(reference), "reference": "live" if price else "close",
             "last_close": _round(daily[-1]["close"]),
-            "atr": _round(atr), "as_of": daily[-1]["at"], "levels": picked}
+            "atr": _round(atr), "as_of": daily[-1]["at"], "levels": picked,
+            "recent": recent.compare(sessions or [], partial=partial and h.primary == "1d")}
 
 
 def prompt_note(sr: dict | None) -> str | None:
@@ -308,7 +367,9 @@ async def frame_bars(prices, ticker: str, trade_date: str | None, h: horizons.Ho
 async def _frame(prices, ticker: str, trade_date: str | None, price: float | None,
                  h: horizons.Horizon) -> dict:
     days, weeks, complete, primary, secondary = await frame_bars(prices, ticker, trade_date, h)
-    result = compute(days, weeks, price, weekly_complete=complete, horizon=h.id)
+    live_day = trade_date is None or trade_date == date.today().isoformat()
+    result = compute(days, weeks, price, weekly_complete=complete, horizon=h.id,
+                     partial=live_day and forming(days, ticker))
     # pairs of swings × bars: off the event loop so it never stalls the streams
     await asyncio.to_thread(add_trend, result, days, weeks, h, price)
     await asyncio.to_thread(add_volume_profile, result, days, h)

@@ -151,7 +151,7 @@ def test_a_run_carries_both_playbooks_and_the_agents_get_the_note(db_url):
 
 # --- scoring (desk.outcome) --------------------------------------------------------------------
 
-from desk import outcome  # noqa: E402
+from desk import outcome
 
 PLAN_AT = "2026-11-02T14:00:00+00:00"
 LONG = {"setup": "dip_catch", "stop": 95.0, "flat_by_close": False,

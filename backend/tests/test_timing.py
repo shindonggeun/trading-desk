@@ -29,6 +29,8 @@ def test_stages_and_agent_turns_with_parallel_analysts():
     r = w.result()
     assert r["total"] == 330.0
     assert r["stages"] == {"desk_pre": 5.0, "graph": 296.0, "desk_post": 8.0, "consensus": 21.0}
+    first_serial = next(a for a in r["agents"] if not a["parallel"])
+    assert first_serial["agent"] == "bull_researcher" and first_serial["includes_join"]
     took = {a["agent"]: a["took"] for a in r["agents"]}
     # analysts count from the graph's start; the rest from the message before them
     assert took == {"market_analyst": 60.0, "news_analyst": 90.0, "bull_researcher": 30.0,
@@ -36,6 +38,21 @@ def test_stages_and_agent_turns_with_parallel_analysts():
     assert r["critical_path"] == ["news_analyst", "bull_researcher", "bear_researcher", "research_manager",
                                   "portfolio_manager"]
     assert "total 330.0s" in w.line()
+
+
+def test_turns_are_numbered_and_summed_per_run():
+    clock = _Clock()
+    w = timing.Stopwatch(clock)
+    w.mark("desk_pre")
+    for agent, at in (("market_analyst", 10.0), ("bull_researcher", 20.0), ("bear_researcher", 30.0),
+                      ("bull_researcher", 45.0), ("bear_researcher", 50.0)):
+        clock.t = at
+        w.message({"type": "message", "agent": agent})
+    r = w.result()
+    assert (r["agents"][3]["agent"], r["agents"][3]["turn"]) == ("bull_researcher", 2)
+    s = timing.summarize([{**r, "total": 50.0}])
+    assert s["agents"]["bull_researcher"]["mean"] == 10.0 and s["agents"]["bull_researcher#2"]["mean"] == 15.0
+    assert s["agents_per_run"]["bull_researcher"]["mean"] == 25.0
 
 
 def test_summary_averages_stages_and_agents():
@@ -52,9 +69,9 @@ def test_a_finished_run_carries_its_timing_and_the_cli_reports_it(db_url, monkey
         created = client.post("/api/runs", json={"ticker": "nvda", "trade_date": "2026-11-03"})
         run = _wait_done(client, created.json()["id"])
     t = run["plan"]["timing"]
-    assert set(t["stages"]) == set(timing.STAGES) and t["total"] >= 0
+    assert set(t["stages"]) == set(timing.STAGES) - {"leverage"} and t["total"] >= 0   # NVDA: no leverage step
     assert any(a["agent"] == "portfolio_manager" for a in t["agents"])
     monkeypatch.setenv("DESK_DATABASE_URL", db_url)
     assert cli.main(["timing", "--last", "5"]) == 0
     out = capsys.readouterr().out
-    assert out.startswith("1 runs") and "graph" in out and "portfolio_manager" in out
+    assert out.startswith("1 runs") and "graph" in out and "portfolio_manager" in out and "(n=1)" in out

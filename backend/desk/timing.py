@@ -9,6 +9,13 @@ arrived from the graph's worker thread. The result goes into ``plan["timing"]`` 
 
 Analysts run in parallel from the graph's start, so an analyst's ``took`` is its arrival time; every
 later agent waits for the one before it, so its ``took`` is the gap since the previous message.
+Caveats when reading the numbers:
+- the graph's "Memory Log" node (past decisions settled with prices and a reflection) runs beside the
+  analysts and sends no message: when it is the slowest, its extra wait lands in the first serial
+  agent's ``took`` (marked ``includes_join``);
+- the graph's start is just before the worker thread: building the graph and the run state (a few
+  seconds) is in every analyst's ``took`` and in the ``graph`` stage;
+- ``turn`` numbers an agent's turns (debate rounds > 1 give bull/bear several).
 ``summarize`` turns recent plans' timings into averages for ``python -m desk.cli timing``.
 """
 
@@ -18,7 +25,7 @@ import statistics
 import time
 from collections.abc import Callable, Iterable
 
-STAGES = ("desk_pre", "graph", "desk_post", "consensus")
+STAGES = ("desk_pre", "graph", "leverage", "desk_post", "consensus")   # leverage: leveraged products only
 # The graph's analysts start together (TradingAgents graph/setup.py); everyone after them is in series.
 PARALLEL = {"market_analyst", "sentiment_analyst", "news_analyst", "fundamentals_analyst"}
 
@@ -47,12 +54,17 @@ class Stopwatch:
 
     def result(self) -> dict:
         start = self._graph_start if self._graph_start is not None else self._start
-        agents, previous = [], start
+        agents, previous, turns, joined = [], start, {}, False
         for agent, at in sorted(self._arrivals, key=lambda a: a[1]):
             parallel = agent in PARALLEL
             took = at - start if parallel else at - previous
-            agents.append({"agent": agent, "at": round(at - start, 1), "took": round(max(took, 0.0), 1),
-                           "parallel": parallel})
+            turns[agent] = turns.get(agent, 0) + 1
+            row = {"agent": agent, "turn": turns[agent], "at": round(at - start, 1),
+                   "took": round(max(took, 0.0), 1), "parallel": parallel}
+            if not parallel and not joined:
+                row["includes_join"] = True     # waited for every parallel node (Memory Log too)
+                joined = True
+            agents.append(row)
             previous = at
         # the serial chain that set the graph's length: the slowest analyst, then everyone after
         first = [a for a in agents if a["parallel"]]
@@ -77,9 +89,20 @@ def summarize(timings: Iterable[dict]) -> dict:
     """Averages over plans' ``timing``: the whole run, each stage and each agent's turn."""
     timings = [t for t in timings if t and t.get("total") is not None]
     stages = {s: _stats([t["stages"][s] for t in timings if s in (t.get("stages") or {})]) for s in STAGES}
-    per_agent: dict[str, list[float]] = {}
+    per_turn: dict[str, list[float]] = {}            # one row per agent and turn ("bull_researcher#2")
+    per_run: dict[str, list[float]] = {}             # an agent's turns added up within a run
     for t in timings:
+        sums: dict[str, float] = {}
         for a in t.get("agents") or []:
-            per_agent.setdefault(a["agent"], []).append(a["took"])
+            turn = a.get("turn", 1)
+            per_turn.setdefault(a["agent"] if turn == 1 else f"{a['agent']}#{turn}", []).append(a["took"])
+            sums[a["agent"]] = sums.get(a["agent"], 0.0) + a["took"]
+        for agent, total in sums.items():
+            per_run.setdefault(agent, []).append(total)
+
+    def order(d: dict[str, list[float]]) -> list:
+        return sorted(d.items(), key=lambda kv: -statistics.fmean(kv[1]))
+
     return {"runs": len(timings), "total": _stats([t["total"] for t in timings]), "stages": stages,
-            "agents": {k: _stats(v) for k, v in sorted(per_agent.items(), key=lambda kv: -statistics.fmean(kv[1]))}}
+            "agents": {k: _stats(v) for k, v in order(per_turn)},
+            "agents_per_run": {k: _stats(v) for k, v in order(per_run)}}

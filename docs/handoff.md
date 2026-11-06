@@ -2,6 +2,32 @@
 
 다음 세션에서 이 파일부터 읽는다. 끝난 일 · 남은 일 · 바로 쓸 명령만 적는다.
 
+## 0. 진행 중 — #146 시장 투매 · 위험 점수 (2026-11-06, 브랜치 푸시됨 · PR 없음)
+
+- 브랜치 `feature/be/146-risk-regime`, 워크트리 `D:\ProjectWorkSpace\trading-desk-wt\146-risk-regime` (origin/develop `6c87266` 기준)
+  - 워크트리에는 venv 가 없다 — `D:/ProjectWorkSpace/trading-desk/backend/.venv/Scripts/python` 을 워크트리 `backend` 에서 실행하면 워크트리의 `desk` 가 잡힌다
+  - 다른 PC 에서는 `git fetch && git switch feature/be/146-risk-regime`
+- 내용
+  - (새) `desk/risk_regime.py`: 야후 일봉(^VIX · ^VIX9D · ^VIX3M · ^NDX · ^SOX · DX-Y.NYB · ^TNX, 한국 종목은 ^KS11 · KRW=X 추가)으로 투매 점수 0~100,
+    국면 `selling`(점수 ≥ 55) · `exhausting`(최근 10일 고점 ≥ 50 + 끝물 신호 2개 이상: VIX 꺾임 · 기간 구조 역전 해소 · 갭 하락 회복 · 연속 하락 뒤 반등) · `calm`.
+    지표가 빠져도 남은 것으로 계산(`missing` 에 표시)
+  - `apply(pb, risk)`: selling → 하따(dip_catch) 사다리 1차만 남기고 2·3차는 `gate.held` 로 보류(평단 · rr · then_stop 재계산), exhausting → 숏을 `none` 으로. `pb.risk_regime` 에 점수 · 근거
+  - `runner._playbooks` 뒤에 적용 + 에이전트 노트(`risk_regime.prompt_note`), `api.create_app` 이 앱 PriceSource 의 야후로 `Cache`(15분) 생성, fake_runs 면 끔
+  - `playbook_live`: 분석 없이 볼 때만 게이트 적용(분석의 플레이북은 이미 게이트됨)
+  - `backtest`: `MarketRisk`(날짜별 점수 메모, 한국 계획은 같은 날 미국 종가를 안 봄), `Report.by_risk` · `risk_gate`(규칙 on/off 비교), CLI `--no-risk`
+- 검증: `ruff` OK · `pytest` 560 passed / 1 failed — `test_related.py::test_a_run_hands_the_related_brief...` 는 develop 에서도 단독 실패하는 불안정 테스트(이 브랜치에서 단독 실행은 통과)
+- 실데이터 백테스트(`backtest --basket --horizon swing --from 2019-06-01`, 비용 차감 기대 R, on / off)
+  - 하따 2020-03 −0.040 / −0.084 · 2025-04 −0.363 / −0.408 · 2022 −0.184 / −0.185, 검증 구간 전체 −0.196 / −0.198, 최대 연속 손실 37 / 37
+  - 숏 규칙(끝물에 숏 금지)은 약 190건을 빼도 숏 기대 R 이 그대로(−0.267 / −0.266) — 효과 없음, 유지할지 결정 필요
+  - exhausting 국면의 하따는 +0.078R(calm −0.103R) — 끝물 신호 자체는 롱에 유의미해 보임
+  - Windows 에서 출력을 파일로 돌리면 note 의 `—` 가 cp949 로 깨져 `--out` 이 안 써질 수 있음 → `PYTHONIOENCODING=utf-8` 로 실행
+- **남은 일**
+  1. 리뷰: `reviewer`(최종 diff `git diff origin/develop...`) 돌리고 CRITICAL/HIGH 만 반영 → 다시 `ruff` · `pytest`
+  2. 숏 게이트 유지/삭제 또는 임계값(SELLING · STRESS · EXHAUST_SIGNALS) 조정 결정 — 백테스트로 확인
+  3. 이슈 완료 기준의 "사다리 평균 진입가" 비교는 리포트에 없음(기대 R 만) — 필요하면 `backtest.gate_view` 에 추가
+  4. PR: `/pr 검증: ruff OK · pytest 560 passed(불안정 1 제외) · 백테스트 하따 폭락 구간 기대 R 개선 · reviewer ...`
+- 겹치는 작업: #166(`trading-desk-wt/166-direction`) · #149(b9 세션)도 `backtest.py` · `runner.py` · `playbook_live.py` 를 고친다. 덩어리가 달라 늦게 머지되는 쪽이 리베이스
+
 ## 1. 지금 돌아가는 것
 
 | 항목 | 상태 |

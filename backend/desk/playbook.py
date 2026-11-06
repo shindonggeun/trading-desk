@@ -26,6 +26,7 @@ MIN_DAILY = 60
 
 # zones and levels, in the frame's ATR
 MERGE_ATR = 0.5
+ZONE_WIDTH_ATR = 1.0     # a zone never spans more than this: dense levels make several zones, not one range
 MIN_GAP_ATR = 0.3
 MAX_ZONE_ATR = {"scalp": 3.0, "intraday": 3.0, "short_swing": 4.0, "swing": 6.0}
 LONG_STOP_ATR = 0.5
@@ -241,7 +242,9 @@ def zones(cands: list[dict], ref: float, atr: float, below: bool, max_atr: float
                   key=lambda c: c["price"], reverse=below)
     groups: list[list[dict]] = []
     for c in side:
-        if groups and abs(c["price"] - groups[-1][-1]["price"]) <= MERGE_ATR * atr:
+        # next to the last member AND within the width cap from the first: a chain of close
+        # levels (dense on a volatile 3x product) must not grow one zone across the whole fall
+        if groups and abs(c["price"] - groups[-1][-1]["price"]) <= MERGE_ATR * atr                 and abs(c["price"] - groups[-1][0]["price"]) <= ZONE_WIDTH_ATR * atr:
             groups[-1].append(c)
         else:
             groups.append([c])

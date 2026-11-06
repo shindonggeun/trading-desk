@@ -1049,3 +1049,7 @@ span.cs-hold-text { color: var(--warn); }
   .qb-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .bc-box { height: 320px; }
 }
+
+/* #132 플레이북 실시간 — 상태가 이어진 시간 · 시세 실패 표시 */
+.pb-live { margin: 0; }
+.pb-stale { color: var(--warn); }

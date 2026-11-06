@@ -227,6 +227,27 @@ export interface PlaybookSide {
   model?: { raw?: string; confirm_text?: string; ignored?: Record<string, unknown> } | null;
 }
 
+/** #128 GET /api/playbooks — 지금 봉 · 현재가로 다시 계산한 상태 */
+export type LivePlaybookState = "waiting" | "near" | "in_zone" | "confirmed" | "invalid";
+export interface LivePlaybookSide extends PlaybookSide {
+  state: LivePlaybookState | null;
+  /** 이 상태가 처음 보인 시각(서버 기준, 최대 캐시 TTL 만큼 늦음) */
+  state_since: string | null;
+  /** 시세를 못 받아 마지막 종가로 계산 */
+  stale: boolean;
+}
+export interface LivePlaybooks extends Omit<Playbooks, "long" | "short"> {
+  long: LivePlaybookSide;
+  short: LivePlaybookSide;
+  ticker: string;
+  horizon: HorizonId;
+  run: string | null;
+  as_of: string;
+  live: { price: number; source: string; fetched_at: string } | null;
+  /** run: 분석의 레벨 그대로 · fresh: 새로 계산한 레벨(분석의 레벨이 아님) */
+  levels_from: "run" | "fresh";
+}
+
 export type PlaybookOutcomeStatus =
   | "waiting" | "open" | "t1" | "t2" | "t1_be" | "stop" | "time_stop" | "flat" | "unfilled" | "invalid" | "unscorable" | "error";
 

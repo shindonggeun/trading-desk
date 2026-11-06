@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import (
+    credit,
     events_calendar,
     filings,
     horizons,
@@ -55,6 +56,7 @@ MAX_BOARD = 30          # tickers per /api/estimates call
 CALENDAR_INTERVAL_SEC = 6 * 3600   # economic calendar re-read (#148)
 POSITIONING_PARALLEL = 3   # Cboe chains are ~2 MB each (#154)
 POSITIONING_QUOTE_SEC = 5.0
+CREDIT_INTERVAL_SEC = 6 * 3600   # KOFIA posts the day's numbers the next business day (#155)
 BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
 KST = timezone(timedelta(hours=9))   # Toss dates (order history from/to) are KST
 REVIEW_CACHE_SEC = 60
@@ -269,7 +271,20 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.exception("economic calendar refresh failed")
                 await asyncio.sleep(CALENDAR_INTERVAL_SEC)
 
+        async def refresh_credit():
+            # #155: margin loans and investor deposits (KOFIA) - a few reads a day catch the new day
+            while True:
+                try:
+                    ok = await credit.CACHE.refresh()
+                    log.info("KOFIA credit: %s", "refreshed" if ok else f"failed ({credit.CACHE.error})")
+                except Exception:  # a failed pass must not stop the next one
+                    log.exception("KOFIA credit refresh failed")
+                await asyncio.sleep(CREDIT_INTERVAL_SEC)
+
         refresher = asyncio.create_task(keep_listing_fresh())
+        # the same switch as the news flow: off in tests and scripted runs
+        credit_task = (asyncio.create_task(refresh_credit())
+                       if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
         macro = (asyncio.create_task(refresh_macro())
                  if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
         # the same switch as the news flow: off in tests and scripted runs
@@ -294,6 +309,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             macro.cancel()
         if calendar_task:
             calendar_task.cancel()
+        if credit_task:
+            credit_task.cancel()
         if scorer:
             scorer.cancel()
         if purger:
@@ -623,6 +640,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         result = await review.build_review(window, store.done_runs_for, universe.lookup, daily, start, today)
         return {"supported": True, "source": broker.name, **result}
+
+    @app.get("/api/market/credit")
+    def market_credit(days: int = 90):
+        """#155: Korean margin loans (신용융자), investor deposits (투자자예탁금), their ratio (빚투 비율)
+        with its 1-year percentile, and forced sales (KOFIA, refreshed in the background)."""
+        return credit.CACHE.view(min(max(days, 7), 400))
 
     @app.get("/api/market/flow")
     async def market_flow(market: str = "KOSPI", interval: str = "1d", count: int = 20):

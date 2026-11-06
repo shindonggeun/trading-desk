@@ -1053,3 +1053,6 @@ span.cs-hold-text { color: var(--warn); }
 /* #132 플레이북 실시간 — 상태가 이어진 시간 · 시세 실패 표시 */
 .pb-live { margin: 0; }
 .pb-stale { color: var(--warn); }
+
+/* #137 적중률 카드 — 플레이북 보기(셋업 이름이 길어 첫 칸은 줄바꿈 허용) */
+.pb-stats td:first-child { white-space: normal; min-width: 140px; }

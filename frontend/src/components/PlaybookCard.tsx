@@ -48,10 +48,10 @@ const hhmm = (iso: string) => new Date(iso).toLocaleTimeString("ko-KR", { hour: 
 
 /** 롱(하따) · 숏(단타) 플레이북(#116 · #117) — 국면, 두 방향의 구역 · 사다리 · 확인 신호 · 손절 · 목표, 지금 가격 기준 상태. */
 
-const REGIME: Record<RegimeId, string> = {
+export const REGIME: Record<RegimeId, string> = {
   crash: "급락", downtrend: "하락 추세", range: "박스권", uptrend: "상승 추세", unknown: "판단 보류",
 };
-const SETUP: Record<string, string> = {
+export const SETUP: Record<string, string> = {
   dip_catch: "하따(급락 받기)", range_low: "박스 하단", pullback: "눌림목", fade: "반등 매도", breakdown: "이탈 매도", none: "없음",
 };
 const CONDITION: Record<string, string> = {

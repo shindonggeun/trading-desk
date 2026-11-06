@@ -297,6 +297,26 @@ export interface StatsGroup {
   avg_r_at_expiry: number | null;
 }
 
+/** backend desk/outcome.py _playbook_stats — hit_rate = (t1 + t2 + t1_be) ÷ 확정(+ stop · time_stop · flat),
+ * avg_r 은 확정 건의 체결 비중을 반영한 R */
+export interface PlaybookStatsGroup {
+  key: string;
+  plans: number;
+  filled: number;
+  t1: number;
+  t2: number;
+  t1_be: number;
+  stop: number;
+  time_stop: number;
+  flat: number;
+  unfilled: number;
+  open: number;
+  waiting: number;
+  hit_rate: number | null;
+  avg_r: number | null;
+  avg_score: number | null;
+}
+
 export interface PlanStats {
   days: number;
   from: string;
@@ -309,6 +329,8 @@ export interface PlanStats {
   by_direction: (StatsGroup & { key: string })[];
   by_opinion: (StatsGroup & { key: string })[];
   by_analysts: (StatsGroup & { key: string })[];
+  /** #116 플레이북 채점 — key "<long|short>:<setup>:<regime>". 예전 서버면 없다 */
+  by_playbook?: PlaybookStatsGroup[];
   calibration: { bucket: string; plans: number; resolved: number; hits: number; hit_rate: number | null; avg_probability: number | null }[];
 }
 

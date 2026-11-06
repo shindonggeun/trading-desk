@@ -4,8 +4,11 @@ import { time } from "../format";
 import { HORIZON } from "../korean";
 import type { DeskConfig, MacroBrief as Brief, MacroTheme } from "../types";
 
-// 서버는 30분마다 새로 모은다 — 화면은 10분마다 다시 읽는다.
+// 서버는 30분마다 새로 모은다 — 화면은 10분마다 다시 읽는다. 아직 비었거나 못 읽었으면 자주.
 const POLL_MS = 10 * 60_000;
+const RETRY_MS = 45_000;
+// 외부 기사 주소는 http(s) 만 링크로 — 그 밖의 주소(javascript: 등)는 제목 글자로만 둔다
+const SAFE_URL = /^https?:\/\//i;
 // 급증 경보선(desk/macro_news.py 와 같게)
 const SPIKE_ALERT = 1.5;
 
@@ -49,7 +52,11 @@ function Tone({ t }: { t: MacroTheme }) {
 function Headline({ h }: { h: MacroTheme["headlines"][number] }) {
   return (
     <>
-      <a href={h.url} target="_blank" rel="noopener noreferrer" className="link">{h.title}</a>
+      {SAFE_URL.test(h.url) ? (
+        <a href={h.url} target="_blank" rel="noopener noreferrer" className="link">{h.title}</a>
+      ) : (
+        <span>{h.title}</span>
+      )}
       <span className="muted small"> {[h.domain, h.seen && time(h.seen)].filter(Boolean).join(" · ")}</span>
     </>
   );
@@ -70,19 +77,27 @@ export default function MacroBrief() {
 
   useEffect(() => {
     let alive = true;
+    let timer = 0;
     const load = () =>
       api.macroBrief()
         .then((b) => {
           if (!alive) return;
           setBrief(b);
           setFailedAt(null);
+          return b.themes.length > 0;
         })
-        .catch(() => alive && setFailedAt(new Date().toISOString()));
+        .catch(() => {
+          if (alive) setFailedAt(new Date().toISOString());
+          return false;
+        })
+        .then((full) => {
+          // 첫 회차 전 · 실패 중이면 45초 뒤, 채워졌으면 10분 뒤
+          if (alive) timer = window.setTimeout(load, full ? POLL_MS : RETRY_MS);
+        });
     load();
-    const t = window.setInterval(load, POLL_MS);
     return () => {
       alive = false;
-      window.clearInterval(t);
+      window.clearTimeout(timer);
     };
   }, []);
   useEffect(() => {
@@ -114,11 +129,19 @@ export default function MacroBrief() {
     return <p className="empty-state">{failedAt ? "브리핑을 불러오지 못했습니다. 잠시 뒤 다시 읽습니다." : "불러오는 중…"}</p>;
   }
   if (!brief.themes.length) {
-    return <p className="empty-state">{brief.refreshed_at ? "모은 테마가 없습니다." : "서버가 첫 뉴스 흐름을 모으는 중입니다. 몇 분 뒤 다시 보세요."}</p>;
+    return (
+      <p className="empty-state">
+        {brief.error
+          ? "뉴스 흐름을 가져오지 못했습니다. 서버가 다시 모으면 이어서 보입니다."
+          : brief.refreshed_at ? "모은 테마가 없습니다." : "서버가 첫 뉴스 흐름을 모으는 중입니다. 잠시 뒤 자동으로 다시 읽습니다."}
+      </p>
+    );
   }
   const horizonId = config?.default_horizon ?? "swing";
   const horizonLabel = config?.horizons?.find((h) => h.id === horizonId)?.label ?? HORIZON[horizonId]?.ko ?? horizonId;
   const anyRough = brief.themes.some((t) => t.tone_kind === "headline-words");
+  const kinds = new Set(brief.themes.map((t) => t.spike_kind));
+  const spikeBase = kinds.size > 1 ? "테마마다 기준이 다름(줄에 마우스를 올리면 표시)" : kinds.has("week") ? "평소 주간 대비" : "다른 테마 대비";
 
   return (
     <section className="card macro-brief">
@@ -126,7 +149,7 @@ export default function MacroBrief() {
         {brief.refreshed_at ? `${time(brief.refreshed_at)} 기준` : "아직 모으는 중"}
         {failedAt && ` · ${time(failedAt)} 다시 읽기 실패 — 마지막 값`}
         {brief.error && " · 일부 테마를 가져오지 못했습니다"}
-        {" · "}급증은 {brief.themes.some((t) => t.spike_kind === "week") ? "평소 주간" : "다른 테마"} 대비
+        {" · "}급증은 {spikeBase}
       </p>
       <ul className="mx-themes">
         {brief.themes.map((t) => {
@@ -136,7 +159,12 @@ export default function MacroBrief() {
           return (
             <li key={t.id} className={`mx-theme${hot ? " mx-hot" : ""}${t.stale ? " mx-stale" : ""}`}>
               <button type="button" className="mx-row" aria-expanded={expanded} aria-controls={expanded ? panel : undefined}
-                onClick={() => setOpen(expanded ? null : t.id)}>
+                aria-label={`${t.label} · 24시간 ${count(t)}건 · 급증 ${spikeText(t)}${t.tone != null ? ` · 톤 ${t.tone.toFixed(1)}` : ""}`}
+                onClick={() => {
+                  setOpen(expanded ? null : t.id);
+                  setPick(null);   // 다른 테마의 같은 종목 확인 창이 따라오지 않게
+                  setError(null);
+                }}>
                 <span className="mx-label">{t.label}</span>
                 <span className="mx-count small num" title="24시간 기사 수">{count(t)}건</span>
                 <span className={`mx-spike small num${hot ? " mx-spike-hot" : ""}`}
@@ -148,7 +176,7 @@ export default function MacroBrief() {
                 <div id={panel} className="mx-detail">
                   {t.headlines.length > 0 ? (
                     <ul className="mx-headlines small">
-                      {t.headlines.slice(0, 3).map((h) => <li key={h.url}><Headline h={h} /></li>)}
+                      {t.headlines.slice(0, 3).map((h, i) => <li key={`${i}-${h.url}`}><Headline h={h} /></li>)}
                     </ul>
                   ) : (
                     <p className="muted small">헤드라인이 없습니다.</p>
@@ -166,7 +194,7 @@ export default function MacroBrief() {
                     </div>
                   )}
                   {pick && THEME_TICKERS[t.id]?.some((x) => x.ticker === pick.ticker) && (
-                    <div className="mx-confirm" role="alertdialog" aria-label="분석 시작 확인">
+                    <div className="mx-confirm" role="group" aria-label="분석 시작 확인" aria-live="polite">
                       <p className="small">
                         <strong>{pick.name} ({pick.ticker})</strong> 분석을 시작할까요? 시간축 {horizonLabel} · LLM 쿼터를 한 번 씁니다.
                       </p>

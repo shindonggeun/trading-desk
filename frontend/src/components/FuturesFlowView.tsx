@@ -27,10 +27,11 @@ const SPLIT: Record<string, string> = {
 };
 
 function Bar({ label, side, max }: { label: string; side: FuturesInvestor | undefined; max: number }) {
-  if (!side || side.net_contracts == null) return null;
-  const share = max > 0 ? Math.min(Math.abs(side.net_contracts) / max, 1) * 50 : 0;
-  const buying = side.net_contracts > 0;
-  const word = side.net_contracts === 0 ? "보합" : buying ? "순매수" : "순매도";
+  if (!side) return null;
+  const net = side.net_contracts ?? side.net_value_mn ?? 0;   // 계약 수가 없으면 금액으로 방향만
+  const share = max > 0 && side.net_contracts != null ? Math.min(Math.abs(side.net_contracts) / max, 1) * 50 : 0;
+  const buying = net > 0;
+  const word = net === 0 ? "보합" : buying ? "순매수" : "순매도";
   return (
     <li className="flow-row">
       <span className="flow-name">{label}</span>
@@ -53,6 +54,7 @@ export default function FuturesFlowView() {
   const [data, setData] = useState<FuturesFlow | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const liveRef = useRef(true);
+  const seq = useRef(0);
 
   useEffect(() => {
     let alive = true;
@@ -63,8 +65,9 @@ export default function FuturesFlowView() {
       timer = window.setInterval(() => visible() && load(), liveRef.current ? REFRESH_LIVE_MS : REFRESH_IDLE_MS);
     };
     const load = () => {
+      const mine = ++seq.current;
       api.marketFutures().then((d) => {
-        if (!alive) return;
+        if (!alive || mine !== seq.current) return; // 겹친 요청 중 늦게 온 이전 응답
         // 시세를 못 받은 응답은 마지막 값을 두고 알림만(처음이면 그 응답을 그대로 보여 준다)
         setData((old) => (d.price == null && old?.price ? old : d));
         setFailed(d.price == null && d.supported ? d.error : null);
@@ -72,7 +75,7 @@ export default function FuturesFlowView() {
           liveRef.current = d.market_open;
           schedule();
         }
-      }, (e) => alive && setFailed(e instanceof Error ? e.message : "불러오지 못했습니다."));
+      }, (e) => alive && mine === seq.current && setFailed(e instanceof Error ? e.message : "불러오지 못했습니다."));
     };
     const onVisible = () => visible() && load();
     load();
@@ -102,7 +105,7 @@ export default function FuturesFlowView() {
           <div className="fut-head">
             <div>
               <strong className="fut-price">{price(p.price)}</strong>{" "}
-              <span className={`small ${tone(p.change)}`}>{signed(p.change)} ({signed(p.change_pct)}%)</span>
+              <span className={`small ${tone(p.change)}`}>{signed(p.change)}{p.change_pct != null && ` (${signed(p.change_pct)}%)`}</span>
             </div>
             <span className="muted small">
               코스피200 선물 {p.code} · 만기 {p.expiry.slice(5).replace("-", "/")} (D-{p.days_left})

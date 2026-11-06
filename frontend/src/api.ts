@@ -155,9 +155,9 @@ export const api = {
   macroBrief: () => call<MacroBrief>("/api/macro/brief"),
   /** 계획 채점 통계(#64 desk/outcome.py) — 서버가 보관 기간까지로 자른다. */
   planStats: (days = 90) => call<PlanStats>(`/api/stats/plans?days=${days}`),
-  /** 코스피 · 코스닥 투자자별 매매대금(#76). 장중 60초 · 장 밖 10분 서버 캐시. */
   /** #160: 코스피200 근월물 선물 현황(한국투자증권) */
   marketFutures: () => call<FuturesFlow>("/api/market/futures"),
+  /** 코스피 · 코스닥 투자자별 매매대금(#76). 장중 60초 · 장 밖 10분 서버 캐시. */
   marketFlow: (market: FlowMarket, interval: FlowInterval, count = 20) =>
     call<MarketFlow>(`/api/market/flow?market=${market}&interval=${interval}&count=${count}`),
   /** 매매 복기(백엔드 desk/review.py): 최근 days 일 체결을 그때의 분석 계획과 묶는다. 읽기 전용. */

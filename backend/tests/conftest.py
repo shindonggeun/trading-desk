@@ -4,6 +4,10 @@ PostgreSQL in DESK_TEST_DATABASE_URL (CI) wiped to nothing first."""
 import os
 
 import pytest
+
+# The world news-flow refresh (#115) would call GDELT / Google News from any app started with
+# fake_runs=False; tests never do.
+os.environ.setdefault("DESK_MACRO_INTERVAL_SEC", "0")
 from sqlalchemy import text
 
 from desk.db import make_engine, metadata

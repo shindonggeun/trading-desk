@@ -19,12 +19,20 @@ function playbookLevels(plan: Plan): { key: string; label: string; level: number
   for (const [dir, side] of [["long", pb.long], ["short", pb.short]] as const) {
     if (side.setup === "none") continue;
     const name = dir === "long" ? "롱" : "숏";
-    if (side.zone) out.push({ key: `pb-${dir}-zone`, label: `${name} 구역 진입`, level: dir === "long" ? side.zone.high : side.zone.low });
-    for (const e of side.entries) out.push({ key: `pb-${dir}-e${e.step}`, label: `${name} ${e.step}차 진입가`, level: e.price });
-    if (side.trigger) out.push({ key: `pb-${dir}-trigger`, label: `${name} 트리거`, level: side.trigger.price });
-    out.push({ key: `pb-${dir}-stop`, label: `${name} 손절가`, level: side.stop });
-    const t1 = side.targets.find((t) => t.role === "t1");
-    if (t1) out.push({ key: `pb-${dir}-t1`, label: `${name} T1`, level: t1.price });
+    // 같은 가격(롱 구역 위쪽 끝 = 1차, 숏 1차 = 트리거 …)은 알림 하나로 — 키는 첫 번째 것, 라벨은 합친다
+    const own: { key: string; label: string; level: number | null }[] = [];
+    const add = (key: string, what: string, level: number | null | undefined) => {
+      if (level == null) return;
+      const same = own.find((l) => l.level != null && Math.abs(l.level - level) < 1e-9);
+      if (same) same.label = `${same.label} · ${what}`;
+      else own.push({ key: `pb-${dir}-${key}`, label: `${name} ${what}`, level });
+    };
+    if (side.zone) add("zone", "구역 진입", dir === "long" ? side.zone.high : side.zone.low);
+    for (const e of side.entries) add(`e${e.step}`, `${e.step}차 진입가`, e.price);
+    if (side.trigger) add("trigger", "트리거", side.trigger.price);
+    add("stop", "손절가", side.stop);
+    add("t1", "T1", side.targets.find((t) => t.role === "t1")?.price);
+    out.push(...own);
   }
   return out;
 }

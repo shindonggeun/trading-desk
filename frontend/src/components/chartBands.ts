@@ -213,10 +213,18 @@ export function playbookDrawing(pb: { long: PlaybookSideLike; short: PlaybookSid
     if (side.zone) {
       bands.push({ top: side.zone.high, bottom: side.zone.low, fill: withAlpha(c, 0.12), label: `${name} 구역 ${fmt(side.zone.low)} ~ ${fmt(side.zone.high)}`, labelColor: withAlpha(c, 0.95) });
     }
-    for (const e of side.entries) marks.push({ price: e.price, color: withAlpha(c, 0.75), label: `${name} ${e.step}차`, right: true });
-    if (side.trigger) marks.push({ price: side.trigger.price, color: withAlpha(c, 0.9), label: `${name} 트리거`, right: true });
-    if (side.stop != null) marks.push({ price: side.stop, color: withAlpha(c, 0.9), label: `${name} 손절`, right: true });
-    for (const t of side.targets) marks.push({ price: t.price, color: withAlpha(c, 0.75), label: `${name} ${t.role.toUpperCase()}`, right: true });
+    // 같은 가격(숏 1차 = 트리거, 롱 1차 = 구역 위쪽 끝 등)은 글자가 겹치니 한 선으로 합친다
+    const own: Mark[] = [];
+    const add = (p: number, alpha: number, what: string) => {
+      const same = own.find((m) => Math.abs(m.price - p) < 1e-9);
+      if (same) same.label = `${same.label} · ${what}`;
+      else own.push({ price: p, color: withAlpha(c, alpha), label: `${name} ${what}`, right: true });
+    };
+    for (const e of side.entries) add(e.price, 0.75, `${e.step}차`);
+    if (side.trigger) add(side.trigger.price, 0.9, "트리거");
+    if (side.stop != null) add(side.stop, 0.9, "손절");
+    for (const t of side.targets) add(t.price, 0.75, t.role.toUpperCase());
+    marks.push(...own);
   }
   return { bands, marks };
 }

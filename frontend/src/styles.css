@@ -987,7 +987,8 @@ span.cs-hold-text { color: var(--warn); }
 .pb-empty { opacity: .75; }
 .pb-side-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .pb-state { font-size: 12px; padding: 1px 8px; border-radius: var(--radius-s, 6px); background: var(--surface-2); color: var(--muted); white-space: nowrap; }
-.pb-state-near { color: var(--warn); }
+.pb-state-near, .pb-state-beyond { color: var(--warn); }
+.pb-state-beyond { font-weight: 600; }
 .pb-state-in_zone, .pb-state-confirmed { color: var(--text); background: var(--surface-3, var(--surface-2)); font-weight: 600; }
 .pb-state-confirmed { box-shadow: inset 0 0 0 1px var(--ok, var(--accent)); }
 .pb-state-invalid { color: var(--danger, var(--up)); text-decoration: line-through; }

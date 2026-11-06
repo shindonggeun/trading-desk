@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import horizons, live, macro_news, otp, outcome, regime, review, verdict
+from . import horizons, live, macro_news, otp, outcome, playbook_live, regime, review, verdict
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
 from .broker import make_broker
 from .consensus import fake_summariser, llm_summariser
@@ -706,6 +706,33 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except Exception as exc:  # noqa: BLE001 - no bars or too few
             log.warning("levels for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no levels for {ticker}") from None
+
+    @app.get("/api/playbooks")
+    async def live_playbooks(ticker: str | None = None, horizon: str | None = None, run: str | None = None):
+        """Long and short playbooks on the bars and the price now (#128). With ``run`` the
+        analysis' zones, ladder, stop and targets stay and only conditions, score and state move."""
+        run_pb = None
+        if run is not None:
+            found = store.get_run(run)
+            if not found:
+                raise HTTPException(404, "no such run")
+            plan = found.get("plan") or {}
+            run_pb = plan.get("playbooks")
+            ticker = ticker or found["ticker"]
+            horizon = horizon or plan.get("horizon")
+        try:
+            if not ticker:
+                raise ValueError("ticker or run is required")
+            ticker = clean_ticker(ticker)
+            if horizon is not None and horizon not in horizons.HORIZONS:
+                raise ValueError(f"horizon must be one of {', '.join(horizons.HORIZONS)}")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        try:
+            return await playbook_live.current(prices, ticker, horizon, run, run_pb)
+        except Exception as exc:  # noqa: BLE001 - no bars, too few, or a source down
+            log.warning("live playbooks for %s failed: %s", ticker, exc)
+            raise HTTPException(503, f"no playbooks for {ticker}") from None
 
     @app.get("/api/estimate")
     async def estimate(ticker: str):

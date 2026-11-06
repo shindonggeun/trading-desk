@@ -730,3 +730,59 @@ FAKE_LINES = (
     "T2 180 / time stop 10 bars\n"
     "Playbook Bias: both - the regime is mixed; take the short only on a failed bounce and the long only after a reclaim."
 )
+
+
+# --- live tracking (#128): the same playbooks against the bars and the price now --------------
+
+STATES = ("waiting", "near", "in_zone", "confirmed", "invalid")
+NEAR_ATR = 1.0
+
+
+def side_state(side: dict | None, up: bool, price: float | None, atr: float) -> str | None:
+    """waiting -> near (within 1 ATR of the zone) -> in_zone -> confirmed (the bars show the
+    turn: a reclaim / higher low / rejection wick for a long, a rejection bar / lower high for a
+    short) -> invalid (the price is through the stop). None for a side with no setup or price."""
+    if not side or side.get("setup") in (None, "none") or not side.get("zone") or price is None:
+        return None
+    zone, stop = side["zone"], side.get("stop")
+    met = {c["id"] for c in side.get("conditions") or [] if c.get("met")}
+    if stop is not None and ((price <= stop) if up else (price >= stop)):
+        return "invalid"
+    if up:
+        if met & {"reclaim", "higher_low", "rejection_wick"} and zone["low"] <= price <= zone["high"] + NEAR_ATR * atr:
+            return "confirmed"
+        if zone["low"] <= price <= zone["high"] + 0.25 * atr:
+            return "in_zone"
+        return "near" if price - zone["high"] <= NEAR_ATR * atr else "waiting"
+    if met & {"rejection_bar", "lower_high"} and zone["low"] - NEAR_ATR * atr <= price <= zone["high"]:
+        return "confirmed"
+    if zone["low"] - 0.25 * atr <= price <= zone["high"]:
+        return "in_zone"
+    return "near" if zone["low"] - price <= NEAR_ATR * atr else "waiting"
+
+
+def track(fresh: dict, run_pb: dict | None, primary: list[dict], h: horizons.Horizon) -> dict:
+    """Live playbooks. With an analysis' playbooks (``run_pb``) its zones, ladder, stop, targets,
+    time stop and sources stay - only the conditions, score and state follow the bars now, so the
+    page never shows levels the plan did not have. Without, the fresh computation as it is."""
+    out = dict(run_pb) if run_pb else dict(fresh)
+    out["regime"] = fresh["regime"]
+    ref = fresh["frame"]["reference_price"]
+    out["frame"] = {**(run_pb or fresh)["frame"], "reference_price": ref}
+    atr = out["frame"]["atr"] or fresh["frame"]["atr"]
+    closes = [b["close"] for b in primary]
+    vwap = _vwap(primary) if h.primary != "1d" else None
+    for side, up in (("long", True), ("short", False)):
+        s = dict(out.get(side) or {})
+        if run_pb and s.get("zone") and s.get("setup") not in (None, "none"):
+            zone = s["zone"]
+            if up:
+                conditions = _long_conditions(zone, primary, ref, atr, h.primary_k,
+                                              fresh["regime"]["flags"]["climax_recent"])
+            else:
+                conditions = _short_conditions(zone, primary, ref, atr, h.primary_k, vwap, _sma(closes, 20),
+                                               s.get("setup"))
+            s = {**s, "conditions": conditions, "score": _score(zone.get("score") or 0, conditions)}
+        s["state"] = side_state(s, up, ref, atr)
+        out[side] = s
+    return out

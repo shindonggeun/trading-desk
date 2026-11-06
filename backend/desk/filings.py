@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from datetime import UTC, date, datetime, timedelta
 
@@ -52,9 +53,13 @@ ITEMS = {
 }
 
 
+_US = re.compile(r"[A-Z]{1,6}(?:[.-][A-Z])?")
+
+
 def is_us_ticker(ticker: str) -> bool:
-    """Plain US symbols only: no exchange suffix (005930.KS), index (^GSPC) or future (CL=F)."""
-    return bool(ticker) and not any(c in ticker for c in ".^=") and ticker.isascii()
+    """Plain US symbols (and share classes: BRK.B, BRK-B) only: no exchange suffix (005930.KS),
+    index (^GSPC) or future (CL=F)."""
+    return bool(_US.fullmatch(ticker or ""))
 
 
 class Filings:

@@ -52,6 +52,19 @@ def test_fomc_decision_is_the_meetings_last_day_at_two_pm_eastern():
     assert {e.id for e in events} == {"fomc"} and all(e.importance == 2 for e in events)
 
 
+def test_fomc_skips_unscheduled_rows_and_rolls_a_meeting_into_january():
+    html = """<h4>2026 FOMC Meetings</h4>
+<div class="fomc-meeting__month"><strong>March</strong></div><div class="fomc-meeting__date">16 (unscheduled)</div>
+<div class="fomc-meeting__month"><strong>April</strong></div><div class="fomc-meeting__date">2 (notation vote)</div>
+<div class="fomc-meeting__month"><strong>Dec/Jan</strong></div><div class="fomc-meeting__date">31-1</div>"""
+    assert [e.to_dict()["at_et"] for e in ec.parse_fomc(html)] == ["2027-01-01 14:00 ET"]
+
+
+def test_a_utc_bls_time_is_read_as_utc():
+    ics = "BEGIN:VEVENT\nDTSTART:20260710T123000Z\nSUMMARY:Consumer Price Index\nEND:VEVENT\n"
+    assert ec.parse_bls(ics)[0].at == datetime(2026, 7, 10, 12, 30, tzinfo=UTC)
+
+
 def test_bls_keeps_the_market_movers_in_eastern_time():
     events = ec.parse_bls(BLS_ICS)
     assert [(e.id, e.importance) for e in events] == [("jobs", 2), ("cpi", 2), ("ppi", 1)]
@@ -126,8 +139,8 @@ def test_summarise_translates_8k_items_and_counts_insider_filings():
 
 
 def test_us_ticker_rule():
-    assert fl.is_us_ticker("NVDA") and fl.is_us_ticker("BRK-B")
-    assert not any(fl.is_us_ticker(t) for t in ("005930.KS", "^GSPC", "CL=F", ""))
+    assert fl.is_us_ticker("NVDA") and fl.is_us_ticker("BRK-B") and fl.is_us_ticker("BRK.B")
+    assert not any(fl.is_us_ticker(t) for t in ("005930.KS", "^GSPC", "CL=F", "", "000660", "BTC-USD"))
 
 
 def test_recent_maps_the_ticker_and_caches_both_lookups():
@@ -151,6 +164,7 @@ def test_recent_maps_the_ticker_and_caches_both_lookups():
             korean = await f.recent("005930.KS", date(2026, 11, 5))
             return first, again, unknown, korean, await f.cik("BRK.B")
     first, again, unknown, korean, brk = asyncio.run(go())
+    assert fl.is_us_ticker("BRK.B")                    # so recent() reaches the BRK-B mapping
     assert first == again and first["8k"][0]["items"] == ["results of operations (earnings)"]
     assert unknown is None and korean is None and brk == 1067983
     assert hits.count("/files/company_tickers.json") == 1 and len(hits) == 2
@@ -198,13 +212,12 @@ def test_filings_and_calendar_notes_reach_the_agents_and_the_calendar_api(db_url
 
     from fastapi.testclient import TestClient
 
-    from desk.api import create_app, desk_news_note
+    from desk.api import create_app
     from desk.auth import Auth
     from desk.db import make_engine
     from desk.runner import make_fake_runner
     from desk.settings import Settings
 
-    monkeypatch.setattr(ec, "CACHE", _calendar())
     seen, rendered = [], []
     fake = make_fake_runner(0)
 
@@ -224,12 +237,19 @@ def test_filings_and_calendar_notes_reach_the_agents_and_the_calendar_api(db_url
         assert client.get("/api/events/calendar").status_code == 401
         client.post("/api/auth/login", json={"username": "owner", "password": "correct horse battery"})
         manager = client.app.state.manager
-        manager.filings, manager.macro = filings, desk_news_note
-        run_id = client.post("/api/runs", json={"ticker": "NVDA"}).json()["id"]
-        for _ in range(200):
-            if client.get(f"/api/runs/{run_id}").json()["status"] in ("done", "failed"):
-                break
-            time.sleep(0.02)
-        assert seen == ["NVDA"] and "SEC NOTE: 8-K earnings" in rendered[0]
+        manager.filings, manager.calendar = filings, lambda: "CALENDAR NOTE: CPI in 4 days"
+
+        def run(body):
+            run_id = client.post("/api/runs", json=body).json()["id"]
+            for _ in range(200):
+                if client.get(f"/api/runs/{run_id}").json()["status"] in ("done", "failed"):
+                    break
+                time.sleep(0.02)
+
+        run({"ticker": "NVDA"})
+        assert seen == ["NVDA"] and "SEC NOTE: 8-K earnings" in rendered[0] and "CALENDAR NOTE" in rendered[0]
+        # a back-dated analysis must not read filings or the calendar of today (look-ahead)
+        run({"ticker": "TSLA", "trade_date": "2026-01-05"})
+        assert seen == ["NVDA"] and "SEC NOTE" not in rendered[1] and "CALENDAR NOTE" not in rendered[1]
         view = client.get("/api/events/calendar", params={"days": 400}).json()
         assert view["error"] is None and isinstance(view["events"], list) and "blackout" in view

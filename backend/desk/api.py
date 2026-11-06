@@ -213,7 +213,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        lever_analyst=fake_analyst if settings.fake_runs else llm_analyst,
                                        summariser=fake_summariser if settings.fake_runs else llm_summariser,
                                        # world news flow: the background cache below, never fetched in a run
-                                       macro=None if settings.fake_runs else desk_news_note,
+                                       macro=None if settings.fake_runs else macro_news.prompt_note,
+                                       # #148: the economic calendar (background cache, same-day runs)
+                                       calendar=None if settings.fake_runs else events_calendar.prompt_note,
                                        # #148: SEC 8-K / Form 4 of a US company, fetched per run (one or two calls)
                                        filings=None if settings.fake_runs else filings.note_for)
 
@@ -930,13 +932,6 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return regime.snapshot(settings.semibot_db_path)
 
     return app
-
-
-def desk_news_note(ticker: str) -> str | None:
-    """The run's background news block: world news flow (#115) and the economic calendar (#148).
-    Both read a cache the lifespan loops fill; nothing here touches the network."""
-    parts = [macro_news.prompt_note(ticker), events_calendar.prompt_note()]
-    return "\n\n".join(p for p in parts if p) or None
 
 
 def _client_ip(request: Request) -> str:

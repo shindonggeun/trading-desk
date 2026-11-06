@@ -9,6 +9,7 @@ TradingAgents(LangGraph 멀티 에이전트)의 분석 토론을 **채팅처럼 
 
 - TradingAgents 는 **라이브러리**로 쓴다. `backend/pyproject.toml` 에 포크 `shindonggeun/TradingAgents` 의 **커밋 SHA 로 고정**.
   포크(`D:\ProjectWorkSpace\TradingAgents`)는 업스트림 추적용이라 고치지 않는다. 패치가 필요하면 포크 브랜치 → 여기 SHA 만 올린다.
+  지금 SHA 는 포크 브랜치 `feat/parallel-openings`(#171: 토론 첫 라운드 병렬 · 등급별 추론 강도, 기본 끔) 끝이다 — 업스트림을 올릴 때 이 브랜치를 그 위로 리베이스한다.
 - 주문 기능은 **일부러 없다**(`broker/base.py` 에 주문 메서드 없음). 붙이기 전 조건은 README "실행(주문)" 절.
 
 ## 명령

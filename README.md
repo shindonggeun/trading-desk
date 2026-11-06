@@ -82,6 +82,16 @@ cd backend && tradingagents login chatgpt     # 브라우저로 로그인 → ~/
 
 모델 ID는 로그인 후 `tradingagents` CLI의 Subscription 메뉴에 나오는 목록에서 골라 `TRADINGAGENTS_QUICK_THINK_LLM` / `TRADINGAGENTS_DEEP_THINK_LLM` 에 넣는다.
 
+속도 옵션(#171, 포크 브랜치 `feat/parallel-openings`)은 기본으로 꺼져 있다. 품질 비교(#171 8번)를 하기 전에는 켜지 않는다.
+
+| env | 켜면 |
+|-----|------|
+| `TRADINGAGENTS_DEBATE_PARALLEL_FIRST_ROUND=true` | 강세 · 약세가 첫 차례를 동시에 쓴다(서로 반박은 2라운드부터) |
+| `TRADINGAGENTS_RISK_PARALLEL_FIRST_ROUND=true` | 공격 · 보수 · 중립이 첫 의견을 동시에 낸다 |
+| `TRADINGAGENTS_QUICK_THINK_REASONING_EFFORT` / `_DEEP_THINK_` | 모델 등급별 추론 강도(`low` · `medium` · `high`). 비우면 `TRADINGAGENTS_OPENAI_REASONING_EFFORT`. quick 은 애널리스트 · 토론 · 트레이더, deep 은 두 매니저 |
+
+효과는 `python -m desk.cli timing --last 20` 으로 본다(같이 도착한 오프닝 발언은 한 단계로 잰다).
+
 서버(Docker)에서의 로그인은 [docs/deploy.md](docs/deploy.md) 5절.
 
 ## 배포 (홈랩)

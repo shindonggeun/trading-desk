@@ -32,7 +32,22 @@ export interface Mark {
   price: number;
   color: string;
   label?: string;
+  /** 실선(POC) — 없으면 점선 */
+  solid?: boolean;
+  /** 글자를 오른쪽 끝에(매물대 막대 위) — 없으면 왼쪽 */
+  right?: boolean;
 }
+
+/** 오른쪽 끝에서 왼쪽으로 뻗는 가로 막대(매물대, #108) — size 는 0 ~ 1(가장 큰 막대 = 1). */
+export interface SideBar {
+  top: number;
+  bottom: number;
+  size: number;
+  fill: string;
+}
+
+/** 매물대 막대가 차지하는 최대 폭(차트 폭 대비) */
+const SIDE_BAR_SHARE = 0.22;
 
 type Target = Parameters<IPrimitivePaneRenderer["draw"]>[0];
 
@@ -47,6 +62,7 @@ export class PriceBands implements ISeriesPrimitive<Time> {
   private request: (() => void) | null = null;
   private bands: Band[] = [];
   private marks: Mark[] = [];
+  private sideBars: SideBar[] = [];
   private readonly view: IPrimitivePaneView;
 
   constructor(private readonly font: string) {
@@ -67,9 +83,10 @@ export class PriceBands implements ISeriesPrimitive<Time> {
     this.request = null;
   }
 
-  set(bands: Band[], marks: Mark[]) {
+  set(bands: Band[], marks: Mark[], sideBars: SideBar[] = []) {
     this.bands = bands;
     this.marks = marks;
+    this.sideBars = sideBars;
     this.request?.();
   }
 
@@ -105,17 +122,71 @@ export class PriceBands implements ISeriesPrimitive<Time> {
           ctx.fillText(b.label, x0 + 6 * hr, top + 2 * vr);
         }
       }
+      const maxBar = bitmapSize.width * SIDE_BAR_SHARE;
+      for (const b of this.sideBars) {
+        const y1 = s.priceToCoordinate(b.top);
+        const y2 = s.priceToCoordinate(b.bottom);
+        if (y1 == null || y2 == null) continue;
+        const top = Math.round(Math.min(y1, y2) * vr);
+        // 이웃 막대와 1px 틈을 두어 한 덩어리로 뭉개지지 않게
+        const height = Math.max(Math.round(vr), Math.round(Math.abs(y2 - y1) * vr) - Math.round(vr));
+        const w = Math.max(Math.round(hr), Math.round(maxBar * Math.min(1, b.size)));
+        ctx.fillStyle = b.fill;
+        ctx.fillRect(bitmapSize.width - w, top, w, height);
+      }
       for (const m of this.marks) {
         const y = s.priceToCoordinate(m.price);
         if (y == null) continue;
         const py = Math.round(y * vr);
+        const thick = Math.max(1, Math.round(vr * (m.solid ? 1.5 : 1)));
         ctx.fillStyle = m.color;
-        for (let x = 0; x < bitmapSize.width; x += 8 * hr) ctx.fillRect(x, py, 3 * hr, Math.max(1, Math.round(vr)));
-        if (m.label) ctx.fillText(m.label, 6 * hr, Math.max(0, py - 13 * vr));   // 맨 위 비율 글자가 잘리지 않게
+        if (m.solid) ctx.fillRect(0, py, bitmapSize.width, thick);
+        else for (let x = 0; x < bitmapSize.width; x += 8 * hr) ctx.fillRect(x, py, 3 * hr, thick);
+        if (m.label) {
+          const ly = Math.max(0, py - 13 * vr);   // 맨 위 글자가 잘리지 않게
+          if (m.right) {
+            ctx.textAlign = "right";
+            ctx.fillText(m.label, bitmapSize.width - 6 * hr, ly);
+            ctx.textAlign = "left";
+          } else {
+            ctx.fillText(m.label, 6 * hr, ly);
+          }
+        }
       }
       ctx.restore();
     });
   }
+}
+
+export interface VolumeProfileLike {
+  bin_width: number;
+  bins: { price: number; volume: number; share: number }[];
+  poc: number;
+  value_area: { low: number; high: number };
+  nodes: { price: number; kind: "thick" | "thin"; share: number }[];
+}
+
+/**
+ * 매물대(#108): 구간별 거래량 막대(가치 영역 안은 조금 진하게, 두꺼운 매물대는 강조색), 가치 영역 옅은 띠,
+ * POC 실선 + 오른쪽 글자. 색은 지지 · 저항 띠와 섞이지 않게 회색 · 경고색 계열.
+ */
+export function volumeProfileDrawing(vp: VolumeProfileLike, colors: { bar: string; thick: string; poc: string; label: string },
+  fmt: (v: number) => string): { bands: Band[]; marks: Mark[]; bars: SideBar[] } {
+  const max = Math.max(...vp.bins.map((b) => b.share), 0) || 1;
+  const half = vp.bin_width / 2;
+  const thick = vp.nodes.filter((n) => n.kind === "thick").map((n) => n.price);
+  const isThick = (p: number) => thick.some((t) => Math.abs(t - p) <= half);
+  const inVa = (p: number) => p >= vp.value_area.low && p <= vp.value_area.high;
+  return {
+    bands: [{ top: vp.value_area.high, bottom: vp.value_area.low, fill: withAlpha(colors.bar, 0.05) }],
+    marks: [{ price: vp.poc, color: withAlpha(colors.poc, 0.9), label: `POC ${fmt(vp.poc)}`, solid: true, right: true }],
+    bars: vp.bins.map((b) => ({
+      top: b.price + half,
+      bottom: b.price - half,
+      size: b.share / max,
+      fill: isThick(b.price) ? withAlpha(colors.thick, 0.45) : withAlpha(colors.bar, inVa(b.price) ? 0.3 : 0.16),
+    })),
+  };
 }
 
 /** 지지 · 저항 구역의 반폭 — 서버가 구역을 묶는 폭(반 ATR)의 절반에 가깝게, ATR 이 없으면 가격의 0.15%(근사). */

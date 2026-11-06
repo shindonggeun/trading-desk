@@ -19,8 +19,8 @@ import {
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles, type ReviewRow } from "../api";
 import { price } from "../format";
-import { keepAxisLabelsApart, nearestLevels, planBands, PriceBands, srBands, withAlpha, zoneHalfWidth } from "./chartBands";
-import type { FibLevel, Fibonacci, Plan, SrLevel, SupportResistance, Trendline } from "../types";
+import { keepAxisLabelsApart, nearestLevels, planBands, PriceBands, srBands, volumeProfileDrawing, withAlpha, zoneHalfWidth } from "./chartBands";
+import type { FibLevel, Fibonacci, Plan, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 
 export type Interval = Exclude<CandleInterval, "1m">;
 const INTERVALS: { iv: Interval; label: string; count: number }[] = [
@@ -41,12 +41,12 @@ const LOG_SCALE = new Set<Interval>(["1w", "1M", "1y"]);
 const LABEL = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.label])) as Record<Interval, string>;
 const COUNT = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.count])) as Record<Interval, number>;
 
-type Show = { levels: boolean; sr: boolean; all: boolean; trend: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean };
+type Show = { levels: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean };
 const SHOW_LABEL: Record<keyof Show, string> = {
-  levels: "타점선", sr: "지지 · 저항", all: "모든 지지 · 저항", trend: "추세선", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
+  levels: "타점선", sr: "지지 · 저항", all: "모든 지지 · 저항", vp: "매물대", trend: "추세선", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
 };
 // #98: 지지 · 저항은 가까운 3개씩만, 피보나치는 켤 때만 — 차트가 선으로 덮이지 않게
-const DEFAULT_SHOW: Show = { levels: true, sr: true, all: false, trend: true, fib: false, fills: true, analysis: true, rsi: true };
+const DEFAULT_SHOW: Show = { levels: true, sr: true, all: false, vp: true, trend: true, fib: false, fills: true, analysis: true, rsi: true };
 const NEAR_LEVELS = 3;
 /** RSI 패널 높이 — 낮은 화면(가로 모드 · 크게 보기)에서 가격 패널을 누르지 않게 차트 높이에 비례 */
 const rsiHeight = (h: number) => Math.round(Math.min(110, Math.max(56, h * 0.22)));
@@ -171,6 +171,7 @@ type Hover = { x: number; y: number; key: string } & (
   | { type: "sr"; level: SrLevel }
   | { type: "trend"; line: Trendline; here: number }
   | { type: "fib"; level: FibLevel; fib: Fibonacci }
+  | { type: "vp"; vp: VolumeProfile }
 );
 
 /** 지지 · 저항은 그 계산의 기준가 위 · 아래로 나뉜다 — 어느 가격 기준인지 같이 적는다. */
@@ -269,7 +270,9 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   // 추세선 · 피보나치(#73) — 지지 · 저항과 같은 출처(분석 당시 / 지금)
   const trendLines: Trendline[] = useMemo(() => (show.trend ? srSource?.trendlines ?? [] : []), [show.trend, srSource]);
   const fib: Fibonacci | null = show.fib ? srSource?.fibonacci ?? null : null;
-  const wantSr = show.sr || show.trend || show.fib;
+  // 매물대(#108) — 지지 · 저항과 같은 출처, 거래량이 없는 지수 · 옛 분석은 없다
+  const vp: VolumeProfile | null = show.vp ? srSource?.volume_profile ?? null : null;
+  const wantSr = show.sr || show.trend || show.fib || show.vp;
   // 분석 당시 값이면 "지금" 이라 하지 않는다 — 선은 오늘까지 그어도 거리 · 상태는 그때 기준
   const when = mode === "plan" ? "분석 당시" : "지금";
   const [trendDrawn, setTrendDrawn] = useState<{ line: Trendline; series: ISeriesApi<"Line"> }[]>([]);
@@ -567,17 +570,25 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const day = intraday ? barFor(rows.map((r) => r.day), tradeDate) : null;
     const at = intraday ? (day == null ? null : rows.find((r) => r.day === day)?.key ?? null) : barFor(rows.map((r) => r.key), tradeDate);
     const muted = css("--muted", "#8c939d");
+    const profile = vp?.bins.length
+      ? volumeProfileDrawing(vp, { bar: muted, thick: css("--warn", "#e5a23a"), poc: css("--warn", "#e5a23a"), label: muted }, price)
+      : { bands: [], marks: [], bars: [] };
     bands.set(
       [
+        ...profile.bands,
         ...(show.levels ? planBands(plan, at == null ? null : time(at), { loss: css("--danger", css("--up", "#f2464b")), profit: css("--ok", "#3fb68b") }) : []),
         ...srBands(srShown, srSource?.atr, { support: css("--sr-support", "#2bb3a3"), resistance: css("--sr-resistance", "#b58cf0") }),
       ],
-      (fib?.levels ?? []).filter((lv) => Number.isFinite(lv.price)).map((lv) => ({ price: lv.price, color: withAlpha(muted, 0.85), label: String(lv.ratio) })),
+      [
+        ...(fib?.levels ?? []).filter((lv) => Number.isFinite(lv.price)).map((lv) => ({ price: lv.price, color: withAlpha(muted, 0.85), label: String(lv.ratio) })),
+        ...profile.marks,
+      ],
+      profile.bars,
     );
     return () => {
       if (drawn.alive.current) series.detachPrimitive(bands);
     };
-  }, [drawn, srShown, srSource, plan, fib, show.levels, tradeDate]);
+  }, [drawn, srShown, srSource, plan, fib, vp, show.levels, tradeDate]);
 
   // RSI 패널은 차트 높이(크게 보기 · 가로 모드 · 창 크기)에 맞춰 다시 잰다
   useEffect(() => {
@@ -714,6 +725,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         }
       }
       if (fib) for (const level of fib.levels) consider(level.price, (y) => ({ type: "fib", level, fib, key: `fib-${level.ratio}`, x: pt.x, y }));
+      if (vp) consider(vp.poc, (y) => ({ type: "vp", vp, key: "vp-poc", x: pt.x, y }));
       for (const { line, series: s } of trendDrawn) {
         const v = param.seriesData.get(s) as { value?: number } | undefined;
         if (v?.value != null) consider(v.value, (y) => ({ type: "trend", line, here: v.value as number, key: `trend-${line.kind}-${line.anchors[0].at}-${line.anchors[1]?.at}`, x: pt.x, y }));
@@ -728,7 +740,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       setHover(null);
       if (drawn.alive.current) chart.unsubscribeCrosshairMove(onMove);
     };
-  }, [drawn, srShown, srSource, fib, trendDrawn]);
+  }, [drawn, srShown, srSource, fib, vp, trendDrawn]);
 
   const currency = isKorean(ticker) ? "원" : "달러";
   const levels = [...(plan ? [plan.entry_price, plan.stop_loss, plan.price_target] : []), ...(extraLines ?? []).map((l) => l.price)];
@@ -804,6 +816,15 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
                   <span className="muted">{TF_LABEL[hover.level.timeframe] ?? hover.level.timeframe} · 강도 {hover.level.strength}</span>
                   <div>{hover.level.basis}</div>
                 </>
+              ) : hover.type === "vp" ? (
+                <>
+                  <strong>매물대 POC {price(hover.vp.poc)}</strong>{" "}
+                  <span className="muted">가장 많이 거래된 가격 · 최근 {hover.vp.bars}봉</span>
+                  <div>거래량 70% 구간(가치 영역) {price(hover.vp.value_area.low)} ~ {price(hover.vp.value_area.high)}</div>
+                  {hover.vp.nodes.some((n) => n.kind === "thick") && (
+                    <div>두꺼운 매물대 {hover.vp.nodes.filter((n) => n.kind === "thick").map((n) => price(n.price)).join(" · ")}</div>
+                  )}
+                </>
               ) : hover.type === "trend" ? (
                 <>
                   <strong>{TREND_NAME[hover.line.kind]} {price(hover.here)}</strong>{" "}
@@ -837,6 +858,18 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
             rsiOn ? "RSI 70 이상 과열 · 30 이하 과매도" : null,
             drawn && LOG_SCALE.has(interval) ? "가격축은 로그 눈금" : null,
           ].filter(Boolean).join(" · ")}
+        </p>
+      )}
+      {show.vp && srSource && !srSource.volume_profile && (
+        <p className="muted small price-chart-legend">
+          {mode === "plan" && srSource.volume_profile === undefined
+            ? "매물대: 이 분석에는 기록이 없습니다 — 표시 메뉴의 \"지금\" 기준으로 보세요."
+            : "매물대: 거래량이 없는 종목(지수 등)은 그리지 않습니다."}
+        </p>
+      )}
+      {vp && (
+        <p className="muted small price-chart-legend">
+          매물대(오른쪽 막대) · <span className="lg lg-poc" /> POC {price(vp.poc)} · 가치 영역 {price(vp.value_area.low)} ~ {price(vp.value_area.high)} · 강조 막대는 두꺼운 매물대
         </p>
       )}
       {wantSr && srFailed && mode === "now" ? (

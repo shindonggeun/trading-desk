@@ -690,7 +690,8 @@ def build(sr: dict | None, daily: list[dict], primary: list[dict], h: horizons.H
         "short": short_side,
     }
     # #166: the trend's side at full size, the other halved or dropped
-    return direction.apply(built, direction.score(daily), h)
+    return direction.apply(built, direction.score(daily), h,
+                           empty=lambda reason: _none_side(reason, "half", True))
 
 
 def refresh(playbooks: dict | None, live: dict | None) -> dict | None:
@@ -994,4 +995,6 @@ def track(fresh: dict, run_pb: dict | None, primary: list[dict], h: horizons.Hor
         s["state"] = side_state(s, up, ref, atr)
         out[side] = s
     _reach_again(out, ref)
+    # the run's sides keep the run's direction; the trend now is shown beside it (#166)
+    out["direction_now"] = fresh.get("direction")
     return out

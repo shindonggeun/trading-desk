@@ -1,4 +1,4 @@
-# 인수인계 (2026-11-05 기준)
+# 인수인계 (2026-11-06 기준)
 
 다음 세션에서 이 파일부터 읽는다. 끝난 일 · 남은 일 · 바로 쓸 명령만 적는다.
 
@@ -8,7 +8,7 @@
 |------|------|
 | 사이트 | `https://trading.8llow8llowme.com` — 이메일 로그인(계정 1개, CLI 로 만듦) |
 | 서버 | backend-server `192.168.0.9` 컨테이너 `trading-desk-web-prod`(:10088) · `trading-desk-backend-prod` |
-| 배포 커밋 | `c118d90` (develop, 배포 기준 브랜치는 develop — #39) |
+| 배포 커밋 | 서버 `~/deploy/trading-desk/src/REVISION` 으로 확인(배포 기준 브랜치는 develop — #39) |
 | DB | main-server `.11` PostgreSQL `trading_desk` / 스키마 `desk` |
 | LLM | ChatGPT Pro 플랜, deep `gpt-6-sol` · quick `gpt-6-luna`, FAKE 모드 꺼짐 |
 | 브로커 | **토스 연결됨** — 서버 `.env.runtime` 에 `DESK_BROKER=toss` · 키 반영, 허용 IP `1.241.243.70` 등록. 보유 종목 · 종목 목록(15,040종) · 현재가 · 1분/일봉 실호출 확인 |
@@ -17,44 +17,42 @@
 토스 메모: `/api/v1/stocks/all` 은 초당 1회(429 + `Retry-After`) — `TossBroker._get` 이 기다렸다 재시도한다.
 토스 봉은 **주봉 없음**(`1w` 400), 한 번에 **최대 200개**.
 
-## 2. 진행 중 — #32 (브랜치 푸시됨, PR 아직 없음)
+## 2. 진행 중 — #148 이벤트 직전 진입 보류 (브랜치 푸시됨, PR 아직 없음)
 
-- 브랜치 `feature/be/32-candles-levels`, 워크트리 `D:\ProjectWorkSpace\trading-desk-wt\32-candles-levels`, origin/develop(`c118d90`) 위로 rebase 됨
-- 검증: `ruff` OK · `pytest` 91 passed (rebase 후). `reviewer` 검토 HIGH 1 · MEDIUM 2 · LOW 1(캐시) 반영 완료
-- 내용
-  - `desk/sr.py` — 일봉 · 주봉 스윙 고저점, 52주 고저, 지난주 고저 · 피벗, 20/50/200일선 → ATR 절반 안에서 구간으로 묶음.
-    강도 = 근거 수(주봉 2배, 1년 반감), 현재가에서 min(6 ATR, 35%) 안만, 강도 ÷ 거리로 위 · 아래 4개
-  - `GET /api/candles?ticker=&interval=1m|1d|1w&count=` · `GET /api/levels?ticker=` (세션 필요). 주봉 · 200개 초과는 야후
-  - 분석 시작 때 거래일까지의 레벨을 계산(20초 제한)해 트레이더 · 리스크 · PM 지침에 참고로 넣고 계획에 `support_resistance` 저장
-- 운영 실데이터 확인(배포 전, 계산만): NVDA 205.8 → 저항 208 · 214.5 / 지지 200.5 · 195.6, 삼성전자 221,500 → 지지 205,438 · 191,561
+- 브랜치 `feature/be/148-event-hold`, 워크트리 `D:\ProjectWorkSpace	rading-desk-wt8-event-hold`(집에서는 `git fetch && git switch feature/be/148-event-hold` 또는 새 워크트리)
+- 배경: #148 은 닫혀 있지만 "주요 이벤트 직전 플레이북 신규 진입 보류"는 프롬프트 문구로만 들어가 있었다 → `playbook.py` 에 실제로 연결
+- 내용(`backend/desk/playbook.py` · `backend/tests/test_playbook.py` 만)
+  - `build(..., live=...)` 가 live 일 때만(= 오늘 분석 · 실시간 플레이북, 백테스트 · 지난 날짜는 아님) `events_calendar.CACHE.blackout()` 을 본다
+  - 새 `hold_for_event(pb, event)`: 사다리 2 · 3차에 `held: "event"`, 각 방향에 미충족 조건 `event_clear`, 점수 재계산, `pb["event_hold"]` = 이벤트 + `until`
+  - `track()` 이 지금 일정으로 다시 적용 — 창이 지나면 표시 제거. `prompt_note` 에 "Event window" 한 줄
+- 검증: `ruff` OK · `pytest` 560 passed(새 테스트 2개)
 - **남은 일**
-  1. PR 생성: `/pr 검증: ruff OK · pytest 91 passed · reviewer HIGH 1 반영(테스트가 실제 야후 호출 → autouse 차단)`
-  2. 리뷰 LOW 미반영: 현재가와 같은 구간이 `resistance` 로만 분류됨(`at` 종류 검토)
-  3. 머지 후 배포 → 실제 분석 1회로 에이전트가 지지 · 저항을 근거로 쓰는지 확인
-- 참고: 초기 pytest 원인 미상 실패 2회는 위 HIGH(실제 야후 호출)로 추정 — 반영 후 재현 없음
+  1. `reviewer` 검토 — 회사에서 띄운 검토는 결과를 받기 전에 퇴근. 집에서 다시 돌린다. 볼 점: `track()` 이 `run_pb` 얕은 복사라 `hold_for_event` 가 원본을 건드리는지, 미국 지표 일정이 **국내 종목에도** 보류를 거는 게 맞는지, `prompt_note` 1200자 제한에 줄이 밀리는지, 프론트 타입(`frontend/src/types.ts`)과 키 추가만인지
+  2. CRITICAL/HIGH 반영 → `pytest` · `ruff` → `/pr 검증: ruff OK · pytest 560 passed · reviewer ...` (Closes 대신 `Refs #148`, 닫힌 이슈)
+  3. 화면 표시(보류 배지 · 경제 일정)는 #150(FE)에서
 
-## 3. 이번 세션에서 끝난 것
+## 3. 이번 세션(11-06)에서 끝난 것
 
 | 이슈 | PR | 내용 |
 |------|----|------|
-| #12 | #29 | 토스 종목 검색 + 429 재시도 |
-| #14 · #13 · #15 · #16 · #23 | #20 · #21 · #22 · #28 · #30 | 투자 성향 · 검색 자동완성 · 한글 풀이 · 90일 보관 · 현재가 기준 타점(BE) |
-| #31 | #38 | 손절가가 트레이더 초안으로 남던 버그 — PM 요약의 최종 진입 · 손절을 우선(SOXL 110.77 → 98.26) |
+| #134 · #135 | — | 즐겨찾기(서버 저장) · 대시보드 즐겨찾기 시세 |
+| #148 | #159 | 경제 일정(연준 · BLS) · SEC 공시 · GDELT 쉬기 |
+| #143 | — | KIS 실시간 연결 상태 API(운영 확인은 남음, 이슈 열림) |
+| #154 · #155 | — | 공매도 · 옵션 포지션, 빚투 · 예탁금 API |
+| #156 · #157 | #175 | 섹터 그룹 API · 섹터 탭 |
+| #158 | #177 | 분석 · 차트 포지션 카드 · 옵션 벽 선 · 대시보드 빚투 구역 |
 
-다른 세션이 같은 기간에 #27(바이낸스 추정가) · #34(분석 기록 삭제 · 페이지네이션) · #39 를 머지했다.
-
-## 4. 남은 일
+## 4. 남은 일 · 다른 세션
 
 | 이슈 | 내용 | 메모 |
 |------|------|------|
-| #32 | 위 2절 | PR → 머지 → 배포 |
-| #18 | [FE] 분석 화면 차트(lightweight-charts) — 일봉 · 주봉 전환, 거래량, 진입 · 손절 · 목표선 | **다음 작업**. #32 의 `/api/candles` 사용 |
-| #25 | [FE] 차트에 지지 · 저항선 · 띠, 근거 툴팁 | #32 `/api/levels` · plan `support_resistance` |
-| #26 | [FE] 실시간 차트(1분봉) | |
-| #23 | [FE 잔여] 계획 카드에 현재가 · 진입가까지 거리 · 갱신 시각 | BE 는 #30 으로 끝 |
-| #17 | 매매 복기(토스 체결 내역) | 토스 연결됨 — 바로 가능 |
-| #24 · #35 · #36 · #37 · #6 | 용어 사전 · 원화/달러 환산 · 기록 페이지 · 총평가액 · OTP | #35~#37 은 다른 세션이 연 것 |
-| — | 계획 카드: `levels_origin` 이 섞이면(pm/trader) 경고 표시, `trader_levels` 로 바뀐 값 표시 | #31 리뷰 MEDIUM, 프론트 |
+| #148 잔여 | 위 2절 | 리뷰 → PR |
+| #146 | 투매 · 위험 점수 | 워크트리 `146-risk-regime`(다른 세션, runner · playbook_live · api 수정 중) |
+| #149 | 5분봉 진입 트리거 | b9 세션(trigger.py · playbook_live · backtest) |
+| #171 | 분석 속도 | 14 세션(timing.py) |
+| #145 · #147 · #150 · #167 | 타점 후보 확장 · 확률 보정 · 플레이북 카드(FE) · 하락장 가치 구간 | 아직 맡은 세션 없음 — 겹침 확인 후 |
+| #143 | 미국 장중 `last_tick.US` 운영 확인 | |
+| #160 | 코스피200 선물 현황 | |
 
 ## 5. 자주 쓰는 명령
 

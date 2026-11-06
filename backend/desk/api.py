@@ -941,13 +941,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # --- #154 short selling & options positioning ------------------------------------------
 
     async def _positioning(ticker: str) -> dict:
-        spot = None
-        if positioning.is_us_ticker(ticker):
+        async def spot_of() -> float | None:
+            # asked only when the options are not cached (a fully cached batch makes no quote calls)
             try:
-                spot = (await asyncio.wait_for(prices.quote(ticker), POSITIONING_QUOTE_SEC)).price
+                return (await asyncio.wait_for(prices.quote(ticker), POSITIONING_QUOTE_SEC)).price
             except Exception:  # noqa: BLE001 - Cboe carries its own (15-min delayed) price
-                spot = None
-        return await positioning.POSITIONING.get(ticker, spot)
+                return None
+        return await positioning.POSITIONING.get(ticker, spot_of=spot_of)
 
     @app.get("/api/positioning")
     async def ticker_positioning(ticker: str):
@@ -976,8 +976,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     return await _positioning(ticker)
                 except Exception as exc:  # noqa: BLE001 - one ticker down, the rest still answer
                     log.warning("positioning %s failed: %s", ticker, type(exc).__name__)
-                    return {"ticker": ticker, "supported": True, "short": None, "options": None, "verdict": None,
-                            "errors": [type(exc).__name__]}
+                    return positioning.blank(ticker, errors=[type(exc).__name__])
         return {"items": await asyncio.gather(*(one(t) for t in names))}
 
     @app.get("/api/regime")

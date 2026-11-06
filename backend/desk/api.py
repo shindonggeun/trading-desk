@@ -27,6 +27,7 @@ from . import (
     otp,
     outcome,
     playbook_live,
+    positioning,
     regime,
     review,
     verdict,
@@ -52,6 +53,8 @@ from .universe import Universe
 
 MAX_BOARD = 30          # tickers per /api/estimates call
 CALENDAR_INTERVAL_SEC = 6 * 3600   # economic calendar re-read (#148)
+POSITIONING_PARALLEL = 3   # Cboe chains are ~2 MB each (#154)
+POSITIONING_QUOTE_SEC = 5.0
 BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
 KST = timezone(timedelta(hours=9))   # Toss dates (order history from/to) are KST
 REVIEW_CACHE_SEC = 60
@@ -934,6 +937,48 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         favorites.remove(request.state.user.id, ticker)
+
+    # --- #154 short selling & options positioning ------------------------------------------
+
+    async def _positioning(ticker: str) -> dict:
+        spot = None
+        if positioning.is_us_ticker(ticker):
+            try:
+                spot = (await asyncio.wait_for(prices.quote(ticker), POSITIONING_QUOTE_SEC)).price
+            except Exception:  # noqa: BLE001 - Cboe carries its own (15-min delayed) price
+                spot = None
+        return await positioning.POSITIONING.get(ticker, spot)
+
+    @app.get("/api/positioning")
+    async def ticker_positioning(ticker: str):
+        """Short-volume share (FINRA), short interest, option put/call · walls · max pain · implied
+        move (Cboe) for a US ticker; ``supported: false`` with the reason for others."""
+        try:
+            ticker = clean_ticker(ticker)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return await _positioning(ticker)
+
+    @app.get("/api/positioning/batch")
+    async def batch_positioning(tickers: str):
+        """The same for up to MAX_BOARD tickers (the sector tab), a few at a time."""
+        try:
+            names = list(dict.fromkeys(clean_ticker(t) for t in tickers.split(",") if t.strip()))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if not names or len(names) > MAX_BOARD:
+            raise HTTPException(422, f"1 to {MAX_BOARD} tickers")
+        gate = asyncio.Semaphore(POSITIONING_PARALLEL)
+
+        async def one(ticker: str) -> dict:
+            async with gate:
+                try:
+                    return await _positioning(ticker)
+                except Exception as exc:  # noqa: BLE001 - one ticker down, the rest still answer
+                    log.warning("positioning %s failed: %s", ticker, type(exc).__name__)
+                    return {"ticker": ticker, "supported": True, "short": None, "options": None, "verdict": None,
+                            "errors": [type(exc).__name__]}
+        return {"items": await asyncio.gather(*(one(t) for t in names))}
 
     @app.get("/api/regime")
     def regime_view():

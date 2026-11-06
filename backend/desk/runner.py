@@ -616,6 +616,7 @@ class RunManager:
                 if lever:
                     plan = await self._leveraged_plan(run_id, request, lever, result, horizon,
                                                       (start, start_u), (live, live_u), (sr, sr_u), related)
+                    watch.mark("leverage")          # the leverage analyst's model call, apart from the desk
                 else:
                     plan = parse_plan(result.final_state)
                     plan.pop("underlying_levels", None)   # a model that wrote the line anyway
@@ -656,6 +657,8 @@ class RunManager:
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "done"})
             except Exception as exc:   # surface every failure to the page, not just the log
                 log.exception("run %s failed", run_id)
+                # a slow run that fails is still worth timing (up to the last finished stage)
+                log.info("run %s %s timing (failed): %s", run_id, request.ticker, watch.line())
                 message = f"{type(exc).__name__}: {exc}"
                 self.store.mark_failed(run_id, message)
                 self._publish(run_id, {"type": "error", "agent": "system", "content": message})

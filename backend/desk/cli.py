@@ -45,20 +45,31 @@ def _timing(engine, last: int) -> int:
     from .store import Store
 
     store, found, offset = Store(engine), [], 0
-    while len(found) < last and offset < 2000:          # scan back past failed and pre-#171 runs
-        page = store.list_runs(limit=100, offset=offset)
-        if not page:
-            break
-        found += [r["plan"]["timing"] for r in page if r["status"] == "done" and (r.get("plan") or {}).get("timing")]
-        offset += 100
-    engine.dispose()
+    try:
+        while len(found) < last and offset < 2000:      # scan back past failed and pre-#171 runs
+            page = store.list_runs(limit=100, offset=offset)
+            if not page:
+                break
+            found += [r["plan"]["timing"] for r in page
+                      if r["status"] == "done" and (r.get("plan") or {}).get("timing")]
+            offset += 100
+    finally:
+        engine.dispose()
     report = timing.summarize(found[:last])
-    fmt = lambda s: "—" if s["n"] == 0 else f"{s['mean']:>6}s avg  {s['median']:>6}s med  {s['max']:>6}s max"
+    def fmt(s: dict) -> str:
+        if s["n"] == 0:
+            return "—"
+        return f"{s['mean']:>6}s avg  {s['median']:>6}s med  {s['max']:>6}s max  (n={s['n']})"
+
     print(f"{report['runs']} runs  total {fmt(report['total'])}")
     for name, s in report["stages"].items():
         print(f"  {name:<22}{fmt(s)}")
+    print("  per turn (the first serial agent's first turn includes the wait for every parallel node):")
     for name, s in report["agents"].items():
-        print(f"    {name:<20}{fmt(s)}")
+        print(f"    {name:<24}{fmt(s)}")
+    print("  per run (an agent's turns added up):")
+    for name, s in report["agents_per_run"].items():
+        print(f"    {name:<24}{fmt(s)}")
     return 0
 
 

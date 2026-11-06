@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { Spark } from "../components/FavoritesPanel";
 import FavoriteStar from "../components/FavoriteStar";
@@ -43,11 +43,35 @@ function TickerSheet({ ticker, name, item, p, onClose }: {
     api.runs(1, 100).then((page) => setRun(page.items.find((r) => r.ticker === ticker && r.status === "done" && r.plan) ?? null))
       .catch(() => setRun(null));
     api.config().then(setConfig, () => {});
+  }, [ticker]);
+  // 모달: 초점은 시트 안에서만 돌고, 닫으면 연 타일로 돌아간다. 뒤 페이지는 스크롤하지 않는다.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     panel.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      if (e.key !== "Tab" || !panel.current) return;
+      const focusable = [...panel.current.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), [tabindex='0']")];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === panel.current)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [ticker, onClose]);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = overflow;
+      opener?.focus();
+    };
+  }, [onClose]);
 
   async function analyze() {
     setBusy(true);
@@ -96,7 +120,7 @@ function TickerSheet({ ticker, name, item, p, onClose }: {
         </div>
         {error && <p className="error small">{error}</p>}
         <div className="sheet-actions">
-          <button type="button" disabled={busy} onClick={analyze}>{busy ? "등록 중…" : "분석 시작"}</button>
+          <button type="button" disabled={busy || !config} onClick={analyze}>{busy ? "등록 중…" : "분석 시작"}</button>
           <a className="button secondary" href={`#/chart/${encodeURIComponent(ticker)}`}>차트</a>
           <a className="button secondary" href={`#/live?t=${encodeURIComponent(ticker)}`}>시세판</a>
         </div>
@@ -113,10 +137,15 @@ function SectorEditor({ sector, index, count, onSaved, onMove, onDeleted }: {
   const [name, setName] = useState(sector.name);
   const [pick, setPick] = useState<Picked>({ ticker: "" });
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   useEffect(() => setName(sector.name), [sector.name]);
-  const save = (patch: Parameters<typeof api.updateSector>[1]) =>
-    api.updateSector(sector.id, patch).then((s) => { setError(null); onSaved(s); })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  // 한 번에 하나: 종목 목록은 통째로 바뀌므로 앞 저장이 끝나기 전에 다음 목록을 만들지 않는다
+  const save = (patch: Parameters<typeof api.updateSector>[1]) => {
+    setSaving(true);
+    return api.updateSector(sector.id, patch).then((s) => { setError(null); onSaved(s); })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setSaving(false));
+  };
   const add = () => {
     const t = pick.ticker.trim().toUpperCase();
     if (!t) return;
@@ -128,7 +157,7 @@ function SectorEditor({ sector, index, count, onSaved, onMove, onDeleted }: {
       <form className="se-row" onSubmit={(e) => { e.preventDefault(); if (name.trim() && name.trim() !== sector.name) save({ name: name.trim() }); }}>
         <label className="sr-only" htmlFor={`se-name-${sector.id}`}>섹터 이름</label>
         <input id={`se-name-${sector.id}`} value={name} maxLength={40} onChange={(e) => setName(e.target.value)} />
-        <button type="submit" className="secondary" disabled={!name.trim() || name.trim() === sector.name}>이름 저장</button>
+        <button type="submit" className="secondary" disabled={saving || !name.trim() || name.trim() === sector.name}>이름 저장</button>
         <span className="se-move" role="group" aria-label="섹터 순서">
           <button type="button" className="secondary" disabled={index === 0} aria-label="앞으로" onClick={() => onMove(-1)}>←</button>
           <button type="button" className="secondary" disabled={index === count - 1} aria-label="뒤로" onClick={() => onMove(1)}>→</button>
@@ -136,20 +165,23 @@ function SectorEditor({ sector, index, count, onSaved, onMove, onDeleted }: {
       </form>
       <form className="se-row" onSubmit={(e) => { e.preventDefault(); add(); }}>
         <InstrumentSearch value={pick} onChange={setPick} />
-        <button type="submit" disabled={!pick.ticker.trim() || sector.tickers.length >= 30}>종목 추가</button>
+        <button type="submit" disabled={saving || !pick.ticker.trim() || sector.tickers.length >= 30}>종목 추가</button>
       </form>
       <ul className="se-tickers">
         {sector.tickers.map((t) => (
           <li key={t.ticker}>
             <span>{t.name ?? t.ticker} <span className="muted small">{t.ticker}</span></span>
-            <button type="button" className="link" aria-label={`${t.name ?? t.ticker} 빼기`}
+            <button type="button" className="link" disabled={saving} aria-label={`${t.name ?? t.ticker} 빼기`}
               onClick={() => save({ tickers: sector.tickers.filter((x) => x.ticker !== t.ticker) })}>×</button>
           </li>
         ))}
       </ul>
       {error && <p className="error small">{error}</p>}
       <button type="button" className="link small se-danger"
-        onClick={() => { if (window.confirm(`"${sector.name}" 섹터를 지울까요?`)) api.deleteSector(sector.id).then(onDeleted, (e) => setError(String(e))); }}>
+        onClick={() => {
+          if (!window.confirm(`"${sector.name}" 섹터를 지울까요? (섹터를 모두 지우면 기본 섹터가 다시 생깁니다)`)) return;
+          api.deleteSector(sector.id).then(onDeleted, (e) => setError(e instanceof Error ? e.message : String(e)));
+        }}>
         섹터 지우기
       </button>
     </section>
@@ -173,6 +205,20 @@ export default function Sectors() {
   const [creating, setCreating] = useState("");
   const [sheet, setSheet] = useState<string | null>(null);
   const [updated, setUpdated] = useState<string | null>(null);
+
+  // 칩 줄을 위 메뉴(휴대폰에선 두 줄, 고정) 바로 밑에 붙이려고 메뉴 높이를 CSS 로 넘긴다(대시보드와 같은 방식)
+  useLayoutEffect(() => {
+    const bar = document.querySelector<HTMLElement>(".topbar");
+    if (!bar) return;
+    const set = () => document.documentElement.style.setProperty("--topbar-h", `${Math.round(bar.getBoundingClientRect().height)}px`);
+    set();
+    const ro = new ResizeObserver(set);
+    ro.observe(bar);
+    return () => {
+      ro.disconnect();
+      document.documentElement.style.removeProperty("--topbar-h");
+    };
+  }, []);
 
   const load = () => api.sectors().then((s) => { setSectors(s); setError(null); })
     .catch((e) => { setError(e instanceof Error ? e.message : String(e)); setSectors((cur) => cur ?? []); });
@@ -201,7 +247,9 @@ export default function Sectors() {
     };
     tick();
     const t = window.setInterval(tick, QUOTE_MS);
-    return () => { alive = false; window.clearInterval(t); };
+    const onShow = () => { if (!document.hidden) tick(); };   // 가려진 동안 건너뛴 차례를 바로 채운다
+    document.addEventListener("visibilitychange", onShow);
+    return () => { alive = false; window.clearInterval(t); document.removeEventListener("visibilitychange", onShow); };
   }, [key]);
 
   // 공매도 · 옵션: 미국 종목만, 15분마다
@@ -209,15 +257,22 @@ export default function Sectors() {
     const us = key.split(",").filter((t) => US.test(t));
     if (!us.length) return;
     let alive = true;
+    let missed = false;
     const tick = () => {
-      if (document.hidden) return;
+      if (document.hidden) {
+        missed = true;
+        return;
+      }
+      missed = false;
       api.positioningBatch(us).then((r) => {
         if (alive) setPos((cur) => ({ ...cur, ...Object.fromEntries(r.items.map((p) => [p.ticker, p])) }));
       }).catch(() => alive && setPos((cur) => ({ ...cur, ...Object.fromEntries(us.filter((t) => !(t in cur)).map((t) => [t, null])) })));
     };
     tick();
     const t = window.setInterval(tick, POSITIONING_MS);
-    return () => { alive = false; window.clearInterval(t); };
+    const onShow = () => { if (!document.hidden && missed) tick(); };
+    document.addEventListener("visibilitychange", onShow);
+    return () => { alive = false; window.clearInterval(t); document.removeEventListener("visibilitychange", onShow); };
   }, [key]);
 
   const korean = tickers.some(isKorean);
@@ -226,7 +281,8 @@ export default function Sectors() {
   }, [korean, credit]);
 
   const rows = useMemo(() => {
-    const list = (sector?.tickers ?? []).map((t, i) => ({ ...t, i, it: items[t.ticker], p: pos[t.ticker] ?? undefined }));
+    // undefined = 아직, null = 실패(시트가 "불러오지 못했습니다"로 말한다)
+    const list = (sector?.tickers ?? []).map((t, i) => ({ ...t, i, it: items[t.ticker], p: t.ticker in pos ? pos[t.ticker] : undefined }));
     const by: Record<SortKey, (r: typeof list[number]) => number> = {
       base: (r) => r.i,
       change: (r) => -(r.it?.change_pct ?? -1e9),
@@ -255,12 +311,16 @@ export default function Sectors() {
     if (j < 0 || j >= ids.length) return;
     [ids[i], ids[j]] = [ids[j], ids[i]];
     // 다른 탭에서 바뀌었으면(422) 다시 읽는다
-    api.reorderSectors(ids).then(setSectors, () => load());
+    pickSector(sector.id);   // 옮긴 섹터를 계속 보고 있게
+    api.reorderSectors(ids).then(setSectors, () => {
+      setError("다른 곳에서 섹터가 바뀌어 다시 읽었습니다. 한 번 더 옮겨 주세요.");
+      load();
+    });
   };
   const create = () => {
     const name = creating.trim();
     if (!name) return;
-    api.createSector(name).then((s) => { setSectors((cur) => [...(cur ?? []), s]); pickSector(s.id); setCreating(""); setEditing(true); })
+    api.createSector(name).then((s) => { setSectors((cur) => [...(cur ?? []), s]); pickSector(s.id); setCreating(""); setError(null); setEditing(true); })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   };
 
@@ -269,12 +329,14 @@ export default function Sectors() {
   const sheetRow = rows.find((r) => r.ticker === sheet);
   return (
     <main className="sectors">
-      <div className="sector-chips" role="tablist" aria-label="섹터">
-        {sectors.map((s) => (
-          <button key={s.id} type="button" role="tab" aria-selected={s.id === sector?.id}
-            className={`chip${s.id === sector?.id ? " chip-on" : ""}`} onClick={() => pickSector(s.id)}>{s.name}</button>
-        ))}
-        <button type="button" className="chip" aria-pressed={editing} onClick={() => setEditing((v) => !v)}>{editing ? "편집 끝" : "편집"}</button>
+      <div className="sector-chips">
+        <span className="sector-chip-list" role="group" aria-label="섹터">
+          {sectors.map((s) => (
+            <button key={s.id} type="button" aria-pressed={s.id === sector?.id}
+              className={`chip${s.id === sector?.id ? " chip-on" : ""}`} onClick={() => pickSector(s.id)}>{s.name}</button>
+          ))}
+        </span>
+        <button type="button" className="chip sector-edit" aria-pressed={editing} onClick={() => setEditing((v) => !v)}>{editing ? "편집 끝" : "편집"}</button>
       </div>
       {error && <p className="error small">{error}</p>}
       {editing && (
@@ -290,8 +352,16 @@ export default function Sectors() {
       ) : (
         <>
           {editing && (
-            <SectorEditor sector={sector} index={sectors.indexOf(sector)} count={sectors.length} onSaved={replace} onMove={move}
-              onDeleted={() => { setSectors((cur) => cur?.filter((s) => s.id !== sector.id) ?? cur); setActiveId(null); load(); }} />
+            <SectorEditor key={sector.id} sector={sector} index={sectors.indexOf(sector)} count={sectors.length} onSaved={replace} onMove={move}
+              onDeleted={() => {
+                // 이웃 섹터로(지운 섹터의 주소에 머물지 않게)
+                const at = sectors.indexOf(sector);
+                const next = sectors[at + 1] ?? sectors[at - 1];
+                setSectors((cur) => cur?.filter((s) => s.id !== sector.id) ?? cur);
+                if (next) pickSector(next.id);
+                else { setActiveId(null); window.history.replaceState(null, "", "#/sectors"); }
+                load();
+              }} />
           )}
           <section className="card sector-summary" aria-label={`${sector.name} 요약`}>
             <div className="ss-item"><span className="muted small">평균 등락</span>
@@ -309,13 +379,13 @@ export default function Sectors() {
               <button key={s.id} type="button" className={`chip${sort === s.id ? " chip-on" : ""}`} aria-pressed={sort === s.id}
                 onClick={() => setSort(s.id)}>{s.label}</button>
             ))}
-            <span className="muted small">{updated ? `${time(updated)} 갱신` : "불러오는 중"}</span>
+            <span className="muted small">{updated && rows.some((r) => r.it) ? `${time(updated)} 갱신` : "불러오는 중"}</span>
           </div>
           {rows.length === 0 ? (
             <p className="empty-state">이 섹터에 종목이 없습니다. 편집에서 종목을 추가하세요.</p>
           ) : (
             <div className="qb-grid sector-grid">
-              {rows.map((r, order) => {
+              {rows.map((r) => {
                 const ch = r.it?.change_pct;
                 const tone = ch == null ? "" : ch > 0 ? "up" : ch < 0 ? "down" : "";
                 const name = r.name ?? r.ticker;
@@ -332,7 +402,7 @@ export default function Sectors() {
                       {price(r.it?.price ?? null)}
                       <span className={`small ${tone}`}>{ch != null ? ` ${ch > 0 ? "+" : ""}${ch.toFixed(2)}%` : ""}</span>
                     </span>
-                    <Spark ticker={r.ticker} tone={tone} order={order} />
+                    <Spark ticker={r.ticker} tone={tone} order={r.i} />
                     <span className="sector-badges">
                       {positioningBadges(r.p).map((b) => <span key={b.text} className={`sector-badge ${b.tone}`}>{b.text}</span>)}
                       {r.p?.short?.volume_ratio != null && <span className="muted small">공매도 {r.p.short.volume_ratio}%</span>}

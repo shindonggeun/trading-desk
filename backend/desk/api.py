@@ -50,6 +50,7 @@ from .prices import INTERVALS, PriceSource
 from .profile import PROFILES
 from .related import collect as collect_related
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
+from .sectors import Duplicate, NotFound, Sectors, clean_name, clean_tickers
 from .settings import Settings, load
 from .sr import support_resistance
 from .store import TERMINAL, Store, iso
@@ -170,6 +171,20 @@ class FavoritesIn(BaseModel):
     items: list[FavoriteIn] = Field(max_length=200)
 
 
+class SectorIn(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    tickers: list[FavoriteIn] = Field(default_factory=list, max_length=200)   # repeats dropped, then 30 max
+
+
+class SectorPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=40)
+    tickers: list[FavoriteIn] | None = Field(default=None, max_length=200)
+
+
+class SectorOrderIn(BaseModel):
+    ids: list[int] = Field(max_length=50)
+
+
 def purge_expired_runs(store: Store, retention_days: int) -> int:
     """Delete finished runs older than ``retention_days`` (0 = keep everything)."""
     if retention_days <= 0:
@@ -197,6 +212,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     otp_fails = LoginThrottle(per_ip=otp.USER_FAILS, window_sec=otp.USER_FAIL_WINDOW_SEC)
     universe = Universe(engine)
     favorites = Favorites(engine, lambda ticker: (universe.lookup(ticker) or {}).get("name"))
+    sectors = Sectors(engine)
     hub = Hub()
     broker = make_broker(settings)
     kis_feed = kis_stream.make(settings) if prices is None else None   # tests bring their own prices
@@ -1022,6 +1038,51 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.warning("positioning %s failed: %s", ticker, type(exc).__name__)
                     return positioning.blank(ticker, errors=[type(exc).__name__])
         return {"items": await asyncio.gather(*(one(t) for t in names))}
+
+    # --- sector tabs (#156): per account, ordered ---------------------------------------------
+
+    def _sector_body(name: str | None, items: list[FavoriteIn] | None):
+        try:
+            clean = clean_name(name) if name is not None else None
+            tickers = clean_tickers([(i.ticker, i.name) for i in items]) if items is not None else None
+        except TooMany as exc:
+            raise HTTPException(422, str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return clean, tickers
+
+    def _sector_call(fn, *args):
+        try:
+            return fn(*args)
+        except NotFound as exc:
+            raise HTTPException(404, str(exc)) from None
+        except (TooMany, Duplicate, Conflict) as exc:
+            raise HTTPException(409, str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.get("/api/sectors")
+    def list_sectors(request: Request):
+        """The account's sector tabs in order; a new account gets the default sectors."""
+        return _sector_call(sectors.list, request.state.user.id)
+
+    @app.post("/api/sectors", status_code=201)
+    def create_sector(body: SectorIn, request: Request):
+        name, tickers = _sector_body(body.name, body.tickers)
+        return _sector_call(sectors.create, request.state.user.id, name, tickers)
+
+    @app.put("/api/sectors/order")       # before /{sector_id}: "order" is not an id
+    def reorder_sectors(body: SectorOrderIn, request: Request):
+        return _sector_call(sectors.reorder, request.state.user.id, body.ids)
+
+    @app.put("/api/sectors/{sector_id}")
+    def update_sector(sector_id: int, body: SectorPatch, request: Request):
+        name, tickers = _sector_body(body.name, body.tickers)
+        return _sector_call(sectors.update, request.state.user.id, sector_id, name, tickers)
+
+    @app.delete("/api/sectors/{sector_id}", status_code=204)
+    def delete_sector(sector_id: int, request: Request):
+        sectors.remove(request.state.user.id, sector_id)
 
     @app.get("/api/regime")
     def regime_view():

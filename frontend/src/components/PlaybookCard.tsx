@@ -19,15 +19,16 @@ const CONDITION: Record<string, string> = {
 const SOURCE: Record<string, string> = { sr: "지지 · 저항", vp: "매물대", fib: "피보나치", trend: "추세선", ma: "이평선", vwap: "VWAP", atr: "ATR" };
 const RESULT: Record<string, string> = {
   waiting: "대기", open: "보유 중", t1: "T1 도달", t2: "T2 도달", t1_be: "T1 뒤 본전", stop: "손절", time_stop: "시간 손절",
-  flat: "당일 청산", expired: "만료", unfilled: "미체결", invalid: "채점 불가", unscorable: "채점 불가",
+  flat: "당일 청산", unfilled: "미체결", invalid: "채점 불가", unscorable: "채점 불가", error: "채점 오류",
 };
 
-export type PlaybookState = "none" | "waiting" | "near" | "in_zone" | "beyond" | "confirmed" | "invalid";
+export type PlaybookState = "none" | "waiting" | "near" | "in_zone" | "beyond" | "confirmed" | "invalid" | "closed";
 const STATE: Record<PlaybookState, string> = {
-  none: "타점 없음", waiting: "대기", near: "구역 근접", in_zone: "구역 안", beyond: "구역 지나침", confirmed: "확인됨", invalid: "무효",
+  none: "타점 없음", waiting: "대기", near: "구역 근접", in_zone: "구역 안", beyond: "구역 지나침", confirmed: "확인됨", invalid: "무효", closed: "끝남",
 };
-/** 채점이 이미 끝난(손절 · 시간 손절 · 만료) 방향은 가격과 상관없이 무효 */
-const CLOSED = new Set(["stop", "time_stop", "expired"]);
+/** 채점이 끝난 방향은 가격과 상관없이 — 손절 · 시간 손절은 무효, 목표 · 본전 · 당일 청산 · 미체결은 끝남 */
+const LOST = new Set(["stop", "time_stop"]);
+const ENDED = new Set(["t2", "t1_be", "flat", "unfilled"]);
 
 const has = (side: PlaybookSide) => side.setup !== "none" && (!!side.zone || side.entries.length > 0 || !!side.trigger);
 
@@ -39,7 +40,8 @@ const has = (side: PlaybookSide) => side.setup !== "none" && (!!side.zone || sid
 export function playbookState(side: PlaybookSide, dir: "long" | "short", p: number | null, atr: number,
   result?: PlaybookOutcome): PlaybookState {
   if (!has(side)) return "none";
-  if (result && CLOSED.has(result.status)) return "invalid";
+  if (result && LOST.has(result.status)) return "invalid";
+  if (result && ENDED.has(result.status)) return "closed";
   if (p == null) return "waiting";
   if (side.stop != null && (dir === "long" ? p <= side.stop : p >= side.stop)) return "invalid";
   const lo = side.zone?.low ?? side.trigger?.price ?? side.entries[0]?.price;

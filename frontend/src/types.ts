@@ -228,10 +228,14 @@ export interface PlaybookSide {
 }
 
 export type PlaybookOutcomeStatus =
-  | "waiting" | "open" | "t1" | "t2" | "t1_be" | "stop" | "time_stop" | "flat" | "expired" | "unfilled" | "invalid" | "unscorable";
+  | "waiting" | "open" | "t1" | "t2" | "t1_be" | "stop" | "time_stop" | "flat" | "unfilled" | "invalid" | "unscorable" | "error";
 
 export interface PlaybookOutcome {
   status: PlaybookOutcomeStatus;
+  setup?: PlaybookSetup;
+  took_t1?: boolean;
+  score?: number;
+  detail?: string;
   filled_shares?: number;
   avg_fill?: number | null;
   r?: number | null;
@@ -249,7 +253,9 @@ export interface Outcome {
   late?: boolean;
   partial_first_session?: boolean;
   /** #116 플레이북 채점 */
-  playbooks?: { version: number; long?: PlaybookOutcome; short?: PlaybookOutcome };
+  playbooks?: { version: number; regime?: RegimeId; long?: PlaybookOutcome; short?: PlaybookOutcome };
+  /** #116: 플레이북 채점 진행 상태 */
+  sweep_status?: string;
 }
 
 /** GET /api/stats/plans 의 한 묶음(desk/outcome.py _group). */

@@ -4,6 +4,7 @@
  * 띠는 축 라벨을 달지 않고 왼쪽 안쪽에 작은 글자 — 오른쪽 축은 진입 · 손절 · 목표만 쓴다.
  */
 import {
+  type IChartApi,
   type IPriceLine,
   type IPrimitivePaneRenderer,
   type IPrimitivePaneView,
@@ -88,6 +89,7 @@ export class PriceBands implements ISeriesPrimitive<Time> {
         const y2 = s.priceToCoordinate(b.bottom);
         if (y1 == null || y2 == null) continue;
         const from = b.from != null ? this.chart?.timeScale().timeToCoordinate(b.from) ?? null : null;
+        if (b.from != null && from == null) continue;   // 그 봉이 이 차트에 없다 — 전체 폭으로 칠하지 않는다
         const x0 = Math.max(0, (from ?? 0) * hr);
         if (x0 >= bitmapSize.width) continue;
         const top = Math.round(Math.min(y1, y2) * vr);
@@ -109,14 +111,14 @@ export class PriceBands implements ISeriesPrimitive<Time> {
         const py = Math.round(y * vr);
         ctx.fillStyle = m.color;
         for (let x = 0; x < bitmapSize.width; x += 8 * hr) ctx.fillRect(x, py, 3 * hr, Math.max(1, Math.round(vr)));
-        if (m.label) ctx.fillText(m.label, 6 * hr, py - 13 * vr);
+        if (m.label) ctx.fillText(m.label, 6 * hr, Math.max(0, py - 13 * vr));   // 맨 위 비율 글자가 잘리지 않게
       }
       ctx.restore();
     });
   }
 }
 
-/** 지지 · 저항 구역의 반폭 — 서버가 구역을 묶은 폭(반 ATR)의 절반, ATR 이 없으면 가격의 0.15%. */
+/** 지지 · 저항 구역의 반폭 — 서버가 구역을 묶는 폭(반 ATR)의 절반에 가깝게, ATR 이 없으면 가격의 0.15%(근사). */
 export function zoneHalfWidth(level: SrLevel, atr: number | null | undefined): number {
   return Math.max((atr ?? 0) * 0.25, level.price * 0.0015);
 }
@@ -161,20 +163,51 @@ export function planBands(plan: Plan | null, from: Time | null, colors: { loss: 
   ];
 }
 
-/** 오른쪽 축의 가까운 라벨은 하나로 — 위 라벨에 이름을 합치고 아래 것은 축 라벨을 끈다. */
-export function mergeAxisLabels(series: ISeriesApi<SeriesType>, lines: IPriceLine[], minGapPx = 16) {
-  const placed = lines
-    .map((line) => ({ line, y: (series.priceToCoordinate(line.options().price) ?? NaN) as number }))
-    .filter((p) => Number.isFinite(p.y) && p.line.options().axisLabelVisible)
-    .sort((a, b) => a.y - b.y);
-  let keep: { line: IPriceLine; y: number } | null = null;
-  for (const p of placed) {
-    if (keep && p.y - keep.y < minGapPx) {
-      const title = [keep.line.options().title, p.line.options().title].filter(Boolean).join(" · ");
-      keep.line.applyOptions({ title });
-      p.line.applyOptions({ axisLabelVisible: false, title: "" });
-    } else {
-      keep = p;
+/**
+ * 오른쪽 축의 가까운 라벨은 하나로 — 위 라벨에 이름을 합치고 아래 것은 축 라벨을 끈다. 좌표는 줌 · 이동 · 새 봉 ·
+ * 늦게 온 데이터로 바뀌니, 원래 제목 · 표시를 기억해 두고 보는 범위 · 크기가 바뀔 때와 1초마다 다시 계산한다
+ * (바뀐 것만 적용 — 같은 값이면 다시 그리지 않는다). 돌려준 함수로 멈춘다(차트가 살아 있을 때만 구독을 푼다).
+ */
+export function keepAxisLabelsApart(chart: IChartApi, series: ISeriesApi<SeriesType>, lines: IPriceLine[], minGapPx = 16) {
+  const original = lines.map((line) => ({ line, title: line.options().title, visible: line.options().axisLabelVisible }));
+  let frame = 0;
+  const run = () => {
+    frame = 0;
+    const want = new Map(original.map((o) => [o.line, { title: o.title, visible: o.visible }]));
+    const placed = original
+      .filter((o) => o.visible)
+      .map((o) => ({ o, y: (series.priceToCoordinate(o.line.options().price) ?? NaN) as number }))
+      .filter((p) => Number.isFinite(p.y))
+      .sort((a, b) => a.y - b.y);
+    let keep: (typeof placed)[number] | null = null;
+    for (const p of placed) {
+      if (keep && p.y - keep.y < minGapPx) {
+        const k = want.get(keep.o.line)!;
+        k.title = [k.title, p.o.title].filter(Boolean).join(" · ");
+        want.set(p.o.line, { title: "", visible: false });
+      } else {
+        keep = p;
+      }
     }
-  }
+    for (const [line, w] of want) {
+      const cur = line.options();
+      if (cur.title !== w.title || cur.axisLabelVisible !== w.visible) line.applyOptions({ title: w.title, axisLabelVisible: w.visible });
+    }
+  };
+  const schedule = () => {
+    if (!frame) frame = requestAnimationFrame(run);
+  };
+  schedule();
+  const scale = chart.timeScale();
+  scale.subscribeVisibleLogicalRangeChange(schedule);
+  scale.subscribeSizeChange(schedule);
+  const timer = window.setInterval(schedule, 1000);   // 새 봉 · 자동 축척은 범위 이벤트 없이도 좌표를 바꾼다
+  return (alive: boolean) => {
+    cancelAnimationFrame(frame);
+    window.clearInterval(timer);
+    if (alive) {
+      scale.unsubscribeVisibleLogicalRangeChange(schedule);
+      scale.unsubscribeSizeChange(schedule);
+    }
+  };
 }

@@ -19,7 +19,7 @@ import {
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles, type ReviewRow } from "../api";
 import { price } from "../format";
-import { mergeAxisLabels, nearestLevels, planBands, PriceBands, srBands, withAlpha, zoneHalfWidth } from "./chartBands";
+import { keepAxisLabelsApart, nearestLevels, planBands, PriceBands, srBands, withAlpha, zoneHalfWidth } from "./chartBands";
 import type { FibLevel, Fibonacci, Plan, SrLevel, SupportResistance, Trendline } from "../types";
 
 export type Interval = Exclude<CandleInterval, "1m">;
@@ -52,10 +52,13 @@ const NEAR_LEVELS = 3;
 const rsiHeight = (h: number) => Math.round(Math.min(110, Math.max(56, h * 0.22)));
 
 // 주기 · 표시 선택은 이 브라우저에 기억한다(사생활 모드 · 막힌 저장소에서도 화면은 그대로 동작).
-const PREFS_KEY = "desk.priceChart.v1";
+const PREFS_KEY = "desk.priceChart.v2";
+const OLD_PREFS_KEY = "desk.priceChart.v1";   // #98 전 — 피보나치는 기본 꺼짐으로 바뀌어 옮기지 않는다
 function loadPrefs(): { interval: Interval; show: Show } {
   try {
-    const raw = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}");
+    const stored = localStorage.getItem(PREFS_KEY);
+    const raw = JSON.parse(stored ?? localStorage.getItem(OLD_PREFS_KEY) ?? "{}");
+    if (stored == null && raw.show) delete raw.show.fib;
     const interval = INTERVALS.some((i) => i.iv === raw.interval) ? (raw.interval as Interval) : "1d";
     const show = { ...DEFAULT_SHOW };
     for (const k of Object.keys(DEFAULT_SHOW) as (keyof Show)[]) if (typeof raw.show?.[k] === "boolean") show[k] = raw.show[k];
@@ -507,7 +510,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (value != null) made.push(series.createPriceLine({ price: value, title, color, lineWidth: 2, lineStyle, axisLabelVisible: true }));
     }
     // 오른쪽 축의 가까운 라벨은 하나로(좌표는 그려진 뒤에 나온다)
-    const frame = requestAnimationFrame(() => drawn.alive.current && mergeAxisLabels(series, made));
+    const stopLabels = keepAxisLabelsApart(drawn.chart, series, made);
     const near = lines.map(([v]) => v).filter((v): v is number => v != null && Math.abs(v - lastClose) / lastClose <= AUTOSCALE_MAX_GAP);
     series.applyOptions({
       autoscaleInfoProvider: (base: () => { priceRange: { minValue: number; maxValue: number } } | null) => {
@@ -548,7 +551,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     markers.setMarkers(list.map(({ key, m }) => ({ ...m, time: time(key) }) as SeriesMarker<Time>));
     return () => {
       // 봉이 바뀌면 차트 effect 가 먼저 chart.remove() 한다 — 그때는 지울 선도 이미 없다.
-      cancelAnimationFrame(frame);
+      stopLabels(drawn.alive.current);
       if (drawn.alive.current) for (const line of made) series.removePriceLine(line);
     };
   }, [drawn, plan, fills, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines]);
@@ -697,17 +700,17 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         const d = Math.abs(y - pt.y);
         if (d <= 5 && (!best || d < best.d)) best = { hit: make(y), d };
       };
+      // 선 근처(5px) 후보가 먼저 — 추세선 · 피보나치가 구역 띠를 지나가도 그 선의 근거가 뜨게
+      let inBand: { hit: Hover; d: number } | null = null;
       for (const level of srShown) {
-        // 띠 안에 커서가 있으면 그 구역(띠 밖이면 가운데 선 근처)
+        const make = (y: number): Hover => ({ type: "sr", level, key: `sr-${level.kind}-${level.price}`, x: pt.x, y });
+        consider(level.price, make);
         const hw = zoneHalfWidth(level, srSource?.atr);
         const a = series.priceToCoordinate(level.price + hw);
         const b = series.priceToCoordinate(level.price - hw);
-        const make = (y: number): Hover => ({ type: "sr", level, key: `sr-${level.kind}-${level.price}`, x: pt.x, y });
         if (a != null && b != null && pt.y >= Math.min(a, b) && pt.y <= Math.max(a, b)) {
-          const d = Math.abs((a + b) / 2 - pt.y) / 100;   // 겹친 띠는 가운데에 가까운 쪽
-          if (!best || d < best.d) best = { hit: make((a + b) / 2), d };
-        } else {
-          consider(level.price, make);
+          const d = Math.abs((a + b) / 2 - pt.y);   // 겹친 띠는 가운데에 가까운 쪽
+          if (!inBand || d < inBand.d) inBand = { hit: make((a + b) / 2), d };
         }
       }
       if (fib) for (const level of fib.levels) consider(level.price, (y) => ({ type: "fib", level, fib, key: `fib-${level.ratio}`, x: pt.x, y }));
@@ -715,8 +718,9 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         const v = param.seriesData.get(s) as { value?: number } | undefined;
         if (v?.value != null) consider(v.value, (y) => ({ type: "trend", line, here: v.value as number, key: `trend-${line.kind}-${line.anchors[0].at}-${line.anchors[1]?.at}`, x: pt.x, y }));
       }
+      // 선 근처가 없으면 커서가 든 구역 띠
+      const hit = (best as { hit: Hover } | null)?.hit ?? (inBand as { hit: Hover } | null)?.hit ?? null;
       // 다른 선으로 옮겨 갈 때만 다시 그린다(마우스 이동마다 렌더하지 않게).
-      const hit = (best as { hit: Hover } | null)?.hit ?? null;
       setHover((prev) => (!hit ? null : prev?.key === hit.key ? prev : hit));
     };
     chart.subscribeCrosshairMove(onMove);

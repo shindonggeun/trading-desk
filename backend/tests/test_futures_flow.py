@@ -28,8 +28,8 @@ PRICE_OUT = {
     "output3": {"bstp_nmix_prpr": "413.20"},
     "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "정상처리 되었습니다.",
 }
-INVESTOR_OUT = {"output": [{"frgn_ntby_qty": "-4100", "frgn_ntby_tr_pbmn": "-845000", "prsn_ntby_qty": "2300",
-                            "prsn_ntby_tr_pbmn": "474000", "orgn_ntby_qty": "1800", "orgn_ntby_tr_pbmn": "371000"}],
+INVESTOR_OUT = {"output": [{"frgn_ntby_qty": "-4100", "frgn_ntby_tr_pbmn": "-422670", "prsn_ntby_qty": "2300",
+                            "prsn_ntby_tr_pbmn": "237100", "orgn_ntby_qty": "1800", "orgn_ntby_tr_pbmn": "185560"}],
                 "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "ok"}
 
 
@@ -40,10 +40,15 @@ def test_price_and_investors_are_normalized():
     assert p["open_interest"] == 285000 and p["open_interest_change"] == -4200
     assert p["market_basis"] == -0.85 and p["structure"] == "backwardation" and p["expiry"] == "2026-12-10"
     inv = ff.normalize_investors(INVESTOR_OUT["output"])
-    assert inv["foreign"] == {"net_contracts": -4100, "net_value_mn": -845000}
+    assert inv["foreign"] == {"net_contracts": -4100, "net_value_mn": -422670}
     assert ff._looks_like_futures(inv, p)
     # a stock-market answer (millions of shares) is not taken for futures
     assert not ff._looks_like_futures({"foreign": {"net_contracts": 9_000_000, "net_value_mn": 1}}, p)
+    # before the open the volume is 0: the value per contract still tells shares from contracts
+    shares = {"foreign": {"net_contracts": 1_200_000, "net_value_mn": 84_000}}          # ~70,000 won a share
+    mini = {"foreign": {"net_contracts": 4000, "net_value_mn": -4000 * 412.35 * 0.05}}   # mini futures
+    assert not ff._looks_like_futures(shares, {**p, "volume": 0}) and not ff._looks_like_futures(mini, p)
+    assert ff._looks_like_futures(inv, {**p, "volume": 0})
 
 
 def _transport(calls, *, token_status=200, price=PRICE_OUT, investors=INVESTOR_OUT, expire_once=False):
@@ -118,17 +123,50 @@ def test_the_flow_shows_futures_and_flags_a_foreign_split():
     assert out["supported"] and out["error"] is None and out["front"]["code"] == "101X12"
     assert out["price"]["open_interest"] == 285000 and out["investors"]["foreign"]["net_contracts"] == -4100
     assert out["split"] == {"spot_net": 320_000_000_000, "spot_date": "2026-11-06", "futures_net_contracts": -4100,
-                            "split": True, "kind": "spot_buy_futures_sell"}
+                            "split": True, "kind": "spot_buy_futures_sell", "reason": None}
+
+
+def test_a_split_needs_the_same_day_and_real_size():
+    inv = {"foreign": {"net_contracts": -4100, "net_value_mn": -422670}}
+    spot = lambda d, n: {"records": [{"date": d, "investors": {"foreign": {"net": n}}}]}
+    today = date(2026, 11, 6)
+    assert ff.foreign_split(spot("2026-11-05", 3.2e11), inv, today)["reason"] == "spot_not_today"
+    assert ff.foreign_split(spot("2026-11-06", 1e8), inv, today)["reason"] == "small"
+    assert ff.foreign_split(spot("2026-11-06", -3.2e11), inv, today)["split"] is False   # both selling
 
 
 def test_without_keys_or_with_a_failure_the_flow_says_why():
     none = asyncio.run(_flow(None).get())
     assert none["supported"] is False and "키" in none["error"]
+    assert set(none) == set(asyncio.run(_flow(_rest([])).get()))          # the same keys on every path
     broken = asyncio.run(_flow(_rest([], price={"rt_cd": "1", "msg_cd": "OPSQ0002", "msg1": "없는 종목"})).get())
     assert broken["supported"] and broken["price"] is None and "OPSQ0002" in broken["error"]
     wrong = {"output": [{"frgn_ntby_qty": "9000000", "frgn_ntby_tr_pbmn": "1"}], "rt_cd": "0"}
     odd = asyncio.run(_flow(_rest([], investors=wrong)).get())
     assert odd["investors"] is None and "확인" in odd["investors_error"] and odd["price"]["price"] == 412.35
+
+
+def test_an_empty_quote_or_a_failed_part_is_retried_soon():
+    clock = [0.0]
+    empty = {"output1": {}, "rt_cd": "0"}
+    flow = ff.FuturesFlow(_rest([], price=empty), None, clock=lambda: clock[0],
+                          now=lambda: datetime(2026, 11, 6, 9, 0, tzinfo=UTC))       # 18:00 KST, closed
+    out = asyncio.run(flow.get())
+    assert out["price"] is None and "101X12" in out["error"]
+    assert flow._cache[1] == ff.CACHE_FAIL_SEC
+    part = ff.FuturesFlow(_rest([], investors={"rt_cd": "1", "msg_cd": "EGW00201"}), None, clock=lambda: 0.0,
+                          now=lambda: datetime(2026, 11, 6, 9, 0, tzinfo=UTC))
+    got = asyncio.run(part.get())
+    assert got["price"]["price"] == 412.35 and got["investors_error"] and part._cache[1] == ff.CACHE_FAIL_SEC
+
+
+def test_the_derivatives_session_and_off_reasons():
+    assert ff.futures_open(datetime(2026, 11, 5, 23, 50, tzinfo=UTC))          # 08:50 KST
+    assert not ff.futures_open(datetime(2026, 11, 6, 6, 50, tzinfo=UTC))       # 15:50 KST
+    s = SimpleNamespace(fake_runs=False, kis_app_key=KEY, kis_app_secret=SECRET, kis_rest_url="http://x")
+    assert "https" in ff.off_reason(s)
+    assert "가짜" in ff.off_reason(SimpleNamespace(fake_runs=True, kis_app_key="", kis_app_secret="", kis_rest_url=""))
+    assert ff.off_reason(SimpleNamespace(fake_runs=False, kis_app_key=KEY, kis_app_secret=SECRET, kis_rest_url="")) is None
 
 
 def test_make_needs_both_keys_and_https():
@@ -147,3 +185,27 @@ def test_api_answers_unsupported_without_keys(db_url):
 def test_api_needs_a_session(db_url):
     with _client(db_url, login=False) as client:
         assert client.get("/api/market/futures").status_code == 401
+
+
+def test_kis_messages_stay_in_the_log_and_never_carry_the_key():
+    leak = {"rt_cd": "1", "msg_cd": "EGW00105", "msg1": f"유효하지 않은 AppKey {KEY}"}
+    out = asyncio.run(_flow(_rest([], price=leak)).get())
+    assert "EGW00105" in out["error"] and KEY not in out["error"] and "AppKey" not in out["error"]
+
+
+def test_refused_issues_back_off():
+    calls, now = [], [100.0]
+    rest = _rest(calls, clock=lambda: now[0], token_status=403)
+    issued = lambda: sum(1 for c in calls if c.url.path == ff.TOKEN_PATH)
+
+    def ask(after):
+        now[0] += after
+        with pytest.raises(ff.KisError) as err:
+            asyncio.run(rest.token())
+        return str(err.value)
+
+    assert "HTTP 403" in ask(0) and issued() == 1
+    assert "waiting" in ask(61) and issued() == 1            # refused once: ten minutes, not one
+    assert "HTTP 403" in ask(540) and issued() == 2          # 601 s after the first ask
+    assert "waiting" in ask(900) and issued() == 2           # refused twice: thirty minutes
+    assert "HTTP 403" in ask(901) and issued() == 3

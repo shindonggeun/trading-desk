@@ -19,7 +19,7 @@
 
 ## 2. 진행 중 — #148 이벤트 직전 진입 보류 (브랜치 푸시됨, PR 아직 없음)
 
-- 브랜치 `feature/be/148-event-hold`, 워크트리 `D:\ProjectWorkSpace	rading-desk-wt8-event-hold`(집에서는 `git fetch && git switch feature/be/148-event-hold` 또는 새 워크트리)
+- 브랜치 `feature/be/148-event-hold`, 워크트리 `D:/ProjectWorkSpace/trading-desk-wt/148-event-hold`(집에서는 `git fetch && git switch feature/be/148-event-hold` 또는 새 워크트리)
 - 배경: #148 은 닫혀 있지만 "주요 이벤트 직전 플레이북 신규 진입 보류"는 프롬프트 문구로만 들어가 있었다 → `playbook.py` 에 실제로 연결
 - 내용(`backend/desk/playbook.py` · `backend/tests/test_playbook.py` 만)
   - `build(..., live=...)` 가 live 일 때만(= 오늘 분석 · 실시간 플레이북, 백테스트 · 지난 날짜는 아님) `events_calendar.CACHE.blackout()` 을 본다

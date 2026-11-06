@@ -147,3 +147,74 @@ def test_a_run_carries_both_playbooks_and_the_agents_get_the_note(db_url):
     pb = done["plan"]["playbooks"]
     assert pb["version"] == 1 and pb["regime"]["id"] == "crash"
     assert pb["long"]["setup"] == "dip_catch" and pb["bias_note"]["source"] == "model"   # the scripted line
+
+
+# --- scoring (desk.outcome) --------------------------------------------------------------------
+
+from desk import outcome  # noqa: E402
+
+PLAN_AT = "2026-11-02T14:00:00+00:00"
+LONG = {"setup": "dip_catch", "stop": 95.0, "flat_by_close": False,
+        "entries": [{"step": 1, "price": 100.0, "share": 0.25, "kind": "limit"},
+                    {"step": 2, "price": 99.0, "share": 0.25, "kind": "limit"},
+                    {"step": 3, "price": 101.0, "share": 0.5, "kind": "stop", "after": ["reclaim"]}],
+        "targets": [{"role": "t1", "price": 104.0}, {"role": "t2", "price": 108.0}],
+        "time_stop": {"bars": 3, "interval": "1d"}}
+
+
+def _bars(rows, start="2026-11-03T05:00:00+00:00", step=timedelta(days=1)):
+    t0 = datetime.fromisoformat(start)
+    return [{"at": (t0 + i * step).isoformat(), "open": o, "high": h, "low": low, "close": c, "volume": 1}
+            for i, (o, h, low, c) in enumerate(rows)]
+
+
+def _judge(rows, side=LONG, direction=1, h=SWING, **kw):
+    return outcome.judge_playbook(side, direction, _bars(rows, **kw), h, PLAN_AT, timedelta(hours=9, minutes=30))
+
+
+def test_the_ladder_fills_limits_first_then_the_confirmation_step_and_reaches_t2():
+    r = _judge([(102, 102, 98.5, 100), (100, 102, 99.5, 101.5), (102, 109, 101, 108)])
+    assert r["status"] == "t2" and r["filled_shares"] == 1.0 and r["took_t1"]
+
+
+def test_t1_then_back_to_break_even_and_a_plain_stop():
+    be = _judge([(102, 102, 99.8, 100), (100, 104.5, 100, 104), (104, 104, 99, 99.5)])
+    assert be["status"] == "t1_be" and be["r"] > 0
+    stop = _judge([(102, 102, 99.8, 100), (99, 99, 94, 94.5)])
+    assert stop["status"] == "stop" and stop["r"] < 0 and stop["filled_shares"] == 0.5
+
+
+def test_time_stop_unfilled_and_waiting():
+    slow = _judge([(102, 102, 99.8, 100), (100, 100.8, 99.6, 100.2), (100, 100.9, 99.7, 100.4), (100, 100.7, 99.9, 100.3)])
+    assert slow["status"] == "time_stop"
+    never = _judge([(110, 111, 105, 106)] * 6)
+    assert never["status"] == "unfilled"
+    assert _judge([(110, 111, 105, 106)])["status"] == "waiting"
+
+
+def test_a_short_flat_by_close_exits_at_the_session_end():
+    short = {"setup": "fade", "stop": 103.0, "flat_by_close": True,
+             "entries": [{"step": 1, "price": 100.0, "share": 1.0, "kind": "stop"}],
+             "targets": [{"role": "t1", "price": 96.0}, {"role": "t2", "price": 92.0}],
+             "time_stop": {"bars": 50, "interval": "5m"}}
+    rows = [(101, 101.5, 99.5, 99.8), (99.8, 100, 98.5, 99)]
+    day1 = _bars(rows, start="2026-11-02T15:00:00+00:00", step=timedelta(minutes=5))
+    day2 = _bars([(99, 99.5, 98.8, 99.2)], start="2026-11-03T15:00:00+00:00")
+    r = outcome.judge_playbook(short, -1, day1 + day2, INTRADAY, PLAN_AT)
+    assert r["status"] == "flat" and r["r"] > 0
+
+
+def test_a_hold_plans_playbooks_keep_the_run_in_the_sweep_and_feed_by_playbook():
+    import asyncio
+
+    class Bars:
+        async def candles(self, *_):
+            return {"bars": _bars([(102, 102, 99.8, 100)])}
+    run = {"ticker": "NVDA", "plan": {"bias": "flat", "horizon": "swing", "live_price": {"fetched_at": PLAN_AT},
+                                      "playbooks": {"regime": {"id": "crash"}, "long": LONG, "short": {"setup": "none"}}}}
+    result = asyncio.run(outcome.score(run, Bars(), datetime(2026, 11, 4, tzinfo=UTC)))
+    assert result["status"] == "invalid" and result["playbooks"]["long"]["status"] == "open"
+    assert result["sweep_status"] == "open"
+    stats = outcome.stats([{**run, "outcome": result, "outcome_status": result["sweep_status"]}])
+    row = stats["by_playbook"][0]
+    assert row["key"] == "long:dip_catch:crash" and row["open"] == 1 and stats["total"]["plans"] == 0

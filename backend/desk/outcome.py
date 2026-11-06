@@ -181,6 +181,121 @@ def plan_time(run: dict) -> str | None:
     return live.get("fetched_at")
 
 
+# --- the two playbooks (#116), each scored on its own -----------------------------------------
+
+PLAYBOOK_RULES_VERSION = 1
+PB_PENDING = ("waiting", "open", "error")
+
+
+def judge_playbook(side: dict, direction: int, bars: list[dict], horizon: horizons.Horizon, plan_at: str,
+                   opens_after: timedelta = timedelta(hours=9, minutes=30),
+                   valid_until: str | None = None) -> dict:
+    """One playbook's outcome: ladder fills (limits first, a stop step only after one of them),
+    then stop / T1 (stop to break-even) / T2, the time stop, and the close for a flat-by-close
+    side. R is the filled shares' weighted result over the planned risk. Pure function."""
+    base = {"rules_version": PLAYBOOK_RULES_VERSION, "setup": side.get("setup")}
+    entries = side.get("entries") or []
+    stop0, targets = side.get("stop"), side.get("targets") or []
+    if side.get("setup") in (None, "none") or not entries or stop0 is None or not targets:
+        return {**base, "status": "invalid", "detail": "no playbook"}
+    t1 = targets[0]["price"]
+    t2 = targets[1]["price"] if len(targets) > 1 else None
+    start = _at(plan_at)
+    daily = horizon.primary in ("1d", "1w", "1M")
+    after = [b for b in bars if (_at(b["at"]) + opens_after >= start if daily else _at(b["at"]) >= start)]
+    if not after:
+        return {**base, "status": "waiting", "detail": "no bars after the plan yet"}
+    sessions = _sessions(after)
+    until = _at(valid_until) if valid_until else None
+    entry_sessions = ENTRY_SESSIONS.get(horizon.id, 1)
+    sign = 1 if direction > 0 else -1
+    filled: list[dict] = []
+    stop, took_t1, last_fill, first_limit = stop0, False, None, None
+    bars_limit = (side.get("time_stop") or {}).get("bars")
+    flat = bool(side.get("flat_by_close")) and not daily
+
+    def avg() -> float:
+        total = sum(e["share"] for e in filled)
+        return sum(e["price"] * e["share"] for e in filled) / total
+
+    def result(status: str, exit_price: float | None, at: str, **extra) -> dict:
+        shares = round(sum(e["share"] for e in filled), 4)
+        a = avg()
+        risk = abs(a - stop0) or 1e-9
+        if status == "t2":
+            pnl = 0.5 * (t1 - a) + 0.5 * (t2 - a)
+        elif status == "t1_be":
+            pnl = 0.5 * (t1 - a)
+        elif took_t1 and exit_price is not None:
+            pnl = 0.5 * (t1 - a) + 0.5 * (exit_price - a)
+        else:
+            pnl = (exit_price - a) if exit_price is not None else 0.0
+        return {**base, "status": status, "filled_shares": shares, "avg_fill": round(a, 4),
+                "exited_at": at, "r": round(sign * pnl / risk, 2), "took_t1": took_t1, **extra}
+
+    for i, bar in enumerate(after):
+        window_open = (until is None or _at(bar["at"]) <= until) and (until is not None or sessions[i] < entry_sessions)
+        if window_open and not took_t1:
+            for e in entries:
+                if e in filled:
+                    continue
+                if e["kind"] == "limit":
+                    hit = bar["low"] <= e["price"] if sign > 0 else bar["high"] >= e["price"]
+                else:   # a stop step: the confirmation comes on a later bar than a limit fill
+                    ready = (first_limit is not None and first_limit < i) or len(entries) == 1
+                    hit = ready and (bar["high"] >= e["price"] if sign > 0 else bar["low"] <= e["price"])
+                if hit:
+                    filled.append(e)
+                    last_fill = i
+                    if e["kind"] == "limit" and first_limit is None:
+                        first_limit = i
+        if not filled:
+            if not window_open:
+                return {**base, "status": "unfilled", "detail": "no fill before the entry window closed"}
+            continue
+        # after a fill: the stop (fill bar included), then the targets
+        if (bar["low"] <= stop) if sign > 0 else (bar["high"] >= stop):
+            gapped = (bar["open"] < stop) if sign > 0 else (bar["open"] > stop)
+            exit_price = bar["open"] if gapped and i != last_fill else stop
+            return result("t1_be" if took_t1 else "stop", exit_price, bar["at"])
+        if not took_t1 and ((bar["high"] >= t1) if sign > 0 else (bar["low"] <= t1)):
+            took_t1, stop = True, avg()
+        if took_t1 and t2 is not None and ((bar["high"] >= t2) if sign > 0 else (bar["low"] <= t2)):
+            return result("t2", t2, bar["at"])
+        if not took_t1 and bars_limit and last_fill is not None and i - last_fill >= bars_limit:
+            return result("time_stop", bar["close"], bar["at"])
+        if flat and i + 1 < len(after) and sessions[i + 1] != sessions[i]:
+            return result("flat", bar["close"], bar["at"])
+    if not filled:
+        return {**base, "status": "waiting", "detail": "not filled yet"}
+    last = after[-1]
+    out = result("open", last["close"], last["at"])
+    return {**out, "exited_at": None, "detail": "still in the trade"}
+
+
+def _score_playbooks(plan: dict, bars: list[dict], horizon: horizons.Horizon, plan_at: str,
+                     opens_after: timedelta) -> dict | None:
+    pb = plan.get("playbooks")
+    if not pb:
+        return None
+    out = {"version": PLAYBOOK_RULES_VERSION, "regime": (pb.get("regime") or {}).get("id")}
+    for side, direction in (("long", 1), ("short", -1)):
+        s = pb.get(side) or {}
+        out[side] = {**judge_playbook(s, direction, bars, horizon, plan_at, opens_after, plan.get("valid_until")),
+                     "score": s.get("score")}
+    return out
+
+
+def _sweep_status(result: dict) -> str:
+    """What the sweep keys on: the plan's own status while it is pending, else a playbook still
+    pending keeps the run in the sweep (a hold plan's playbooks outlive its 'invalid')."""
+    if result.get("status") in PB_PENDING:
+        return result["status"]
+    pbs = result.get("playbooks") or {}
+    pending = [pbs[s]["status"] for s in ("long", "short") if s in pbs and pbs[s]["status"] in PB_PENDING]
+    return pending[0] if pending else result.get("status")
+
+
 # After this long a plan still waiting or open is closed as unscorable: the entry and holding
 # windows are long over, so missing bars (a delisted symbol, a feed gap) will not come back.
 MAX_AGE = {"scalp": timedelta(days=3), "intraday": timedelta(days=7), "short_swing": timedelta(days=21),
@@ -193,7 +308,8 @@ async def score(run: dict, prices, now: datetime | None = None) -> dict:
     horizon = horizons.get(plan.get("horizon") or (run.get("options") or {}).get("horizon"))
     base = {"rules_version": RULES_VERSION, "interval": horizon.primary}
     plan_at = plan_time(run)
-    if plan.get("bias") not in ("long", "short"):
+    directional = plan.get("bias") in ("long", "short")
+    if not directional and not plan.get("playbooks"):
         return {**base, "status": "invalid", "detail": "not a directional plan"}
     if not plan_at:
         return {**base, "status": "unscorable", "detail": "no live quote: a past-date run"}
@@ -204,12 +320,23 @@ async def score(run: dict, prices, now: datetime | None = None) -> dict:
         return {**base, "status": "unscorable", "detail": f"{horizon.primary} bars older than {limit} days"}
     try:
         candles = await prices.candles(run["ticker"], horizon.primary, BARS)
-        result = judge(plan, candles["bars"], horizon, plan_at, session_open(run["ticker"]))
+        opens = session_open(run["ticker"])
+        result = (judge(plan, candles["bars"], horizon, plan_at, opens) if directional
+                  else {**base, "status": "invalid", "detail": "not a directional plan"})
+        playbooks = _score_playbooks(plan, candles["bars"], horizon, plan_at, opens)
+        if playbooks:
+            result["playbooks"] = playbooks
     except Exception as exc:  # noqa: BLE001 - try again next pass, until MAX_AGE
         result = {**base, "status": "error", "detail": f"{type(exc).__name__}: {exc}"}
-    if result["status"] in ("waiting", "open", "error") and age > MAX_AGE[horizon.id]:
-        return {**result, "status": "unscorable",
-                "detail": f"still {result['status']} after {MAX_AGE[horizon.id].days} days: {result.get('detail', '')}"}
+    if age > MAX_AGE[horizon.id]:
+        if result["status"] in ("waiting", "open", "error"):
+            result = {**result, "status": "unscorable",
+                      "detail": f"still {result['status']} after {MAX_AGE[horizon.id].days} days: {result.get('detail', '')}"}
+        for side in ("long", "short"):
+            pb = (result.get("playbooks") or {}).get(side)
+            if pb and pb["status"] in PB_PENDING:
+                result["playbooks"][side] = {**pb, "status": "unscorable", "detail": f"still {pb['status']}"}
+    result["sweep_status"] = _sweep_status(result)
     return result
 
 
@@ -258,18 +385,53 @@ def _group(rows: list[dict]) -> dict:
             "avg_r_at_expiry": round(sum(expiry_r) / len(expiry_r), 2) if expiry_r else None}
 
 
+_PB_COUNTED = ("t1", "t2", "t1_be", "stop", "time_stop", "flat", "unfilled", "open", "waiting")
+
+
+def _playbook_stats(runs: list[dict]) -> list[dict]:
+    """By "<side>:<setup>:<regime>": how the desk's playbooks played out (#116). hit_rate =
+    (t1 + t2 + t1_be) over the settled trades (those + stop + time_stop + flat)."""
+    groups: dict[str, list[dict]] = {}
+    for run in runs:
+        pb_plan = (run.get("plan") or {}).get("playbooks") or {}
+        scored = (run.get("outcome") or {}).get("playbooks") or {}
+        regime = (pb_plan.get("regime") or {}).get("id") or "unknown"
+        for side in ("long", "short"):
+            setup = (pb_plan.get(side) or {}).get("setup")
+            if not setup or setup == "none":
+                continue
+            groups.setdefault(f"{side}:{setup}:{regime}", []).append(
+                {"status": (scored.get(side) or {}).get("status"), "r": (scored.get(side) or {}).get("r"),
+                 "filled": (scored.get(side) or {}).get("filled_shares"), "score": (pb_plan.get(side) or {}).get("score")})
+    out = []
+    for key in sorted(groups):
+        items = groups[key]
+        counts = {k: sum(1 for i in items if i["status"] == k) for k in _PB_COUNTED}
+        won = counts["t1"] + counts["t2"] + counts["t1_be"]
+        settled = won + counts["stop"] + counts["time_stop"] + counts["flat"]
+        rs = [i["r"] for i in items if i["r"] is not None and i["status"] not in ("open", "waiting", None)]
+        scores = [i["score"] for i in items if i["score"] is not None]
+        out.append({"key": key, "plans": len(items), "filled": sum(1 for i in items if i["filled"]), **counts,
+                    "hit_rate": round(won / settled, 3) if settled else None,
+                    "avg_r": round(sum(rs) / len(rs), 2) if rs else None,
+                    "avg_score": round(sum(scores) / len(scores), 1) if scores else None})
+    return out
+
+
 def stats(runs: list[dict]) -> dict:
     """Plans and their outcomes grouped every way the bias question needs: horizon, rating,
     direction, the desk's opinion (did the filter help?), analyst set, and a calibration of the
     model's win probability against what happened."""
     rows = []
     total = {"plans": 0, "scored": 0, "waiting": 0, "errors": 0, "unscorable": 0}
+    playbooks = _playbook_stats(runs)
     for run in runs:
         plan = run.get("plan") or {}
         if plan.get("bias") not in ("long", "short"):
             continue
         outcome = run.get("outcome") or {}
-        status = run.get("outcome_status")
+        # the plan's own status; outcome_status may be a pending playbook's (#116)
+        status = outcome.get("status") if outcome else run.get("outcome_status")
         total["plans"] += 1
         if status in TERMINAL:
             total["scored"] += 1
@@ -299,6 +461,6 @@ def stats(runs: list[dict]) -> dict:
                                 "resolved": group["target"] + group["stop"] + group["both"],
                                 "hits": group["target"], "hit_rate": group["hit_rate"],
                                 "avg_probability": group["avg_probability_resolved"]})
-    return {"rules_version": RULES_VERSION, "total": total,
+    return {"rules_version": RULES_VERSION, "total": total, "by_playbook": playbooks,
             "by_horizon": by("horizon"), "by_rating": by("rating"), "by_direction": by("direction"),
             "by_opinion": by("opinion"), "by_analysts": by("analysts"), "calibration": calibration}

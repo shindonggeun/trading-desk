@@ -129,7 +129,9 @@ class Store:
         return [_run(row) for row in rows]
 
     def set_outcome(self, run_id: str, outcome: dict) -> None:
-        self._update(run_id, outcome=outcome, outcome_status=outcome.get("status"), scored_at=now())
+        # the sweep's key: a pending playbook (#116) keeps a run whose own plan is settled in the sweep
+        self._update(run_id, outcome=outcome, outcome_status=outcome.get("sweep_status") or outcome.get("status"),
+                     scored_at=now())
 
     def scored_since(self, since: datetime) -> list[dict]:
         """Finished runs created since ``since`` with their outcomes, for the statistics."""

@@ -24,7 +24,7 @@ from .broker import make_broker
 from .consensus import fake_summariser, llm_summariser
 from .db import make_engine, migrate, now
 from .estimate import CANDLE_INTERVALS, BinanceEstimator
-from .favorites import MAX_FAVORITES, Favorites, TooMany
+from .favorites import Conflict, Favorites, TooMany
 from .indicators import INDICATORS
 from .leverage_analyst import fake_analyst, llm_analyst
 from .market_flow import MarketFlow
@@ -83,7 +83,7 @@ class DisableOtpIn(BaseModel):
 
 def clean_ticker(v: str) -> str:
     v = v.strip().upper()
-    if not v or len(v) > 20 or not all(c.isalnum() or c in ".-^=" for c in v):
+    if not v or len(v) > 20 or not all((c.isascii() and c.isalnum()) or c in ".-^=" for c in v):
         raise ValueError("ticker may contain letters, digits and . - ^ = only")
     return v
 
@@ -144,7 +144,8 @@ class FavoriteIn(BaseModel):
 
 
 class FavoritesIn(BaseModel):
-    items: list[FavoriteIn] = Field(max_length=MAX_FAVORITES)
+    # repeats are dropped before the 50-ticker cap (desk.favorites) applies; this only bounds the body
+    items: list[FavoriteIn] = Field(max_length=200)
 
 
 def purge_expired_runs(store: Store, retention_days: int) -> int:
@@ -842,13 +843,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             return favorites.replace(request.state.user.id, [(i.ticker, i.name) for i in body.items])
         except TooMany as exc:
             raise HTTPException(422, str(exc)) from None
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from None
 
     @app.post("/api/favorites")
     def add_favorite(body: FavoriteIn, request: Request):
         user_id = request.state.user.id
         try:
             added = favorites.add(user_id, body.ticker, body.name)
-        except TooMany as exc:
+        except (TooMany, Conflict) as exc:
             raise HTTPException(409, str(exc)) from None
         return JSONResponse(favorites.list(user_id), status_code=201 if added else 200)
 

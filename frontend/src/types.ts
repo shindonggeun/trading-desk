@@ -234,6 +234,8 @@ export interface SupportResistance {
   fibonacci?: Fibonacci | null;
   /** #106 매물대(desk/volume_profile.py) — 거래량 없는 지수 · 예전 run 은 없다 */
   volume_profile?: VolumeProfile | null;
+  /** 매물대 계산이 실패한 이유(있으면 volume_profile 은 null) */
+  volume_profile_error?: string;
   trend_error?: string;
 }
 

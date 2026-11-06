@@ -271,7 +271,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const trendLines: Trendline[] = useMemo(() => (show.trend ? srSource?.trendlines ?? [] : []), [show.trend, srSource]);
   const fib: Fibonacci | null = show.fib ? srSource?.fibonacci ?? null : null;
   // 매물대(#108) — 지지 · 저항과 같은 출처, 거래량이 없는 지수 · 옛 분석은 없다
-  const vp: VolumeProfile | null = show.vp ? srSource?.volume_profile ?? null : null;
+  const vp: VolumeProfile | null = show.vp && srSource?.volume_profile?.bins.length ? srSource.volume_profile : null;
   const wantSr = show.sr || show.trend || show.fib || show.vp;
   // 분석 당시 값이면 "지금" 이라 하지 않는다 — 선은 오늘까지 그어도 거리 · 상태는 그때 기준
   const when = mode === "plan" ? "분석 당시" : "지금";
@@ -570,7 +570,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const day = intraday ? barFor(rows.map((r) => r.day), tradeDate) : null;
     const at = intraday ? (day == null ? null : rows.find((r) => r.day === day)?.key ?? null) : barFor(rows.map((r) => r.key), tradeDate);
     const muted = css("--muted", "#8c939d");
-    const profile = vp?.bins.length
+    const profile = vp
       ? volumeProfileDrawing(vp, { bar: muted, thick: css("--warn", "#e5a23a"), poc: css("--warn", "#e5a23a"), label: muted }, price)
       : { bands: [], marks: [], bars: [] };
     bands.set(
@@ -819,7 +819,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
               ) : hover.type === "vp" ? (
                 <>
                   <strong>매물대 POC {price(hover.vp.poc)}</strong>{" "}
-                  <span className="muted">가장 많이 거래된 가격 · 최근 {hover.vp.bars}봉</span>
+                  <span className="muted">가장 많이 거래된 가격 · 최근 {hover.vp.bars}봉{hover.vp.interval ? `(${tfLabel(hover.vp.interval)})` : ""}</span>
                   <div>거래량 70% 구간(가치 영역) {price(hover.vp.value_area.low)} ~ {price(hover.vp.value_area.high)}</div>
                   {hover.vp.nodes.some((n) => n.kind === "thick") && (
                     <div>두꺼운 매물대 {hover.vp.nodes.filter((n) => n.kind === "thick").map((n) => price(n.price)).join(" · ")}</div>
@@ -860,11 +860,13 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           ].filter(Boolean).join(" · ")}
         </p>
       )}
-      {show.vp && srSource && !srSource.volume_profile && (
+      {show.vp && srSource && !vp && (
         <p className="muted small price-chart-legend">
-          {mode === "plan" && srSource.volume_profile === undefined
-            ? "매물대: 이 분석에는 기록이 없습니다 — 표시 메뉴의 \"지금\" 기준으로 보세요."
-            : "매물대: 거래량이 없는 종목(지수 등)은 그리지 않습니다."}
+          {srSource.volume_profile_error
+            ? "매물대를 계산하지 못했습니다."
+            : mode === "plan" && srSource.volume_profile === undefined
+              ? "매물대: 이 분석에는 기록이 없습니다 — 표시 메뉴의 \"지금\" 기준으로 보세요."
+              : "매물대: 거래량이 없는 종목(지수 등)은 그리지 않습니다."}
         </p>
       )}
       {vp && (

@@ -44,6 +44,11 @@ STALE_SEC = 6 * 3600           # an older theme is left out of the agents' note 
 _CONTROL = dict.fromkeys(range(32), " ")
 
 
+def _web(url: str | None) -> bool:
+    """Only http(s) links reach the page (no javascript: or data: from a third-party feed)."""
+    return bool(url) and str(url).lower().startswith(("http://", "https://"))
+
+
 def clean(text: str | None, limit: int) -> str | None:
     """Third-party text for a prompt: one line, no control characters, no double quotes, capped."""
     if not text:
@@ -156,7 +161,7 @@ def headlines(payload: Any) -> list[dict]:
     out = []
     for a in (payload or {}).get("articles") or []:
         title = clean(a.get("title"), 200)
-        if not title or not a.get("url"):
+        if not title or not _web(a.get("url")):
             continue
         seen = _stamp(a.get("seendate"))
         out.append({"title": title, "url": a["url"], "domain": clean(a.get("domain"), 80),
@@ -272,7 +277,7 @@ def parse_rss(text: str) -> list[dict]:
             published = parsedate_to_datetime(item.findtext("pubDate") or "")
         except (TypeError, ValueError):
             published = None
-        if title and item.findtext("link"):
+        if title and _web(item.findtext("link")):
             items.append({"title": title, "url": item.findtext("link"), "domain": source,
                           "seen": published.astimezone(UTC) if published else None})
     return items

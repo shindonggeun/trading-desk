@@ -24,7 +24,7 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from statistics import fmean
 from typing import Any
@@ -36,7 +36,8 @@ log = logging.getLogger(__name__)
 GDELT_DOC = "https://api.gdeltproject.org/api/v2/doc/doc"
 GOOGLE_NEWS = "https://news.google.com/rss/search"
 RSS_MAX_BYTES = 2_000_000
-REQUEST_GAP_SEC = 5.5          # GDELT: no more than one request every five seconds
+REQUEST_GAP_SEC = 6.0          # GDELT: no more than one request every five seconds (a margin over it)
+RATE_LIMIT_COOL_SEC = 15 * 60  # after a 429 GDELT blocks the address for about 15 minutes: leave it alone (#148)
 TIMEOUT_SEC = 20.0
 HEADLINES = 5
 SPIKE_ALERT = 1.5              # last 24h at least this many times the prior days' average
@@ -339,12 +340,14 @@ class Cache:
     themes: dict[str, dict] = field(default_factory=dict)
     refreshed_at: str | None = None
     error: str | None = None
+    gdelt_resume_at: datetime | None = None   # set by a 429: passes until then go straight to Google News
 
     async def refresh(self, gdelt: Gdelt | None = None, now: datetime | None = None,
                       rss=fetch_theme_rss) -> int:
         gdelt = gdelt or Gdelt()
         ok, failures = 0, []
-        use_gdelt = True
+        start = now or datetime.now(UTC)
+        use_gdelt = self.gdelt_resume_at is None or start >= self.gdelt_resume_at
         # Built aside and swapped in at the end: a run reading mid-pass sees the last full snapshot,
         # never un-rebased Google News surges.
         fresh = dict(self.themes)
@@ -358,6 +361,8 @@ class Cache:
                         continue
                     except Exception as exc:  # noqa: BLE001 - 429, timeout, outage: Google News instead
                         use_gdelt = False
+                        if isinstance(exc, RateLimited):
+                            self.gdelt_resume_at = start + timedelta(seconds=RATE_LIMIT_COOL_SEC)
                         log.info("GDELT unavailable (%s); macro news falls back to Google News RSS",
                                  type(exc.__cause__ or exc).__name__)
                 fresh[theme.id] = await rss(theme, at)

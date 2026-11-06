@@ -24,6 +24,9 @@ from .estimate import KRX, US, session_of
 log = logging.getLogger(__name__)
 
 TICK_SEC = 5.0
+# With a KIS websocket trade for the ticker (desk.broker.kis_stream) the stream sends this often;
+# the session check and the bars stay on TICK_SEC (bars are cached ~30 s anyway).
+FAST_TICK_SEC = 1.0
 # While the market is closed the stream fetches nothing, but still re-checks the session this
 # often (docs/security.md: a logout ends an open stream within 15 s).
 CLOSED_SEC = 15.0
@@ -129,8 +132,18 @@ async def is_open(calendar: Calendar | None, ticker: str, now: datetime | None =
     return market_open(ticker, now)
 
 
-async def frame(prices, ticker: str) -> dict:
-    """{"state": "open", "quote", "bars"} — either part may be missing when its source failed."""
+def watch(prices, ticker: str) -> bool:
+    """Ask the KIS stream for the ticker; True when its trades are already coming in."""
+    stream = getattr(prices, "stream", None)
+    if stream is None:
+        return False
+    stream.want(ticker)
+    return stream.latest(ticker) is not None
+
+
+async def frame(prices, ticker: str, bars: bool = True) -> dict:
+    """{"state": "open", "quote", "bars"} — either part may be missing when its source failed.
+    ``bars=False`` sends the quote only (the fast KIS rounds between bar refreshes)."""
     out: dict = {"state": "open", "ticker": ticker}
     # The page gets a fixed word; the details (upstream URLs, hosts) stay in the server log.
     try:
@@ -138,6 +151,8 @@ async def frame(prices, ticker: str) -> dict:
     except Exception as exc:  # noqa: BLE001 - the next tick tries again
         log.warning("live quote for %s failed: %s", ticker, exc)
         out["quote_error"] = "unavailable"
+    if not bars:
+        return out
     try:
         candles = await prices.candles(ticker, "1m", 30)
         out["bars"] = candles["bars"][-BARS:]

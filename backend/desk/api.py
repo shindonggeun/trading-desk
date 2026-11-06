@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import horizons, live, macro_news, otp, outcome, playbook_live, regime, review, verdict
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
-from .broker import make_broker
+from .broker import kis_stream, make_broker
 from .consensus import fake_summariser, llm_summariser
 from .db import make_engine, migrate, now
 from .estimate import CANDLE_INTERVALS, BinanceEstimator
@@ -160,7 +160,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     universe = Universe(engine)
     hub = Hub()
     broker = make_broker(settings)
-    prices = prices or PriceSource(broker)
+    kis_feed = kis_stream.make(settings) if prices is None else None   # tests bring their own prices
+    prices = prices or PriceSource(broker, stream=kis_feed)
     estimator = estimator or BinanceEstimator()
     book = book or Portfolio(broker, prices)
     flow = flow or MarketFlow(broker)
@@ -226,7 +227,16 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         scorer = (asyncio.create_task(score_plans())
                   if settings.score_interval_sec > 0 and not settings.fake_runs else None)
         purger = asyncio.create_task(purge_old_runs()) if settings.retention_days > 0 else None
+        # connects only once a page watches a KIS-streamable ticker (desk.broker.kis_stream)
+        kis = asyncio.create_task(kis_feed.run()) if kis_feed is not None else None
+        if kis:
+            log.info("kis stream on")
         yield
+        if kis:
+            kis.cancel()
+            with suppress(asyncio.CancelledError):
+                await kis                   # the socket closes before its http client does
+            await kis_feed.aclose()
         refresher.cancel()
         if macro:
             macro.cancel()
@@ -610,16 +620,24 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         async def frames():
             try:
                 yield f"retry: {int(live.TICK_SEC * 1000)}" + NL2
-                was_open, failing = None, 0
+                was_open, failing, checked = None, 0, None
+                loop = asyncio.get_running_loop()
                 while not await request.is_disconnected():
-                    # Re-check every round (logout, revoke or expiry ends the stream), without
+                    # Re-check every TICK_SEC (logout, revoke or expiry ends the stream), without
                     # counting it as activity: an open tab must not keep the session from idling.
-                    if await asyncio.to_thread(auth.resolve, token, False) is None:
-                        return
+                    slow = checked is None or loop.time() - checked >= live.TICK_SEC - 0.05
+                    if slow:
+                        if await asyncio.to_thread(auth.resolve, token, False) is None:
+                            return
+                        checked = loop.time()
                     is_open = await live.is_open(calendar, ticker)
+                    fast = bool(is_open) and live.watch(prices, ticker)
                     if is_open:
-                        data = await live.frame(prices, ticker)
-                        failing = failing + 1 if "quote" not in data and "bars" not in data else 0
+                        with_bars = slow or not fast
+                        data = await live.frame(prices, ticker, bars=with_bars)
+                        # a fast round asks no bars: only a round that asked for both can fail
+                        if with_bars:
+                            failing = failing + 1 if "quote" not in data and "bars" not in data else 0
                     elif was_open is not False:
                         data = {"state": "closed", "ticker": ticker}
                     else:
@@ -627,8 +645,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     # a comment frame keeps proxies from dropping an idle stream
                     yield (f"data: {json.dumps(data, ensure_ascii=False)}" if data is not None else ": closed") + NL2
                     was_open = is_open
-                    pause = live.TICK_SEC if is_open else live.CLOSED_SEC
-                    await asyncio.sleep(live.FAILING_SEC if failing >= live.FAIL_ROUNDS else pause)
+                    pause = (live.FAST_TICK_SEC if fast else live.TICK_SEC) if is_open else live.CLOSED_SEC
+                    if failing >= live.FAIL_ROUNDS:
+                        # a failing ticker is tried again a minute later, the session still every 15 s
+                        for _ in range(max(1, int(live.FAILING_SEC // live.CLOSED_SEC))):
+                            await asyncio.sleep(live.CLOSED_SEC)
+                            if await asyncio.to_thread(auth.resolve, token, False) is None:
+                                return
+                    else:
+                        await asyncio.sleep(pause)
             finally:
                 live_streams[key] -= 1
                 if not live_streams[key]:
@@ -782,6 +807,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                              "source": ({"kind": est.method, "contract": est.contract, "basis": est.basis,
                                          "multiple": est.multiple} if est else None)}
                 if is_open:
+                    live.watch(prices, ticker)       # the board's tickers ride the KIS stream too
                     try:
                         q = await prices.quote(ticker)
                         change = (round((q.price / est.last_close - 1) * 100, 2) if est and est.last_close else None)

@@ -126,3 +126,12 @@ docker run --rm -it -p 127.0.0.1:1455:1455 -v trading-desk-tradingagents-home:/h
 - `nginx/conf.d/trading.8llow8llowme.conf` — HTTP → HTTPS, `X-Real-IP $remote_addr`, SSE 용 `proxy_buffering off` · `proxy_read_timeout 1h`
 - 인증서: `certbot/init-cert-non-www.sh trading.8llow8llowme.com`
 - fail2ban: 로그인 401 반복 IP 차단 (`fail2ban/filter.d`, `jail.local`)
+
+## 9. 한국투자증권(KIS) 실시간 시세 (#125)
+
+- 한국투자증권 계좌 → **KIS Developers(apiportal.koreainvestment.com) → API 신청** 으로 실전투자 앱키 · 앱시크릿을 받는다.
+- 서버 `.env.runtime` 에 `DESK_KIS_APP_KEY` · `DESK_KIS_APP_SECRET` 을 넣고 `scripts/deploy.sh HEAD backend`. 모의투자 키면 `DESK_KIS_WS_URL` · `DESK_KIS_REST_URL` 도 모의 주소로(`.env.example`).
+- 서버에서 `ops.koreainvestment.com:21000`(ws) · `openapi.koreainvestment.com:9443`(https) 로 나가는 연결이 열려 있어야 한다.
+- 확인: 장중에 실시간 화면을 열면 시세 출처가 실시간(`kis`)으로 바뀌고 1초 간격으로 갱신된다(INFO 로그는 출력되지 않는다).
+  안 되면 백엔드 로그(WARNING)의 `kis stream dropped: <예외 타입>` · `kis stream refused <종목>: <사유>` · `approval key refused` 를 본다. 그동안 화면은 토스 폴링으로 계속 돈다.
+- 규칙(키 보관 · 회전 · 로그)은 [security.md §5](security.md#5-비밀).

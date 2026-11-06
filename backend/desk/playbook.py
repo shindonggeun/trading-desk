@@ -751,16 +751,21 @@ def side_state(side: dict | None, up: bool, price: float | None, atr: float) -> 
     met = {c["id"] for c in side.get("conditions") or [] if c.get("met")}
     if stop is not None and ((price <= stop) if up else (price >= stop)):
         return "invalid"
+    # Only a turn *at the zone* confirms: a zone-bound signal (reclaim / wick / rejection bar)
+    # carries up to 1 ATR past the zone; the swing structure (higher low / lower high) counts only
+    # with the price in the zone - above a long's zone it is just the trend, not a dip bought.
     if up:
-        if met & {"reclaim", "higher_low", "rejection_wick"} and zone["low"] <= price <= zone["high"] + NEAR_ATR * atr:
+        inside = price <= zone["high"] + 0.25 * atr        # below the zone but above the stop: still in play
+        if met & {"reclaim", "rejection_wick"} and price <= zone["high"] + NEAR_ATR * atr:
             return "confirmed"
-        if zone["low"] <= price <= zone["high"] + 0.25 * atr:
-            return "in_zone"
+        if inside:
+            return "confirmed" if "higher_low" in met else "in_zone"
         return "near" if price - zone["high"] <= NEAR_ATR * atr else "waiting"
-    if met & {"rejection_bar", "lower_high"} and zone["low"] - NEAR_ATR * atr <= price <= zone["high"]:
+    inside = price >= zone["low"] - 0.25 * atr
+    if "rejection_bar" in met and price >= zone["low"] - NEAR_ATR * atr:
         return "confirmed"
-    if zone["low"] - 0.25 * atr <= price <= zone["high"]:
-        return "in_zone"
+    if inside:
+        return "confirmed" if "lower_high" in met else "in_zone"
     return "near" if zone["low"] - price <= NEAR_ATR * atr else "waiting"
 
 

@@ -718,8 +718,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 raise HTTPException(404, "no such run")
             plan = found.get("plan") or {}
             run_pb = plan.get("playbooks")
-            ticker = ticker or found["ticker"]
-            horizon = horizon or plan.get("horizon")
+            # the analysis' levels are in its own instrument's prices on its own horizon
+            run_horizon = plan.get("horizon") or (found.get("options") or {}).get("horizon")
+            if (ticker and ticker.strip().upper() != found["ticker"]) or (horizon and run_horizon and horizon != run_horizon):
+                raise HTTPException(422, "ticker and horizon come from the run; leave them out")
+            ticker, horizon = found["ticker"], run_horizon
         try:
             if not ticker:
                 raise ValueError("ticker or run is required")

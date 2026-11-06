@@ -198,7 +198,7 @@ export default function RunView({ runId }: { runId: string }) {
             plan ? (
               <div className="run-summary">
                 {status === "done" && <ConsensusCard plan={plan} ticker={run.ticker} />}
-                <PlaybookCard plan={plan} symbol={stillOpen(run.trade_date) ? run.ticker : undefined} outcome={run.outcome} runId={run.id} />
+                <PlaybookCard plan={plan} symbol={stillOpen(run.trade_date) ? run.ticker : undefined} outcome={run.outcome} runId={run.id} horizon={plan.horizon ?? run.options.horizon ?? undefined} />
                 <TradeMap plan={plan} ticker={run.ticker} />
                 <PlanCard
                   plan={plan}

@@ -19,7 +19,8 @@ export function useLivePlaybooks(runId: string | undefined, horizon: HorizonId |
     let alive = true;
     const load = () => {
       if (document.hidden) return;
-      api.livePlaybooks(runId).then((d) => alive && setData(d), () => {});
+      // 거의 동시에 부른 두 응답이 거꾸로 와도 더 오래된 계산(as_of)으로 되돌아가지 않게
+      api.livePlaybooks(runId).then((d) => alive && setData((old) => (old && old.as_of > d.as_of ? old : d)), () => {});
     };
     load();
     const timer = setInterval(load, POLL_MS[horizon ?? "swing"] ?? POLL_MS.swing);
@@ -124,7 +125,7 @@ export function playbookState(side: PlaybookSide, dir: "long" | "short", p: numb
 
 function Side({ side, dir, state, result, live }: {
   side: PlaybookSide; dir: "long" | "short"; state: PlaybookState; result?: PlaybookOutcome;
-  live?: { since: string | null; stale: boolean };
+  live?: { since: string | null; stale: boolean; note: string | null };
 }) {
   const name = dir === "long" ? "롱" : "숏";
   if (!has(side)) {
@@ -143,10 +144,11 @@ function Side({ side, dir, state, result, live }: {
         <strong>{name} · {SETUP[side.setup] ?? side.setup}</strong>
         <span className={`pb-state pb-state-${state}`}>{STATE[state]}</span>
       </div>
-      {live && (live.since || live.stale) && (
+      {live && (live.since || live.stale || live.note) && (
         <p className="muted small pb-live">
           {live.since && <>이 상태 {live.since}</>}
           {live.stale && <span className="pb-stale">{live.since ? " · " : ""}시세 실패 — 마지막 종가 기준</span>}
+          {live.note && <span className="pb-stale">{live.since || live.stale ? " · " : ""}{live.note}</span>}
         </p>
       )}
       {side.reason && <p className="small pb-reason">{side.reason}</p>}
@@ -212,15 +214,17 @@ function Side({ side, dir, state, result, live }: {
   );
 }
 
-export default function PlaybookCard({ plan, symbol, outcome, runId }: {
+export default function PlaybookCard({ plan, symbol, outcome, runId, horizon }: {
   plan: Plan; symbol?: string; outcome?: Outcome | null; runId?: string;
+  /** 폴링 간격용 — 서버처럼 plan.horizon, 없으면 run 옵션 */
+  horizon?: HorizonId;
 }) {
   const saved: Playbooks | undefined = plan.playbooks;
   // 15초 현재가, 장 마감 중이면 추정가(#42) — 훅은 카드가 숨을 때도 같은 순서로
   const live = useLiveQuote(symbol, plan.live_price, !!saved);
   const est = useEstimate(symbol, !!saved);
   // #132: 열린 거래일(symbol 있음)에만 지금 값으로 — 지난 run 은 부르지 않는다
-  const fresh = useLivePlaybooks(runId, plan.horizon, !!saved && !!symbol);
+  const fresh = useLivePlaybooks(runId, horizon ?? plan.horizon, !!saved && !!symbol);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!fresh) return;
@@ -238,13 +242,25 @@ export default function PlaybookCard({ plan, symbol, outcome, runId }: {
   const atr = pb.frame.atr;
   const res = outcome?.playbooks;
   // 채점이 끝난 방향은 채점 결과, 아니면 서버의 지금 상태, 없으면(실패 · null) 화면 계산
+  // 상태 우선순위: 채점 결과 → 실제 현재가로 본 손절 통과(서버는 최대 TTL 늦다) → 서버 state
+  // (시세 실패로 마지막 종가 기준이면 화면 가격이 더 새롭다) → 화면 계산
+  const local = { long: playbookState(pb.long, "long", p, atr, res?.long), short: playbookState(pb.short, "short", p, atr, res?.short) };
+  const scored = (dir: "long" | "short") => { const s = res?.[dir]?.status; return !!s && (LOST.has(s) || ENDED.has(s)); };
   const stateOf = (dir: "long" | "short"): PlaybookState => {
-    const local = playbookState(pb[dir], dir, p, atr, res?.[dir]);
-    if (local === "none" || local === "closed" || (res?.[dir] && LOST.has(res[dir]!.status))) return local;
-    return cur?.[dir].state ?? local;
+    const srv = cur?.[dir];
+    if (local[dir] === "none" || scored(dir) || !srv || srv.state == null) return local[dir];
+    if (local[dir] === "invalid" && !est && live) return local[dir];
+    if (srv.stale && (est || live)) return local[dir];
+    return srv.state;
   };
   const states = { long: stateOf("long"), short: stateOf("short") };
-  const liveOf = (s: LivePlaybookSide) => ({ since: since(s.state_since, now), stale: s.stale });
+  const liveOf = (s: LivePlaybookSide, dir: "long" | "short") => ({
+    // 경과 시간은 보이는 상태가 서버 상태와 같을 때만(채점 · 화면 판정이 이기면 그 시간이 아니다)
+    since: !s.stale && states[dir] === s.state ? since(s.state_since, now) : null,
+    stale: s.stale,
+    // 장외 추정가로는 손절을 넘었지만 서버(실제 시세)는 아직 — 두 기준이 다르다는 것을 밝힌다
+    note: est && local[dir] === "invalid" && states[dir] !== "invalid" ? "추정가로는 손절 너머" : null,
+  });
   const hits = pb.regime.evidence.filter((e) => e.hit);
   const misses = pb.regime.evidence.filter((e) => !e.hit && e.value != null);
   return (
@@ -253,7 +269,7 @@ export default function PlaybookCard({ plan, symbol, outcome, runId }: {
         <h3 id="pb-title">플레이북</h3>
         <span className={`pb-regime pb-regime-${pb.regime.id}`}>{REGIME[pb.regime.id] ?? pb.regime.id}</span>
         {p != null && <span className="muted small">{basis} {price(p)} · {pb.frame.primary} 봉 기준</span>}
-        {cur && <span className="muted small pb-asof">조건 · 상태 {hhmm(cur.as_of)} 기준</span>}
+        {cur && <span className="muted small pb-asof">조건 · 상태 {hhmm(cur.as_of)} 시세 기준</span>}
       </div>
       {hits.length > 0 && <p className="muted small pb-evidence">국면 근거: {hits.map((e) => evidenceText(e).text).join(" · ")}</p>}
       {misses.length > 0 && (
@@ -269,8 +285,8 @@ export default function PlaybookCard({ plan, symbol, outcome, runId }: {
       )}
       {pb.bias_note?.text && <p className="small pb-bias">거시 · 정책: {pb.bias_note.text}</p>}
       <div className="pb-sides">
-        <Side side={pb.long} dir="long" state={states.long} result={outcome?.playbooks?.long} live={cur ? liveOf(cur.long) : undefined} />
-        <Side side={pb.short} dir="short" state={states.short} result={outcome?.playbooks?.short} live={cur ? liveOf(cur.short) : undefined} />
+        <Side side={pb.long} dir="long" state={states.long} result={outcome?.playbooks?.long} live={cur ? liveOf(cur.long, "long") : undefined} />
+        <Side side={pb.short} dir="short" state={states.short} result={outcome?.playbooks?.short} live={cur ? liveOf(cur.short, "short") : undefined} />
       </div>
       <p className="muted small pb-note">가격은 계산이지 예측이 아닙니다. ◌ 는 직접 지켜볼 신호, – 는 데이터가 없어 판단하지 못한 신호입니다.</p>
     </section>

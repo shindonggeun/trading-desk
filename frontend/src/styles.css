@@ -1007,3 +1007,8 @@ span.cs-hold-text { color: var(--warn); }
   .pb-sides { grid-template-columns: minmax(0, 1fr); }
   .pb-side-head { flex-direction: row-reverse; justify-content: flex-end; }   /* 상태 배지를 맨 앞(위)에 */
 }
+
+/* #129 플레이북 국면 근거 — 기준에 못 미친 근거는 접어서 */
+.pb-misses { margin: 0; }
+.pb-misses > summary { cursor: pointer; }
+.pb-misses ul { margin: 4px 0 0; padding-left: 18px; }

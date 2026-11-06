@@ -14,6 +14,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
+    "websockets>=14",          # the asyncio client API (desk.broker.kis_stream)
     "python-dotenv>=1.0",
     "sqlalchemy>=2.0.30",
     "alembic>=1.13",

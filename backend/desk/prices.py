@@ -48,7 +48,7 @@ class Quote:
     ticker: str
     price: float
     currency: str | None
-    source: str            # toss | yahoo
+    source: str            # kis (websocket trade) | toss | yahoo
     # When the desk read it (UTC), not when the market printed it: a Yahoo fallback can
     # lag ~20 min and, on a weekend, is the last close.
     fetched_at: str
@@ -154,8 +154,10 @@ def group_bars(keyed: list[tuple[object, Bar]], size: int | None = None) -> list
 
 class PriceSource:
     def __init__(self, broker: Broker, yahoo_quote=None, yahoo_candles=None,
-                 clock=time.monotonic) -> None:
+                 clock=time.monotonic, stream=None) -> None:
         self.broker = broker
+        # desk.broker.kis_stream.KisStream or None: a subscribed ticker's last trade wins
+        self.stream = stream
         # Looked up at call time when not injected, so tests can keep Yahoo off the network.
         self._yahoo_quote = yahoo_quote or (lambda *args: globals()["yahoo_quote"](*args))
         self._yahoo_candles = yahoo_candles or (lambda *args: globals()["yahoo_candles"](*args))
@@ -164,6 +166,10 @@ class PriceSource:
         self._candles: dict[tuple[str, str, int, tuple[str, ...]], tuple[float, dict, float]] = {}
 
     async def quote(self, ticker: str) -> Quote:
+        tick = self.stream.latest(ticker) if self.stream is not None else None
+        if tick is not None:
+            currency = "KRW" if ticker.upper().endswith((".KS", ".KQ")) else "USD"
+            return Quote(ticker, _tidy(tick.price), currency, "kis", tick.received_at)
         cached = self._quotes.get(ticker)
         if cached and self._clock() - cached[0] < QUOTE_TTL_SEC:
             return cached[1]

@@ -18,6 +18,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    UniqueConstraint,
     create_engine,
     event,
 )
@@ -127,6 +128,19 @@ favorites = Table(
     Column("name", String(200)),                          # display name; NULL when the listing has none
     Column("position", Integer, nullable=False),
     Column("created_at", Timestamp, nullable=False),
+)
+
+# Sector tabs per account (#156): a named, ordered group of tickers ([{ticker, name}] in JSON).
+sector_groups = Table(
+    "sector_groups", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True),
+    Column("name", String(40), nullable=False),
+    Column("position", Integer, nullable=False),
+    Column("tickers", Json, nullable=False),
+    Column("created_at", Timestamp, nullable=False),
+    Column("updated_at", Timestamp, nullable=False),
+    UniqueConstraint("user_id", "name", name="uq_sector_groups_user_id_name"),
 )
 
 

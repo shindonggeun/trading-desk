@@ -42,7 +42,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from datetime import time as clock_time
 from zoneinfo import ZoneInfo
 
@@ -116,11 +116,46 @@ US = Session(ZoneInfo("America/New_York"), clock_time(9, 30), clock_time(16, 0),
 DailyCloses = Callable[[str], list[tuple[date, float]]]
 
 
+CLOSES_TTL_SEC = 300.0
+_CLOSES: dict[str, tuple[float, list[tuple[date, float]]]] = {}
+
+
 def yahoo_daily_closes(ticker: str) -> list[tuple[date, float]]:
+    """Daily closes, oldest first, cached a few minutes (a board polls every 15 s).
+
+    Yahoo's daily bars have two gaps the anchor cannot live with: the newest US bar often
+    carries a NaN close for hours after the bell, and a futures contract's newest bar keeps
+    moving with the next session. Both come from the hourly bars instead: the close of the
+    last hourly bar that started before that day's close moment."""
     import yfinance as yf
 
-    frame = yf.Ticker(ticker).history(period="15d", interval="1d", auto_adjust=False)
-    return [(index.date(), float(row["Close"])) for index, row in frame.iterrows()]
+    hit = _CLOSES.get(ticker)
+    if hit and time.monotonic() - hit[0] < CLOSES_TTL_SEC:
+        return hit[1]
+    t = yf.Ticker(ticker)
+    frame = t.history(period="15d", interval="1d", auto_adjust=False)
+    rows = [(index.date(), float(row["Close"])) for index, row in frame.iterrows()]
+    session = session_of(ticker)
+    if rows and (session.futures or not math.isfinite(rows[-1][1])):
+        try:
+            hourly = t.history(period="5d", interval="60m", auto_adjust=False)
+            bars = [(index.to_pydatetime(), float(row["Close"])) for index, row in hourly.iterrows()
+                    if math.isfinite(float(row["Close"]))]
+        except Exception:  # noqa: BLE001 - keep the daily rows as they are
+            bars = []
+        fixed = []
+        for i, (day, close) in enumerate(rows):
+            if i == len(rows) - 1 or not math.isfinite(close):
+                end = session.close_moment(day)
+                before = [c for at, c in bars if end - timedelta(hours=24) <= at < end]
+                if before:
+                    close = before[-1]
+            fixed.append((day, close))
+        rows = fixed
+    if len(_CLOSES) > 256:
+        _CLOSES.clear()
+    _CLOSES[ticker] = (time.monotonic(), rows)
+    return rows
 
 
 FUTURES = Session(ZoneInfo("America/New_York"), clock_time(18, 0), clock_time(17, 0), futures=True)

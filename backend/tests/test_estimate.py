@@ -325,3 +325,31 @@ def test_board_endpoint_mixes_estimates_and_unavailable(db_url):
         assert len(bars["bars"]) == 2 and bars["close"] == 10.0
         assert client.get("/api/estimate/candles?ticker=SOXS&interval=3m").status_code == 422
         assert client.get("/api/estimate/candles?ticker=AAPL").json() == {"ticker": "AAPL", "supported": False}
+
+
+def test_yahoo_gaps_are_filled_from_the_hourly_bars(monkeypatch):
+    import sys
+    import types
+
+    import pandas as pd
+
+    from desk import estimate
+
+    ny = "America/New_York"
+    daily = pd.DataFrame({"Close": [200.0, float("nan")]},
+                         index=pd.DatetimeIndex(["2026-11-04", "2026-11-05"]).tz_localize(ny))
+    hourly = pd.DataFrame({"Close": [183.1, 181.57, 182.4]},
+                          index=pd.DatetimeIndex(["2026-11-05 14:30", "2026-11-05 15:30", "2026-11-05 16:30"]).tz_localize(ny))
+
+    class Ticker:
+        def __init__(self, t):
+            pass
+
+        def history(self, period, interval, auto_adjust):
+            return daily if interval == "1d" else hourly
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=Ticker))
+    estimate._CLOSES.clear()
+    rows = estimate.yahoo_daily_closes("NVDA")
+    assert rows == [(date(2026, 11, 4), 200.0), (date(2026, 11, 5), 181.57)]   # the 15:30 bar, not the after-hours one
+    estimate._CLOSES.clear()

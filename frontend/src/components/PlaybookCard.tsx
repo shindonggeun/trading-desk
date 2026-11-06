@@ -22,29 +22,36 @@ const RESULT: Record<string, string> = {
   flat: "당일 청산", expired: "만료", unfilled: "미체결", invalid: "채점 불가", unscorable: "채점 불가",
 };
 
-export type PlaybookState = "none" | "waiting" | "near" | "in_zone" | "confirmed" | "invalid";
+export type PlaybookState = "none" | "waiting" | "near" | "in_zone" | "beyond" | "confirmed" | "invalid";
 const STATE: Record<PlaybookState, string> = {
-  none: "타점 없음", waiting: "대기", near: "구역 근접", in_zone: "구역 안", confirmed: "확인됨", invalid: "무효",
+  none: "타점 없음", waiting: "대기", near: "구역 근접", in_zone: "구역 안", beyond: "구역 지나침", confirmed: "확인됨", invalid: "무효",
 };
+/** 채점이 이미 끝난(손절 · 시간 손절 · 만료) 방향은 가격과 상관없이 무효 */
+const CLOSED = new Set(["stop", "time_stop", "expired"]);
 
 const has = (side: PlaybookSide) => side.setup !== "none" && (!!side.zone || side.entries.length > 0 || !!side.trigger);
 
 /**
- * 지금 가격으로 본 상태: 대기 → 구역 근접(1 ATR) → 구역 안 → 확인됨(롱 reclaim · 숏 rejection_bar) → 무효(손절 통과).
+ * 지금 가격으로 본 상태: 대기 → 구역 근접(1 ATR) → 구역 안 → 구역 지나침(손절 전) → 무효(손절 통과 · 채점 종료).
+ * 확인됨(롱 reclaim · 숏 rejection_bar)은 분석 당시 값이라 가격이 구역 ± 1 ATR 안에 있을 때만 인정한다.
  * 숏은 구역이 저항(위)이고 손절이 위 — 방향만 뒤집는다.
  */
-export function playbookState(side: PlaybookSide, dir: "long" | "short", p: number | null, atr: number): PlaybookState {
+export function playbookState(side: PlaybookSide, dir: "long" | "short", p: number | null, atr: number,
+  result?: PlaybookOutcome): PlaybookState {
   if (!has(side)) return "none";
+  if (result && CLOSED.has(result.status)) return "invalid";
   if (p == null) return "waiting";
   if (side.stop != null && (dir === "long" ? p <= side.stop : p >= side.stop)) return "invalid";
-  const confirmId = dir === "long" ? "reclaim" : "rejection_bar";
-  if (side.conditions.some((c) => c.id === confirmId && c.met)) return "confirmed";
   const lo = side.zone?.low ?? side.trigger?.price ?? side.entries[0]?.price;
   const hi = side.zone?.high ?? side.trigger?.price ?? side.entries[0]?.price;
   if (lo == null || hi == null) return "waiting";
-  if (p >= lo && p <= hi) return "in_zone";
-  const gap = dir === "long" ? p - hi : lo - p;   // 롱 구역은 아래, 숏 구역은 위에서 다가온다
-  return gap >= 0 && gap <= atr ? "near" : "waiting";
+  const dist = p < lo ? lo - p : p > hi ? p - hi : 0;
+  const confirmId = dir === "long" ? "reclaim" : "rejection_bar";
+  if (dist <= atr && side.conditions.some((c) => c.id === confirmId && c.met === true)) return "confirmed";
+  if (dist === 0) return "in_zone";
+  // 롱은 구역 아래, 숏은 구역 위로 지나쳤지만 아직 손절 전 — 들어갔다면 가장 깊은 자리
+  if (dir === "long" ? p < lo : p > hi) return "beyond";
+  return dist <= atr ? "near" : "waiting";
 }
 
 function Side({ side, dir, state, result }: {
@@ -86,7 +93,7 @@ function Side({ side, dir, state, result }: {
             <dt>진입 사다리</dt>
             <dd className="pb-ladder">
               {side.entries.map((e) => (
-                <span key={e.step}>{e.step}차 <span className="num">{price(e.price)}</span> <span className="muted small">({Math.round(e.share * 100)}%{e.kind === "stop" ? " · 돌파" : ""})</span></span>
+                <span key={e.step}>{e.step}차 <span className="num">{price(e.price)}</span> <span className="muted small">({Math.round(e.share * 100)}%{e.kind === "stop" ? (dir === "long" ? " · 돌파" : " · 이탈") : ""})</span></span>
               ))}
             </dd>
           </div>
@@ -115,10 +122,10 @@ function Side({ side, dir, state, result }: {
       {side.conditions.length > 0 && (
         <ul className="pb-conditions" aria-label={`${name} 확인 신호`}>
           {side.conditions.map((c) => (
-            <li key={c.id} className={c.how === "watch" ? "pb-watch" : c.met ? "pb-met" : "pb-unmet"}>
-              <span aria-hidden>{c.how === "watch" ? "◌" : c.met ? "●" : "○"}</span>{" "}
+            <li key={c.id} className={c.how === "watch" || c.met == null ? "pb-watch" : c.met ? "pb-met" : "pb-unmet"}>
+              <span aria-hidden>{c.how === "watch" ? "◌" : c.met == null ? "–" : c.met ? "●" : "○"}</span>{" "}
               {CONDITION[c.id] ?? c.id}
-              <span className="sr-only">{c.how === "watch" ? " — 직접 지켜볼 것" : c.met ? " — 충족" : " — 미충족"}</span>
+              <span className="sr-only">{c.how === "watch" ? " — 직접 지켜볼 것" : c.met == null ? " — 판단 불가(데이터 없음)" : c.met ? " — 충족" : " — 미충족"}</span>
             </li>
           ))}
         </ul>
@@ -136,10 +143,15 @@ export default function PlaybookCard({ plan, symbol, outcome }: { plan: Plan; sy
   const live = useLiveQuote(symbol, plan.live_price, !!pb);
   const est = useEstimate(symbol, !!pb);
   if (!pb) return null;
-  const p = est?.estimate ?? live?.price ?? pb.frame.reference_price ?? null;
-  const basis = est ? "추정가" : live ? "현재가" : "기준가";
+  // 지난 거래일 run(symbol 없음)은 useLiveQuote 가 분석 당시 값을 돌려주므로 기준가로 "분석 당시" 라 적는다
+  const p = symbol ? est?.estimate ?? live?.price ?? pb.frame.reference_price ?? null : pb.frame.reference_price ?? null;
+  const basis = !symbol ? "분석 당시" : est ? "추정가" : live ? "현재가" : "기준가";
   const atr = pb.frame.atr;
-  const states = { long: playbookState(pb.long, "long", p, atr), short: playbookState(pb.short, "short", p, atr) };
+  const res = outcome?.playbooks;
+  const states = {
+    long: playbookState(pb.long, "long", p, atr, res?.long),
+    short: playbookState(pb.short, "short", p, atr, res?.short),
+  };
   const hits = pb.regime.evidence.filter((e) => e.hit);
   return (
     <section className="card playbook" aria-labelledby="pb-title">
@@ -154,7 +166,7 @@ export default function PlaybookCard({ plan, symbol, outcome }: { plan: Plan; sy
         <Side side={pb.long} dir="long" state={states.long} result={outcome?.playbooks?.long} />
         <Side side={pb.short} dir="short" state={states.short} result={outcome?.playbooks?.short} />
       </div>
-      <p className="muted small pb-note">가격은 계산이지 예측이 아닙니다. ◌ 는 화면이 판단하지 못해 직접 지켜볼 신호입니다.</p>
+      <p className="muted small pb-note">가격은 계산이지 예측이 아닙니다. ◌ 는 직접 지켜볼 신호, – 는 데이터가 없어 판단하지 못한 신호입니다.</p>
     </section>
   );
 }

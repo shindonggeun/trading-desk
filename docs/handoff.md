@@ -22,7 +22,17 @@
   - exhausting 국면의 하따는 +0.078R(calm −0.103R) — 끝물 신호 자체는 롱에 유의미해 보임
   - Windows 에서 출력을 파일로 돌리면 note 의 `—` 가 cp949 로 깨져 `--out` 이 안 써질 수 있음 → `PYTHONIOENCODING=utf-8` 로 실행
 - **남은 일**
-  1. 리뷰: `reviewer`(최종 diff `git diff origin/develop...`) 돌리고 CRITICAL/HIGH 만 반영 → 다시 `ruff` · `pytest`
+  1. 리뷰 반영 — `reviewer` 1차 결과(b6813a5 기준, REQUEST_CHANGES). 고친 뒤 `ruff` · `pytest` 와 백테스트를 다시 돌린다(1번은 수치가 바뀔 수 있음)
+     - **HIGH** `backtest.py` `MarketRisk.on`: 분봉 · 시간봉 계획(scalp · intraday · short_swing)이 그날 **최종** 일봉(VIX · NDX · KS11 종가)으로 게이트됨 = 미래 참조.
+       `h.primary != "1d"` 면 계획일 **전날까지**(`bisect_left`)로 자른다. 스윙(일봉 종가 계획)은 지금대로
+     - MEDIUM `risk_regime.py` `SAME_DAY_KR` · `_day`: KRW=X 는 런던 자정 스탬프 — 서머타임엔 날짜가 하루 앞당겨져 하루 미래 참조, 겨울에도 서울 마감 뒤 종가.
+       KRW=X 를 한국 계획에서도 strict(전날까지)로 두고, 날짜는 거래소 현지 시간대로
+     - MEDIUM `playbook_live.py` `_compute`: 캐시 미스 때 지표 7~9개를 순차로 받는 게 바깥 25초 `wait_for` 안이라 야후가 느리면 실시간 플레이북 전체가 503.
+       위험 호출에 따로 짧은 `wait_for`(try 안), `Cache` 에 빈 결과 · 실패도 짧게 캐시
+     - LOW `runner.py` `_playbooks`: 플레이북이 없으면(레벨 없음) 점수 노트도 빠진다 — 노트는 플레이북과 무관하게 넣을지 결정
+     - 테스트 공백: RunManager(risk=…) 경로(게이트 + 노트), `_risk` 타임아웃/예외, playbook_live 위험 경로(run_pb 없을 때만), 과거 trade_date 의 `Cache.current`, 분봉 · 서머타임 KRW 의 `MarketRisk`
+     - 문제없음 확인: apply 멱등 · 입력 불변, rr/then_stop 이 judge_playbook 과 일치, merge 가 꺼진 숏을 건너뜀, risk=None 이면 동작 그대로, 테스트 오프라인
+     - FE: 추가 필드만(`risk_regime`, 사이드 `gate`). 화면엔 이유가 안 보임 — 보류 1차만 남은 사다리 · 꺼진 숏 표시는 #150 에서
   2. 숏 게이트 유지/삭제 또는 임계값(SELLING · STRESS · EXHAUST_SIGNALS) 조정 결정 — 백테스트로 확인
   3. 이슈 완료 기준의 "사다리 평균 진입가" 비교는 리포트에 없음(기대 R 만) — 필요하면 `backtest.gate_view` 에 추가
   4. PR: `/pr 검증: ruff OK · pytest 560 passed(불안정 1 제외) · 백테스트 하따 폭락 구간 기대 R 개선 · reviewer ...`

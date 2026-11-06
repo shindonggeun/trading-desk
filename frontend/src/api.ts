@@ -1,4 +1,4 @@
-import type { DeskConfig, DeskEvent, Estimate, FlowInterval, FlowMarket, Instrument, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
+import type { DeskConfig, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FlowMarket, Instrument, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -165,6 +165,13 @@ export const api = {
       `/api/quote?ticker=${encodeURIComponent(ticker)}`,
     ),
   estimate: (ticker: string) => call<Estimate>(`/api/estimate?ticker=${encodeURIComponent(ticker)}`),
+  /** #123 시세판: 여러 종목(최대 30)의 실시간 · 추정가 */
+  board: (tickers: string[]) =>
+    call<{ items: BoardItem[] }>(`/api/estimates?tickers=${encodeURIComponent(tickers.join(","))}`),
+  /** #123 추정 봉 — 계약이 없으면 supported: false */
+  estimateCandles: (ticker: string, interval: string) =>
+    call<EstimatedCandles | { ticker: string; supported: false }>(
+      `/api/estimate/candles?ticker=${encodeURIComponent(ticker)}&interval=${interval}`),
   candles: (ticker: string, interval: CandleInterval, count: number, rsi = false) =>
     call<Candles>(
       `/api/candles?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(interval)}&count=${count}${rsi ? "&indicators=rsi14" : ""}`,

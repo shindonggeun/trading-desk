@@ -1012,3 +1012,40 @@ span.cs-hold-text { color: var(--warn); }
 .pb-misses { margin: 0; }
 .pb-misses > summary { cursor: pointer; }
 .pb-misses ul { margin: 4px 0 0; padding-left: 18px; }
+
+/* #124 — 시세판(관심 종목 · 주말 추정 타일)과 봉 · 추정 차트 (색은 토큰만) */
+.quote-board { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-bottom: 12px; }
+.qb-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap; }
+.qb-head h2 { margin: 0; font-size: var(--fs-l); }
+.qb-group { display: grid; gap: 6px; }
+.qb-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.qb-group-tools { display: inline-flex; gap: 10px; }
+.qb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px; }
+.qb-cell { position: relative; min-width: 0; }
+.qb-tile { display: grid; gap: 3px; width: 100%; padding: 9px 10px; text-align: left; background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius); font: inherit; font-weight: 400; cursor: pointer; min-width: 0; }
+.qb-tile:hover { border-color: var(--muted); }
+.qb-on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.qb-est { border-style: dashed; }
+.qb-top { display: flex; justify-content: space-between; align-items: center; gap: 6px; min-width: 0; }
+.qb-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qb-badge { flex: none; font-size: var(--fs-xs); padding: 0 6px; border: 1px solid currentColor; border-radius: var(--radius-s); }
+.qb-live { color: var(--ok); }
+.qb-estimate { color: var(--warn); }
+.qb-unavailable, .qb-wait { color: var(--muted); }
+.qb-price { font-size: var(--fs-l); font-variant-numeric: tabular-nums; }
+.qb-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qb-x { position: absolute; top: -6px; right: -6px; width: 22px; height: 22px; padding: 0; border-radius: 50%; line-height: 1;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+.qb-note { margin: 0; }
+.live-view { margin: 8px 0; align-items: center; }
+.board-chart { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.bc-box { min-width: 0; }
+.bc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.bc-head h3 { margin: 0; }
+.bc-box { height: max(360px, calc(100dvh - 420px)); }
+.bc-note { margin: 0; }
+@media (max-width: 600px) {
+  .qb-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bc-box { height: 320px; }
+}

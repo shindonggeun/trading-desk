@@ -519,6 +519,34 @@ export interface Instrument {
   security_type: string;
 }
 
+/** #123 시세판 한 줄(GET /api/estimates): 장중 실시간 · 장외 추정 · 추정 불가. */
+export interface BoardItem {
+  ticker: string;
+  state: "live" | "estimate" | "unavailable";
+  price: number | null;
+  change_pct: number | null;
+  close: number | null;
+  close_date: string | null;
+  /** 추정 출처: 그 종목 계약 · 대용(지수 ← ETF) · 레버리지 환산(기초 × 배수) */
+  source: { kind: "binance_perp_mark" | "proxy" | "leveraged"; contract: string; basis: string | null; multiple: number } | null;
+  quote_source?: string;
+  fetched_at: string | null;
+}
+
+/** #123 추정 봉(GET /api/estimate/candles): 마지막 정규장 종가 이후. */
+export interface EstimatedCandles {
+  ticker: string;
+  interval: string;
+  close: number;
+  close_date: string;
+  close_at: string;
+  market_state: "open" | "closed";
+  method: string;
+  basis: string | null;
+  multiple: number;
+  bars: { at: string; open: number; high: number; low: number; close: number; volume: number; estimated: true }[];
+}
+
 /** GET /api/estimate (backend desk/estimate.py): 장이 닫힌 동안 바이낸스 주식 무기한 선물로 낸 추정가. */
 export type Estimate =
   | { ticker: string; supported: false }

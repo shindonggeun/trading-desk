@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from . import horizons, macro_news, playbook, trade_map, verdict
+from . import horizons, macro_news, playbook, timing, trade_map, verdict
 from . import underlying as under
 from .broker.base import Broker
 from .consensus import CONSENSUS_TIMEOUT_SEC, ConsensusContext, llm_summariser
@@ -564,8 +564,10 @@ class RunManager:
             self._publish(run_id, {"type": "status", "agent": "system", "content": "running",
                                    "data": {"analysts": subject.selected_analysts()}})
             loop = asyncio.get_running_loop()
+            watch = timing.Stopwatch()       # #171: where the minutes go
 
             def emit(event: dict) -> None:   # called from the worker thread
+                watch.message(event)
                 loop.call_soon_threadsafe(self._publish, run_id, event)
 
             try:
@@ -604,7 +606,9 @@ class RunManager:
                 mandate = "\n\n".join(part for part in (mandate, verdict.mandate(horizon),
                                                        playbook.mandate() if pb_note else None) if part)
                 portfolio = desk_portfolio(request.profile, book, note, horizon_mandate=mandate)
+                watch.mark("desk_pre")
                 result = await asyncio.to_thread(self.runner, subject, emit, portfolio)
+                watch.mark("graph")
                 # The model may still leave a level out; fill it from ATR and mark it as computed.
                 fresh, fresh_u = await asyncio.gather(
                     self._live_quote(request), self._live_quote(request, base) if base else _none())
@@ -642,7 +646,11 @@ class RunManager:
                 if related:
                     plan["related"] = related
                 price = (live or {}).get("price") or (sr or {}).get("last_close")
+                watch.mark("desk_post")
                 await self._consensus(run_id, request, subject.ticker, result.final_state, plan, price, book)
+                watch.mark("consensus")
+                plan["timing"] = watch.result()
+                log.info("run %s %s timing: %s", run_id, request.ticker, watch.line())
                 self.store.mark_done(run_id, plan, result.report_path)
                 self._publish(run_id, {"type": "plan", "agent": "portfolio_manager", "data": plan})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "done"})

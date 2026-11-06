@@ -8,6 +8,7 @@
     python -m desk.cli otp-key                       # prints a new DESK_OTP_KEY value
     python -m desk.cli backtest SOXL --horizon swing --from 2018-01-01 [--sweep] [--out report.json]
     python -m desk.cli backtest --basket             # the reference basket (desk.backtest.BASKET)
+    python -m desk.cli timing [--last 20]            # where recent analyses spent their time (#171)
 
 In Docker: ``docker compose exec backend python -m desk.cli create-user <name>``.
 For scripts, DESK_NEW_PASSWORD supplies the password instead of the prompt.
@@ -37,6 +38,28 @@ def _password() -> str:
     if first != getpass.getpass("again: "):
         sys.exit("passwords differ")
     return first
+
+
+def _timing(engine, last: int) -> int:
+    from . import timing
+    from .store import Store
+
+    store, found, offset = Store(engine), [], 0
+    while len(found) < last and offset < 2000:          # scan back past failed and pre-#171 runs
+        page = store.list_runs(limit=100, offset=offset)
+        if not page:
+            break
+        found += [r["plan"]["timing"] for r in page if r["status"] == "done" and (r.get("plan") or {}).get("timing")]
+        offset += 100
+    engine.dispose()
+    report = timing.summarize(found[:last])
+    fmt = lambda s: "—" if s["n"] == 0 else f"{s['mean']:>6}s avg  {s['median']:>6}s med  {s['max']:>6}s max"
+    print(f"{report['runs']} runs  total {fmt(report['total'])}")
+    for name, s in report["stages"].items():
+        print(f"  {name:<22}{fmt(s)}")
+    for name, s in report["agents"].items():
+        print(f"    {name:<20}{fmt(s)}")
+    return 0
 
 
 def _backtest(args) -> int:
@@ -86,6 +109,8 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--cost-bps", type=float, default=None, help="commission + slippage per side (bp)")
     bt.add_argument("--sweep", action="store_true", help="also try the parameters one at a time")
     bt.add_argument("--out", default=None, help="write the full JSON report here")
+    tm = sub.add_parser("timing", help="average time per stage and per agent over the latest finished runs")
+    tm.add_argument("--last", type=int, default=20, help="how many recent finished runs (default 20)")
     args = parser.parse_args(argv)
     if args.command == "otp-key":
         print(otp.new_key())
@@ -100,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     engine = make_engine(settings.database_url)
+    if args.command == "timing":
+        return _timing(engine, args.last)
     if args.command == "rescore":
         from .store import Store
 

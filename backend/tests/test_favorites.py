@@ -84,6 +84,9 @@ def test_cap_of_fifty(db_url):
     with _login(app) as client:
         many = [{"ticker": f"T{i}"} for i in range(MAX_FAVORITES + 1)]
         assert client.put("/api/favorites", json={"items": many}).status_code == 422
+        # repeats do not count: 51 entries, 50 tickers
+        assert client.put("/api/favorites", json={"items": many[:MAX_FAVORITES] + many[:1]}).status_code == 200
+        assert client.put("/api/favorites", json={"items": many * 4}).status_code == 422   # body bound (200)
         assert client.put("/api/favorites", json={"items": many[:MAX_FAVORITES]}).status_code == 200
         full = client.post("/api/favorites", json={"ticker": "ONEMORE"})
         assert full.status_code == 409
@@ -105,6 +108,15 @@ def test_accounts_are_separate_and_list_survives_a_restart(db_url):
         assert _tickers(owner) == ["NVDA"]
 
 
+def test_names_are_cleaned_and_blank_falls_back_to_the_listing(db_url):
+    app = _app(db_url)
+    with _login(app) as client:
+        got = client.post("/api/favorites", json={"ticker": "NVDA", "name": "엔비\u202e디아\n"}).json()
+        assert got[0]["name"] == "엔비디아"
+        got = client.post("/api/favorites", json={"ticker": "005930.KS", "name": "  "}).json()
+        assert got[1]["name"] == "삼성전자"
+
+
 def test_login_origin_and_ticker_checks(db_url):
     app = _app(db_url)
     with TestClient(app, base_url="https://testserver") as anon:
@@ -122,4 +134,6 @@ def test_login_origin_and_ticker_checks(db_url):
         assert client.put("/api/favorites", json={"items": [{"ticker": "<x>"}]}).status_code == 422
         assert client.delete("/api/favorites/a%20b").status_code == 422
         assert client.post("/api/favorites", json={"ticker": "NVDA", "name": "x" * 201}).status_code == 422
+        assert client.post("/api/favorites", json={"ticker": "삼성"}).status_code == 422      # ASCII only
+        assert client.post("/api/favorites", json={"ticker": "１２３"}).status_code == 422
         assert _tickers(client) == []

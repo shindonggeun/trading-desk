@@ -22,6 +22,29 @@ const RESULT: Record<string, string> = {
   flat: "당일 청산", unfilled: "미체결", invalid: "채점 불가", unscorable: "채점 불가", error: "채점 오류",
 };
 
+/**
+ * 국면 근거(#129) — backend desk/playbook.py detect_regime 의 evidence key 를 읽는 문구로.
+ * 모르는 key 는 그대로 보인다.
+ */
+const num = (v: number, d = 2) => String(Number(v.toFixed(d)));
+const pct = (v: number) => `${v > 0 ? "+" : ""}${num(v * 100, 1)}%`;
+const EVIDENCE: Record<string, { text: (v: number) => string; limit: (t: number) => string }> = {
+  dd20: { text: (v) => `20일 고점 대비 ${pct(v)}`, limit: (t) => `${pct(t)} 이하` },
+  dd20_atr: { text: (v) => `낙폭 ${num(v)} ATR`, limit: (t) => `${num(t)} ATR 이하` },
+  down_streak: { text: (v) => `연속 하락 ${num(v, 0)}일`, limit: (t) => `${num(t, 0)}일 이상` },
+  rsi_d: { text: (v) => `일봉 RSI ${num(v, 1)}`, limit: (t) => `${num(t, 0)} 이하` },
+  ma20_atr: { text: (v) => `20일선 ${v < 0 ? "아래" : "위"} ${num(Math.abs(v))} ATR`, limit: (t) => `${num(Math.abs(t))} ATR 이상 아래` },
+  vol_x: { text: (v) => `거래량 20일 평균의 ${num(v)}배`, limit: (t) => `${num(t)}배 이상` },
+  gap_atr: { text: (v) => `시가 갭 ${num(v)} ATR`, limit: (t) => `${num(t)} ATR 이하` },
+  vix: { text: (v) => `VIX ${num(v, 1)}`, limit: (t) => `${num(t, 0)} 이상` },
+};
+type Evidence = Playbooks["regime"]["evidence"][number];
+export function evidenceText(e: Evidence): { text: string; limit: string | null } {
+  const spec = EVIDENCE[e.key];
+  if (!spec || typeof e.value !== "number") return { text: e.key, limit: null };
+  return { text: spec.text(e.value), limit: typeof e.threshold === "number" ? spec.limit(e.threshold) : null };
+}
+
 export type PlaybookState = "none" | "waiting" | "near" | "in_zone" | "beyond" | "confirmed" | "invalid" | "closed";
 const STATE: Record<PlaybookState, string> = {
   none: "타점 없음", waiting: "대기", near: "구역 근접", in_zone: "구역 안", beyond: "구역 지나침", confirmed: "확인됨", invalid: "무효", closed: "끝남",
@@ -155,6 +178,7 @@ export default function PlaybookCard({ plan, symbol, outcome }: { plan: Plan; sy
     short: playbookState(pb.short, "short", p, atr, res?.short),
   };
   const hits = pb.regime.evidence.filter((e) => e.hit);
+  const misses = pb.regime.evidence.filter((e) => !e.hit && e.value != null);
   return (
     <section className="card playbook" aria-labelledby="pb-title">
       <div className="pb-head">
@@ -162,7 +186,18 @@ export default function PlaybookCard({ plan, symbol, outcome }: { plan: Plan; sy
         <span className={`pb-regime pb-regime-${pb.regime.id}`}>{REGIME[pb.regime.id] ?? pb.regime.id}</span>
         {p != null && <span className="muted small">{basis} {price(p)} · {pb.frame.primary} 봉 기준</span>}
       </div>
-      {hits.length > 0 && <p className="muted small pb-evidence">국면 근거: {hits.map((e) => e.key).join(" · ")}</p>}
+      {hits.length > 0 && <p className="muted small pb-evidence">국면 근거: {hits.map((e) => evidenceText(e).text).join(" · ")}</p>}
+      {misses.length > 0 && (
+        <details className="pb-misses small">
+          <summary className="muted">기준에 못 미친 것 {misses.length}개</summary>
+          <ul>
+            {misses.map((e) => {
+              const { text, limit } = evidenceText(e);
+              return <li key={e.key}>{text}{limit && <span className="muted"> (기준 {limit})</span>}</li>;
+            })}
+          </ul>
+        </details>
+      )}
       {pb.bias_note?.text && <p className="small pb-bias">거시 · 정책: {pb.bias_note.text}</p>}
       <div className="pb-sides">
         <Side side={pb.long} dir="long" state={states.long} result={outcome?.playbooks?.long} />

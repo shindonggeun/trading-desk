@@ -356,6 +356,13 @@ def _target(role: str, price: float, basis: str, source: str, entry: float, stop
 
 # --- the two sides -----------------------------------------------------------------------------
 
+def _none_side(reason: str, size_hint: str, flat_by_close: bool) -> dict:
+    """A side with no setup still carries every key, empty (the page's type is one shape)."""
+    return {"setup": "none", "reason": reason, "size_hint": size_hint, "flat_by_close": flat_by_close,
+            "zone": None, "entries": [], "avg_entry": None, "stop": None, "risk": None, "targets": [],
+            "time_stop": None, "conditions": [], "score": 0, "source": {}, "model": None}
+
+
 def _long(regime: dict, cands: list[dict], primary: list[dict], ref: float, atr: float, h: horizons.Horizon,
           fib: dict | None) -> dict:
     rid = regime["id"]
@@ -364,8 +371,7 @@ def _long(regime: dict, cands: list[dict], primary: list[dict], ref: float, atr:
     found = zones(cands, ref, atr, below=True, max_atr=MAX_ZONE_ATR[h.id])
     zone = found[0] if found else _fallback_zone(ref, atr, below=True)
     if setup == "dip_catch" and rid == "downtrend" and zone["score"] < 3:
-        return {"setup": "none", "reason": "하락 추세에서 받칠 만한 구역(합류 점수 3 이상)이 없음", "zone": zone,
-                "size_hint": SIZE[rid], "flat_by_close": h.flat_by_close}
+        return _none_side("하락 추세에서 받칠 만한 구역(합류 점수 3 이상)이 없음", SIZE[rid], h.flat_by_close)
     shares = SHARES["crash"] if rid == "crash" else SHARES["default"]
     entries = [{"step": 1, "price": zone["high"], "share": shares[0], "kind": "limit"},
                {"step": 2, "price": zone["mid"], "share": shares[1], "kind": "limit"},
@@ -407,8 +413,7 @@ def _short(regime: dict, sr: dict, cands: list[dict], primary: list[dict], ref: 
            h: horizons.Horizon, vwap: float | None, sma20: float | None) -> dict:
     rid = regime["id"]
     if rid == "uptrend" and not regime["flags"]["overextended"]:
-        return {"setup": "none", "reason": "상승 추세에 과열 신호가 없음 — 숏은 쉬어 간다", "zone": None,
-                "size_hint": SIZE[rid], "flat_by_close": True}
+        return _none_side("상승 추세에 과열 신호가 없음 — 숏은 쉬어 간다", SIZE[rid], True)
     # a strong support just above the price = a breakdown to retest; else fade the bounce
     broken = [lv for lv in sr.get("levels") or [] if lv["price"] > ref and lv["price"] - ref <= atr
               and (lv.get("strength") or 0) >= 2 and lv.get("kind") == "support"]

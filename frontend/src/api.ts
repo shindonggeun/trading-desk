@@ -1,4 +1,4 @@
-import type { DeskConfig, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
+import type { DeskConfig, Favorite, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -168,6 +168,13 @@ export const api = {
   /** #123 시세판: 여러 종목(최대 30)의 실시간 · 추정가 */
   board: (tickers: string[]) =>
     call<{ items: BoardItem[] }>(`/api/estimates?tickers=${encodeURIComponent(tickers.join(","))}`),
+  /** #134 즐겨찾기(계정별 · 순서대로). 추가 · 교체도 전체 목록을 돌려준다. */
+  favorites: () => call<Favorite[]>("/api/favorites"),
+  addFavorite: (ticker: string, name?: string) =>
+    call<Favorite[]>("/api/favorites", { method: "POST", body: JSON.stringify({ ticker, name }) }),
+  replaceFavorites: (items: { ticker: string; name?: string | null }[]) =>
+    call<Favorite[]>("/api/favorites", { method: "PUT", body: JSON.stringify({ items }) }),
+  removeFavorite: (ticker: string) => call<void>(`/api/favorites/${encodeURIComponent(ticker)}`, { method: "DELETE" }),
   /** #123 추정 봉 — 계약이 없으면 supported: false */
   estimateCandles: (ticker: string, interval: string) =>
     call<EstimatedCandles | { ticker: string; supported: false }>(

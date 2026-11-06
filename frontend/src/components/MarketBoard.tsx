@@ -6,6 +6,7 @@ import {
   type BoardMode, loadMarkets, loadMode, loadOpen, MARKETS_CHANGED, type MarketSymbol, saveMode, saveOpen,
 } from "../markets";
 import type { DeskConfig, Estimate, SupportResistance } from "../types";
+import FavoriteStar from "./FavoriteStar";
 
 const REFRESH_MS = 60_000;
 const BARS: Record<BoardMode, number> = { "1d": 63, "5m": 78 }; // 일봉 약 3개월 · 5분봉 약 하루
@@ -285,7 +286,7 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
       {open && picked && (
         <div className="mb-confirm" id="mb-confirm" ref={confirmRef} role="group" aria-label="분석 시작 확인">
           <p>
-            <strong>{picked.name}</strong> ({picked.ticker}) 분석을 시작할까요?
+            <FavoriteStar ticker={picked.ticker} name={picked.name} /> <strong>{picked.name}</strong> ({picked.ticker}) 분석을 시작할까요?
           </p>
           <p className="muted small">
             투자 성향 {profileLabel ?? "기본"} · 시간축 {horizonLabel} · 보고서 한국어 · 보유 종목 반영 안 함. 지수 · 선물 · 환율 ·

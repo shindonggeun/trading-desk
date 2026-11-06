@@ -8,6 +8,7 @@ import PlaybookCard from "../components/PlaybookCard";
 import EvidenceLevels from "../components/Evidence";
 import { GlossaryPanel, GlossaryProvider } from "../components/Glossary";
 import PlanCard from "../components/PlanCard";
+import FavoriteStar from "../components/FavoriteStar";
 import RunSummaryBar from "../components/RunSummaryBar";
 import TradeMap from "../components/TradeMap";
 import { duration, STATUS_LABEL } from "../format";
@@ -168,7 +169,7 @@ export default function RunView({ runId }: { runId: string }) {
     <main className="run run-wide run-tabbed">
       <div className="run-head">
         <a href="#/" className="link">← 대시보드</a>
-        <h1>{run.options.name ?? run.ticker} <span className="muted">{run.options.name ? `${run.ticker} · ` : ""}{run.trade_date}</span></h1>
+        <h1><FavoriteStar ticker={run.ticker} name={run.options.name} /> {run.options.name ?? run.ticker} <span className="muted">{run.options.name ? `${run.ticker} · ` : ""}{run.trade_date}</span></h1>
         <span className={`status status-${status}`}>{STATUS_LABEL[status]}</span>
         <span className="muted small">{duration(run.started_at, run.finished_at)}</span>
       </div>

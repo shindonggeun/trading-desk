@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { api } from "../api";
+import FavoritesPanel from "../components/FavoritesPanel";
 import MacroBrief from "../components/MacroBrief";
 import MarketBoard from "../components/MarketBoard";
 import MarketFlowPanel from "../components/MarketFlowPanel";
@@ -45,10 +46,11 @@ function RegimePanel() {
   );
 }
 
-type SectionId = "macro" | "market" | "portfolio" | "recent" | "stats" | "flow" | "regime";
+type SectionId = "macro" | "favorites" | "market" | "portfolio" | "recent" | "stats" | "flow" | "regime";
 /** 구역 — 순서는 이슈 #100 의 기본값. wide 는 넓은 화면에서 한 줄을 다 쓴다. */
 const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () => ReactNode }> = {
   macro: { title: "오늘의 거시 · 정책 브리핑", wide: true, render: () => <MacroBrief /> },
+  favorites: { title: "즐겨찾기 시세", wide: true, render: () => <FavoritesPanel /> },
   market: { title: "시장 · 지수 · 선물", wide: true, render: () => <MarketBoard embedded /> },
   portfolio: { title: "내 투자", render: () => <PortfolioPanel /> },
   recent: { title: "최근 분석", render: () => <RecentRuns /> },

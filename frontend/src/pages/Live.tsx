@@ -5,19 +5,16 @@ import InstrumentSearch, { type Picked } from "../components/InstrumentSearch";
 import BoardChart from "../components/BoardChart";
 import LiveChart from "../components/LiveChart";
 import QuoteBoard, { type BoardTicker } from "../components/QuoteBoard";
+import FavoriteStar from "../components/FavoriteStar";
+import { addFavorite, removeFavorite, useFavorites } from "../favorites";
 import { price, time } from "../format";
 import type { Run } from "../types";
 
-const STORE = "desk.live.tickers";
-const DEFAULT: Picked[] = [{ ticker: "NVDA", name: "엔비디아" }];
-
-function loadTabs(): Picked[] {
-  try {
-    const raw = JSON.parse(localStorage.getItem(STORE) ?? "null");
-    return Array.isArray(raw) && raw.length ? raw : DEFAULT;
-  } catch {
-    return DEFAULT;
-  }
+/** #/live?t=NVDA — 대시보드 즐겨찾기 타일에서 넘어온 종목 */
+function linkedTicker(): string | null {
+  const q = window.location.hash.split("?")[1];
+  const t = q ? new URLSearchParams(q).get("t") : null;
+  return t ? t.trim().toUpperCase() : null;
 }
 
 const VIEW_KEY = "desk.board.view";
@@ -27,11 +24,12 @@ function weekendKst(): boolean {
 }
 
 /**
- * 시세판(#124 · 예전 실시간 차트 #26): 위에 관심 종목 · 주말 추정 타일(장중 실시간 · 장외 추정가),
+ * 시세판(#124 · 예전 실시간 차트 #26): 관심 종목 = 즐겨찾기(#135, 서버 저장). 위에 즐겨찾기 · 주말 추정 타일(장중 실시간 · 장외 추정가),
  * 아래에 고른 종목 차트 — "1분 실시간"(타점 겹쳐 보기 · 도달 알림 #42) 또는 "봉 · 추정"(5분 ~ 주봉 + 장외 추정 봉).
  */
 export default function Live() {
-  const [tabs, setTabs] = useState<Picked[]>(loadTabs);
+  const { list, error: favError } = useFavorites();
+  const tabs: Picked[] = useMemo(() => (list ?? []).map((f) => ({ ticker: f.ticker, name: f.name ?? undefined })), [list]);
   const [active, setActive] = useState(0);
   const [pick, setPick] = useState<Picked>({ ticker: "" });
   const [runs, setRuns] = useState<Run[]>([]);
@@ -67,13 +65,22 @@ export default function Live() {
   };
   const shown = focus ?? tab;
 
+  // 대시보드 타일에서 넘어오면(#/live?t=…) 그 종목을 고른다 — 목록을 읽은 뒤 한 번
+  const [linked, setLinked] = useState<string | null>(linkedTicker);
   useEffect(() => {
-    try {
-      localStorage.setItem(STORE, JSON.stringify(tabs));
-    } catch {
-      /* 저장 못 해도 화면은 그대로 */
-    }
-  }, [tabs]);
+    const on = () => setLinked(linkedTicker());
+    window.addEventListener("hashchange", on);
+    return () => window.removeEventListener("hashchange", on);
+  }, []);
+  useEffect(() => {
+    if (!linked || list === null) return;
+    const i = tabs.findIndex((x) => x.ticker === linked);
+    if (i >= 0) {
+      setActive(i);
+      setFocus(null);
+    } else setFocus({ ticker: linked });
+    setLinked(null);
+  }, [linked, list, tabs]);
 
   // re-read on every tab switch: an analysis that finished meanwhile brings its levels
   useEffect(() => {
@@ -98,14 +105,13 @@ export default function Live() {
     setFocus(null);
     if (at >= 0) setActive(at);
     else {
-      setTabs([...tabs, { ticker: t, name: pick.name }]);
+      addFavorite(t, pick.name);
       setActive(tabs.length);
     }
     setPick({ ticker: "" });
   };
   const remove = (i: number) => {
-    const next = tabs.filter((_, j) => j !== i);
-    setTabs(next.length ? next : DEFAULT);
+    removeFavorite(tabs[i].ticker);
     setActive(0);
   };
   const askPermission = () => {
@@ -125,26 +131,29 @@ export default function Live() {
       <QuoteBoard watch={tabs} selected={shown?.ticker} onPick={pickTile}
         // 봉 · 추정 보기에선 1분 흐름이 없으니 시세판 값(장외면 추정가)으로 도달 알림을 이어 간다
         onPrice={(t, p) => { if (view === "bars" && t === tab?.ticker) setTick({ ticker: t, price: p }); }} />
-      <div className="live-tabs" role="tablist" aria-label="관심 종목">
+      {favError && <p className="error small">{favError}</p>}
+      {list !== null && tabs.length === 0 && !focus && (
+        <p className="empty-state">즐겨찾기가 없습니다. 위에서 종목을 찾아 추가하거나, 타일을 고른 뒤 ☆ 를 누르세요.</p>
+      )}
+      <div className="live-tabs" role="tablist" aria-label="관심 종목(즐겨찾기)">
         {tabs.map((t, i) => (
           <span key={t.ticker} className={`live-tab ${t === tab ? "live-tab-on" : ""}`}>
             <button type="button" role="tab" aria-selected={!focus && t === tab} onClick={() => { setActive(i); setFocus(null); }}>
               {t.name ? `${t.name} ` : ""}<span className="muted small">{t.ticker}</span>
             </button>
-            <button type="button" className="link live-tab-x" aria-label={`${t.ticker} 탭 닫기`} onClick={() => remove(i)}>×</button>
+            <button type="button" className="link live-tab-x" aria-label={`${t.name ?? t.ticker} 즐겨찾기에서 빼기`} title="즐겨찾기에서 빼기" onClick={() => remove(i)}>×</button>
           </span>
         ))}
       </div>
       {shown && (
         <div className="live-view chips" role="group" aria-label="차트 종류">
-          {focus && <span className="small"><strong>{focus.name ?? focus.ticker}</strong> <span className="muted">{focus.ticker}</span></span>}
+          {focus && (
+            <span className="small">
+              <FavoriteStar ticker={focus.ticker} name={focus.name} /> <strong>{focus.name ?? focus.ticker}</strong> <span className="muted">{focus.ticker}</span>
+            </span>
+          )}
           <button type="button" className={`chip${view === "live" ? " chip-on" : ""}`} aria-pressed={view === "live"} onClick={() => pickView("live")}>1분 실시간</button>
           <button type="button" className={`chip${view === "bars" ? " chip-on" : ""}`} aria-pressed={view === "bars"} onClick={() => pickView("bars")}>봉 · 장외 추정</button>
-          {focus && (
-            <button type="button" className="link small" onClick={() => { setTabs([...tabs, focus]); setActive(tabs.length); setFocus(null); }}>
-              관심 종목에 추가
-            </button>
-          )}
         </div>
       )}
       {shown && view === "bars" && <BoardChart key={shown.ticker} ticker={shown.ticker} name={shown.name} />}

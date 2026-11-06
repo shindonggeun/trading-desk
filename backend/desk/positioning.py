@@ -550,3 +550,15 @@ def prompt_note(p: dict | None) -> str | None:
         if m.get("iv30_pct"):
             lines.append(f"- 30-day IV {m['iv30_pct']}% (about +/-{m['move_30d_pct']}% over a month)")
     return "\n".join(lines)
+
+
+async def note_for(ticker: str, timeout: float = 20.0) -> str | None:
+    """The note for a run; None for a non-US ticker or on any failure (a run never waits long).
+    The option chains carry Cboe's own (15-minute delayed) price."""
+    if not is_us_ticker(ticker.upper()):
+        return None
+    try:
+        return prompt_note(await asyncio.wait_for(POSITIONING.get(ticker), timeout))
+    except Exception as exc:  # noqa: BLE001 - incl. timeout
+        log.info("positioning note for %s failed: %s", ticker, type(exc).__name__)
+        return None

@@ -80,7 +80,7 @@ export default function App() {
           <nav aria-label="메뉴">
             <a href="#/" className={!runMatch && !onSettings && !onReview && !onLive && !onHistory ? "active" : ""}>대시보드</a>
             <a href="#/history" className={onHistory ? "active" : ""}>분석 기록</a>
-            <a href="#/live" className={onLive ? "active" : ""}>실시간</a>
+            <a href="#/live" className={onLive ? "active" : ""}>시세판</a>
             <a href="#/review" className={onReview ? "active" : ""}>매매 복기</a>
             <a href="#/settings" className={onSettings ? "active" : ""}>설정</a>
           </nav>

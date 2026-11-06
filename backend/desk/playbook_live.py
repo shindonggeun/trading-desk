@@ -14,12 +14,15 @@ here (the scoring in desk.outcome judges it on the bars).
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections import OrderedDict
 from datetime import UTC, datetime
 
-from . import horizons, playbook, trigger
+from . import horizons, playbook, risk_regime, trigger
 from .sr import frame_bars, support_resistance
+
+log = logging.getLogger(__name__)
 
 TIMEOUT_SEC = 25.0           # the whole computation, not each step
 FAIL_TTL_SEC = 10.0          # a failure is remembered briefly so a poll does not pile up retries
@@ -47,7 +50,8 @@ def _trim(d: OrderedDict, limit: int) -> None:
         d.popitem(last=False)          # the oldest first
 
 
-async def _compute(prices, ticker: str, h: horizons.Horizon, run_pb: dict | None) -> tuple[dict, dict | None]:
+async def _compute(prices, ticker: str, h: horizons.Horizon, run_pb: dict | None,
+                   risk=None) -> tuple[dict, dict | None]:
     try:
         quote = await prices.quote(ticker)
         live = {"price": quote.price, "source": quote.source, "fetched_at": quote.fetched_at}
@@ -61,6 +65,12 @@ async def _compute(prices, ticker: str, h: horizons.Horizon, run_pb: dict | None
                                     today=today(primary, frame))
     if fresh is None:
         raise ValueError(f"no playbooks for {ticker}: too few bars or no levels")
+    if risk is not None and not run_pb:
+        # #146: the market's selling score now (an analysis' playbooks were gated when it ran)
+        try:
+            fresh = risk_regime.apply(fresh, await asyncio.to_thread(risk, ticker, None))
+        except Exception as exc:  # noqa: BLE001 - the playbooks ungated, not none
+            log.warning("risk regime for %s failed: %s", ticker, exc)
     out = playbook.track(fresh, run_pb, primary, frame)
     await _triggers(prices, ticker, out, frame, live)
     return out, live
@@ -91,7 +101,7 @@ async def _triggers(prices, ticker: str, out: dict, frame: horizons.Horizon, liv
 
 
 async def current(prices, ticker: str, horizon: str | None = None, run_id: str | None = None,
-                  run_pb: dict | None = None, clock=time.monotonic) -> dict:
+                  run_pb: dict | None = None, clock=time.monotonic, risk=None) -> dict:
     """Both playbooks now; with ``run_pb`` (an analysis' playbooks) its levels stay."""
     h = horizons.get(horizon)
     key = (ticker, h.id, run_id)
@@ -108,7 +118,7 @@ async def current(prices, ticker: str, horizon: str | None = None, run_id: str |
             if not isinstance(value, Exception) and clock() - at < h.sr_ttl_sec:
                 return value
         try:
-            out, live = await asyncio.wait_for(_compute(prices, ticker, h, run_pb), TIMEOUT_SEC)
+            out, live = await asyncio.wait_for(_compute(prices, ticker, h, run_pb, risk), TIMEOUT_SEC)
         except Exception as exc:
             _CACHE[key] = (clock(), exc)
             _trim(_CACHE, 256)

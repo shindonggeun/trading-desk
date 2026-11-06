@@ -18,7 +18,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import horizons, live, macro_news, otp, outcome, playbook_live, regime, review, verdict
+from . import (
+    events_calendar,
+    filings,
+    horizons,
+    live,
+    macro_news,
+    otp,
+    outcome,
+    playbook_live,
+    regime,
+    review,
+    verdict,
+)
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
 from .broker import kis_stream, make_broker
 from .consensus import fake_summariser, llm_summariser
@@ -39,6 +51,7 @@ from .store import TERMINAL, Store, iso
 from .universe import Universe
 
 MAX_BOARD = 30          # tickers per /api/estimates call
+CALENDAR_INTERVAL_SEC = 6 * 3600   # economic calendar re-read (#148)
 BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
 KST = timezone(timedelta(hours=9))   # Toss dates (order history from/to) are KST
 REVIEW_CACHE_SEC = 60
@@ -200,7 +213,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        lever_analyst=fake_analyst if settings.fake_runs else llm_analyst,
                                        summariser=fake_summariser if settings.fake_runs else llm_summariser,
                                        # world news flow: the background cache below, never fetched in a run
-                                       macro=None if settings.fake_runs else macro_news.prompt_note)
+                                       macro=None if settings.fake_runs else desk_news_note,
+                                       # #148: SEC 8-K / Form 4 of a US company, fetched per run (one or two calls)
+                                       filings=None if settings.fake_runs else filings.note_for)
 
         async def keep_listing_fresh():
             while True:
@@ -237,9 +252,22 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.exception("macro news refresh failed")
                 await asyncio.sleep(settings.macro_interval_sec)
 
+        async def refresh_calendar():
+            # #148: FOMC + BLS release dates change rarely; a few reads a day keep them current
+            while True:
+                try:
+                    ok = await events_calendar.CACHE.refresh()
+                    log.info("economic calendar: %d/2 source(s) refreshed", ok)
+                except Exception:  # a failed pass must not stop the next one
+                    log.exception("economic calendar refresh failed")
+                await asyncio.sleep(CALENDAR_INTERVAL_SEC)
+
         refresher = asyncio.create_task(keep_listing_fresh())
         macro = (asyncio.create_task(refresh_macro())
                  if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
+        # the same switch as the news flow: off in tests and scripted runs
+        calendar_task = (asyncio.create_task(refresh_calendar())
+                         if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
         # Scripted runs have made-up levels; scoring them against real bars means nothing.
         scorer = (asyncio.create_task(score_plans())
                   if settings.score_interval_sec > 0 and not settings.fake_runs else None)
@@ -257,6 +285,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         refresher.cancel()
         if macro:
             macro.cancel()
+        if calendar_task:
+            calendar_task.cancel()
         if scorer:
             scorer.cancel()
         if purger:
@@ -711,6 +741,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             log.warning("candles for %s %s failed: %s", ticker, interval, exc)
             raise HTTPException(503, f"no candles for {ticker}") from None
 
+    @app.get("/api/events/calendar")
+    def economic_calendar(days: int = 14):
+        """#148: upcoming FOMC decisions and major BLS releases (official calendars, refreshed in the
+        background) and the release window a fresh entry should wait out, if one is open now."""
+        return events_calendar.CACHE.view(days=min(max(days, 1), 60))
+
     @app.get("/api/macro/brief")
     def macro_brief(ticker: str | None = None):
         """World news-flow themes (GDELT, refreshed in the background): article count in 24h,
@@ -894,6 +930,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return regime.snapshot(settings.semibot_db_path)
 
     return app
+
+
+def desk_news_note(ticker: str) -> str | None:
+    """The run's background news block: world news flow (#115) and the economic calendar (#148).
+    Both read a cache the lifespan loops fill; nothing here touches the network."""
+    parts = [macro_news.prompt_note(ticker), events_calendar.prompt_note()]
+    return "\n\n".join(p for p in parts if p) or None
 
 
 def _client_ip(request: Request) -> str:

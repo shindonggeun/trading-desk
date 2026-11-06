@@ -494,6 +494,32 @@ export interface Portfolio {
 }
 
 export type FlowMarket = "KOSPI" | "KOSDAQ";
+
+/** #160 GET /api/market/futures — 코스피200 근월물(desk/futures_flow.py). 실패 · 키 없음도 200 + supported/error */
+export interface FuturesInvestor { net_contracts: number | null; net_value_mn: number | null }
+export interface FuturesFlow {
+  source: string;
+  fetched_at: string;
+  front: { code: string; expiry: string; days_left: number };
+  market_open: boolean;
+  supported: boolean;
+  error: string | null;
+  price: {
+    code: string; name: string; expiry: string; days_left: number;
+    price: number | null; change: number | null; change_pct: number | null; volume: number | null;
+    open_interest: number | null; open_interest_change: number | null;
+    market_basis: number | null; theory_basis: number | null; theory_price: number | null; spot_index: number | null;
+    structure: "contango" | "backwardation" | "flat" | null;
+  } | null;
+  investors: Partial<Record<"foreign" | "individual" | "institution", FuturesInvestor>> | null;
+  investors_error: string | null;
+  investors_unit: { value: string; qty: string };
+  split: {
+    spot_net: number | null; spot_date: string | null; futures_net_contracts: number | null;
+    split: boolean; kind: "spot_buy_futures_sell" | "spot_sell_futures_buy" | null;
+    reason: "spot_not_today" | "small" | "no_data" | null;
+  } | null;
+}
 export type FlowInterval = "1d" | "1w" | "1mo" | "1y";
 export type Investor = "individual" | "foreigner" | "institution" | "other_corporation";
 export type InstitutionKind =

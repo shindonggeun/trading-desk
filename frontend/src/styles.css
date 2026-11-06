@@ -1074,3 +1074,15 @@ h1 .fav-star { font-size: var(--fs-xl); }
 .fav-spark-flat path { stroke: var(--muted); }
 .fav-spark-none { display: flex; align-items: center; }
 .fav-tools { display: flex; justify-content: flex-end; gap: 4px; margin-top: 4px; }
+
+/* #161 시장 수급 — 코스피200 선물 보기 */
+.fut { display: grid; gap: 8px; }
+.fut-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.fut-price { font-size: 20px; font-variant-numeric: tabular-nums; }
+.fut-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 12px; margin: 0; }
+.fut-grid dt { color: var(--muted); font-size: 12px; }
+.fut-grid dd { margin: 0; font-variant-numeric: tabular-nums; }
+.fut-split { margin: 0; }
+@media (max-width: 560px) {
+  .fut-grid { grid-template-columns: minmax(0, 1fr); }
+}

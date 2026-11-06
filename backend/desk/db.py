@@ -119,6 +119,16 @@ sessions = Table(
     Column("user_agent", String(256)),
 )
 
+# Starred tickers per account (#134), in the order the owner set. The dashboard and the quote board read them.
+favorites = Table(
+    "favorites", metadata,
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("ticker", String(20), primary_key=True),      # clean_ticker form: NVDA, 005930.KS
+    Column("name", String(200)),                          # display name; NULL when the listing has none
+    Column("position", Integer, nullable=False),
+    Column("created_at", Timestamp, nullable=False),
+)
+
 
 def now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)

@@ -24,6 +24,7 @@ from .broker import make_broker
 from .consensus import fake_summariser, llm_summariser
 from .db import make_engine, migrate, now
 from .estimate import CANDLE_INTERVALS, BinanceEstimator
+from .favorites import MAX_FAVORITES, Favorites, TooMany
 from .indicators import INDICATORS
 from .leverage_analyst import fake_analyst, llm_analyst
 from .market_flow import MarketFlow
@@ -132,6 +133,20 @@ class RunIn(BaseModel):
         return v
 
 
+class FavoriteIn(BaseModel):
+    ticker: str = Field(min_length=1, max_length=20)
+    name: str | None = Field(default=None, max_length=200)   # looked up from the listing when absent
+
+    @field_validator("ticker")
+    @classmethod
+    def _ticker(cls, v: str) -> str:
+        return clean_ticker(v)
+
+
+class FavoritesIn(BaseModel):
+    items: list[FavoriteIn] = Field(max_length=MAX_FAVORITES)
+
+
 def purge_expired_runs(store: Store, retention_days: int) -> int:
     """Delete finished runs older than ``retention_days`` (0 = keep everything)."""
     if retention_days <= 0:
@@ -158,6 +173,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # Failed codes per account, across IPs (docs/security.md §6).
     otp_fails = LoginThrottle(per_ip=otp.USER_FAILS, window_sec=otp.USER_FAIL_WINDOW_SEC)
     universe = Universe(engine)
+    favorites = Favorites(engine, lambda ticker: (universe.lookup(ticker) or {}).get("name"))
     hub = Hub()
     broker = make_broker(settings)
     prices = prices or PriceSource(broker)
@@ -813,6 +829,36 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             log.warning("estimated candles for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no estimated candles for {ticker}") from None
         return result if result else {"ticker": ticker, "supported": False}
+
+    # --- favorites (#134): per account, ordered ----------------------------------------
+
+    @app.get("/api/favorites")
+    def list_favorites(request: Request):
+        return favorites.list(request.state.user.id)
+
+    @app.put("/api/favorites")
+    def replace_favorites(body: FavoritesIn, request: Request):
+        try:
+            return favorites.replace(request.state.user.id, [(i.ticker, i.name) for i in body.items])
+        except TooMany as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.post("/api/favorites")
+    def add_favorite(body: FavoriteIn, request: Request):
+        user_id = request.state.user.id
+        try:
+            added = favorites.add(user_id, body.ticker, body.name)
+        except TooMany as exc:
+            raise HTTPException(409, str(exc)) from None
+        return JSONResponse(favorites.list(user_id), status_code=201 if added else 200)
+
+    @app.delete("/api/favorites/{ticker}", status_code=204)
+    def remove_favorite(ticker: str, request: Request):
+        try:
+            ticker = clean_ticker(ticker)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        favorites.remove(request.state.user.id, ticker)
 
     @app.get("/api/regime")
     def regime_view():

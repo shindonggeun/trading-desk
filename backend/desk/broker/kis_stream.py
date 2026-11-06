@@ -145,6 +145,10 @@ class ApprovalError(RuntimeError):
     pass
 
 
+class ApprovalDue(ApprovalError):
+    """The approval key reached APPROVAL_TTL_SEC: a planned reconnect, not a failure."""
+
+
 class KisStream:
     """One KIS websocket shared by every page; see the module docstring."""
 
@@ -171,9 +175,10 @@ class KisStream:
         self._refused_key = False
         self.connected = False
         # #143: what GET /api/live/kis shows. Kept across reconnects; nothing here is a key.
-        self._last_tick: dict[str, str | None] = {"KR": None, "US": None}   # wall-clock ISO of the last trade
+        self._last_tick: dict[str, str | None] = {"KR": None, "US": None}   # wall-clock ISO when the last trade frame arrived
         self._connected_at: str | None = None
         self._last_drop: dict | None = None            # {at, error (exception type)}
+        self._last_refusal: str | None = None          # when KIS last refused the approval key
 
     # --- what the pages use ------------------------------------------------------------------
 
@@ -196,11 +201,14 @@ class KisStream:
     def status(self) -> dict:
         """Connection health for the owner (GET /api/live/kis). Never the app key, secret or
         approval key: only counts, ticker symbols, times and exception type names."""
+        # read-only (no pruning): call it on the loop thread, where the stream changes these dicts
         now = self._clock()
-        return {"connected": self.connected, "subscribed": len(self._subs), "watched": len(self._live_wants()),
+        return {"connected": self.connected, "subscribed": len(self._subs),
+                "watched": sum(1 for at in self._wanted.values() if now - at <= WANT_SEC),
                 "tickers": sorted(self._subs), "last_tick": dict(self._last_tick),
                 "refused": sorted(t for t, until in self._rejected.items() if until > now),
-                "approval_refused": self._refused_key, "connected_at": self._connected_at,
+                "approval_refused_at": self._last_refusal,
+                "connected_at": self._connected_at if self.connected else None,
                 "last_drop": dict(self._last_drop) if self._last_drop else None}
 
     # --- the connection ----------------------------------------------------------------------
@@ -227,7 +235,8 @@ class KisStream:
                 raise
             except Exception as exc:  # noqa: BLE001 - logged by type only: messages may carry a request
                 failed = True
-                self._last_drop = {"at": _now_iso(), "error": type(exc).__name__}
+                if not isinstance(exc, ApprovalDue):          # a planned key rotation is not a drop
+                    self._last_drop = {"at": _now_iso(), "error": type(exc).__name__}
                 log.warning("kis stream dropped: %s", type(exc).__name__)
             finally:
                 self.connected = False
@@ -293,9 +302,9 @@ class KisStream:
                 now = self._clock()
                 if self._refused_key or now - started >= APPROVAL_TTL_SEC:
                     # KIS refused the approval key, or it is due: reconnect with a new one
-                    self._refused_key = False
+                    refused, self._refused_key = self._refused_key, False
                     self._approval = None
-                    raise ApprovalError("approval key refused or due")
+                    raise ApprovalError("approval key refused") if refused else ApprovalDue("approval key due")
                 wanted = self._live_wants()
                 if wanted:
                     idle_since = None
@@ -381,6 +390,7 @@ class KisStream:
         if "approval" in reason.lower():
             log.warning("kis stream: approval key refused (%s)", reason)
             self._refused_key = True
+            self._last_refusal = _now_iso()               # kept: the flag above resets on reconnect
             return
         tr_key = str(header.get("tr_key") or "")
         for ticker, (_tr, key) in list(self._subs.items()):

@@ -133,7 +133,7 @@ docker run --rm -it -p 127.0.0.1:1455:1455 -v trading-desk-tradingagents-home:/h
 - 서버 `.env.runtime` 에 `DESK_KIS_APP_KEY` · `DESK_KIS_APP_SECRET` 을 넣고 `scripts/deploy.sh HEAD backend`. 모의투자 키면 `DESK_KIS_WS_URL` · `DESK_KIS_REST_URL` 도 모의 주소로(`.env.example`).
 - 서버에서 `ops.koreainvestment.com:21000`(ws) · `openapi.koreainvestment.com:9443`(https) 로 나가는 연결이 열려 있어야 한다.
 - 확인: 장중에 실시간 화면을 열면 시세 출처가 실시간(`kis`)으로 바뀌고 1초 간격으로 갱신된다.
-  로그인한 브라우저에서 `GET /api/live/kis`(#143) 로 상태를 본다 — `connected` · 구독 종목(`tickers`) · 시장별 마지막 체결 시각(`last_tick.KR` · `last_tick.US`) ·
-  거절된 종목(`refused`) · 접속키 거절(`approval_refused`) · 마지막 끊김(`last_drop`: 시각 · 예외 타입). 키 · 접속키는 들어 있지 않다.
+  로그인한 브라우저에서 `GET /api/live/kis`(#143) 로 상태를 본다 — `connected` · 구독 종목(`tickers`) · 시장별 마지막 체결 수신 시각(`last_tick.KR` · `last_tick.US`) ·
+  거절된 종목(`refused`) · 접속키가 마지막으로 거절된 시각(`approval_refused_at`) · 마지막 끊김(`last_drop`: 시각 · 예외 타입, 정기 접속키 교체는 빼고). 키 · 접속키는 들어 있지 않다.
   INFO 로그는 출력하지 않는다(상태는 이 API 로 본다). 문제는 백엔드 로그(WARNING)의 `kis stream dropped: <예외 타입>` · `kis stream refused <종목>: <사유>` · `approval key refused` 로도 남는다. 그동안 화면은 토스 폴링으로 계속 돈다.
 - 규칙(키 보관 · 회전 · 로그)은 [security.md §5](security.md#5-비밀).

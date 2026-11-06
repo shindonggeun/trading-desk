@@ -18,7 +18,7 @@ import time
 from collections import OrderedDict
 from datetime import UTC, datetime
 
-from . import horizons, playbook
+from . import horizons, playbook, trigger
 from .sr import frame_bars, support_resistance
 
 TIMEOUT_SEC = 25.0           # the whole computation, not each step
@@ -61,7 +61,31 @@ async def _compute(prices, ticker: str, h: horizons.Horizon, run_pb: dict | None
                                     today=today(primary, frame))
     if fresh is None:
         raise ValueError(f"no playbooks for {ticker}: too few bars or no levels")
-    return playbook.track(fresh, run_pb, primary, frame), live
+    out = playbook.track(fresh, run_pb, primary, frame)
+    await _triggers(prices, ticker, out, frame, live)
+    return out, live
+
+
+async def _triggers(prices, ticker: str, out: dict, frame: horizons.Horizon, live: dict | None) -> None:
+    """The lower-bar entry trigger (#149) on each side near or in its zone; ``trigger`` None
+    otherwise, or when the lower bars cannot be had (the page keeps the zone state)."""
+    lower = trigger.LOWER.get(frame.primary)
+    wanted = [s for s in ("long", "short")
+              if (out.get(s) or {}).get("state") in ("near", "in_zone", "confirmed")]
+    for s in ("long", "short"):
+        if out.get(s) is not None:
+            out[s]["trigger"] = None
+    if not lower or not wanted:
+        return
+    try:
+        bars = (await prices.candles(ticker, lower, trigger.LOOKBACK[lower]))["bars"]
+    except Exception:  # noqa: BLE001 - the trigger is an extra; the zone state still stands
+        return
+    atr = out["frame"].get("atr") or 0.0
+    price = live["price"] if live else None
+    for s in wanted:
+        out[s]["trigger"] = trigger.live(out[s], bars, s == "long", atr, price)
+    out["frame"] = {**out["frame"], "trigger_interval": lower}
 
 
 async def current(prices, ticker: str, horizon: str | None = None, run_id: str | None = None,

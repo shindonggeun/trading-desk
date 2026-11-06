@@ -220,7 +220,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        # #148: the economic calendar (background cache, same-day runs)
                                        calendar=None if settings.fake_runs else events_calendar.prompt_note,
                                        # #148: SEC 8-K / Form 4 of a US company, fetched per run (one or two calls)
-                                       filings=None if settings.fake_runs else filings.note_for)
+                                       filings=None if settings.fake_runs else filings.note_for,
+                                       # #154: short volume + options of a US ticker (cached ~15 min)
+                                       positioning=None if settings.fake_runs else positioning.note_for)
 
         async def keep_listing_fresh():
             while True:

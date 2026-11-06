@@ -250,3 +250,57 @@ def test_positioning_api(db_url, monkeypatch):
         assert batch["items"][1]["supported"] is False
         many = ",".join(f"T{i}" for i in range(31))
         assert client.get("/api/positioning/batch", params={"tickers": many}).status_code == 422
+
+
+def test_note_for_skips_non_us_and_survives_a_slow_source(monkeypatch):
+    class Slow:
+        async def get(self, ticker):
+            await asyncio.sleep(5)
+
+    monkeypatch.setattr(pz, "POSITIONING", Slow())
+    assert asyncio.run(pz.note_for("005930.KS")) is None
+    assert asyncio.run(pz.note_for("NVDA", timeout=0.05)) is None
+
+
+def test_the_positioning_note_reaches_us_same_day_runs_only(db_url):
+    import time
+    from datetime import timedelta as td
+
+    from fastapi.testclient import TestClient
+
+    from desk.api import create_app
+    from desk.auth import Auth
+    from desk.db import make_engine
+    from desk.runner import make_fake_runner
+    from desk.settings import Settings
+
+    rendered, seen = [], []
+    fake = make_fake_runner(0)
+
+    def runner(request, emit, portfolio):
+        rendered.append((request.ticker, portfolio.render(request.ticker) if portfolio is not None else ""))
+        return fake(request, emit, portfolio)
+
+    async def note(ticker):
+        seen.append(ticker)
+        return "POSITIONING NOTE: put/call 0.9"
+
+    app = create_app(Settings(database_url=db_url, fake_runs=True, fake_delay=0), runner=runner)
+    engine = make_engine(db_url)
+    Auth(engine, td(hours=1), td(hours=1)).create_user("owner", "correct horse battery")
+    engine.dispose()
+    with TestClient(app, base_url="https://testserver") as client:
+        client.post("/api/auth/login", json={"username": "owner", "password": "correct horse battery"})
+        client.app.state.manager.positioning = note
+
+        def run(body):
+            run_id = client.post("/api/runs", json=body).json()["id"]
+            for _ in range(200):
+                if client.get(f"/api/runs/{run_id}").json()["status"] in ("done", "failed"):
+                    return
+                time.sleep(0.02)
+
+        run({"ticker": "NVDA"})
+        run({"ticker": "TSLA", "trade_date": "2026-01-05"})
+    notes = dict(rendered)
+    assert seen == ["NVDA"] and "POSITIONING NOTE" in notes["NVDA"] and "POSITIONING NOTE" not in notes["TSLA"]

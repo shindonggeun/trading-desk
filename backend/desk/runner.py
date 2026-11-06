@@ -252,11 +252,14 @@ class RunManager:
                  lever_analyst=llm_analyst, summariser=llm_summariser,
                  macro: Callable[[str], str | None] | None = None,
                  filings: Callable[[str], Awaitable[str | None]] | None = None,
+                 positioning: Callable[[str], Awaitable[str | None]] | None = None,
                  calendar: Callable[[], str | None] | None = None) -> None:
         self.levels = levels
         # #148: recent SEC filings of a US company (desk.filings.note_for) and the economic calendar
         # (desk.events_calendar.prompt_note). Both read "now": same-day runs only. None leaves them out.
         self.filings = filings
+        # #154: short volume and option positioning of a US ticker (desk.positioning.note_for), same day
+        self.positioning = positioning
         self.calendar = calendar
         # #115: the world news-flow note (desk.macro_news.prompt_note) - None leaves it out
         self.macro = macro
@@ -557,11 +560,12 @@ class RunManager:
                 start, start_u = await asyncio.gather(
                     self._live_quote(request), self._live_quote(request, base) if base else _none())
                 same_day = request.trade_date == dt.date.today().isoformat()
-                sr, sr_u, related, filings_note = await asyncio.gather(
+                sr, sr_u, related, filings_note, positioning_note = await asyncio.gather(
                     self._support_resistance(request, start),
                     self._support_resistance(request, start_u, base) if base else _none(),
                     self._related(request),
-                    self.filings(base or request.ticker) if self.filings and same_day else _none())
+                    self.filings(base or request.ticker) if self.filings and same_day else _none(),
+                    self.positioning(base or request.ticker) if self.positioning and same_day else _none())
                 # The run's own instrument: the underlying for a leveraged product.
                 main_live, main_sr = (start_u, sr_u) if lever else (start, sr)
                 lever_note = under.prompt_note(request.ticker, *lever) if lever else None
@@ -575,7 +579,8 @@ class RunManager:
                 pb_note = playbook.prompt_note(pb_main)
                 note = "\n\n".join(part for part in (live_note(main_live, main_sr and main_sr.get("atr")),
                                                      prompt_note(main_sr), pb_note, lever_note,
-                                                     related_note(related), macro_note, calendar_note, filings_note)
+                                                     related_note(related), macro_note, calendar_note, filings_note,
+                                                     positioning_note)
                                    if part) or None
                 mandate = horizons.horizon_mandate(horizon, main_sr and main_sr.get("atr"), frame=frame,
                                                    levels_below=bool(main_sr))

@@ -371,3 +371,69 @@ def test_failures_stop_once_nobody_watches():
         task.cancel()
 
     asyncio.run(go())
+
+
+# --- #143 status ----------------------------------------------------------------------------
+
+def test_status_shows_last_trade_per_market_refusals_and_drops_but_no_keys():
+    async def go():
+        h = Harness()
+        task = asyncio.create_task(h.stream.run())
+        empty = h.stream.status()
+        assert empty["last_tick"] == {"KR": None, "US": None} and empty["last_drop"] is None
+        h.stream.want("005930.KS")
+        h.stream.want("SOXL")
+        h.stream.want("NVDA")
+        await _until(lambda: h.sockets and len(h.sockets[0].subs()) == 3)
+        sock = h.sockets[0]
+        await sock.inbox.put(_frame(KR, _kr()))
+        await _until(lambda: h.stream.status()["last_tick"]["KR"] is not None)
+        assert h.stream.status()["last_tick"]["US"] is None              # US not traded yet
+        await sock.inbox.put(_frame(US, _us()))
+        await _until(lambda: h.stream.status()["last_tick"]["US"] is not None)
+        await sock.inbox.put(json.dumps({"header": {"tr_id": US, "tr_key": "DAMSNVDA"},
+                                         "body": {"rt_cd": "1", "msg1": "MAX SUBSCRIBE OVER"}}))
+        await _until(lambda: h.stream.status()["refused"] == ["NVDA"])
+        s = h.stream.status()
+        assert s["connected"] and s["tickers"] == ["005930.KS", "SOXL"] and s["connected_at"]
+        assert s["approval_refused"] is False
+
+        await sock.inbox.put(ConnectionError(f"boom {APPROVAL}"))
+        await _until(lambda: h.stream.status()["last_drop"] is not None)
+        s = h.stream.status()
+        assert s["last_drop"]["error"] == "ConnectionError" and s["last_tick"]["KR"]   # kept across the drop
+        text = json.dumps(s)
+        for secret in (APP_KEY, APP_SECRET, APPROVAL):
+            assert secret not in text
+        task.cancel()
+
+    asyncio.run(go())
+
+
+def test_status_api_needs_a_session_and_never_returns_keys(db_url):
+    from datetime import timedelta
+
+    from fastapi.testclient import TestClient
+
+    from desk.api import create_app
+    from desk.auth import Auth
+    from desk.db import make_engine
+    from desk.runner import make_fake_runner
+
+    def client_for(**keys):
+        app = create_app(Settings(database_url=db_url, fake_runs=True, fake_delay=0, **keys), runner=make_fake_runner(0))
+        return TestClient(app, base_url="https://testserver")
+
+    first = client_for()                        # migrates the database
+    engine = make_engine(db_url)
+    Auth(engine, timedelta(hours=1), timedelta(hours=1)).create_user("owner", "correct horse battery")
+    engine.dispose()
+    with first as client:
+        assert client.get("/api/live/kis").status_code == 401
+        client.post("/api/auth/login", json={"username": "owner", "password": "correct horse battery"})
+        assert client.get("/api/live/kis").json() == {"enabled": False}
+    with client_for(kis_app_key=APP_KEY, kis_app_secret=APP_SECRET) as client:
+        client.post("/api/auth/login", json={"username": "owner", "password": "correct horse battery"})
+        body = client.get("/api/live/kis")
+        assert body.status_code == 200 and body.json()["enabled"] is True and body.json()["connected"] is False
+        assert APP_KEY not in body.text and APP_SECRET not in body.text

@@ -679,6 +679,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return StreamingResponse(frames(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+    @app.get("/api/live/kis")
+    def kis_status():
+        """#143: is the KIS realtime feed (#125) connected, what it streams and when the last trade
+        came per market. No keys: counts, symbols, times and error type names only."""
+        if kis_feed is None:
+            return {"enabled": False}
+        return {"enabled": True, **kis_feed.status()}
+
     @app.get("/api/quote")
     async def quote(ticker: str):
         """Current price for the plan card: Toss when connected, else Yahoo; cached ~10 s."""

@@ -926,3 +926,12 @@ span.cs-hold-text { color: var(--warn); }
 .pair-confirm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pair-start { justify-self: start; }
 @media (max-width: 420px) { .pair-levels { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* #98 지지 · 저항 구역 띠 · 타점 손익 영역 — 범례는 실선, 레벨 목록은 접는 칸(기본 접힘) */
+.lg-stop, .lg-target { border-top-style: solid !important; }
+.level-list { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+.level-list > summary { cursor: pointer; font-size: 13px; color: var(--text); list-style: none; display: flex; align-items: baseline; gap: 8px; }
+.level-list > summary::-webkit-details-marker { display: none; }
+.level-list > summary::before { content: "▸"; color: var(--muted); width: 10px; }
+.level-list[open] > summary::before { content: "▾"; }
+.level-list[open] > summary { margin-bottom: 6px; }

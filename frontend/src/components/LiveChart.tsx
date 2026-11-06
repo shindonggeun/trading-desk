@@ -12,6 +12,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { api, followLive, type Candles, type LiveFrame, type StreamState } from "../api";
 import { price } from "../format";
+import { mergeAxisLabels, nearestLevels, planBands, PriceBands, srBands } from "./chartBands";
 import type { Plan } from "../types";
 
 // 분봉 시각은 한국 시각으로 보인다(PriceChart 와 같은 방식).
@@ -157,29 +158,42 @@ export default function LiveChart({ ticker, plan, onPrice }: {
     };
   }, [ticker]);
 
-  // 계획선 · 지지 · 저항 — 차트는 그대로 두고 선만 갈아 끼운다
+  // 계획선(축 라벨) · 지지 · 저항 구역 띠 · 손실 · 이익 영역(#98) — 차트는 그대로 두고 갈아 끼운다
   useEffect(() => {
     const c = chartRef.current;
     if (!c) return;
     const lines: [number | null | undefined, string, string, LineStyle][] = [
       [plan?.entry_price, "진입", css("--accent", "#c9d1db"), LineStyle.Solid],
-      [plan?.stop_loss, "손절", css("--short", "#3a86f8"), LineStyle.Dashed],
-      [plan?.price_target, "목표", css("--long", "#f2464b"), LineStyle.Dashed],
+      [plan?.stop_loss, "손절", css("--short", "#3a86f8"), LineStyle.Solid],
+      [plan?.price_target, "목표", css("--long", "#f2464b"), LineStyle.Solid],
       [plan?.long_trigger, "롱 조건", css("--long", "#f2464b"), LineStyle.Dotted],
       [plan?.short_trigger, "숏 조건", css("--short", "#3a86f8"), LineStyle.Dotted],
-      ...(plan?.support_resistance?.levels ?? []).slice(0, 8).map(
-        (lv): [number, string, string, LineStyle] => [
-          lv.price, lv.kind === "resistance" ? "저항" : "지지",
-          css(lv.kind === "resistance" ? "--sr-resistance" : "--sr-support", lv.kind === "resistance" ? "#b58cf0" : "#2bb3a3"), LineStyle.LargeDashed,
-        ],
-      ),
     ];
     const made: IPriceLine[] = [];
     for (const [value, title, color, lineStyle] of lines) {
       if (value != null) made.push(c.series.createPriceLine({ price: value, title, color, lineWidth: 1, lineStyle, axisLabelVisible: true }));
     }
+    const frame = requestAnimationFrame(() => chartRef.current?.series === c.series && mergeAxisLabels(c.series, made));
+    // 지지 · 저항은 축 라벨 없는 띠 — 기준가에서 가까운 3개씩
+    const sr = plan?.support_resistance;
+    const bands = new PriceBands(`11px ${getComputedStyle(document.body).fontFamily}`);
+    c.series.attachPrimitive(bands);
+    bands.set(
+      [
+        ...planBands(plan, null, { loss: css("--danger", css("--up", "#f2464b")), profit: css("--ok", "#3fb68b") }),
+        ...srBands(
+          sr?.reference_price != null ? nearestLevels(sr.levels ?? [], sr.reference_price, 3, false) : [],
+          sr?.atr, { support: css("--sr-support", "#2bb3a3"), resistance: css("--sr-resistance", "#b58cf0") },
+        ),
+      ],
+      [],
+    );
     return () => {
-      if (chartRef.current?.series === c.series) for (const l of made) c.series.removePriceLine(l);
+      cancelAnimationFrame(frame);
+      if (chartRef.current?.series === c.series) {
+        for (const l of made) c.series.removePriceLine(l);
+        c.series.detachPrimitive(bands);
+      }
     };
   }, [plan, ticker]);
 

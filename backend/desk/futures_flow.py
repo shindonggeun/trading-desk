@@ -26,7 +26,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
-from .market_flow import KST, _ttl_until_open, market_open
+from .market_flow import KST, _ttl_until_open
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +40,9 @@ INVESTOR_MARKET = ("K2I", "F001")
 TOKEN_PATH = "/oauth2/tokenP"
 TOKEN_TTL_SEC = 20 * 3600.0       # KIS issues a token for a day; renew a little before
 TOKEN_MIN_GAP_SEC = 60.0          # KIS allows one issue a minute (and notifies on each)
+# A refused issue (or a fresh token refused again) waits longer each time, so a key without the
+# rights or a changed IP does not ask KIS every minute all day (each issue notifies the owner).
+TOKEN_BACKOFF_SEC = (60.0, 600.0, 1800.0)
 TIMEOUT_SEC = 8.0
 CACHE_OPEN_SEC = 30.0
 CACHE_CLOSED_SEC = 600.0
@@ -47,6 +50,10 @@ CACHE_FAIL_SEC = 30.0
 # KRX year letters for derivative codes: 2006 = A, I · O · U skipped (2025 = W, 2026 = X).
 _YEARS = [c for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if c not in "IOU"]
 _EXPIRED_TOKEN = ("EGW00123", "EGW00121")
+MULTIPLIER_MN = 0.25             # KOSPI200 futures: 250,000 KRW a point = 0.25 million KRW
+# A foreign spot/futures split is shown only past noise: 10 billion KRW of stock, 500 contracts.
+SPLIT_SPOT_MIN = 10_000_000_000
+SPLIT_FUTURES_MIN = 500
 
 
 class KisError(RuntimeError):
@@ -145,13 +152,43 @@ def normalize_investors(output) -> dict | None:
     return out or None
 
 
+def futures_open(now: datetime) -> bool:
+    """KRX regular derivatives session, 08:45 ~ 15:45 KST on weekdays."""
+    local = now.astimezone(KST)
+    if local.weekday() >= 5:
+        return False
+    minutes = local.hour * 60 + local.minute
+    return 8 * 60 + 45 <= minutes <= 15 * 60 + 45
+
+
+def contract_value_ratio(investors: dict | None, price: dict) -> float | None:
+    """Net value per net contract against one KOSPI200 contract's notional (price x 0.25 mn KRW),
+    on the class with the most contracts. Near 1 for these futures; ~0.01 for a stock market
+    answer (won per share), ~0.2 for mini futures."""
+    if not investors or not price.get("price"):
+        return None
+    rows = [v for v in investors.values() if v.get("net_contracts") and v.get("net_value_mn") is not None]
+    if not rows:
+        return None
+    row = max(rows, key=lambda v: abs(v["net_contracts"]))
+    if abs(row["net_contracts"]) < 50:              # too few to say: a thin early session
+        return None
+    return (row["net_value_mn"] / row["net_contracts"]) / (price["price"] * MULTIPLIER_MN)
+
+
 def _looks_like_futures(investors: dict | None, price: dict) -> bool:
-    """Net contracts in a futures market are a small multiple of the day's volume; a stock market
-    answer (shares) is orders of magnitude bigger. Guards a wrong market code."""
-    if not investors or not price.get("volume"):
-        return bool(investors)
-    biggest = max(abs(v.get("net_contracts") or 0) for v in investors.values())
-    return biggest <= 3 * price["volume"]
+    """Guards a wrong market code: the value per contract must match a KOSPI200 contract, and the
+    net contracts stay within a few times the day's volume (shares would be far more)."""
+    if not investors:
+        return False
+    ratio = contract_value_ratio(investors, price)
+    if ratio is not None and not 0.5 <= ratio <= 2.0:
+        return False
+    if price.get("volume"):
+        biggest = max(abs(v.get("net_contracts") or 0) for v in investors.values())
+        if biggest > 3 * price["volume"]:
+            return False
+    return True
 
 
 class KisRest:
@@ -165,6 +202,7 @@ class KisRest:
         self._clock = clock
         self._token: tuple[float, str] | None = None     # (expires at, token)
         self._asked = -TOKEN_MIN_GAP_SEC
+        self._refusals = 0                               # issues refused in a row (backoff step)
         self._lock = asyncio.Lock()
 
     def __repr__(self) -> str:                           # never the key, the secret or the token
@@ -180,12 +218,13 @@ class KisRest:
             now = self._clock()
             if self._token and now < self._token[0]:
                 return self._token[1]
-            if now - self._asked < TOKEN_MIN_GAP_SEC:
+            if now - self._asked < self._gap():
                 raise KisError("waiting before asking KIS for another access token")
             self._asked = now
             res = await (await self._client()).post(f"{self._url}{TOKEN_PATH}", json={
                 "grant_type": "client_credentials", "appkey": self._key, "appsecret": self._secret})
             if res.status_code != 200:
+                self._refusals += 1
                 raise KisError(f"access token: HTTP {res.status_code}")
             try:
                 body = res.json()
@@ -193,10 +232,20 @@ class KisRest:
                 body = {}
             token = body.get("access_token")
             if not token or not isinstance(token, str):
+                self._refusals += 1
                 raise KisError("access token: none in the answer")
             life = min(float(body.get("expires_in") or TOKEN_TTL_SEC), TOKEN_TTL_SEC)
             self._token = (now + life, token)
             return token
+
+    def _gap(self) -> float:
+        return TOKEN_BACKOFF_SEC[min(self._refusals, len(TOKEN_BACKOFF_SEC) - 1)]
+
+    def _scrub(self, text: str) -> str:
+        for secret in (self._key, self._secret, self._token[1] if self._token else ""):
+            if secret:
+                text = text.replace(secret, "***")
+        return text
 
     async def get(self, path: str, tr_id: str, params: dict) -> dict:
         for attempt in (0, 1):
@@ -209,18 +258,38 @@ class KisRest:
             except ValueError:
                 body = {}
             code = str(body.get("msg_cd") or "")
-            if attempt == 0 and (res.status_code == 401 or code in _EXPIRED_TOKEN):
-                self._token = None                       # revoked early: one fresh token, once
-                continue
+            if res.status_code == 401 or code in _EXPIRED_TOKEN:
+                if attempt == 0:
+                    if self._token and self._token[1] == token:
+                        self._token = None               # revoked early: one fresh token, once
+                    continue
+                self._refusals += 1                      # a fresh token refused too: back off
+                raise KisError(f"{tr_id}: token refused")
             if res.status_code != 200 or str(body.get("rt_cd")) != "0":
-                msg = str(body.get("msg1") or "").strip()[:80]
-                raise KisError(f"{tr_id}: HTTP {res.status_code} {code} {msg}".strip())
+                # KIS' message stays in the server log (scrubbed); the page gets the codes only
+                log.warning("kis %s: HTTP %s %s %s", tr_id, res.status_code, code,
+                            self._scrub(str(body.get("msg1") or "").strip()[:80]))
+                raise KisError(f"{tr_id}: HTTP {res.status_code} {code}".strip())
+            self._refusals = 0
             return body
         raise KisError(f"{tr_id}: token refused")
 
     async def aclose(self) -> None:
         if self._own_http and self._http is not None:
             await self._http.aclose()
+
+
+def off_reason(settings) -> str | None:
+    """Why the futures flow is off, in words for the page; None when it can run."""
+    if settings.fake_runs:
+        return "가짜 실행(DESK_FAKE_RUNS)이라 한국투자증권을 부르지 않습니다"
+    if not settings.kis_app_key or not settings.kis_app_secret:
+        return "한국투자증권 키(DESK_KIS_APP_KEY · DESK_KIS_APP_SECRET)가 없어 선물 현황을 받을 수 없습니다"
+    from .broker.kis_stream import REST_URL
+
+    if not (settings.kis_rest_url or REST_URL).startswith("https://"):
+        return "DESK_KIS_REST_URL 이 https:// 가 아니라 키를 보내지 않습니다"
+    return None
 
 
 def make(settings) -> KisRest | None:
@@ -239,8 +308,11 @@ def make(settings) -> KisRest | None:
 class FuturesFlow:
     """The cached front-month picture for /api/market/futures."""
 
-    def __init__(self, rest: KisRest | None, spot=None, clock=time.monotonic, now=lambda: datetime.now(UTC)) -> None:
+    def __init__(self, rest: KisRest | None, spot=None, clock=time.monotonic, now=lambda: datetime.now(UTC),
+                 off: str | None = None) -> None:
         self.rest = rest
+        self.off = off or "한국투자증권 키가 없어 선물 현황을 받을 수 없습니다"
+        self._ratio_logged = False
         self.spot = spot                                 # desk.market_flow.MarketFlow (for the split)
         self._clock, self._now = clock, now
         self._cache: tuple[float, float, dict] | None = None
@@ -252,18 +324,22 @@ class FuturesFlow:
                 return self._cache[2]
             value, ok = await self._fetch()
             now = self._now()
-            ttl = CACHE_FAIL_SEC if not ok else CACHE_OPEN_SEC if market_open(now) else _ttl_until_open(now, CACHE_CLOSED_SEC)
+            # any failed part (price, investors) is retried soon; the derivatives session sets the rest
+            ttl = (CACHE_FAIL_SEC if not ok else CACHE_OPEN_SEC if futures_open(now)
+                   else _ttl_until_open(now, CACHE_CLOSED_SEC))
             self._cache = (self._clock(), ttl, value)
             return value
 
     async def _fetch(self) -> tuple[dict, bool]:
         now = self._now()
         front = front_month(now.astimezone(KST).date())
+        # every path answers the same keys
         base = {"source": "kis", "fetched_at": now.astimezone(KST).isoformat(timespec="seconds"),
-                "front": front, "market_open": market_open(now)}
+                "front": front, "market_open": futures_open(now), "supported": True, "error": None,
+                "price": None, "investors": None, "investors_error": None,
+                "investors_unit": {"value": "백만원", "qty": "계약"}, "split": None}
         if self.rest is None:
-            return {**base, "supported": False, "error": "한국투자증권 키가 없어 선물 현황을 받을 수 없습니다",
-                    "price": None, "investors": None, "split": None}, True
+            return {**base, "supported": False, "error": self.off}, True
         price_res, inv_res, spot_res = await asyncio.gather(
             self.rest.get(PRICE_PATH, PRICE_TR, {"FID_COND_MRKT_DIV_CODE": "F", "FID_INPUT_ISCD": front["code"]}),
             self.rest.get(INVESTOR_PATH, INVESTOR_TR,
@@ -272,21 +348,27 @@ class FuturesFlow:
             return_exceptions=True)
         if isinstance(price_res, BaseException):
             log.warning("futures price failed: %s", _short(price_res))
-            return {**base, "supported": True, "error": f"선물 시세를 받지 못했습니다 — {_short(price_res)}",
-                    "price": None, "investors": None, "split": None}, False
+            return {**base, "error": f"선물 시세를 받지 못했습니다 — {_short(price_res)}"}, False
         price = normalize_price(price_res.get("output1") or {}, price_res.get("output3"), front)
-        investors, inv_error = None, None
+        if price["price"] is None:                   # a success with no quote: most likely the contract code
+            log.warning("futures price: empty answer for %s", front["code"])
+            return {**base, "error": f"선물 시세가 비어 있습니다 — 종목 코드 {front['code']} 확인 필요"}, False
+        investors, inv_error, ok = None, None, True
         if isinstance(inv_res, BaseException):
             log.warning("futures investors failed: %s", _short(inv_res))
-            inv_error = f"투자자별 동향을 받지 못했습니다 — {_short(inv_res)}"
+            inv_error, ok = f"투자자별 동향을 받지 못했습니다 — {_short(inv_res)}", False
         else:
             investors = normalize_investors(inv_res.get("output"))
+            ratio = contract_value_ratio(investors, price)
+            if ratio is not None and not self._ratio_logged:   # once: the units on a live answer
+                log.info("futures investors: value per contract / notional = %.2f", ratio)
+                self._ratio_logged = True
             if investors is not None and not _looks_like_futures(investors, price):
                 log.warning("futures investors: the answer for %s does not look like futures", INVESTOR_MARKET)
                 investors, inv_error = None, "투자자별 동향의 시장 코드가 선물과 맞지 않습니다(확인 필요)"
-        split = foreign_split(spot_res if isinstance(spot_res, dict) else None, investors)
-        return {**base, "supported": True, "error": None, "price": price, "investors": investors,
-                "investors_error": inv_error, "investors_unit": {"value": "백만원", "qty": "계약"}, "split": split}, True
+        spot = spot_res if isinstance(spot_res, dict) else None
+        split = foreign_split(spot, investors, now.astimezone(KST).date())
+        return {**base, "price": price, "investors": investors, "investors_error": inv_error, "split": split}, ok
 
     async def aclose(self) -> None:
         if self.rest is not None:
@@ -301,20 +383,26 @@ def _short(exc: BaseException) -> str:
     return str(exc)[:100] if isinstance(exc, KisError) else type(exc).__name__
 
 
-def foreign_split(spot: dict | None, investors: dict | None) -> dict | None:
-    """Foreign spot net (KRW) vs futures net (contracts) today: opposite signs = a split."""
+def foreign_split(spot: dict | None, investors: dict | None, today: date) -> dict | None:
+    """Foreign spot net (KRW) vs futures net (contracts), the same day only, past noise: opposite
+    signs = a split. ``reason`` says why there is none when the numbers cannot be compared."""
     if not investors or "foreign" not in investors:
         return None
     fut = investors["foreign"].get("net_contracts")
     record = ((spot or {}).get("records") or [None])[0]
     spot_net = ((record or {}).get("investors") or {}).get("foreign", {}).get("net") if record else None
+    out = {"spot_net": spot_net, "spot_date": (record or {}).get("date"), "futures_net_contracts": fut,
+           "split": False, "kind": None, "reason": None}
     if fut is None or spot_net is None:
-        return {"spot_net": spot_net, "futures_net_contracts": fut, "split": False, "kind": None}
+        return {**out, "reason": "no_data"}
+    if out["spot_date"] != today.isoformat():          # yesterday's stocks against today's futures
+        return {**out, "reason": "spot_not_today"}
+    if abs(spot_net) < SPLIT_SPOT_MIN or abs(fut) < SPLIT_FUTURES_MIN:
+        return {**out, "reason": "small"}
     if spot_net > 0 and fut < 0:
         kind = "spot_buy_futures_sell"
     elif spot_net < 0 and fut > 0:
         kind = "spot_sell_futures_buy"
     else:
         kind = None
-    return {"spot_net": spot_net, "spot_date": record.get("date"), "futures_net_contracts": fut,
-            "split": kind is not None, "kind": kind}
+    return {**out, "split": kind is not None, "kind": kind}

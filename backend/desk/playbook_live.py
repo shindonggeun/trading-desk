@@ -19,7 +19,7 @@ import time
 from collections import OrderedDict
 from datetime import UTC, datetime
 
-from . import horizons, playbook, risk_regime, trigger, value_swing
+from . import horizons, playbook, risk_regime, summary, trigger, value_swing
 from .sr import frame_bars, support_resistance
 
 log = logging.getLogger(__name__)
@@ -81,6 +81,10 @@ async def _compute(prices, ticker: str, h: horizons.Horizon, run_pb: dict | None
         fresh = value_swing.apply(fresh, daily, secondary if frame.secondary == "1w" else None, frame.id, sr, market)
     out = playbook.track(fresh, run_pb, primary, frame)
     await _triggers(prices, ticker, out, frame, live)
+    try:
+        out["summary"] = summary.build(None, out)      # #221: the card on the bars and the price now
+    except Exception as exc:  # noqa: BLE001 - the playbooks stand without it
+        log.warning("no live summary for %s: %s", ticker, exc)
     return out, live
 
 

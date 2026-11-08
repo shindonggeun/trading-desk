@@ -147,6 +147,9 @@ def test_a_run_carries_both_playbooks_and_the_agents_get_the_note(db_url):
     pb = done["plan"]["playbooks"]
     assert pb["version"] == 1 and pb["regime"]["id"] == "crash"
     assert pb["long"]["setup"] == "dip_catch" and pb["bias_note"]["source"] == "model"   # the scripted line
+    card = done["plan"]["summary"]                                   # #221: the one card rides along
+    assert card["verdict"] in ("buy_now", "wait_for_zone", "short_now", "wait_short", "stand_aside")
+    assert card["side"] in ("long", "short", None) and "ladder" in card or card["verdict"] == "stand_aside"
 
 
 # --- scoring (desk.outcome) --------------------------------------------------------------------

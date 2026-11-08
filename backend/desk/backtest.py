@@ -28,7 +28,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
-from . import horizons, outcome, playbook, playbook_live, risk_regime, sr, value_swing
+from . import horizons, outcome, playbook, playbook_live, risk_regime, sr, summary, value_swing
 
 VERSION = 1
 BASKET = ("SOXL", "TQQQ", "NVDA", "QQQ", "005930.KS", "000660.KS")
@@ -297,9 +297,10 @@ def _held_and_reach(direction: int, future: list[dict], side: dict, first_fill_a
 
 
 def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: Costs,
-              gate: bool = True) -> list[Trade]:
+              gate: bool = True, single: bool = False) -> list[Trade]:
     """Build the snapshot's playbooks and judge each side on the bars after it. ``gate`` applies
-    the market's selling rule (#146) when the snapshot has a score."""
+    the market's selling rule (#146) when the snapshot has a score. ``single`` (#221) buys each side
+    all at once at desk.summary's single price instead of its ladder (a side without one is skipped)."""
     pb = playbook.build(snap.sr, snap.daily, snap.window, h, now=snap.plan_at, today=snap.today, vix=snap.vix,
                         calibrate=False,                # #147: not graded by its own results
                         market=snap.risk if gate else None)   # #166: gate off = the market score unused
@@ -320,6 +321,10 @@ def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: C
         side = pb[side_name]
         if side.get("setup") in (None, "none"):
             continue
+        if single:
+            side = summary.as_single(side, direction > 0, pb["frame"].get("atr_zone") or atr)
+            if side is None:
+                continue
         # the entry stays valid as long as a live plan's would (scalp 15 min, intraday 1 h, 2~3 days 1 day)
         res = outcome.judge_playbook(side, direction, future, h, snap.plan_at, opens,
                                      horizons.valid_until(h, snap.plan_at))
@@ -345,6 +350,22 @@ def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: C
 
 
 # ---------------------------------------------------------------- tallies
+
+
+def entry_style(snaps: Iterable[tuple[Snapshot, list[dict]]], h: horizons.Horizon, costs: Costs) -> dict:
+    """#221: the ladder against buying it all at the single price, on the same plans (those that have
+    a single price), split at the train / held-out cut."""
+    snaps = list(snaps)
+    ladder = [t for s, p in snaps for t in trades_at(s, p, h, costs)]
+    single = [t for s, p in snaps for t in trades_at(s, p, h, costs, single=True)]
+    keys = {(t.ticker, t.at, t.side) for t in single}
+    ladder = [t for t in ladder if (t.ticker, t.at, t.side) in keys]
+    cut = split_cut(t.at for t in ladder)
+    out = {"cut": cut}
+    for name, trades in (("ladder", ladder), ("single", single)):
+        tr, va = split(trades, cut, h)
+        out[name] = {"train": aggregate(tr), "valid": aggregate(va)}
+    return out
 
 
 def _median(values: list[float]) -> float | None:

@@ -47,8 +47,6 @@ TIMEOUT_SEC = 8.0
 CACHE_OPEN_SEC = 30.0
 CACHE_CLOSED_SEC = 600.0
 CACHE_FAIL_SEC = 30.0
-# KRX year letters for derivative codes: 2006 = A, I · O · U skipped (2025 = W, 2026 = X).
-_YEARS = [c for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if c not in "IOU"]
 _EXPIRED_TOKEN = ("EGW00123", "EGW00121")
 MULTIPLIER_MN = 0.25             # KOSPI200 futures: 250,000 KRW a point = 0.25 million KRW
 # A foreign spot/futures split is shown only past noise: 10 billion KRW of stock, 500 contracts.
@@ -58,10 +56,6 @@ SPLIT_FUTURES_MIN = 500
 
 class KisError(RuntimeError):
     """A KIS answer that is not a success: its short code and message only (no request echo)."""
-
-
-def _year_letter(year: int) -> str:
-    return _YEARS[(year - 2006) % len(_YEARS)]
 
 
 def second_thursday(year: int, month: int) -> date:
@@ -77,7 +71,9 @@ def front_month(today: date) -> dict:
         quarter = ((month - 1) // 3 + 1) * 3
         expiry = second_thursday(year, quarter)
         if today <= expiry:
-            return {"code": f"101{_year_letter(year)}{quarter:02d}", "expiry": expiry.isoformat(),
+            # KIS' index-futures master (fo_idx_code_mts.mst): "A01612 · F 202612 · KOSPI200" - A01, the
+            # year's last digit, the month. The older "101X12" form answers an empty quote (#160).
+            return {"code": f"A01{year % 10}{quarter:02d}", "expiry": expiry.isoformat(),
                     "days_left": (expiry - today).days}
         month = quarter + 1
         if month > 12:

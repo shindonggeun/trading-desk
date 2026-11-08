@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 
 import httpx
 import pytest
@@ -125,12 +126,12 @@ def fast(monkeypatch):
     monkeypatch.setattr(kis_stream, "BACKOFF_START_SEC", 0.01)
 
 
-async def _until(cond, timeout=2.0):
-    for _ in range(int(timeout / 0.01)):
-        if cond():
-            return
+async def _until(cond, timeout=10.0):
+    deadline = time.monotonic() + timeout          # #213: by the clock, not a count of short sleeps
+    while not cond():
+        if time.monotonic() > deadline:
+            raise AssertionError("timed out")
         await asyncio.sleep(0.01)
-    raise AssertionError("timed out")
 
 
 def test_subscribes_on_demand_streams_trades_and_unsubscribes():

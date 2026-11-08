@@ -130,7 +130,6 @@ def test_an_empty_or_failed_cache_still_answers():
 
 
 def test_the_credit_note_reaches_korean_same_day_runs_only(db_url):
-    import time
     from datetime import timedelta as td
 
     from fastapi.testclient import TestClient
@@ -140,6 +139,7 @@ def test_the_credit_note_reaches_korean_same_day_runs_only(db_url):
     from desk.db import make_engine
     from desk.runner import make_fake_runner
     from desk.settings import Settings
+    from tests.test_api import _wait_done
 
     rendered = []
     fake = make_fake_runner(0)
@@ -158,10 +158,7 @@ def test_the_credit_note_reaches_korean_same_day_runs_only(db_url):
 
         def run(body):
             run_id = client.post("/api/runs", json=body).json()["id"]
-            for _ in range(200):
-                if client.get(f"/api/runs/{run_id}").json()["status"] in ("done", "failed"):
-                    return
-                time.sleep(0.02)
+            _wait_done(client, run_id)                 # #213: fails loudly instead of going on unfinished
 
         run({"ticker": "005930.KS"})
         run({"ticker": "NVDA"})

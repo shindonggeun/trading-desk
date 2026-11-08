@@ -25,13 +25,19 @@ def _client(db_url, login=True, **overrides) -> TestClient:
     return client
 
 
-def _wait_done(client, run_id, headers=None):
-    for _ in range(200):
+RUN_WAIT_SEC = 30.0   # a fake run takes well under a second; a busy machine (the full suite) can take seconds (#213)
+
+
+def _wait_done(client, run_id, headers=None, timeout=RUN_WAIT_SEC):
+    """Poll until the run is done or failed; returns as soon as it is, so a fast run stays fast."""
+    deadline = time.monotonic() + timeout
+    while True:
         run = client.get(f"/api/runs/{run_id}", headers=headers).json()
         if run["status"] in ("done", "failed"):
             return run
+        if time.monotonic() > deadline:
+            raise AssertionError(f"run did not finish in {timeout:.0f}s (status {run['status']})")
         time.sleep(0.02)
-    raise AssertionError("run did not finish")
 
 
 def test_fake_run_streams_the_whole_desk_and_ends_with_a_plan(db_url):

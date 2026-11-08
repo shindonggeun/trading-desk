@@ -113,7 +113,8 @@ def test_throttle_counts_before_checking_and_forgets_old_attempts():
     assert throttle.attempt("1.2.3.4") > 0      # third in the window: refused before any password check
     assert throttle.attempt("5.6.7.8") == 0     # other clients are not affected
     import time
-    time.sleep(0.06)
+    # well past the window: Windows' monotonic clock moves in ~15.6 ms steps, 0.06 s could read as 0.047 (#213)
+    time.sleep(0.2)
     assert throttle.attempt("1.2.3.4") == 0
     throttle.succeeded("1.2.3.4")
     assert throttle.attempt("1.2.3.4") == 0

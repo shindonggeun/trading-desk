@@ -63,6 +63,13 @@ STOP_ATR = 0.5               # under the structure low
 TIME_STOP_BARS = 25          # sessions after the last fill to reach T1 (about five weeks)
 ACCOUNT_RISK_PCT = {"normal": 0.5, "conviction": 1.0}   # the most one trade may lose, % of the account
 MAX_POSITION_PCT = 30.0      # never more of the account in one name, whatever the stop allows
+# How often each target was reached before the stop once filled (desk.backtest value_swing_report:
+# swing basket from 2019, costs in, within the 40-session look-ahead). Shown on the plan's targets.
+# 2026-11-08: 192 filled of 211 plans, expectancy +0.249R (held-out +0.573R on 34), worst -1.51R (a gap
+# through the stop), held a median 16 sessions; each crash beat the dip catch (2020-03 +0.40 vs -0.08,
+# 2022 +0.12 vs -0.23, 2025-04 +0.87 vs -0.40).
+TARGET_REACH = {"t1": 0.599, "t2": 0.344, "t3": 0.094}
+TARGET_REACH_N = 192
 
 GROUPS = ("oversold", "depth", "base", "fear", "flows")
 
@@ -232,6 +239,12 @@ def position_pct(entry: float, stop: float, account_risk_pct: float) -> float:
     return math.floor(min(MAX_POSITION_PCT, account_risk_pct / loss) * 100) / 100   # down: never over budget
 
 
+def _with_reach(target: dict) -> dict:
+    """The target with its backtest reach rate (``hit_rate``, 0-1) and sample size, when known."""
+    rate = TARGET_REACH.get(target.get("role"))
+    return {**target, "hit_rate": rate, "hit_n": TARGET_REACH_N} if rate is not None else target
+
+
 def plan(ev: dict, edge: dict | None = None) -> dict | None:
     """The long side for desk.playbook, or None when the evidence is not there."""
     if not ev or not ev["setup"]:
@@ -258,7 +271,7 @@ def plan(ev: dict, edge: dict | None = None) -> dict | None:
             extra = {"t1": {"action": "take_half", "then_stop": _round(avg)},
                      "t2": {"action": "take_rest"},                 # desk.outcome scores the trade to T2
                      "t3": {"action": "trail", "trail_atr": 2.0}}[role]   # shown; T2 onward on a 2-ATR trail
-            targets.append(_target(role, price, basis, "desk", avg, stop, True, **extra))
+            targets.append(_with_reach(_target(role, price, basis, "desk", avg, stop, True, **extra)))
     if not targets:
         return None
     conv = conviction(ev, edge)
@@ -326,6 +339,9 @@ def prompt_line(side: dict | None) -> str | None:
         return None
     met = [k for k, g in side["evidence"].items() if g["met"]]
     conv = side["conviction"]
+    reach = ", ".join(f"{t['role'].upper()} {t['hit_rate']:.0%}" for t in side.get("targets") or []
+                      if t.get("hit_rate") is not None)
     return (f"Oversold swing buy (2-8 weeks): evidence {', '.join(met)}; conviction {conv['score']}"
             + (" - CONVICTION trade" if conv["active"] else "")
-            + f"; risk {side['risk_budget']['account_pct']}% of the account at the stop.")
+            + f"; risk {side['risk_budget']['account_pct']}% of the account at the stop"
+            + (f"; backtest reach before the stop {reach}" if reach else "") + ".")

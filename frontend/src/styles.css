@@ -823,7 +823,11 @@ span.cs-hold-text { color: var(--warn); }
 .sum-box { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; display: grid; gap: 6px; }
 .sum-box h4 { margin: 0; font-size: 0.95rem; color: var(--muted); font-weight: 600; }
 .sum-big { font-size: 1.75rem; font-weight: 800; line-height: 1.15; }
-.sum-row { display: flex; justify-content: space-between; gap: 8px; font-size: 1.15rem; }
+.sum-row { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; font-size: 1.15rem; }
+.sum-row > span:first-child { white-space: nowrap; }
+.sum-row > span + span { margin-left: auto; text-align: right; }
+/* #231 관망 · 손익비 부족이면 아래 숫자는 참고용 — 흐리게 */
+.sum-grid.sum-ref { opacity: 0.7; }
 .sum-row b { font-size: 1.25rem; }
 .sum-why { display: flex; flex-wrap: wrap; gap: 6px; }
 .sum-note { font-size: 0.85rem; }

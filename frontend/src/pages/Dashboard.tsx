@@ -9,6 +9,7 @@ import NewRunForm from "../components/NewRunForm";
 import PlanStatsCard from "../components/PlanStatsCard";
 import PortfolioPanel from "../components/PortfolioPanel";
 import RecentRuns from "../components/RecentRuns";
+import WeeklyMapBrief from "../components/WeeklyMapBrief";
 import { time } from "../format";
 import type { RegimeSnapshot } from "../types";
 
@@ -47,12 +48,14 @@ function RegimePanel() {
   );
 }
 
-type SectionId = "macro" | "favorites" | "market" | "portfolio" | "recent" | "stats" | "flow" | "credit" | "regime";
+type SectionId = "macro" | "favorites" | "market" | "weekly" | "portfolio" | "recent" | "stats" | "flow" | "credit" | "regime";
 /** 구역 — 순서는 이슈 #100 의 기본값. wide 는 넓은 화면에서 한 줄을 다 쓴다. */
 const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () => ReactNode }> = {
   macro: { title: "오늘의 거시 · 정책 브리핑", wide: true, render: () => <MacroBrief /> },
   favorites: { title: "즐겨찾기 시세", wide: true, render: () => <FavoritesPanel /> },
   market: { title: "시장 · 지수 · 선물", wide: true, render: () => <MarketBoard embedded /> },
+  // #227 주요 지수의 주간 지도(#202) 위치 · 다음 선 한 줄씩
+  weekly: { title: "주간 지도", render: () => <WeeklyMapBrief /> },
   portfolio: { title: "내 투자", render: () => <PortfolioPanel /> },
   recent: { title: "최근 분석", render: () => <RecentRuns /> },
   stats: { title: "적중률", render: () => <PlanStatsCard /> },

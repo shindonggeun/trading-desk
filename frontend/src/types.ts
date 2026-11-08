@@ -193,7 +193,11 @@ export type PlaybookSetup = "dip_catch" | "range_low" | "pullback" | "fade" | "b
 export interface Playbooks {
   version: number;
   computed_at: string;
-  frame: { primary: string; daily: string; atr: number; atr_daily: number; reference_price: number; fallback: string | null };
+  frame: {
+    primary: string; daily: string; atr: number; atr_daily: number; reference_price: number; fallback: string | null;
+    /** #149 실시간 응답에서 하위 봉 트리거를 읽은 봉 간격 */
+    trigger_interval?: string;
+  };
   regime: {
     id: RegimeId;
     features: Record<string, number | boolean | null | undefined>;
@@ -203,6 +207,59 @@ export interface Playbooks {
   bias_note: { side: "long" | "short" | "both" | "none"; text: string; source: "model" | "desk" } | null;
   long: PlaybookSide;
   short: PlaybookSide;
+  /** #146 desk/risk_regime.py — 시장 투매 점수(분석 때 또는 분석 없는 실시간 계산). 없으면 판단 안 함 */
+  risk_regime?: RiskRegime | null;
+  /** #148 주요 경제 발표 앞뒤 창 안이면 그 일정 — 사다리 2 · 3차가 `held: "event"` */
+  event_hold?: EconEvent | null;
+}
+
+export type RiskPhase = "selling" | "exhausting" | "calm";
+/** #146 desk/risk_regime.score */
+export interface RiskRegime {
+  version: number;
+  market: "US" | "KR";
+  as_of: string | null;
+  score: number;
+  /** 최근 10거래일 최고 점수 */
+  peak: number;
+  phase: RiskPhase;
+  label: string;
+  parts: { id: string; score: number; text: string }[];
+  signals: { id: string; text: string }[];
+  missing: string[];
+}
+
+/** #148 desk/events_calendar.Event.to_dict */
+export interface EconEvent {
+  id: string;
+  label: string;
+  at: string;
+  importance: number;
+  source: string;
+  at_et: string;
+}
+/** GET /api/events/calendar */
+export interface EconCalendar {
+  events: EconEvent[];
+  blackout: EconEvent | null;
+  refreshed_at: string | null;
+  error: string | null;
+}
+
+/** 플레이북이 정한 진입 트리거(이탈 매도의 지지 이탈 등) */
+export interface PlanTrigger { price: number; kind: "stop" | "limit"; text: string }
+/** #149 desk/trigger.live — 실시간 플레이북이 하위 봉으로 읽은 진입 트리거. 같은 `trigger` 키로 온다 */
+export interface LowerTrigger {
+  state: "armed" | "triggered" | "invalid";
+  price: number | null;
+  invalidation: number | null;
+  signal: "break" | "vwap_reclaim" | "absorption" | "higher_low" | null;
+  signal_at: string | null;
+  touched_at: string | null;
+  filled_at: string | null;
+  rr_t1: number | null;
+  /** 구역 지정가 대신 트리거를 기다리라는 데스크 권장 */
+  preferred: boolean;
 }
 
 export interface PlaybookSide {
@@ -214,8 +271,12 @@ export interface PlaybookSide {
     low: number; high: number; mid: number; score: number;
     members: { price: number; source: "sr" | "vp" | "fib" | "trend" | "ma" | "vwap" | "atr"; basis: string; weight: number }[];
   } | null;
-  entries: { step: 1 | 2 | 3; price: number; share: number; kind: "limit" | "stop"; after?: string[] }[];
-  trigger?: { price: number; kind: "stop" | "limit"; text: string } | null;
+  /** held: #148 경제 일정 창이 지날 때까지 보류된 차수 */
+  entries: { step: 1 | 2 | 3; price: number; share: number; kind: "limit" | "stop"; after?: string[]; held?: "event" }[];
+  /** 분석의 플레이북은 PlanTrigger, 실시간(#149)은 LowerTrigger — 둘을 가려 읽는 건 PlaybookCard */
+  trigger?: PlanTrigger | LowerTrigger | null;
+  /** #146 시장 투매 점수가 걸러 낸 것: selling → 사다리 1차만(held = 뺀 차수), exhausting → 숏을 쉼(setup = 원래 셋업) */
+  gate?: { phase: RiskPhase; text: string; held: { step: number; price: number; share: number }[]; setup?: PlaybookSetup } | null;
   avg_entry: number | null;
   stop: number | null;
   risk: number | null;

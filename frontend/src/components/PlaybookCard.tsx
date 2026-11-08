@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { price } from "../format";
-import type { HorizonId, LivePlaybooks, LivePlaybookSide, Outcome, Plan, PlaybookOutcome, PlaybookSide, Playbooks, RegimeId } from "../types";
+import type {
+  EconEvent, HorizonId, LivePlaybooks, LivePlaybookSide, LowerTrigger, Outcome, Plan, PlanTrigger, PlaybookOutcome, PlaybookSide,
+  Playbooks, RegimeId, RiskPhase, RiskRegime,
+} from "../types";
 import { useEstimate, useLiveQuote } from "./PlanCard";
 
 /** 서버 캐시 TTL(desk/horizons.py sr_ttl_sec)에 맞춘 폴링 간격 — 더 자주 불러도 같은 값이다 */
@@ -59,6 +62,7 @@ const CONDITION: Record<string, string> = {
   volume_dry: "거래량 마름", climax_recent: "투매 직후", tape_hh_hl: "체결 고점 · 저점 높임",
   at_resistance: "저항 도달", rejection_bar: "윗꼬리 · 음봉", lower_high: "고점 낮춤", below_vwap: "VWAP 아래",
   below_ma20: "20선 아래", volume_on_break: "이탈 거래량", no_new_entry_late: "장 막판 신규 금지",
+  event_clear: "경제 일정 통과",
 };
 const SOURCE: Record<string, string> = { sr: "지지 · 저항", vp: "매물대", fib: "피보나치", trend: "추세선", ma: "이평선", vwap: "VWAP", avwap: "앵커드 VWAP", gap: "갭 메움", atr: "ATR" };
 const RESULT: Record<string, string> = {
@@ -97,7 +101,105 @@ const STATE: Record<PlaybookState, string> = {
 const LOST = new Set(["stop", "time_stop"]);
 const ENDED = new Set(["t2", "t1_be", "flat", "unfilled"]);
 
-const has = (side: PlaybookSide) => side.setup !== "none" && (!!side.zone || side.entries.length > 0 || !!side.trigger);
+/**
+ * 같은 `trigger` 키에 두 가지가 온다: 분석의 플레이북이 정한 진입가(이탈 매도 등, text 있음)와
+ * 실시간 플레이북이 하위 봉으로 읽은 트리거(#149, state 있음). 실시간 응답은 앞의 것을 덮으므로
+ * 카드는 앞의 것을 분석 당시 값에서, 뒤의 것을 실시간 값에서 읽는다.
+ */
+const planTrigger = (side?: PlaybookSide | null): PlanTrigger | null =>
+  side?.trigger && "text" in side.trigger ? side.trigger : null;
+const lowerTrigger = (side?: PlaybookSide | null): LowerTrigger | null =>
+  side?.trigger && "state" in side.trigger ? side.trigger : null;
+
+const has = (side: PlaybookSide) => side.setup !== "none" && (!!side.zone || side.entries.length > 0 || !!planTrigger(side));
+
+/** #149 하위 봉 트리거 — 상태 · 신호(롱 / 숏 문구가 거울) */
+const TRIGGER_STATE: Record<LowerTrigger["state"], string> = { armed: "신호 대기", triggered: "발동", invalid: "무효" };
+const SIGNAL: Record<NonNullable<LowerTrigger["signal"]>, { long: string; short: string }> = {
+  break: { long: "직전 봉 고점 돌파", short: "직전 봉 저점 이탈" },
+  vwap_reclaim: { long: "VWAP 되찾기", short: "VWAP 아래로" },
+  absorption: { long: "투매 봉 저점 지킴", short: "급등 봉 고점 막힘" },
+  higher_low: { long: "저점 높임", short: "고점 낮춤" },
+};
+
+/** #146 투매 국면별로 플레이북에 무엇이 달라지는지 */
+const RISK_RULE: Record<RiskPhase, string> = {
+  selling: "하따 사다리는 1차만, 2 · 3차는 끝물 신호까지 보류",
+  exhausting: "사다리는 계획대로, 바닥 반등에 숏은 쉼",
+  calm: "시장 전체 투매 없음 — 종목 플레이북 그대로",
+};
+
+const whenLocal = (iso: string) =>
+  new Date(iso).toLocaleString("ko-KR", { month: "numeric", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit" });
+
+/** #148 다음 주요(시장 전체) 경제 발표 — 열린 거래일 카드에서만 한 번 부른다. 실패하면 null */
+function useNextEvent(enabled: boolean): EconEvent | null {
+  const [next, setNext] = useState<EconEvent | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    api.econCalendar().then((c) => {
+      const now = Date.now();
+      if (alive) setNext(c.events.find((e) => e.importance >= 2 && Date.parse(e.at) > now) ?? null);
+    }, () => {});
+    return () => { alive = false; };
+  }, [enabled]);
+  return next;
+}
+
+function RiskGauge({ risk }: { risk: RiskRegime }) {
+  return (
+    <details className={`pb-risk pb-risk-${risk.phase}`}>
+      <summary>
+        <span className="pb-risk-name small">시장 투매 점수</span>
+        <span className="pb-risk-bar" role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={risk.score}
+          aria-label={`시장 투매 점수 ${risk.score} / 100, ${risk.label}`}>
+          <span style={{ width: `${Math.max(0, Math.min(100, risk.score))}%` }} />
+        </span>
+        <strong className="num">{risk.score}</strong>
+        <span className="pb-risk-label">{risk.label}</span>
+      </summary>
+      <div className="pb-risk-body small">
+        <p className="pb-risk-rule">{RISK_RULE[risk.phase]}</p>
+        <ul>
+          {risk.parts.map((p) => <li key={p.id}><span className="num">{p.score}</span> {p.text}</li>)}
+        </ul>
+        {risk.signals.length > 0 && <p>끝물 신호: {risk.signals.map((s) => s.text).join(" · ")}</p>}
+        <p className="muted">
+          {risk.market === "KR" ? "한국" : "미국"} 지수 기준{risk.as_of ? ` · ${risk.as_of} 종가` : ""} · 최근 10거래일 최고 {risk.peak}
+          {risk.missing.length > 0 && ` · 못 받은 지표 ${risk.missing.join(", ")}`}
+        </p>
+      </div>
+    </details>
+  );
+}
+
+function LowerTriggerRow({ t, dir, interval }: { t: LowerTrigger; dir: "long" | "short"; interval?: string }) {
+  const signal = t.signal ? SIGNAL[t.signal]?.[dir] ?? t.signal : null;
+  return (
+    <div className="pb-row">
+      <dt>진입 신호{interval ? <span className="muted"> ({interval})</span> : null}</dt>
+      <dd>
+        <span className={`pb-trig pb-trig-${t.state}`}>{TRIGGER_STATE[t.state] ?? t.state}</span>{" "}
+        {t.price != null ? (
+          <>
+            <span className="num">{price(t.price)}</span>
+            <span className="muted small">
+              {signal && ` · ${signal}`}
+              {t.invalidation != null && ` · 무효화 ${price(t.invalidation)}`}
+              {t.rr_t1 != null && ` · T1까지 ${t.rr_t1}R`}
+            </span>
+          </>
+        ) : (
+          <span className="muted small">{t.state === "armed" ? "구역 터치 — 하위 봉 반전 신호를 기다리는 중" : "손절이 먼저 닿음"}</span>
+        )}
+        {t.preferred && t.state === "armed" && (
+          <span className="muted small pb-trig-hint"> 구역 지정가보다 이 신호를 기다리는 쪽이 백테스트에서 나았습니다</span>
+        )}
+      </dd>
+    </div>
+  );
+}
 
 /**
  * 지금 가격으로 본 상태: 대기 → 구역 근접(1 ATR) → 구역 안 → 구역 지나침(손절 전) → 무효(손절 통과 · 채점 종료).
@@ -111,8 +213,8 @@ export function playbookState(side: PlaybookSide, dir: "long" | "short", p: numb
   if (result && ENDED.has(result.status)) return "closed";
   if (p == null) return "waiting";
   if (side.stop != null && (dir === "long" ? p <= side.stop : p >= side.stop)) return "invalid";
-  const lo = side.zone?.low ?? side.trigger?.price ?? side.entries[0]?.price;
-  const hi = side.zone?.high ?? side.trigger?.price ?? side.entries[0]?.price;
+  const lo = side.zone?.low ?? planTrigger(side)?.price ?? side.entries[0]?.price;
+  const hi = side.zone?.high ?? planTrigger(side)?.price ?? side.entries[0]?.price;
   if (lo == null || hi == null) return "waiting";
   const dist = p < lo ? lo - p : p > hi ? p - hi : 0;
   const confirmId = dir === "long" ? "reclaim" : "rejection_bar";
@@ -123,19 +225,27 @@ export function playbookState(side: PlaybookSide, dir: "long" | "short", p: numb
   return dist <= atr ? "near" : "waiting";
 }
 
-function Side({ side, dir, state, result, live }: {
+function Side({ side, dir, state, result, live, lower, interval }: {
   side: PlaybookSide; dir: "long" | "short"; state: PlaybookState; result?: PlaybookOutcome;
   live?: { since: string | null; stale: boolean; note: string | null };
+  /** #149 실시간 하위 봉 트리거와 그 봉 간격 */
+  lower?: LowerTrigger | null; interval?: string;
 }) {
   const name = dir === "long" ? "롱" : "숏";
   if (!has(side)) {
     return (
       <div className={`pb-side pb-${dir} pb-empty`}>
-        <div className="pb-side-head"><strong>{name}</strong><span className="pb-state pb-state-none">{STATE.none}</span></div>
+        <div className="pb-side-head">
+          <strong>{name}</strong>
+          <span className="pb-state pb-state-none">{side.gate ? "시장 위험으로 쉼" : STATE.none}</span>
+        </div>
         <p className="muted small">{side.reason ?? "이번 국면에는 이 방향 타점을 두지 않습니다."}</p>
+        {side.gate?.setup && <p className="muted small">원래 셋업: {SETUP[side.gate.setup] ?? side.gate.setup}</p>}
       </div>
     );
   }
+  const trig = planTrigger(side);
+  const gateHeld = side.gate?.held ?? [];
   const t1 = side.targets.find((t) => t.role === "t1");
   const t2 = side.targets.find((t) => t.role === "t2");
   return (
@@ -152,6 +262,7 @@ function Side({ side, dir, state, result, live }: {
         </p>
       )}
       {side.reason && <p className="small pb-reason">{side.reason}</p>}
+      {side.gate && <p className="small pb-gate">{side.gate.text}</p>}
       <dl className="pb-grid">
         {side.zone && (
           <div className="pb-row">
@@ -162,15 +273,24 @@ function Side({ side, dir, state, result, live }: {
             </dd>
           </div>
         )}
-        {side.trigger && (
-          <div className="pb-row"><dt>트리거</dt><dd><span className="num">{price(side.trigger.price)}</span> <span className="muted small">{side.trigger.text}</span></dd></div>
+        {trig && (
+          <div className="pb-row"><dt>트리거</dt><dd><span className="num">{price(trig.price)}</span> <span className="muted small">{trig.text}</span></dd></div>
         )}
-        {side.entries.length > 0 && (
+        {lower && <LowerTriggerRow t={lower} dir={dir} interval={interval} />}
+        {side.entries.length + gateHeld.length > 0 && (
           <div className="pb-row">
             <dt>진입 사다리</dt>
             <dd className="pb-ladder">
               {side.entries.map((e) => (
-                <span key={e.step}>{e.step}차 <span className="num">{price(e.price)}</span> <span className="muted small">({Math.round(e.share * 100)}%{e.kind === "stop" ? (dir === "long" ? " · 돌파" : " · 이탈") : ""})</span></span>
+                <span key={e.step} className={e.held ? "pb-held" : undefined}>
+                  {e.step}차 <span className="num">{price(e.price)}</span>{" "}
+                  <span className="muted small">({Math.round(e.share * 100)}%{e.kind === "stop" ? (dir === "long" ? " · 돌파" : " · 이탈") : ""}{e.held === "event" ? " · 일정 보류" : ""})</span>
+                </span>
+              ))}
+              {gateHeld.map((e) => (
+                <span key={`held-${e.step}`} className="pb-held">
+                  {e.step}차 <span className="num">{price(e.price)}</span> <span className="muted small">({Math.round(e.share * 100)}% · 투매 보류)</span>
+                </span>
               ))}
             </dd>
           </div>
@@ -225,6 +345,7 @@ export default function PlaybookCard({ plan, symbol, outcome, runId, horizon }: 
   const est = useEstimate(symbol, !!saved);
   // #132: 열린 거래일(symbol 있음)에만 지금 값으로 — 지난 run 은 부르지 않는다
   const fresh = useLivePlaybooks(runId, horizon ?? plan.horizon, !!saved && !!symbol);
+  const nextEvent = useNextEvent(!!saved && !!symbol);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!fresh) return;
@@ -235,7 +356,15 @@ export default function PlaybookCard({ plan, symbol, outcome, runId, horizon }: 
   if (!saved) return null;
   // levels_from "fresh" 는 분석의 레벨이 아니라 새로 계산한 것 — 이 카드(분석의 플레이북)에는 쓰지 않는다
   const cur: LivePlaybooks | null = fresh && fresh.levels_from === "run" ? fresh : null;
-  const pb: Playbooks = cur ?? saved;
+  // 실시간 응답의 trigger 는 #149 하위 봉 트리거 — 분석이 정한 트리거(이탈 매도 등)는 분석 당시 값에서 되살린다
+  const keepPlanTrigger = (dir: "long" | "short"): PlaybookSide =>
+    cur ? { ...cur[dir], trigger: planTrigger(saved[dir]) } : saved[dir];
+  const pb: Playbooks = cur ? { ...cur, long: keepPlanTrigger("long"), short: keepPlanTrigger("short") } : saved;
+  const lower = { long: lowerTrigger(cur?.long), short: lowerTrigger(cur?.short) };
+  const interval = cur?.frame.trigger_interval;
+  // 투매 점수는 분석 때 값(분석의 플레이북을 거른 것) — 실시간 응답은 분석이 있으면 다시 매기지 않는다
+  const risk = cur?.risk_regime ?? saved.risk_regime ?? null;
+  const hold = cur ? cur.event_hold ?? null : saved.event_hold ?? null;
   // 지난 거래일 run(symbol 없음)은 useLiveQuote 가 분석 당시 값을 돌려주므로 기준가로 "분석 당시" 라 적는다
   const p = symbol ? est?.estimate ?? live?.price ?? pb.frame.reference_price ?? null : pb.frame.reference_price ?? null;
   const basis = !symbol ? "분석 당시" : est ? "추정가" : live ? "현재가" : "기준가";
@@ -284,9 +413,19 @@ export default function PlaybookCard({ plan, symbol, outcome, runId, horizon }: 
         </details>
       )}
       {pb.bias_note?.text && <p className="small pb-bias">거시 · 정책: {pb.bias_note.text}</p>}
+      {risk && <RiskGauge risk={risk} />}
+      {hold ? (
+        <p className="small pb-event pb-event-hold" role="status">
+          <strong>진입 보류</strong> · {hold.label} {whenLocal(hold.at)} 앞뒤 — 사다리 1차만, 나머지는 발표 반응을 본 뒤
+        </p>
+      ) : nextEvent && (
+        <p className="muted small pb-event">다음 주요 일정: {nextEvent.label} · {whenLocal(nextEvent.at)}</p>
+      )}
       <div className="pb-sides">
-        <Side side={pb.long} dir="long" state={states.long} result={outcome?.playbooks?.long} live={cur ? liveOf(cur.long, "long") : undefined} />
-        <Side side={pb.short} dir="short" state={states.short} result={outcome?.playbooks?.short} live={cur ? liveOf(cur.short, "short") : undefined} />
+        <Side side={pb.long} dir="long" state={states.long} result={outcome?.playbooks?.long} live={cur ? liveOf(cur.long, "long") : undefined}
+          lower={lower.long} interval={interval} />
+        <Side side={pb.short} dir="short" state={states.short} result={outcome?.playbooks?.short} live={cur ? liveOf(cur.short, "short") : undefined}
+          lower={lower.short} interval={interval} />
       </div>
       <p className="muted small pb-note">가격은 계산이지 예측이 아닙니다. ◌ 는 직접 지켜볼 신호, – 는 데이터가 없어 판단하지 못한 신호입니다.</p>
     </section>

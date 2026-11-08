@@ -193,7 +193,8 @@ interface PlaybookSideLike {
   setup: string;
   zone: { low: number; high: number } | null;
   entries: { step: number; price: number }[];
-  trigger?: { price: number } | null;
+  /** 분석의 트리거 또는 #149 실시간 트리거(신호 전이면 price null) */
+  trigger?: { price: number | null } | null;
   stop: number | null;
   targets: { role: string; price: number }[];
 }
@@ -221,7 +222,7 @@ export function playbookDrawing(pb: { long: PlaybookSideLike; short: PlaybookSid
       else own.push({ price: p, color: withAlpha(c, alpha), label: `${name} ${what}`, right: true });
     };
     for (const e of side.entries) add(e.price, 0.75, `${e.step}차`);
-    if (side.trigger) add(side.trigger.price, 0.9, "트리거");
+    if (side.trigger?.price != null) add(side.trigger.price, 0.9, "트리거");
     if (side.stop != null) add(side.stop, 0.9, "손절");
     for (const t of side.targets) add(t.price, 0.75, t.role.toUpperCase());
     marks.push(...own);

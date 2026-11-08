@@ -1054,6 +1054,34 @@ span.cs-hold-text { color: var(--warn); }
 .pb-live { margin: 0; }
 .pb-stale { color: var(--warn); }
 
+/* #150 투매 점수 게이지(#146) · 경제 일정(#148) · 하위 봉 트리거(#149) · 보류된 사다리 */
+.pb-risk { border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px; background: var(--surface); }
+.pb-risk > summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; list-style: none; }
+.pb-risk > summary::-webkit-details-marker { display: none; }
+.pb-risk > summary::after { content: "근거"; margin-left: auto; font-size: 12px; color: var(--muted); }
+.pb-risk[open] > summary::after { content: "접기"; }
+.pb-risk-name { color: var(--muted); }
+.pb-risk-bar { position: relative; flex: 1 1 80px; max-width: 180px; height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.pb-risk-bar > span { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--muted); }
+.pb-risk-selling .pb-risk-bar > span { background: var(--danger); }
+.pb-risk-exhausting .pb-risk-bar > span { background: var(--warn); }
+.pb-risk-label { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: var(--radius-s, 6px); background: var(--surface-2); }
+.pb-risk-selling .pb-risk-label { color: var(--danger); }
+.pb-risk-exhausting .pb-risk-label { color: var(--warn); }
+.pb-risk-body { display: grid; gap: 4px; margin-top: 6px; }
+.pb-risk-body p { margin: 0; }
+.pb-risk-body ul { margin: 0; padding-left: 18px; }
+.pb-risk-body .num { display: inline-block; min-width: 2ch; text-align: right; color: var(--muted); }
+.pb-risk-rule { font-weight: 600; }
+.pb-event { margin: 0; }
+.pb-event-hold { color: var(--warn); }
+.pb-gate { margin: 0; color: var(--warn); }
+.pb-held { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--border); }
+.pb-trig { font-size: 12px; padding: 1px 6px; border-radius: var(--radius-s, 6px); background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+.pb-trig-triggered { color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--ok, var(--accent)); }
+.pb-trig-invalid { color: var(--danger); text-decoration: line-through; }
+.pb-trig-hint { display: block; }
+
 /* #137 적중률 카드 — 플레이북 보기(셋업 이름이 길어 첫 칸은 줄바꿈 허용) */
 .pb-stats td:first-child { white-space: normal; min-width: 140px; }
 .pb-stats th[scope="row"] { font-weight: 400; text-align: left; white-space: normal; min-width: 140px; }

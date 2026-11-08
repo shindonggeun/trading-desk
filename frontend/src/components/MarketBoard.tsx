@@ -131,7 +131,7 @@ function useTiles(markets: MarketSymbol[], mode: BoardMode, enabled: boolean): R
       api.levels(ticker).then((sr) => set(ticker, { sr }), () => {});
       if (!NO_ESTIMATE.test(ticker))
         api.estimate(ticker).then(
-          (e) => set(ticker, { est: e.supported && e.market_state === "closed" ? e : null }),
+          (e) => set(ticker, { est: e.supported && (e.market_state === "closed" || e.market_state === "nxt") ? e : null }),
           () => {},
         );
     }
@@ -271,10 +271,11 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
                 </span>
                 <Spark bars={t?.bars ?? []} up={up} />
                 {t?.est && (
-                  <span className="small muted" title={`바이낸스 ${t.est.contract} 무기한 선물로 낸 추정가 — 실제 체결가가 아닙니다` +
+                  <span className="small muted" title={t.est.market_state === "nxt" ? "NXT(넥스트레이드) 프리 · 애프터마켓 마지막 체결가 — 20:00 이 지나면 추정가로 바뀝니다" :
+                    `바이낸스 ${t.est.contract} 무기한 선물로 낸 추정가 — 실제 체결가가 아닙니다` +
                     (t.est.anchor_source === "nxt" && t.est.anchor_price != null
                       ? ` · NXT 애프터마켓 마지막 체결 ${price(t.est.anchor_price)} 에서 계약 움직임만 얹음` : "")}>
-                    추정가 {price(t.est.estimate)} ({t.est.change_pct > 0 ? "+" : ""}
+                    {t.est.market_state === "nxt" ? "NXT" : "추정가"} {price(t.est.estimate)} ({t.est.change_pct > 0 ? "+" : ""}
                     {t.est.change_pct.toFixed(2)}%)
                   </span>
                 )}

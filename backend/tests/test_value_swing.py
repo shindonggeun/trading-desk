@@ -138,3 +138,37 @@ def test_a_failure_leaves_the_playbooks_as_built(monkeypatch):
         raise ZeroDivisionError("flat series")
     monkeypatch.setattr(vs, "evidence", boom)
     assert vs.apply(pb, days[-200:], weeks[-156:], "swing") is pb
+
+
+def test_a_shock_day_does_not_stretch_the_plan(monkeypatch):
+    """A crash day swells the 14-day ATR (SOXL 2026-11-08: 13.6 on a 46 price, stop 43% under the
+    average): the plan's distances use the capped ATR, the evidence keeps the raw one."""
+    days, weeks = _crash(bottom_days=3)
+    days = days[-200:]
+    last = days[-1]
+    days[-1] = {**last, "high": last["close"] * 1.35, "low": last["close"] * 0.7}      # one wild session
+    ev = vs.evidence(days, weeks[-156:], risk={"phase": "selling", "score": 72}, vix=34)
+    assert ev["plan_atr"] < ev["atr"]
+    side = vs.plan(ev)
+    monkeypatch.setattr(vs, "CALM_ATR", False)
+    raw = vs.evidence(days, weeks[-156:], risk={"phase": "selling", "score": 72}, vix=34)
+    assert raw["plan_atr"] == raw["atr"]
+    wide = vs.plan(raw)
+    # a tighter ladder and stop than the swollen ATR would give
+    assert side["avg_entry"] - side["stop"] < wide["avg_entry"] - wide["stop"]
+    assert side["entries"][0]["price"] - side["entries"][1]["price"] < wide["entries"][0]["price"] - wide["entries"][1]["price"]
+
+
+def test_a_first_target_that_does_not_pay_is_left_out_and_the_next_becomes_t1():
+    days, weeks = _crash(bottom_days=3)
+    ev = vs.evidence(days[-200:], weeks[-156:], risk={"phase": "selling", "score": 72}, vix=34)
+    side = vs.plan(ev)
+    risk = side["avg_entry"] - side["stop"]
+    first = side["targets"][0]
+    assert first["role"] == "t1" and first["action"] == "take_half"
+    assert first["price"] >= side["avg_entry"] + vs.T1_MIN_RR * risk - 0.01
+    # the 20-day line just over the average: not a target any more
+    close_line = {**ev, "sma20": side["avg_entry"] + 0.05 * risk}
+    moved = vs.plan(close_line)
+    assert moved["targets"][0]["basis"] != "20일선" and moved["targets"][0]["role"] == "t1"
+    assert [t["role"] for t in moved["targets"]] == [f"t{i}" for i in range(1, len(moved["targets"]) + 1)]

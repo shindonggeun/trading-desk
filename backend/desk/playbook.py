@@ -711,7 +711,8 @@ def _desk_bias(regime: dict, macro: dict | None) -> dict:
 
 def build(sr: dict | None, daily: list[dict], primary: list[dict], h: horizons.Horizon, *,
           live: dict | None = None, vix: float | None = None, macro: dict | None = None,
-          today: dict | None = None, now: str | None = None, calibrate: bool = True) -> dict | None:
+          today: dict | None = None, now: str | None = None, calibrate: bool = True,
+          market: dict | None = None) -> dict | None:
     """Both playbooks from the frame's bars. None without levels or an ATR. ``calibrate=False``
     (the backtest) leaves out the desk's record - a backtest must not be graded by its own results."""
     if not sr or not primary:
@@ -766,7 +767,8 @@ def build(sr: dict | None, daily: list[dict], primary: list[dict], h: horizons.H
         "short": short_side,
     }
     # #166: the trend's side at full size, the other halved or dropped
-    out = direction.apply(built, direction.score(daily), h,
+    # #166 stage 2: the market's selling score (desk.risk_regime) and the ticker's news theme vote too
+    out = direction.apply(built, direction.score(daily, market, macro), h,
                           empty=lambda reason: _none_side(reason, "half", True))
     # #148: only a same-day (live) playbook looks at the calendar — a past date or a backtest has no "now"
     if out and live:

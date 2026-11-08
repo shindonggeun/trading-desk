@@ -62,19 +62,20 @@ async def _compute(prices, ticker: str, h: horizons.Horizon, run_pb: dict | None
     frame = horizons.get(None) if sr.get("fallback") else h
     primary, secondary, _c, _p, _s = await frame_bars(prices, ticker, None, frame)
     daily = primary if frame.primary == "1d" else secondary
-    fresh = await asyncio.to_thread(playbook.build, sr, daily, primary, frame, live=live,
-                                    today=today(primary, frame))
-    if fresh is None:
-        raise ValueError(f"no playbooks for {ticker}: too few bars or no levels")
     market = None
     if risk is not None and not run_pb:
         # #146: the market's selling score now (an analysis' playbooks were gated when it ran)
-        # its own short limit: a slow Yahoo leaves the playbooks ungated, not the whole page a 503
+        # its own short limit: a slow Yahoo leaves the playbooks ungated, not the whole page a 503.
+        # Fetched before the build: the direction score reads it too (#166)
         try:
             market = await asyncio.wait_for(asyncio.to_thread(risk, ticker, None), RISK_TIMEOUT_SEC)
-            fresh = risk_regime.apply(fresh, market)
         except Exception as exc:  # noqa: BLE001 - incl. timeout; the playbooks ungated, not none
             log.warning("risk regime for %s failed: %s", ticker, exc)
+    fresh = await asyncio.to_thread(playbook.build, sr, daily, primary, frame, live=live,
+                                    today=today(primary, frame), market=market)
+    if fresh is None:
+        raise ValueError(f"no playbooks for {ticker}: too few bars or no levels")
+    fresh = risk_regime.apply(fresh, market)
     if not run_pb:
         # #167: the oversold swing buy on the bars now (an analysis keeps the long it was given)
         fresh = value_swing.apply(fresh, daily, secondary if frame.secondary == "1w" else None, frame.id, sr, market)

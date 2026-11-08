@@ -16,7 +16,18 @@ MIN_BARS = 60
 LEAN = 30          # |score| from here: one side is "with" the trend
 STRONG = 60        # "strong" on the page and in the note
 SWING_K = 3
-WEIGHTS = {"ma_stack": 1.5, "slope50": 1.0, "structure": 1.0, "ret20": 0.5}
+# #166 stage 2: "market" is desk.risk_regime's selling score (reproduced in the backtest, swept),
+# "macro" the ticker's own surging news theme (live only - the backtest cannot replay it). Both are
+# shown as evidence at weight 0: swing basket 2019-, costs in, gated, train / held-out (2024-05-17):
+# market 0 -0.1372R / -0.1175R, 0.5 -0.1368 / -0.1169, 1.0 -0.1361 / -0.1176, 1.5 -0.1359 / -0.1178 -
+# no held-out gain. "macro" cannot be measured, so it must not move which shorts the desk drops.
+WEIGHTS = {"ma_stack": 1.5, "slope50": 1.0, "structure": 1.0, "ret20": 0.5, "market": 0.0, "macro": 0.0}
+VALIDATED = ("ma_stack", "slope50", "structure", "ret20", "market")   # the parts the backtest measured
+MARKET_NEUTRAL = 25.0   # a selling score here votes neither way; 75 is a full short vote
+HYSTERESIS = 0          # keep an earlier lean this far under LEAN (10 was swept: -0.1361R / -0.1176R vs
+                        # -0.1359R / -0.1168R without - it dropped more shorts that were not worse: off)
+TURN_BARS = 5           # the lean this many sessions ago, for the hysteresis and the turn
+MACRO_SPIKE = 1.5
 APPLY = True       # set False to re-measure the counter-trend rows (desk.backtest by_direction)
 APPLY_HORIZONS = ("swing",)   # the backtest that decided the rule ran on swing; other horizons are only marked
 
@@ -44,8 +55,52 @@ def _pivots(values: list[float], high: bool) -> list[int]:
             if values[i] < min(values[i - k:i]) and values[i] <= min(values[i + 1:i + k + 1])]
 
 
-def score(daily: list[dict]) -> dict | None:
-    """{"score", "bias": long|short|neutral, "strong", "parts": [...]} or None with too few bars."""
+def _market_part(market: dict | None) -> dict | None:
+    """desk.risk_regime.score as a vote: calm market leans long a little, a dump short. Once the
+    dump shows exhaustion it no longer votes short (the turn is what a dip catch waits for)."""
+    if not market or market.get("score") is None:
+        return None
+    value = _clip(-(market["score"] - MARKET_NEUTRAL) / (75 - MARKET_NEUTRAL))
+    if market.get("phase") == "exhausting":
+        value = max(value, 0.0)
+    return {"id": "market", "value": round(value, 2),
+            "text": f"시장 투매 점수 {market['score']}({market.get('label') or market.get('phase')})"}
+
+
+def _macro_part(macro: dict | None) -> dict | None:
+    """The ticker's directly relevant theme, fresh and surging: its tone is the vote. The headlines
+    stay untrusted input - only the counted tone and spike are used here."""
+    for row in (macro or {}).get("themes") or []:
+        if row.get("relevance") == 2 and not row.get("stale") and row.get("tone") is not None \
+                and (row.get("spike") or 0) >= MACRO_SPIKE:
+            value = _clip(row["tone"] / 2) * min(1.0, row["spike"] / 3)
+            if value:
+                return {"id": "macro", "value": round(value, 2),
+                        "text": f"{row.get('label') or row['id']} 뉴스 급증 {row['spike']:.1f}배 · 톤 {row['tone']:+.1f}"}
+    return None
+
+
+def score(daily: list[dict], market: dict | None = None, macro: dict | None = None) -> dict | None:
+    """{"score", "bias": long|short|neutral, "strong", "turning", "held", "parts": [...]} or None
+    with too few bars. ``market`` (desk.risk_regime.score) and ``macro`` (desk.macro_news brief)
+    join as parts when given. The lean has a hysteresis against the price-only lean TURN_BARS ago:
+    it is kept until the score falls HYSTERESIS under LEAN, and a score that crossed zero since then
+    is ``turning`` (fresh entries need a stated reason)."""
+    now = _score(daily, market, macro)
+    if now is None:
+        return None
+    before = _score(daily[:-TURN_BARS])
+    if before:
+        keep = LEAN - HYSTERESIS
+        if now["bias"] == "neutral" and before["bias"] != "neutral" \
+                and (now["score"] >= keep if before["bias"] == "long" else now["score"] <= -keep):
+            now["bias"], now["held"] = before["bias"], True
+        now["turning"] = _sign(now["score"]) * _sign(before["score"]) < 0 and abs(before["score"]) >= LEAN / 2
+        now["before"] = before["score"]
+    return now
+
+
+def _score(daily: list[dict], market: dict | None = None, macro: dict | None = None) -> dict | None:
     if len(daily) < MIN_BARS:
         return None
     closes = [b["close"] for b in daily]
@@ -87,10 +142,15 @@ def score(daily: list[dict]) -> dict | None:
         ret = close / closes[-21] - 1
         parts.append({"id": "ret20", "value": round(_clip(ret / 0.10), 2), "text": f"20일 수익률 {ret * 100:+.1f}%"})
 
+    parts += [p for p in (_market_part(market), _macro_part(macro)) if p]
+    for p in parts:
+        p["validated"] = p["id"] in VALIDATED
+        p["weight"] = WEIGHTS[p["id"]]           # 0: shown as evidence, not counted in the score
     total = sum(WEIGHTS[p["id"]] for p in parts)
     value = round(100 * sum(WEIGHTS[p["id"]] * p["value"] for p in parts) / total) if total else 0
     bias = "long" if value >= LEAN else "short" if value <= -LEAN else "neutral"
-    return {"score": value, "bias": bias, "strong": abs(value) >= STRONG, "parts": parts}
+    return {"score": value, "bias": bias, "strong": abs(value) >= STRONG, "turning": False, "held": False,
+            "parts": parts}
 
 
 def side_vs(direction: dict | None, side: str) -> str:
@@ -118,6 +178,8 @@ def apply(pb: dict, direction: dict | None, h: horizons.Horizon, empty=None) -> 
             continue
         rel = side_vs(direction, name)
         side = {**side, "direction": rel}
+        if direction and direction.get("turning"):
+            side["turning"] = True             # the lean crossed zero lately: a fresh entry needs a reason
         if APPLY and h.id in APPLY_HORIZONS and rel == "against" and name == "short"                 and side.get("setup") not in (None, "none"):
             reason = f"방향 판정 롱 우세({direction['score']:+d}) — 상승 추세를 거스르는 숏은 쉼"
             side = {**(empty(reason) if empty else _none(side, h)), "direction": rel, "reason": reason}
@@ -135,7 +197,13 @@ def prompt_note(direction: dict | None) -> str | None:
     if not direction:
         return None
     word = {"long": "LONG-leaning", "short": "SHORT-leaning", "neutral": "neutral"}[direction["bias"]]
-    why = "; ".join(f"{p['id']} {p['value']:+.2f}" for p in direction["parts"])
-    return (f"Direction (desk, price trend): {word} {direction['score']:+d}"
-            + (" (strong)" if direction["strong"] else "") + f" - {why}. A plan against this direction needs a "
+    why = "; ".join(f"{p['id']} {p['value']:+.2f}" + ("" if p.get("validated", True) else " (live only, unvalidated)")
+                    + (" (context, not in the score)" if p.get("weight", 1) == 0 else "")
+                    for p in direction["parts"])
+    return (f"Direction (desk: price trend, market selling score, news): {word} {direction['score']:+d}"
+            + (" (strong)" if direction["strong"] else "")
+            + (" (kept from the earlier lean)" if direction.get("held") else "")
+            + (f" - TURNING: crossed zero from {direction['before']:+d} in {TURN_BARS} sessions, a fresh entry"
+               " either way needs a stated reason" if direction.get("turning") else "")
+            + f" - {why}. A plan against this direction needs a "
             "stated reason (a crash low to catch, an exhausted move); the desk drops shorts against an uptrend.")

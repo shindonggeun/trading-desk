@@ -275,7 +275,8 @@ def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: C
     """Build the snapshot's playbooks and judge each side on the bars after it. ``gate`` applies
     the market's selling rule (#146) when the snapshot has a score."""
     pb = playbook.build(snap.sr, snap.daily, snap.window, h, now=snap.plan_at, today=snap.today, vix=snap.vix,
-                        calibrate=False)                # #147: not graded by its own results
+                        calibrate=False,                # #147: not graded by its own results
+                        market=snap.risk if gate else None)   # #166: gate off = the market score unused
     if gate:
         pb = risk_regime.apply(pb, snap.risk)
     # #167: the oversold swing buy takes the long slot when its evidence is there (no record: no conviction)

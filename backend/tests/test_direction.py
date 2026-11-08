@@ -98,3 +98,74 @@ def test_an_uptrend_drops_the_short_through_build_on_swing_only():
     marked = direction.apply({"short": {"setup": "fade", "entries": [{"price": 1}]}}, pb["direction"],
                              horizons.get("intraday"))
     assert marked["short"]["setup"] == "fade" and marked["short"]["direction"] == "against"
+
+
+# --- #166 stage 2: the market's selling score, the news theme, the hysteresis and the turn ------
+
+def test_the_market_selling_score_is_context_by_default():
+    flat = _days([100.0] * 150, wiggle=0.01)
+    got = direction.score(flat, {"score": 80, "phase": "selling", "label": "투매 진행"})
+    part = {p["id"]: p for p in got["parts"]}["market"]
+    assert part["weight"] == 0 and got["score"] == direction.score(flat)["score"]      # swept: no gain
+    assert "market -1.00 (context, not in the score)" in direction.prompt_note(got)
+
+
+def test_the_market_selling_score_votes_and_an_exhausted_dump_stops_voting_short(monkeypatch):
+    monkeypatch.setattr(direction, "WEIGHTS", {**direction.WEIGHTS, "market": 1.0})
+    flat = _days([100.0] * 150, wiggle=0.01)
+    calm = direction.score(flat, {"score": 5, "phase": "calm", "label": "평온"})
+    dump = direction.score(flat, {"score": 80, "phase": "selling", "label": "투매 진행"})
+    done = direction.score(flat, {"score": 80, "phase": "exhausting", "label": "투매 끝물"})
+    part = {p["id"]: p for p in dump["parts"]}["market"]
+    assert part["value"] == -1.0 and part["validated"] and "투매 진행" in part["text"]
+    assert {p["id"]: p for p in calm["parts"]}["market"]["value"] > 0
+    assert {p["id"]: p for p in done["parts"]}["market"]["value"] == 0.0
+    assert dump["score"] < direction.score(flat)["score"] < calm["score"]
+    assert direction.score(flat, {"score": None}) == direction.score(flat)          # no score: no part
+
+
+def test_only_a_fresh_surging_directly_relevant_theme_votes_and_it_is_marked_unvalidated(monkeypatch):
+    monkeypatch.setattr(direction, "WEIGHTS", {**direction.WEIGHTS, "macro": 0.5})
+    flat = _days([100.0] * 150, wiggle=0.01)
+    theme = {"id": "chips", "label": "반도체 수출 규제", "relevance": 2, "spike": 3.0, "tone": -2.0, "stale": False}
+    got = direction.score(flat, None, {"themes": [theme]})
+    part = {p["id"]: p for p in got["parts"]}["macro"]
+    assert part["value"] == -1.0 and not part["validated"] and "반도체 수출 규제" in part["text"]
+    for other in ({**theme, "relevance": 1}, {**theme, "stale": True}, {**theme, "spike": 1.2}, {**theme, "tone": None}):
+        assert "macro" not in {p["id"] for p in direction.score(flat, None, {"themes": [other]})["parts"]}
+    assert "unvalidated" in direction.prompt_note(got)
+
+
+def test_a_lean_is_kept_inside_the_hysteresis_and_a_zero_cross_is_a_turn(monkeypatch):
+    days = _days([100.0] * 150, wiggle=0.01)
+    real = direction._score
+
+    def fake(now: int, before: int):
+        def _score(daily, market=None, macro=None):
+            got = real(daily, market, macro)
+            value = now if len(daily) == len(days) else before
+            bias = "long" if value >= direction.LEAN else "short" if value <= -direction.LEAN else "neutral"
+            return {**got, "score": value, "bias": bias}
+        return _score
+
+    monkeypatch.setattr(direction, "_score", fake(25, 40))       # off by default (swept): neutral at 25
+    assert direction.score(days)["bias"] == "neutral" and not direction.score(days)["held"]
+    monkeypatch.setattr(direction, "HYSTERESIS", 10)             # on: the long is kept in the band
+    held = direction.score(days)
+    assert held["bias"] == "long" and held["held"] and not held["turning"]
+    monkeypatch.setattr(direction, "_score", fake(15, 40))       # under the band: neutral
+    assert direction.score(days)["bias"] == "neutral"
+    monkeypatch.setattr(direction, "_score", fake(-10, 40))      # crossed zero: a turn
+    turned = direction.score(days)
+    assert turned["turning"] and turned["before"] == 40
+    pb = direction.apply({"long": {"setup": "dip_catch"}, "short": {"setup": "fade"}}, turned, SWING)
+    assert pb["long"]["turning"] and pb["short"]["turning"]
+    assert "TURNING" in direction.prompt_note(turned)
+    monkeypatch.setattr(direction, "_score", real)
+
+
+def test_a_hard_break_of_an_uptrend_turns_the_score():
+    up = [100 * 1.004 ** i for i in range(150)]
+    crash = up + [up[-1] * 0.92 ** k for k in range(1, 7)]    # six sessions of -8%
+    turned = direction.score(_days(crash, wiggle=0.01))
+    assert turned["before"] > direction.LEAN and turned["score"] < 0 and turned["turning"]

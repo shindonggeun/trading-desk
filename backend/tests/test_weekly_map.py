@@ -206,3 +206,58 @@ def test_under_the_lower_band_the_text_does_not_call_it_a_floor():
     head = m["text"]["headline"]
     assert "볼린저 하단" in head and "보다도 아래" in head and "다음 바닥 후보 — 50주" not in head
 
+
+
+# --- #216: the line pairs compared -----------------------------------------------------------------
+
+
+def _record_series():
+    reach = _rise(80) + [165, 160, 155, 150, 145] + _rise(40, 145, 3)
+    v = [reach[-1] + 3 * i for i in range(1, 30)]
+    v_back = [v[-1] + 3 * i for i in range(1, 40)]
+    return _weeks(reach + v + [v[-1] - 35] + v_back + [v_back[-1] - 45]), len(reach) + len(v)
+
+
+def test_the_map_keeps_its_record_and_line_breaks_takes_other_lengths():
+    bars, v_at = _record_series()
+    m = wm.build("SOXX", bars, today=date(2100, 1, 1))
+    assert m["record"]["black_break"] == wm.line_breaks(bars, len(bars) - 1)          # 20 · 60 by default
+    assert (m["record"]["black_break"]["n"], m["record"]["black_break"]["v_count"]) == (2, 1)
+    assert m["record"]["black_break"]["gap_pct"] < 0                                   # the red line was below
+    other = wm.line_breaks(bars, len(bars) - 1, 10, 40)
+    assert other != m["record"]["black_break"] and other["n"] >= 1
+    # no look-ahead with other lengths either
+    i = v_at + 3
+    assert wm.line_breaks(bars, i, 13, 50) == wm.line_breaks(bars[:i + 1], i, 13, 50)
+
+
+def test_compare_lines_sums_the_indices_and_marks_thin_ones():
+    bars, _ = _record_series()
+    report = wm.compare_lines({"SOXX": bars, "QQQ": bars, "TINY": bars[:50]}, blacks=(10, 20), reds=(20, 60))
+    pairs = [(r["black"], r["red"]) for r in report["rows"]]
+    assert pairs == [(10, 20), (10, 60), (20, 60)]                                   # black < red only
+    row = next(r for r in report["rows"] if (r["black"], r["red"]) == (20, 60))
+    one = wm.line_breaks(bars, len(bars) - 1, 20, 60)
+    assert row["current"] is True and set(row["by_index"]) == {"SOXX", "QQQ"}         # too short: left out
+    assert row["n"] == 2 * one["n"] and row["reach_rate"] == round(one["reached_red"] / one["n"], 2)
+    assert row["by_index"]["SOXX"]["thin"] is (one["n"] < wm.MIN_BREAKS) and row["gap_pct"] == one["gap_pct"]
+    import io
+
+    out = io.StringIO()
+    wm.print_lines(report, out)
+    text = out.getvalue()
+    assert "← 지금" in text and "빨간선까지" in text and "SOXX" in text
+
+
+def test_cli_weekly_lines_prints_and_writes(tmp_path, monkeypatch, capsys):
+    import json
+
+    from desk import cli
+
+    bars, _ = _record_series()
+    monkeypatch.setattr(wm.Maps, "all_bars", lambda self: {"SOXX": bars})
+    out = tmp_path / "lines.json"
+    assert cli.main(["weekly-lines", "--out", str(out)]) == 0
+    assert "← 지금" in capsys.readouterr().out
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["rows"] and body["indices"]["SOXX"]["weeks"] == len(bars)

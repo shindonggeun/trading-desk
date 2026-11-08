@@ -11,6 +11,7 @@
     python -m desk.cli backtest --basket --triggers  # touch entry vs the lower-bar trigger (#149)
     python -m desk.cli timing [--last 20]            # where recent analyses spent their time (#171)
     python -m desk.cli calibrate [--horizon swing]   # rebuild desk/data/playbook_calibration.json (#147)
+    python -m desk.cli weekly-lines [--out lines.json]  # compare the weekly map's trend-line pairs (#216)
 
 In Docker: ``docker compose exec backend python -m desk.cli create-user <name>``.
 For scripts, DESK_NEW_PASSWORD supplies the password instead of the prompt.
@@ -140,6 +141,19 @@ def _backtest(args) -> int:
     return 0
 
 
+def _weekly_lines(args) -> int:
+    import json
+
+    from . import weekly_map
+
+    report = weekly_map.compare_lines(weekly_map.Maps().all_bars())
+    weekly_map.print_lines(report)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(report, f, ensure_ascii=False, indent=1)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m desk.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -172,6 +186,9 @@ def main(argv: list[str] | None = None) -> int:
     cb.add_argument("--horizon", action="append", default=None,
                     help="repeatable; default swing (the other frames have few bars on Yahoo)")
     cb.add_argument("--from", dest="start", default="2019-01-01", help="first plan date, YYYY-MM-DD")
+    wl = sub.add_parser("weekly-lines", help=(
+        "compare the weekly map's black / red line pairs on the indices' weekly history (#216)"))
+    wl.add_argument("--out", default=None, help="write the full JSON report here")
     tm = sub.add_parser("timing", help="average time per stage and per agent over the latest finished runs")
     tm.add_argument("--last", type=int, default=20, help="how many recent finished runs (default 20)")
     args = parser.parse_args(argv)
@@ -182,6 +199,8 @@ def main(argv: list[str] | None = None) -> int:
         return _backtest(args)
     if args.command == "calibrate":
         return _calibrate(args)
+    if args.command == "weekly-lines":
+        return _weekly_lines(args)
 
     settings = load()
     migrate(settings.database_url)

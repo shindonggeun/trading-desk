@@ -122,27 +122,41 @@ def _swings(bars: list[dict], i: int, k: int = SWING_K) -> tuple[list[float], li
     return lows, highs
 
 
-def record(bars: list[dict], i: int) -> dict:
-    """The lines' record up to week ``i`` - only events whose outcome was known by then."""
+def line_breaks(bars: list[dict], i: int, black_w: int = BLACK, red_w: int = RED) -> dict:
+    """After a weekly close broke under the ``black_w``-week line while above the ``red_w``-week one,
+    up to week ``i``: how often the low reached the red line within ``REACH_WEEKS`` (and in how many
+    weeks), and the V-shaped exceptions that took the black line back within ``V_WEEKS`` instead.
+    Only breaks whose outcome was known by week ``i``; the rest are ``pending``."""
     closes = [b["close"] for b in bars]
-    breaks, reached, weeks_to, v_dates, open_breaks = 0, 0, [], [], 0
-    touches, rebounds, deeper, open_touches = 0, 0, [], 0
-    last_touch = -10 ** 9
-    for j in range(max(BLACK, RED), i + 1):
-        black, red = _sma(closes, BLACK, j), _sma(closes, RED, j)
-        prev_black = _sma(closes, BLACK, j - 1)
+    breaks, reached, weeks_to, v_dates, open_breaks, gaps = 0, 0, [], [], 0, []
+    for j in range(max(black_w, red_w), i + 1):
+        black, red = _sma(closes, black_w, j), _sma(closes, red_w, j)
+        prev_black = _sma(closes, black_w, j - 1)
         if prev_black is not None and closes[j - 1] >= prev_black and closes[j] < black and closes[j] > red:
             if j + REACH_WEEKS > i:                     # its outcome was not known yet at week i
                 open_breaks += 1
-            else:
-                breaks += 1
-                hit = next((w for w in range(1, REACH_WEEKS + 1)
-                            if bars[j + w]["low"] <= (_sma(closes, RED, j + w) or red)), None)
-                if hit:
-                    reached += 1
-                    weeks_to.append(hit)
-                elif any(closes[j + w] >= (_sma(closes, BLACK, j + w) or black) for w in range(1, V_WEEKS + 1)):
-                    v_dates.append(bars[j]["at"][:10])
+                continue
+            breaks += 1
+            gaps.append((red / closes[j] - 1) * 100)    # how far down "the way to the red line" was
+            hit = next((w for w in range(1, REACH_WEEKS + 1)
+                        if bars[j + w]["low"] <= (_sma(closes, red_w, j + w) or red)), None)
+            if hit:
+                reached += 1
+                weeks_to.append(hit)
+            elif any(closes[j + w] >= (_sma(closes, black_w, j + w) or black) for w in range(1, V_WEEKS + 1)):
+                v_dates.append(bars[j]["at"][:10])
+    return {"n": breaks, "reached_red": reached, "rate": round(reached / breaks, 2) if breaks else None,
+            "median_weeks": statistics.median(weeks_to) if weeks_to else None,
+            "v_count": len(v_dates), "v_exceptions": v_dates[-5:], "pending": open_breaks,
+            "gap_pct": round(statistics.median(gaps), 1) if gaps else None, "within_weeks": REACH_WEEKS}
+
+
+def record(bars: list[dict], i: int) -> dict:
+    """The lines' record up to week ``i`` - only events whose outcome was known by then."""
+    closes = [b["close"] for b in bars]
+    touches, rebounds, deeper, open_touches = 0, 0, [], 0
+    last_touch = -10 ** 9
+    for j in range(max(BLACK, RED), i + 1):
         mid = _sma(closes, BB_WEEKS, j)
         if mid is not None:
             sd = statistics.pstdev(closes[j - BB_WEEKS + 1:j + 1])
@@ -160,10 +174,7 @@ def record(bars: list[dict], i: int) -> dict:
                     else:
                         deeper.append(bars[j]["at"][:10])
     return {
-        "black_break": {"n": breaks, "reached_red": reached,
-                        "rate": round(reached / breaks, 2) if breaks else None,
-                        "median_weeks": statistics.median(weeks_to) if weeks_to else None,
-                        "v_exceptions": v_dates[-5:], "pending": open_breaks, "within_weeks": REACH_WEEKS},
+        "black_break": line_breaks(bars, i),
         "bb_lower_touch": {"n": touches, "rebounded": rebounds,
                            "rate": round(rebounds / touches, 2) if touches else None,
                            "lower_after": deeper[-5:], "pending": open_touches, "after_weeks": REBOUND_WEEKS},
@@ -312,6 +323,72 @@ def history(symbol: str, bars: list[dict], weeks: int = 8) -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------- line candidates (#216)
+
+BLACK_CANDIDATES = (10, 13, 20, 26)
+RED_CANDIDATES = (40, 50, 60, 100)
+MIN_BREAKS = 8            # fewer finished breaks than this per index: the rate is "thin"
+
+
+def compare_lines(series: dict[str, list[dict]], blacks=BLACK_CANDIDATES, reds=RED_CANDIDATES) -> dict:
+    """Every (black, red) pair with black < red over each index's whole weekly history: finished
+    breaks, the share that reached the red line, the weeks it took, the share of V exceptions, and
+    the totals over the indices. Indices start at different dates, so the totals weigh the longer ones."""
+    rows = []
+    for black in blacks:
+        for red in reds:
+            if black >= red:
+                continue
+            per, n, reached, v, weeks, gaps = {}, 0, 0, 0, [], []
+            for symbol, bars in series.items():
+                if len(bars) < red + REACH_WEEKS:
+                    continue
+                b = line_breaks(bars, len(bars) - 1, black, red)
+                per[symbol] = {k: b[k] for k in ("n", "reached_red", "rate", "median_weeks", "v_count", "pending",
+                                                 "gap_pct")}
+                per[symbol]["thin"] = b["n"] < MIN_BREAKS
+                n, reached, v = n + b["n"], reached + b["reached_red"], v + b["v_count"]
+                if b["median_weeks"] is not None:
+                    weeks.append(b["median_weeks"])
+                if b["gap_pct"] is not None:
+                    gaps.append(b["gap_pct"])
+            rows.append({"black": black, "red": red, "current": (black, red) == (BLACK, RED), "n": n,
+                         "reach_rate": round(reached / n, 2) if n else None,
+                         "v_rate": round(v / n, 2) if n else None,
+                         "median_weeks": statistics.median(weeks) if weeks else None,
+                         "gap_pct": round(statistics.median(gaps), 1) if gaps else None, "by_index": per})
+    return {"version": VERSION, "reach_weeks": REACH_WEEKS, "v_weeks": V_WEEKS, "min_breaks": MIN_BREAKS,
+            "indices": {s: {"weeks": len(b), "from": b[0]["at"][:10] if b else None} for s, b in series.items()},
+            "rows": rows}
+
+
+def _cell(symbol: str, b: dict) -> str:
+    rate = "-" if b["rate"] is None else f"{b['rate']:.2f}"
+    return f"{symbol} {rate}({b['n']}{'*' if b['thin'] else ''})"
+
+
+def print_lines(report: dict, out=None) -> None:
+    import sys
+
+    out = out or sys.stdout
+    print(f"검정선 이탈 → {report['reach_weeks']}주 안 빨간선 도달 · {report['v_weeks']}주 안 되찾은 V자 "
+          f"(지수별 이탈 {report['min_breaks']}번 미만은 *)", file=out)
+    for s, meta in report["indices"].items():
+        print(f"  {s}: 주봉 {meta['weeks']}개, {meta['from']}부터", file=out)
+    print("가까운 빨간선일수록 도달률은 오르지만 '열어 둘 하락폭'(이탈 때 빨간선까지 %)은 작아진다 — 둘을 함께 본다.",
+          file=out)
+    head = f"{'검정':>4} {'빨강':>4} {'이탈':>5} {'도달률':>6} {'V자':>5} {'걸린 주':>6} {'빨간선까지':>8}  지수별 도달(이탈)"
+    print(head, file=out)
+    for r in report["rows"]:
+        per = "  ".join(_cell(s, b) for s, b in r["by_index"].items())
+        mark = " ← 지금" if r["current"] else ""
+        rate = "-" if r["reach_rate"] is None else f"{r['reach_rate']:.2f}"
+        vr = "-" if r["v_rate"] is None else f"{r['v_rate']:.2f}"
+        wk = "-" if r["median_weeks"] is None else f"{r['median_weeks']:.1f}"
+        gap = "-" if r["gap_pct"] is None else f"{r['gap_pct']:+.1f}%"
+        print(f"{r['black']:>4} {r['red']:>4} {r['n']:>5} {rate:>6} {vr:>5} {wk:>6} {gap:>8}  {per}{mark}", file=out)
+
+
 # ---------------------------------------------------------------- live
 
 
@@ -374,6 +451,15 @@ class Maps:
     def history(self, symbol: str, weeks: int = 8) -> list[dict]:
         _used, bars = self.bars(symbol)
         return history(symbol, bars, weeks)
+
+    def all_bars(self) -> dict[str, list[dict]]:
+        """Every target's weekly bars (an index with too few is left out) - for compare_lines."""
+        out = {}
+        for symbol, _name, _f in TARGETS:
+            _used, bars = self.bars(symbol)
+            if len(bars) >= RED:
+                out[symbol] = bars
+        return out
 
     def note_for(self, ticker: str) -> str | None:
         index = UNDERLYING.get(ticker.upper())

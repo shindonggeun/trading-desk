@@ -60,7 +60,7 @@ const CONDITION: Record<string, string> = {
   at_resistance: "저항 도달", rejection_bar: "윗꼬리 · 음봉", lower_high: "고점 낮춤", below_vwap: "VWAP 아래",
   below_ma20: "20선 아래", volume_on_break: "이탈 거래량", no_new_entry_late: "장 막판 신규 금지",
 };
-const SOURCE: Record<string, string> = { sr: "지지 · 저항", vp: "매물대", fib: "피보나치", trend: "추세선", ma: "이평선", vwap: "VWAP", atr: "ATR" };
+const SOURCE: Record<string, string> = { sr: "지지 · 저항", vp: "매물대", fib: "피보나치", trend: "추세선", ma: "이평선", vwap: "VWAP", avwap: "앵커드 VWAP", gap: "갭 메움", atr: "ATR" };
 const RESULT: Record<string, string> = {
   waiting: "대기", open: "보유 중", t1: "T1 도달", t2: "T2 도달", t1_be: "T1 뒤 본전", stop: "손절", time_stop: "시간 손절",
   flat: "당일 청산", unfilled: "미체결", invalid: "채점 불가", unscorable: "채점 불가", error: "채점 오류",

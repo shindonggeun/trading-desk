@@ -31,6 +31,12 @@ from statistics import mean
 
 from .indicators import rsi
 
+ENABLED = True               # set by the basket backtest (#167 done-when): off unless it pays after costs
+# Swing basket 2019-, costs in, train / held-out (cut 2024-05-17), value_swing trades only:
+#   3 bundles -0.140R (297) / -0.239R (94); fear required -0.010R (169) / +0.218R (31);
+#   4 bundles +0.038R (141) / +0.391R (26, T1 69%) - chosen on the training half; RSI 25 or a 95th
+#   percentile depth did not help. The held-out sample is small: watch the live record (desk.calibration).
+
 # thresholds (the backtest sweeps them, #144)
 RSI_DAILY = 30.0
 RSI_WEEKLY = 35.0
@@ -42,7 +48,8 @@ MA200_GAP = -0.10            # the close this far under the 200-day average
 NEAR_ATR = 1.5               # a weekly support / old crash low this close to the recent low
 CLIMAX_X = 2.0               # a capitulation day: volume this many times its 20-day average
 VIX_FEAR = 30.0
-MIN_GROUPS = 3               # bundles for the setup (oversold and depth among them)
+MIN_GROUPS = 4               # bundles for the setup, the REQUIRED ones among them (swept, see below)
+REQUIRED = ("oversold", "depth")
 CONVICTION_GROUPS = 4        # bundles for a conviction trade
 CONVICTION_MIN_N = 30        # desk.calibration record needed before a conviction trade
 
@@ -193,7 +200,7 @@ def evidence(daily: list[dict], weekly: list[dict] | None, sr: dict | None = Non
     return {"groups": groups, "count": count, "atr": atr, "close": close, "low20": low20,
             "sma20": sma20, "sma50": sma50, "sma200": sma200,
             "high52": max(b["high"] for b in weekly[-52:]) if weekly else max(b["high"] for b in daily),
-            "setup": bool(oversold["met"] and depth["met"] and count >= MIN_GROUPS)}
+            "setup": bool(all(groups[g]["met"] for g in REQUIRED) and count >= MIN_GROUPS)}
 
 
 def conviction(ev: dict, edge: dict | None) -> dict:
@@ -270,6 +277,34 @@ def plan(ev: dict, edge: dict | None = None) -> dict | None:
                             "position_pct": position_pct(_round(avg), stop, budget)},
             "evidence": {k: {"met": g["met"], "checks": g["checks"]} for k, g in ev["groups"].items()},
             "source": {k: "desk" for k in ("zone", "entries", "stop", "t1", "t2", "time_stop")}, "model": None}
+
+
+def apply(pb: dict | None, daily: list[dict], weekly: list[dict] | None, horizon: str, sr: dict | None = None,
+          risk: dict | None = None, vix: float | None = None, calibrate: bool = True) -> dict | None:
+    """The playbooks with the long slot taken by an oversold swing buy when the evidence is there
+    (swing frame only - its secondary bars are the weekly ones). The long it replaces is named in
+    ``replaced``. ``calibrate=False`` (the backtest) gives conviction no record: never active.
+    Idempotent on the same input; ENABLED off leaves the playbooks as they are."""
+    if not ENABLED or not pb or horizon != "swing":
+        return pb
+    ev = evidence(daily, weekly, sr, risk, vix)
+    if not ev or not ev["setup"]:
+        return pb
+    edge = None
+    if calibrate:
+        from . import calibration
+
+        edge = calibration.TABLE.look(horizon, "long", "value_swing", (pb.get("regime") or {}).get("id"),
+                                      conviction(ev, None)["score"])
+    side = plan(ev, edge)
+    if not side:
+        return pb
+    prev = pb.get("long") or {}
+    side["direction"] = prev.get("direction")
+    side["replaced"] = prev.get("setup") if prev.get("setup") not in (None, "none", "value_swing") else None
+    if edge:
+        side.update(p_t1=edge["p_t1"], exp_r=edge["exp_r"], n=edge["n"], calibration=edge)
+    return {**pb, "long": side}
 
 
 def prompt_line(side: dict | None) -> str | None:

@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from . import horizons, macro_news, playbook, risk_regime, timing, trade_map, verdict
+from . import horizons, macro_news, playbook, risk_regime, timing, trade_map, value_swing, verdict
 from . import underlying as under
 from .broker.base import Broker
 from .consensus import CONSENSUS_TIMEOUT_SEC, ConsensusContext, llm_summariser
@@ -419,10 +419,12 @@ class RunManager:
             macro = macro_news.CACHE.brief(ticker) if self.macro is not None else None
             pb = await asyncio.to_thread(playbook.build, sr, daily, primary, h, live=live, vix=vix,
                                          macro=macro, today=today)
+            pb = risk_regime.apply(pb, market)
+            # #167: the oversold swing buy (the swing frame's secondary bars are the weekly ones)
+            return value_swing.apply(pb, daily, secondary if h.secondary == "1w" else None, h.id, sr, market, vix)
         except Exception as exc:  # noqa: BLE001 - incl. timeout
             log.warning("playbooks for %s failed: %s", ticker, exc)
             return None
-        return risk_regime.apply(pb, market)
 
     async def _risk(self, ticker: str, trade_date: str) -> dict | None:
         """#146: the market's selling score on the run's date; a failure leaves the playbooks ungated."""

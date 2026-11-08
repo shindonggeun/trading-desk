@@ -28,7 +28,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
-from . import horizons, outcome, playbook, playbook_live, risk_regime, sr
+from . import horizons, outcome, playbook, playbook_live, risk_regime, sr, value_swing
 
 VERSION = 1
 BASKET = ("SOXL", "TQQQ", "NVDA", "QQQ", "005930.KS", "000660.KS")
@@ -83,6 +83,7 @@ class Snapshot:
     today: dict | None = None         # the forming session on intraday frames (as the live run builds)
     vix: float | None = None          # ^VIX close on that day
     risk: dict | None = None          # desk.risk_regime.score on that day (#146)
+    weekly: list[dict] | None = None  # the finished weekly bars on a swing frame (#167, desk.value_swing)
 
 
 @dataclass
@@ -194,6 +195,7 @@ def snapshot(ticker: str, h: horizons.Horizon, primary: list[dict], secondary: l
     day = cut.isoformat()
     return Snapshot(ticker, t, primary[t]["at"], day, _plan_at(primary[t + 1], h, ticker), levels, daily, window,
                     today=playbook_live.today(window, h), vix=_vix_on(vix, day),
+                    weekly=sec if h.secondary == "1w" else None,
                     risk=market.on(day, ticker, intraday=h.primary not in ("1d", "1w", "1M"))
                     if market else None)
 
@@ -275,6 +277,10 @@ def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: C
                         calibrate=False)                # #147: not graded by its own results
     if gate:
         pb = risk_regime.apply(pb, snap.risk)
+    # #167: the oversold swing buy takes the long slot when its evidence is there (no record: no conviction)
+    # (gate off = the market score unused: the fear bundle does not read it either)
+    pb = value_swing.apply(pb, snap.daily, snap.weekly, h.id, snap.sr, snap.risk if gate else None, snap.vix,
+                           calibrate=False)
     if not pb:
         return []
     future = primary[snap.t + 1: snap.t + 1 + LOOKAHEAD[h.id]]

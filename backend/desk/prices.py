@@ -28,7 +28,8 @@ CANDLE_TTL_SEC = 30.0
 CACHE_MAX = 256
 # 1M is a month, 1m a minute. 240m and 1y are built here from Yahoo's 60m and monthly bars.
 INTERVALS = ("1m", "5m", "15m", "30m", "60m", "240m", "1d", "1w", "1M", "1y")
-MAX_COUNT = 500
+# #206: the chart loads older bars as it scrolls left (doubling the count) up to this many.
+MAX_COUNT = 2000
 # Toss serves at most 200 bars and only 1m / 1d ("지원하지 않는 캔들 주기"); everything else,
 # and longer histories, come straight from Yahoo.
 BROKER_MAX_COUNT = 200

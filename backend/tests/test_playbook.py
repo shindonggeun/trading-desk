@@ -306,3 +306,59 @@ def test_a_release_far_away_or_minor_does_not_hold(monkeypatch):
     ref = bars[-1]["close"]
     monkeypatch.setattr(events_calendar, "CACHE", _event_cache(datetime.now(UTC) + timedelta(days=2)))
     assert playbook.build(_crash_sr(ref), bars, bars, SWING, live={"price": ref})["event_hold"] is None
+
+
+# --- #145: anchored VWAP and unfilled gaps ----------------------------------------------------
+
+def _gapped(closes: list[float], gaps: dict[int, float]) -> list[dict]:
+    """Flat-range bars (high/low = close ± 1) with the given bars opened ``gap`` off the prior close."""
+    bars = _daily(closes)
+    for i, g in gaps.items():
+        c = bars[i]["close"]
+        bars[i] |= {"open": bars[i - 1]["close"] + g}
+        bars[i] |= {"high": max(bars[i]["open"], c) + 1.0, "low": min(bars[i]["open"], c) - 1.0}
+    return bars
+
+
+def test_anchored_vwaps_from_the_top_the_swing_low_and_the_gap():
+    closes = [100.0] * 20 + [100 + 2 * i for i in range(1, 11)] + [120 - 3 * i for i in range(1, 11)] \
+        + [90 + i for i in range(1, 6)]
+    bars = _daily(closes)
+    out = playbook.anchored_vwaps(bars, atr=2.0)
+    bases = " / ".join(c["basis"] for c in out)
+    assert all(c["source"] == "avwap" and c["weight"] == playbook.AVWAP_WEIGHT for c in out)
+    assert "고점" in bases and "스윙 저점" in bases
+    top = next(c for c in out if "고점" in c["basis"])
+    assert 90 < top["price"] < 120                       # the buyers since the top are under water
+    # a gap of 1 daily ATR or more is an anchor too
+    gapped = _gapped(closes, {len(closes) - 3: 4.0})
+    assert any("갭" in c["basis"] for c in playbook.anchored_vwaps(gapped, atr=2.0))
+    # no volume (an index): no VWAP
+    assert playbook.anchored_vwaps([{**b, "volume": 0} for b in bars], atr=2.0) == []
+
+
+def test_gap_fills_keep_only_gaps_not_yet_filled(monkeypatch):
+    closes = [100.0] * 30 + [106.0] * 5 + [96.0] * 5      # up gap at 30, then down gap at 35
+    bars = _gapped(closes, {30: 6.0, 35: -10.0})
+    monkeypatch.setattr(playbook, "GAP_FILL_WEIGHT", 1.0)    # off by default (#145 sweep): on here
+    out = playbook.gap_fills(bars, atr=2.0)
+    # the up gap was filled by the fall (lows went back under 101), the down gap is still open
+    assert [c["basis"].split("(")[0] for c in out] == ["하락 갭 메움"]
+    assert out[0]["price"] == bars[34]["low"] and out[0]["source"] == "gap"
+    # the shock day's gap is shock_candidates' to show
+    assert playbook.gap_fills(bars, atr=2.0, skip_at=bars[35]["at"]) == []
+    # a weight of 0 turns the source off (the backtest sweep compares it)
+    monkeypatch.setattr(playbook, "GAP_FILL_WEIGHT", 0.0)
+    monkeypatch.setattr(playbook, "AVWAP_WEIGHT", 0.0)
+    assert playbook.gap_fills(bars, atr=2.0) == [] and playbook.anchored_vwaps(bars, atr=2.0) == []
+
+
+def test_a_live_playbook_zone_can_carry_the_new_sources():
+    bars = _crash()
+    ref = bars[-1]["close"]
+    pb = playbook.build(_crash_sr(ref), bars, bars, SWING)
+    members = [m for side in ("long", "short") for z in [(pb[side] or {}).get("zone") or {}]
+               for m in z.get("members") or []]
+    sources = {m["source"] for m in members}
+    assert pb["long"]["setup"] != "none"
+    assert sources <= {"sr", "vp", "fib", "trend", "ma", "vwap", "avwap", "gap"}

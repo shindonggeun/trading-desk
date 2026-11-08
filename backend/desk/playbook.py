@@ -52,6 +52,18 @@ SIZE = {"crash": "half", "downtrend": "half", "unknown": "half", "range": "norma
 SHARES = {"crash": (0.25, 0.25, 0.5), "default": (0.34, 0.33, 0.33)}
 LIVE_MAX_GAP = 0.25      # a model price further than this from the reference is not taken
 
+# #145: more zone candidates from the daily bars. A weight of 0 leaves the source out - the basket
+# backtest sweeps them (desk.backtest.SWEEP) and only a source that lifts the expectancy stays on.
+# Swing basket 2019-, costs in (train 70% / held-out 30%): anchored VWAP off -0.132R / -0.152R,
+# on (1.0) -0.129R / -0.123R, T1-first 0.511 -> 0.540 held out - kept. Gap fills 0 -0.132 / -0.122,
+# 1.0 -0.129 / -0.123 - no held-out gain, so off (the code stays for the next sweep).
+AVWAP_WEIGHT = 1.0       # the VWAP anchored at the recent top, the last swing low and the last big gap
+AVWAP_LOOKBACK = 60      # daily bars the anchors are looked for in
+GAP_FILL_WEIGHT = 0.0    # the edge of a gap the price has not gone back to fill
+GAP_LOOKBACK = 40
+GAP_MIN_ATR = 0.5        # a gap smaller than this (in daily ATR) is noise
+GAP_MAX = 2              # per direction, the most recent first
+
 # regime thresholds (daily bars, daily ATR)
 CRASH_DD = -0.10
 CRASH_DD_ATR = -4.0
@@ -302,6 +314,67 @@ def round_levels(ref: float, cap: float) -> list[dict]:
     prices = [base - step, base, base + step, base + 2 * step]
     return [{"price": round(p, 6), "source": "sr", "weight": 0.5, "basis": "라운드 넘버", "tag": "round"}
             for p in prices if p > 0 and p != ref and abs(p - ref) <= cap]
+
+
+def _avwap_from(daily: list[dict], i: int) -> float | None:
+    bars = [b for b in daily[i:] if (b.get("volume") or 0) > 0]
+    vol = sum(b["volume"] for b in bars)
+    if not vol:
+        return None
+    return sum((b["high"] + b["low"] + b["close"]) / 3 * b["volume"] for b in bars) / vol
+
+
+def anchored_vwaps(daily: list[dict], atr: float) -> list[dict]:
+    """#145: the VWAP since the recent top (what the buyers since the fall paid on average), since
+    the last swing low (the bounce's buyers) and since the last big gap - institutions defend these.
+    One candidate per anchor bar; none without volume (an index)."""
+    if AVWAP_WEIGHT <= 0 or len(daily) < 10:
+        return []
+    start = max(1, len(daily) - AVWAP_LOOKBACK)
+    window = range(start, len(daily) - 1)             # an anchor needs a bar after it
+    if not window:
+        return []
+    anchors: dict[int, list[str]] = {}
+    top = max(window, key=lambda i: daily[i]["high"])
+    anchors.setdefault(top, []).append("고점")
+    lows = [i for i in _swings([b["low"] for b in daily], 3, low=True) if i >= start]
+    if lows:
+        anchors.setdefault(lows[-1], []).append("스윙 저점")
+    gaps = [i for i in window if abs(daily[i]["open"] - daily[i - 1]["close"]) >= 2 * GAP_MIN_ATR * atr]
+    if gaps:
+        anchors.setdefault(gaps[-1], []).append("갭")
+    out = []
+    for i, names in sorted(anchors.items()):
+        price = _avwap_from(daily, i)
+        if price is not None:
+            out.append({"price": price, "source": "avwap", "weight": AVWAP_WEIGHT,
+                        "basis": f"앵커드 VWAP({' · '.join(names)} {daily[i]['at'][:10]}부터)"})
+    return out
+
+
+def gap_fills(daily: list[dict], atr: float, skip_at: str | None = None) -> list[dict]:
+    """#145: gaps the price has not gone back to fill - the far edge (the bar before the gap) is
+    where a move back stalls or turns. ``skip_at`` is a shock day, whose gap shock_candidates has."""
+    if GAP_FILL_WEIGHT <= 0 or len(daily) < 3:
+        return []
+    out: list[dict] = []
+    ups = downs = 0
+    for i in range(len(daily) - 1, max(0, len(daily) - GAP_LOOKBACK), -1):
+        bar, prev = daily[i], daily[i - 1]
+        if bar["at"] == skip_at:
+            continue
+        after = daily[i:]
+        if ups < GAP_MAX and bar["low"] - prev["high"] >= GAP_MIN_ATR * atr \
+                and min(b["low"] for b in after) > prev["high"]:
+            ups += 1
+            out.append({"price": prev["high"], "source": "gap", "weight": GAP_FILL_WEIGHT,
+                        "basis": f"상승 갭 메움({bar['at'][:10]} 전 고가)"})
+        elif downs < GAP_MAX and prev["low"] - bar["high"] >= GAP_MIN_ATR * atr \
+                and max(b["high"] for b in after) < prev["low"]:
+            downs += 1
+            out.append({"price": prev["low"], "source": "gap", "weight": GAP_FILL_WEIGHT,
+                        "basis": f"하락 갭 메움({bar['at'][:10]} 전 저가)"})
+    return out
 
 
 def zones(cands: list[dict], ref: float, atr: float, below: bool, max_atr: float) -> list[dict]:
@@ -654,7 +727,9 @@ def build(sr: dict | None, daily: list[dict], primary: list[dict], h: horizons.H
     jolt = shock(daily, _calm_atr(daily, _atr(daily) or atr)) if len(daily) > 21 else None
     if jolt and abs(jolt["bar"]["close"] - ref) > 2 * cap:
         jolt = None                                   # a shock the price has long left behind
-    cands = [*candidates(sr, primary, intraday), *shock_candidates(jolt), *round_levels(ref, cap)]
+    datr = _atr(daily) or atr                         # the gaps and anchors are daily bars
+    cands = [*candidates(sr, primary, intraday), *shock_candidates(jolt), *round_levels(ref, cap),
+             *anchored_vwaps(daily, datr), *gap_fills(daily, datr, jolt["bar"]["at"] if jolt else None)]
     low = None
     recent_low = min(b["low"] for b in primary[-3:]) if primary else None
     if jolt and jolt["down"]:

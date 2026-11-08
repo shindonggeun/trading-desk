@@ -90,6 +90,7 @@ cd backend && tradingagents login chatgpt     # 브라우저로 로그인 → ~/
 | `TRADINGAGENTS_RISK_PARALLEL_FIRST_ROUND=true` | 공격 · 보수 · 중립이 첫 의견을 동시에 낸다 |
 | `TRADINGAGENTS_QUICK_THINK_REASONING_EFFORT` / `_DEEP_THINK_` | 모델 등급별 추론 강도(`low` · `medium` · `high`). 비우면 `TRADINGAGENTS_OPENAI_REASONING_EFFORT`. quick 은 애널리스트 · 토론 · 트레이더, deep 은 두 매니저 |
 | `DESK_REUSE_REPORTS_MIN=30` | 같은 종목 · 거래일 · 보기 · 출력 언어로 30분 안에 다시 분석하면 앞 run 의 뉴스 · 펀더멘털 보고서를 재사용한다(채팅에 "N분 전 보고서 재사용"). 시세 · 기술 · 심리 분석은 매번 새로 한다. 0 = 끔 |
+| `DESK_MAX_CONCURRENT_RUNS=2` | 서로 다른 종목 2개를 동시에 돌린다. 같은 종목(레버리지 상품과 기초자산 포함)은 앞 run 이 끝날 때까지 기다린다. 모델 속도 제한(429)을 만나면 `DESK_RATE_LIMIT_COOLDOWN_MIN`(기본 30)분 동안 1개씩 |
 
 효과는 `python -m desk.cli timing --last 20` 으로 본다(같이 도착한 오프닝 발언은 한 단계로 잰다).
 

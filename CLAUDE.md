@@ -40,7 +40,7 @@ UI 작업은 `.env` 에 `DESK_FAKE_RUNS=true` — 대본 러너가 **같은 `Sta
 ## 아키텍처 (여러 파일을 읽어야 보이는 것)
 
 **실행 흐름**: `POST /api/runs` → `RunManager.submit()` 이 run 행과 `queued` 이벤트를 쓰고 asyncio task 를 만든다 →
-세마포어(`DESK_MAX_CONCURRENT_RUNS`, 기본 1 — 모든 run 이 같은 ChatGPT 플랜을 쓴다) → 러너를 `asyncio.to_thread` 워커에서 실행 →
+종목 잠금(같은 기초자산은 차례로) → `_Gate`(`DESK_MAX_CONCURRENT_RUNS`, 기본 1 — 모든 run 이 같은 ChatGPT 플랜을 쓴다. 429 뒤 `DESK_RATE_LIMIT_COOLDOWN_MIN` 동안 1개) → 러너를 `asyncio.to_thread` 워커에서 실행 →
 러너의 `emit()` 은 `loop.call_soon_threadsafe` 로 **이벤트 루프 스레드에서** `store.append_event` + `hub.notify` 한다 →
 끝나면 `plan.parse_plan(final_state)` → `plan` 이벤트 → `done`. 실패면 `error` → `done`.
 

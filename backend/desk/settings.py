@@ -28,8 +28,12 @@ class Settings:
     # Fake runs replay a scripted debate: build the UI without spending the plan's quota.
     fake_runs: bool = field(default_factory=lambda: _bool("DESK_FAKE_RUNS"))
     fake_delay: float = field(default_factory=lambda: float(os.getenv("DESK_FAKE_DELAY", "0.6")))
-    # One run at a time by default: every run draws on the same ChatGPT plan.
+    # One run at a time by default: every run draws on the same ChatGPT plan. With 2 (#171), two
+    # different instruments run side by side; the same one always waits for the run before it.
     max_concurrent_runs: int = field(default_factory=lambda: int(os.getenv("DESK_MAX_CONCURRENT_RUNS", "1")))
+    # After the provider's rate limit (HTTP 429), one run at a time for this many minutes.
+    rate_limit_cooldown_min: float = field(
+        default_factory=lambda: float(os.getenv("DESK_RATE_LIMIT_COOLDOWN_MIN") or "30"))
     # #171: a run of the same ticker, day, horizon and language within this many minutes reuses the
     # news and fundamentals reports of the earlier one (price and technical work is always fresh). 0 = off.
     reuse_reports_min: float = field(default_factory=lambda: float(os.getenv("DESK_REUSE_REPORTS_MIN") or "0"))

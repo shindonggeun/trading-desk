@@ -264,7 +264,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        filings=None if settings.fake_runs else filings.note_for,
                                        # #154: short volume + options of a US ticker (cached ~15 min)
                                        positioning=None if settings.fake_runs else positioning.note_for,
-                                       risk=risk)
+                                       risk=risk,
+                                       # #171: recent news/fundamentals reports taken over (0 = off)
+                                       reuse_minutes=settings.reuse_reports_min)
 
         async def keep_listing_fresh():
             while True:

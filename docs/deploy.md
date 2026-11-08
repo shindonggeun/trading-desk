@@ -99,7 +99,7 @@ docker run --rm -it -p 127.0.0.1:1455:1455 -v trading-desk-tradingagents-home:/h
 
 브라우저가 열라는 주소를 PC 브라우저에서 연다. 끝나면 `chatgpt-auth.json` 이 볼륨에 남는다.
 그다음 `.env.runtime` 에서 `DESK_FAKE_RUNS=false`, 모델 ID(`TRADINGAGENTS_QUICK_THINK_LLM` · `TRADINGAGENTS_DEEP_THINK_LLM`)를 채우고 `scripts/deploy.sh HEAD backend`.
-속도 옵션 env 4개(`TRADINGAGENTS_DEBATE_PARALLEL_FIRST_ROUND` · `TRADINGAGENTS_RISK_PARALLEL_FIRST_ROUND` · `TRADINGAGENTS_QUICK_THINK_REASONING_EFFORT` · `TRADINGAGENTS_DEEP_THINK_REASONING_EFFORT`)는 비워 두면 꺼진다 — README "ChatGPT 플랜으로 실제 실행".
+속도 옵션 env 4개(`TRADINGAGENTS_DEBATE_PARALLEL_FIRST_ROUND` · `TRADINGAGENTS_RISK_PARALLEL_FIRST_ROUND` · `TRADINGAGENTS_QUICK_THINK_REASONING_EFFORT` · `TRADINGAGENTS_DEEP_THINK_REASONING_EFFORT`)는 비워 두면, 보고서 재사용 `DESK_REUSE_REPORTS_MIN` 은 0 이면 꺼진다 — README "ChatGPT 플랜으로 실제 실행".
 
 ## 6. 토스증권 Open API
 

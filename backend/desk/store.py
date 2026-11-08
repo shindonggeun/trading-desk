@@ -180,6 +180,20 @@ class Store:
             ).mappings().all()
         return [{**row, "ts": iso(row["ts"])} for row in rows]
 
+    def recent_reports(self, ticker: str, trade_date: str, agents: list[str], since: datetime) -> list[dict]:
+        """#171: these agents' messages in finished runs of this ticker and day, filed since ``since``,
+        newest first, each with its run's options (horizon, language) for the caller to match."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(events.c.run_id, events.c.ts, events.c.agent, events.c.content, events.c.data,
+                       runs.c.options)
+                .select_from(events.join(runs, events.c.run_id == runs.c.id))
+                .where(runs.c.ticker == ticker, runs.c.trade_date == trade_date, runs.c.status == "done",
+                       events.c.type == "message", events.c.agent.in_(agents), events.c.ts >= since)
+                .order_by(events.c.ts.desc())
+            ).mappings().all()
+        return [{**row, "ts": aware(row["ts"])} for row in rows]
+
 
 def _run(row: RowMapping) -> dict:
     return {

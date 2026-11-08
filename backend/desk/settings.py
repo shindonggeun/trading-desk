@@ -30,6 +30,9 @@ class Settings:
     fake_delay: float = field(default_factory=lambda: float(os.getenv("DESK_FAKE_DELAY", "0.6")))
     # One run at a time by default: every run draws on the same ChatGPT plan.
     max_concurrent_runs: int = field(default_factory=lambda: int(os.getenv("DESK_MAX_CONCURRENT_RUNS", "1")))
+    # #171: a run of the same ticker, day, horizon and language within this many minutes reuses the
+    # news and fundamentals reports of the earlier one (price and technical work is always fresh). 0 = off.
+    reuse_reports_min: float = field(default_factory=lambda: float(os.getenv("DESK_REUSE_REPORTS_MIN") or "0"))
     # Login sessions: hard limit from sign-in, and sign-out after this long without a request.
     session_max_hours: float = field(default_factory=lambda: float(os.getenv("DESK_SESSION_MAX_HOURS", "72")))
     session_idle_hours: float = field(default_factory=lambda: float(os.getenv("DESK_SESSION_IDLE_HOURS", "12")))

@@ -41,6 +41,9 @@ from .store import Store
 log = logging.getLogger(__name__)
 
 ANALYSTS = ("market", "social", "news", "fundamentals")
+# #171: the analysts whose reports are data rather than a read of the price (agent, state field) -
+# reusable from a recent run of the same ticker; market and sentiment are always fresh.
+REUSABLE = {"news": ("news_analyst", "news_report"), "fundamentals": ("fundamentals_analyst", "fundamentals_report")}
 
 Emit = Callable[[dict], None]
 
@@ -59,6 +62,8 @@ class RunRequest:
     output_language: str | None = None
     max_debate_rounds: int | None = None
     max_risk_rounds: int | None = None
+    # #171: analyst -> report taken over from a recent run; set by RunManager, never by the API
+    reused: dict[str, str] | None = None
 
     def asset_type(self) -> str:
         return "crypto" if self.ticker.upper().endswith(CRYPTO_SUFFIXES) else "stock"
@@ -69,6 +74,10 @@ class RunRequest:
         # (desk.prices.is_market_symbol)
         no_statements = self.asset_type() == "crypto" or is_market_symbol(self.ticker)
         return [a for a in chosen if not (no_statements and a == "fundamentals")]
+
+    def graph_analysts(self) -> list[str]:
+        """The analysts the graph runs: the selected ones less those whose report is reused."""
+        return [a for a in self.selected_analysts() if a not in (self.reused or {})]
 
 
 
@@ -101,13 +110,19 @@ def run_tradingagents(request: RunRequest, emit: Emit, portfolio: Any) -> RunRes
     if request.max_risk_rounds:
         config["max_risk_discuss_rounds"] = request.max_risk_rounds
 
-    graph = TradingAgentsGraph(selected_analysts=request.selected_analysts(), config=config)
+    graph = TradingAgentsGraph(selected_analysts=request.graph_analysts(), config=config)
     ticker, date, asset_type = request.ticker, request.trade_date, request.asset_type()
     differ = StateDiffer()
     final_state: dict[str, Any] = {}
 
     with run_config(graph.config):
         init_state = graph.create_run_state(ticker, date, asset_type, portfolio)
+        # #171: a reused report is in the state from the start - the researchers read it as if its
+        # analyst had just filed it; the chat already shows it (RunManager), so the differ skips it
+        for analyst, report in (request.reused or {}).items():
+            key = REUSABLE[analyst][1]
+            init_state[key] = report
+            differ.seed(key, report)
         args = graph.propagator.get_graph_args()
         thread_id = graph.begin_checkpoint(ticker, date, asset_type, portfolio)
         if thread_id is not None:
@@ -163,7 +178,7 @@ def make_fake_runner(delay: float) -> Runner:
             "news": ("news_report", f"## {t} 뉴스\n\n- 신규 데이터센터 수주 보도\n- 거시: 금리 동결 기대 유지"),
             "fundamentals": ("fundamentals_report", f"## {t} 재무\n\n| 항목 | 값 |\n|---|---|\n| 매출 성장(YoY) | +18% |\n| 영업이익률 | 31% |\n| PER | 34 |"),
         }
-        for analyst in request.selected_analysts():
+        for analyst in request.graph_analysts():
             key, text = reports[analyst]
             steps.append(([_FakeToolCall(f"{analyst}-tool", _TOOLS[analyst], {"symbol": t})], None))
             steps.append(([], {key: text}))
@@ -282,8 +297,11 @@ class RunManager:
                  positioning: Callable[[str], Awaitable[str | None]] | None = None,
                  calendar: Callable[[], str | None] | None = None,
                  credit: Callable[[], str | None] | None = None,
-                 risk: Callable[[str, str | None], dict | None] | None = None) -> None:
+                 risk: Callable[[str, str | None], dict | None] | None = None,
+                 reuse_minutes: float = 0) -> None:
         self.levels = levels
+        # #171: news and fundamentals reports this fresh are taken over from an earlier run (0 = off)
+        self.reuse_minutes = reuse_minutes
         # #146: the market-wide selling score (desk.risk_regime.Cache.current: ticker, trade date) that
         # gates the dip-catch ladder and the short - None leaves the playbooks as built
         self.risk = risk
@@ -602,6 +620,31 @@ class RunManager:
         self.store.append_event(run_id, event)
         self.hub.notify(run_id)
 
+    def _reusable(self, request: RunRequest, analysts: list[str]) -> list[dict]:
+        """#171: reports to take over - per reusable analyst the newest one filed within
+        ``reuse_minutes`` by a finished run of the same ticker, day, horizon and language, that was
+        itself written fresh. At least one analyst always runs. A failed lookup reuses nothing."""
+        wanted = [a for a in analysts if a in REUSABLE]
+        if self.reuse_minutes <= 0 or not wanted or len(wanted) == len(analysts):
+            return []
+        since = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=self.reuse_minutes)
+        try:
+            rows = self.store.recent_reports(request.ticker, request.trade_date,
+                                             [REUSABLE[a][0] for a in wanted], since)
+        except Exception:   # a run without reuse is just slower
+            log.exception("report reuse lookup failed for %s", request.ticker)
+            return []
+        by_agent = {agent: analyst for analyst, (agent, _key) in REUSABLE.items()}
+        picked: dict[str, dict] = {}
+        for row in rows:                                   # newest first
+            options, analyst = row["options"] or {}, by_agent[row["agent"]]
+            if (analyst in picked or not (row["content"] or "").strip() or (row["data"] or {}).get("reused")
+                    or options.get("horizon") != request.horizon
+                    or options.get("output_language") != request.output_language):
+                continue
+            picked[analyst] = row
+        return [{"analyst": analyst, **row} for analyst, row in picked.items()]
+
     async def _execute(self, run_id: str, request: RunRequest) -> None:
         async with self._slots:
             self.store.mark_running(run_id)
@@ -612,6 +655,15 @@ class RunManager:
             subject = replace(request, ticker=base) if base else request
             self._publish(run_id, {"type": "status", "agent": "system", "content": "running",
                                    "data": {"analysts": subject.selected_analysts()}})
+            # #171: the reused reports go into the chat now, marked, and into the graph's first state
+            reused = self._reusable(request, subject.selected_analysts())
+            for row in reused:
+                minutes = max(0, int((dt.datetime.now(dt.UTC) - row["ts"]).total_seconds() // 60))
+                self._publish(run_id, {"type": "message", "agent": row["agent"], "content": row["content"],
+                                       "data": {"reused": {"run_id": row["run_id"], "filed_at": row["ts"].isoformat(),
+                                                           "minutes": minutes}}})
+            if reused:
+                subject = replace(subject, reused={row["analyst"]: row["content"] for row in reused})
             loop = asyncio.get_running_loop()
             watch = timing.Stopwatch()       # #171: where the minutes go
 
@@ -736,6 +788,8 @@ class RunManager:
                     closing.cancel()   # a no-op once it is done
                 watch.mark("consensus")         # the summary, with the playbooks and trade map beside it
                 plan["timing"] = watch.result()
+                if reused:
+                    plan["timing"]["reused"] = sorted(row["analyst"] for row in reused)
                 if late:
                     plan["timing"]["late_notes"] = late
                 log.info("run %s %s timing: %s", run_id, request.ticker, watch.line())

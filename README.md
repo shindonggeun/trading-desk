@@ -94,6 +94,19 @@ cd backend && tradingagents login chatgpt     # 브라우저로 로그인 → ~/
 
 서버(Docker)에서의 로그인은 [docs/deploy.md](docs/deploy.md) 5절.
 
+## 백테스트 리포트 스냅샷
+
+백테스트 화면(`GET /api/backtest/reports`, #185)은 저장소에 커밋한 리포트를 그대로 보여 준다.
+서버는 백테스트를 돌리지 않는다(야후에서 몇 년 치 봉을 받느라 수 분이 걸린다). 규칙을 바꾼 뒤 로컬에서 다시 만들어 커밋한다.
+
+```bash
+cd backend
+PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli backtest --basket --horizon swing --from 2019-06-01 --out desk/data/backtest/swing.json
+PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli backtest --basket --horizon intraday --out desk/data/backtest/intraday.json
+```
+
+파일 이름이 곧 보기 id 다(`desk/horizons.py`). 이미지에는 package-data 로 들어간다.
+
 ## 배포 (홈랩)
 
 `https://trading.8llow8llowme.com` — backend-server(`192.168.0.9`)에 컨테이너 둘(웹 · 백엔드), DB 는 홈랩 PostgreSQL.

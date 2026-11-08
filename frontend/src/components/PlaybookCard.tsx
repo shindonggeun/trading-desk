@@ -102,14 +102,13 @@ const LOST = new Set(["stop", "time_stop"]);
 const ENDED = new Set(["t2", "t1_be", "flat", "unfilled"]);
 
 /**
- * 같은 `trigger` 키에 두 가지가 온다: 분석의 플레이북이 정한 진입가(이탈 매도 등, text 있음)와
- * 실시간 플레이북이 하위 봉으로 읽은 트리거(#149, state 있음). 실시간 응답은 앞의 것을 덮으므로
- * 카드는 앞의 것을 분석 당시 값에서, 뒤의 것을 실시간 값에서 읽는다.
+ * `trigger` 는 플레이북이 정한 진입가(이탈 매도 등), `lower_trigger` 는 실시간 플레이북이 하위 봉으로 읽은
+ * 트리거(#149)다(#193 에서 키를 나눴다). 나누기 전 서버가 `trigger` 에 하위 봉 트리거를 실어 보내도
+ * 계획 트리거로 잘못 읽지 않게 text 가 있을 때만 계획 트리거로 본다.
  */
 const planTrigger = (side?: PlaybookSide | null): PlanTrigger | null =>
   side?.trigger && "text" in side.trigger ? side.trigger : null;
-const lowerTrigger = (side?: PlaybookSide | null): LowerTrigger | null =>
-  side?.trigger && "state" in side.trigger ? side.trigger : null;
+const lowerTrigger = (side?: LivePlaybookSide | null): LowerTrigger | null => side?.lower_trigger ?? null;
 
 const has = (side: PlaybookSide) => side.setup !== "none" && (!!side.zone || side.entries.length > 0 || !!planTrigger(side));
 
@@ -388,10 +387,7 @@ export default function PlaybookCard({ plan, symbol, outcome, runId, horizon }: 
   if (!saved) return null;
   // levels_from "fresh" 는 분석의 레벨이 아니라 새로 계산한 것 — 이 카드(분석의 플레이북)에는 쓰지 않는다
   const cur: LivePlaybooks | null = fresh && fresh.levels_from === "run" ? fresh : null;
-  // 실시간 응답의 trigger 는 #149 하위 봉 트리거 — 분석이 정한 트리거(이탈 매도 등)는 분석 당시 값에서 되살린다
-  const keepPlanTrigger = (dir: "long" | "short"): PlaybookSide =>
-    cur ? { ...cur[dir], trigger: planTrigger(saved[dir]) } : saved[dir];
-  const pb: Playbooks = cur ? { ...cur, long: keepPlanTrigger("long"), short: keepPlanTrigger("short") } : saved;
+  const pb: Playbooks = cur ?? saved;
   const lower = { long: lowerTrigger(cur?.long), short: lowerTrigger(cur?.short) };
   const interval = cur?.frame.trigger_interval;
   // 투매 점수는 분석 때 값(분석의 플레이북을 거른 것) — 실시간 응답은 분석이 있으면 다시 매기지 않는다

@@ -84,14 +84,15 @@ async def _compute(prices, ticker: str, h: horizons.Horizon, run_pb: dict | None
 
 
 async def _triggers(prices, ticker: str, out: dict, frame: horizons.Horizon, live: dict | None) -> None:
-    """The lower-bar entry trigger (#149) on each side near or in its zone; ``trigger`` None
-    otherwise, or when the lower bars cannot be had (the page keeps the zone state)."""
+    """The lower-bar entry trigger (#149) on each side near or in its zone, as ``lower_trigger``;
+    None otherwise, or when the lower bars cannot be had (the page keeps the zone state). Its own
+    key: ``trigger`` is the playbook's planned entry (a breakdown short's) and stays as it is (#193)."""
     lower = trigger.LOWER.get(frame.primary)
     wanted = [s for s in ("long", "short")
               if (out.get(s) or {}).get("state") in ("near", "in_zone", "confirmed")]
     for s in ("long", "short"):
         if out.get(s) is not None:
-            out[s]["trigger"] = None
+            out[s]["lower_trigger"] = None
     atr = out["frame"].get("atr")
     if not lower or not wanted or not atr:
         return
@@ -104,7 +105,7 @@ async def _triggers(prices, ticker: str, out: dict, frame: horizons.Horizon, liv
     for s in wanted:
         # in the zone now: it was touched, perhaps before the window the lower bars cover
         touched = out[s]["state"] in ("in_zone", "confirmed")
-        out[s]["trigger"] = trigger.live(out[s], bars, s == "long", atr, price, touched=touched)
+        out[s]["lower_trigger"] = trigger.live(out[s], bars, s == "long", atr, price, touched=touched)
 
 
 async def current(prices, ticker: str, horizon: str | None = None, run_id: str | None = None,

@@ -697,7 +697,7 @@ export type Estimate =
       ticker: string;
       supported: true;
       estimate: number;
-      /** 기준 종가 이후 계약 가격 변화, % */
+      /** 정규장 종가(last_close) 대비 추정가 등락, % */
       change_pct: number;
       last_close: number;
       last_close_date: string;
@@ -705,6 +705,12 @@ export type Estimate =
       contract: string;
       market_state: "open" | "closed";
       fetched_at: string;
+      /** #204 계약 움직임을 얹은 기준 — 정규장 종가, 또는 한국 종목의 NXT 애프터마켓 마지막 체결 */
+      anchor_source?: "close" | "nxt";
+      anchor_price?: number | null;
+      anchor_at?: string | null;
+      /** 기준 시각 이후 계약 가격 변화, % */
+      contract_move_pct?: number | null;
     };
 
 /** #134 즐겨찾기 한 줄(GET /api/favorites) — position 0 이 맨 앞 */

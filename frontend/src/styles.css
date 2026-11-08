@@ -1198,3 +1198,7 @@ h1 .fav-star { font-size: var(--fs-xl); }
 .bt-gate h3 { margin: 0 0 8px; }
 .bt-gate p { margin: 6px 0 0; }
 .bt-notes { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+
+/* #150 데스크 실적(#147 보정) */
+.pb-cal-thin { color: var(--muted); padding: 0 6px; border-radius: var(--radius-s, 6px); background: var(--surface-2); }
+.pb-cal-neg { display: block; color: var(--warn); }

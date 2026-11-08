@@ -32,6 +32,7 @@ def _crash(bottom_days: int = 0) -> tuple[list[dict], list[dict]]:
     rise = [105 + 0.1 * i for i in range(50)]                      # to 110
     fall = [110 * (0.97 ** k) for k in range(1, 26)]               # ~110 -> ~51
     base = [fall[-1] * (1 + 0.003 * ((k % 3) - 1)) for k in range(bottom_days)]
+    base += [base[-1] * 1.06] if base else []                    # the new low taken back
     closes = calm + rise + fall + base
     vols = [1_000_000.0] * len(closes)
     vols[len(calm) + len(rise) + 22] = 3_500_000.0                 # the capitulation day
@@ -101,3 +102,29 @@ def test_a_conviction_trade_never_loses_more_than_its_account_budget():
     assert loss_pct <= vs.ACCOUNT_RISK_PCT["conviction"] + 1e-9
     assert vs.position_pct(100, 99.99, 1.0) == vs.MAX_POSITION_PCT     # a tight stop is capped by the position
     assert vs.position_pct(100, 101, 1.0) == 0.0
+
+
+def test_apply_takes_the_long_slot_on_the_swing_frame_only(monkeypatch):
+    days, weeks = _crash(bottom_days=3)
+    pb = {"regime": {"id": "crash"}, "long": {"setup": "dip_catch", "direction": "against"}, "short": {"setup": "none"}}
+    monkeypatch.setattr(vs, "ENABLED", True)
+    got = vs.apply(pb, days[-200:], weeks[-156:], "swing", risk={"phase": "selling", "score": 70}, vix=33,
+                   calibrate=False)
+    assert got["long"]["setup"] == "value_swing" and got["long"]["replaced"] == "dip_catch"
+    assert got["long"]["direction"] == "against" and got["short"] == pb["short"]
+    assert pb["long"]["setup"] == "dip_catch"                       # the input is not changed
+    assert not got["long"]["conviction"]["active"]                  # no record (the backtest path)
+    assert vs.apply(pb, days[-200:], weeks[-156:], "intraday", vix=33) is pb
+    monkeypatch.setattr(vs, "ENABLED", False)
+    assert vs.apply(pb, days[-200:], weeks[-156:], "swing", vix=33) is pb
+
+
+def test_the_note_carries_the_oversold_swing_line():
+    from desk import playbook
+
+    days, weeks = _crash(bottom_days=3)
+    side = vs.plan(vs.evidence(days[-200:], weeks[-156:], risk={"phase": "selling", "score": 70}, vix=33))
+    pb = {"regime": {"id": "crash", "features": {}}, "frame": {}, "long": side,
+          "short": {"setup": "none", "reason": "n/a"}}
+    note = playbook.prompt_note(pb)
+    assert "LONG oversold swing buy (2-8 weeks)" in note and "Oversold swing buy (2-8 weeks): evidence" in note

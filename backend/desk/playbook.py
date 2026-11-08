@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from itertools import pairwise
 from statistics import median
 
-from . import calibration, direction, events_calendar, horizons
+from . import calibration, direction, events_calendar, horizons, value_swing
 from .indicators import rsi
 
 VERSION = 1
@@ -847,7 +847,8 @@ def refresh(playbooks: dict | None, live: dict | None) -> dict | None:
 # --- the agents -------------------------------------------------------------------------------
 
 _SETUP_EN = {"dip_catch": "dip-catch", "range_low": "range-low buy", "pullback": "pullback buy",
-             "fade": "fade the failed bounce", "breakdown": "breakdown retest", "none": "no setup"}
+             "fade": "fade the failed bounce", "breakdown": "breakdown retest", "none": "no setup",
+             "value_swing": "oversold swing buy (2-8 weeks)"}
 
 
 def _fmt(p: float | None) -> str:
@@ -907,6 +908,8 @@ def prompt_note(pb: dict | None) -> str | None:
             + f", time stop {s['time_stop']['bars']} x {s['time_stop']['interval']} bars, size {s['size_hint']}"
             + (", flat before the close" if s.get("flat_by_close") else "") + f". Conditions now: {met or 'n/a'}."
             + (f" {bit}" if (bit := calibration.prompt_bit(s.get("calibration"))) else ""))
+        if (vs_line := value_swing.prompt_line(s)):
+            lines.append(vs_line)                       # #167: the evidence and the risk budget
     if any((pb.get(s) or {}).get("calibration") for s in ("long", "short")):
         lines.append(calibration.PROMPT_RULE)
     note = "\n".join(lines)

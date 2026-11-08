@@ -187,7 +187,7 @@ export type OutcomeStatus =
   | "open" | "waiting" | "error";
 
 export type RegimeId = "crash" | "downtrend" | "range" | "uptrend" | "unknown";
-export type PlaybookSetup = "dip_catch" | "range_low" | "pullback" | "fade" | "breakdown" | "none";
+export type PlaybookSetup = "dip_catch" | "range_low" | "pullback" | "fade" | "breakdown" | "value_swing" | "none";
 
 /** backend desk/playbook.py (#116) — plan.playbooks */
 export interface Playbooks {
@@ -282,10 +282,16 @@ export interface PlaybookSide {
   exp_r?: number | null;
   n?: number;
   calibration?: PlaybookCalibration | null;
+  /** #167 과매도 스윙(value_swing) 만: 승부 타점 · 위험 예산 · 근거 묶음 · 바꿔 낸 원래 셋업 */
+  conviction?: ValueSwingConviction;
+  risk_budget?: { kind: "normal" | "conviction"; account_pct: number; position_pct: number };
+  evidence?: Record<string, { met: boolean | null; checks: { id: string; met: boolean | null; value: number | string | boolean | null }[] }>;
+  replaced?: PlaybookSetup | null;
   avg_entry: number | null;
   stop: number | null;
   risk: number | null;
-  targets: { role: "t1" | "t2"; price: number; basis: string; source: "desk" | "model" | "atr"; rr: number | null; action: "take_half" | "take_rest"; then_stop?: number }[];
+  /** t3: #167 과매도 스윙만 — T2 뒤 trail_atr 배 ATR 추적 손절 */
+  targets: { role: "t1" | "t2" | "t3"; price: number; basis: string; source: "desk" | "model" | "atr"; rr: number | null; action: "take_half" | "take_rest" | "trail"; then_stop?: number; trail_atr?: number }[];
   time_stop: { bars: number; interval: string; required: boolean; rule: string } | null;
   conditions: { id: string; met: boolean | null; how: "computed" | "watch"; value?: number | string | boolean | null }[];
   score: number;
@@ -871,3 +877,14 @@ export interface PlaybookCalibration {
   /** 표본이 충분한데 기대 R 90% 상한까지 음수 */
   negative: boolean;
 }
+
+/** #167 desk/value_swing.conviction — 0~100, 묶음 4개 이상 + 데스크 실적 양수면 승부(active) */
+export interface ValueSwingConviction {
+  score: number;
+  active: boolean;
+  /** 묶음별 충족 — oversold · depth · base · fear · flows · record(데스크 실적) */
+  checklist: { id: string; met: boolean | null }[];
+  /** 승부를 풀 조건 */
+  release: string[];
+}
+

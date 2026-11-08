@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from . import horizons, macro_news, playbook, risk_regime, timing, trade_map, value_swing, verdict
+from . import horizons, macro_news, playbook, risk_regime, summary, timing, trade_map, value_swing, verdict
 from . import underlying as under
 from .broker.base import Broker
 from .consensus import CONSENSUS_TIMEOUT_SEC, ConsensusContext, llm_summariser
@@ -876,6 +876,11 @@ class RunManager:
                             plan["direction"] = plan_pb.get("direction")
                     except Exception as exc:  # noqa: BLE001 - the plan stands without its playbooks
                         log.warning("no playbooks for %s: %s", request.ticker, exc)
+                    # #221: the one card - verdict · split buy · the single price · stop · targets
+                    try:
+                        plan["summary"] = summary.build(plan, plan.get("playbooks"))
+                    except Exception as exc:  # noqa: BLE001 - the plan stands without its card
+                        log.warning("no summary for %s: %s", request.ticker, exc)
                     # #106: entry → targets → guards → stop from the plan, the zones and the volume profile
                     try:
                         plan["trade_map"] = trade_map.build(plan, sr)

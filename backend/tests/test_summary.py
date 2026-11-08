@@ -87,3 +87,20 @@ def test_the_single_arm_buys_it_all_at_the_single_price():
     assert one["entries"] == [{"step": 1, "price": price, "share": 1.0, "kind": "limit"}]
     assert one["avg_entry"] == price and one["stop"] == side["stop"] and one["targets"] == side["targets"]
     assert summary.as_single(_long(targets=[{"role": "t1", "price": 101.0}]), True, 2.0) is None
+
+
+def test_a_hold_plan_reads_watch_and_shows_the_better_side_as_if_you_go_in():
+    """#231: the SOXL Hold run read "구역까지 기다렸다가 산다" under a 관망 header."""
+    card = summary.build({"bias": "flat", "rating": "HOLD"}, _pb())
+    assert card["verdict"] == "watch" and card["text"].startswith("관망") and "롱" in card["text"]
+    assert card["side"] == "long" and card["ladder"] and "계획은 관망" in card["why"]
+    assert summary.build(None, _pb())["verdict"] == "wait_for_zone"     # the live page has no plan to follow
+
+
+def test_a_ladder_whose_t1_pays_under_1r_is_not_a_buy():
+    """#231: T1 46.33 just above the 45.97 entry, stop -43% - rr 0.06 read as a buy."""
+    poor = _long(targets=[{"role": "t1", "price": 99.3, "rr": 0.06}, {"role": "t2", "price": 105.0, "rr": 1.2}])
+    for plan in ({"bias": "long"}, {"bias": "flat"}, None):
+        card = summary.build(plan, _pb(long=poor))
+        assert card["verdict"] == "stand_aside" and "손익비" in card["text"] and "0.06" in card["why"]
+        assert card["side"] == "long" and card["stop"] == 94.0        # the numbers stay, for reference

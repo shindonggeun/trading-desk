@@ -209,3 +209,88 @@ def test_refused_issues_back_off():
     assert "HTTP 403" in ask(540) and issued() == 2          # 601 s after the first ask
     assert "waiting" in ask(900) and issued() == 2           # refused twice: thirty minutes
     assert "HTTP 403" in ask(901) and issued() == 3
+
+
+# --- #160: the note for the agents of a Korean run -------------------------------------------------
+
+
+def test_the_note_reads_price_basis_investors_and_a_split():
+    view = asyncio.run(_flow(_rest([]), _Spot()).get())
+    note = ff.prompt_note(view)
+    assert note.startswith("KOSPI200 futures, front month 101X12") and "open interest 285,000" in note
+    assert "foreign -4,100" in note and "foreigners BUY stocks but SELL futures" in note and "+320 bn KRW" in note
+    assert "session closed" not in note                           # 11:00 KST: the session is open
+    # investors that did not read as futures are not shown; no quote = no note
+    assert "Net futures contracts" not in ff.prompt_note({**view, "investors": None, "split": None})
+    assert ff.prompt_note({**view, "price": {**view["price"], "price": None}}) is None
+    assert ff.prompt_note(asyncio.run(_flow(None).get())) is None and ff.prompt_note(None) is None
+    closed = ff.prompt_note({**view, "market_open": False})
+    assert "last session" in closed and len(note) < 700
+
+
+class _StubFutures:
+    def __init__(self, view, delay=0.0):
+        self.view, self.delay, self.calls = view, delay, 0
+
+    async def get(self):
+        self.calls += 1
+        await asyncio.sleep(self.delay)
+        return self.view
+
+    async def aclose(self):
+        pass
+
+
+def _korean_run(db_url, monkeypatch, futures, ticker="005930.KS", first=True):
+    from datetime import date as d
+    from datetime import timedelta as td
+
+    from fastapi.testclient import TestClient
+
+    from desk import api
+    from desk.auth import Auth
+    from desk.db import make_engine
+    from desk.runner import make_fake_runner
+    from desk.settings import Settings
+    from tests.test_api import OWNER, PASSWORD, _wait_done
+
+    monkeypatch.setattr(api, "collect_related", lambda ticker, day: None)
+    seen = []
+    fake = make_fake_runner(0)
+
+    def graph(request, emit, portfolio):
+        seen.append(portfolio.render(request.ticker) if portfolio else "")
+        return fake(request, emit, portfolio)
+
+    client = TestClient(api.create_app(Settings(database_url=db_url, fake_delay=0), runner=graph, futures=futures),
+                        base_url="https://testserver")
+    if first:
+        engine = make_engine(db_url)
+        Auth(engine, td(hours=1), td(hours=1)).create_user(OWNER, PASSWORD)
+        engine.dispose()
+    with client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        run = client.post("/api/runs", json={"ticker": ticker, "trade_date": d.today().isoformat()}).json()
+        done = _wait_done(client, run["id"])
+    return done, seen[0]
+
+
+def test_a_korean_same_day_run_hands_the_futures_note_to_the_agents(db_url, monkeypatch):
+    view = asyncio.run(_flow(_rest([]), _Spot()).get())
+    stub = _StubFutures(view)
+    done, note = _korean_run(db_url, monkeypatch, stub)
+    assert done["status"] == "done" and "KOSPI200 futures, front month" in note and stub.calls == 1
+    us = _StubFutures(view)
+    done, note = _korean_run(db_url, monkeypatch, us, ticker="NVDA", first=False)
+    assert done["status"] == "done" and "KOSPI200" not in note and us.calls == 0     # a US ticker never asks
+
+
+def test_a_slow_kis_does_not_hold_the_run(db_url, monkeypatch):
+    from desk import runner
+
+    monkeypatch.setattr(runner, "NOTES_WAIT_SEC", {})
+    monkeypatch.setattr(runner, "NOTES_WAIT_DEFAULT", 0.05)
+    view = asyncio.run(_flow(_rest([]), _Spot()).get())
+    done, note = _korean_run(db_url, monkeypatch, _StubFutures(view, delay=0.5))
+    assert done["status"] == "done" and "KOSPI200" not in note
+    assert "futures" in done["plan"]["timing"]["late_notes"]

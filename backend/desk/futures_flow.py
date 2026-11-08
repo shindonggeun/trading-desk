@@ -406,3 +406,39 @@ def foreign_split(spot: dict | None, investors: dict | None, today: date) -> dic
     else:
         kind = None
     return {**out, "split": kind is not None, "kind": kind}
+
+
+_SPLIT_EN = {"spot_buy_futures_sell": "foreigners BUY stocks but SELL futures",
+             "spot_sell_futures_buy": "foreigners SELL stocks but BUY futures"}
+
+
+def prompt_note(view: dict | None) -> str | None:
+    """#160: the front month for the agents of a Korean run, in a few lines - price, open interest,
+    basis, the net contracts by investor class (only when the answer read as futures) and a foreign
+    spot/futures split. None without a quote (no keys, KIS down, nothing loaded)."""
+    p = (view or {}).get("price") or {}
+    if not view or not view.get("supported") or p.get("price") is None:
+        return None
+
+    def num(v, fmt):
+        return format(v, fmt) if isinstance(v, int | float) else "n/a"
+
+    head = (f"KOSPI200 futures, front month {p.get('code')} (expires {p.get('expiry')}, {p.get('days_left')} days left): "
+            f"{num(p['price'], '.2f')} ({num(p.get('change_pct'), '+.2f')}%), open interest {num(p.get('open_interest'), ',.0f')} "
+            f"({num(p.get('open_interest_change'), '+,.0f')}), basis {num(p.get('market_basis'), '+.2f')} "
+            f"vs theoretical {num(p.get('theory_basis'), '+.2f')}" + (f" ({p['structure']})" if p.get("structure") else "") + ".")
+    if not view.get("market_open"):
+        head += " Derivatives session closed: the last session's figures."
+    lines = [head]
+    inv = view.get("investors") or {}
+    if inv:
+        parts = [f"{name} {num((inv.get(key) or {}).get('net_contracts'), '+,.0f')}"
+                 for key, name in (("foreign", "foreign"), ("institution", "institutions"), ("individual", "individuals"))
+                 if key in inv]
+        lines.append("Net futures contracts today: " + ", ".join(parts) + ".")
+    split = view.get("split") or {}
+    if split.get("split") and split.get("kind") in _SPLIT_EN:
+        lines.append(f"Split: {_SPLIT_EN[split['kind']]} today (spot {split['spot_net'] / 1e9:+,.0f} bn KRW, "
+                     f"futures {split['futures_net_contracts']:+,.0f} contracts) - often a hedge or an early turn.")
+    lines.append("Context for the index direction only (KIS); weigh it with the spot flow, not as a signal by itself.")
+    return "\n".join(lines)

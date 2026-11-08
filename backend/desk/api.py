@@ -47,6 +47,7 @@ from .favorites import Conflict, Favorites, TooMany
 from .futures_flow import FuturesFlow
 from .futures_flow import make as make_kis_rest
 from .futures_flow import off_reason as futures_off
+from .futures_flow import prompt_note as futures_note
 from .indicators import INDICATORS
 from .leverage_analyst import fake_analyst, llm_analyst
 from .market_flow import MarketFlow
@@ -238,6 +239,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # KOSPI200 futures from KIS REST (#160); without the KIS keys it answers supported: false
     futures = futures or FuturesFlow(make_kis_rest(settings) if not settings.fake_runs else None, flow,
                                      off=futures_off(settings))
+
+    async def _futures_note() -> str | None:
+        return futures_note(await futures.get())
+
     live_streams: dict[str, int] = {}   # open /api/live/stream per session (token hash)
     calendar = live.Calendar(broker)     # market holidays for the live stream, cached per market
     if runner is None:
@@ -265,6 +270,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        filings=None if settings.fake_runs else filings.note_for,
                                        # #154: short volume + options of a US ticker (cached ~15 min)
                                        positioning=None if settings.fake_runs else positioning.note_for,
+                                       # #160: KOSPI200 futures from the cached KIS view (Korean same-day runs)
+                                       futures=None if settings.fake_runs else _futures_note,
                                        risk=risk,
                                        # #171: recent news/fundamentals reports taken over (0 = off)
                                        reuse_minutes=settings.reuse_reports_min,

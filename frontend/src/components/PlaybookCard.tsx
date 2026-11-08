@@ -64,6 +64,7 @@ const CONDITION: Record<string, string> = {
   at_resistance: "저항 도달", rejection_bar: "윗꼬리 · 음봉", lower_high: "고점 낮춤", below_vwap: "VWAP 아래",
   below_ma20: "20선 아래", volume_on_break: "이탈 거래량", no_new_entry_late: "장 막판 신규 금지",
   event_clear: "경제 일정 통과",
+  vs_oversold: "과매도", vs_depth: "낙폭", vs_base: "바닥 구조", vs_fear: "시장 공포", vs_flows: "수급 · 뉴스",
 };
 const SOURCE: Record<string, string> = { sr: "지지 · 저항", vp: "매물대", fib: "피보나치", trend: "추세선", ma: "이평선", vwap: "VWAP", avwap: "앵커드 VWAP", gap: "갭 메움", atr: "ATR" };
 const RESULT: Record<string, string> = {
@@ -254,6 +255,74 @@ function CalibrationRow({ cal }: { cal: PlaybookCalibration }) {
   );
 }
 
+/** #167 과매도 스윙 근거 묶음 · 세부 지표 이름 */
+const VS_GROUP: Record<string, string> = {
+  oversold: "과매도", depth: "낙폭", base: "바닥 구조", fear: "시장 공포", flows: "수급 · 뉴스", record: "데스크 실적 양수",
+};
+const VS_CHECK: Record<string, string> = {
+  rsi_daily: "일봉 RSI", rsi_weekly: "주봉 RSI", rsi_divergence: "RSI 상승 다이버전스", bb_reentry: "볼린저 하단 복귀",
+  below_ma20: "20일선 아래 이격", down_streak: "연속 하락", drawdown_pctl: "52주 낙폭 분위", below_ma200: "200일선 아래 이격",
+  weekly_support: "주봉 지지 근처", old_crash_low: "과거 폭락 저점 근처", capitulation_then_dry: "투매 거래량 뒤 마름",
+  new_low_taken_back: "신저가 뒤 되찾기", selling_score: "시장 투매 점수", vix: "VIX 공포", flows_news: "수급 · 뉴스(아직 계산 안 함)",
+};
+const mark = (met: boolean | null | undefined) => (met == null ? "–" : met ? "●" : "○");
+const cls = (met: boolean | null | undefined) => (met == null ? "pb-watch" : met ? "pb-met" : "pb-unmet");
+const shown = (v: unknown) => (typeof v === "number" ? String(Number(v.toFixed(2))) : typeof v === "string" ? v : null);
+
+/** 과매도 스윙(#167): 승부인지, 왜인지(근거 묶음 · 세부 지표), 한 번에 잃을 수 있는 계좌 비율과 맞춘 비중, 승부 해제 조건 */
+function ValueSwingBlock({ side }: { side: PlaybookSide }) {
+  const conv = side.conviction;
+  const budget = side.risk_budget;
+  return (
+    <div className="pb-vs">
+      {conv && (
+        <>
+          <p className="small pb-vs-head">
+            <span className={`pb-vs-badge ${conv.active ? "pb-vs-on" : ""}`}>{conv.active ? "승부 타점" : "일반 과매도 스윙"}</span>{" "}
+            확신 <strong className="num">{conv.score}</strong><span className="muted">/100</span>
+            {!conv.active && <span className="muted"> — 승부는 묶음 4개 이상 + 데스크 실적 양수일 때</span>}
+          </p>
+          <ul className="pb-conditions" aria-label="과매도 스윙 근거 묶음">
+            {conv.checklist.map((c) => (
+              <li key={c.id} className={cls(c.met)}>
+                <span aria-hidden>{mark(c.met)}</span> {VS_GROUP[c.id] ?? c.id}
+                <span className="sr-only">{c.met == null ? " — 판단 불가" : c.met ? " — 충족" : " — 미충족"}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {budget && (
+        <p className="small pb-vs-budget">
+          위험 예산: 한 번에 계좌의 <strong className="num">{budget.account_pct}%</strong>까지 잃게 —{" "}
+          권장 비중 계좌의 <strong className="num">{budget.position_pct}%</strong>
+          <span className="muted"> (평균 진입 → 손절 거리로 계산{budget.kind === "conviction" ? ", 승부라 예산 2배" : ""})</span>
+        </p>
+      )}
+      {side.replaced && <p className="muted small">원래 셋업 {SETUP[side.replaced] ?? side.replaced} 대신 과매도 스윙으로 냈습니다.</p>}
+      {(side.evidence || conv?.release.length) && (
+        <details className="pb-misses small">
+          <summary className="muted">근거 세부 · 승부 해제 조건</summary>
+          {side.evidence && (
+            <ul>
+              {Object.entries(side.evidence).map(([g, ev]) => (
+                <li key={g}>
+                  <span className={cls(ev.met)}>{mark(ev.met)} {VS_GROUP[g] ?? g}</span>
+                  <span className="muted">
+                    {" — "}
+                    {ev.checks.map((c) => `${mark(c.met)} ${VS_CHECK[c.id] ?? c.id}${shown(c.value) ? ` ${shown(c.value)}` : ""}`).join(" · ")}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {conv && conv.release.length > 0 && <p className="pb-vs-release">해제: {conv.release.join(" · ")}</p>}
+        </details>
+      )}
+    </div>
+  );
+}
+
 function Side({ side, dir, state, result, live, lower, interval, cal }: {
   side: PlaybookSide; dir: "long" | "short"; state: PlaybookState; result?: PlaybookOutcome;
   live?: { since: string | null; stale: boolean; note: string | null };
@@ -279,10 +348,13 @@ function Side({ side, dir, state, result, live, lower, interval, cal }: {
   const gateHeld = side.gate?.held ?? [];
   const t1 = side.targets.find((t) => t.role === "t1");
   const t2 = side.targets.find((t) => t.role === "t2");
+  const t3 = side.targets.find((t) => t.role === "t3");
+  // 과매도 스윙의 근거 묶음(vs_*)은 위 블록의 체크리스트가 보여 준다 — 같은 것을 두 번 그리지 않는다
+  const conditions = side.conviction ? side.conditions.filter((c) => !c.id.startsWith("vs_")) : side.conditions;
   return (
     <div className={`pb-side pb-${dir}`}>
       <div className="pb-side-head">
-        <strong>{name} · {SETUP[side.setup] ?? side.setup}</strong>
+        <strong>{name} · {SETUP[side.setup] ?? side.setup}{side.conviction?.active && <span className="pb-vs-badge pb-vs-on pb-vs-inline">승부</span>}</strong>
         <span className={`pb-state pb-state-${state}`}>{STATE[state]}</span>
       </div>
       {live && (live.since || live.stale || live.note) && (
@@ -294,6 +366,7 @@ function Side({ side, dir, state, result, live, lower, interval, cal }: {
       )}
       {side.reason && <p className="small pb-reason">{side.reason}</p>}
       {side.gate && <p className="small pb-gate">{side.gate.text}</p>}
+      {side.setup === "value_swing" && <ValueSwingBlock side={side} />}
       <dl className="pb-grid">
         {side.zone && (
           <div className="pb-row">
@@ -329,12 +402,12 @@ function Side({ side, dir, state, result, live, lower, interval, cal }: {
         {side.stop != null && (
           <div className="pb-row"><dt>손절</dt><dd><span className="num">{price(side.stop)}</span>{side.avg_entry != null && <span className="muted small"> · 평균 진입 {price(side.avg_entry)}</span>}</dd></div>
         )}
-        {(t1 || t2) && (
+        {(t1 || t2 || t3) && (
           <div className="pb-row">
             <dt>목표</dt>
             <dd className="pb-ladder">
-              {[t1, t2].filter(Boolean).map((t) => (
-                <span key={t!.role}>{t!.role.toUpperCase()} <span className="num">{price(t!.price)}</span>{t!.rr != null && <span className="muted small"> ({t!.rr}R{t!.action === "take_half" ? " · 절반" : ""})</span>}</span>
+              {[t1, t2, t3].filter(Boolean).map((t) => (
+                <span key={t!.role}>{t!.role.toUpperCase()} <span className="num">{price(t!.price)}</span>{(t!.rr != null || t!.action === "trail") && <span className="muted small"> ({t!.rr != null ? `${t!.rr}R` : ""}{t!.action === "take_half" ? " · 절반" : ""}{t!.action === "trail" ? `${t!.rr != null ? " · " : ""}${t!.trail_atr ?? 2} ATR 추적 손절` : ""})</span>}</span>
               ))}
             </dd>
           </div>
@@ -348,9 +421,9 @@ function Side({ side, dir, state, result, live, lower, interval, cal }: {
         </div>
         {cal && <CalibrationRow cal={cal} />}
       </dl>
-      {side.conditions.length > 0 && (
+      {conditions.length > 0 && (
         <ul className="pb-conditions" aria-label={`${name} 확인 신호`}>
-          {side.conditions.map((c) => (
+          {conditions.map((c) => (
             <li key={c.id} className={c.how === "watch" || c.met == null ? "pb-watch" : c.met ? "pb-met" : "pb-unmet"}>
               <span aria-hidden>{c.how === "watch" ? "◌" : c.met == null ? "–" : c.met ? "●" : "○"}</span>{" "}
               {CONDITION[c.id] ?? c.id}

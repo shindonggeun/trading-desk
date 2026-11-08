@@ -1219,3 +1219,11 @@ h1 .fav-star { font-size: var(--fs-xl); }
 .bt-curve-cut-note { margin: 4px 0 0; }
 .bt-curve-sum { margin: 6px 0 0; }
 
+/* #198 과매도 스윙 · 승부 타점(#167) */
+.pb-vs { display: grid; gap: 4px; padding: 6px 8px; border: 1px dashed var(--border); border-radius: var(--radius-s, 6px); }
+.pb-vs p { margin: 0; }
+.pb-vs-badge { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: var(--radius-s, 6px); background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+.pb-vs-on { color: var(--text); box-shadow: inset 0 0 0 1px var(--warn); }
+.pb-vs-inline { margin-left: 6px; vertical-align: 1px; }
+.pb-vs-release { margin: 4px 0 0; }
+

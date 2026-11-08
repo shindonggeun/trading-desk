@@ -489,6 +489,8 @@ export default function PlanCard({ plan, ticker, code, symbol, profile, profileI
                   {" "}
                   {est.change_pct > 0 ? "+" : ""}
                   {est.change_pct.toFixed(2)}% (종가 {price(est.last_close)} · {est.last_close_date})
+                  {est.anchor_source === "nxt" && est.anchor_price != null &&
+                    ` · NXT 애프터 ${price(est.anchor_price)} 기준`}
                 </span>
                 <span
                   className="src"

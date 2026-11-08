@@ -271,7 +271,9 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
                 </span>
                 <Spark bars={t?.bars ?? []} up={up} />
                 {t?.est && (
-                  <span className="small muted" title={`바이낸스 ${t.est.contract} 무기한 선물로 낸 추정가 — 실제 체결가가 아닙니다`}>
+                  <span className="small muted" title={`바이낸스 ${t.est.contract} 무기한 선물로 낸 추정가 — 실제 체결가가 아닙니다` +
+                    (t.est.anchor_source === "nxt" && t.est.anchor_price != null
+                      ? ` · NXT 애프터마켓 마지막 체결 ${price(t.est.anchor_price)} 에서 계약 움직임만 얹음` : "")}>
                     추정가 {price(t.est.estimate)} ({t.est.change_pct > 0 ? "+" : ""}
                     {t.est.change_pct.toFixed(2)}%)
                   </span>

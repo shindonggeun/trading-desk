@@ -29,6 +29,7 @@ from . import (
     horizons,
     live,
     macro_news,
+    oscillator,
     otp,
     outcome,
     playbook_live,
@@ -48,7 +49,7 @@ from .futures_flow import FuturesFlow
 from .futures_flow import make as make_kis_rest
 from .futures_flow import off_reason as futures_off
 from .futures_flow import prompt_note as futures_note
-from .indicators import INDICATORS
+from .indicators import normalize as normalize_indicators
 from .leverage_analyst import fake_analyst, llm_analyst
 from .market_flow import MarketFlow
 from .portfolio import Portfolio
@@ -233,6 +234,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # #146: the market's selling score from the same Yahoo source as the prices (cached ~15 min)
     risk = None if settings.fake_runs else risk_regime.Cache(
         fetcher=lambda symbols: risk_regime.fetch(symbols, candles=prices._yahoo_candles)).current
+    # #203: years of Yahoo bars for the RSI / Stochastic extremes and what followed them
+    # (read when called: a test's price source may have no Yahoo at all)
+    oscillator_fetch = oscillator.yahoo_fetch(lambda *args: prices._yahoo_candles(*args))
     estimator = estimator or BinanceEstimator()
     book = book or Portfolio(broker, prices)
     flow = flow or MarketFlow(broker)
@@ -272,6 +276,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        positioning=None if settings.fake_runs else positioning.note_for,
                                        # #160: KOSPI200 futures from the cached KIS view (Korean same-day runs)
                                        futures=None if settings.fake_runs else _futures_note,
+                                       # #203: overbought / oversold and its record (same-day runs)
+                                       oscillator=None if settings.fake_runs else (
+                                           lambda ticker: oscillator.note_for(oscillator_fetch, ticker)),
                                        risk=risk,
                                        # #171: recent news/fundamentals reports taken over (0 = off)
                                        reuse_minutes=settings.reuse_reports_min,
@@ -831,14 +838,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     @app.get("/api/candles")
     async def candles(ticker: str, interval: str = "1d", count: int = 120, indicators: str = ""):
         """Bars for the chart, oldest first. 1m/1d: Toss then Yahoo; minute bars, 1w, 1M, 1y
-        (and > 200 bars): Yahoo. ``indicators=rsi14`` adds each bar's RSI(14)."""
-        wanted = tuple(part.strip() for part in indicators.split(",") if part.strip())
+        (and > 200 bars): Yahoo. ``indicators=rsi,stoch,bb`` (or rsi14, bb20, bb50) adds each bar's
+        RSI(14), Stochastic (14, 1, 3) and Bollinger Bands (20 / 50, 2σ) - desk.indicators (#203)."""
         try:
             ticker = clean_ticker(ticker)
             if interval not in INTERVALS:
                 raise ValueError(f"interval must be one of {', '.join(INTERVALS)}")
-            if set(wanted) - set(INDICATORS):
-                raise ValueError(f"indicators must be among {', '.join(INDICATORS)}")
+            wanted = normalize_indicators(indicators.split(","))
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         try:
@@ -846,6 +852,23 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except Exception as exc:  # noqa: BLE001 - both sources failed
             log.warning("candles for %s %s failed: %s", ticker, interval, exc)
             raise HTTPException(503, f"no candles for {ticker}") from None
+
+    @app.get("/api/oscillator")
+    async def oscillator_view(ticker: str, interval: str = "1d"):
+        """#203: is the ticker overbought ("hot") or oversold ("cold") on its RSI / Stochastic, and what
+        followed the same reading over the last years (desk.oscillator). A leveraged or inverse
+        product also gets its underlying's reading (``underlying``)."""
+        try:
+            ticker = clean_ticker(ticker)
+            if interval not in oscillator.INTERVALS:
+                raise ValueError(f"interval must be one of {', '.join(oscillator.INTERVALS)}")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        try:
+            return await asyncio.to_thread(oscillator.view, oscillator_fetch, ticker, interval)
+        except Exception as exc:  # noqa: BLE001 - no bars from Yahoo
+            log.warning("oscillator for %s %s failed: %s", ticker, interval, exc)
+            raise HTTPException(503, f"no oscillator for {ticker}") from None
 
     @app.get("/api/events/calendar")
     def economic_calendar(days: int = 14):

@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from itertools import pairwise
 from statistics import median
 
-from . import direction, events_calendar, horizons
+from . import calibration, direction, events_calendar, horizons
 from .indicators import rsi
 
 VERSION = 1
@@ -711,8 +711,9 @@ def _desk_bias(regime: dict, macro: dict | None) -> dict:
 
 def build(sr: dict | None, daily: list[dict], primary: list[dict], h: horizons.Horizon, *,
           live: dict | None = None, vix: float | None = None, macro: dict | None = None,
-          today: dict | None = None, now: str | None = None) -> dict | None:
-    """Both playbooks from the frame's bars. None without levels or an ATR."""
+          today: dict | None = None, now: str | None = None, calibrate: bool = True) -> dict | None:
+    """Both playbooks from the frame's bars. None without levels or an ATR. ``calibrate=False``
+    (the backtest) leaves out the desk's record - a backtest must not be graded by its own results."""
     if not sr or not primary:
         return None
     atr = sr.get("atr")
@@ -772,7 +773,29 @@ def build(sr: dict | None, daily: list[dict], primary: list[dict], h: horizons.H
         hit = events_calendar.CACHE.blackout()
         hold_for_event(out, {**hit.to_dict(), "until": (hit.at + events_calendar.BLACKOUT_AFTER).isoformat()}
                        if hit else None)
+    if out and calibrate:
+        calibrate_sides(out, h)
     return out
+
+
+def calibrate_sides(pb: dict, h: horizons.Horizon, table: calibration.Table | None = None) -> dict:
+    """#147: each side's score as the desk's record - T1 rate, expected R, sample (``p_t1``,
+    ``exp_r``, ``n``, the rest under ``calibration``). A thin sample gives no numbers. A setup
+    negative on enough trades is only marked unless calibration.DISABLE turns it off."""
+    table = table or calibration.TABLE
+    regime = (pb.get("regime") or {}).get("id")
+    for side in ("long", "short"):
+        s = pb.get(side) or {}
+        if s.get("setup") in (None, "none"):
+            continue
+        cal = table.look(h.id, side, s["setup"], regime, s.get("score"))
+        if cal["negative"] and calibration.DISABLE:
+            reason = f"데스크 실적 기대 {cal['exp_r']:+.2f}R ({cal['n']}건) — 음수라 쉼"
+            pb[side] = {**_none_side(reason, s.get("size_hint") or "half", bool(s.get("flat_by_close"))),
+                        "direction": s.get("direction"), "calibration": cal}
+            continue
+        s.update(p_t1=cal["p_t1"], exp_r=cal["exp_r"], n=cal["n"], calibration=cal)
+    return pb
 
 
 def hold_for_event(pb: dict, event: dict | None) -> dict:
@@ -882,9 +905,12 @@ def prompt_note(pb: dict | None) -> str | None:
             f"entries {entries} ({shares}%), stop {_fmt(s['stop'])}, "
             + ", ".join(f"{t['role'].upper()} {_fmt(t['price'])} ({t['basis']})" for t in tg)
             + f", time stop {s['time_stop']['bars']} x {s['time_stop']['interval']} bars, size {s['size_hint']}"
-            + (", flat before the close" if s.get("flat_by_close") else "") + f". Conditions now: {met or 'n/a'}.")
+            + (", flat before the close" if s.get("flat_by_close") else "") + f". Conditions now: {met or 'n/a'}."
+            + (f" {bit}" if (bit := calibration.prompt_bit(s.get("calibration"))) else ""))
+    if any((pb.get(s) or {}).get("calibration") for s in ("long", "short")):
+        lines.append(calibration.PROMPT_RULE)
     note = "\n".join(lines)
-    return note[:1200]
+    return note[:1500]          # #147: the records and their rule added ~250 characters to the 1200
 
 
 def mandate() -> str:

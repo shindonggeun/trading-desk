@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import (
     backtest_reports,
+    calibration,
     credit,
     events_calendar,
     filings,
@@ -283,11 +284,18 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         async def score_plans():
             # How each plan played out, on the bars that came after it (desk.outcome). Starts at boot.
+            fresh = True                                  # the live record is read once at boot
             while True:
                 try:
                     scored = await outcome.sweep(store, prices)
                     if scored:
                         log.info("scored %d plan(s)", scored)
+                    if scored or fresh:
+                        # #147: the playbooks' live record on top of the backtest prior
+                        since = now() - timedelta(days=calibration.LIVE_DAYS)
+                        runs_scored = await asyncio.to_thread(store.scored_since, since)
+                        calibration.TABLE.set_live(runs_scored)
+                        fresh = False
                 except Exception:  # a failed pass must not stop the next one
                     log.exception("plan scoring failed")
                 await asyncio.sleep(settings.score_interval_sec)

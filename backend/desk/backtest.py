@@ -271,7 +271,8 @@ def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: C
               gate: bool = True) -> list[Trade]:
     """Build the snapshot's playbooks and judge each side on the bars after it. ``gate`` applies
     the market's selling rule (#146) when the snapshot has a score."""
-    pb = playbook.build(snap.sr, snap.daily, snap.window, h, now=snap.plan_at, today=snap.today, vix=snap.vix)
+    pb = playbook.build(snap.sr, snap.daily, snap.window, h, now=snap.plan_at, today=snap.today, vix=snap.vix,
+                        calibrate=False)                # #147: not graded by its own results
     if gate:
         pb = risk_regime.apply(pb, snap.risk)
     if not pb:
@@ -487,10 +488,12 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
         step: int | None = None, costs: Costs | None = None, do_sweep: bool = False,
         fetch: Callable[[str, horizons.Horizon, str | None], tuple[list[dict], list[dict], list[str]]] | None = None,
         progress: Callable[[str], None] | None = None,
-        vix: dict[str, float] | None | bool = True, risk: MarketRisk | None | bool = None) -> Report:
+        vix: dict[str, float] | None | bool = True, risk: MarketRisk | None | bool = None,
+        on_trades: Callable[[list[Trade], str | None], None] | None = None) -> Report:
     """``vix=True`` loads ^VIX daily closes (the regime's fear evidence); a dict supplies them; None skips.
     ``risk=True`` loads the market's indices for the selling score (#146, desk.risk_regime; the CLI
-    does); a MarketRisk supplies them; None leaves the playbooks ungated."""
+    does); a MarketRisk supplies them; None leaves the playbooks ungated. ``on_trades(trades, cut)``
+    receives the gated trades and the train/held-out cut (desk.cli calibrate, #147)."""
     h = horizons.get(horizon)
     costs = costs or Costs()
     fetch = fetch or history
@@ -524,6 +527,8 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
         snaps += got
     trades = evaluate(snaps, h, costs, notes=notes)
     cut = split_cut(t.at for t in trades)
+    if on_trades:
+        on_trades(trades, cut)
     if h.primary != "1d":
         notes.append("분봉 · 시간봉 보기는 야후 보관 기간 때문에 표본이 적습니다")
     notes.append("이어진 시점의 계획은 기간이 겹칩니다 — 규칙의 성적이지 실제 계좌 곡선이 아닙니다")

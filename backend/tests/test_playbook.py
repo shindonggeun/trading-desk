@@ -365,3 +365,17 @@ def test_a_live_playbook_zone_can_carry_the_new_sources():
     sources = {m["source"] for m in members}
     assert pb["long"]["setup"] != "none"
     assert sources <= {"sr", "vp", "fib", "trend", "ma", "vwap", "avwap", "gap"}
+
+
+def test_the_range_low_and_pullback_ladder_shapes(monkeypatch):
+    """#166: the second step waits for a reclaim by default - with a second limit it mostly filled on
+    the way to the stop (swing 1+2 fills -0.25R against +0.25R for the top alone)."""
+    zone = {"high": 100.0, "mid": 98.0, "low": 96.0}
+    assert playbook.PAIR_LADDER == "confirm"
+    top, rest = playbook._pair_entries(zone, 2.0)
+    assert (top["kind"], top["price"], top["share"]) == ("limit", 100.0, 0.5)
+    assert (rest["kind"], rest["price"], rest["share"], rest["after"]) == ("stop", 100.5, 0.5, ["reclaim"])
+    monkeypatch.setattr(playbook, "PAIR_LADDER", "split")
+    assert [(e["kind"], e["price"]) for e in playbook._pair_entries(zone, 2.0)] == [("limit", 100.0), ("limit", 98.0)]
+    monkeypatch.setattr(playbook, "PAIR_LADDER", "first")
+    assert [(e["price"], e["share"]) for e in playbook._pair_entries(zone, 2.0)] == [(100.0, 1.0)]

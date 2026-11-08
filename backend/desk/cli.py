@@ -154,7 +154,16 @@ def _weekly_lines(args) -> int:
     return 0
 
 
+def _utf8_out() -> None:
+    """Reports carry Korean and '—': a Windows console or a redirect to a file defaults to cp949,
+    where one such character used to stop ``backtest`` before it wrote ``--out``."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure") and (stream.encoding or "").lower().replace("-", "") != "utf8":
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_out()
     parser = argparse.ArgumentParser(prog="python -m desk.cli")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("migrate", help="bring the database schema to head")

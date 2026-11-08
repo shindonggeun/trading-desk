@@ -10,6 +10,7 @@
     python -m desk.cli backtest --basket             # the reference basket (desk.backtest.BASKET)
     python -m desk.cli backtest --basket --triggers  # touch entry vs the lower-bar trigger (#149)
     python -m desk.cli timing [--last 20]            # where recent analyses spent their time (#171)
+    python -m desk.cli calibrate [--horizon swing]   # rebuild desk/data/playbook_calibration.json (#147)
 
 In Docker: ``docker compose exec backend python -m desk.cli create-user <name>``.
 For scripts, DESK_NEW_PASSWORD supplies the password instead of the prompt.
@@ -74,6 +75,36 @@ def _timing(engine, last: int) -> int:
     return 0
 
 
+def _calibrate(args) -> int:
+    """The prior of desk.calibration: every settled basket trade per horizon. The reliability check
+    builds the table from the training dates only and scores it on the held-out ones."""
+    from . import backtest, calibration, horizons
+
+    cells: dict = {}
+    checks: dict = {}
+    for name in args.horizon or ["swing"]:
+        if name not in horizons.HORIZONS:
+            sys.exit(f"horizon must be one of {', '.join(horizons.HORIZONS)}")
+        got: dict = {}
+        backtest.run(list(backtest.BASKET), name, args.start, risk=True,
+                     progress=lambda msg: print(msg, file=sys.stderr),
+                     on_trades=lambda trades, cut, got=got: got.update(trades=trades, cut=cut))
+        trades, cut = got.get("trades") or [], got.get("cut")
+        cells.update(calibration.from_trades(trades, name))
+        train = [t for t in trades if cut is None or t.at < cut]
+        valid = [t for t in trades if cut is not None and t.at >= cut]
+        bands = calibration.reliability(calibration.from_trades(train, name), valid, name)
+        checks[name] = {"cut": cut, "bands": bands}
+        print(f"{name}: {len(trades)} plans, cut {cut}")
+        for row in bands:
+            print(f"  band {row['band']:>2}+  n {row['n']:>5}  predicted {row['predicted']:.3f}  "
+                  f"actual {row['actual']:.3f}  gap {row['gap']:+.3f}")
+    calibration.write(cells, {"source": "backtest", "tickers": list(backtest.BASKET), "start": args.start,
+                              "costs_bps": backtest.COST_BPS, "reliability": checks})
+    print(f"written: {calibration.PATH}")
+    return 0
+
+
 def _backtest(args) -> int:
     """No settings or database: bars come from Yahoo, the report goes to stdout and ``--out``."""
     import json
@@ -135,6 +166,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="compare the zone-touch entry with the lower-bar trigger entry (#149; ~2 years of 60m bars)")
     bt.add_argument("--no-risk", action="store_true",
                     help="leave out the market's selling-score rule (#146) and its on/off comparison")
+    cb = sub.add_parser("calibrate", help=(
+        "rebuild desk/data/playbook_calibration.json from the basket backtest (#147): T1 rate and "
+        "expected R per setup, regime and score band, with the held-out reliability check"))
+    cb.add_argument("--horizon", action="append", default=None,
+                    help="repeatable; default swing (the other frames have few bars on Yahoo)")
+    cb.add_argument("--from", dest="start", default="2019-01-01", help="first plan date, YYYY-MM-DD")
     tm = sub.add_parser("timing", help="average time per stage and per agent over the latest finished runs")
     tm.add_argument("--last", type=int, default=20, help="how many recent finished runs (default 20)")
     args = parser.parse_args(argv)
@@ -143,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "backtest":
         return _backtest(args)
+    if args.command == "calibrate":
+        return _calibrate(args)
 
     settings = load()
     migrate(settings.database_url)

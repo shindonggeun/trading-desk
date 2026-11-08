@@ -92,8 +92,8 @@ def test_the_note_is_bounded_and_the_mandate_names_three_lines():
     bars = _crash()
     pb = playbook.build(_crash_sr(bars[-1]["close"]), bars, bars, SWING)
     note = playbook.prompt_note(pb)
-    assert note.startswith("Desk-computed two-sided playbook") and "Regime: crash" in note and len(note) <= 1200
-    assert "LONG dip-catch" in note and "SHORT " in note
+    assert note.startswith("Desk-computed two-sided playbook") and "Regime: crash" in note and len(note) <= 1500
+    assert "LONG dip-catch" in note and "SHORT " in note and "Desk record" in note   # #147
     text = playbook.mandate()
     assert all(label in text for label in ("Long Playbook:", "Short Playbook:", "Playbook Bias:"))
 

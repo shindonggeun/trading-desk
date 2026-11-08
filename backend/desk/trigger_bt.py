@@ -86,7 +86,8 @@ def _touch(side: dict, bars: list[dict], up: bool) -> tuple[float | None, str | 
 
 def plan_arms(snap: backtest.Snapshot, primary: list[dict], lower: list[dict], h: horizons.Horizon,
               bps: float) -> list[Arm]:
-    pb = playbook.build(snap.sr, snap.daily, snap.window, h, now=snap.plan_at, today=snap.today, vix=snap.vix)
+    pb = playbook.build(snap.sr, snap.daily, snap.window, h, now=snap.plan_at, today=snap.today, vix=snap.vix,
+                        calibrate=False)                # #147: not graded by its own results
     if not pb:
         return []
     end_t = min(snap.t + backtest.LOOKAHEAD[h.id], len(primary) - 1)

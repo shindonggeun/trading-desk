@@ -17,7 +17,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { api, type CandleInterval, type Candles, type OscEpisode, type OscillatorView, type OscReading, type ReviewRow } from "../api";
+import { api, type CandleInterval, type Candles, type OscillatorView, type OscReading, type ReviewRow } from "../api";
 import { price } from "../format";
 import { keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands, volumeProfileDrawing, withAlpha, zoneHalfWidth } from "./chartBands";
 import type { FibLevel, Fibonacci, Plan, Positioning, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
@@ -132,7 +132,6 @@ function toRows(bars: Candles["bars"], intraday: boolean, ticker: string): Row[]
 /** 그 시점이 들어가는 봉(그 시점 이하의 마지막 봉). 차트 앞이면 null. */
 /** #206 과열 · 침체 판정의 이름과 극단 마커 문구 */
 const OSC_ZONE: Record<"hot" | "cold" | "neutral", string> = { hot: "위험 구간(과열)", cold: "바닥권(침체)", neutral: "중립" };
-const OSC_KIND: Record<OscEpisode["kind"], string> = { rsi_hot: "RSI 과열", rsi_cold: "RSI 침체", stoch_hot: "스토 과열", stoch_cold: "스토 침체" };
 const pct = (x: number | undefined | null) => (x == null ? "" : `${x > 0 ? "+" : ""}${(x * 100).toFixed(0)}%`);
 function oscLine(r: OscReading | null | undefined, label: string): string | null {
   if (!r || !r.zone) return null;
@@ -499,7 +498,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down,
       });
       series.priceScale().applyOptions({
-        scaleMargins: { top: 0.08, bottom: 0.24 }, // 아래는 거래량 자리
+        // 거래량은 트레이딩뷰처럼 아래쪽에 반투명하게 겹친다 — 큰 여백은 넓은 가격 범위에서 음수 눈금을 만들었다(#206)
+        scaleMargins: { top: 0.08, bottom: 0.1 },
         mode: LOG_SCALE.has(iv) ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal,
       });
       series.setData(rows.map(({ key, bar }) => ({ time: time(key), open: bar.open, high: bar.high, low: bar.low, close: bar.close })));
@@ -641,13 +641,16 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       }
     }
     if (show.osc && osc && !intraday && osc.interval === (drawn.interval === "1w" ? "1w" : drawn.interval === "1d" ? "1d" : null)) {
+      // RSI 극단만 점으로(스토캐스틱은 너무 자주 닿아 차트를 덮는다 — 근거는 배지 문장에), 글자는 짧게 · 좁은 화면은 점만
+      const narrow = (box.current?.clientWidth ?? 1000) < 600;
       for (const e of osc.own.episodes ?? []) {
+        if (!e.kind.startsWith("rsi")) continue;
         const at = barFor(keys, e.at.slice(0, 10));
         if (at == null || at === keys[0]) continue;          // before the chart's first bar
         const hot = e.kind.endsWith("hot");
-        const after = e.ret20 != null ? ` → 20봉 ${pct(e.ret20)}` : "";
+        const text = narrow ? "" : `${hot ? "과열" : "침체"}${e.ret20 != null ? ` ${pct(e.ret20)}` : ""}`;
         list.push({ key: at, m: { position: hot ? "aboveBar" : "belowBar", shape: "circle", size: 0.6,
-          color: hot ? css("--warn", "#e5a23a") : css("--accent", "#3a86f8"), text: `${OSC_KIND[e.kind]}${after}` } });
+          color: hot ? css("--warn", "#e5a23a") : css("--accent", "#3a86f8"), text } });
       }
     }
     list.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
@@ -975,7 +978,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
             rsiOn ? "RSI 70 이상 과열 · 30 이하 과매도" : null,
             stochOn ? "스토캐스틱 80 이상 과열 · 20 이하 침체(실선 %K · 점선 %D)" : null,
             show.osc && osc && !LOG_SCALE.has(interval) && !["5m", "15m", "30m", "60m", "240m"].includes(interval)
-              ? "점 = 과거 극단과 그 뒤 20봉 등락" : null,
+              ? "점 = 과거 RSI 과열(위) · 침체(아래)와 그 뒤 20봉 등락" : null,
             drawn && LOG_SCALE.has(interval) ? "가격축은 로그 눈금" : null,
           ].filter(Boolean).join(" · ")}
         </p>

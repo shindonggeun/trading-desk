@@ -175,7 +175,8 @@ export function useEstimate(symbol: string | undefined, enabled: boolean): Close
       document.removeEventListener("visibilitychange", load);
     };
   }, [symbol, enabled]);
-  return est && est.supported && est.market_state === "closed" ? est : null;
+  // #209: NXT trading (until 20:00 KST) shows its real trade; after it, the estimate
+  return est && est.supported && (est.market_state === "closed" || est.market_state === "nxt") ? est : null;
 }
 
 function hhmm(iso: string): string {
@@ -482,22 +483,28 @@ export default function PlanCard({ plan, ticker, code, symbol, profile, profileI
           )}
           {est && (
             <>
-              <dt>추정가</dt>
+              <dt>{est.market_state === "nxt" ? "NXT 실시간" : "추정가"}</dt>
               <dd>
                 {price(est.estimate)}
                 <span className="muted small">
                   {" "}
                   {est.change_pct > 0 ? "+" : ""}
                   {est.change_pct.toFixed(2)}% (종가 {price(est.last_close)} · {est.last_close_date})
-                  {est.anchor_source === "nxt" && est.anchor_price != null &&
+                  {est.market_state === "closed" && est.anchor_source === "nxt" && est.anchor_price != null &&
                     ` · NXT 애프터 ${price(est.anchor_price)} 기준`}
                 </span>
-                <span
-                  className="src"
-                  title={`바이낸스 ${est.contract} 무기한 선물이 종가 이후 움직인 비율을 종가에 곱한 값입니다. 실제 체결가가 아닙니다.`}
-                >
-                  바이낸스 {est.contract} · {hhmm(est.fetched_at)}
-                </span>
+                {est.market_state === "nxt" ? (
+                  <span className="src" title="NXT(넥스트레이드) 프리 · 애프터마켓의 마지막 체결가입니다. 20:00 이 지나면 추정가로 바뀝니다.">
+                    NXT 체결 · {hhmm(est.anchor_at ?? est.fetched_at)}
+                  </span>
+                ) : (
+                  <span
+                    className="src"
+                    title={`바이낸스 ${est.contract} 무기한 선물이 기준 시각 이후 움직인 비율을 기준가에 곱한 값입니다. 실제 체결가가 아닙니다.`}
+                  >
+                    바이낸스 {est.contract} · {hhmm(est.fetched_at)}
+                  </span>
+                )}
               </dd>
             </>
           )}

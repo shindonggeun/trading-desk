@@ -16,6 +16,7 @@ export const QUOTE_SOURCE: Record<string, string> = {
   toss: "토스",
   yahoo: "야후(지연 가능)",
   mock: "모의",
+  nxt: "NXT",
 };
 
 export function quoteSourceText(source: string | null | undefined): string {

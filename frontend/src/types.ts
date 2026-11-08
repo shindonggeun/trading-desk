@@ -703,7 +703,8 @@ export type Estimate =
       last_close_date: string;
       close_at: string;
       contract: string;
-      market_state: "open" | "closed";
+      /** #209 nxt = 한국 종목 NXT 프리 · 애프터마켓 거래 중(estimate 는 NXT 마지막 체결가 그대로) */
+      market_state: "open" | "closed" | "nxt";
       fetched_at: string;
       /** #204 계약 움직임을 얹은 기준 — 정규장 종가, 또는 한국 종목의 NXT 애프터마켓 마지막 체결 */
       anchor_source?: "close" | "nxt";

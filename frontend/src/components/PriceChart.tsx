@@ -237,7 +237,7 @@ export interface ExtraLine {
  * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
  * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
  */
-export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice }: {
+export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, onIntervalChange }: {
   ticker: string;
   tradeDate: string;
   plan: Plan | null;
@@ -254,6 +254,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   onClose?: () => void;
   /** 머리줄 아래 한 줄 안내(차트 주소 화면: 분석 기록을 못 찾았을 때 등). */
   notice?: string;
+  /** #220 봉 주기를 바꿀 때마다 — 차트 탭이 주소(iv=)를 맞춘다 */
+  onIntervalChange?: (interval: Interval) => void;
 }) {
   const [prefs] = useState(loadPrefs);
   const [interval, setBarInterval] = useState<Interval>(initialInterval ?? prefs.interval);
@@ -305,6 +307,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const [trendDrawn, setTrendDrawn] = useState<{ line: Trendline; series: ISeriesApi<"Line"> }[]>([]);
 
   useEffect(() => savePrefs(interval, show), [interval, show]);
+  useEffect(() => onIntervalChange?.(interval), [interval, onIntervalChange]);
   const toggle = (k: keyof Show) => setShow((s) => ({ ...s, [k]: !s[k] }));
 
   // #158 옵션 벽 · 맥스 페인(#154 positioning) — 켤 때만 읽는다

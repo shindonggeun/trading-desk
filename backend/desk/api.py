@@ -38,6 +38,7 @@ from . import (
     review,
     risk_regime,
     verdict,
+    weekly_map,
 )
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
 from .broker import kis_stream, make_broker
@@ -207,7 +208,8 @@ def purge_expired_runs(store: Store, retention_days: int) -> int:
 
 def create_app(settings: Settings | None = None, runner=None, prices: PriceSource | None = None,
                estimator: BinanceEstimator | None = None, book: Portfolio | None = None,
-               flow: MarketFlow | None = None, futures: FuturesFlow | None = None) -> FastAPI:
+               flow: MarketFlow | None = None, futures: FuturesFlow | None = None,
+               weekly: weekly_map.Maps | None = None) -> FastAPI:
     settings = settings or load()
     migrate(settings.database_url)
     engine = make_engine(settings.database_url)
@@ -247,6 +249,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     async def _futures_note() -> str | None:
         return futures_note(await futures.get())
 
+    # #202: the weekly market map of the main indices (Yahoo weekly bars, cached an hour)
+    weekly = weekly or weekly_map.Maps()
+
+    async def _weekly_note(ticker: str) -> str | None:
+        return await asyncio.to_thread(weekly.note_for, ticker)
+
     live_streams: dict[str, int] = {}   # open /api/live/stream per session (token hash)
     calendar = live.Calendar(broker)     # market holidays for the live stream, cached per market
     if runner is None:
@@ -279,6 +287,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        # #203: overbought / oversold and its record (same-day runs)
                                        oscillator=None if settings.fake_runs else (
                                            lambda ticker: oscillator.note_for(oscillator_fetch, ticker)),
+                                       # #202: the index map behind a leveraged / sector ticker (same day)
+                                       weekly=None if settings.fake_runs else _weekly_note,
                                        risk=risk,
                                        # #171: recent news/fundamentals reports taken over (0 = off)
                                        reuse_minutes=settings.reuse_reports_min,
@@ -730,6 +740,24 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         class, and the foreign spot/futures split (desk.futures_flow). A KIS failure or missing
         keys come back as ``error`` / ``supported: false``, not as a 5xx."""
         return await futures.get()
+
+    @app.get("/api/market/weekly")
+    async def market_weekly(symbol: str | None = None):
+        """#202: the weekly market map - each main index's weekly trend lines, bands, ranges, this
+        week's candle and the lines' record, in plain Korean. One index failing answers its
+        ``error``; the others still come. ``symbol`` narrows it to one of desk.weekly_map.TARGETS."""
+        if symbol is None:
+            return await asyncio.to_thread(weekly.all)
+        if symbol not in weekly_map.NAMES:
+            raise HTTPException(422, f"symbol must be one of {', '.join(weekly_map.NAMES)}")
+        return {"maps": [await asyncio.to_thread(weekly.one, symbol)]}
+
+    @app.get("/api/market/weekly/{symbol}/history")
+    async def market_weekly_history(symbol: str, weeks: int = 8):
+        """#202: the map as it read at the end of each of the last ``weeks`` weeks (bars up to each)."""
+        if symbol not in weekly_map.NAMES:
+            raise HTTPException(422, f"symbol must be one of {', '.join(weekly_map.NAMES)}")
+        return {"symbol": symbol, "weeks": await asyncio.to_thread(weekly.history, symbol, min(max(weeks, 1), 52))}
 
     @app.get("/api/portfolio")
     async def portfolio():

@@ -50,6 +50,16 @@ SHORT_TIME_STOP_BARS = {"scalp": 15, "intraday": 12, "short_swing": 6, "swing": 
 SIZE = {"crash": "half", "downtrend": "half", "unknown": "half", "range": "normal", "uptrend": "normal"}
 # A crash ladder buys less before the bounce shows: 25 / 25 / 50 (the third only after confirmation).
 SHARES = {"crash": (0.25, 0.25, 0.5), "default": (0.34, 0.33, 0.33)}
+# The range low's and the pullback's ladder (#166): "split" two limits 50 / 50 (zone top, zone middle),
+# "first" the zone top only, "confirm" the zone top then the rest on a reclaim above it (a stop entry,
+# as the dip catch's third step). With "split" the second limit filled on the way to the stop: swing
+# 1+2 fills made -0.25R (pullback, 2,485) and -0.26R (range low, 1,544) against +0.26R / +0.24R for
+# the top alone. Basket backtest, costs in, gated, all / train / held-out:
+#   swing 2019-   split -0.122 / -0.125 / -0.105R   first -0.124 / -0.126 / -0.111R   confirm -0.103 / -0.108 / -0.085R
+#   2~3 days      split -0.348 / -0.373 / -0.307R   first -0.346 / -0.369 / -0.313R   confirm -0.292 / -0.301 / -0.283R
+#   intraday      split -0.991 / -1.074 / -0.821R   first -0.990 / -1.075 / -0.816R   confirm -0.844 / -0.878 / -0.766R
+# (scalp: too few minute bars to measure; it follows the others). desk.backtest sweeps it.
+PAIR_LADDER = "confirm"
 LIVE_MAX_GAP = 0.25      # a model price further than this from the reference is not taken
 
 # #145: more zone candidates from the daily bars. A weight of 0 leaves the source out - the basket
@@ -519,6 +529,17 @@ def _none_side(reason: str, size_hint: str, flat_by_close: bool) -> dict:
             "time_stop": None, "conditions": [], "score": 0, "source": {}, "model": None}
 
 
+def _pair_entries(zone: dict, zatr: float) -> list[dict]:
+    """A range low's / pullback's entries per PAIR_LADDER (see there)."""
+    top = {"step": 1, "price": zone["high"], "share": 0.5, "kind": "limit"}
+    if PAIR_LADDER == "first":
+        return [{**top, "share": 1.0}]
+    if PAIR_LADDER == "confirm":
+        return [top, {"step": 2, "price": _round(zone["high"] + CONFIRM_ATR * zatr), "share": 0.5, "kind": "stop",
+                      "after": ["reclaim"]}]
+    return [top, {"step": 2, "price": zone["mid"], "share": 0.5, "kind": "limit"}]
+
+
 def _long(regime: dict, cands: list[dict], primary: list[dict], ref: float, atr: float, h: horizons.Horizon,
           fib: dict | None, zatr: float | None = None, cap: float | None = None, low: dict | None = None) -> dict:
     rid = regime["id"]
@@ -539,11 +560,12 @@ def _long(regime: dict, cands: list[dict], primary: list[dict], ref: float, atr:
                {"step": 2, "price": zone["mid"], "share": shares[1], "kind": "limit"},
                {"step": 3, "price": _round(zone["high"] + CONFIRM_ATR * zatr), "share": shares[2], "kind": "stop",
                 "after": ["reclaim", "higher_low"]}]
-    if setup != "dip_catch":     # a range low / pullback is two limit steps
-        entries = [{"step": 1, "price": zone["high"], "share": 0.5, "kind": "limit"},
-                   {"step": 2, "price": zone["mid"], "share": 0.5, "kind": "limit"}]
-    avg = (entries[0]["price"] * entries[0]["share"] + entries[1]["price"] * entries[1]["share"]) / \
-        (entries[0]["share"] + entries[1]["share"])
+    if setup != "dip_catch":     # a range low / pullback: PAIR_LADDER's two steps (or one)
+        entries = _pair_entries(zone, zatr)
+        avg = sum(e["price"] * e["share"] for e in entries) / sum(e["share"] for e in entries)
+    else:                        # the dip catch's average is its two limits (the third waits for the turn)
+        avg = (entries[0]["price"] * entries[0]["share"] + entries[1]["price"] * entries[1]["share"]) / \
+            (entries[0]["share"] + entries[1]["share"])
     stop = _round(zone["low"] - LONG_STOP_ATR * zatr)
     ups = [c for c in cands if c.get("tag") != "round"]
     t1c = _next_level(ups, max(avg, zone["high"]), True, zatr, within=2 * cap, ref=ref)

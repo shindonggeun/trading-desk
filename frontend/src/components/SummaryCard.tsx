@@ -38,7 +38,7 @@ export default function SummaryCard({ summary, runId, horizon, live: liveOn }: {
       <div className={`sum-verdict ${broke ? "" : tone(s.verdict)}`}>
         {broke ? "구역을 뚫고 나가 이 타점은 무효 — 관망" : s.text}
       </div>
-      {s.why && <p className="muted">{s.why}</p>}
+      {s.why && <p className={s.verdict === "stand_aside" && s.side ? "error" : "muted"}>{s.why}</p>}
       {s.side && (
         <p className="muted small">
           지금가 <b>{price(now)}</b>
@@ -50,7 +50,7 @@ export default function SummaryCard({ summary, runId, horizon, live: liveOn }: {
       {s.notes && s.notes.length > 0 && <p className="small error">{s.notes.join(" · ")}</p>}
 
       {s.side && (
-        <div className="sum-grid">
+        <div className={`sum-grid ${s.verdict === "watch" || s.verdict === "stand_aside" ? "sum-ref" : ""}`}>
           <div className="sum-box">
             <h4>나눠서 {buyWord}한다면</h4>
             {(s.ladder ?? []).map((l) => (

@@ -941,7 +941,8 @@ export interface WeeklyHistoryRow {
 }
 
 /** #221 GET plan.summary — 결론 · 분할 매수 · 한 번에 매수 최적 타점 · 손절 · 목표 */
-export type SummaryVerdict = "buy_now" | "wait_for_zone" | "short_now" | "wait_short" | "stand_aside";
+// #231 watch: 계획은 관망 — 데스크의 더 나은 쪽을 "들어간다면" 으로만
+export type SummaryVerdict = "buy_now" | "wait_for_zone" | "short_now" | "wait_short" | "watch" | "stand_aside";
 export interface PlanSummary {
   version: number;
   verdict: SummaryVerdict;

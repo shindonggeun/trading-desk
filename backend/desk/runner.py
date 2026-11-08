@@ -418,7 +418,7 @@ class RunManager:
                         if row.get("ticker") == "^VIX"), None)
             macro = macro_news.CACHE.brief(ticker) if self.macro is not None else None
             pb = await asyncio.to_thread(playbook.build, sr, daily, primary, h, live=live, vix=vix,
-                                         macro=macro, today=today)
+                                         macro=macro, today=today, market=market)
             pb = risk_regime.apply(pb, market)
             # #167: the oversold swing buy (the swing frame's secondary bars are the weekly ones)
             return value_swing.apply(pb, daily, secondary if h.secondary == "1w" else None, h.id, sr, market, vix)
@@ -850,6 +850,8 @@ class RunManager:
                                                                 result.final_state, (start, start_u), (sr, sr_u))
                         if plan_pb:
                             plan["playbooks"] = plan_pb
+                            # #166: score · bias · parts (with which ones the backtest validated) · turning
+                            plan["direction"] = plan_pb.get("direction")
                     except Exception as exc:  # noqa: BLE001 - the plan stands without its playbooks
                         log.warning("no playbooks for %s: %s", request.ticker, exc)
                     # #106: entry → targets → guards → stop from the plan, the zones and the volume profile

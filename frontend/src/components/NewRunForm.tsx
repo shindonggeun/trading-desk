@@ -37,8 +37,15 @@ function typing(target: EventTarget | null): boolean {
  * 대시보드 맨 위 검색 한 줄(#100): 종목을 고르고 "분석 시작" — 성향 · 시간축 · 애널리스트는 기본값.
  * "옵션" 을 펴면 기준일 · 애널리스트 · 성향 · 시간축 · 언어 · 보유 반영을 바꾼다. "/" 로 검색 칸에 바로 간다.
  */
+/** #220 차트 탭의 "이 종목으로 분석" — `#/?ticker=SOXL&name=…` 로 오면 종목을 미리 채운다 */
+function prefilled(): Picked {
+  const q = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+  const ticker = (q.get("ticker") ?? "").trim().toUpperCase();
+  return ticker && /^[A-Z0-9.^=-]{1,20}$/.test(ticker) ? { ticker, name: q.get("name") ?? undefined } : { ticker: "" };
+}
+
 export default function NewRunForm() {
-  const [instrument, setInstrument] = useState<Picked>({ ticker: "" });
+  const [instrument, setInstrument] = useState<Picked>(prefilled);
   const [date, setDate] = useState(today());
   const [analysts, setAnalysts] = useState<string[]>(ANALYST_CHOICES.map((c) => c.key));
   const [usePortfolio, setUsePortfolio] = useState(true);

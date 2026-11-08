@@ -36,7 +36,8 @@ ANCHOR = {("SAMSUNGUSDT", "2026-11-06T06:29:00+00:00"): "164.00",
           ("NVDAUSDT", "2026-11-27T17:59:00+00:00"): "205.00",
           ("SAMSUNGUSDT", "2026-11-03T06:29:00+00:00"): "160.00",
           ("NVDAUSDT", "2026-11-06T20:59:00+00:00"): "205.00",
-          ("BRKBUSDT", "2026-11-06T20:59:00+00:00"): "481.00"}
+          ("BRKBUSDT", "2026-11-06T20:59:00+00:00"): "481.00",
+          ("SAMSUNGUSDT", "2026-11-06T10:59:00+00:00"): "166.00"}      # 20:00 KST, the NXT close (#204)
 MARK = {"SAMSUNGUSDT": "167.28", "NVDAUSDT": "209.10", "BRKBUSDT": "481.00"}
 
 
@@ -71,11 +72,11 @@ class Clock:
         return self.t
 
 
-def _estimator(now, closes=CLOSES, binance=None, clock=None):
+def _estimator(now, closes=CLOSES, binance=None, clock=None, after_hours=None):
     binance = binance or FakeBinance()
     http = httpx.AsyncClient(base_url="https://fapi.test", transport=httpx.MockTransport(binance))
     return BinanceEstimator(http=http, daily_closes=lambda t: closes[t], now=lambda: now,
-                            clock=clock or Clock()), binance
+                            clock=clock or Clock(), after_hours=after_hours), binance
 
 
 def test_saturday_samsung_moves_fridays_close_by_the_contract():
@@ -439,3 +440,77 @@ def test_board_live_path_and_one_failure(db_url, monkeypatch):
         rows = {r["ticker"]: r for r in client.get("/api/estimates?tickers=NVDA,SOXS").json()["items"]}
     assert rows["NVDA"]["state"] == "live" and rows["NVDA"]["price"] == 190.0 and rows["NVDA"]["change_pct"] is None
     assert rows["SOXS"]["state"] == "estimate"
+
+
+# --- #204: the NXT after-market trade is the anchor when there was one after the close -------------
+
+NXT_FRIDAY_20H = (221000.0, datetime(2026, 11, 6, 11, 0, 0, tzinfo=UTC))      # 20:00 KST
+
+
+def test_a_korean_estimate_moves_the_nxt_after_market_close_not_the_krx_close():
+    est, _ = _estimator(SATURDAY_KST_10AM, after_hours=lambda code: NXT_FRIDAY_20H if code == "005930" else None)
+    r = asyncio.run(est.estimate("005930.KS"))
+    assert r.anchor_source == "nxt" and r.anchor_price == 221000.0 and r.anchor_at == "2026-11-06T11:00:00+00:00"
+    assert r.estimate == round(221000 * 167.28 / 166.0)                  # only the contract's move since 20:00
+    assert r.contract_move_pct == round((167.28 / 166.0 - 1) * 100, 2)
+    assert r.change_pct == round((r.estimate / 218000 - 1) * 100, 2)      # still against the KRX close
+    assert r.last_close == 218000.0 and r.contract_price_at_close == 164.0
+
+
+def test_no_nxt_trade_or_an_old_one_keeps_the_krx_close():
+    for source in (lambda code: None,
+                   lambda code: (219000.0, datetime(2026, 11, 5, 11, 0, tzinfo=UTC))):   # Thursday's: before the close
+        est, _ = _estimator(SATURDAY_KST_10AM, after_hours=source)
+        r = asyncio.run(est.estimate("005930.KS"))
+        assert r.anchor_source == "close" and r.estimate == 222360.0 and r.change_pct == 2.0
+        assert r.contract_move_pct == 2.0
+
+
+def test_us_tickers_never_ask_for_an_nxt_trade():
+    asked = []
+    est, _ = _estimator(datetime(2026, 11, 7, 15, 0, tzinfo=UTC), after_hours=lambda code: asked.append(code))
+    r = asyncio.run(est.estimate("NVDA"))
+    assert r.anchor_source == "close" and asked == []
+
+
+def test_naver_after_market_quote_is_read_and_anything_else_is_none(monkeypatch):
+    from desk import estimate as mod
+
+    def reply(body):
+        return lambda url, **kw: httpx.Response(200, json=body, request=httpx.Request("GET", url))
+    monkeypatch.setattr(mod.httpx, "get", reply({"overMarketPriceInfo": {
+        "tradingSessionType": "AFTER_MARKET", "overPrice": "193,400", "localTradedAt": "2026-11-06T20:00:00+09:00"}}))
+    assert mod.naver_after_hours("005930") == (193400.0, datetime(2026, 11, 6, 11, 0, tzinfo=UTC))
+    monkeypatch.setattr(mod.httpx, "get", reply({"overMarketPriceInfo": {"tradingSessionType": "PRE_MARKET",
+                                                                        "overPrice": "190,000"}}))
+    assert mod.naver_after_hours("005930") is None
+    monkeypatch.setattr(mod.httpx, "get", reply({}))
+    assert mod.naver_after_hours("005930") is None
+
+    def boom(url, **kw):
+        raise httpx.ConnectError("down")
+    monkeypatch.setattr(mod.httpx, "get", boom)
+    assert mod.naver_after_hours("005930") is None
+
+
+def test_estimated_bars_after_the_nxt_trade_move_from_its_price():
+    close_ms = int(datetime(2026, 11, 6, 6, 30, tzinfo=UTC).timestamp() * 1000)
+    nxt_ms = int(NXT_FRIDAY_20H[1].timestamp() * 1000)
+
+    def binance(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        if request.url.path == "/fapi/v1/markPriceKlines" and params["interval"] == "1m":
+            start = int(params["startTime"])
+            price = {close_ms - 60_000: "164.00", nxt_ms - 60_000: "166.00"}.get(start)
+            return httpx.Response(200, json=[[start, price, price, price, price, "1"]] if price else [])
+        if request.url.path == "/fapi/v1/markPriceKlines":          # the 5-minute bars: one before, one after 20:00
+            return httpx.Response(200, json=[[nxt_ms - 300_000, "165.0", "165.0", "165.0", "165.0", "1"],
+                                             [nxt_ms, "167.0", "167.0", "167.0", "167.0", "1"]])
+        return httpx.Response(404)
+
+    est, _ = _estimator(SATURDAY_KST_10AM, binance=binance, after_hours=lambda code: NXT_FRIDAY_20H)
+    got = asyncio.run(est.candles("005930.KS", "5m"))
+    before, after = got["bars"]
+    assert before["close"] == round(218000 * 165 / 164)               # still from the KRX close
+    assert after["close"] == round(221000 * 167 / 166)                # from the NXT trade
+    assert got["anchor_source"] == "nxt" and got["anchor_price"] == 221000.0

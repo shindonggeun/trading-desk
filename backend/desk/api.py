@@ -1005,6 +1005,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                              "close_date": est.last_close_date if est else None,
                              "source": ({"kind": est.method, "contract": est.contract, "basis": est.basis,
                                          "multiple": est.multiple} if est else None)}
+                if est and est.market_state == "nxt":
+                    # #209: NXT trading (08:00-08:50, 15:40-20:00 KST) - its last trade is a real price
+                    return {**row, "state": "live", "price": est.estimate, "change_pct": est.change_pct,
+                            "quote_source": "nxt", "fetched_at": est.fetched_at}
                 if is_open:
                     live.watch(prices, ticker)       # the board's tickers ride the KIS stream too
                     try:

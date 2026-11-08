@@ -781,3 +781,61 @@ export interface CreditView {
   refreshed_at: string | null;
   error: string | null;
 }
+
+/** #185 desk.backtest.aggregate — 한 묶음의 백테스트 성적 */
+export interface BacktestAgg {
+  plans: number;
+  filled: number;
+  settled: number;
+  t2: number;
+  t1_be: number;
+  stop: number;
+  time_stop: number;
+  flat: number;
+  open: number;
+  unfilled: number;
+  fill_rate: number | null;
+  /** 체결된 것 중 손절보다 T1 에 먼저 닿은 비율 */
+  t1_first_rate: number | null;
+  median_r: number | null;
+  /** 체결된 건당 비용 차감 기대 R */
+  expectancy_r: number | null;
+  /** 계획당(미체결 포함) 기대 R */
+  expectancy_per_plan_r: number | null;
+  mae_atr_median: number | null;
+  mfe_atr_median: number | null;
+}
+/** GET /api/backtest/reports — 보기별 스냅샷 요약 */
+export interface BacktestSummary {
+  horizon: HorizonId;
+  label: string;
+  generated_at: string | null;
+  start: string | null;
+  end: string | null;
+  tickers: string[];
+  plans: number | null;
+  filled: number | null;
+  expectancy_r: number | null;
+}
+/** GET /api/backtest/reports/{horizon} — desk.backtest.Report */
+export interface BacktestReport {
+  version: number;
+  horizon: HorizonId;
+  tickers: string[];
+  start: string | null;
+  end: string | null;
+  generated_at: string | null;
+  costs: { bps_per_side: number };
+  baseline: BacktestAgg;
+  by_setup: Record<string, BacktestAgg>;
+  by_regime: Record<string, BacktestAgg>;
+  by_steps: Record<string, BacktestAgg>;
+  by_ticker: Record<string, BacktestAgg>;
+  by_direction?: Record<string, BacktestAgg>;
+  by_risk?: Record<string, BacktestAgg>;
+  crash_windows: Record<string, BacktestAgg>;
+  split: { cut: string | null; embargo_days: number; train: BacktestAgg; valid: BacktestAgg };
+  /** #146 규칙 켬 / 끔 — 키마다 묶음 성적, losing_streak 만 숫자 */
+  risk_gate?: { on: Record<string, BacktestAgg | number>; off: Record<string, BacktestAgg | number> };
+  notes: string[];
+}

@@ -77,6 +77,12 @@ def test_a_run_reports_baseline_breakdowns_and_a_split():
     assert 0 < report.split["train"]["plans"] + report.split["valid"]["plans"] < base["plans"]
     assert any(k.startswith("long:") for k in report.by_setup)
     assert report.notes and report.horizon == "swing"
+    eq = report.equity                                       # #192
+    assert eq["basis"] == "plan_day" and eq["days"] == sorted(eq["days"]) and "all" in eq["series"]
+    assert all(len(v) == len(eq["days"]) for v in eq["series"].values())
+    assert eq["trades"]["all"] == base["settled"] and eq["series"]["all"][-1] == pytest.approx(
+        sum(report.by_setup[k]["expectancy_r"] * report.by_setup[k]["settled"]
+            for k in report.by_setup if report.by_setup[k]["settled"]), abs=0.05)
 
 
 def test_costs_lower_the_net_r():
@@ -188,3 +194,29 @@ def test_cli_backtest_writes_a_report(tmp_path, monkeypatch, capsys):
         cli.main(["backtest", "SOXL", "--horizon", "weekly"])
     with pytest.raises(SystemExit, match="tickers"):
         cli.main(["backtest"])
+
+
+def _t(at: str, r: float | None, side: str = "long", setup: str = "dip_catch", status: str = "stop", filled: float = 1.0):
+    return backtest.Trade("SOXL", at, side, setup, "crash", 50, status, filled_shares=filled, r_net=r)
+
+
+def test_the_equity_curve_sums_settled_r_by_day_and_measures_the_deepest_fall():
+    trades = [_t("2024-01-02", 1.0), _t("2024-01-02", 0.5, "short", "fade", "t2"), _t("2024-01-03", -2.0),
+              _t("2024-01-04", -0.5, "short", "fade"), _t("2024-01-05", 1.2, status="t1_be"),
+              _t("2024-01-05", 9.0, status="unfilled", filled=0.0), _t("2024-01-06", None), _t("2024-01-06", 3.0, status="waiting")]
+    eq = backtest.equity(trades)
+    assert eq["days"] == ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"]   # unfilled · unsettled · no R left out
+    assert eq["series"]["all"] == [1.5, -0.5, -1.0, 0.2]
+    assert eq["series"]["long:dip_catch"] == [1.0, -1.0, -1.0, 0.2] and eq["series"]["short:fade"] == [0.5, 0.5, 0.0, 0.0]
+    assert eq["max_dd"] == {"all": -2.5, "long:dip_catch": -2.0, "short:fade": -0.5}
+    assert eq["trades"] == {"all": 5, "long:dip_catch": 3, "short:fade": 2}
+    assert backtest.equity([]) == {}
+
+
+def test_a_long_curve_is_thinned_but_keeps_its_ends_and_the_exact_drawdown():
+    start = datetime(2020, 1, 1, tzinfo=UTC)
+    trades = [_t((start + timedelta(days=i)).date().isoformat(), -1.0 if 300 <= i < 320 else 0.1) for i in range(1000)]
+    eq = backtest.equity(trades, max_points=50)
+    assert len(eq["days"]) == 50 and eq["days"][0] == "2020-01-01" and eq["days"][-1] == trades[-1].at
+    assert eq["series"]["all"][-1] == pytest.approx(980 * 0.1 - 20, abs=0.01)
+    assert eq["max_dd"]["all"] == -20.0                     # from every day, not only the kept points

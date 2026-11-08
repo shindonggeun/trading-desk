@@ -133,6 +133,7 @@ class Report:
     generated_at: str = ""
     by_risk: dict = field(default_factory=dict)
     risk_gate: dict = field(default_factory=dict)   # the same plans with the #146 rule on / off
+    equity: dict = field(default_factory=dict)      # cumulative R by plan day (#192, ``equity``)
 
 
 # ---------------------------------------------------------------- data
@@ -400,6 +401,45 @@ def losing_streak(trades: list[Trade]) -> int:
     return best
 
 
+EQUITY_POINTS = 400        # the curve's points at most (the report ships with the image, #185)
+
+
+def equity(trades: list[Trade], max_points: int = EQUITY_POINTS) -> dict:
+    """The rule's record over time (#192): settled trades' R after costs summed by the plan's day,
+    cumulative, for the basket (``all``) and per side:setup, with each curve's deepest fall from a
+    peak (``max_dd``, R, on every day - the curve itself is thinned to ``max_points`` days, each
+    point the exact running total on that day). Plans overlap, so this is not an account's curve."""
+    rows = [t for t in trades if t.filled_shares and t.status in SETTLED + MARKED and t.r_net is not None]
+    if not rows:
+        return {}
+    keys = ["all", *sorted({f"{t.side}:{t.setup}" for t in rows})]
+    days = sorted({t.at for t in rows})
+    at = {d: i for i, d in enumerate(days)}
+    per_day = {k: [0.0] * len(days) for k in keys}
+    counts = dict.fromkeys(keys, 0)
+    for t in rows:
+        for k in ("all", f"{t.side}:{t.setup}"):
+            per_day[k][at[t.at]] += t.r_net
+            counts[k] += 1
+    series, max_dd = {}, {}
+    for k in keys:
+        total = peak = worst = 0.0
+        run = []
+        for v in per_day[k]:
+            total += v
+            peak = max(peak, total)
+            worst = min(worst, total - peak)
+            run.append(total)
+        series[k], max_dd[k] = run, round(worst, 2)
+    if len(days) > max_points:
+        keep = sorted({round(i * (len(days) - 1) / (max_points - 1)) for i in range(max_points)})
+    else:
+        keep = range(len(days))
+    return {"basis": "plan_day", "days": [days[i] for i in keep],
+            "series": {k: [round(series[k][i], 2) for i in keep] for k in keys},
+            "max_dd": max_dd, "trades": counts}
+
+
 def gate_view(trades: list[Trade], cut: str | None, h: horizons.Horizon) -> dict:
     """What the #146 rule changes: the dip catch, the short, the held-out dates and the crashes."""
     _, valid = split(trades, cut, h)
@@ -545,6 +585,7 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
     if risk:
         report.risk_gate = {"on": gate_view(trades, cut, h),
                             "off": gate_view(evaluate(snaps, h, costs, gate=False), cut, h)}
+    report.equity = equity(trades)
     if do_sweep:
         report.sweep = sweep(snaps, h, costs)
     return report

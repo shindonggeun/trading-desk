@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { REGIME, SETUP } from "../components/PlaybookCard";
 import type { BacktestAgg, BacktestReport, BacktestSummary, RegimeId } from "../types";
@@ -89,6 +89,67 @@ function GroupTable({ groups, title }: { groups: Record<string, BacktestAgg>; ti
         </tbody>
       </table>
     </div>
+  );
+}
+
+const W = 600;
+const H = 180;
+
+/**
+ * #192 누적 R 곡선 — 계획일 기준(같은 날 세운 계획이 겹쳐 실제 계좌 곡선이 아니다). 0 선과 학습 / 검증 경계(split.cut).
+ * SVG 는 가로로 늘어나므로 선은 non-scaling-stroke, 글자는 SVG 밖 HTML 로 둔다.
+ */
+function EquityCurve({ equity, cut }: { equity: NonNullable<BacktestReport["equity"]>; cut: string | null }) {
+  const keys = Object.keys(equity.series);
+  const [key, setKey] = useState("all");
+  const k = equity.series[key] ? key : "all";
+  const ys = equity.series[k] ?? [];
+  const n = equity.days.length;
+  const geo = useMemo(() => {
+    const lo = Math.min(0, ...ys);
+    const hi = Math.max(0, ...ys);
+    const span = hi - lo || 1;
+    const x = (i: number) => (n > 1 ? (i / (n - 1)) * W : W / 2);
+    const y = (v: number) => H - ((v - lo) / span) * H;
+    const path = ys.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+    const cutAt = cut ? equity.days.findIndex((d) => d >= cut) : -1;
+    return { lo, hi, path, zero: y(0), cutX: cutAt > 0 ? x(cutAt) : null };
+  }, [ys, n, cut, equity.days]);
+  if (!n) return null;
+  const last = ys[ys.length - 1];
+  const r = (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(1)}R`;
+  return (
+    <section className="card bt-equity">
+      <h3>누적 R <span className="muted small">계획일 기준 · 비용 차감 — 계획이 겹쳐 실제 계좌 곡선은 아닙니다</span></h3>
+      <div className="chips" role="group" aria-label="곡선 묶음">
+        {keys.map((s) => (
+          <button key={s} type="button" className={`chip ${k === s ? "chip-on" : ""}`} aria-pressed={k === s} onClick={() => setKey(s)}>
+            {s === "all" ? "전체" : label(s)}
+          </button>
+        ))}
+      </div>
+      <div className="bt-curve-box">
+        <span className="bt-curve-y bt-curve-hi num muted small">{r(geo.hi)}</span>
+        <span className="bt-curve-y bt-curve-lo num muted small">{r(geo.lo)}</span>
+        <svg className="bt-curve" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img"
+          aria-label={`${k === "all" ? "전체" : label(k)} 누적 ${r(last)}, 최대 낙폭 ${r(equity.max_dd[k] ?? 0)}, ${equity.trades[k] ?? 0}건`}>
+          <line className="bt-curve-zero" x1={0} x2={W} y1={geo.zero} y2={geo.zero} vectorEffect="non-scaling-stroke" />
+          {geo.cutX != null && (
+            <line className="bt-curve-cut" x1={geo.cutX} x2={geo.cutX} y1={0} y2={H} vectorEffect="non-scaling-stroke" />
+          )}
+          <path className={`bt-curve-line ${last >= 0 ? "bt-curve-up" : "bt-curve-down"}`} d={geo.path} vectorEffect="non-scaling-stroke" />
+        </svg>
+      </div>
+      <div className="bt-curve-x muted small">
+        <span>{equity.days[0]}</span>
+        <span>{equity.days[n - 1]}</span>
+      </div>
+      {geo.cutX != null && <p className="muted small bt-curve-cut-note">점선 = 검증 구간 시작({cut}) — 그 뒤는 규칙 · 값을 고를 때 안 본 구간</p>}
+      <p className="small bt-curve-sum">
+        끝 <strong className={`num ${last > 0 ? "up" : last < 0 ? "down" : ""}`}>{r(last)}</strong> · 최대 낙폭{" "}
+        <strong className="num down">{r(equity.max_dd[k] ?? 0)}</strong> · {(equity.trades[k] ?? 0).toLocaleString("ko-KR")}건
+      </p>
+    </section>
   );
 }
 
@@ -212,10 +273,12 @@ export default function Backtest() {
             ? <GroupTable groups={groups} title={VIEWS.find((v) => v.key === view)!.title} />
             : <p className="muted small">이 리포트에는 이 구분이 없습니다.</p>}
           <p className="muted small bt-note">
-            계획은 봉마다 하나씩 겹쳐 세운 것이라 건수가 실제 독립 표본보다 많습니다. 기대 R 은 수수료 · 슬리피지를 뺀 값, 자본 곡선은 아직 없습니다.
+            계획은 봉마다 하나씩 겹쳐 세운 것이라 건수가 실제 독립 표본보다 많습니다. 기대 R 은 수수료 · 슬리피지를 뺀 값입니다.
           </p>
         </section>
       )}
+
+      {report?.equity?.days?.length ? <EquityCurve key={report.horizon} equity={report.equity} cut={report.split.cut} /> : null}
 
       {report?.risk_gate && Object.keys(report.risk_gate.on).length > 0 && <RiskGate gate={report.risk_gate} />}
 

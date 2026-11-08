@@ -1294,6 +1294,9 @@ h1 .fav-star { font-size: var(--fs-xl); }
 .charts-chips-gap { margin-left: 8px; }
 .charts-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
 .charts-actions button { padding: 3px 10px; font-size: 12px; }
+.charts-weekly { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 6px; }
+.charts-weekly-toggle { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.wm-charts { margin-left: auto; }
 .charts-page .price-chart-box,
 .charts-page .price-chart-box.with-rsi,
 .charts-page .price-chart-box.with-rsi.with-osc2 { height: max(420px, calc(100vh - 300px)); height: max(420px, calc(100dvh - 300px)); }

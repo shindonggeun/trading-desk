@@ -14,4 +14,12 @@ export const WEEKLY_NAMES: Record<string, string> = {
   "NQ=F": "나스닥100 선물", QQQ: "나스닥100 ETF(QQQ)", SOXX: "반도체 ETF(SOXX)", "^GSPC": "S&P 500", "^KS200": "코스피200",
 };
 
+/** 주간 지도의 위치 이름(#205 카드 · #235 차트 탭) */
+export const WEEKLY_POSITION: Record<"above_black" | "between" | "below_red", string> = {
+  above_black: "검정선 위", between: "검정선 아래 · 빨간선 위", below_red: "빨간선 아래",
+};
+
+/** #235 그 종목의 차트 탭을 주봉으로 */
+export const chartsLink = (symbol: string) => `#/charts?t=${encodeURIComponent(symbol)}&iv=1w`;
+
 export const weeklyLink = (symbol: string) => `#/weekly?symbol=${encodeURIComponent(symbol)}`;

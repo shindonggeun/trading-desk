@@ -5,6 +5,7 @@ import WeeklyMapChart from "../components/WeeklyMapChart";
 import { useFavorites } from "../favorites";
 import { price } from "../format";
 import type { WeeklyHistoryRow, WeeklyMap as Map, WeeklyMapError } from "../types";
+import { chartsLink, WEEKLY_POSITION } from "../weekly";
 
 /**
  * #205 주간 시장 지도(#202) — 지수마다 "지금 어디쯤인지, 어디까지 빠질 수 있고 어디가 바닥 후보인지"를
@@ -12,9 +13,7 @@ import type { WeeklyHistoryRow, WeeklyMap as Map, WeeklyMapError } from "../type
  * 한 지수가 실패하면 그 카드만 "불러오지 못함".
  */
 
-const POSITION: Record<Map["position"], string> = {
-  above_black: "검정선 위", between: "검정선 아래 · 빨간선 위", below_red: "빨간선 아래",
-};
+const POSITION = WEEKLY_POSITION;
 const pct = (v: number | null | undefined) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`);
 const tone = (v: number | null | undefined) => (v == null ? "" : v > 0 ? "up" : v < 0 ? "down" : "");
 const isMap = (m: Map | WeeklyMapError): m is Map => !("error" in m);
@@ -57,6 +56,7 @@ function MapCard({ map, focused }: { map: Map; focused: boolean }) {
           {price(map.close)} · {map.week} 주{!map.week_complete && " (마감 전)"}
           {map.source_symbol && ` · ${map.source_symbol} 로 계산`}
         </span>
+        <a className="small wm-charts" href={chartsLink(map.source_symbol ?? map.symbol)}>차트 탭에서 보기 →</a>
       </div>
       <p className="wm-headline">{map.text.headline}</p>
       {prev && (

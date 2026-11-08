@@ -1,9 +1,11 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import InstrumentSearch, { type Picked } from "../components/InstrumentSearch";
-import type { Interval } from "../components/PriceChart";
+import type { ExtraLine, Interval } from "../components/PriceChart";
 import { useFavorites } from "../favorites";
-import type { Run } from "../types";
+import { price } from "../format";
+import type { Run, WeeklyMap, WeeklyMapError } from "../types";
+import { WEEKLY_POSITION, weeklyLink } from "../weekly";
 
 const PriceChart = lazy(() => import("../components/PriceChart"));
 
@@ -16,6 +18,31 @@ const PriceChart = lazy(() => import("../components/PriceChart"));
 const INTERVALS: Interval[] = ["5m", "15m", "30m", "60m", "240m", "1d", "1w", "1M", "1y"];
 const RECENT_KEY = "desk.charts.recent";
 const RECENT_MAX = 8;
+const WEEKLY_KEY = "desk.charts.weekly";
+
+const pct = (v: number | null | undefined) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`);
+const isMap = (m: WeeklyMap | WeeklyMapError): m is WeeklyMap => !("error" in m);
+
+function css(name: string, fallback: string): string {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+
+/** #235 주간 선(검정선 · 빨간선)을 차트에 겹칠지 — 이 브라우저에 기억, 기본 켬 */
+function loadWeeklyOn(): boolean {
+  try {
+    return localStorage.getItem(WEEKLY_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+function saveWeeklyOn(on: boolean) {
+  try {
+    localStorage.setItem(WEEKLY_KEY, on ? "on" : "off");
+  } catch {
+    /* storage blocked: the choice is not kept */
+  }
+}
 
 function today(): string {
   const d = new Date();
@@ -59,6 +86,8 @@ export default function Charts({ query }: { query: URLSearchParams }) {
   const favorites = useFavorites().list ?? [];
   const [underlying, setUnderlying] = useState<string | null>(null);
   const [lastRun, setLastRun] = useState<Run | null>(null);
+  const [weekly, setWeekly] = useState<WeeklyMap | WeeklyMapError | null>(null);
+  const [weeklyOn, setWeeklyOn] = useState(loadWeeklyOn);
   const name = recent.find((r) => r.ticker === ticker)?.name ?? favorites.find((f) => f.ticker === ticker)?.name ?? null;
 
   const open = (p: Picked) => {
@@ -92,6 +121,32 @@ export default function Charts({ query }: { query: URLSearchParams }) {
     api.runs(1, 50).then((p) => alive && setLastRun(p.items.find((r) => r.ticker === ticker) ?? null), () => {});
     return () => { alive = false; };
   }, [ticker]);
+
+  // #235 이 종목의 주간 지도(#202 · #229) — 실패는 위치 줄에서 한 줄로
+  useEffect(() => {
+    setWeekly(null);
+    if (!ticker) return;
+    let alive = true;
+    api.weeklyMaps(ticker).then(
+      (r) => alive && setWeekly(r.maps[0] ?? { symbol: ticker, name: ticker, error: "empty" }),
+      () => alive && setWeekly({ symbol: ticker, name: ticker, error: "failed" }),
+    );
+    return () => { alive = false; };
+  }, [ticker]);
+
+  // 다른 심볼로 계산한 지도(코스피200 → 069500.KS 등)는 가격 단위가 달라 선을 겹치지 않는다
+  const map = weekly && isMap(weekly) && (!weekly.source_symbol || weekly.source_symbol === ticker) ? weekly : null;
+  const weeklyLines = useMemo<ExtraLine[] | undefined>(() => {
+    if (!map || !weeklyOn) return undefined;
+    return [
+      { price: map.lines.black.price, label: `검정선 ${map.lines.black.weeks}주`, color: css("--text", "#e6e9ee") },
+      { price: map.lines.red.price, label: `빨간선 ${map.lines.red.weeks}주`, color: css("--up", "#e5484d") },
+    ];
+  }, [map, weeklyOn]);
+  const toggleWeekly = (on: boolean) => {
+    setWeeklyOn(on);
+    saveWeeklyOn(on);
+  };
 
   const onInterval = useCallback((next: Interval) => go(ticker, next, false), [ticker]);
   const analyze = `#/?ticker=${encodeURIComponent(ticker)}${name ? `&name=${encodeURIComponent(name)}` : ""}`;
@@ -132,12 +187,40 @@ export default function Charts({ query }: { query: URLSearchParams }) {
             {lastRun && <a href={`#/runs/${lastRun.id}`}>최근 분석({lastRun.trade_date}) 열기</a>}
           </div>
         )}
+        {ticker && weekly && (
+          <div className="charts-weekly small">
+            {map ? (
+              <>
+                <span className="muted">주간</span>
+                <span className={`wm-pos wm-pos-${map.position}`}>{WEEKLY_POSITION[map.position]}</span>
+                <span className="num">검정 {price(map.lines.black.price)} · 빨강 {price(map.lines.red.price)}</span>
+                <span className="num">
+                  다음 선 <span className="down">↓ {price(map.scenario.down.price)} {pct(map.scenario.down.pct)}</span>
+                  {" · "}<span className="up">↑ {price(map.scenario.up.price)} {pct(map.scenario.up.pct)}</span>
+                </span>
+                {map.cross && <strong>{map.cross === "broke_black" ? "이번 주 검정선 이탈" : "이번 주 검정선 되찾음"}</strong>}
+                <label className="charts-weekly-toggle">
+                  <input type="checkbox" checked={weeklyOn} onChange={(e) => toggleWeekly(e.target.checked)} />
+                  주간 선 차트에 표시
+                </label>
+                <a href={weeklyLink(ticker)}>주간 지도 보기 →</a>
+              </>
+            ) : isMap(weekly) ? (
+              <>
+                <span className="muted">주간 지도는 {weekly.source_symbol} 로 계산해 이 차트에 선을 겹치지 않습니다.</span>
+                <a href={weeklyLink(ticker)}>주간 지도 보기 →</a>
+              </>
+            ) : (
+              <span className="muted">주봉이 모자라거나 받지 못해 주간 선 없이 차트만 보여 줍니다.</span>
+            )}
+          </div>
+        )}
       </section>
 
       {ticker ? (
         <Suspense fallback={<p className="muted">차트를 여는 중…</p>}>
           <PriceChart key={ticker} ticker={ticker} tradeDate={today()} plan={null} title={name ?? ticker}
-            initialInterval={iv} onIntervalChange={onInterval} />
+            initialInterval={iv} onIntervalChange={onInterval} extraLines={weeklyLines} />
         </Suspense>
       ) : (
         <section className="card charts-empty">

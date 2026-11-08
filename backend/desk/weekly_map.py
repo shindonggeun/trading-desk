@@ -392,8 +392,11 @@ def print_lines(report: dict, out=None) -> None:
 # ---------------------------------------------------------------- live
 
 
+CACHE_SYMBOLS = 64        # any ticker can be asked for (#229): the oldest cached ones go first
+
+
 class Maps:
-    """Weekly bars per index from Yahoo, cached; thread-safe (read from worker threads)."""
+    """Weekly bars per index (or any ticker, #229) from Yahoo, cached; thread-safe (read from worker threads)."""
 
     def __init__(self, candles: Callable | None = None, ttl_sec: float = 3600.0, clock=time.monotonic) -> None:
         if candles is None:
@@ -425,7 +428,10 @@ class Maps:
                 used = sym
                 break
         with self._lock:
+            self._rows.pop(symbol, None)
             self._rows[symbol] = (self._clock(), used, got)
+            while len(self._rows) > CACHE_SYMBOLS:          # dicts keep insertion order: drop the oldest
+                self._rows.pop(next(iter(self._rows)))
         return used, got
 
     def one(self, symbol: str) -> dict:

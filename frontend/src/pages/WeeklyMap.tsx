@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import InstrumentSearch, { type Picked } from "../components/InstrumentSearch";
 import WeeklyMapChart from "../components/WeeklyMapChart";
+import { useFavorites } from "../favorites";
 import { price } from "../format";
 import type { WeeklyHistoryRow, WeeklyMap as Map, WeeklyMapError } from "../types";
 
@@ -94,16 +96,70 @@ function ErrorCard({ m }: { m: WeeklyMapError }) {
   );
 }
 
+// #229 즐겨찾기 종목 지도 켬 · 끔(이 브라우저에만 — 편의용)
+const FAV_KEY = "desk.weekly.favorites";
+function loadFavOn(): boolean {
+  try {
+    return localStorage.getItem(FAV_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function saveFavOn(on: boolean) {
+  try {
+    localStorage.setItem(FAV_KEY, on ? "1" : "0");
+  } catch {
+    /* storage blocked: the toggle just is not kept */
+  }
+}
+
+/** 지수 외 종목 하나의 지도(#229) — 검색한 종목 · 즐겨찾기 종목 */
+function useOneMap(symbol: string | null): Map | WeeklyMapError | null {
+  const [m, setM] = useState<Map | WeeklyMapError | null>(null);
+  useEffect(() => {
+    setM(null);
+    if (!symbol) return;
+    let alive = true;
+    api.weeklyMaps(symbol).then(
+      (r) => alive && setM(r.maps[0] ?? null),
+      () => alive && setM({ symbol, name: symbol, error: "불러오지 못함" }),
+    );
+    return () => { alive = false; };
+  }, [symbol]);
+  return m;
+}
+
+function OneCard({ symbol, focused, label }: { symbol: string; focused: boolean; label?: string | null }) {
+  const got = useOneMap(symbol);
+  if (!got) return <section className="card wm-card"><p className="muted small">{label ?? symbol} 주봉을 받는 중…</p></section>;
+  // 서버는 지수가 아닌 종목의 이름을 모른다 — 즐겨찾기에 저장된 이름이 있으면 그것으로
+  const m = label && got.name === got.symbol ? { ...got, name: `${label} (${symbol})` } : got;
+  return isMap(m) ? <MapCard map={m} focused={focused} /> : <ErrorCard m={m} />;
+}
+
 export default function WeeklyMap({ query }: { query: URLSearchParams }) {
   const [maps, setMaps] = useState<(Map | WeeklyMapError)[] | null>(null);
   const [failed, setFailed] = useState(false);
-  const focus = query.get("symbol");
+  const [search, setSearch] = useState<Picked>({ ticker: "" });
+  const [favOn, setFavOn] = useState(loadFavOn);
+  const favorites = useFavorites().list ?? [];
+  const focus = query.get("symbol")?.toUpperCase() ?? null;
   useEffect(() => {
     let alive = true;
     api.weeklyMaps().then((r) => alive && setMaps(r.maps), () => alive && setFailed(true));
     return () => { alive = false; };
   }, []);
   const first = maps?.find(isMap);
+  const indexes = new Set((maps ?? []).map((m) => m.symbol));
+  // 주소의 종목이 지수가 아니면(검색한 종목) 그 카드를 맨 위에
+  const searched = focus && maps && !indexes.has(focus) ? focus : null;
+  const favs = favOn ? favorites.map((f) => f.ticker).filter((t) => !indexes.has(t) && t !== searched) : [];
+  const open = (p: Picked) => {
+    const t = p.ticker.trim().toUpperCase();
+    if (!t) return;
+    setSearch({ ticker: "" });
+    window.location.hash = `#/weekly?symbol=${encodeURIComponent(t)}`;
+  };
   return (
     <main className="page weekly-map">
       <section className="card wm-intro">
@@ -113,9 +169,24 @@ export default function WeeklyMap({ query }: { query: URLSearchParams }) {
           예외였는지를 함께 적었습니다. 예측이 아니라 가격이 과거에 멈춘 자리입니다.
         </p>
       </section>
+      <section className="card wm-tools">
+        <div className="wm-search">
+          <label className="sr-only" htmlFor="wm-search">종목 지도 보기</label>
+          <InstrumentSearch inputId="wm-search" value={search} onChange={setSearch} onPick={open}
+            placeholder="다른 종목의 주간 지도 — 이름 · 티커(예: NVDA, 삼성전자)" />
+          <button type="button" onClick={() => open(search)} disabled={!search.ticker.trim()}>보기</button>
+        </div>
+        <label className="wm-fav small">
+          <input type="checkbox" checked={favOn} onChange={(e) => { setFavOn(e.target.checked); saveFavOn(e.target.checked); }} />
+          즐겨찾기 종목의 지도도 보기{favOn && favorites.length === 0 ? " (즐겨찾기가 없습니다)" : ""}
+        </label>
+      </section>
       {failed && <p className="error small">주간 지도를 불러오지 못했습니다.</p>}
       {!maps && !failed && <p className="muted small">주봉을 받는 중…</p>}
+      {searched && <OneCard key={`s-${searched}`} symbol={searched} focused label={favorites.find((f) => f.ticker === searched)?.name} />}
       {maps?.map((m) => (isMap(m) ? <MapCard key={m.symbol} map={m} focused={m.symbol === focus} /> : <ErrorCard key={m.symbol} m={m} />))}
+      {favs.length > 0 && <h3 className="wm-fav-title">즐겨찾기 종목</h3>}
+      {favs.map((t) => <OneCard key={`f-${t}`} symbol={t} focused={false} label={favorites.find((f) => f.ticker === t)?.name} />)}
       {first && (
         <div className="wm-help">
           <section className="card">

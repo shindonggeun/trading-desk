@@ -3,7 +3,7 @@ import { api } from "../api";
 import { price } from "../format";
 import type {
   EconEvent, HorizonId, LivePlaybooks, LivePlaybookSide, LowerTrigger, Outcome, Plan, PlanTrigger, PlaybookOutcome, PlaybookSide,
-  Playbooks, RegimeId, RiskPhase, RiskRegime,
+  PlaybookCalibration, Playbooks, RegimeId, RiskPhase, RiskRegime,
 } from "../types";
 import { useEstimate, useLiveQuote } from "./PlanCard";
 
@@ -225,11 +225,42 @@ export function playbookState(side: PlaybookSide, dir: "long" | "short", p: numb
   return dist <= atr ? "near" : "waiting";
 }
 
-function Side({ side, dir, state, result, live, lower, interval }: {
+const CAL_LEVEL: Record<NonNullable<PlaybookCalibration["level"]>, string> = {
+  band: "같은 셋업 · 국면 · 점수대", regime: "같은 셋업 · 국면", setup: "같은 셋업 전체",
+};
+
+/** #147 데스크 실적 — 이 셋업이 지금까지 T1 에 먼저 닿은 비율과 비용 차감 기대 R. 표본이 모자라면 숫자를 내지 않는다 */
+function CalibrationRow({ cal }: { cal: PlaybookCalibration }) {
+  if (cal.thin || cal.p_t1 == null || cal.exp_r == null) {
+    return (
+      <div className="pb-row">
+        <dt>데스크 실적</dt>
+        <dd className="small"><span className="pb-cal-thin">표본 부족</span> <span className="muted">({cal.n}건 — 확률을 내지 않습니다)</span></dd>
+      </div>
+    );
+  }
+  const r = `${cal.exp_r > 0 ? "+" : ""}${cal.exp_r.toFixed(2)}R`;
+  return (
+    <div className="pb-row">
+      <dt>데스크 실적</dt>
+      <dd className="small">
+        T1 먼저 <strong className="num">{Math.round(cal.p_t1 * 100)}%</strong>
+        {cal.p_range && <span className="muted"> ({Math.round(cal.p_range[0] * 100)}~{Math.round(cal.p_range[1] * 100)}%)</span>}
+        {" · "}기대 <strong className={`num ${cal.exp_r > 0 ? "up" : cal.exp_r < 0 ? "down" : ""}`}>{r}</strong>
+        <span className="muted"> · {cal.n.toLocaleString("ko-KR")}건{cal.level ? `, ${CAL_LEVEL[cal.level]}` : ""}{cal.live_n ? ` · 운영 ${cal.live_n}건 포함` : ""}</span>
+        {cal.negative && <span className="pb-cal-neg"> 실적상 기대 R 이 음수 — 근거를 더 갖추고 비중을 줄이세요</span>}
+      </dd>
+    </div>
+  );
+}
+
+function Side({ side, dir, state, result, live, lower, interval, cal }: {
   side: PlaybookSide; dir: "long" | "short"; state: PlaybookState; result?: PlaybookOutcome;
   live?: { since: string | null; stale: boolean; note: string | null };
   /** #149 실시간 하위 봉 트리거와 그 봉 간격 */
   lower?: LowerTrigger | null; interval?: string;
+  /** #147 보정 — 실시간 응답에 없으면 분석 당시 값 */
+  cal?: PlaybookCalibration | null;
 }) {
   const name = dir === "long" ? "롱" : "숏";
   if (!has(side)) {
@@ -315,6 +346,7 @@ function Side({ side, dir, state, result, live, lower, interval }: {
           <dt>비중</dt>
           <dd className="small">{side.size_hint === "half" ? "평소의 절반" : "평소대로"}{side.flat_by_close ? " · 그날 안에 청산" : ""} · 점수 {side.score}</dd>
         </div>
+        {cal && <CalibrationRow cal={cal} />}
       </dl>
       {side.conditions.length > 0 && (
         <ul className="pb-conditions" aria-label={`${name} 확인 신호`}>
@@ -423,9 +455,9 @@ export default function PlaybookCard({ plan, symbol, outcome, runId, horizon }: 
       )}
       <div className="pb-sides">
         <Side side={pb.long} dir="long" state={states.long} result={outcome?.playbooks?.long} live={cur ? liveOf(cur.long, "long") : undefined}
-          lower={lower.long} interval={interval} />
+          lower={lower.long} interval={interval} cal={pb.long.calibration ?? saved.long.calibration} />
         <Side side={pb.short} dir="short" state={states.short} result={outcome?.playbooks?.short} live={cur ? liveOf(cur.short, "short") : undefined}
-          lower={lower.short} interval={interval} />
+          lower={lower.short} interval={interval} cal={pb.short.calibration ?? saved.short.calibration} />
       </div>
       <p className="muted small pb-note">가격은 계산이지 예측이 아닙니다. ◌ 는 직접 지켜볼 신호, – 는 데이터가 없어 판단하지 못한 신호입니다.</p>
     </section>

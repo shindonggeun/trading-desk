@@ -277,6 +277,11 @@ export interface PlaybookSide {
   trigger?: PlanTrigger | LowerTrigger | null;
   /** #146 시장 투매 점수가 걸러 낸 것: selling → 사다리 1차만(held = 뺀 차수), exhausting → 숏을 쉼(setup = 원래 셋업) */
   gate?: { phase: RiskPhase; text: string; held: { step: number; price: number; share: number }[]; setup?: PlaybookSetup } | null;
+  /** #147 데스크 실적으로 보정한 T1 도달 확률 · 기대 R · 표본 수(표본 부족이면 확률 · 기대 R 은 null) */
+  p_t1?: number | null;
+  exp_r?: number | null;
+  n?: number;
+  calibration?: PlaybookCalibration | null;
   avg_entry: number | null;
   stop: number | null;
   risk: number | null;
@@ -838,4 +843,21 @@ export interface BacktestReport {
   /** #146 규칙 켬 / 끔 — 키마다 묶음 성적, losing_streak 만 숫자 */
   risk_gate?: { on: Record<string, BacktestAgg | number>; off: Record<string, BacktestAgg | number> };
   notes: string[];
+}
+
+/** #147 desk/calibration.Table.look — 셋업 · 국면 · 점수 구간의 데스크 실적(백테스트 + 운영 채점) */
+export interface PlaybookCalibration {
+  p_t1: number | null;
+  exp_r: number | null;
+  n: number;
+  /** 어느 묶음에서 읽었나: 점수 구간 → 셋업 · 국면 → 셋업 전체(앞이 얇으면 뒤로) */
+  level: "band" | "regime" | "setup" | null;
+  /** 표본이 모자라 확률 · 기대 R 을 내지 않음 */
+  thin: boolean;
+  /** T1 확률의 90% 구간 */
+  p_range: [number, number] | null;
+  /** 그중 운영 채점 건수 */
+  live_n: number;
+  /** 표본이 충분한데 기대 R 90% 상한까지 음수 */
+  negative: boolean;
 }

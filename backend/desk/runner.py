@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, replace
@@ -288,6 +289,63 @@ async def _quiet(name: str, coro: Awaitable):
         return None
 
 
+# #171 step 7: after the model provider says "too many requests", runs go one at a time this long.
+RATE_LIMIT_COOLDOWN_MIN = 30.0
+_RATE_LIMIT_WORDS = re.compile(r"\b429\b|rate.?limit|too many requests|usage.?limit", re.IGNORECASE)
+
+
+def rate_limited(error: BaseException | str | None) -> bool:
+    """A provider's rate limit anywhere in ``error``: an exception (its cause and context chain
+    too - openai's RateLimitError has status 429, a wrapper may hide it) or an error string."""
+    seen: set[int] = set()
+    while isinstance(error, BaseException) and id(error) not in seen:
+        seen.add(id(error))
+        if getattr(error, "status_code", None) == 429 or type(error).__name__ == "RateLimitError":
+            return True
+        if _has_rate_words(str(error)):
+            return True
+        error = error.__cause__ or error.__context__
+    return isinstance(error, str) and _has_rate_words(error)
+
+
+def _has_rate_words(text: str) -> bool:
+    return bool(_RATE_LIMIT_WORDS.search(text))
+
+
+class _Gate:
+    """At most ``limit`` runs at once; one at a time for ``cooldown`` seconds after ``back_off()``.
+
+    Shrinking never stops a run already going: the next one just waits until fewer than the
+    current limit are running."""
+
+    def __init__(self, limit: int, cooldown: float, clock: Callable[[], float] = time.monotonic) -> None:
+        self._max = max(1, limit)
+        self._cooldown = cooldown
+        self._clock = clock
+        self._calm_until = 0.0
+        self._active = 0
+        self._changed = asyncio.Condition()
+
+    def limit(self) -> int:
+        return 1 if self._clock() < self._calm_until else self._max
+
+    def back_off(self) -> bool:
+        """Start (or extend) the cooldown; True when it was not already on."""
+        was_on = self._clock() < self._calm_until
+        self._calm_until = self._clock() + self._cooldown
+        return not was_on and self._max > 1
+
+    async def __aenter__(self) -> None:
+        async with self._changed:
+            await self._changed.wait_for(lambda: self._active < self.limit())
+            self._active += 1
+
+    async def __aexit__(self, *_exc) -> None:
+        async with self._changed:
+            self._active -= 1
+            self._changed.notify_all()
+
+
 class RunManager:
     def __init__(self, store: Store, hub: Hub, runner: Runner, broker: Broker, max_concurrent: int,
                  levels=fill_levels, prices: PriceSource | None = None, related=collect_related,
@@ -298,7 +356,7 @@ class RunManager:
                  calendar: Callable[[], str | None] | None = None,
                  credit: Callable[[], str | None] | None = None,
                  risk: Callable[[str, str | None], dict | None] | None = None,
-                 reuse_minutes: float = 0) -> None:
+                 reuse_minutes: float = 0, rate_limit_cooldown_min: float = RATE_LIMIT_COOLDOWN_MIN) -> None:
         self.levels = levels
         # #171: news and fundamentals reports this fresh are taken over from an earlier run (0 = off)
         self.reuse_minutes = reuse_minutes
@@ -323,8 +381,17 @@ class RunManager:
         self.hub = hub
         self.runner = runner
         self.broker = broker
-        self._slots = asyncio.Semaphore(max(1, max_concurrent))
+        # #171 step 7: every run draws on the same model plan - up to max_concurrent at once, one at a
+        # time for a while after a rate limit; the same instrument (a product and its underlying
+        # alike) never twice at once, so a re-run waits for, and can reuse, the run before it
+        self._slots = _Gate(max_concurrent, rate_limit_cooldown_min * 60)
+        self._instrument_locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()
+
+    def _note_rate_limit(self, run_id: str, error: BaseException | str | None) -> None:
+        if rate_limited(error) and self._slots.back_off():
+            log.warning("run %s hit the model provider's rate limit: one run at a time for %.0f min",
+                        run_id, self._slots._cooldown / 60)
 
     async def _playbooks(self, request: RunRequest, sr: dict | None, live: dict | None, h: horizons.Horizon,
                          related: dict | None, ticker: str, market: dict | None = None) -> dict | None:
@@ -645,8 +712,15 @@ class RunManager:
             picked[analyst] = row
         return [{"analyst": analyst, **row} for analyst, row in picked.items()]
 
+    def _instrument_lock(self, request: RunRequest) -> asyncio.Lock:
+        """One lock per analysed instrument: SOXL and SOXX both run the graph on SOXX."""
+        lever = under.leverage_of(request.ticker)
+        key = (lever[0] if lever else request.ticker).upper()
+        return self._instrument_locks.setdefault(key, asyncio.Lock())
+
     async def _execute(self, run_id: str, request: RunRequest) -> None:
-        async with self._slots:
+        # the instrument first: a second run of it waits without holding a slot another ticker could use
+        async with self._instrument_lock(request), self._slots:
             self.store.mark_running(run_id)
             # A leveraged/inverse product is analysed through its underlying (desk.underlying, #82):
             # TradingAgents reads SOXX, then the leverage analyst turns the call into one on SOXL.
@@ -793,6 +867,9 @@ class RunManager:
                 if late:
                     plan["timing"]["late_notes"] = late
                 log.info("run %s %s timing: %s", run_id, request.ticker, watch.line())
+                # the side calls catch their own failures; a rate limit there still slows the queue
+                for error in (plan.get("leverage_analyst_error"), plan.get("consensus_error")):
+                    self._note_rate_limit(run_id, error)
                 self.store.mark_done(run_id, plan, result.report_path)
                 self._publish(run_id, {"type": "plan", "agent": "portfolio_manager", "data": plan})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "done"})
@@ -801,6 +878,7 @@ class RunManager:
                 # a slow run that fails is still worth timing (up to the last finished stage)
                 log.info("run %s %s timing (failed): %s", run_id, request.ticker, watch.line())
                 message = f"{type(exc).__name__}: {exc}"
+                self._note_rate_limit(run_id, exc)
                 self.store.mark_failed(run_id, message)
                 self._publish(run_id, {"type": "error", "agent": "system", "content": message})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "failed"})

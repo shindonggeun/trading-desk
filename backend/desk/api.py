@@ -267,7 +267,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        positioning=None if settings.fake_runs else positioning.note_for,
                                        risk=risk,
                                        # #171: recent news/fundamentals reports taken over (0 = off)
-                                       reuse_minutes=settings.reuse_reports_min)
+                                       reuse_minutes=settings.reuse_reports_min,
+                                       rate_limit_cooldown_min=settings.rate_limit_cooldown_min)
 
         async def keep_listing_fresh():
             while True:

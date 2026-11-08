@@ -18,6 +18,8 @@ x-backend-environment: &backend_environment
   DESK_FAKE_RUNS: ${DESK_FAKE_RUNS:-false}
   DESK_FAKE_DELAY: ${DESK_FAKE_DELAY:-0.6}
   DESK_MAX_CONCURRENT_RUNS: ${DESK_MAX_CONCURRENT_RUNS:-1}
+  # 모델 속도 제한(429) 뒤 이 시간(분) 동안은 1개씩만 돌린다(#171)
+  DESK_RATE_LIMIT_COOLDOWN_MIN: ${DESK_RATE_LIMIT_COOLDOWN_MIN:-30}
   # 같은 종목 · 날짜 · 보기 · 언어로 N분 안에 다시 분석하면 뉴스 · 펀더멘털 보고서를 재사용(#171). 0 = 끔
   DESK_REUSE_REPORTS_MIN: ${DESK_REUSE_REPORTS_MIN:-0}
   # 끝난 분석 기록 보관 일수. 기동 시 · 하루 1회 지난 run 을 지운다. 0 = 지우지 않음

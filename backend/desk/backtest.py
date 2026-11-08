@@ -59,6 +59,9 @@ SWEEP: dict[str, list] = {
                {"crash": (0.34, 0.33, 0.33), "default": (0.34, 0.33, 0.33)},
                {"crash": (0.5, 0.3, 0.2), "default": (0.5, 0.3, 0.2)}],
     "min_score": [0, 40, 60],
+    # #145: 0 leaves the source out - a source stays on only where it beats 0 on both halves
+    "AVWAP_WEIGHT": [0.0, 0.5, 1.0, 1.5],
+    "GAP_FILL_WEIGHT": [0.0, 0.5, 1.0, 1.5],
 }
 
 

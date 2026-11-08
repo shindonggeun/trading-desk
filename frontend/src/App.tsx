@@ -12,6 +12,7 @@ import { navigation } from "./nav";
 import ChartView from "./pages/ChartView";
 import Settings from "./pages/Settings";
 import Backtest from "./pages/Backtest";
+import WeeklyMap from "./pages/WeeklyMap";
 import { resetFavorites } from "./favorites";
 
 function safeDecode(v: string): string {
@@ -78,6 +79,7 @@ export default function App() {
   const onHistory = route.startsWith("#/history");
   const onSectors = route.startsWith("#/sectors");
   const onBacktest = route.startsWith("#/backtest");
+  const weeklyMatch = route.match(/^#\/weekly(?:\?(.*))?$/);
   // 큰 차트(#97): #/chart/<티커>?run=…&interval=…
   const chartMatch = route.match(/^#\/chart\/([^?]+)(?:\?(.*))?$/);
 
@@ -89,11 +91,12 @@ export default function App() {
         </a>
         {user && (
           <nav aria-label="메뉴">
-            <a href="#/" className={!runMatch && !onSettings && !onReview && !onLive && !onHistory && !onSectors && !onBacktest ? "active" : ""}>대시보드</a>
+            <a href="#/" className={!runMatch && !onSettings && !onReview && !onLive && !onHistory && !onSectors && !onBacktest && !weeklyMatch ? "active" : ""}>대시보드</a>
             <a href="#/history" className={onHistory ? "active" : ""}>분석 기록</a>
             <a href="#/live" className={onLive ? "active" : ""}>시세판</a>
             <a href="#/sectors" className={onSectors ? "active" : ""}>섹터</a>
             <a href="#/review" className={onReview ? "active" : ""}>매매 복기</a>
+            <a href="#/weekly" className={weeklyMatch ? "active" : ""}>주간 지도</a>
             <a href="#/backtest" className={onBacktest ? "active" : ""}>백테스트</a>
             <a href="#/settings" className={onSettings ? "active" : ""}>설정</a>
           </nav>
@@ -123,6 +126,8 @@ export default function App() {
         <Sectors />
       ) : onReview ? (
         <Review />
+      ) : weeklyMatch ? (
+        <WeeklyMap query={new URLSearchParams(weeklyMatch[1] ?? "")} />
       ) : onBacktest ? (
         <Backtest />
       ) : onSettings ? (

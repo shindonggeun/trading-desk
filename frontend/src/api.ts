@@ -1,4 +1,4 @@
-import type { BacktestReport, BacktestSummary, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
+import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -158,6 +158,12 @@ export const api = {
   /** #185 저장소에 커밋한 바스켓 백테스트 스냅샷 — 보기별 요약과 한 보기의 리포트 */
   backtestReports: () => call<BacktestSummary[]>("/api/backtest/reports"),
   backtestReport: (horizon: string) => call<BacktestReport>(`/api/backtest/reports/${encodeURIComponent(horizon)}`),
+  /** #202 주간 시장 지도 — 주요 지수별(한 지수 실패는 그 지수만 error), symbol 로 하나만 */
+  weeklyMaps: (symbol?: string) =>
+    call<{ maps: (WeeklyMap | WeeklyMapError)[]; generated_at?: string }>(
+      `/api/market/weekly${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ""}`),
+  weeklyHistory: (symbol: string, weeks = 4) =>
+    call<{ symbol: string; weeks: WeeklyHistoryRow[] }>(`/api/market/weekly/${encodeURIComponent(symbol)}/history?weeks=${weeks}`),
   /** #160: 코스피200 근월물 선물 현황(한국투자증권) */
   marketFutures: () => call<FuturesFlow>("/api/market/futures"),
   /** 코스피 · 코스닥 투자자별 매매대금(#76). 장중 60초 · 장 밖 10분 서버 캐시. */

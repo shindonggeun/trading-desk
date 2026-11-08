@@ -895,3 +895,45 @@ export interface ValueSwingConviction {
   release: string[];
 }
 
+
+/** #202 desk/weekly_map.build — 지수 하나의 주간 시장 지도(그 주까지의 주봉만으로 계산) */
+export interface WeeklyMap {
+  version: number;
+  symbol: string;
+  name: string;
+  /** 야후에 그 지수가 없어 대신 쓴 심볼(코스피200 → 069500.KS, 나스닥 선물 → ^NDX) */
+  source_symbol?: string;
+  week: string;
+  week_complete: boolean;
+  close: number;
+  lines: { black: WeeklyLine; red: WeeklyLine };
+  position: "above_black" | "between" | "below_red";
+  cross: "broke_black" | "reclaimed_black" | null;
+  bollinger: { weeks: number; upper: number; middle: number; lower: number; lower_pct: number | null; upper_pct: number | null };
+  range_52w: { high: number; low: number; from_high_pct: number | null };
+  fibonacci: { ratio: number; price: number }[];
+  supports: number[];
+  resistances: number[];
+  candle: { kind: "long_black" | "long_white" | "lower_wick" | "upper_wick" | "plain"; label: string; change_pct: number | null };
+  scenario: { down: { price: number; pct: number | null }; up: { price: number; pct: number | null } };
+  record: {
+    black_break: { n: number; reached_red: number; rate: number | null; median_weeks: number | null; v_exceptions: string[]; pending: number; within_weeks: number };
+    bb_lower_touch: { n: number; rebounded: number; rate: number | null; lower_after: string[]; pending: number; after_weeks: number };
+  };
+  text: { headline: string; lines: string[]; glossary: { term: string; text: string }[]; checklist: string[] };
+}
+export interface WeeklyLine { weeks: number; price: number; pct: number | null }
+/** 지도를 못 만든 지수 — 그 카드만 "불러오지 못함" */
+export interface WeeklyMapError { symbol: string; name: string; error: string }
+/** GET /api/market/weekly/{symbol}/history — 지난 N주의 지도 요약, 최근 주부터 */
+export interface WeeklyHistoryRow {
+  week: string;
+  week_complete: boolean;
+  close: number;
+  lines: WeeklyMap["lines"];
+  position: WeeklyMap["position"];
+  cross: WeeklyMap["cross"];
+  candle: WeeklyMap["candle"];
+  scenario: WeeklyMap["scenario"];
+  headline: string;
+}

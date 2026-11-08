@@ -47,4 +47,16 @@ def no_yahoo_network(monkeypatch):
     from desk import api
     monkeypatch.setattr(api, "llm_analyst", offline)
     monkeypatch.setattr(api, "llm_summariser", offline)   # nor the closing summary (#94)
+    # nor SEC (#148) or the positioning sources (#154): a same-day run calls both, and a slow network
+    # held it past _wait_done's few seconds (a flaky test_inverse_pair)
+    from desk import filings, positioning
+
+    class Offline:
+        async def recent(self, *_args):
+            raise ConnectionError("no network in tests")
+
+        get = recent
+
+    monkeypatch.setattr(filings, "FILINGS", Offline())
+    monkeypatch.setattr(positioning, "POSITIONING", Offline())
     sr._CACHE.clear()

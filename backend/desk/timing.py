@@ -19,7 +19,12 @@ Caveats when reading the numbers:
 - with the library's parallel first rounds on (``TRADINGAGENTS_*_PARALLEL_FIRST_ROUND``), a debate's
   openers arrive in one state update, milliseconds apart: serial messages within ``TOGETHER_GAP`` of
   each other are one step (``together``), each timed from before that step, and the step counts
-  once in the critical path.
+  once in the critical path;
+- the desk's own stages overlap where they can (#171 step 5): ``desk_pre`` waits for the slow notes
+  (related instruments, filings, positioning) only up to the horizon's budget
+  (``runner.NOTES_WAIT_SEC``) - the ones left out are listed in ``late_notes``; ``consensus`` is the
+  closing summary with the product's playbooks and trade map built beside it, so ``desk_post`` no
+  longer holds them; ``leverage`` has the underlying side's levels filled while its analyst thinks.
 ``summarize`` turns recent plans' timings into averages for ``python -m desk.cli timing``.
 """
 

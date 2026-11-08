@@ -257,6 +257,20 @@ IMPLAUSIBLE = 0.5
 QUOTE_TIMEOUT_SEC = 10.0
 # And for the related instruments (desk.related): one Yahoo download plus a few news lists.
 RELATED_TIMEOUT_SEC = 30.0
+# #171: how long the graph waits, per horizon, for the slow notes (related instruments, filings,
+# positioning) once the levels are in. Past it the agents start without them; a late related set
+# still reaches the plan. A scalp is worth less a minute later than a swing is.
+NOTES_WAIT_SEC = {"scalp": 5.0, "intraday": 8.0, "short_swing": 15.0, "swing": 20.0}
+NOTES_WAIT_DEFAULT = 20.0
+
+
+async def _quiet(name: str, coro: Awaitable):
+    """A note lookup that never fails the run: an error leaves the note out."""
+    try:
+        return await coro
+    except Exception as exc:  # noqa: BLE001
+        log.warning("%s note failed: %s", name, exc)
+        return None
 
 
 class RunManager:
@@ -462,11 +476,28 @@ class RunManager:
         leverage analyst's call on the product, its gaps filled by conversion and ATR. A failing
         analyst leaves the underlying's direction (flipped for inverse) and converted levels."""
         base, leverage, proxy = lever
-        (start, start_u), (live, live_u), (sr, sr_u) = starts, lives, srs
         u_plan = parse_plan(result.final_state)
         u_plan.pop("underlying_levels", None)
-        underlying = await self._underlying_plan({**u_plan, "ticker": base, "leverage": leverage, "proxy": proxy},
-                                                 request, sr_u, live_u)
+        # #171: the underlying side's levels (bars, ATR) need nothing from the analyst - fill them
+        # while it thinks (fill_levels and entry_vs_live work on copies)
+        u_task = asyncio.ensure_future(self._underlying_plan(
+            {**u_plan, "ticker": base, "leverage": leverage, "proxy": proxy}, request, srs[1], lives[1]))
+        try:
+            plan = await self._product_call(run_id, request, lever, result, horizon, starts, lives, srs,
+                                            related, u_plan)
+            underlying = await u_task
+        finally:
+            u_task.cancel()   # a no-op once it is done; else (the call above raised) it is not waited for
+        plan["underlying"] = underlying
+        plan["analysis_subject"] = base
+        return plan
+
+    async def _product_call(self, run_id: str, request: RunRequest, lever: tuple, result: RunResult, horizon,
+                            starts: tuple, lives: tuple, srs: tuple, related: dict | None,
+                            u_plan: dict) -> dict:
+        """The leverage analyst's call on the product, checked and filled."""
+        base, leverage, proxy = lever
+        (start, start_u), (live, live_u), (sr, sr_u) = starts, lives, srs
         daily = sr_u and (sr_u.get("fallback") or horizon.primary == "1d")
         pair = inverse_pair(request.ticker)
         live_pair = await self._pair_price(request, pair[0]) if pair else None
@@ -534,8 +565,6 @@ class RunManager:
         plan = await asyncio.to_thread(self.levels, plan, request.ticker, request.trade_date, live=live,
                                        horizon=horizon.id)
         plan = entry_vs_live(plan, sr and sr.get("atr"), sr and sr.get("last_close"))
-        plan["underlying"] = underlying
-        plan["analysis_subject"] = base
         # #109: the bet against the product, bought in its pair; a holder's exit in the product's price
         if paired := parse_pair(text or "", ctx, plan.get("bias")):
             plan["pair"] = paired
@@ -544,11 +573,14 @@ class RunManager:
         return plan
 
     async def _consensus(self, run_id: str, request: RunRequest, subject: str, final_state: dict,
-                         plan: dict, price: float | None = None, book: Any = None) -> None:
-        """#94: the closing summary into ``plan["consensus"]``; a failure only leaves
-        ``consensus_error`` — the run still ends with its plan."""
+                         plan: dict, price: float | None = None, book: Any = None) -> dict:
+        """#94: the closing summary as ``{"consensus": ...}``; a failure only gives
+        ``{"consensus_error": ...}`` — the run still ends with its plan.
+
+        #171: it runs beside the product's playbooks and trade map, so the caller hands it a copy of the
+        plan and merges the result."""
         if self.summariser is None:
-            return
+            return {}
         self._publish(run_id, {"type": "status", "agent": "consensus", "content": "thinking"})
         held = book.position_in(request.ticker) if book is not None else None
         position = {"quantity": held.quantity, "average_price": held.average_price} if held else None
@@ -559,13 +591,12 @@ class RunManager:
             summary = parse_consensus(text, final_state, subject, plan, price, position)
         except Exception as exc:  # noqa: BLE001 - incl. timeout and unreadable JSON
             log.warning("consensus failed for %s: %s", request.ticker, exc)
-            plan["consensus_error"] = f"{type(exc).__name__}: {exc}"[:300]
             # the rail and chat stop showing the summariser as working
             self._publish(run_id, {"type": "status", "agent": "consensus", "content": "skipped"})
-            return
-        plan["consensus"] = summary
+            return {"consensus_error": f"{type(exc).__name__}: {exc}"[:300]}
         self._publish(run_id, {"type": "message", "agent": "consensus", "content": render_consensus(summary),
                                "data": None})
+        return {"consensus": summary}
 
     def _publish(self, run_id: str, event: dict) -> None:
         self.store.append_event(run_id, event)
@@ -588,26 +619,44 @@ class RunManager:
                 watch.message(event)
                 loop.call_soon_threadsafe(self._publish, run_id, event)
 
+            notes: dict[str, asyncio.Future] = {}
             try:
-                book = await self.broker.portfolio() if request.use_portfolio else None
                 # The agents set levels against the price now, not only a close days old.
-                start, start_u = await asyncio.gather(
+                book, start, start_u = await asyncio.gather(
+                    self.broker.portfolio() if request.use_portfolio else _none(),
                     self._live_quote(request), self._live_quote(request, base) if base else _none())
                 same_day = request.trade_date == dt.date.today().isoformat()
-                sr, sr_u, related, filings_note, positioning_note, market = await asyncio.gather(
+                horizon = horizons.get(request.horizon)
+                # #171: the slow notes run on their own; the levels are waited for, the notes only up
+                # to the horizon's budget (counted from here)
+                waited = loop.time()
+                notes["related"] = asyncio.ensure_future(self._related(request))
+                if self.filings and same_day:
+                    notes["filings"] = asyncio.ensure_future(_quiet("filings", self.filings(base or request.ticker)))
+                if self.positioning and same_day:
+                    notes["positioning"] = asyncio.ensure_future(
+                        _quiet("positioning", self.positioning(base or request.ticker)))
+                # the levels and #146's selling score gate the playbooks: waited for in full
+                sr, sr_u, market = await asyncio.gather(
                     self._support_resistance(request, start),
                     self._support_resistance(request, start_u, base) if base else _none(),
-                    self._related(request),
-                    self.filings(base or request.ticker) if self.filings and same_day else _none(),
-                    self.positioning(base or request.ticker) if self.positioning and same_day else _none(),
                     self._risk(base or request.ticker, request.trade_date))
+                budget = NOTES_WAIT_SEC.get(horizon.id, NOTES_WAIT_DEFAULT) - (loop.time() - waited)
+                if (pending := [f for f in notes.values() if not f.done()]) and budget > 0:
+                    await asyncio.wait(pending, timeout=budget)
+                late = sorted(name for name, f in notes.items() if not f.done())
+                if late:
+                    log.info("run %s %s: starting without %s (horizon %s)", run_id, request.ticker,
+                             ", ".join(late), horizon.id)
+                related, filings_note, positioning_note = (
+                    notes[name].result() if name in notes and notes[name].done() else None
+                    for name in ("related", "filings", "positioning"))
                 # The run's own instrument: the underlying for a leveraged product.
                 main_live, main_sr = (start_u, sr_u) if lever else (start, sr)
                 lever_note = under.prompt_note(request.ticker, *lever) if lever else None
                 macro_note = self._macro_note(base or request.ticker)
                 calendar_note = self._calendar_note() if same_day else None
                 credit_note = self._credit_note(base or request.ticker) if same_day else None
-                horizon = horizons.get(request.horizon)
                 frame = horizons.get(None) if main_sr and main_sr.get("fallback") else horizon
                 # #116: both playbooks from the bars the levels came from - the run's own instrument
                 # for the agents (the underlying of a leveraged product)
@@ -632,6 +681,12 @@ class RunManager:
                 watch.mark("desk_pre")
                 result = await asyncio.to_thread(self.runner, subject, emit, portfolio)
                 watch.mark("graph")
+                # a related set too slow for the prompt still serves the plan (beta, VIX, the panel);
+                # it has its own timeout. Late filings/positioning only ever fed the prompt.
+                if "related" in late:
+                    related = await notes["related"]
+                for name in late:
+                    notes[name].cancel()
                 # The model may still leave a level out; fill it from ATR and mark it as computed.
                 fresh, fresh_u = await asyncio.gather(
                     self._live_quote(request), self._live_quote(request, base) if base else _none())
@@ -654,26 +709,35 @@ class RunManager:
                 plan = verdict.apply(plan, horizon)   # opinion + filter; rating, bias and levels stay
                 if sr:
                     plan["support_resistance"] = sr
-                # #116: the product's playbooks (its own bars), the model's three lines merged when sane
-                try:
-                    plan_pb = await self._product_playbooks(request, lever, pb_main, sr, frame, related, live,
-                                                            result.final_state, (start, start_u), (sr, sr_u))
-                    if plan_pb:
-                        plan["playbooks"] = plan_pb
-                except Exception as exc:  # noqa: BLE001 - the plan stands without its playbooks
-                    log.warning("no playbooks for %s: %s", request.ticker, exc)
-                # #106: entry → targets → guards → stop from the plan, the zones and the volume profile
-                try:
-                    plan["trade_map"] = trade_map.build(plan, sr)
-                except Exception as exc:  # noqa: BLE001 - the plan stands without its map
-                    log.warning("no trade map for %s: %s", request.ticker, exc)
-                if related:
-                    plan["related"] = related
                 price = (live or {}).get("price") or (sr or {}).get("last_close")
                 watch.mark("desk_post")
-                await self._consensus(run_id, request, subject.ticker, result.final_state, plan, price, book)
-                watch.mark("consensus")
+                # #171: the closing summary reads the levels, rating and zones above, nothing below it -
+                # it thinks while the product's playbooks and trade map are built
+                closing = asyncio.ensure_future(   # its own copy: the summariser's thread must not see it grow
+                    self._consensus(run_id, request, subject.ticker, result.final_state, dict(plan), price, book))
+                try:
+                    # #116: the product's playbooks (its own bars), the model's three lines merged when sane
+                    try:
+                        plan_pb = await self._product_playbooks(request, lever, pb_main, sr, frame, related, live,
+                                                                result.final_state, (start, start_u), (sr, sr_u))
+                        if plan_pb:
+                            plan["playbooks"] = plan_pb
+                    except Exception as exc:  # noqa: BLE001 - the plan stands without its playbooks
+                        log.warning("no playbooks for %s: %s", request.ticker, exc)
+                    # #106: entry → targets → guards → stop from the plan, the zones and the volume profile
+                    try:
+                        plan["trade_map"] = trade_map.build(plan, sr)
+                    except Exception as exc:  # noqa: BLE001 - the plan stands without its map
+                        log.warning("no trade map for %s: %s", request.ticker, exc)
+                    if related:
+                        plan["related"] = related
+                    plan.update(await closing)
+                finally:
+                    closing.cancel()   # a no-op once it is done
+                watch.mark("consensus")         # the summary, with the playbooks and trade map beside it
                 plan["timing"] = watch.result()
+                if late:
+                    plan["timing"]["late_notes"] = late
                 log.info("run %s %s timing: %s", run_id, request.ticker, watch.line())
                 self.store.mark_done(run_id, plan, result.report_path)
                 self._publish(run_id, {"type": "plan", "agent": "portfolio_manager", "data": plan})
@@ -686,3 +750,6 @@ class RunManager:
                 self.store.mark_failed(run_id, message)
                 self._publish(run_id, {"type": "error", "agent": "system", "content": message})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "failed"})
+            finally:
+                for lookup in notes.values():   # a failed run does not wait for its notes
+                    lookup.cancel()

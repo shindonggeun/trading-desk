@@ -1299,3 +1299,21 @@ h1 .fav-star { font-size: var(--fs-xl); }
   .charts-page .price-chart-box.with-rsi.with-osc2 { height: max(380px, calc(100vh - 230px)); height: max(380px, calc(100dvh - 230px)); }
 }
 
+/* #227 대시보드 주간 지도 요약 */
+.wmb { display: grid; gap: 6px; }
+.wmb-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.wmb-row { display: grid; grid-template-columns: minmax(0, 1.3fr) auto minmax(0, 1fr) auto; align-items: center; gap: 4px 10px;
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); text-decoration: none; }
+a.wmb-row:hover { border-color: var(--accent); }
+.wmb-cross { box-shadow: inset 3px 0 0 var(--warn); }
+.wmb-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wmb-candle { min-width: 0; }
+.wmb-lines { display: flex; gap: 10px; white-space: nowrap; justify-content: flex-end; }
+.wmb-error { grid-template-columns: 1fr auto; }
+.wmb-foot { margin: 0; }
+@media (max-width: 760px) {
+  .wmb-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .wmb-candle { grid-column: 1; }
+  .wmb-lines { grid-column: 2; }
+}
+

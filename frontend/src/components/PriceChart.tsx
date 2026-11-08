@@ -17,7 +17,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { api, type CandleInterval, type Candles, type ReviewRow } from "../api";
+import { api, type CandleInterval, type Candles, type OscEpisode, type OscillatorView, type OscReading, type ReviewRow } from "../api";
 import { price } from "../format";
 import { keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands, volumeProfileDrawing, withAlpha, zoneHalfWidth } from "./chartBands";
 import type { FibLevel, Fibonacci, Plan, Positioning, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
@@ -41,17 +41,18 @@ const LOG_SCALE = new Set<Interval>(["1w", "1M", "1y"]);
 const LABEL = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.label])) as Record<Interval, string>;
 const COUNT = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.count])) as Record<Interval, number>;
 
-type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean };
+type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean };
 const SHOW_LABEL: Record<keyof Show, string> = {
   levels: "타점선", pb: "플레이북", sr: "지지 · 저항", all: "모든 지지 · 저항", vp: "매물대", trend: "추세선", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
   opt: "옵션 벽 · 맥스 페인",
+  stoch: "스토캐스틱", bb: "볼린저밴드(20)", osc: "과열 · 침체 표시",
 };
 // #158 옵션 벽: 미국 상장 종목만(Cboe), 현재가에서 이 범위 안의 벽만 그린다(멀리 있는 벽이 가격 축을 늘이지 않게)
 const US_TICKER = /^[A-Z]{1,6}(?:[.-][A-Z])?$/;
 const WALL_RANGE = 0.15;
 const WALLS_SHOWN = 2;
 // #98: 지지 · 저항은 가까운 3개씩만, 피보나치는 켤 때만 — 차트가 선으로 덮이지 않게
-const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, fib: false, fills: true, analysis: true, rsi: true, opt: true };
+const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true };
 const NEAR_LEVELS = 3;
 /** RSI 패널 높이 — 낮은 화면(가로 모드 · 크게 보기)에서 가격 패널을 누르지 않게 차트 높이에 비례 */
 const rsiHeight = (h: number) => Math.round(Math.min(110, Math.max(56, h * 0.22)));
@@ -129,6 +130,15 @@ function toRows(bars: Candles["bars"], intraday: boolean, ticker: string): Row[]
 }
 
 /** 그 시점이 들어가는 봉(그 시점 이하의 마지막 봉). 차트 앞이면 null. */
+/** #206 과열 · 침체 판정의 이름과 극단 마커 문구 */
+const OSC_ZONE: Record<"hot" | "cold" | "neutral", string> = { hot: "위험 구간(과열)", cold: "바닥권(침체)", neutral: "중립" };
+const OSC_KIND: Record<OscEpisode["kind"], string> = { rsi_hot: "RSI 과열", rsi_cold: "RSI 침체", stoch_hot: "스토 과열", stoch_cold: "스토 침체" };
+const pct = (x: number | undefined | null) => (x == null ? "" : `${x > 0 ? "+" : ""}${(x * 100).toFixed(0)}%`);
+function oscLine(r: OscReading | null | undefined, label: string): string | null {
+  if (!r || !r.zone) return null;
+  return `${label} ${OSC_ZONE[r.zone]}${r.reason ? ` — ${r.reason}` : ""}`;
+}
+
 function barFor(keys: Key[], at: Key): Key | null {
   let hit: Key | null = null;
   for (const k of keys) {
@@ -204,6 +214,8 @@ type Drawn = {
   series: ISeriesApi<"Candlestick">;
   volume: ISeriesApi<"Histogram">;
   rsi: ISeriesApi<"Line"> | null;
+  /** #206 스토캐스틱 %K (아래 패널) */
+  stoch: ISeriesApi<"Line"> | null;
   markers: ISeriesMarkersPluginApi<Time>;
   rows: Row[];
   intraday: boolean;
@@ -250,6 +262,17 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const [candles, setCandles] = useState<Candles | null>(null);
   const [fills, setFills] = useState<ReviewRow[]>([]);
   const [failed, setFailed] = useState(false);
+  // #206 과열 · 침체 판정(일봉 · 주봉만 — 분봉 · 월 · 년봉은 일봉 판정을 배지로만)
+  const [osc, setOsc] = useState<OscillatorView | null>(null);
+  const oscInterval: "1d" | "1w" = interval === "1w" ? "1w" : "1d";
+  useEffect(() => {
+    if (!show.osc) return setOsc(null);
+    let live = true;
+    api.oscillator(ticker, oscInterval).then((v) => live && setOsc(v), () => live && setOsc(null));
+    return () => {
+      live = false;
+    };
+  }, [ticker, oscInterval, show.osc]);
   const [drawn, setDrawn] = useState<Drawn | null>(null);
   const box = useRef<HTMLDivElement>(null);
   // 한 화면에 차트가 여럿(본주 · 레버리지)이어도 범례 id 가 겹치지 않게
@@ -358,9 +381,10 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const ohlc = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!drawn) return;
-    const { chart, series, volume, rsi, rows } = drawn;
+    const { chart, series, volume, rsi, stoch, rows } = drawn;
     const last = rows[rows.length - 1];
-    const write = (o: number, h: number, l: number, c: number, v: number | null, r: number | null, prev: number | null) => {
+    const write = (o: number, h: number, l: number, c: number, v: number | null, r: number | null, prev: number | null,
+      k: number | null = null, d: number | null = null) => {
       const el = ohlc.current;
       if (!el) return;
       const chg = prev ? ((c - prev) / prev) * 100 : null;
@@ -383,10 +407,12 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (chg != null) add("", `${chg > 0 ? "+" : ""}${chg.toFixed(2)}%`, chg >= 0 ? "up" : "down");
       if (v != null) add("거래량", v.toLocaleString("ko-KR"));
       if (r != null) add("RSI", r.toFixed(1));
+      if (stoch && k != null) add("스토캐스틱", `${k.toFixed(0)}${d != null ? ` / ${d.toFixed(0)}` : ""}`);
     };
     const showLast = () => {
       const prev = rows.length > 1 ? rows[rows.length - 2].bar.close : null;
-      write(last.bar.open, last.bar.high, last.bar.low, last.bar.close, last.bar.volume, last.bar.rsi ?? null, prev);
+      write(last.bar.open, last.bar.high, last.bar.low, last.bar.close, last.bar.volume, last.bar.rsi ?? null, prev,
+        last.bar.stoch_k ?? null, last.bar.stoch_d ?? null);
     };
     showLast();
     const onMove = (param: MouseEventParams<Time>) => {
@@ -396,7 +422,9 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       const r = rsi ? (param.seriesData.get(rsi) as { value?: number } | undefined) : undefined;
       const i = param.logical != null ? Math.round(param.logical as number) : -1;
       const prev = i > 0 && rows[i - 1] ? rows[i - 1].bar.close : null;
-      write(bar.open ?? bar.close, bar.high ?? bar.close, bar.low ?? bar.close, bar.close, v?.value ?? null, r?.value ?? null, prev);
+      const here = i >= 0 ? rows[i]?.bar : undefined;
+      write(bar.open ?? bar.close, bar.high ?? bar.close, bar.low ?? bar.close, bar.close, v?.value ?? null, r?.value ?? null, prev,
+        here?.stoch_k ?? null, here?.stoch_d ?? null);
     };
     chart.subscribeCrosshairMove(onMove);
     return () => {
@@ -421,13 +449,14 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     setCandles(null);
     setFailed(false);
     api
-      .candles(ticker, interval, COUNT[interval], show.rsi)
+      .candles(ticker, interval, COUNT[interval],
+        [...(show.rsi ? ["rsi"] : []), ...(show.stoch ? ["stoch"] : []), ...(show.bb ? ["bb20"] : [])])
       .then((c) => live && setCandles(c))
       .catch(() => live && setFailed(true));
     return () => {
       live = false;
     };
-  }, [ticker, interval, show.rsi]);
+  }, [ticker, interval, show.rsi, show.stoch, show.bb]);
 
   // 이 종목 체결만. 브로커가 체결 내역을 안 주거나 실패하면 마커 없이 그린다.
   useEffect(() => {
@@ -494,8 +523,36 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         chart.panes()[1]?.setHeight(rsiHeight(el.clientHeight));
       }
 
+      // #206 볼린저밴드(20, 2σ) — 가격 패널, 상 · 하단 실선 · 가운데 점선
+      if (candles.indicators?.includes("bb20")) {
+        const band = css("--muted", "#8c939d");
+        for (const [k, style] of [["upper", LineStyle.Solid], ["mid", LineStyle.Dotted], ["lower", LineStyle.Solid]] as const) {
+          const line = chart.addSeries(LineSeries, { color: band, lineWidth: 1, lineStyle: style, priceLineVisible: false,
+            lastValueVisible: false, crosshairMarkerVisible: false });
+          line.setData(rows.flatMap(({ key, bar }) => (bar.bb20 ? [{ time: time(key), value: bar.bb20[k] }] : [])));
+        }
+      }
+
+      // #206 스토캐스틱(14, 1, 3) — RSI 아래 패널, %K 실선 · %D 점선, 20 · 80 점선
+      let stoch: ISeriesApi<"Line"> | null = null;
+      if (candles.indicators?.includes("stoch")) {
+        const pane = rsi ? 2 : 1;
+        const scale = { autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
+          priceFormat: { type: "custom" as const, formatter: (v: number) => v.toFixed(0), minMove: 0.01 } };
+        stoch = chart.addSeries(LineSeries, { color: css("--accent", "#3a86f8"), lineWidth: 2, priceLineVisible: false,
+          lastValueVisible: true, ...scale }, pane);
+        stoch.priceScale().applyOptions({ mode: PriceScaleMode.Normal, scaleMargins: { top: 0.08, bottom: 0.08 } });
+        stoch.setData(rows.flatMap(({ key, bar }) => (bar.stoch_k == null ? [] : [{ time: time(key), value: bar.stoch_k }])));
+        const d = chart.addSeries(LineSeries, { color: css("--warn", "#e5a23a"), lineWidth: 1, lineStyle: LineStyle.Dashed,
+          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, ...scale }, pane);
+        d.setData(rows.flatMap(({ key, bar }) => (bar.stoch_d == null ? [] : [{ time: time(key), value: bar.stoch_d }])));
+        const muted = css("--muted", "#8c939d");
+        for (const lv of [80, 20]) stoch.createPriceLine({ price: lv, color: muted, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "" });
+        chart.panes()[pane]?.setHeight(rsiHeight(el.clientHeight));
+      }
+
       chart.timeScale().fitContent();
-      setDrawn({ chart, series, volume, rsi, markers: createSeriesMarkers(series, []), rows, intraday, interval: iv, lastClose: rows[rows.length - 1].bar.close, alive });
+      setDrawn({ chart, series, volume, rsi, stoch, markers: createSeriesMarkers(series, []), rows, intraday, interval: iv, lastClose: rows[rows.length - 1].bar.close, alive });
     } catch {
       chart?.remove(); // 봉 데이터가 이상하면 앱 전체가 아니라 차트만 실패로
       setFailed(true);
@@ -583,6 +640,16 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         list.push({ key: at, m: { position: buy ? "belowBar" : "aboveBar", shape: buy ? "arrowUp" : "arrowDown", color: buy ? up : down, text: `${buy ? "매수" : "매도"} ${price(f.price)}` } });
       }
     }
+    if (show.osc && osc && !intraday && osc.interval === (drawn.interval === "1w" ? "1w" : drawn.interval === "1d" ? "1d" : null)) {
+      for (const e of osc.own.episodes ?? []) {
+        const at = barFor(keys, e.at.slice(0, 10));
+        if (at == null || at === keys[0]) continue;          // before the chart's first bar
+        const hot = e.kind.endsWith("hot");
+        const after = e.ret20 != null ? ` → 20봉 ${pct(e.ret20)}` : "";
+        list.push({ key: at, m: { position: hot ? "aboveBar" : "belowBar", shape: "circle", size: 0.6,
+          color: hot ? css("--warn", "#e5a23a") : css("--accent", "#3a86f8"), text: `${OSC_KIND[e.kind]}${after}` } });
+      }
+    }
     list.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     markers.setMarkers(list.map(({ key, m }) => ({ ...m, time: time(key) }) as SeriesMarker<Time>));
     return () => {
@@ -590,7 +657,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       stopLabels(drawn.alive.current);
       if (drawn.alive.current) for (const line of made) series.removePriceLine(line);
     };
-  }, [drawn, plan, fills, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines, show.opt, optionData]);
+  }, [drawn, plan, fills, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines, show.opt, optionData, show.osc, osc]);
 
   // 지지 · 저항 구역 띠 · 타점의 손실 · 이익 영역 · 피보나치(#98) — 캔들 아래에 칠하고 축 라벨은 달지 않는다.
   useEffect(() => {
@@ -788,6 +855,12 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   // 보관 한도 안내는 분봉일 때만 — 년봉은 늘 요청보다 적게 오지만 한도 탓이 아니다.
   const limited = candles?.truncated && candles.history_limit_days != null ? candles.history_limit_days : null;
   const rsiOn = show.rsi && !!candles?.indicators?.includes("rsi14");
+  const stochOn = show.stoch && !!candles?.indicators?.includes("stoch");
+  const oscLines = show.osc && osc ? [
+    oscLine(osc.own, `${osc.own.ticker ?? ticker} ${osc.interval === "1w" ? "주봉" : "일봉"}`),
+    osc.underlying ? oscLine(osc.underlying, `기초자산 ${osc.underlying.ticker}(${osc.underlying.leverage ?? ""}배 기준)`) : null,
+  ].filter((x): x is string => !!x) : [];
+  const hot = show.osc && (osc?.own.zone === "hot" || osc?.underlying?.zone === "hot");
   return (
     <section ref={section} className={`card price-chart${expanded ? " price-chart-expanded" : ""}`}
       {...(expanded ? { role: "dialog", "aria-modal": true, "aria-label": `${title ?? ticker} 큰 차트` } : {})}>
@@ -832,6 +905,11 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         </button>
       </div>
       {notice && <p className="error small chart-limit">{notice}</p>}
+      {oscLines.length > 0 && (
+        <div className={`small chart-limit ${hot ? "error" : "muted"}`} role="status">
+          {oscLines.map((t) => <p key={t} className="chart-osc">{hot && t.includes("과열") ? "⚠ " : ""}{t}</p>)}
+        </div>
+      )}
       {limited != null && <p className="muted small chart-limit">야후 보관 한도로 {LABEL[interval]}봉은 최근 {limited}일만 제공됩니다.</p>}
       {failed ? (
         <p className="muted small">시세를 불러오지 못했습니다.</p>
@@ -840,9 +918,9 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       ) : (
         <div
           ref={box}
-          className={`price-chart-box ${rsiOn ? "with-rsi" : ""}`}
+          className={`price-chart-box ${rsiOn || stochOn ? "with-rsi" : ""}${rsiOn && stochOn ? " with-osc2" : ""}`}
           role="img"
-          aria-label={`${ticker} ${LABEL[interval]}봉 가격 차트${rsiOn ? "와 RSI" : ""}${drawn ? `, 마지막 종가 ${price(drawn.lastClose)}` : ""}`}
+          aria-label={`${ticker} ${LABEL[interval]}봉 가격 차트${rsiOn ? "와 RSI" : ""}${stochOn ? " · 스토캐스틱" : ""}${drawn ? `, 마지막 종가 ${price(drawn.lastClose)}` : ""}`}
           aria-describedby={hasLevels && show.levels ? legendId : undefined}
         >
           {!candles && <p className="muted small">불러오는 중…</p>}
@@ -890,11 +968,14 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           {outOfRange && " · 현재가와 너무 먼 선은 축 범위에서 뺐습니다"}
         </p>
       )}
-      {((show.fills && fills.length > 0) || rsiOn || (drawn && LOG_SCALE.has(interval))) && (
+      {((show.fills && fills.length > 0) || rsiOn || stochOn || (drawn && LOG_SCALE.has(interval))) && (
         <p className="muted small price-chart-legend">
           {[
             show.fills && fills.length > 0 ? `내 체결 ${fills.length}건` : null,
             rsiOn ? "RSI 70 이상 과열 · 30 이하 과매도" : null,
+            stochOn ? "스토캐스틱 80 이상 과열 · 20 이하 침체(실선 %K · 점선 %D)" : null,
+            show.osc && osc && !LOG_SCALE.has(interval) && !["5m", "15m", "30m", "60m", "240m"].includes(interval)
+              ? "점 = 과거 극단과 그 뒤 20봉 등락" : null,
             drawn && LOG_SCALE.has(interval) ? "가격축은 로그 눈금" : null,
           ].filter(Boolean).join(" · ")}
         </p>

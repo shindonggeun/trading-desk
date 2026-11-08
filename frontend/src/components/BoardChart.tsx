@@ -16,13 +16,18 @@ import type { EstimatedCandles } from "../types";
 const KST_SEC = 9 * 3600;
 const REFRESH_MS = 60_000;
 
+// #206: 분석 차트와 같은 주기(5 · 15 · 30분 · 1 · 4시간 · 일 · 주 · 월 · 년) + 시세판만의 10분
 export const BOARD_INTERVALS = [
   { id: "5m", label: "5분" },
   { id: "10m", label: "10분" },
   { id: "15m", label: "15분" },
+  { id: "30m", label: "30분" },
   { id: "1h", label: "1시간" },
+  { id: "4h", label: "4시간" },
   { id: "1d", label: "일" },
   { id: "1w", label: "주" },
+  { id: "1M", label: "월" },
+  { id: "1y", label: "년" },
 ] as const;
 export type BoardInterval = (typeof BOARD_INTERVALS)[number]["id"];
 
@@ -31,10 +36,16 @@ const REAL: Record<BoardInterval, { iv: CandleInterval; count: number }> = {
   "5m": { iv: "5m", count: 300 },
   "10m": { iv: "5m", count: 600 },
   "15m": { iv: "15m", count: 300 },
+  "30m": { iv: "30m", count: 300 },
   "1h": { iv: "60m", count: 300 },
+  "4h": { iv: "240m", count: 250 },
   "1d": { iv: "1d", count: 250 },
   "1w": { iv: "1w", count: 156 },
+  "1M": { iv: "1M", count: 120 },
+  "1y": { iv: "1y", count: 30 },
 };
+// 장외 추정 봉을 낼 수 있는 주기(desk.estimate.CANDLE_INTERVALS) — 나머지는 실제 봉만
+const ESTIMATED = new Set<BoardInterval>(["5m", "10m", "15m", "1h", "1d", "1w"]);
 
 type Bar = { time: UTCTimestamp; open: number; high: number; low: number; close: number };
 
@@ -122,7 +133,7 @@ export default function BoardChart({ ticker, name }: { ticker: string; name?: st
       const spec = REAL[interval];
       const [realRes, estRes] = await Promise.allSettled([
         api.candles(ticker, spec.iv, spec.count),
-        api.estimateCandles(ticker, interval),
+        ESTIMATED.has(interval) ? api.estimateCandles(ticker, interval) : Promise.reject(new Error("no estimate")),
       ]);
       if (!alive || ref.current !== c) return;
       let real: Bar[] = [];
@@ -177,7 +188,9 @@ export default function BoardChart({ ticker, name }: { ticker: string; name?: st
           ? "봉을 불러오지 못했습니다."
           : e
             ? `옅은 봉은 ${e.close_date} 종가 ${price(e.close)} 이후의 추정 봉입니다(${e.method === "leveraged" ? `${e.basis} × ${e.multiple}` : e.method === "proxy" ? `${e.basis} 계약 대용` : "바이낸스 계약"}). 실제 체결이 아닙니다.`
-            : info ? "추정 봉이 없습니다(장중이거나 따라갈 계약이 없음)." : "불러오는 중…"}
+            : info
+              ? ESTIMATED.has(interval) ? "추정 봉이 없습니다(장중이거나 따라갈 계약이 없음)." : "이 주기는 실제 봉만 그립니다(추정 봉은 5분 ~ 주봉)."
+              : "불러오는 중…"}
       </p>
     </section>
   );

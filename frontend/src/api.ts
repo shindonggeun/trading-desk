@@ -70,8 +70,13 @@ export interface Candles {
   interval: string;
   source: string;
   fetched_at: string;
-  /** rsi 는 indicators 에 rsi14 를 요청했을 때만(역사가 짧으면 앞쪽 null). */
-  bars: { at: string; open: number; high: number; low: number; close: number; volume: number; rsi?: number | null }[];
+  /** rsi 는 indicators 에 rsi14 를 요청했을 때만(역사가 짧으면 앞쪽 null). stoch · bb 도 같다(#203). */
+  bars: {
+    at: string; open: number; high: number; low: number; close: number; volume: number; rsi?: number | null;
+    stoch_k?: number | null; stoch_d?: number | null;
+    bb20?: { mid: number; upper: number; lower: number } | null;
+    bb50?: { mid: number; upper: number; lower: number } | null;
+  }[];
   indicators?: string[];
   /** 야후 분봉 보관 한도(일). 분봉이 아니면 null. */
   history_limit_days?: number | null;
@@ -204,10 +209,17 @@ export const api = {
   estimateCandles: (ticker: string, interval: string) =>
     call<EstimatedCandles | { ticker: string; supported: false }>(
       `/api/estimate/candles?ticker=${encodeURIComponent(ticker)}&interval=${interval}`),
-  candles: (ticker: string, interval: CandleInterval, count: number, rsi = false) =>
-    call<Candles>(
-      `/api/candles?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(interval)}&count=${count}${rsi ? "&indicators=rsi14" : ""}`,
-    ),
+  /** indicators: true = RSI 만(예전 호출), 또는 ["rsi", "stoch", "bb"] 처럼 고른 지표(#206) */
+  candles: (ticker: string, interval: CandleInterval, count: number, indicators: boolean | string[] = false) => {
+    const wanted = indicators === true ? ["rsi14"] : indicators === false ? [] : indicators;
+    return call<Candles>(
+      `/api/candles?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(interval)}&count=${count}` +
+        (wanted.length ? `&indicators=${encodeURIComponent(wanted.join(","))}` : ""),
+    );
+  },
+  /** #203 RSI · 스토캐스틱 과열 · 침체 판정과 과거 극단 뒤 통계(레버리지는 기초자산 판정도) */
+  oscillator: (ticker: string, interval: "1d" | "1w" = "1d") =>
+    call<OscillatorView>(`/api/oscillator?ticker=${encodeURIComponent(ticker)}&interval=${interval}`),
   /** 지지 · 저항(backend desk/sr.py) — 지금 봉 기준, 서버가 몇 분 캐시. */
   /** #128: 분석(run)의 구역 · 사다리 · 손절 · 목표는 그대로, 조건 · 점수 · 상태만 지금 값. ticker · horizon 은 run 에서 */
   livePlaybooks: (run: string) => call<LivePlaybooks>(`/api/playbooks?run=${encodeURIComponent(run)}`),
@@ -323,4 +335,42 @@ export function followLive(ticker: string, onFrame: (f: LiveFrame) => void, onSt
     window.clearTimeout(timer);
     source?.close();
   };
+}
+
+/** #203 · #206 GET /api/oscillator — RSI · 스토캐스틱 과열 · 침체 판정과 과거 극단 뒤 통계 */
+export type OscKind = "rsi_hot" | "rsi_cold" | "stoch_hot" | "stoch_cold";
+export interface OscEpisode {
+  kind: OscKind;
+  at: string;
+  value: number;
+  ret5?: number; ret10?: number; ret20?: number; max_drop?: number; max_rise?: number;
+}
+export interface OscStats {
+  n: number; thin: boolean; up20?: number | null; ret5?: number | null; ret10?: number | null; ret20?: number | null;
+  max_drop?: number | null; max_rise?: number | null;
+}
+export interface OscReading {
+  ticker: string;
+  interval: string;
+  zone: "hot" | "cold" | "neutral" | null;
+  by?: "rsi" | "stoch" | null;
+  rsi?: number | null;
+  stoch_k?: number | null;
+  stoch_d?: number | null;
+  divergence?: "bearish" | "bullish" | null;
+  /** 한국어 근거 문장 */
+  reason?: string;
+  by_kind?: Partial<Record<OscKind, OscStats>>;
+  recent?: OscEpisode[];
+  episodes?: OscEpisode[];
+  years?: number;
+  bars?: number;
+  error?: string;
+  leverage?: number;
+}
+export interface OscillatorView {
+  ticker: string;
+  interval: "1d" | "1w";
+  own: OscReading;
+  underlying: OscReading | null;
 }

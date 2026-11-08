@@ -412,6 +412,10 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .chart-limit { margin: 0 0 6px; }
 .price-chart-box.with-rsi { height: 470px; }
 @media (max-width: 760px) { .price-chart-box.with-rsi { height: 380px; } }
+/* #206 RSI + 스토캐스틱 두 패널 · 과열 · 침체 배지 */
+.price-chart-box.with-rsi.with-osc2 { height: 560px; }
+@media (max-width: 760px) { .price-chart-box.with-rsi.with-osc2 { height: 470px; } }
+.chart-osc { margin: 0.1rem 0; }
 
 /* ── 모바일 반응형 (#79) ─────────────────────────────────────────────── */
 .topbar nav a { white-space: nowrap; }

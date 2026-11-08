@@ -128,3 +128,13 @@ def test_the_note_carries_the_oversold_swing_line():
           "short": {"setup": "none", "reason": "n/a"}}
     note = playbook.prompt_note(pb)
     assert "LONG oversold swing buy (2-8 weeks)" in note and "Oversold swing buy (2-8 weeks): evidence" in note
+
+
+def test_a_failure_leaves_the_playbooks_as_built(monkeypatch):
+    days, weeks = _crash(bottom_days=3)
+    pb = {"regime": {"id": "crash"}, "long": {"setup": "dip_catch"}, "short": {"setup": "none"}}
+
+    def boom(*_a, **_k):
+        raise ZeroDivisionError("flat series")
+    monkeypatch.setattr(vs, "evidence", boom)
+    assert vs.apply(pb, days[-200:], weeks[-156:], "swing") is pb

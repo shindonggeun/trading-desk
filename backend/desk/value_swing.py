@@ -26,10 +26,13 @@ Pure functions: daily and weekly bars in, dicts out.
 
 from __future__ import annotations
 
+import logging
 import math
 from statistics import mean
 
 from .indicators import rsi
+
+log = logging.getLogger(__name__)
 
 ENABLED = True               # set by the basket backtest (#167 done-when): off unless it pays after costs
 # Swing basket 2019-, costs in, train / held-out (cut 2024-05-17), value_swing trades only:
@@ -284,9 +287,19 @@ def apply(pb: dict | None, daily: list[dict], weekly: list[dict] | None, horizon
     """The playbooks with the long slot taken by an oversold swing buy when the evidence is there
     (swing frame only - its secondary bars are the weekly ones). The long it replaces is named in
     ``replaced``. ``calibrate=False`` (the backtest) gives conviction no record: never active.
-    Idempotent on the same input; ENABLED off leaves the playbooks as they are."""
+    Idempotent on the same input; ENABLED off leaves the playbooks as they are. A failure here is
+    logged and leaves them as built - an extra setup must never cost the run its playbooks."""
     if not ENABLED or not pb or horizon != "swing":
         return pb
+    try:
+        return _apply(pb, daily, weekly, horizon, sr, risk, vix, calibrate)
+    except Exception:  # odd bars (a flat series, a gap in the weeks)
+        log.exception("value swing failed; the playbooks stay as built")
+        return pb
+
+
+def _apply(pb: dict, daily: list[dict], weekly: list[dict] | None, horizon: str, sr: dict | None,
+           risk: dict | None, vix: float | None, calibrate: bool) -> dict:
     ev = evidence(daily, weekly, sr, risk, vix)
     if not ev or not ev["setup"]:
         return pb

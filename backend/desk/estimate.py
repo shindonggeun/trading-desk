@@ -199,31 +199,33 @@ def _iso(moment: datetime) -> str:
     return moment.astimezone(UTC).isoformat(timespec="seconds")
 
 
-AFTER_HOURS_TTL_SEC = 60.0
+AFTER_HOURS_TTL_SEC = 15.0   # an open NXT session is live trading: read it often (one call per ticker)
 NAVER_URL = "https://m.stock.naver.com/api/stock/{code}/basic"
+NXT_SESSIONS = ("AFTER_MARKET", "PRE_MARKET")
 
 
-def naver_after_hours(code: str) -> tuple[float, datetime] | None:
-    """The last NXT (Nextrade) after-market trade of a KRX code: (price, traded at, UTC), or None.
+def naver_after_hours(code: str) -> tuple[float, datetime, bool] | None:
+    """The last NXT (Nextrade) trade outside the KRX session of a KRX code: (price, traded at UTC,
+    NXT trading now), or None.
 
-    #204: since 2025 Korean stocks keep trading on NXT until 20:00 KST. A move there is real
-    trading, not the Binance contract's guess, so the estimate anchors on it. Naver's mobile quote
-    (key-less) carries it as ``overMarketPriceInfo``; any failure means no NXT anchor (the KRX
-    close is used, as before)."""
+    #204: Korean stocks keep trading on NXT until 20:00 KST (and from 08:00 before the open). That
+    is real trading, not the Binance contract's guess: the estimate anchors on it, and while NXT is
+    open (#209) the page shows that trade itself, not an estimate. Naver's mobile quote (key-less)
+    carries it as ``overMarketPriceInfo``; any failure means no NXT (the KRX close, as before)."""
     try:
         r = httpx.get(NAVER_URL.format(code=code), headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
         info = (r.json() or {}).get("overMarketPriceInfo") or {}
-        if info.get("tradingSessionType") != "AFTER_MARKET" or not info.get("overPrice"):
+        if info.get("tradingSessionType") not in NXT_SESSIONS or not info.get("overPrice"):
             return None
         price = float(str(info["overPrice"]).replace(",", ""))
         at = datetime.fromisoformat(info["localTradedAt"]).astimezone(UTC)
-        return (price, at) if price > 0 else None
+        return (price, at, info.get("overMarketStatus") == "OPEN") if price > 0 else None
     except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:
-        log.info("no NXT after-market price for %s: %s", code, exc)
+        log.info("no NXT price for %s: %s", code, exc)
         return None
 
 
-AfterHours = Callable[[str], "tuple[float, datetime] | None"]
+AfterHours = Callable[[str], "tuple[float, datetime, bool] | None"]
 
 
 @dataclass(frozen=True)
@@ -401,39 +403,43 @@ class BinanceEstimator:
         day, close, close_at, is_open = await asyncio.to_thread(self._anchor_close, ticker, session, now)
         anchor = await self._mark_at(contract, close_at)
         mark = await self._mark_now(contract)
-        anchor_price, anchor_at, at_anchor, source = await self._anchor(
+        anchor_price, anchor_at, at_anchor, source, nxt_open = await self._anchor(
             ticker, contract, method, close, close_at, anchor, is_open, now)
         move = multiple * (mark / at_anchor - 1)
-        value = _round(anchor_price * max(1 + move, MIN_FRACTION))
+        # #209: while NXT trades (08:00-08:50, 15:40-20:00 KST) its last trade is the price - no
+        # estimate on top; after 20:00 the contract's move since that trade is the estimate
+        value = _round(anchor_price) if nxt_open else _round(anchor_price * max(1 + move, MIN_FRACTION))
         # against the regular close either way (the page says "종가 대비"); with the close as the
         # anchor this is the contract's move itself
         change = move if source == "close" else value / close - 1
+        state = "open" if is_open else "nxt" if nxt_open else "closed"
         return Estimate(
             ticker=ticker, estimate=value, change_pct=round(change * 100, 2),
             last_close=_round(close), last_close_date=day.isoformat(), close_at=_iso(close_at),
             contract=contract, contract_price=mark, contract_price_at_close=anchor,
-            market_state="open" if is_open else "closed", fetched_at=_iso(now),
+            market_state=state, fetched_at=_iso(now),
             method=method, basis=basis, multiple=multiple,
             anchor_source=source, anchor_price=_round(anchor_price), anchor_at=_iso(anchor_at),
             contract_move_pct=round(move * 100, 2),
         )
 
     async def _anchor(self, ticker: str, contract: str, method: str, close: float, close_at: datetime,
-                      at_close: float, is_open: bool, now: datetime) -> tuple[float, datetime, float, str]:
-        """(price, moment, contract mark then, "close" | "nxt"): the regular close, or for a Korean
-        stock with its own contract the NXT after-market trade after it (#204) - real trading
+                      at_close: float, is_open: bool, now: datetime) -> tuple[float, datetime, float, str, bool]:
+        """(price, moment, contract mark then, "close" | "nxt", NXT trading now): the regular close,
+        or for a Korean stock with its own contract the NXT trade after it (#204) - real trading
         since the close, so only the contract's move after that trade is a guess."""
         if method == "binance_perp_mark" and ticker.endswith((".KS", ".KQ")) and not is_open:
             nxt = await self._nxt_trade(ticker[:-3])
             # only a trade after this close and not in the future (Friday's NXT trade read on
             # Monday afternoon is older than Monday's close and is skipped)
             if nxt and close_at < nxt[1] <= now:
-                moment = nxt[1].replace(second=0, microsecond=0)    # the 1-minute mark bar ending there
-                return nxt[0], moment, await self._mark_at(contract, moment), "nxt"
-        return close, close_at, at_close, "close"
+                price, at, *rest = nxt
+                moment = at.replace(second=0, microsecond=0)    # the 1-minute mark bar ending there
+                return price, moment, await self._mark_at(contract, moment), "nxt", bool(rest and rest[0])
+        return close, close_at, at_close, "close", False
 
-    async def _nxt_trade(self, code: str) -> tuple[float, datetime] | None:
-        """The NXT after-market trade, cached for a minute (a board polls every few seconds)."""
+    async def _nxt_trade(self, code: str) -> tuple[float, datetime, bool] | None:
+        """The NXT trade, cached for a few seconds (a board polls every few seconds)."""
         if self._after_hours is None:
             return None
         cached = self._nxt.get(code)
@@ -474,7 +480,7 @@ class BinanceEstimator:
         now = self._now()
         day, close, close_at, is_open = await asyncio.to_thread(self._anchor_close, ticker, session_of(ticker), now)
         anchor = await self._mark_at(contract, close_at)
-        nxt_price, nxt_at, at_nxt, source = await self._anchor(
+        nxt_price, nxt_at, at_nxt, source, _nxt_open = await self._anchor(
             ticker, contract, method, close, close_at, anchor, is_open, now)
         nxt_ms = int(nxt_at.timestamp() * 1000) if source == "nxt" else None
         rows: list = []

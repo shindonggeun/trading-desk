@@ -444,7 +444,7 @@ def test_board_live_path_and_one_failure(db_url, monkeypatch):
 
 # --- #204: the NXT after-market trade is the anchor when there was one after the close -------------
 
-NXT_FRIDAY_20H = (221000.0, datetime(2026, 11, 6, 11, 0, 0, tzinfo=UTC))      # 20:00 KST
+NXT_FRIDAY_20H = (221000.0, datetime(2026, 11, 6, 11, 0, 0, tzinfo=UTC), False)   # 20:00 KST, NXT closed
 
 
 def test_a_korean_estimate_moves_the_nxt_after_market_close_not_the_krx_close():
@@ -480,8 +480,12 @@ def test_naver_after_market_quote_is_read_and_anything_else_is_none(monkeypatch)
         return lambda url, **kw: httpx.Response(200, json=body, request=httpx.Request("GET", url))
     monkeypatch.setattr(mod.httpx, "get", reply({"overMarketPriceInfo": {
         "tradingSessionType": "AFTER_MARKET", "overPrice": "193,400", "localTradedAt": "2026-11-06T20:00:00+09:00"}}))
-    assert mod.naver_after_hours("005930") == (193400.0, datetime(2026, 11, 6, 11, 0, tzinfo=UTC))
-    monkeypatch.setattr(mod.httpx, "get", reply({"overMarketPriceInfo": {"tradingSessionType": "PRE_MARKET",
+    assert mod.naver_after_hours("005930") == (193400.0, datetime(2026, 11, 6, 11, 0, tzinfo=UTC), False)
+    monkeypatch.setattr(mod.httpx, "get", reply({"overMarketPriceInfo": {
+        "tradingSessionType": "PRE_MARKET", "overMarketStatus": "OPEN", "overPrice": "190,000",
+        "localTradedAt": "2026-11-09T08:10:00+09:00"}}))
+    assert mod.naver_after_hours("005930") == (190000.0, datetime(2026, 11, 8, 23, 10, tzinfo=UTC), True)
+    monkeypatch.setattr(mod.httpx, "get", reply({"overMarketPriceInfo": {"tradingSessionType": "REGULAR",
                                                                         "overPrice": "190,000"}}))
     assert mod.naver_after_hours("005930") is None
     monkeypatch.setattr(mod.httpx, "get", reply({}))
@@ -514,3 +518,38 @@ def test_estimated_bars_after_the_nxt_trade_move_from_its_price():
     assert before["close"] == round(218000 * 165 / 164)               # still from the KRX close
     assert after["close"] == round(221000 * 167 / 166)                # from the NXT trade
     assert got["anchor_source"] == "nxt" and got["anchor_price"] == 221000.0
+
+
+# --- #209: while NXT trades, its last trade is the price; after 20:00 the estimate takes over -------
+
+def test_while_nxt_trades_the_price_is_its_last_trade_not_an_estimate():
+    friday_17h = datetime(2026, 11, 6, 8, 0, tzinfo=UTC)                  # 17:00 KST, NXT after-market open
+    trade = (220000.0, datetime(2026, 11, 6, 7, 59, 30, tzinfo=UTC), True)
+    ANCHOR[("SAMSUNGUSDT", "2026-11-06T07:58:00+00:00")] = "165.00"
+    try:
+        est, _ = _estimator(friday_17h, after_hours=lambda code: trade)
+        r = asyncio.run(est.estimate("005930.KS"))
+    finally:
+        del ANCHOR[("SAMSUNGUSDT", "2026-11-06T07:58:00+00:00")]
+    assert r.market_state == "nxt" and r.estimate == 220000.0 and r.anchor_source == "nxt"
+    assert r.change_pct == round((220000 / 218000 - 1) * 100, 2)
+
+
+def test_after_20h_the_estimate_moves_the_nxt_close_and_the_state_is_closed():
+    est, _ = _estimator(SATURDAY_KST_10AM, after_hours=lambda code: NXT_FRIDAY_20H)
+    r = asyncio.run(est.estimate("005930.KS"))
+    assert r.market_state == "closed" and r.estimate == round(221000 * 167.28 / 166.0)
+
+
+def test_the_board_shows_an_open_nxt_trade_as_a_live_price(db_url):
+    friday_17h = datetime(2026, 11, 6, 8, 0, tzinfo=UTC)
+    ANCHOR[("SAMSUNGUSDT", "2026-11-06T07:58:00+00:00")] = "165.00"
+    try:
+        est, _ = _estimator(friday_17h, after_hours=lambda code: (
+            220000.0, datetime(2026, 11, 6, 7, 59, 30, tzinfo=UTC), True))
+        with _client(db_url, est) as client:
+            client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+            row = client.get("/api/estimates?tickers=005930.KS").json()["items"][0]
+    finally:
+        del ANCHOR[("SAMSUNGUSDT", "2026-11-06T07:58:00+00:00")]
+    assert row["state"] == "live" and row["quote_source"] == "nxt" and row["price"] == 220000.0

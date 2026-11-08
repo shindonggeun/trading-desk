@@ -2,41 +2,32 @@
 
 다음 세션에서 이 파일부터 읽는다. 끝난 일 · 남은 일 · 바로 쓸 명령만 적는다.
 
-## 0. 진행 중 — #146 시장 투매 · 위험 점수 (2026-11-06, 브랜치 푸시됨 · PR 없음)
+## 0. 진행 중 — #146 시장 투매 · 위험 점수 (2026-11-08, 리뷰 반영 · PR 전)
 
-- 브랜치 `feature/be/146-risk-regime`, 워크트리 `D:\ProjectWorkSpace\trading-desk-wt\146-risk-regime` (origin/develop `6c87266` 기준)
+- 브랜치 `feature/be/146-risk-regime`, 워크트리 `D:/ProjectWorkSpace/trading-desk-wt/146-risk-regime` (origin/develop `24e1737` 위로 리베이스)
   - 워크트리에는 venv 가 없다 — `D:/ProjectWorkSpace/trading-desk/backend/.venv/Scripts/python` 을 워크트리 `backend` 에서 실행하면 워크트리의 `desk` 가 잡힌다
   - 다른 PC 에서는 `git fetch && git switch feature/be/146-risk-regime`
 - 내용
   - (새) `desk/risk_regime.py`: 야후 일봉(^VIX · ^VIX9D · ^VIX3M · ^NDX · ^SOX · DX-Y.NYB · ^TNX, 한국 종목은 ^KS11 · KRW=X 추가)으로 투매 점수 0~100,
     국면 `selling`(점수 ≥ 55) · `exhausting`(최근 10일 고점 ≥ 50 + 끝물 신호 2개 이상: VIX 꺾임 · 기간 구조 역전 해소 · 갭 하락 회복 · 연속 하락 뒤 반등) · `calm`.
-    지표가 빠져도 남은 것으로 계산(`missing` 에 표시)
+    지표가 빠져도 남은 것으로 계산(`missing` 에 표시). 봉 날짜는 심볼별 거래소 시간대(KRW=X 는 런던)
   - `apply(pb, risk)`: selling → 하따(dip_catch) 사다리 1차만 남기고 2·3차는 `gate.held` 로 보류(평단 · rr · then_stop 재계산), exhausting → 숏을 `none` 으로. `pb.risk_regime` 에 점수 · 근거
-  - `runner._playbooks` 뒤에 적용 + 에이전트 노트(`risk_regime.prompt_note`), `api.create_app` 이 앱 PriceSource 의 야후로 `Cache`(15분) 생성, fake_runs 면 끔
-  - `playbook_live`: 분석 없이 볼 때만 게이트 적용(분석의 플레이북은 이미 게이트됨)
-  - `backtest`: `MarketRisk`(날짜별 점수 메모, 한국 계획은 같은 날 미국 종가를 안 봄), `Report.by_risk` · `risk_gate`(규칙 on/off 비교), CLI `--no-risk`
-- 검증: `ruff` OK · `pytest` 560 passed / 1 failed — `test_related.py::test_a_run_hands_the_related_brief...` 는 develop 에서도 단독 실패하는 불안정 테스트(이 브랜치에서 단독 실행은 통과)
-- 실데이터 백테스트(`backtest --basket --horizon swing --from 2019-06-01`, 비용 차감 기대 R, on / off)
-  - 하따 2020-03 −0.040 / −0.084 · 2025-04 −0.363 / −0.408 · 2022 −0.184 / −0.185, 검증 구간 전체 −0.196 / −0.198, 최대 연속 손실 37 / 37
-  - 숏 규칙(끝물에 숏 금지)은 약 190건을 빼도 숏 기대 R 이 그대로(−0.267 / −0.266) — 효과 없음, 유지할지 결정 필요
-  - exhausting 국면의 하따는 +0.078R(calm −0.103R) — 끝물 신호 자체는 롱에 유의미해 보임
-  - Windows 에서 출력을 파일로 돌리면 note 의 `—` 가 cp949 로 깨져 `--out` 이 안 써질 수 있음 → `PYTHONIOENCODING=utf-8` 로 실행
+  - `runner`: 점수를 사전 수집 `gather` 안에서 한 번 받아 플레이북에 적용, 에이전트 노트는 플레이북 유무와 무관. `api.create_app` 이 앱 PriceSource 의 야후로 `Cache`(15분, 실패 2분 기억, 시장별 단일 fetch) 생성, fake_runs 면 끔
+  - `playbook_live`: 분석 없이 볼 때만 게이트 적용, 점수 호출은 따로 6초 제한(넘으면 게이트 없이)
+  - `backtest`: `MarketRisk`(날짜별 점수 메모, 한국 계획은 같은 날 미국 종가 · 원화를 안 봄, 분봉 · 시간봉 계획은 그날 지수 종가를 안 봄), `Report.by_risk` · `risk_gate`(규칙 on/off 비교), CLI `--no-risk`
+- 리뷰 1차(REQUEST_CHANGES)의 HIGH 1 · MEDIUM 2 · LOW 1 · 테스트 공백 반영 완료(`408ad48`). 2차 `reviewer` 는 auto mode 에서 플러그인 hook 이 프롬프트를 고쳐 실행되지 못함
+- 검증: `ruff` OK · `pytest` 587 passed. `test_inverse_pair::test_a_soxl_run...` 이 가끔 "run did not finish"(4초 대기 초과) — origin/develop 에서도 8번 중 5번 실패하는 기존 불안정
+- 실데이터 백테스트(2026-11-08, 비용 차감 기대 R, on / off, `PYTHONIOENCODING=utf-8`)
+  - swing `--basket --from 2019-06-01`: 하따 2020-03 −0.043 / −0.092 · 2025-04 −0.372 / −0.417 · 2022 −0.183 / −0.186, 검증 구간 −0.151 / −0.155, 최대 연속 손실 26 / 26
+  - 숏 게이트: 169건을 빼도 숏 기대 R −0.188 / −0.190 — 여전히 효과 없음. exhausting 국면 하따 +0.077R(calm −0.100R)
+  - intraday `--basket`(60분봉 약 2년): 전 구간 calm 이라 게이트가 걸린 계획이 없음(on = off) — 분봉 규칙 효과는 측정 불가
 - **남은 일**
-  1. 리뷰 반영 — `reviewer` 1차 결과(b6813a5 기준, REQUEST_CHANGES). 고친 뒤 `ruff` · `pytest` 와 백테스트를 다시 돌린다(1번은 수치가 바뀔 수 있음)
-     - **HIGH** `backtest.py` `MarketRisk.on`: 분봉 · 시간봉 계획(scalp · intraday · short_swing)이 그날 **최종** 일봉(VIX · NDX · KS11 종가)으로 게이트됨 = 미래 참조.
-       `h.primary != "1d"` 면 계획일 **전날까지**(`bisect_left`)로 자른다. 스윙(일봉 종가 계획)은 지금대로
-     - MEDIUM `risk_regime.py` `SAME_DAY_KR` · `_day`: KRW=X 는 런던 자정 스탬프 — 서머타임엔 날짜가 하루 앞당겨져 하루 미래 참조, 겨울에도 서울 마감 뒤 종가.
-       KRW=X 를 한국 계획에서도 strict(전날까지)로 두고, 날짜는 거래소 현지 시간대로
-     - MEDIUM `playbook_live.py` `_compute`: 캐시 미스 때 지표 7~9개를 순차로 받는 게 바깥 25초 `wait_for` 안이라 야후가 느리면 실시간 플레이북 전체가 503.
-       위험 호출에 따로 짧은 `wait_for`(try 안), `Cache` 에 빈 결과 · 실패도 짧게 캐시
-     - LOW `runner.py` `_playbooks`: 플레이북이 없으면(레벨 없음) 점수 노트도 빠진다 — 노트는 플레이북과 무관하게 넣을지 결정
-     - 테스트 공백: RunManager(risk=…) 경로(게이트 + 노트), `_risk` 타임아웃/예외, playbook_live 위험 경로(run_pb 없을 때만), 과거 trade_date 의 `Cache.current`, 분봉 · 서머타임 KRW 의 `MarketRisk`
-     - 문제없음 확인: apply 멱등 · 입력 불변, rr/then_stop 이 judge_playbook 과 일치, merge 가 꺼진 숏을 건너뜀, risk=None 이면 동작 그대로, 테스트 오프라인
-     - FE: 추가 필드만(`risk_regime`, 사이드 `gate`). 화면엔 이유가 안 보임 — 보류 1차만 남은 사다리 · 꺼진 숏 표시는 #150 에서
-  2. 숏 게이트 유지/삭제 또는 임계값(SELLING · STRESS · EXHAUST_SIGNALS) 조정 결정 — 백테스트로 확인
+  1. 2차 리뷰(`reviewer`, 범위 `git diff origin/develop`) — CRITICAL/HIGH 만 반영
+  2. 숏 게이트 유지/삭제 또는 임계값(SELLING · STRESS · EXHAUST_SIGNALS) 조정 결정
   3. 이슈 완료 기준의 "사다리 평균 진입가" 비교는 리포트에 없음(기대 R 만) — 필요하면 `backtest.gate_view` 에 추가
-  4. PR: `/pr 검증: ruff OK · pytest 560 passed(불안정 1 제외) · 백테스트 하따 폭락 구간 기대 R 개선 · reviewer ...`
-- 겹치는 작업: #166(`trading-desk-wt/166-direction`) · #149(b9 세션)도 `backtest.py` · `runner.py` · `playbook_live.py` 를 고친다. 덩어리가 달라 늦게 머지되는 쪽이 리베이스
+  4. PR: `/pr 검증: ruff OK · pytest 587 passed(기존 불안정 1 제외) · 백테스트 하따 폭락 구간 기대 R 개선 · reviewer ...`
+  5. FE: 추가 필드만(`risk_regime`, 사이드 `gate`). 보류 1차만 남은 사다리 · 꺼진 숏 표시는 #150 에서
+- 겹치는 작업: #148(`feature/be/148-event-hold`)도 `docs/handoff.md` 를 고친다 — 늦게 머지되는 쪽이 이 절을 합친다
 
 ## 1. 지금 돌아가는 것
 

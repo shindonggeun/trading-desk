@@ -5,6 +5,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 data/
+# 패키지에 넣는 데이터(백테스트 리포트 스냅샷 · 보정표)는 커밋한다 — 위 data/ 는 로컬 SQLite 용
+!backend/desk/data/
 semibot-data/
 node_modules/
 dist/

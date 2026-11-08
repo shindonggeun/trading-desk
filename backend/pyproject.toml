@@ -33,6 +33,7 @@ include = ["desk*"]
 
 [tool.setuptools.package-data]
 "desk.migrations" = ["alembic.ini", "script.py.mako"]
+"desk" = ["data/*.json", "data/backtest/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

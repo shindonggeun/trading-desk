@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import (
+    backtest_reports,
     credit,
     events_calendar,
     filings,
@@ -833,6 +834,22 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         """#148: upcoming FOMC decisions and major BLS releases (official calendars, refreshed in the
         background) and the release window a fresh entry should wait out, if one is open now."""
         return events_calendar.CACHE.view(days=min(max(days, 1), 60))
+
+    @app.get("/api/backtest/reports")
+    def backtest_report_list():
+        """#185: the basket backtest snapshots shipped with the image, one line per horizon."""
+        return backtest_reports.summaries()
+
+    @app.get("/api/backtest/reports/{horizon}")
+    def backtest_report(horizon: str):
+        """#185: one horizon's basket backtest report (desk.backtest.Report as JSON), as committed."""
+        try:
+            report = backtest_reports.get(horizon)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if report is None:
+            raise HTTPException(404, f"no backtest report for {horizon}")
+        return report
 
     @app.get("/api/macro/brief")
     def macro_brief(ticker: str | None = None):

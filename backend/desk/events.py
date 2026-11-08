@@ -62,6 +62,10 @@ class StateDiffer:
         self._seen: dict[str, str] = {}
         self._messages: set[Any] = set()
 
+    def seed(self, key: str, value: str) -> None:
+        """A state field the run starts with (#171: a reused report) - already said, not new."""
+        self._seen[key] = value
+
     def feed(self, messages: Iterable[Any] | None, state: dict | None) -> list[dict]:
         events: list[dict] = []
         for message in messages or []:

@@ -361,6 +361,7 @@ class RunManager:
                  credit: Callable[[], str | None] | None = None,
                  futures: Callable[[], Awaitable[str | None]] | None = None,
                  oscillator: Callable[[str], Awaitable[str | None]] | None = None,
+                 weekly: Callable[[str], Awaitable[str | None]] | None = None,
                  risk: Callable[[str, str | None], dict | None] | None = None,
                  reuse_minutes: float = 0, rate_limit_cooldown_min: float = RATE_LIMIT_COOLDOWN_MIN) -> None:
         self.levels = levels
@@ -383,6 +384,8 @@ class RunManager:
         # #203: RSI / Stochastic extremes and what followed them (desk.oscillator.note_for) on the run's
         # own instrument (a product's underlying) - same day only, the latest bars are today's
         self.oscillator = oscillator
+        # #202: the weekly map of the index behind a leveraged / sector ticker (desk.weekly_map), same day
+        self.weekly = weekly
         # #115: the world news-flow note (desk.macro_news.prompt_note) - None leaves it out
         self.macro = macro
         self.summariser = summariser
@@ -781,6 +784,8 @@ class RunManager:
                 if self.oscillator and same_day:
                     notes["oscillator"] = asyncio.ensure_future(
                         _quiet("oscillator", self.oscillator(base or request.ticker)))
+                if self.weekly and same_day:
+                    notes["weekly"] = asyncio.ensure_future(_quiet("weekly", self.weekly(request.ticker)))
                 # the levels and #146's selling score gate the playbooks: waited for in full
                 sr, sr_u, market = await asyncio.gather(
                     self._support_resistance(request, start),
@@ -793,9 +798,9 @@ class RunManager:
                 if late:
                     log.info("run %s %s: starting without %s (horizon %s)", run_id, request.ticker,
                              ", ".join(late), horizon.id)
-                related, filings_note, positioning_note, futures_note, oscillator_note = (
+                related, filings_note, positioning_note, futures_note, oscillator_note, weekly_note = (
                     notes[name].result() if name in notes and notes[name].done() else None
-                    for name in ("related", "filings", "positioning", "futures", "oscillator"))
+                    for name in ("related", "filings", "positioning", "futures", "oscillator", "weekly"))
                 # The run's own instrument: the underlying for a leveraged product.
                 main_live, main_sr = (start_u, sr_u) if lever else (start, sr)
                 lever_note = under.prompt_note(request.ticker, *lever) if lever else None
@@ -813,7 +818,7 @@ class RunManager:
                                                      pb_note, direction_note((pb_main or {}).get("direction")),
                                                      lever_note,
                                                      related_note(related), macro_note, calendar_note, credit_note,
-                                                     futures_note, filings_note, positioning_note, oscillator_note,
+                                                     futures_note, weekly_note, filings_note, positioning_note, oscillator_note,
                                                      # the score stands for the agents with or without playbooks
                                                      risk_regime.prompt_note(market))
                                    if part) or None

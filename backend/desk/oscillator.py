@@ -43,6 +43,9 @@ def _rows(bars) -> Bars:
     return [asdict(b) if is_dataclass(b) else dict(b) for b in bars]
 
 
+EPISODES_MAX = 80
+
+
 def _forward(bars: Bars, i: int) -> dict:
     close = bars[i]["close"]
     ahead = bars[i + 1:i + 1 + SPAN]
@@ -154,6 +157,8 @@ def report(bars, ticker: str, interval: str = "1d") -> dict:
     return {"ticker": ticker, "interval": interval, "bars": len(bars), "years": years, **now,
             "by_kind": by_kind, "baseline": base, "effect": effect,
             "recent": [r for r in rows if r["kind"].endswith(now["zone"])][-5:] if now["zone"] != "neutral" else [],
+            # #206: the chart marks every past extreme with what followed (the latest EPISODES_MAX)
+            "episodes": rows[-EPISODES_MAX:],
             "reason": _reason(ticker, interval, now, by_kind, effect, base, years)}
 
 

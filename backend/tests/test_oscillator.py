@@ -78,7 +78,11 @@ def test_the_zone_now_and_its_sentence():
     assert rep["zone"] == "hot" and rep["by"] == "rsi" and rep["rsi"] >= 70
     assert rep["reason"].startswith("SOXX 일봉 RSI") and "과열(위험) 구간" in rep["reason"]
     assert "번 중" in rep["reason"] and "평균 최대 낙폭" in rep["reason"]
-    flat = oscillator.report(_bars([100 + (i % 2) * 0.1 for i in range(200)]), "FLAT")
+    # #206: every kind of past extreme for the chart's markers, oldest first, the latest EPISODES_MAX
+    eps = rep["episodes"]
+    assert eps and len(eps) <= oscillator.EPISODES_MAX and [e["at"] for e in eps] == sorted(e["at"] for e in eps)
+    assert {e["kind"] for e in eps} >= {"rsi_hot"} and all("value" in e for e in eps)
+    flat =oscillator.report(_bars([100 + (i % 2) * 0.1 for i in range(200)]), "FLAT")
     assert flat["zone"] == "neutral" and "과열 · 침체 구간 아님" in flat["reason"]
     assert oscillator.report(_bars([100.0] * 10), "X")["zone"] is None
 

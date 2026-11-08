@@ -167,7 +167,8 @@ def write(cells: dict, meta: dict, path: Path = PATH) -> None:
     rounded = {k: {f: round(v, 4) for f, v in c.items()} for k, c in sorted(cells.items())}
     body = {"version": VERSION, "generated_at": datetime.now(UTC).isoformat(timespec="seconds"), **meta,
             "cells": rounded}
-    path.write_text(json.dumps(body, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    with path.open("w", encoding="utf-8", newline="\n") as f:      # LF on Windows too (.gitattributes)
+        f.write(json.dumps(body, ensure_ascii=False, indent=1) + "\n")
 
 
 def reliability(cells_train: dict, trades_valid, horizon: str) -> list[dict]:

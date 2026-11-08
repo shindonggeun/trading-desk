@@ -160,6 +160,15 @@ def test_a_lean_is_kept_inside_the_hysteresis_and_a_zero_cross_is_a_turn(monkeyp
     assert turned["turning"] and turned["before"] == 40
     pb = direction.apply({"long": {"setup": "dip_catch"}, "short": {"setup": "fade"}}, turned, SWING)
     assert pb["long"]["turning"] and pb["short"]["turning"]
+    # swing: no fresh entry either way while turning (measured: turning trades lost more)
+    assert pb["long"]["setup"] == pb["short"]["setup"] == "none"
+    assert pb["long"]["reason"].startswith("방향 전환 중(+40 → -10")
+    # other horizons are only marked
+    marked = direction.apply({"long": {"setup": "dip_catch"}, "short": {"setup": "fade"}}, turned,
+                             horizons.get("intraday"))
+    assert marked["long"]["setup"] == "dip_catch" and marked["long"]["turning"]
+    monkeypatch.setattr(direction, "TURN_PAUSE", False)
+    assert direction.apply({"long": {"setup": "dip_catch"}}, turned, SWING)["long"]["setup"] == "dip_catch"
     assert "TURNING" in direction.prompt_note(turned)
     monkeypatch.setattr(direction, "_score", real)
 

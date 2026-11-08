@@ -30,6 +30,13 @@ TURN_BARS = 5           # the lean this many sessions ago, for the hysteresis an
 MACRO_SPIKE = 1.5
 APPLY = True       # set False to re-measure the counter-trend rows (desk.backtest by_direction)
 APPLY_HORIZONS = ("swing",)   # the backtest that decided the rule ran on swing; other horizons are only marked
+# While the lean is turning (crossed zero within TURN_BARS) no fresh entry on either side; the oversold
+# swing buy (desk.value_swing, applied after) still takes the long slot. Swing basket 2019-, costs in,
+# gated, train / held-out (2024-05-17): turning trades were worse than steady ones in every group
+# (long neutral -0.148R vs -0.108R, short neutral -0.209R vs -0.176R); pausing them took the book
+# -0.127R / -0.113R -> -0.125R / -0.105R (all -0.126R -> -0.122R, ~10% fewer plans). Keeping only the
+# new direction's side (-0.123R / -0.112R) or only the old one's (-0.129R / -0.106R) did not win on both.
+TURN_PAUSE = True
 
 
 def _sma(values: list[float], n: int) -> float | None:
@@ -183,6 +190,12 @@ def apply(pb: dict, direction: dict | None, h: horizons.Horizon, empty=None) -> 
         if APPLY and h.id in APPLY_HORIZONS and rel == "against" and name == "short"                 and side.get("setup") not in (None, "none"):
             reason = f"방향 판정 롱 우세({direction['score']:+d}) — 상승 추세를 거스르는 숏은 쉼"
             side = {**(empty(reason) if empty else _none(side, h)), "direction": rel, "reason": reason}
+        elif (TURN_PAUSE and APPLY and h.id in APPLY_HORIZONS and direction and direction.get("turning")
+              and side.get("setup") not in (None, "none")):
+            reason = (f"방향 전환 중({direction.get('before', 0):+d} → {direction['score']:+d}, {TURN_BARS}거래일) "
+                      "— 새 진입 쉼")
+            side = {**(empty(reason) if empty else _none(side, h)), "direction": rel, "reason": reason,
+                    "turning": True}
         out[name] = side
     return out
 
@@ -204,6 +217,7 @@ def prompt_note(direction: dict | None) -> str | None:
             + (" (strong)" if direction["strong"] else "")
             + (" (kept from the earlier lean)" if direction.get("held") else "")
             + (f" - TURNING: crossed zero from {direction['before']:+d} in {TURN_BARS} sessions, a fresh entry"
-               " either way needs a stated reason" if direction.get("turning") else "")
+               " either way needs a stated reason (the desk's swing playbooks pause both sides)"
+               if direction.get("turning") else "")
             + f" - {why}. A plan against this direction needs a "
             "stated reason (a crash low to catch, an exhausted move); the desk drops shorts against an uptrend.")

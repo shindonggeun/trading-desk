@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
 from .broker.base import Bar, Broker
-from .indicators import INDICATORS, RSI_WARMUP, rsi
+from .indicators import WARMUP, annotate, normalize
 
 log = logging.getLogger(__name__)
 
@@ -189,20 +189,19 @@ class PriceSource:
     async def candles(self, ticker: str, interval: str = "1d", count: int = 120,
                       indicators: tuple[str, ...] = ()) -> dict:
         """{"ticker", "interval", "source", "fetched_at", "bars": [...oldest first], "indicators",
-        "history_limit_days", "truncated"}. With "rsi14" each bar also carries "rsi"."""
+        "history_limit_days", "truncated"}. With "rsi14" each bar also carries "rsi", with "stoch"
+        "stoch_k" / "stoch_d", with "bb20" / "bb50" a {"mid", "upper", "lower"} (desk.indicators)."""
         if interval not in INTERVALS:
             raise ValueError(f"interval must be one of {INTERVALS}")
-        if set(indicators) - set(INDICATORS):
-            raise ValueError(f"indicators must be among {INDICATORS}")
-        indicators = tuple(sorted(set(indicators)))
+        indicators = normalize(indicators)
         count = min(max(count, 1), MAX_COUNT)
         key = (ticker, interval, count, indicators)
         ttl = _CANDLE_TTL[interval]
         cached = self._candles.get(key)
         if cached and self._clock() - cached[0] < ttl:
             return cached[1]
-        # Extra bars ahead of the shown ones so the RSI has settled by the first bar drawn.
-        fetch = count + (RSI_WARMUP if "rsi14" in indicators else 0)
+        # Extra bars ahead of the shown ones so the indicators have settled by the first bar drawn.
+        fetch = count + max((WARMUP[i] for i in indicators), default=0)
         try:
             if interval not in BROKER_INTERVALS or count > BROKER_MAX_COUNT or off_broker(ticker):
                 raise NotImplementedError
@@ -218,9 +217,7 @@ class PriceSource:
             bars = await asyncio.to_thread(self._yahoo_candles, ticker, interval, fetch)
             source = "yahoo"
         rows = [asdict(bar) for bar in bars]
-        if "rsi14" in indicators:
-            for row, value in zip(rows, rsi([row["close"] for row in rows]), strict=True):
-                row["rsi"] = value
+        annotate(rows, indicators)
         rows = rows[-count:]
         result = {"ticker": ticker, "interval": interval, "source": source, "fetched_at": _now(),
                   "bars": rows, "indicators": list(indicators),

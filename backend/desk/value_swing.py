@@ -63,13 +63,23 @@ STOP_ATR = 0.5               # under the structure low
 TIME_STOP_BARS = 25          # sessions after the last fill to reach T1 (about five weeks)
 ACCOUNT_RISK_PCT = {"normal": 0.5, "conviction": 1.0}   # the most one trade may lose, % of the account
 MAX_POSITION_PCT = 30.0      # never more of the account in one name, whatever the stop allows
+# The plan's distances (second limit, stop, reclaim) use the ATR capped the way desk.playbook caps it
+# (#151 _calm_atr: a crash day swells the 14-day ATR - SOXL 2026-11-08 had 13.6 on a 46 price, which
+# put the stop 43% under the average). The evidence keeps the raw ATR its thresholds were swept with.
+# Swing basket 2019-, costs in, gated (train / held-out cut 2024-05-17), the oversold swing buy alone:
+#   raw ATR, no floor     192 settled  +0.249R  train +0.180R  held-out +0.573R (34)  worst -1.51R
+#   capped ATR            192          +0.315R        +0.201R           +0.845R (34)        -1.07R
+#   capped, T1 >= 1R      182          +0.393R        +0.256R           +1.060R (31)        -1.07R
+# and the whole book's held-out -0.105R -> -0.100R.
+CALM_ATR = True
+T1_MIN_RR = 1.0              # a first target closer than this reward/risk from the average is left out
 # How often each target was reached before the stop once filled (desk.backtest value_swing_report:
 # swing basket from 2019, costs in, within the 40-session look-ahead). Shown on the plan's targets.
-# 2026-11-08: 192 filled of 211 plans, expectancy +0.249R (held-out +0.573R on 34), worst -1.51R (a gap
-# through the stop), held a median 16 sessions; each crash beat the dip catch (2020-03 +0.40 vs -0.08,
-# 2022 +0.12 vs -0.23, 2025-04 +0.87 vs -0.40).
-TARGET_REACH = {"t1": 0.599, "t2": 0.344, "t3": 0.094}
-TARGET_REACH_N = 192
+# 2026-11-08, capped ATR and T1 >= 1R: 182 filled, expectancy +0.393R (held-out +1.060R on 31), worst
+# -1.07R, held a median 17 sessions; each crash beat the dip catch (2020-03 +0.60 vs -0.09, 2022 +0.16
+# vs -0.23, 2025-04 +1.44 vs -0.41). T1 is further now (at least 1R), so it is reached less often.
+TARGET_REACH = {"t1": 0.473, "t2": 0.203, "t3": 0.033}
+TARGET_REACH_N = 182
 
 GROUPS = ("oversold", "depth", "base", "fear", "flows")
 
@@ -207,7 +217,10 @@ def evidence(daily: list[dict], weekly: list[dict] | None, sr: dict | None = Non
 
     groups = {"oversold": oversold, "depth": depth, "base": base, "fear": fear, "flows": flows}
     count = sum(1 for g in groups.values() if g["met"])
+    from .playbook import _calm_atr
+
     return {"groups": groups, "count": count, "atr": atr, "close": close, "low20": low20,
+            "plan_atr": _calm_atr(daily, atr, close) if CALM_ATR else atr,
             "sma20": sma20, "sma50": sma50, "sma200": sma200,
             "high52": max(b["high"] for b in weekly[-52:]) if weekly else max(b["high"] for b in daily),
             "setup": bool(all(groups[g]["met"] for g in REQUIRED) and count >= MIN_GROUPS)}
@@ -251,7 +264,7 @@ def plan(ev: dict, edge: dict | None = None) -> dict | None:
         return None
     from .playbook import _round, _target
 
-    atr, close = ev["atr"], ev["close"]
+    atr, close = ev.get("plan_atr") or ev["atr"], ev["close"]
     e1 = close
     e2 = close - STEP_ATR * atr
     e3 = max(close, ev["low20"] + atr)                 # a stop entry: the reclaim, after a limit fill
@@ -263,11 +276,14 @@ def plan(ev: dict, edge: dict | None = None) -> dict | None:
     fall_top, fall_low = ev["high52"], ev["low20"]
     span = max(0.0, fall_top - fall_low)
     targets = []
-    for role, price, basis in (("t1", ev["sma20"], "20일선"),
-                               ("t2", fall_low + 0.382 * span, "하락폭 38.2% 되돌림"),
-                               ("t3", max(ev["sma50"] or 0, fall_low + 0.5 * span), "50일선 · 하락폭 50% 되돌림")):
-        floor = targets[-1]["price"] if targets else avg
-        if price and price > floor + 0.3 * atr:
+    for price, basis in ((ev["sma20"], "20일선"),
+                         (fall_low + 0.382 * span, "하락폭 38.2% 되돌림"),
+                         (max(ev["sma50"] or 0, fall_low + 0.5 * span), "50일선 · 하락폭 50% 되돌림")):
+        # the first target must pay T1_MIN_RR of the risk; the next ones only lie beyond it. The roles
+        # go by position: a 20-day line too close to pay leaves the retracement as T1 (half off there).
+        floor = targets[-1]["price"] + 0.3 * atr if targets else max(avg + 0.3 * atr, avg + T1_MIN_RR * (avg - stop))
+        if price and price > floor:
+            role = f"t{len(targets) + 1}"
             extra = {"t1": {"action": "take_half", "then_stop": _round(avg)},
                      "t2": {"action": "take_rest"},                 # desk.outcome scores the trade to T2
                      "t3": {"action": "trail", "trail_atr": 2.0}}[role]   # shown; T2 onward on a 2-ATR trail

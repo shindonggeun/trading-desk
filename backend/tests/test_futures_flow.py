@@ -13,11 +13,12 @@ KEY, SECRET = "app-key-not-real", "app-secret-not-real"
 
 def test_the_front_month_rolls_after_the_second_thursday():
     assert ff.second_thursday(2026, 12) == date(2026, 12, 10)
-    assert ff.front_month(date(2026, 11, 6)) == {"code": "101X12", "expiry": "2026-12-10", "days_left": 34}
-    assert ff.front_month(date(2026, 12, 10))["code"] == "101X12"           # the last trading day itself
-    assert ff.front_month(date(2026, 12, 11))["code"] == "101Y03"           # next quarter, next year's letter
-    assert ff.front_month(date(2025, 9, 1))["code"] == "101W09"             # KIS sample's code
-    assert ff.front_month(date(2026, 3, 13))["code"] == "101X06"
+    # codes as in KIS' index-futures master: "1|A01612|KR4A016C0004|F 202612| ...|KOSPI200", "A01703 ... F 202703"
+    assert ff.front_month(date(2026, 11, 6)) == {"code": "A01612", "expiry": "2026-12-10", "days_left": 34}
+    assert ff.front_month(date(2026, 12, 10))["code"] == "A01612"           # the last trading day itself
+    assert ff.front_month(date(2026, 12, 11))["code"] == "A01703"           # next quarter, next year
+    assert ff.front_month(date(2025, 9, 1))["code"] == "A01509"
+    assert ff.front_month(date(2026, 3, 13))["code"] == "A01606"
 
 
 PRICE_OUT = {
@@ -120,7 +121,7 @@ def _flow(rest, spot=None):
 
 def test_the_flow_shows_futures_and_flags_a_foreign_split():
     out = asyncio.run(_flow(_rest([]), _Spot()).get())
-    assert out["supported"] and out["error"] is None and out["front"]["code"] == "101X12"
+    assert out["supported"] and out["error"] is None and out["front"]["code"] == "A01612"
     assert out["price"]["open_interest"] == 285000 and out["investors"]["foreign"]["net_contracts"] == -4100
     assert out["split"] == {"spot_net": 320_000_000_000, "spot_date": "2026-11-06", "futures_net_contracts": -4100,
                             "split": True, "kind": "spot_buy_futures_sell", "reason": None}
@@ -152,7 +153,7 @@ def test_an_empty_quote_or_a_failed_part_is_retried_soon():
     flow = ff.FuturesFlow(_rest([], price=empty), None, clock=lambda: clock[0],
                           now=lambda: datetime(2026, 11, 6, 9, 0, tzinfo=UTC))       # 18:00 KST, closed
     out = asyncio.run(flow.get())
-    assert out["price"] is None and "101X12" in out["error"]
+    assert out["price"] is None and "A01612" in out["error"]
     assert flow._cache[1] == ff.CACHE_FAIL_SEC
     part = ff.FuturesFlow(_rest([], investors={"rt_cd": "1", "msg_cd": "EGW00201"}), None, clock=lambda: 0.0,
                           now=lambda: datetime(2026, 11, 6, 9, 0, tzinfo=UTC))
@@ -179,7 +180,7 @@ def test_make_needs_both_keys_and_https():
 def test_api_answers_unsupported_without_keys(db_url):
     with _client(db_url) as client:
         body = client.get("/api/market/futures").json()
-        assert body["supported"] is False and body["front"]["code"].startswith("101")
+        assert body["supported"] is False and body["front"]["code"].startswith("A01")
 
 
 def test_api_needs_a_session(db_url):
@@ -217,7 +218,7 @@ def test_refused_issues_back_off():
 def test_the_note_reads_price_basis_investors_and_a_split():
     view = asyncio.run(_flow(_rest([]), _Spot()).get())
     note = ff.prompt_note(view)
-    assert note.startswith("KOSPI200 futures, front month 101X12") and "open interest 285,000" in note
+    assert note.startswith("KOSPI200 futures, front month A01612") and "open interest 285,000" in note
     assert "foreign -4,100" in note and "foreigners BUY stocks but SELL futures" in note and "+320 bn KRW" in note
     assert "session closed" not in note                           # 11:00 KST: the session is open
     # investors that did not read as futures are not shown; no quote = no note

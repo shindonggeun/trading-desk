@@ -40,6 +40,10 @@ const INTRADAY = new Set<Interval>(["5m", "15m", "30m", "60m", "240m"]);
 const LOG_SCALE = new Set<Interval>(["1w", "1M", "1y"]);
 const LABEL = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.label])) as Record<Interval, string>;
 const COUNT = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.count])) as Record<Interval, number>;
+// #206 왼쪽 끝까지 끌면 과거 봉을 두 배씩 더 받는다 — 백엔드 최대(prices.MAX_COUNT)까지.
+const MAX_BARS = 2000;
+// 보이는 범위의 왼쪽 끝이 첫 봉에서 이만큼 안쪽이면 더 받는다
+const OLDER_EDGE = 5;
 
 type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean };
 const SHOW_LABEL: Record<keyof Show, string> = {
@@ -261,6 +265,16 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const [interval, setBarInterval] = useState<Interval>(initialInterval ?? prefs.interval);
   const [show, setShow] = useState<Show>(prefs.show);
   const [candles, setCandles] = useState<Candles | null>(null);
+  // 과거 봉 배수(1 · 2 · 4 …) — 종목 · 주기가 바뀌면 처음으로
+  const [older, setOlder] = useState({ key: "", times: 1 });
+  const olderKey = `${ticker}|${interval}`;
+  const olderKeyRef = useRef(olderKey);
+  olderKeyRef.current = olderKey;
+  const times = older.key === olderKey ? older.times : 1;
+  const wanted = Math.min(COUNT[interval] * times, MAX_BARS);
+  // 더 받은 뒤 새 차트에서 보던 자리를 지키려고: 받기 전 보이던 논리 범위와 봉 수
+  const keepView = useRef<{ from: number; to: number; bars: number } | null>(null);
+  const loadingOlder = useRef(false);
   const [fills, setFills] = useState<ReviewRow[]>([]);
   const [failed, setFailed] = useState(false);
   // #206 과열 · 침체 판정(일봉 · 주봉만 — 분봉 · 월 · 년봉은 일봉 판정을 배지로만)
@@ -448,17 +462,25 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   // RSI 를 켜고 끄면 다시 받는다(서버가 30초 캐시) — RSI 는 봉과 같은 응답에 실린다.
   useEffect(() => {
     let live = true;
-    setCandles(null);
+    // 과거 봉을 더 받을 땐 지금 차트를 둔 채 받는다(깜빡임 없이)
+    if (times === 1) {
+      keepView.current = null;
+      setCandles(null);
+    }
     setFailed(false);
     api
-      .candles(ticker, interval, COUNT[interval],
+      .candles(ticker, interval, wanted,
         [...(show.rsi ? ["rsi"] : []), ...(show.stoch ? ["stoch"] : []), ...(show.bb ? ["bb20"] : [])])
       .then((c) => live && setCandles(c))
-      .catch(() => live && setFailed(true));
+      .catch(() => live && (times === 1 ? setFailed(true) : (keepView.current = null)))
+      .finally(() => {
+        if (live) loadingOlder.current = false;
+      });
     return () => {
       live = false;
+      loadingOlder.current = false;
     };
-  }, [ticker, interval, show.rsi, show.stoch, show.bb]);
+  }, [ticker, interval, wanted, show.rsi, show.stoch, show.bb]);
 
   // 이 종목 체결만. 브로커가 체결 내역을 안 주거나 실패하면 마커 없이 그린다.
   useEffect(() => {
@@ -554,7 +576,26 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         chart.panes()[pane]?.setHeight(rsiHeight(el.clientHeight));
       }
 
-      chart.timeScale().fitContent();
+      // 과거 봉을 더 받은 뒤면 보던 자리 그대로(앞에 붙은 봉 수만큼 밀어서), 아니면 전체
+      const kept = keepView.current;
+      keepView.current = null;
+      if (kept) {
+        const added = rows.length - kept.bars;
+        chart.timeScale().setVisibleLogicalRange({ from: kept.from + added, to: kept.to + added });
+      } else {
+        chart.timeScale().fitContent();
+      }
+      // 왼쪽 끝 가까이 끌면 과거 봉을 더 — 요청만큼 다 왔을 때만(보관 한도 · 상장 이후 끝이면 멈춘다)
+      const more = !candles.truncated && rows.length < MAX_BARS;
+      const ts = chart.timeScale();
+      if (more) {
+        ts.subscribeVisibleLogicalRangeChange((r) => {
+          if (!r || r.from > OLDER_EDGE || loadingOlder.current || !alive.current) return;
+          loadingOlder.current = true;
+          keepView.current = { from: r.from, to: r.to, bars: rows.length };
+          setOlder((o) => ({ key: olderKeyRef.current, times: (o.key === olderKeyRef.current ? o.times : 1) * 2 }));
+        });
+      }
       setDrawn({ chart, series, volume, rsi, stoch, markers: createSeriesMarkers(series, []), rows, intraday, interval: iv, lastClose: rows[rows.length - 1].bar.close, alive });
     } catch {
       chart?.remove(); // 봉 데이터가 이상하면 앱 전체가 아니라 차트만 실패로

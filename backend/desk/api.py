@@ -745,18 +745,22 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     async def market_weekly(symbol: str | None = None):
         """#202: the weekly market map - each main index's weekly trend lines, bands, ranges, this
         week's candle and the lines' record, in plain Korean. One index failing answers its
-        ``error``; the others still come. ``symbol`` narrows it to one of desk.weekly_map.TARGETS."""
+        ``error``; the others still come. ``symbol`` asks for one map: a main index or any ticker (#229)."""
         if symbol is None:
             return await asyncio.to_thread(weekly.all)
-        if symbol not in weekly_map.NAMES:
-            raise HTTPException(422, f"symbol must be one of {', '.join(weekly_map.NAMES)}")
+        try:
+            symbol = clean_ticker(symbol)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
         return {"maps": [await asyncio.to_thread(weekly.one, symbol)]}
 
     @app.get("/api/market/weekly/{symbol}/history")
     async def market_weekly_history(symbol: str, weeks: int = 8):
         """#202: the map as it read at the end of each of the last ``weeks`` weeks (bars up to each)."""
-        if symbol not in weekly_map.NAMES:
-            raise HTTPException(422, f"symbol must be one of {', '.join(weekly_map.NAMES)}")
+        try:
+            symbol = clean_ticker(symbol)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
         return {"symbol": symbol, "weeks": await asyncio.to_thread(weekly.history, symbol, min(max(weeks, 1), 52))}
 
     @app.get("/api/portfolio")

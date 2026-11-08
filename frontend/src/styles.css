@@ -1317,3 +1317,10 @@ a.wmb-row:hover { border-color: var(--accent); }
   .wmb-lines { grid-column: 2; }
 }
 
+/* #229 주간 지도 — 다른 종목 검색 · 즐겨찾기 종목 */
+.wm-tools { display: grid; gap: 8px; }
+.wm-search { display: flex; gap: 8px; align-items: stretch; }
+.wm-search > :first-child { flex: 1 1 auto; min-width: 0; }
+.wm-fav { display: flex; align-items: center; gap: 6px; }
+.wm-fav-title { margin: 4px 0 0; }
+

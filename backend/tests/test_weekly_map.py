@@ -146,10 +146,10 @@ def test_the_api_needs_a_session_and_validates_the_symbol(db_url):
         body = client.get("/api/market/weekly").json()
         assert len(body["maps"]) == len(wm.TARGETS) and body["maps"][0]["text"]["headline"]
         assert client.get("/api/market/weekly", params={"symbol": "SOXX"}).json()["maps"][0]["symbol"] == "SOXX"
-        assert client.get("/api/market/weekly", params={"symbol": "AAPL"}).status_code == 422
+        assert client.get("/api/market/weekly", params={"symbol": "AAP L"}).status_code == 422   # not a ticker
         hist = client.get("/api/market/weekly/SOXX/history", params={"weeks": 4}).json()
         assert hist["symbol"] == "SOXX" and len(hist["weeks"]) == 4
-        assert client.get("/api/market/weekly/AAPL/history").status_code == 422
+        assert client.get("/api/market/weekly/AAP%20L/history").status_code == 422
 
 
 def test_a_leveraged_same_day_run_hands_the_index_map_to_the_agents(db_url, monkeypatch):
@@ -261,3 +261,44 @@ def test_cli_weekly_lines_prints_and_writes(tmp_path, monkeypatch, capsys):
     assert "← 지금" in capsys.readouterr().out
     body = json.loads(out.read_text(encoding="utf-8"))
     assert body["rows"] and body["indices"]["SOXX"]["weeks"] == len(bars)
+
+
+# --- #229: any ticker ------------------------------------------------------------------------------
+
+
+def test_any_ticker_gets_a_map_and_the_cache_stays_bounded(monkeypatch):
+    monkeypatch.setattr(wm, "CACHE_SYMBOLS", 3)
+    maps = wm.Maps(candles=lambda s, i, c: _bars_obj(_rise(90)) if s != "THIN" else _bars_obj(_rise(10)))
+    m = maps.one("NVDA")
+    assert m["symbol"] == "NVDA" and m["name"] == "NVDA" and m["text"]["headline"].startswith("NVDA:")
+    assert "error" in maps.one("THIN")                       # too few weekly bars: that ticker only
+    for t in ("AAA", "BBB", "CCC"):
+        maps.one(t)
+    assert len(maps._rows) == 3 and "NVDA" not in maps._rows
+
+
+def test_the_api_takes_any_valid_ticker(db_url):
+    from datetime import timedelta as td
+
+    from fastapi.testclient import TestClient
+
+    from desk import api
+    from desk.auth import Auth
+    from desk.db import make_engine
+    from desk.settings import Settings
+    from tests.test_api import OWNER, PASSWORD
+
+    maps = wm.Maps(candles=lambda s, i, c: _bars_obj(_rise(90)))
+    client = TestClient(api.create_app(Settings(database_url=db_url, fake_runs=True, fake_delay=0), weekly=maps),
+                        base_url="https://testserver")
+    engine = make_engine(db_url)
+    Auth(engine, td(hours=1), td(hours=1)).create_user(OWNER, PASSWORD)
+    engine.dispose()
+    with client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        body = client.get("/api/market/weekly", params={"symbol": "nvda"}).json()
+        assert body["maps"][0]["symbol"] == "NVDA"
+        assert client.get("/api/market/weekly", params={"symbol": "005930.KS"}).status_code == 200
+        assert client.get("/api/market/weekly", params={"symbol": "../x"}).status_code == 422
+        assert client.get("/api/market/weekly/NVDA/history", params={"weeks": 2}).json()["symbol"] == "NVDA"
+        assert client.get("/api/market/weekly/bad$/history").status_code == 422

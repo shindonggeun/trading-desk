@@ -191,7 +191,8 @@ def snapshot(ticker: str, h: horizons.Horizon, primary: list[dict], secondary: l
     day = cut.isoformat()
     return Snapshot(ticker, t, primary[t]["at"], day, _plan_at(primary[t + 1], h, ticker), levels, daily, window,
                     today=playbook_live.today(window, h), vix=_vix_on(vix, day),
-                    risk=market.on(day, ticker) if market else None)
+                    risk=market.on(day, ticker, intraday=h.primary not in ("1d", "1w", "1M"))
+                    if market else None)
 
 
 def _vix_on(vix: dict[str, float] | None, day: str) -> float | None:
@@ -212,17 +213,19 @@ class MarketRisk:
     def __init__(self, series: risk_regime.Series) -> None:
         self.series = series
         self._days = {k: [b["day"] for b in v] for k, v in series.items()}
-        self._memo: dict[tuple[str, bool], dict | None] = {}
+        self._memo: dict[tuple[str, bool, bool], dict | None] = {}
 
-    def on(self, day: str, ticker: str) -> dict | None:
+    def on(self, day: str, ticker: str, intraday: bool = False) -> dict | None:
+        """``intraday``: a plan made during the session of ``day`` (minute or hourly bars) - that
+        day's index closes were still ahead of it, so only the days before count."""
         korean = risk_regime.is_korean(ticker)
-        key = (day, korean)
+        key = (day, korean, intraday)
         if key not in self._memo:
             cut = {}
             for symbol, bars in self.series.items():
                 days = self._days[symbol]
-                # a Korean plan sees the US session of the day before (as risk_regime.as_of)
-                strict = korean and symbol not in risk_regime.SAME_DAY_KR
+                # as risk_regime.as_of: a Korean plan sees the US session of the day before
+                strict = risk_regime.strict_for(symbol, korean, intraday)
                 end = bisect.bisect_left(days, day) if strict else bisect.bisect_right(days, day)
                 if end:
                     cut[symbol] = bars[max(0, end - risk_regime.HISTORY_BARS): end]

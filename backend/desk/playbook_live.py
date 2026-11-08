@@ -25,7 +25,8 @@ from .sr import frame_bars, support_resistance
 log = logging.getLogger(__name__)
 
 TIMEOUT_SEC = 25.0           # the whole computation, not each step
-FAIL_TTL_SEC = 10.0          # a failure is remembered briefly so a poll does not pile up retries
+RISK_TIMEOUT_SEC = 6.0       # the market's selling score (#146), inside the whole
+FAIL_TTL_SEC = 10.0         # a failure is remembered briefly so a poll does not pile up retries
 _CACHE: OrderedDict[tuple, tuple[float, dict | Exception]] = OrderedDict()
 _SINCE: OrderedDict[tuple, tuple[str, str]] = OrderedDict()   # (ticker, horizon, run, side) -> (state, since)
 _LOCKS: dict[tuple, asyncio.Lock] = {}
@@ -67,9 +68,11 @@ async def _compute(prices, ticker: str, h: horizons.Horizon, run_pb: dict | None
         raise ValueError(f"no playbooks for {ticker}: too few bars or no levels")
     if risk is not None and not run_pb:
         # #146: the market's selling score now (an analysis' playbooks were gated when it ran)
+        # its own short limit: a slow Yahoo leaves the playbooks ungated, not the whole page a 503
         try:
-            fresh = risk_regime.apply(fresh, await asyncio.to_thread(risk, ticker, None))
-        except Exception as exc:  # noqa: BLE001 - the playbooks ungated, not none
+            fresh = risk_regime.apply(fresh, await asyncio.wait_for(asyncio.to_thread(risk, ticker, None),
+                                                                    RISK_TIMEOUT_SEC))
+        except Exception as exc:  # noqa: BLE001 - incl. timeout; the playbooks ungated, not none
             log.warning("risk regime for %s failed: %s", ticker, exc)
     out = playbook.track(fresh, run_pb, primary, frame)
     await _triggers(prices, ticker, out, frame, live)

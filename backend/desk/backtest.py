@@ -105,6 +105,8 @@ class Trade:
     mae_atr: float | None = None      # worst move against the average fill, in the frame's ATR
     mfe_atr: float | None = None      # best move for it
     direction: str = "neutral"        # with | against | neutral: the side against desk.direction (#166)
+    held_bars: int | None = None      # primary bars from the first fill to the exit (the look-ahead's end if open)
+    reach: int | None = None          # targets T1..Tn reached in order before the original stop (#167)
 
 
 @dataclass
@@ -134,6 +136,7 @@ class Report:
     by_risk: dict = field(default_factory=dict)
     risk_gate: dict = field(default_factory=dict)   # the same plans with the #146 rule on / off
     equity: dict = field(default_factory=dict)      # cumulative R by plan day (#192, ``equity``)
+    value_swing: dict = field(default_factory=dict)  # the oversold swing buy on its own (#167)
 
 
 # ---------------------------------------------------------------- data
@@ -270,6 +273,29 @@ def _excursions(direction: int, future: list[dict], avg: float, first_fill_at: s
     return round(max(mae, 0.0), 2), round(max(mfe, 0.0), 2)
 
 
+def _held_and_reach(direction: int, future: list[dict], side: dict, first_fill_at: str | None,
+                    exited_at: str | None) -> tuple[int | None, int | None]:
+    """(bars held, targets reached) for a filled side. Held: from the first fill's bar to the exit's
+    (to the look-ahead's end while open). Reached: how far down the target list the price went before
+    the original stop - a bar touching both counts the stop first, as desk.outcome does."""
+    at = [b["at"] for b in future]
+    if first_fill_at not in at:
+        return None, None
+    i0 = at.index(first_fill_at)
+    held = (at.index(exited_at) if exited_at in at else len(future) - 1) - i0
+    stop, targets = side.get("stop"), [t["price"] for t in side.get("targets") or [] if t.get("price") is not None]
+    reached = 0
+    for bar in future[i0:]:
+        if stop is not None and (bar["low"] <= stop if direction > 0 else bar["high"] >= stop):
+            break
+        best = bar["high"] if direction > 0 else bar["low"]
+        while reached < len(targets) and (best >= targets[reached] if direction > 0 else best <= targets[reached]):
+            reached += 1
+        if reached == len(targets):
+            break
+    return held, reached
+
+
 def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: Costs,
               gate: bool = True) -> list[Trade]:
     """Build the snapshot's playbooks and judge each side on the bars after it. ``gate`` applies
@@ -310,6 +336,8 @@ def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: C
                 trade.r_net = round(trade.r_size - cost_r, 3)
             trade.mae_atr, trade.mfe_atr = _excursions(direction, future, avg, res.get("first_fill_at"),
                                                        res.get("exited_at"), atr)
+            trade.held_bars, trade.reach = _held_and_reach(direction, future, side, res.get("first_fill_at"),
+                                                           res.get("exited_at"))
         trade.risk_phase = (snap.risk or {}).get("phase") or "unknown"
         out.append(trade)
     return out
@@ -453,6 +481,42 @@ def gate_view(trades: list[Trade], cut: str | None, h: horizons.Horizon) -> dict
     return view
 
 
+def _pct(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return round(ordered[min(len(ordered) - 1, int(q * len(ordered)))], 3)
+
+
+def value_swing_report(trades: list[Trade], cut: str | None, h: horizons.Horizon) -> dict:
+    """#167: the oversold swing buy on its own - expectancy on the train and held-out dates, how
+    often each target was reached before the stop (the plan shows these), the worst loss, how long a
+    trade was held, against the dip catch in the crashes, and by conviction score."""
+    vs = [t for t in trades if t.side == "long" and t.setup == "value_swing"]
+    if not vs:
+        return {}
+    train, valid = split(vs, cut, h)
+    filled = [t for t in vs if t.filled_shares and t.reach is not None]
+    settled = [t for t in vs if t.filled_shares and t.status in SETTLED + MARKED and t.r_net is not None]
+    held = [t.held_bars for t in filled if t.held_bars is not None]
+    dip = [t for t in trades if t.side == "long" and t.setup == "dip_catch"]
+    return {
+        "all": aggregate(vs), "train": aggregate(train), "valid": aggregate(valid),
+        # P(target k reached before the stop | filled), the first fill onwards within the look-ahead
+        "reach": {f"t{k}": round(sum(1 for t in filled if t.reach >= k) / len(filled), 3) if filled else None
+                  for k in (1, 2, 3)},
+        "reach_n": len(filled),
+        "worst_r": min((t.r_net for t in settled), default=None),
+        "r_p10": _pct([t.r_net for t in settled], 0.1),
+        "mae_atr_p90": _pct([t.mae_atr for t in settled if t.mae_atr is not None], 0.9),
+        "held_bars": {"median": _median(held), "p90": _pct(held, 0.9), "max": max(held, default=None)},
+        "crash": {name: {"value_swing": aggregate([t for t in vs if _in(t.at, lo, hi)]),
+                         "dip_catch": aggregate([t for t in dip if _in(t.at, lo, hi)])}
+                  for name, (lo, hi) in CRASH_WINDOWS.items()},
+        "by_score": _by(vs, lambda t: str(t.score)),
+    }
+
+
 # ---------------------------------------------------------------- runs
 
 
@@ -582,6 +646,7 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
     notes.append("사다리 비중(SHARES) 스윕은 하따(dip_catch)에만 영향 — 박스 하단 · 눌림목은 50/50 고정")
     report = Report(VERSION, h.id, list(tickers), start, end, asdict(costs), **summarize(trades, h, cut), notes=notes,
                     generated_at=datetime.now(UTC).isoformat(timespec="seconds"))
+    report.value_swing = value_swing_report(trades, cut, h)
     if risk:
         report.risk_gate = {"on": gate_view(trades, cut, h),
                             "off": gate_view(evaluate(snaps, h, costs, gate=False), cut, h)}
@@ -626,6 +691,19 @@ def print_summary(report: Report, out=None) -> None:
             print(f"gate {key}: expectancy on {_fmt(on['expectancy_r'])} / off {_fmt(off['expectancy_r'])}"
                   f" · per plan {_fmt(on['expectancy_per_plan_r'])} / {_fmt(off['expectancy_per_plan_r'])}"
                   f" (settled {on['settled']} / {off['settled']})", file=out)
+    vs = report.value_swing
+    if vs:
+        held = vs["held_bars"]
+        print(f"value_swing: valid {_fmt(vs['valid']['expectancy_r'])} (settled {vs['valid']['settled']}) · "
+              f"reach T1 {_fmt(vs['reach']['t1'])} T2 {_fmt(vs['reach']['t2'])} T3 {_fmt(vs['reach']['t3'])} "
+              f"(filled {vs['reach_n']}) · worst {_fmt(vs['worst_r'])}R p10 {_fmt(vs['r_p10'])}R · "
+              f"held median {_fmt(held['median'])} p90 {_fmt(held['p90'])} max {_fmt(held['max'])} bars", file=out)
+        for name, pair in vs["crash"].items():
+            if pair["value_swing"]["plans"]:
+                print(f"value_swing crash:{name}: {_fmt(pair['value_swing']['expectancy_r'])} vs dip_catch "
+                      f"{_fmt(pair['dip_catch']['expectancy_r'])}", file=out)
+        for score, agg in vs["by_score"].items():
+            print(f"value_swing score {score}: {_fmt(agg['expectancy_r'])} (settled {agg['settled']})", file=out)
     for row in report.sweep[:12]:
         print(f"sweep {row['param']}={row['value']}{' (now)' if row['current'] else ''}: "
               f"train {_fmt(row['train']['expectancy_r'])} / valid {_fmt(row['valid']['expectancy_r'])}"

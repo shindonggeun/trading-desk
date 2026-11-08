@@ -263,7 +263,6 @@ def test_note_for_skips_non_us_and_survives_a_slow_source(monkeypatch):
 
 
 def test_the_positioning_note_reaches_us_same_day_runs_only(db_url):
-    import time
     from datetime import timedelta as td
 
     from fastapi.testclient import TestClient
@@ -273,6 +272,7 @@ def test_the_positioning_note_reaches_us_same_day_runs_only(db_url):
     from desk.db import make_engine
     from desk.runner import make_fake_runner
     from desk.settings import Settings
+    from tests.test_api import _wait_done
 
     rendered, seen = [], []
     fake = make_fake_runner(0)
@@ -295,10 +295,7 @@ def test_the_positioning_note_reaches_us_same_day_runs_only(db_url):
 
         def run(body):
             run_id = client.post("/api/runs", json=body).json()["id"]
-            for _ in range(200):
-                if client.get(f"/api/runs/{run_id}").json()["status"] in ("done", "failed"):
-                    return
-                time.sleep(0.02)
+            _wait_done(client, run_id)                 # #213: fails loudly instead of going on unfinished
 
         run({"ticker": "NVDA"})
         run({"ticker": "TSLA", "trade_date": "2026-01-05"})

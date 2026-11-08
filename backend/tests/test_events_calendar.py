@@ -7,6 +7,7 @@ import httpx
 from desk import events_calendar as ec
 from desk import filings as fl
 from desk import macro_news as m
+from tests.test_api import _wait_done
 
 FOMC_HTML = """
 <h4><a>2026 FOMC Meetings</a></h4>
@@ -241,10 +242,7 @@ def test_filings_and_calendar_notes_reach_the_agents_and_the_calendar_api(db_url
 
         def run(body):
             run_id = client.post("/api/runs", json=body).json()["id"]
-            for _ in range(200):
-                if client.get(f"/api/runs/{run_id}").json()["status"] in ("done", "failed"):
-                    break
-                time.sleep(0.02)
+            _wait_done(client, run_id)                 # #213: fails loudly instead of going on unfinished
 
         run({"ticker": "NVDA"})
         assert seen == ["NVDA"] and "SEC NOTE: 8-K earnings" in rendered[0] and "CALENDAR NOTE" in rendered[0]

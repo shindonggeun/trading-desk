@@ -248,7 +248,7 @@ export interface EconCalendar {
 
 /** 플레이북이 정한 진입 트리거(이탈 매도의 지지 이탈 등) */
 export interface PlanTrigger { price: number; kind: "stop" | "limit"; text: string }
-/** #149 desk/trigger.live — 실시간 플레이북이 하위 봉으로 읽은 진입 트리거. 같은 `trigger` 키로 온다 */
+/** #149 desk/trigger.live — 실시간 플레이북이 하위 봉으로 읽은 진입 트리거(`lower_trigger`, #193) */
 export interface LowerTrigger {
   state: "armed" | "triggered" | "invalid";
   price: number | null;
@@ -273,7 +273,7 @@ export interface PlaybookSide {
   } | null;
   /** held: #148 경제 일정 창이 지날 때까지 보류된 차수 */
   entries: { step: 1 | 2 | 3; price: number; share: number; kind: "limit" | "stop"; after?: string[]; held?: "event" }[];
-  /** 분석의 플레이북은 PlanTrigger, 실시간(#149)은 LowerTrigger — 둘을 가려 읽는 건 PlaybookCard */
+  /** 플레이북이 정한 진입 트리거(이탈 매도 등). #193 전 서버는 실시간 응답에서 하위 봉 트리거를 여기에 실었다 */
   trigger?: PlanTrigger | LowerTrigger | null;
   /** #146 시장 투매 점수가 걸러 낸 것: selling → 사다리 1차만(held = 뺀 차수), exhausting → 숏을 쉼(setup = 원래 셋업) */
   gate?: { phase: RiskPhase; text: string; held: { step: number; price: number; share: number }[]; setup?: PlaybookSetup } | null;
@@ -301,6 +301,8 @@ export interface LivePlaybookSide extends PlaybookSide {
   state_since: string | null;
   /** 시세를 못 받아 마지막 종가로 계산 */
   stale: boolean;
+  /** #149 하위 봉 트리거 — 구역 근처가 아니거나 하위 봉을 못 받으면 null(#193 에서 trigger 와 나눔) */
+  lower_trigger?: LowerTrigger | null;
 }
 export interface LivePlaybooks extends Omit<Playbooks, "long" | "short"> {
   long: LivePlaybookSide;

@@ -142,10 +142,14 @@ def test_the_live_playbooks_carry_a_trigger_from_the_lower_bars(monkeypatch):
     assert wanted, "the crash fixture should put a side near its zone"
     assert asked == [trigger.LOOKBACK["60m"]] and out["frame"]["trigger_interval"] == "60m"
     for s in ("long", "short"):
-        assert "trigger" in out[s]
+        assert "lower_trigger" in out[s]
         if s not in wanted:
-            assert out[s]["trigger"] is None
-    assert out["long"]["trigger"] is None or out["long"]["trigger"]["preferred"] is True
+            assert out[s]["lower_trigger"] is None
+    assert out["long"]["lower_trigger"] is None or out["long"]["lower_trigger"]["preferred"] is True
+    # #193: the playbook's own planned trigger is left alone - a dict with a text, or absent
+    fresh = playbook.build(_crash_sr(bars[-1]["close"]), bars, bars, SWING)
+    for s in ("long", "short"):
+        assert out[s].get("trigger") == fresh[s].get("trigger")
 
     async def broken(ticker, interval="1d", count=120, indicators=()):
         if interval == "60m":
@@ -155,7 +159,7 @@ def test_the_live_playbooks_carry_a_trigger_from_the_lower_bars(monkeypatch):
     playbook_live._CACHE.clear()
     monkeypatch.setattr(src, "candles", broken)
     out = asyncio.run(playbook_live.current(src, "NVDA", "swing"))
-    assert all(out[s]["trigger"] is None for s in ("long", "short")) and out["long"]["state"] is not None
+    assert all(out[s]["lower_trigger"] is None for s in ("long", "short")) and out["long"]["state"] is not None
 
 
 def test_the_backtest_compares_both_arms_on_the_same_plan():

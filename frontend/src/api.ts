@@ -1,4 +1,4 @@
-import type { CreditView, DeskConfig, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
+import type { CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -202,6 +202,8 @@ export const api = {
   /** 지지 · 저항(backend desk/sr.py) — 지금 봉 기준, 서버가 몇 분 캐시. */
   /** #128: 분석(run)의 구역 · 사다리 · 손절 · 목표는 그대로, 조건 · 점수 · 상태만 지금 값. ticker · horizon 은 run 에서 */
   livePlaybooks: (run: string) => call<LivePlaybooks>(`/api/playbooks?run=${encodeURIComponent(run)}`),
+  /** #148 다가오는 FOMC · 주요 BLS 발표(공식 일정, 서버가 백그라운드로 갱신)와 지금 열린 진입 보류 창 */
+  econCalendar: (days = 14) => call<EconCalendar>(`/api/events/calendar?days=${days}`),
   levels: (ticker: string) => call<SupportResistance>(`/api/levels?ticker=${encodeURIComponent(ticker)}`),
   instruments: (q: string) => call<Instrument[]>(`/api/instruments?q=${encodeURIComponent(q)}`),
   instrumentsStatus: () =>

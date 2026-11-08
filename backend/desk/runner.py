@@ -295,9 +295,10 @@ class RunManager:
         self._tasks: set[asyncio.Task] = set()
 
     async def _playbooks(self, request: RunRequest, sr: dict | None, live: dict | None, h: horizons.Horizon,
-                         related: dict | None, ticker: str) -> dict | None:
-        """desk.playbook from the frame's bars (a cache hit right after the levels). None without
-        prices or levels; a failure is logged and the run goes on without playbooks."""
+                         related: dict | None, ticker: str, market: dict | None = None) -> dict | None:
+        """desk.playbook from the frame's bars (a cache hit right after the levels), gated by the
+        market's selling score ``market`` (#146, ``_risk``) when there is one. None without prices or
+        levels; a failure is logged and the run goes on without playbooks."""
         if self.prices is None or not sr:
             return None
         try:
@@ -322,7 +323,7 @@ class RunManager:
         except Exception as exc:  # noqa: BLE001 - incl. timeout
             log.warning("playbooks for %s failed: %s", ticker, exc)
             return None
-        return risk_regime.apply(pb, await self._risk(ticker, request.trade_date)) if pb else pb
+        return risk_regime.apply(pb, market)
 
     async def _risk(self, ticker: str, trade_date: str) -> dict | None:
         """#146: the market's selling score on the run's date; a failure leaves the playbooks ungated."""
@@ -346,7 +347,8 @@ class RunManager:
         # the product's own frame: its levels may have fallen back to daily bars when the
         # underlying's did not (or the other way round)
         own = horizons.get(None) if sr and sr.get("fallback") else horizons.get(request.horizon)
-        pb = await self._playbooks(request, sr, live, own, related, request.ticker)
+        pb = await self._playbooks(request, sr, live, own, related, request.ticker,
+                                   await self._risk(request.ticker, request.trade_date))
         if not pb:
             return None
         anchor = under.anchors(*starts, *srs)
@@ -592,12 +594,13 @@ class RunManager:
                 start, start_u = await asyncio.gather(
                     self._live_quote(request), self._live_quote(request, base) if base else _none())
                 same_day = request.trade_date == dt.date.today().isoformat()
-                sr, sr_u, related, filings_note, positioning_note = await asyncio.gather(
+                sr, sr_u, related, filings_note, positioning_note, market = await asyncio.gather(
                     self._support_resistance(request, start),
                     self._support_resistance(request, start_u, base) if base else _none(),
                     self._related(request),
                     self.filings(base or request.ticker) if self.filings and same_day else _none(),
-                    self.positioning(base or request.ticker) if self.positioning and same_day else _none())
+                    self.positioning(base or request.ticker) if self.positioning and same_day else _none(),
+                    self._risk(base or request.ticker, request.trade_date))
                 # The run's own instrument: the underlying for a leveraged product.
                 main_live, main_sr = (start_u, sr_u) if lever else (start, sr)
                 lever_note = under.prompt_note(request.ticker, *lever) if lever else None
@@ -608,7 +611,8 @@ class RunManager:
                 frame = horizons.get(None) if main_sr and main_sr.get("fallback") else horizon
                 # #116: both playbooks from the bars the levels came from - the run's own instrument
                 # for the agents (the underlying of a leveraged product)
-                pb_main = await self._playbooks(request, main_sr, main_live, frame, related, base or request.ticker)
+                pb_main = await self._playbooks(request, main_sr, main_live, frame, related, base or request.ticker,
+                                                market)
                 pb_note = playbook.prompt_note(pb_main)
                 note = "\n\n".join(part for part in (live_note(main_live, main_sr and main_sr.get("atr")),
                                                      prompt_note(main_sr), recent_note((main_sr or {}).get("recent")),
@@ -616,7 +620,8 @@ class RunManager:
                                                      lever_note,
                                                      related_note(related), macro_note, calendar_note, credit_note,
                                                      filings_note, positioning_note,
-                                                     risk_regime.prompt_note((pb_main or {}).get("risk_regime")))
+                                                     # the score stands for the agents with or without playbooks
+                                                     risk_regime.prompt_note(market))
                                    if part) or None
                 mandate = horizons.horizon_mandate(horizon, main_sr and main_sr.get("atr"), frame=frame,
                                                    levels_below=bool(main_sr))

@@ -166,3 +166,187 @@ def test_the_backtest_gates_the_plans_and_compares_on_and_off():
     assert all(k.endswith(("selling", "calm", "exhausting", "unknown")) for k in report.by_risk)
     ungated = backtest.run(["SOXL"], "swing", fetch=_fetch(daily), vix=None)
     assert ungated.risk_gate == {} and ungated.baseline == off["all"]
+
+
+# --- review follow-ups: look-ahead, a slow Yahoo, the runner's path -------------------------------
+
+
+def test_the_won_is_dated_in_london_and_a_korean_plan_sees_it_only_from_the_day_before():
+    # summer: London midnight is 23:00 UTC the day before - read in UTC it would be a day early
+    assert risk_regime._day("2026-07-01T23:00:00+00:00", "KRW=X") == "2026-07-02"
+    assert risk_regime._day("2026-01-05T00:00:00+00:00", "KRW=X") == "2026-01-05"
+    assert risk_regime._day("2026-07-02T04:00:00", "^VIX") == "2026-07-02"        # naive = UTC
+    s = {"KRW=X": _series([1400.0, 1410.0, 1420.0]), "^KS11": _series([100.0, 101.0, 102.0])}
+    day = s["KRW=X"][1]["day"]
+    cut = risk_regime.as_of(s, day, korean=True)
+    assert [b["close"] for b in cut["KRW=X"]] == [1400.0] and [b["close"] for b in cut["^KS11"]] == [100.0, 101.0]
+
+
+def test_an_intraday_plan_sees_no_index_close_of_its_own_day():
+    s = {"^VIX": _series([15.0, 16.0, 17.0]), "^KS11": _series([100.0, 101.0, 102.0])}
+    day = s["^VIX"][1]["day"]
+    for korean in (False, True):
+        cut = risk_regime.as_of(s, day, korean=korean, intraday=True)
+        assert [b["close"] for b in cut["^VIX"]] == [15.0] and [b["close"] for b in cut["^KS11"]] == [100.0]
+    # the backtest's MarketRisk cuts the same way: an intraday plan on the dump's last day misses it
+    dump = _dump()
+    market = backtest.MarketRisk(dump)
+    last = dump["^NDX"][-1]["day"]
+    daily, intraday = market.on(last, "NVDA"), market.on(last, "NVDA", intraday=True)
+    assert daily["as_of"] == last and intraday["as_of"] == dump["^NDX"][-2]["day"]
+
+
+def test_the_cache_remembers_a_failure_briefly_and_fetches_once_at_a_time():
+    import threading
+
+    now, calls = [0.0], []
+
+    def failing(symbols):
+        calls.append(symbols)
+        raise RuntimeError("yahoo down")
+
+    cache = risk_regime.Cache(fetcher=failing, clock=lambda: now[0], fail_ttl_sec=30)
+    assert cache.current("NVDA") is None and cache.current("NVDA") is None and len(calls) == 1
+    now[0] = 31.0
+    cache.current("NVDA")
+    assert len(calls) == 2
+
+    gate, started = threading.Event(), []
+
+    def slow(symbols):
+        started.append(symbols)
+        gate.wait(5)
+        return _dump()
+
+    cache = risk_regime.Cache(fetcher=slow)
+    out = []
+    threads = [threading.Thread(target=lambda: out.append(cache.current("NVDA"))) for _ in range(4)]
+    for t in threads:
+        t.start()
+    gate.set()
+    for t in threads:
+        t.join(5)
+    assert len(started) == 1 and len(out) == 4 and all(r["phase"] == "selling" for r in out)
+
+
+def test_a_past_trade_date_scores_the_bars_of_that_day():
+    s = _dump()
+    cache = risk_regime.Cache(fetcher=lambda syms: s)
+    calm_day = s["^NDX"][30]["day"]
+    assert cache.current("NVDA", calm_day)["phase"] == "calm"
+    assert cache.current("NVDA", calm_day)["as_of"] == calm_day
+    assert cache.current("NVDA", s["^NDX"][5]["day"]) is None           # older than the fetched bars allow
+
+
+def _live_source():
+    from desk.broker.base import Bar
+    from desk.prices import PriceSource
+    from tests.test_playbook import CrashBroker
+
+    weekly = [Bar(**b) for b in _crash()[::5]]
+    return PriceSource(CrashBroker(), yahoo_candles=lambda t, i, c: weekly[-c:])
+
+
+def test_live_playbooks_gate_on_the_score_only_without_an_analysis_and_survive_a_slow_one(monkeypatch):
+    import asyncio
+    import time
+
+    from desk import playbook_live
+
+    selling = risk_regime.score(_dump())
+    seen = []
+
+    def risk(ticker, day):
+        seen.append((ticker, day))
+        return selling
+
+    playbook_live._CACHE.clear()
+    out = asyncio.run(playbook_live.current(_live_source(), "NVDA", "swing", risk=risk))
+    assert out["risk_regime"]["phase"] == "selling" and [e["step"] for e in out["long"]["entries"]] == [1]
+    assert seen == [("NVDA", None)]
+
+    # an analysis' playbooks were gated when it ran: not again
+    playbook_live._CACHE.clear()
+    bars = _crash()
+    run_pb = playbook.build(_crash_sr(bars[-1]["close"]), bars, bars, SWING)
+    out = asyncio.run(playbook_live.current(_live_source(), "NVDA", "swing", run_id="r1", run_pb=run_pb, risk=risk))
+    assert "risk_regime" not in out and len(seen) == 1
+
+    # a slow or failing score leaves the playbooks ungated, not the page a 503
+    monkeypatch.setattr(playbook_live, "RISK_TIMEOUT_SEC", 0.05)
+    for bad in (lambda t, d: time.sleep(0.5) or selling, lambda t, d: 1 / 0):
+        playbook_live._CACHE.clear()
+        out = asyncio.run(playbook_live.current(_live_source(), "NVDA", "swing", risk=bad))
+        assert "risk_regime" not in out and len(out["long"]["entries"]) == 3
+    playbook_live._CACHE.clear()
+
+
+def _run(db_url, monkeypatch, current):
+    from datetime import timedelta as td
+
+    from fastapi.testclient import TestClient
+
+    from desk import api
+    from desk.auth import Auth
+    from desk.db import make_engine
+    from desk.runner import make_fake_runner
+    from desk.settings import Settings
+    from tests.test_api import OWNER, PASSWORD, _wait_done
+
+    monkeypatch.setattr(risk_regime.Cache, "current", current)
+    seen = []
+    fake = make_fake_runner(0)
+
+    def runner(request, emit, portfolio):
+        seen.append(portfolio.render(request.ticker) if portfolio else "")
+        return fake(request, emit, portfolio)
+
+    client = TestClient(api.create_app(Settings(database_url=db_url, fake_delay=0), runner=runner,
+                                       prices=_live_source()), base_url="https://testserver")
+    engine = make_engine(db_url)
+    Auth(engine, td(hours=1), td(hours=1)).create_user(OWNER, PASSWORD)
+    engine.dispose()
+    with client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        run = client.post("/api/runs", json={"ticker": "NVDA", "trade_date": _crash()[-1]["at"][:10]}).json()
+        done = _wait_done(client, run["id"])
+    assert done["status"] == "done"
+    return done, seen[0]
+
+
+def test_a_run_gates_its_playbooks_and_tells_the_agents(db_url, monkeypatch):
+    selling = risk_regime.score(_dump())
+    days = []
+    done, note = _run(db_url, monkeypatch, lambda self, ticker, day=None: days.append(day) or selling)
+    pb = done["plan"]["playbooks"]
+    assert pb["risk_regime"]["phase"] == "selling" and pb["long"]["gate"]["phase"] == "selling"
+    assert "SELLING UNDER WAY" in note and days == [_crash()[-1]["at"][:10]]
+
+
+def test_a_run_without_playbooks_still_tells_the_agents(db_url, monkeypatch):
+    monkeypatch.setattr(playbook, "build", lambda *a, **k: None)
+    done, note = _run(db_url, monkeypatch, lambda self, ticker, day=None: risk_regime.score(_dump()))
+    assert not done["plan"].get("playbooks") and "SELLING UNDER WAY" in note
+
+
+def test_a_failing_score_leaves_the_run_ungated(db_url, monkeypatch):
+    def broken(self, ticker, day=None):
+        raise RuntimeError("yahoo down")
+
+    done, note = _run(db_url, monkeypatch, broken)
+    assert "risk_regime" not in done["plan"]["playbooks"] and "Market selling pressure" not in note
+
+
+def test_a_hung_fetch_lets_its_waiters_go():
+    import threading
+
+    gate = threading.Event()
+    cache = risk_regime.Cache(fetcher=lambda syms: gate.wait(5) and _dump(), wait_sec=0.05)
+    first = threading.Thread(target=cache.current, args=("NVDA",))
+    first.start()
+    while not cache._fetching["US"].locked():
+        pass
+    assert cache.series(False) == {}                    # gave up waiting, nothing cached for it
+    gate.set()
+    first.join(5)
+    assert cache.current("NVDA")["phase"] == "selling"

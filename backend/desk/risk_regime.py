@@ -21,17 +21,22 @@ import statistics
 import threading
 import time
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
 
 VERSION = 1
 US = ("^VIX", "^VIX9D", "^VIX3M", "^NDX", "^SOX", "DX-Y.NYB", "^TNX")
 KR = (*US, "^KS11", "KRW=X")
-# Indices whose bars Yahoo stamps at Seoul midnight (15:00 UTC the day before).
-_SEOUL = ("^KS11",)
-# A Korean plan sees these on its own date; the US indices only up to the day before.
-SAME_DAY_KR = (*_SEOUL, "KRW=X")
+# Yahoo stamps a daily bar at local midnight of the market it trades in: the KOSPI at Seoul's
+# (15:00 UTC the day before), the won at London's (23:00 UTC the day before in summer), the rest
+# at New York's. A bar's date is read in that zone.
+_ZONES = {"^KS11": ZoneInfo("Asia/Seoul"), "KRW=X": ZoneInfo("Europe/London")}
+_NEW_YORK = ZoneInfo("America/New_York")
+# A Korean plan sees these on its own date. The rest only up to the day before: the US session
+# closes after Seoul's, and the won's London-day bar runs on past Seoul's close too.
+SAME_DAY_KR = ("^KS11",)
 HISTORY_BARS = 90        # daily bars per indicator: 20-day bases plus the 10-day look-back
 MIN_BARS = 21
 LOOKBACK = 10            # sessions an exhaustion signal looks back over (and the recent peak score)
@@ -66,9 +71,9 @@ def symbols_for_all(tickers: list[str]) -> tuple[str, ...]:
 
 def _day(at: str, symbol: str) -> str:
     stamp = datetime.fromisoformat(at)
-    if symbol in _SEOUL:
-        stamp += timedelta(hours=9)
-    return stamp.date().isoformat()
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    return stamp.astimezone(_ZONES.get(symbol, _NEW_YORK)).date().isoformat()
 
 
 def fetch(symbols: tuple[str, ...], candles: Callable | None = None, count: int = HISTORY_BARS) -> Series:
@@ -89,12 +94,18 @@ def fetch(symbols: tuple[str, ...], candles: Callable | None = None, count: int 
     return out
 
 
-def as_of(series: Series, day: str, *, korean: bool = False) -> Series:
-    """The bars an analysis on ``day`` had. For a Korean plan the US session of the same date
-    closes after Seoul's, so only the US days before it count."""
+def strict_for(symbol: str, korean: bool, intraday: bool) -> bool:
+    """Whether a plan on a day sees only the bars of the days before it. A daily plan is made on its
+    session's close and sees that day's bar, but a Korean one not the bars that close after Seoul's
+    (``SAME_DAY_KR``). An intraday plan is made during its session: that day's close is ahead of it."""
+    return intraday or (korean and symbol not in SAME_DAY_KR)
+
+
+def as_of(series: Series, day: str, *, korean: bool = False, intraday: bool = False) -> Series:
+    """The bars an analysis on ``day`` had (``strict_for``)."""
     out = {}
     for symbol, bars in series.items():
-        strict = korean and symbol not in SAME_DAY_KR
+        strict = strict_for(symbol, korean, intraday)
         kept = [b for b in bars if (b["day"] < day if strict else b["day"] <= day)]
         if kept:
             out[symbol] = kept
@@ -316,27 +327,51 @@ def prompt_note(risk: dict | None) -> str | None:
 
 class Cache:
     """The score per market for a while (every run and every live refresh would refetch nine
-    tickers otherwise). Thread-safe: read from worker threads."""
+    tickers otherwise). Thread-safe: read from worker threads. One thread fetches a market at a time
+    (a caller that gave up waiting leaves its thread running; the next ones wait for it up to
+    ``wait_sec``, not start another), and an empty or failed fetch is remembered for ``fail_ttl_sec``
+    so a slow Yahoo is not asked again on every poll."""
 
     def __init__(self, ttl_sec: float = 900.0, fetcher: Callable[[tuple[str, ...]], Series] | None = None,
-                 clock=time.monotonic) -> None:
+                 clock=time.monotonic, fail_ttl_sec: float = 120.0, wait_sec: float = 30.0) -> None:
         self.ttl = ttl_sec
+        self.fail_ttl = fail_ttl_sec
+        self.wait = wait_sec
         self._fetch = fetcher or fetch
         self._clock = clock
         self._lock = threading.Lock()
+        self._fetching = {"KR": threading.Lock(), "US": threading.Lock()}
         self._rows: dict[str, tuple[float, Series]] = {}
+
+    def _hit(self, key: str) -> Series | None:
+        with self._lock:
+            hit = self._rows.get(key)
+        if hit and self._clock() - hit[0] < (self.ttl if hit[1] else self.fail_ttl):
+            return hit[1]
+        return None
 
     def series(self, korean: bool) -> Series:
         key = "KR" if korean else "US"
-        with self._lock:
-            hit = self._rows.get(key)
-            if hit and self._clock() - hit[0] < self.ttl:
-                return hit[1]
-        got = self._fetch(KR if korean else US)
-        if got:
+        hit = self._hit(key)
+        if hit is not None:
+            return hit
+        # a hung fetch does not pile up its waiters: they give up and score nothing this time
+        if not self._fetching[key].acquire(timeout=self.wait):
+            return {}
+        try:
+            hit = self._hit(key)                 # fetched while this one waited
+            if hit is not None:
+                return hit
+            try:
+                got = self._fetch(KR if korean else US)
+            except Exception as exc:  # noqa: BLE001 - remembered as nothing, briefly
+                log.warning("risk regime: %s fetch failed: %s", key, exc)
+                got = {}
             with self._lock:
                 self._rows[key] = (self._clock(), got)
-        return got
+            return got
+        finally:
+            self._fetching[key].release()
 
     def current(self, ticker: str, trade_date: str | None = None) -> dict | None:
         """The score an analysis of ``ticker`` on ``trade_date`` (today when None) sees. None when

@@ -209,6 +209,7 @@ table.runs { width: 100%; border-collapse: collapse; }
   border-radius: 2px var(--radius) var(--radius) var(--radius); padding: 10px 14px; min-width: 0;
 }
 .bubble header { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.msg-meta { display: inline-flex; align-items: center; gap: 8px; }
 .bubble header strong { color: var(--team); }
 .bubble header time { color: var(--muted); font-size: 12px; }
 .md { overflow-wrap: anywhere; }

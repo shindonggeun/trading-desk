@@ -22,13 +22,22 @@ export function ChatMessage({ event }: { event: DeskEvent }) {
   const text = koreanizeLabels(event.content ?? "");
   const long = text.length > COLLAPSE_AT;
   const [open, setOpen] = useState(!long);
+  // #171: a news/fundamentals report taken over from a recent run of the same ticker
+  const reused = event.data?.reused as { minutes: number; filed_at: string } | undefined;
   return (
     <article className={`msg team-${info.team}`}>
       <div className="avatar" aria-hidden>{info.short}</div>
       <div className="bubble">
         <header>
           <strong>{info.name}</strong>
-          <time>{new Date(event.ts).toLocaleTimeString("ko-KR")}</time>
+          <span className="msg-meta">
+            {reused && (
+              <span className="pill" title={`${new Date(reused.filed_at).toLocaleTimeString("ko-KR")}에 작성된 보고서`}>
+                {reused.minutes < 1 ? "방금" : `${reused.minutes}분 전`} 보고서 재사용
+              </span>
+            )}
+            <time>{new Date(event.ts).toLocaleTimeString("ko-KR")}</time>
+          </span>
         </header>
         <div className={`md ${open ? "" : "md-clipped"}`}>
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={WITH_TERMS}>{text}</ReactMarkdown>

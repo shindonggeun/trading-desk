@@ -844,6 +844,14 @@ export interface BacktestReport {
   split: { cut: string | null; embargo_days: number; train: BacktestAgg; valid: BacktestAgg };
   /** #146 규칙 켬 / 끔 — 키마다 묶음 성적, losing_streak 만 숫자 */
   risk_gate?: { on: Record<string, BacktestAgg | number>; off: Record<string, BacktestAgg | number> };
+  /** #192 계획일 기준 누적 R(비용 차감) — 전체 · 방향:셋업별, 최대 400개 날짜로 줄임. max_dd 는 모든 날짜로 잰 최대 낙폭(R) */
+  equity?: {
+    basis: "plan_day";
+    days: string[];
+    series: Record<string, number[]>;
+    max_dd: Record<string, number>;
+    trades: Record<string, number>;
+  };
   notes: string[];
 }
 

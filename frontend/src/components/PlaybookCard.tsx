@@ -55,7 +55,8 @@ export const REGIME: Record<RegimeId, string> = {
   crash: "급락", downtrend: "하락 추세", range: "박스권", uptrend: "상승 추세", unknown: "판단 보류",
 };
 export const SETUP: Record<string, string> = {
-  dip_catch: "하따(급락 받기)", range_low: "박스 하단", pullback: "눌림목", fade: "반등 매도", breakdown: "이탈 매도", none: "없음",
+  dip_catch: "하따(급락 받기)", range_low: "박스 하단", pullback: "눌림목", fade: "반등 매도", breakdown: "이탈 매도",
+  value_swing: "과매도 스윙", none: "없음",
 };
 const CONDITION: Record<string, string> = {
   in_zone: "구역 안", rejection_wick: "아래꼬리", rsi_divergence: "RSI 다이버전스", higher_low: "저점 높임", reclaim: "구역 되찾기",

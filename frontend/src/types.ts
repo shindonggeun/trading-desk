@@ -50,6 +50,8 @@ export interface Plan {
   horizon?: HorizonId;
   /** 진입이 유효한 마지막 시각(ISO). 스윙은 null. */
   valid_until?: string | null;
+  /** #221 · #222 한눈에 요약(데스크 계산) — 예전 분석엔 없다 */
+  summary?: PlanSummary | null;
   /** 시간축 mandate 의 Entry 줄(#63) — 스윙엔 없다. */
   entry_type?: "now" | "limit" | "stop" | null;
   invalidation?: string | null;
@@ -936,4 +938,32 @@ export interface WeeklyHistoryRow {
   candle: WeeklyMap["candle"];
   scenario: WeeklyMap["scenario"];
   headline: string;
+}
+
+/** #221 GET plan.summary — 결론 · 분할 매수 · 한 번에 매수 최적 타점 · 손절 · 목표 */
+export type SummaryVerdict = "buy_now" | "wait_for_zone" | "short_now" | "wait_short" | "stand_aside";
+export interface PlanSummary {
+  version: number;
+  verdict: SummaryVerdict;
+  text: string;
+  why?: string | null;
+  side: "long" | "short" | null;
+  setup?: string;
+  price?: number | null;
+  rating?: string | null;
+  valid_until?: string | null;
+  zone?: { low: number | null; high: number | null };
+  ladder?: { step: number; price: number; share: number | null; kind?: string; when: string }[];
+  avg_entry?: number | null;
+  single_entry?: { price: number; rr: number; weight: number; why: string[]; p_t1: number | null; thin: boolean; note?: string } | null;
+  stop?: number | null;
+  stop_pct?: number | null;
+  targets?: { role: string; price: number; rr: number | null }[];
+  distance_pct?: number | null;
+  record?: { p_t1: number | null; exp_r: number | null; n: number | null; thin: boolean; negative: boolean } | null;
+  risk_pct?: number | null;
+  position_pct?: number | null;
+  conviction?: boolean;
+  time_stop?: { bars: number; interval: string } | null;
+  notes?: string[];
 }

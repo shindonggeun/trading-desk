@@ -10,6 +10,7 @@ import { GlossaryPanel, GlossaryProvider } from "../components/Glossary";
 import PlanCard from "../components/PlanCard";
 import FavoriteStar from "../components/FavoriteStar";
 import RunSummaryBar from "../components/RunSummaryBar";
+import SummaryCard from "../components/SummaryCard";
 import TradeMap from "../components/TradeMap";
 import PositioningCard from "../components/PositioningCard";
 import { WEEKLY_NAMES, WEEKLY_UNDERLYING, weeklyLink } from "../weekly";
@@ -39,6 +40,33 @@ function toItems(events: DeskEvent[]): Item[] {
 
 // 계획의 보유 기간은 길어야 몇 주다. 그보다 오래된 · 과거 날짜 분석은 지금 시세로 판단하지 않는다.
 const LIVE_DAYS = 21;
+
+// #222 요약 아래 상세(결론 · 플레이북 · 매매 지도 · 포지션 · 계획)를 펼쳐 둘지 — 이 브라우저에 기억
+const MORE_KEY = "desk.run.more";
+function MoreDetails({ children, collapsible }: { children: React.ReactNode; collapsible: boolean }) {
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem(MORE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  if (!collapsible) return <>{children}</>;
+  return (
+    <details className="run-more" open={open} onToggle={(e) => {
+      const next = (e.currentTarget as HTMLDetailsElement).open;
+      setOpen(next);
+      try {
+        localStorage.setItem(MORE_KEY, next ? "1" : "0");
+      } catch {
+        /* 기억만 못 한다 */
+      }
+    }}>
+      <summary>자세히 보기 — 결론 근거 · 플레이북 · 매매 지도 · 포지션 · 계획</summary>
+      <div className="run-summary">{children}</div>
+    </details>
+  );
+}
 
 function stillOpen(tradeDate: string): boolean {
   const days = (Date.now() - new Date(`${tradeDate}T00:00:00`).getTime()) / 86_400_000;
@@ -201,6 +229,11 @@ export default function RunView({ runId }: { runId: string }) {
           {tab === "summary" && (
             plan ? (
               <div className="run-summary">
+                {plan.summary && (
+                  <SummaryCard summary={plan.summary} runId={run.id} live={stillOpen(run.trade_date)}
+                    horizon={plan.horizon ?? run.options.horizon ?? undefined} />
+                )}
+                <MoreDetails collapsible={!!plan.summary}>
                 {status === "done" && <ConsensusCard plan={plan} ticker={run.ticker} />}
                 <PlaybookCard plan={plan} symbol={stillOpen(run.trade_date) ? run.ticker : undefined} outcome={run.outcome} runId={run.id} horizon={plan.horizon ?? run.options.horizon ?? undefined} />
                 <TradeMap plan={plan} ticker={run.ticker} />
@@ -222,6 +255,7 @@ export default function RunView({ runId }: { runId: string }) {
                   outcome={run.outcome}
                   outcomeStatus={run.outcome_status}
                 />
+                </MoreDetails>
               </div>
             ) : (
               <section className="card run-empty">

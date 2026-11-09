@@ -1050,17 +1050,17 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                 "quote_source": q.source, "fetched_at": q.fetched_at}
                     except Exception as exc:  # noqa: BLE001 - fall back to the estimate below
                         log.warning("board quote for %s failed: %s", ticker, exc)
-                elif kis_stream.market_of(ticker) == "US" and \
-                        (session := kis_stream.us_session()) in ("pre", "post", "overnight"):
-                    # #238: US pre / after market and the overnight (Korean daytime) session are real
-                    # trading - a KIS trade beats the estimate; none yet (or no KIS) keeps the estimate
-                    if live.watch(prices, ticker):
-                        q = await prices.quote(ticker)
-                        if q.source == "kis":
-                            change = (round((q.price / est.last_close - 1) * 100, 2)
-                                      if est and est.last_close else None)
-                            return {**row, "state": "live", "price": q.price, "change_pct": change,
-                                    "quote_source": "kis", "session": session, "fetched_at": q.fetched_at}
+                # #238: US pre / after market and the overnight (Korean daytime) session are real
+                # trading - a KIS trade beats the estimate; none yet (or no KIS) keeps the estimate
+                elif (kis_stream.market_of(ticker) == "US"
+                      and (session := kis_stream.us_session()) in ("pre", "post", "overnight")
+                      and live.watch(prices, ticker)):
+                    q = await prices.quote(ticker)
+                    if q.source == "kis":
+                        change = (round((q.price / est.last_close - 1) * 100, 2)
+                                  if est and est.last_close else None)
+                        return {**row, "state": "live", "price": q.price, "change_pct": change,
+                                "quote_source": "kis", "session": session, "fetched_at": q.fetched_at}
                 if est:
                     return {**row, "state": "estimate", "price": est.estimate, "change_pct": est.change_pct,
                             "fetched_at": est.fetched_at}

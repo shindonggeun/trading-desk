@@ -125,3 +125,59 @@ def test_api_answers_the_zone_and_the_note_joins_the_weekly_one(db_url):
         assert client.get("/api/bottom-zone", params={"ticker": "A B"}).status_code == 422
     assert "Long-term bottom zone (NVDA" in zones.note_for("NVDA")
     assert zones.note_for("NEW") is None
+
+
+def test_the_signal_week_fills_only_its_close_not_its_own_low():
+    """#240 review: the signal is known at the week's close, so that week's low fills no deeper step."""
+    closes = _crash()
+    bars = _bars(closes, wick=0.12)                 # every week dips 12% under its close
+    z = bz.assess(bars, len(bars) - 1)
+    assert z["ladder"][1]["price"] > bars[-1]["low"]          # the low would have reached step 2
+    follow = bz._follow(bars + _bars([closes[-1] * 1.5] * 3, start=datetime(2030, 1, 7, tzinfo=UTC), wick=0),
+                        len(bars) - 1, z, (1,))
+    assert follow["filled_steps"] == 1 and follow["max_drawdown"] >= 0
+
+
+def test_a_long_stay_in_the_zone_is_one_signal():
+    closes = _crash() + [110.0 * (1 + 0.001 * (n % 3)) for n in range(80)]   # 80 weeks flat at the low
+    bt = bz.backtest(_bars(closes), "approach")
+    assert bt["count"] == 1
+
+
+def test_the_note_warns_about_leveraged_products():
+    z = bz.assess(_bars(_crash()), leveraged=True)
+    assert "Leveraged/inverse product" in bz.note(z, "SOXL")
+
+
+def test_a_slow_bottom_zone_does_not_hold_back_the_weekly_note(db_url, monkeypatch):
+    import asyncio
+    import time
+
+    from desk import api
+    from desk import weekly_map as wm
+    from desk.settings import Settings
+
+    monkeypatch.setattr(api, "BOTTOM_NOTE_SEC", 0.2)
+    weekly = wm.Maps(candles=lambda s, i, c: [])
+    monkeypatch.setattr(weekly, "note_for", lambda t: "weekly map line")
+    zones = bz.Zones(candles=lambda s, i, c: [])
+    monkeypatch.setattr(zones, "note_for", lambda t: time.sleep(1.0) or "late bottom line")
+    captured = {}
+    real = api.RunManager.__init__
+
+    def keep(self, *a, **k):
+        captured["weekly"] = k.get("weekly")
+        real(self, *a, **k)
+
+    monkeypatch.setattr(api.RunManager, "__init__", keep)
+    app = api.create_app(Settings(database_url=db_url, fake_runs=False, fake_delay=0), runner=lambda *a, **k: None,
+                         weekly=weekly, bottoms=zones)
+    with TestClient(app):
+        pass
+    async def timed():
+        started = time.monotonic()
+        line = await captured["weekly"]("SOXL")
+        return line, time.monotonic() - started
+
+    line, took = asyncio.run(timed())               # (asyncio.run then waits for the sleeping thread)
+    assert line == "weekly map line" and took < 0.9

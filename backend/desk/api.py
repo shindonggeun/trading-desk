@@ -76,6 +76,9 @@ POSITIONING_QUOTE_SEC = 5.0
 CREDIT_INTERVAL_SEC = 6 * 3600   # KOFIA posts the day's numbers the next business day (#155)
 CREDIT_RETRY_SEC = 15 * 60
 BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
+# #240: the bottom-zone line of the weekly note waits this long (the scalp budget is 5 s; the line is
+# skipped, not the weekly map, when a cold cache is slower)
+BOTTOM_NOTE_SEC = 4.0
 KST = timezone(timedelta(hours=9))   # Toss dates (order history from/to) are KST
 REVIEW_CACHE_SEC = 60
 REVIEW_FAIL_CACHE_SEC = 30
@@ -261,10 +264,17 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     bottoms = bottoms or bottom_zone.Zones()
 
     async def _weekly_note(ticker: str) -> str | None:
-        # the index's weekly map (#202) and the ticker's own long-term bottom zone (#240), one note
-        lines = await asyncio.gather(asyncio.to_thread(weekly.note_for, ticker),
-                                     asyncio.to_thread(bottoms.note_for, ticker))
-        return "\n".join(x for x in lines if x) or None
+        # the index's weekly map (#202) and the ticker's own long-term bottom zone (#240), one note.
+        # The bottom zone gets its own short budget (a cold cache fetches ~20 years of weekly bars)
+        # so it never makes the weekly map late, and either one failing leaves the other.
+        lines = await asyncio.gather(
+            asyncio.to_thread(weekly.note_for, ticker),
+            asyncio.wait_for(asyncio.to_thread(bottoms.note_for, ticker), BOTTOM_NOTE_SEC),
+            return_exceptions=True)
+        for line in lines:
+            if isinstance(line, BaseException):
+                log.info("weekly / bottom note for %s skipped: %s", ticker, type(line).__name__)
+        return "\n".join(x for x in lines if isinstance(x, str) and x) or None
 
     live_streams: dict[str, int] = {}   # open /api/live/stream per session (token hash)
     calendar = live.Calendar(broker)     # market holidays for the live stream, cached per market

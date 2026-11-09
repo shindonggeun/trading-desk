@@ -29,6 +29,7 @@ from . import (
     horizons,
     live,
     macro_news,
+    news_digest,
     oscillator,
     otp,
     outcome,
@@ -332,6 +333,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 try:
                     ok = await macro_news.CACHE.refresh()
                     log.info("macro news: %d/%d theme(s) refreshed", ok, len(macro_news.THEMES))
+                    # #242: Korean titles and a market read, only while no analysis holds the plan
+                    read = await news_digest.DIGEST.refresh(macro_news.CACHE.themes, busy=app.state.manager.busy)
+                    if read:
+                        log.info("news digest: %d headline(s) read", read)
                 except Exception:  # a failed pass must not stop the next one
                     log.exception("macro news refresh failed")
                 await asyncio.sleep(settings.macro_interval_sec)
@@ -933,7 +938,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 ticker = clean_ticker(ticker)
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from None
-        return macro_news.CACHE.brief(ticker)
+        return news_digest.DIGEST.annotate(macro_news.CACHE.brief(ticker))
 
     @app.get("/api/stats/plans")
     def plan_stats(days: int = 90):

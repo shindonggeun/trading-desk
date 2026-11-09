@@ -17,6 +17,7 @@ import asyncio
 import logging
 import re
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -25,6 +26,8 @@ log = logging.getLogger(__name__)
 NASDAQ_URL = "https://api.nasdaq.com/api/calendar/earnings"
 TIMEOUT_SEC = 20.0
 GAP_SEC = 0.5                  # between Nasdaq day requests
+MAX_FAILS_IN_ROW = 5           # a stalled Nasdaq ends the pass's day requests (each would wait the timeout)
+KST = ZoneInfo("Asia/Seoul")
 MAJOR_CAP = 100e9              # US reports shown without being watched: market cap at least this
 DEFAULT_KR = ("005930.KS", "000660.KS", "373220.KS", "207940.KS", "005380.KS", "035420.KS", "035720.KS")
 _TICKER = re.compile(r"^[A-Z0-9.\-^=]{1,15}$")
@@ -86,14 +89,18 @@ class Earnings:
 
     def want(self, tickers) -> None:
         """Korean tickers a page watches (favorites): fetched on the next pass."""
-        self.want_kr |= {t for t in tickers if t.endswith((".KS", ".KQ"))}
+        new = {t for t in tickers if t.endswith((".KS", ".KQ"))} - self.want_kr
+        if new:
+            self.want_kr = self.want_kr | new          # a new set, never mutated under a reader
 
     async def refresh(self, client: httpx.AsyncClient | None = None, today: date | None = None,
                       gap: float = GAP_SEC) -> int:
-        today = today or datetime.now(UTC).date()
+        today = today or datetime.now(KST).date()        # the month as the page sees it
         first = today.replace(day=1)
         last = (first + timedelta(days=62)).replace(day=1) - timedelta(days=1)      # the end of next month
-        ok, failures = 0, []
+        # Built aside and swapped in at the end: the calendar handler reads these from the threadpool
+        us, kr, want = dict(self.us), dict(self.kr), sorted(self.want_kr)
+        ok, failures, in_row = 0, [], 0
         own = client is None
         client = client or httpx.AsyncClient(timeout=TIMEOUT_SEC, headers={
             "User-Agent": "Mozilla/5.0 (trading-desk)", "Accept": "application/json"})
@@ -102,25 +109,31 @@ class Earnings:
                 try:
                     resp = await client.get(NASDAQ_URL, params={"date": d.isoformat()})
                     resp.raise_for_status()
-                    self.us[d.isoformat()] = parse_nasdaq(resp.json(), d)
+                    us[d.isoformat()] = parse_nasdaq(resp.json(), d)
                     ok += 1
+                    in_row = 0
                 except Exception as exc:  # noqa: BLE001 - one day down keeps its last rows
                     failures.append(f"nasdaq {d}: {type(exc).__name__}")
+                    in_row += 1
+                    if in_row >= MAX_FAILS_IN_ROW:
+                        failures.append("nasdaq: stopped after repeated failures")
+                        break
                 if gap:
                     await asyncio.sleep(gap)
         finally:
             if own:
                 await client.aclose()
-        for t in sorted(self.want_kr):
+        for t in want:
             try:
                 row = await asyncio.to_thread(self._yahoo, t)
                 if row:
-                    self.kr[t] = row
+                    kr[t] = row
                     ok += 1
             except Exception as exc:  # noqa: BLE001
                 failures.append(f"yahoo {t}: {type(exc).__name__}")
         cutoff = (first - timedelta(days=40)).isoformat()
-        self.us = {k: v for k, v in self.us.items() if k >= cutoff}
+        self.us = {k: v for k, v in us.items() if k >= cutoff}
+        self.kr = kr
         if ok:
             self.refreshed_at = datetime.now(UTC).isoformat(timespec="seconds")
         self.error = f"{len(failures)} failed (first: {failures[0]})" if failures else None
@@ -130,13 +143,14 @@ class Earnings:
         """ISO day -> the reports to show: watched tickers and US names of ``MAJOR_CAP`` or more."""
         out: dict[str, list[dict]] = {}
         lo, hi = first.isoformat(), last.isoformat()
-        for day, rows in self.us.items():
+        us, kr = self.us, self.kr                      # whole dicts swapped by refresh: one consistent view
+        for day, rows in us.items():
             if lo <= day <= hi:
                 keep = [{**r, "watched": r["ticker"] in watch} for r in rows
                         if r["ticker"] in watch or (r["market_cap"] or 0) >= MAJOR_CAP]
                 if keep:
                     out[day] = sorted(keep, key=lambda r: (not r["watched"], -(r["market_cap"] or 0)))
-        for t, row in self.kr.items():
+        for t, row in kr.items():
             if lo <= row["date"] <= hi and (t in watch or t in DEFAULT_KR):
                 out.setdefault(row["date"], []).append({**row, "watched": t in watch})
         return out

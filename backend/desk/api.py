@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import (
     backtest_reports,
+    bottom_zone,
     calibration,
     credit,
     events_calendar,
@@ -210,7 +211,7 @@ def purge_expired_runs(store: Store, retention_days: int) -> int:
 def create_app(settings: Settings | None = None, runner=None, prices: PriceSource | None = None,
                estimator: BinanceEstimator | None = None, book: Portfolio | None = None,
                flow: MarketFlow | None = None, futures: FuturesFlow | None = None,
-               weekly: weekly_map.Maps | None = None) -> FastAPI:
+               weekly: weekly_map.Maps | None = None, bottoms: bottom_zone.Zones | None = None) -> FastAPI:
     settings = settings or load()
     migrate(settings.database_url)
     engine = make_engine(settings.database_url)
@@ -253,8 +254,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # #202: the weekly market map of the main indices (Yahoo weekly bars, cached an hour)
     weekly = weekly or weekly_map.Maps()
 
+    # #240: the long-term bottom zone of the ticker itself (Yahoo weekly bars, cached an hour)
+    bottoms = bottoms or bottom_zone.Zones()
+
     async def _weekly_note(ticker: str) -> str | None:
-        return await asyncio.to_thread(weekly.note_for, ticker)
+        # the index's weekly map (#202) and the ticker's own long-term bottom zone (#240), one note
+        lines = await asyncio.gather(asyncio.to_thread(weekly.note_for, ticker),
+                                     asyncio.to_thread(bottoms.note_for, ticker))
+        return "\n".join(x for x in lines if x) or None
 
     live_streams: dict[str, int] = {}   # open /api/live/stream per session (token hash)
     calendar = live.Calendar(broker)     # market holidays for the live stream, cached per market
@@ -745,6 +752,21 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         class, and the foreign spot/futures split (desk.futures_flow). A KIS failure or missing
         keys come back as ``error`` / ``supported: false``, not as a 5xx."""
         return await futures.get()
+
+    @app.get("/api/bottom-zone")
+    async def bottom_zone_of(ticker: str):
+        """#240: the long-term bottom zone ("인생 타점") of a stock or an index - score, stage,
+        evidence, the staged buys over months and the monthly close that voids the plan.
+        ``supported: false`` with too little weekly history."""
+        try:
+            ticker = clean_ticker(ticker)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        try:
+            return await asyncio.to_thread(bottoms.one, ticker)
+        except Exception as exc:  # noqa: BLE001 - Yahoo down
+            log.warning("bottom zone for %s failed: %s", ticker, exc)
+            raise HTTPException(503, f"no bottom zone for {ticker}") from None
 
     @app.get("/api/market/weekly")
     async def market_weekly(symbol: str | None = None):

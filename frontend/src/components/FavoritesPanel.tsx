@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { boardBadge } from "../korean";
 import { clearFavoriteError, moveFavorite, removeFavorite, useFavorites } from "../favorites";
 import { price, time } from "../format";
 import type { BoardItem, EstimatedCandles } from "../types";
@@ -77,7 +78,7 @@ function Tile({ ticker, name, it, first, last, editing, order }: {
 }) {
   const ch = it?.change_pct;
   const tone = ch == null ? "" : ch > 0 ? "up" : ch < 0 ? "down" : "";
-  const badge = it ? { live: "실시간", estimate: "추정", unavailable: "추정 불가" }[it.state] : "…";
+  const badge = it ? boardBadge(it) : "…";
   return (
     <div className="qb-cell fav-cell">
       <a className={`qb-tile fav-tile${it?.state === "estimate" ? " qb-est" : ""}`} href={`#/live?t=${encodeURIComponent(ticker)}`}

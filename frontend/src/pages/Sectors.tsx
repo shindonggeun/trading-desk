@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { boardBadge } from "../korean";
 import { Spark } from "../components/FavoritesPanel";
 import FavoriteStar from "../components/FavoriteStar";
 import InstrumentSearch, { type Picked } from "../components/InstrumentSearch";
@@ -395,7 +396,7 @@ export default function Sectors() {
                     <span className="qb-top">
                       <span className="qb-name">{name}</span>
                       <span className={`qb-badge qb-${r.it?.state ?? "wait"}`}>
-                        {r.it ? { live: "실시간", estimate: "추정", unavailable: "추정 불가" }[r.it.state] : "…"}
+                        {r.it ? boardBadge(r.it) : "…"}
                       </span>
                     </span>
                     <span className="qb-price num">

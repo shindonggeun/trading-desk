@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -17,6 +18,7 @@ from desk.broker.mock import MockBroker
 from desk.prices import PriceSource
 from desk.settings import Settings
 
+REGULAR_SESSION = datetime(2026, 11, 9, 15, 0, tzinfo=UTC)    # Monday 10:00 New York
 APP_KEY, APP_SECRET, APPROVAL = "test-app-key-123", "test-app-secret-456", "approval-xyz-789"
 
 
@@ -103,7 +105,8 @@ class Harness:
 
         self.stream = KisStream(APP_KEY, APP_SECRET, connect=self.connect,
                                 http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-                                exchange_of=exchange_of, clock=lambda: self.now[0])
+                                exchange_of=exchange_of, clock=lambda: self.now[0],
+                                now=lambda: REGULAR_SESSION)          # #238: the D key, whatever the day
 
     def connect(self, url):
         harness = self
@@ -462,3 +465,40 @@ def test_status_api_needs_a_session_and_never_returns_keys(db_url):
         body = client.get("/api/live/kis")
         assert body.status_code == 200 and body.json()["enabled"] is True and body.json()["connected"] is False
         assert APP_KEY not in body.text and APP_SECRET not in body.text and APPROVAL not in body.text
+
+
+# --- #238: the US sessions and the overnight (KIS day market) key ----------------------------------
+
+@pytest.mark.parametrize("utc,expected", [
+    ("2026-11-09T07:49:00", "overnight"),   # Monday 16:49 KST = 02:49 New York
+    ("2026-11-09T10:00:00", "pre"),         # 05:00 New York
+    ("2026-11-09T15:00:00", "regular"),
+    ("2026-11-09T22:00:00", "post"),        # 17:00 New York
+    ("2026-11-10T02:00:00", "overnight"),   # Monday 21:00 New York
+    ("2026-11-07T03:00:00", None),          # Friday 22:00 New York: no overnight into Saturday
+    ("2026-11-08T12:00:00", None),          # Sunday 07:00 New York
+    ("2026-11-09T01:30:00", "overnight"),   # Sunday 20:30 New York: the week opens
+])
+def test_us_session_by_the_new_york_clock(utc, expected):
+    assert kis_stream.us_session(datetime.fromisoformat(utc).replace(tzinfo=UTC)) == expected
+
+
+def test_the_overnight_session_subscribes_the_day_market_and_rekeys_when_it_ends():
+    async def go():
+        h = Harness(exchange="AMS")
+        wall = [datetime(2026, 11, 9, 7, 49, tzinfo=UTC)]        # overnight
+        h.stream._now = lambda: wall[0]
+        task = asyncio.create_task(h.stream.run())
+        h.stream.want("SOXL")
+        await _until(lambda: h.sockets and h.sockets[0].subs() == ["RBAASOXL"])
+        sock = h.sockets[0]
+        await sock.inbox.put(_frame(US, _us()))
+        await _until(lambda: h.stream.latest("SOXL") is not None)
+
+        wall[0] = datetime(2026, 11, 9, 10, 0, tzinfo=UTC)       # pre-market: back on the D key
+        h.stream.want("SOXL")
+        await _until(lambda: sock.subs() == ["RBAASOXL", "DAMSSOXL"])
+        assert sock.subs("2") == ["RBAASOXL"]
+        task.cancel()
+
+    asyncio.run(go())

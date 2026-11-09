@@ -5,6 +5,9 @@ keeps one websocket to KIS and subscribes the tickers someone is watching:
 
 - KRX stocks and ETFs (``005930.KS``): ``H0STCNT0`` (domestic trades), keyed by the 6-digit code.
 - US stocks and ETFs (``NVDA``): ``HDFSCNT0`` keyed ``D`` + exchange (NAS / NYS / AMS) + symbol.
+  During the US overnight session (20:00-04:00 New York, the Korean daytime: KIS' "주간거래") the
+  key is ``R`` + the day market (BAQ / BAY / BAA) + symbol instead (#238); a subscription is
+  re-keyed when the session changes. Pre- and after-market trades come on the ``D`` key.
   KIS gives US trades free with no delay (the docstring of its official sample ``delayed_ccnl``).
 - Everything else (indices, FX, futures, crypto, symbols with ``.`` or ``-``) is not subscribed;
   those keep the polling path.
@@ -38,6 +41,8 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from datetime import time as clock_time
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -71,6 +76,10 @@ _EXCHANGES = {
     "NYQ": "NYS", "NYS": "NYS", "NYSE": "NYS",
     "PCX": "AMS", "ASE": "AMS", "AMEX": "AMS", "BTS": "AMS", "ARCA": "AMS", "NYSEARCA": "AMS",
 }
+# KIS' day-market (overnight session) codes of each US exchange
+_DAY_MARKETS = {"NAS": "BAQ", "NYS": "BAY", "AMS": "BAA"}
+_REGULAR_MARKETS = {v: k for k, v in _DAY_MARKETS.items()}
+_NEW_YORK = ZoneInfo("America/New_York")
 _US_SYMBOL = re.compile(r"[A-Z]{1,5}")
 _KR_CODE = re.compile(r"[0-9A-Z]{6}")
 
@@ -89,6 +98,30 @@ def market_of(ticker: str) -> str | None:
     if t.endswith((".KS", ".KQ")):
         return "KR" if _KR_CODE.fullmatch(t[:-3]) else None
     return "US" if _US_SYMBOL.fullmatch(t) else None
+
+
+def us_session(now: datetime | None = None) -> str | None:
+    """The US equity session by the New York clock: regular (09:30-16:00), pre (04:00-09:30),
+    post (16:00-20:00), overnight (20:00-04:00, Sunday night to Friday morning) or None (weekend).
+    Holidays are not known here: on one nothing trades and the stream simply gets no ticks."""
+    ny = (now or datetime.now(UTC)).astimezone(_NEW_YORK)
+    t, day = ny.time(), ny.weekday()
+    if t >= clock_time(20):
+        return "overnight" if day in (6, 0, 1, 2, 3) else None
+    if t < clock_time(4):
+        return "overnight" if day in (0, 1, 2, 3, 4) else None
+    if day >= 5:
+        return None
+    if t < clock_time(9, 30):
+        return "pre"
+    return "regular" if t < clock_time(16) else "post"
+
+
+def us_key(exchange: str, symbol: str, now: datetime | None = None) -> str:
+    """The HDFSCNT0 key of a US symbol now: the day market during the overnight session."""
+    if us_session(now) == "overnight" and exchange in _DAY_MARKETS:
+        return f"R{_DAY_MARKETS[exchange]}{symbol}"
+    return f"D{exchange}{symbol}"
 
 
 def yahoo_exchange(ticker: str) -> str | None:
@@ -155,8 +188,9 @@ class KisStream:
     def __init__(self, app_key: str, app_secret: str, *, ws_url: str = WS_URL, rest_url: str = REST_URL,
                  connect: Callable | None = None, http: httpx.AsyncClient | None = None,
                  exchange_of: Callable[[str], Awaitable[str | None]] | None = None,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, now: Callable[[], datetime] | None = None):
         self._key, self._secret = app_key, app_secret
+        self._now = now or (lambda: datetime.now(UTC))     # the wall clock for the US session
         self._ws_url, self._rest_url = ws_url, rest_url.rstrip("/")
         self._connect = connect
         self._http = http
@@ -314,8 +348,8 @@ class KisStream:
                         self._demand.clear()
                         log.info("kis stream idle: closing")
                         return
-                for t in [t for t in self._subs if t not in wanted]:
-                    tr_id, tr_key = self._drop(t)
+                for t in [t for t in self._subs if t not in wanted or self._stale_key(t)]:
+                    tr_id, tr_key = self._drop(t)       # re-keyed ones subscribe again below
                     await ws.send(json.dumps(_message(key, "2", tr_id, tr_key)))
                 lookups = 0
                 for t in wanted:
@@ -356,7 +390,16 @@ class KisStream:
             while len(self._exchanges) > EXCHANGE_CACHE:
                 self._exchanges.popitem(last=False)
         self._exchanges.move_to_end(ticker)
-        return (US, f"D{hit[1]}{ticker}") if hit[1] else None
+        return (US, us_key(hit[1], ticker, self._now())) if hit[1] else None
+
+    def _stale_key(self, ticker: str) -> bool:
+        """A US subscription whose key belongs to another session (overnight vs the rest)."""
+        tr_id, tr_key = self._subs[ticker]
+        if tr_id != US or len(tr_key) < 5:
+            return False
+        market = tr_key[1:4]
+        exchange = _REGULAR_MARKETS.get(market, market)
+        return us_key(exchange, ticker, self._now()) != tr_key
 
     async def _read(self, ws) -> None:
         while True:

@@ -128,3 +128,31 @@ def test_the_api_needs_a_session_validates_the_month_and_watches_favorites(db_ur
         body = client.get("/api/calendar").json()
         assert len(body["days"]) >= 28 and {"kr", "us", "events", "earnings"} <= set(body["days"][0])
     assert "000660.KS" in earnings.CACHE.want_kr
+
+
+def test_a_stalled_nasdaq_stops_the_pass_and_want_takes_only_korean_tickers():
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        raise httpx.ConnectTimeout("stalled")
+
+    e = earnings.Earnings(yahoo=lambda t: None)
+    e.want({"NVDA", "035420.KS"})
+    assert "NVDA" not in e.want_kr and "035420.KS" in e.want_kr
+    asyncio.run(e.refresh(httpx.AsyncClient(transport=httpx.MockTransport(handler)), today=date(2026, 12, 9), gap=0))
+    assert len(calls) == earnings.MAX_FAILS_IN_ROW and e.error.startswith(f"{earnings.MAX_FAILS_IN_ROW + 1} failed")
+
+
+def test_a_december_month_reads_into_january_and_a_year_boundary_view():
+    asked = []
+
+    def handler(request):
+        asked.append(request.url.params["date"])
+        return httpx.Response(200, json={"data": None})
+
+    e = earnings.Earnings(yahoo=lambda t: None)
+    asyncio.run(e.refresh(httpx.AsyncClient(transport=httpx.MockTransport(handler)), today=date(2026, 12, 31), gap=0))
+    assert asked[0] == "2026-12-01" and asked[-1] == "2027-01-29"
+    v = mc.month_view("2027-01", calendar=_calendar(), earn=e)
+    assert v["days"][0]["kr"]["holiday"] and v["days"][0]["us"]["holiday"] == "새해 첫날"

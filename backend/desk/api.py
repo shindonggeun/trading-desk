@@ -334,7 +334,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     ok = await macro_news.CACHE.refresh()
                     log.info("macro news: %d/%d theme(s) refreshed", ok, len(macro_news.THEMES))
                     # #242: Korean titles and a market read, only while no analysis holds the plan
-                    read = await news_digest.DIGEST.refresh(macro_news.CACHE.themes, busy=app.state.manager.busy)
+                    read = await news_digest.DIGEST.refresh(macro_news.CACHE.themes, slot=app.state.manager.spare_slot)
                     if read:
                         log.info("news digest: %d headline(s) read", read)
                 except Exception:  # a failed pass must not stop the next one

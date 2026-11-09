@@ -23,6 +23,7 @@ import logging
 import re
 from collections import OrderedDict
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 log = logging.getLogger(__name__)
@@ -93,9 +94,14 @@ def parse(text: str, ids: set[str]) -> dict[str, dict]:
         rows = json.loads(text[start:end + 1])
     except ValueError:
         return {}
-    out = {}
+    out, twice = {}, set()
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict) or str(row.get("id")) not in ids:
+            continue
+        if str(row["id"]) in out:
+            twice.add(str(row["id"]))          # an id answered twice: neither answer is trusted
+            continue
+        if any(isinstance(row.get(k), bool) for k in ("pos", "neg", "neu")):
             continue
         title = _text(row.get("title_ko"), TITLE_MAX)
         try:
@@ -111,7 +117,7 @@ def parse(text: str, ids: set[str]) -> dict[str, dict]:
         out[str(row["id"])] = {"title_ko": title, "sentiment": {"pos": pos, "neg": neg, "neu": 100 - pos - neg},
                                "impact": row["impact"], "assets": assets,
                                "why_ko": _text(row.get("why_ko"), WHY_MAX)}
-    return out
+    return {k: v for k, v in out.items() if k not in twice}
 
 
 def llm_digest(prompt: str) -> str:
@@ -159,18 +165,22 @@ class Digest:
                             "source": h.get("domain")})
         return out
 
-    async def refresh(self, themes: dict[str, dict], busy: Callable[[], bool] = lambda: False) -> int:
-        """Ask about the headlines not read yet; 0 when there are none, an analysis is busy, or the call fails."""
+    async def refresh(self, themes: dict[str, dict], slot=None) -> int:
+        """Ask about the headlines not read yet; 0 when there are none, no run slot is free
+        (``slot``: desk.runner.RunManager.spare_slot - an analysis or a rate-limit cooldown has the
+        plan), or the call fails."""
         pending = self._pending(themes)
         done = 0
         for start in range(0, len(pending), BATCH):
-            if busy():
-                break                      # an analysis took the plan: the next pass asks again
             batch = [{**p, "id": str(n)} for n, p in enumerate(pending[start:start + BATCH])]
             try:
-                text = await asyncio.wait_for(asyncio.to_thread(self.ask, build_prompt(batch)), TIMEOUT_SEC + 10)
+                async with (slot or _always)() as free:
+                    if not free:
+                        break                  # the plan is taken: the next pass asks again
+                    text = await asyncio.wait_for(asyncio.to_thread(self.ask, build_prompt(batch)),
+                                                  TIMEOUT_SEC + 10)
                 reads = parse(text, {b["id"] for b in batch})
-                self.error = None
+                self.error = None if reads else "unparsed"
             except Exception as exc:  # noqa: BLE001 - no read: the page keeps the original headline
                 self.error = type(exc).__name__
                 log.info("news digest failed: %s", exc)
@@ -213,14 +223,23 @@ class Digest:
         return {k: r[k] for k in ("title_ko", "sentiment", "impact", "assets", "why_ko")}
 
     def high_impact(self, brief_rows: list[dict]) -> list[tuple[str, dict]]:
-        """(theme id, read) for the high-impact headlines among ``brief_rows`` - the agents' note."""
-        out = []
+        """(theme id, read) for the high-impact headlines among ``brief_rows`` - the agents' note.
+        Each URL once; the title cut and stripped of quotes (it goes inside quotes in the note)."""
+        out, seen = [], set()
         for row in brief_rows:
-            for h in row.get("headlines") or []:
-                r = self.reads.get(h.get("url") or "")
-                if r and r["impact"] == "high":
-                    out.append((row["id"], {**r, "title": h.get("title")}))
+            for h in (row.get("headlines") or [])[:PER_THEME]:
+                url = h.get("url") or ""
+                r = self.reads.get(url)
+                if r and r["impact"] == "high" and url not in seen:
+                    seen.add(url)
+                    title = " ".join(str(h.get("title") or "").translate(_CONTROL).replace('"', "'").split())[:200]
+                    out.append((row["id"], {**r, "title": title}))
         return out
+
+
+@asynccontextmanager
+async def _always():
+    yield True
 
 
 DIGEST = Digest()

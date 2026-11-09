@@ -235,7 +235,10 @@ def note(z: dict | None, ticker: str) -> str | None:
     return (f"Long-term bottom zone ({ticker}, weekly/monthly, desk rules #240): stage {z['stage']} "
             f"score {z['score']}/100, down {z['drawdown_pct']}% from the high; met: {', '.join(met) or 'none'}. "
             f"Staged buys over months: {steps}; the plan is void on a monthly close under "
-            f"{z['invalidation']['monthly_close_below']}. A rule-based reading, not a forecast.")
+            f"{z['invalidation']['monthly_close_below']}. A rule-based reading, not a forecast."
+            + (" Leveraged/inverse product: daily rebalancing decay makes it recover less than its "
+               "underlying over months - accumulate the underlying or an index ETF, or at most half the size."
+               if z.get("leveraged_note") else ""))
 
 
 # --- the backtest ---------------------------------------------------------------------------------
@@ -254,12 +257,19 @@ def backtest(bars: list[dict], stage: str = "approach", horizons=HORIZONS_WEEKS)
     plan is void), and the average cost is marked at each horizon. A signal is false when the price
     ended up under its invalidation, or the year after it lost money."""
     rank = {"none": 0, "watch": 1, "approach": 2, "bottom": 3}
-    signals, last = [], -SIGNAL_GAP_WEEKS
+    # one signal per episode: a new one needs SIGNAL_GAP_WEEKS in a row under the stage, so a long
+    # bear market that stays in the zone counts once
+    signals, quiet, armed = [], SIGNAL_GAP_WEEKS, True
     for i in range(MIN_WEEKS - 1, len(bars)):
         z = assess(bars, i)
-        if z is None or rank[z["stage"]] < rank[stage] or i - last < SIGNAL_GAP_WEEKS:
+        if z is None or rank[z["stage"]] < rank[stage]:
+            quiet += 1
+            armed = armed or quiet >= SIGNAL_GAP_WEEKS
             continue
-        last = i
+        quiet = 0
+        if not armed:
+            continue
+        armed = False
         signals.append(_follow(bars, i, z, horizons))
     done = [s for s in signals if s["returns"].get(f"{max(horizons)}w") is not None or s["void"]]
     false = [s for s in done if s["false"]]
@@ -282,12 +292,17 @@ def _follow(bars: list[dict], i: int, z: dict, horizons) -> dict:
     end = min(len(bars), i + max(horizons) + 1)
     for j in range(i, end):
         b = bars[j]
-        if not void:
+        if j == i:
+            # the signal is known at the week's close: only the first step (that close) fills then;
+            # the week's own low came before the signal and fills nothing
+            first = pending.pop(0)
+            filled.append((first["price"], first["weight_pct"]))
+        elif not void:
             for s in [s for s in pending if b["low"] <= s["price"]]:
                 filled.append((s["price"], s["weight_pct"]))
                 pending.remove(s)
         cost = (sum(p * w for p, w in filled) / sum(w for _p, w in filled)) if filled else None
-        if cost:
+        if cost and j > i:
             dd = (b["low"] / cost - 1) * 100
             worst = dd if worst is None else min(worst, dd)
         # a month ended (the next bar starts another): its close under the line voids the plan

@@ -675,6 +675,8 @@ export interface BoardItem {
   /** 추정 출처: 그 종목 계약 · 대용(지수 ← ETF) · 레버리지 환산(기초 × 배수) */
   source: { kind: "binance_perp_mark" | "proxy" | "leveraged"; contract: string; basis: string | null; multiple: number } | null;
   quote_source?: string;
+  /** #238 미국 장외 실제 체결(한투): pre · post · overnight(주간거래) */
+  session?: string;
   fetched_at: string | null;
 }
 

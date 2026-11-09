@@ -553,3 +553,38 @@ def test_the_board_shows_an_open_nxt_trade_as_a_live_price(db_url):
     finally:
         del ANCHOR[("SAMSUNGUSDT", "2026-11-06T07:58:00+00:00")]
     assert row["state"] == "live" and row["quote_source"] == "nxt" and row["price"] == 220000.0
+
+
+# --- #238: US pre / after market and the overnight session are real trades on KIS ----------------
+
+def test_off_hours_us_trades_from_kis_are_live_and_without_one_the_estimate_stays(db_url, monkeypatch):
+    from desk import live
+    from desk.broker import kis_stream
+    from desk.prices import Quote
+
+    est = _wide()
+
+    async def closed(_cal, ticker, now=None):
+        return False
+
+    monkeypatch.setattr(live, "is_open", closed)
+    monkeypatch.setattr(kis_stream, "us_session", lambda now=None: "overnight")
+    streaming = {"SOXS"}                                     # a KIS trade came in for SOXS only
+    monkeypatch.setattr(live, "watch", lambda prices, t: t in streaming)
+
+    async def quote(self, t):
+        return Quote(t, 12.0, "USD", "kis", "2026-11-09T07:49:00+00:00")
+
+    monkeypatch.setattr("desk.prices.PriceSource.quote", quote)
+    with _client(db_url, est) as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        rows = {r["ticker"]: r for r in client.get("/api/estimates?tickers=SOXS,CL=F").json()["items"]}
+        soxs = rows["SOXS"]
+        assert (soxs["state"], soxs["price"], soxs["quote_source"], soxs["session"]) == ("live", 12.0, "kis", "overnight")
+        assert soxs["change_pct"] == round((12.0 / 10.0 - 1) * 100, 2)
+        assert rows["CL=F"]["state"] == "estimate"            # not a US stock: no KIS stream
+        streaming.clear()
+        assert client.get("/api/estimates?tickers=SOXS").json()["items"][0]["state"] == "estimate"
+        monkeypatch.setattr(kis_stream, "us_session", lambda now=None: None)      # weekend
+        streaming.add("SOXS")
+        assert client.get("/api/estimates?tickers=SOXS").json()["items"][0]["state"] == "estimate"

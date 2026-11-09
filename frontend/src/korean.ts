@@ -19,6 +19,15 @@ export const QUOTE_SOURCE: Record<string, string> = {
   nxt: "NXT",
 };
 
+/** #238 미국 장외 세션: 프리마켓 · 애프터마켓 · 주간거래(한국 낮, 미국 밤) — 실제 체결이다. */
+export const US_SESSION: Record<string, string> = { pre: "프리", post: "애프터", overnight: "주간거래" };
+
+/** 시세판 타일 배지: 실시간(장외 세션이면 세션 이름) · 추정 · 추정 불가. */
+export function boardBadge(it: { state: "live" | "estimate" | "unavailable"; session?: string }): string {
+  if (it.state === "live") return it.session && US_SESSION[it.session] ? `실시간 ${US_SESSION[it.session]}` : "실시간";
+  return it.state === "estimate" ? "추정" : "추정 불가";
+}
+
 export function quoteSourceText(source: string | null | undefined): string {
   if (!source) return "";
   return QUOTE_SOURCE[source] ?? source;

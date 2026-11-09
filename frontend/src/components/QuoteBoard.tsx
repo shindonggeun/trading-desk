@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { price, time } from "../format";
 import type { BoardItem } from "../types";
-import { quoteSourceText } from "../korean";
+import { boardBadge, quoteSourceText, US_SESSION } from "../korean";
 
 export type BoardTicker = { ticker: string; name?: string };
 
@@ -10,7 +10,7 @@ const POLL_MS = 15_000;
 const BUNDLE_KEY = "desk.board.weekend";
 const OPEN_KEY = "desk.board.weekend.open";
 
-/** 주말 · 장 마감 중 자동으로 보이는 묶음 — 국내 반도체 · 미장 주요 · 레버리지 · 위켄드 나스닥 · S&P · 유가 · 금. */
+/** 주말 · 장 마감 중 자동으로 보이는 묶음 — 국내 반도체 · 미장 주요 · 레버리지 · 나스닥100 선물 · S&P · 유가 · 금. */
 export const WEEKEND_DEFAULT: BoardTicker[] = [
   { ticker: "005930.KS", name: "삼성전자" },
   { ticker: "000660.KS", name: "SK하이닉스" },
@@ -20,9 +20,9 @@ export const WEEKEND_DEFAULT: BoardTicker[] = [
   { ticker: "AVGO", name: "브로드컴" },
   { ticker: "TSM", name: "TSMC" },
   { ticker: "MU", name: "마이크론" },
-  { ticker: "SOXL", name: "반도체 3배" },
-  { ticker: "TQQQ", name: "나스닥 3배" },
-  { ticker: "^NDX", name: "위켄드 나스닥100" },
+  { ticker: "SOXL", name: "SOXL" },
+  { ticker: "TQQQ", name: "TQQQ" },
+  { ticker: "NQ=F", name: "나스닥100 선물" },
   { ticker: "^GSPC", name: "S&P 500" },
   { ticker: "CL=F", name: "WTI 원유" },
   { ticker: "GC=F", name: "금" },
@@ -45,6 +45,17 @@ function save(key: string, value: unknown) {
   }
 }
 
+/** #238 예전 기본 묶음 이름: 레버리지 ETF 는 티커로, ^NDX(장외에 안 움직임)는 나스닥100 선물로. */
+const LEGACY: Record<string, BoardTicker> = {
+  "SOXL|반도체 3배": { ticker: "SOXL", name: "SOXL" },
+  "TQQQ|나스닥 3배": { ticker: "TQQQ", name: "TQQQ" },
+  "^NDX|위켄드 나스닥100": { ticker: "NQ=F", name: "나스닥100 선물" },
+};
+function renamed(list: BoardTicker[]): BoardTicker[] {
+  const out = list.map((t) => LEGACY[`${t.ticker}|${t.name ?? ""}`] ?? t);
+  return out.filter((t, i) => out.findIndex((o) => o.ticker === t.ticker) === i);
+}
+
 /** 한국 시각 토 · 일 — 국내 · 미장 모두 쉬는 날 */
 function isWeekendKst(now = new Date()): boolean {
   const day = new Date(now.getTime() + 9 * 3600_000).getUTCDay();
@@ -52,7 +63,10 @@ function isWeekendKst(now = new Date()): boolean {
 }
 
 function sourceText(it: BoardItem): string {
-  if (it.state === "live") return quoteSourceText(it.quote_source) || "실시간";
+  if (it.state === "live") {
+    const src = quoteSourceText(it.quote_source) || "실시간";
+    return it.session && US_SESSION[it.session] ? `${src} · ${US_SESSION[it.session]}` : src;
+  }
   const s = it.source;
   if (!s) return "";
   if (s.kind === "leveraged") return `${s.basis} 추정 × ${s.multiple > 0 ? s.multiple : `(${s.multiple})`}`;
@@ -63,7 +77,7 @@ function sourceText(it: BoardItem): string {
 function Tile({ it, name, on, onPick }: { it: BoardItem | undefined; name: string; on: boolean; onPick: () => void }) {
   const ch = it?.change_pct;
   const tone = ch == null ? "" : ch > 0 ? "up" : ch < 0 ? "down" : "";
-  const badge = it ? { live: "실시간", estimate: "추정", unavailable: "추정 불가" }[it.state] : "…";
+  const badge = it ? boardBadge(it) : "…";
   return (
     <button type="button" className={`qb-tile${on ? " qb-on" : ""}${it?.state === "estimate" ? " qb-est" : ""}`} aria-pressed={on} onClick={onPick}>
       <span className="qb-top">
@@ -95,7 +109,7 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
 }) {
   const onPriceRef = useRef(onPrice);
   onPriceRef.current = onPrice;
-  const [bundle, setBundle] = useState<BoardTicker[]>(() => load(BUNDLE_KEY, WEEKEND_DEFAULT, isList));
+  const [bundle, setBundle] = useState<BoardTicker[]>(() => renamed(load(BUNDLE_KEY, WEEKEND_DEFAULT, isList)));
   const [bundleOpen, setBundleOpen] = useState<boolean>(() => load(OPEN_KEY, true, (v) => typeof v === "boolean"));
   const [items, setItems] = useState<Record<string, BoardItem>>({});
   const [failedAt, setFailedAt] = useState<string | null>(null);

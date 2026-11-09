@@ -40,3 +40,29 @@ def test_store_keeps_order_json_and_utc_times(db_url):
     store.create_run("AAPL", "2026-11-04", {})
     assert store.fail_unfinished("restart") == 1
     engine.dispose()
+
+
+def test_0007_renames_old_board_favorites(db_url):
+    """#238: leveraged ETFs by ticker, ^NDX ("weekend Nasdaq 100") as NQ=F unless already starred."""
+    from alembic import command
+    from sqlalchemy import text
+
+    from desk.db import alembic_config
+
+    command.upgrade(alembic_config(db_url), "0006")
+    engine = make_engine(db_url)
+    with engine.begin() as conn:
+        for uid in (1, 2):
+            conn.execute(text("INSERT INTO users (id, username, password_hash, created_at, password_changed_at) "
+                              "VALUES (:id, :u, 'x', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"), {"id": uid, "u": f"u{uid}"})
+        rows = [(1, "SOXL", "반도체 3배", 0), (1, "^NDX", "위켄드 나스닥100", 1), (1, "NVDA", "엔비디아", 2),
+                (2, "^NDX", "위켄드 나스닥100", 0), (2, "NQ=F", "나스닥 선물", 1), (2, "TQQQ", "내 TQQQ", 2)]
+        for uid, ticker, name, pos in rows:
+            conn.execute(text("INSERT INTO favorites (user_id, ticker, name, position, created_at) "
+                              "VALUES (:u, :t, :n, :p, CURRENT_TIMESTAMP)"), {"u": uid, "t": ticker, "n": name, "p": pos})
+    migrate(db_url)
+    with engine.connect() as conn:
+        got = sorted(tuple(r) for r in conn.execute(text("SELECT user_id, ticker, name FROM favorites")))
+    engine.dispose()
+    assert got == [(1, "NQ=F", "나스닥100 선물"), (1, "NVDA", "엔비디아"), (1, "SOXL", "SOXL"),
+                   (2, "NQ=F", "나스닥 선물"), (2, "TQQQ", "내 TQQQ")]

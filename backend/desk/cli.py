@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import os
 import sys
 from datetime import timedelta
@@ -198,6 +199,10 @@ def main(argv: list[str] | None = None) -> int:
     wl = sub.add_parser("weekly-lines", help=(
         "compare the weekly map's black / red line pairs on the indices' weekly history (#216)"))
     wl.add_argument("--out", default=None, help="write the full JSON report here")
+    bz = sub.add_parser("bottom-backtest", help=(
+        "the long-term bottom zone (#240) on past big lows: signals, how early, staged-buy returns"))
+    bz.add_argument("tickers", nargs="*", default=["^NDX", "^GSPC", "^SOX", "^KS11", "005930.KS", "000660.KS"])
+    bz.add_argument("--out", default=None, help="write the full JSON report here")
     tm = sub.add_parser("timing", help="average time per stage and per agent over the latest finished runs")
     tm.add_argument("--last", type=int, default=20, help="how many recent finished runs (default 20)")
     args = parser.parse_args(argv)
@@ -210,6 +215,14 @@ def main(argv: list[str] | None = None) -> int:
         return _calibrate(args)
     if args.command == "weekly-lines":
         return _weekly_lines(args)
+    if args.command == "bottom-backtest":
+        from . import bottom_zone
+
+        report = bottom_zone.report(args.tickers)
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as f:
+                json.dump(report, f, ensure_ascii=False, indent=1)
+        return 0
 
     settings = load()
     migrate(settings.database_url)

@@ -403,6 +403,10 @@ class RunManager:
         self._instrument_locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()
 
+    def busy(self) -> bool:
+        """An analysis is queued or running (#242: background LLM work waits for it)."""
+        return bool(self._tasks)
+
     def _note_rate_limit(self, run_id: str, error: BaseException | str | None) -> None:
         if rate_limited(error) and self._slots.back_off():
             log.warning("run %s hit the model provider's rate limit: one run at a time for %.0f min",

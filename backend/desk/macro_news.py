@@ -449,4 +449,10 @@ def prompt_note(ticker: str, cache: Cache | None = None, limit: int = 5, now: da
         mine = " Directly relevant to this instrument." if r["relevance"] == 2 else ""
         lines.append(f"- {r['id']}: {count} articles in 24h, {surge}{flag}, {_tone_word(r['tone'], r.get('tone_kind'))}. "
                      f"Why it matters: {r['why']}.{mine}{headline}")
+    from .news_digest import DIGEST  # #242: the desk's read of the high-impact headlines
+
+    for theme_id, read in DIGEST.high_impact(rows)[:3]:
+        s = read["sentiment"]
+        lines.append(f'- High-impact headline ({theme_id}): "{read["title"]}" - read as positive {s["pos"]}% / '
+                     f'negative {s["neg"]}% for stocks (a model reading of the headline, not a forecast).')
     return "\n".join(lines)

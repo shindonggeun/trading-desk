@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 
 from desk import macro_news, news_digest
 
@@ -82,9 +83,64 @@ def test_a_failed_or_busy_call_leaves_the_original_headlines():
     assert brief["themes"][0]["digest"] is None
     asked = []
     busy = news_digest.Digest(lambda p: asked.append(p) or _answer(p))
-    assert asyncio.run(busy.refresh(THEMES, busy=lambda: True)) == 0 and asked == []     # an analysis holds the plan
+
+    @asynccontextmanager
+    async def taken():
+        yield False
+
+    assert asyncio.run(busy.refresh(THEMES, slot=taken)) == 0 and asked == []     # an analysis holds the plan
     garbage = news_digest.Digest(lambda p: "[{\"id\": \"0\", \"title_ko\": \"x\"}]")
-    assert asyncio.run(garbage.refresh(THEMES)) == 0 and not garbage.reads
+    assert asyncio.run(garbage.refresh(THEMES)) == 0 and not garbage.reads and garbage.error == "unparsed"
+
+
+def _manager(tasks=()):
+    from desk.runner import RunManager, _Gate
+
+    m = RunManager.__new__(RunManager)
+    m._slots, m._tasks = _Gate(1, 600), set(tasks)
+    return m
+
+
+def test_the_digest_holds_a_run_slot_so_a_run_waits_and_never_starts_beside_it():
+    from desk.runner import RunManager
+
+    async def scenario():
+        m = _manager()
+        order = []
+        async with RunManager.spare_slot(m) as free:
+            assert free
+            run = asyncio.create_task(_enter(m._slots, order))
+            await asyncio.sleep(0.05)
+            assert order == []                          # the run waits for the digest's slot
+        await run
+        assert order == ["run"]
+        async with RunManager.spare_slot(_manager(tasks=[object()])) as free:
+            assert not free                             # a run queued: skip
+        cooled = _manager()
+        cooled._slots.back_off()
+        async with RunManager.spare_slot(cooled) as free:
+            assert not free                             # rate-limit cooldown: skip
+        hit = _manager()
+        try:
+            async with RunManager.spare_slot(hit) as free:
+                raise RuntimeError("Error code: 429 - rate limit exceeded")
+        except RuntimeError:
+            pass
+        assert hit._slots._clock() < hit._slots._calm_until and hit._slots._active == 0
+
+    asyncio.run(scenario())
+
+
+async def _enter(gate, order):
+    async with gate:
+        order.append("run")
+
+
+def test_parse_drops_ids_answered_twice_and_booleans():
+    row = {"title_ko": "x", "pos": 50, "neg": 50, "neu": 0, "impact": "low"}
+    text = json.dumps([{**row, "id": "0"}, {**row, "id": "0", "title_ko": "y"}, {**row, "id": "1", "pos": True,
+                                                                                   "neg": 99, "neu": 0}])
+    assert news_digest.parse(text, {"0", "1"}) == {}
 
 
 def test_the_fake_digest_parses_and_the_note_names_high_impact_headlines(monkeypatch):
@@ -99,6 +155,10 @@ def test_the_fake_digest_parses_and_the_note_names_high_impact_headlines(monkeyp
     monkeypatch.setattr(news_digest, "DIGEST", d)
     note = macro_news.prompt_note("NVDA", cache, now=now)
     assert "High-impact headline (fed)" in note and "not a forecast" in note
+    quoted = {**THEMES["fed"]["headlines"][0], "title": 'He said "buy" now'}
+    cache.themes["fed"] = {**cache.themes["fed"], "headlines": [quoted, quoted]}
+    note = macro_news.prompt_note("NVDA", cache, now=now)
+    assert note.count("High-impact headline") == 1 and "\"He said 'buy' now\"" in note
 
 
 def test_the_brief_api_carries_the_reads(db_url, monkeypatch):

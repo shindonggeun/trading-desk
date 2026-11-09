@@ -4,6 +4,7 @@ thread, with every new chat event written to the store as it happens."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import logging
 import re
@@ -403,9 +404,29 @@ class RunManager:
         self._instrument_locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()
 
-    def busy(self) -> bool:
-        """An analysis is queued or running (#242: background LLM work waits for it)."""
-        return bool(self._tasks)
+    @contextlib.asynccontextmanager
+    async def spare_slot(self):
+        """Background LLM work (#242) holds one run slot, only if it is free right now: no run
+        queued or running and no rate-limit cooldown. Yields False otherwise (skip the work). A run
+        submitted meanwhile waits for the slot - one call on the plan at a time - and a rate limit
+        hit by the work starts the cooldown like a run's would."""
+        gate = self._slots
+        async with gate._changed:
+            free = not self._tasks and gate._active == 0 and gate._clock() >= gate._calm_until
+            if free:
+                gate._active += 1
+        try:
+            yield free
+        except Exception as exc:
+            if free and rate_limited(exc) and gate.back_off():
+                log.warning("background model call hit the rate limit: one run at a time for %.0f min",
+                            gate._cooldown / 60)
+            raise
+        finally:
+            if free:
+                async with gate._changed:
+                    gate._active -= 1
+                    gate._changed.notify_all()
 
     def _note_rate_limit(self, run_id: str, error: BaseException | str | None) -> None:
         if rate_limited(error) and self._slots.back_off():

@@ -1,0 +1,12 @@
+{
+  "_note": "Bank of Korea rate decisions (금통위 통화정책방향 결정회의), announced about 10:00 KST. Kept by hand from the bank's yearly schedule (bok.or.kr); add the dates not confirmed yet.",
+  "events": [
+    {"id": "bok", "label": "한국은행 기준금리 결정(금통위)", "date": "2026-01-15", "time": "10:00", "importance": 2, "source": "bok"},
+    {"id": "bok", "label": "한국은행 기준금리 결정(금통위)", "date": "2026-02-26", "time": "10:00", "importance": 2, "source": "bok"},
+    {"id": "bok", "label": "한국은행 기준금리 결정(금통위)", "date": "2026-05-28", "time": "10:00", "importance": 2, "source": "bok"},
+    {"id": "bok", "label": "한국은행 기준금리 결정(금통위)", "date": "2026-07-16", "time": "10:00", "importance": 2, "source": "bok"},
+    {"id": "bok", "label": "한국은행 기준금리 결정(금통위)", "date": "2026-08-27", "time": "10:00", "importance": 2, "source": "bok"},
+    {"id": "bok", "label": "한국은행 기준금리 결정(금통위)", "date": "2026-10-22", "time": "10:00", "importance": 2, "source": "bok"},
+    {"id": "bok", "label": "한국은행 기준금리 결정(금통위)", "date": "2027-01-14", "time": "10:00", "importance": 2, "source": "bok"}
+  ]
+}

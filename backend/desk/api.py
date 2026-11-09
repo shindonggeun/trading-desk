@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime, timedelta, timezone
@@ -24,11 +25,13 @@ from . import (
     backtest_reports,
     calibration,
     credit,
+    earnings,
     events_calendar,
     filings,
     horizons,
     live,
     macro_news,
+    market_calendar,
     news_digest,
     oscillator,
     otp,
@@ -349,6 +352,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.info("economic calendar: %d/2 source(s) refreshed", ok)
                 except Exception:  # a failed pass must not stop the next one
                     log.exception("economic calendar refresh failed")
+                try:                # #243: company earnings for this month and the next
+                    ok = await earnings.CACHE.refresh()
+                    log.info("earnings calendar: %d day(s)/ticker(s) refreshed", ok)
+                except Exception:
+                    log.exception("earnings calendar refresh failed")
                 await asyncio.sleep(CALENDAR_INTERVAL_SEC)
 
         async def refresh_credit():
@@ -928,6 +936,21 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if report is None:
             raise HTTPException(404, f"no backtest report for {horizon}")
         return report
+
+    @app.get("/api/calendar")
+    def market_month(request: Request, month: str | None = None):
+        """#243: a month of KRX / NYSE closed days, early closes, releases, expiries and earnings,
+        in Korean time. ``month`` YYYY-MM (default this month in Korea), within a year either way."""
+        today = datetime.now(market_calendar.KST).date()
+        month = month or today.strftime("%Y-%m")
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+            raise HTTPException(422, "month must be YYYY-MM")
+        first = date.fromisoformat(month + "-01")
+        if abs((first.year - today.year) * 12 + first.month - today.month) > 12:
+            raise HTTPException(422, "month must be within a year of now")
+        watch = {f["ticker"] for f in favorites.list(request.state.user.id)}
+        earnings.CACHE.want(watch)
+        return market_calendar.month_view(month, watch)
 
     @app.get("/api/macro/brief")
     def macro_brief(ticker: str | None = None):

@@ -65,8 +65,11 @@ export default function BottomZoneCard({ ticker }: { ticker: string }) {
           </div>
           <div className="bz-meter" aria-hidden="true"><span style={{ width: `${z.score}%` }} /></div>
 
-          <h4 className="bz-sub">분할 매수(줍줍) 계획</h4>
-          <table className="bz-ladder">
+          <h4 className="bz-sub">분할 매수(줍줍) 계획{z.stage === "watch" && " — 참고용"}</h4>
+          {z.stage === "watch" && (
+            <p className="small muted">아직 "관찰" 단계라 지금 사라는 뜻이 아닙니다. "접근" 단계가 되면 1차부터 나눠서 봅니다.</p>
+          )}
+          <table className={`bz-ladder${z.stage === "watch" ? " bz-ladder-ref" : ""}`}>
             <thead><tr><th scope="col">단계</th><th scope="col">가격</th><th scope="col">비중</th><th scope="col">지금가 대비</th></tr></thead>
             <tbody>
               {(z.ladder ?? []).map((s) => (
@@ -98,7 +101,8 @@ export default function BottomZoneCard({ ticker }: { ticker: string }) {
         <ul className="bz-evidence">
           {(z.evidence ?? []).map((e) => (
             <li key={e.id} className={e.met === null ? "muted" : e.met ? "bz-met" : ""}>
-              <span aria-hidden="true">{e.met === null ? "–" : e.met ? "✓" : "✗"}</span>{" "}
+              <span aria-hidden="true">{e.met === null ? "–" : e.met ? "✓" : "✗"}</span>
+              <span className="sr-only">{e.met === null ? "모름" : e.met ? "충족" : "미충족"}</span>{" "}
               <span>{EVIDENCE_KO[e.id]}</span>
               {evidenceValue(e) && <span className="num muted"> {evidenceValue(e)}</span>}
               <span className="muted small"> · 기준 {e.threshold}</span>

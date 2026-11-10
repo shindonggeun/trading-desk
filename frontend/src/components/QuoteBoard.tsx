@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { price, time } from "../format";
 import type { BoardItem } from "../types";
-import { boardBadge, quoteSourceText, US_SESSION } from "../korean";
+import { boardBadge, boardBadgeClass, boardReason, quoteSourceShort } from "../korean";
 
 export type BoardTicker = { ticker: string; name?: string };
 
@@ -63,10 +63,7 @@ function isWeekendKst(now = new Date()): boolean {
 }
 
 function sourceText(it: BoardItem): string {
-  if (it.state === "live") {
-    const src = quoteSourceText(it.quote_source) || "실시간";
-    return it.session && US_SESSION[it.session] ? `${src} · ${US_SESSION[it.session]}` : src;
-  }
+  if (it.state === "live") return quoteSourceShort(it.quote_source);
   const s = it.source;
   if (!s) return "";
   if (s.kind === "leveraged") return `${s.basis} 추정 × ${s.multiple > 0 ? s.multiple : `(${s.multiple})`}`;
@@ -82,12 +79,13 @@ function Tile({ it, name, on, onPick }: { it: BoardItem | undefined; name: strin
     <button type="button" className={`qb-tile${on ? " qb-on" : ""}${it?.state === "estimate" ? " qb-est" : ""}`} aria-pressed={on} onClick={onPick}>
       <span className="qb-top">
         <span className="qb-name">{name}</span>
-        <span className={`qb-badge qb-${it?.state ?? "wait"}`}>{badge}</span>
+        <span className={boardBadgeClass(it)} title={(it && boardReason(it)) ?? undefined}>{badge}</span>
       </span>
       <span className="qb-price num">
         {it?.price != null ? price(it.price) : "—"}
         <span className={`small ${tone}`}>{ch != null ? ` ${ch > 0 ? "+" : ""}${ch.toFixed(2)}%` : ""}</span>
       </span>
+      {on && it && boardReason(it) && <span className="qb-reason small">{boardReason(it)}</span>}
       <span className="qb-sub muted small">
         {it?.close != null && `기준 ${price(it.close)}${it.close_date ? `(${it.close_date.slice(5)})` : ""}`}
         {it && sourceText(it) && ` · ${sourceText(it)}`}

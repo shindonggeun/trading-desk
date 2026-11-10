@@ -22,10 +22,51 @@ export const QUOTE_SOURCE: Record<string, string> = {
 /** #238 미국 장외 세션: 프리마켓 · 애프터마켓 · 주간거래(한국 낮, 미국 밤) — 실제 체결이다. */
 export const US_SESSION: Record<string, string> = { pre: "프리", post: "애프터", overnight: "주간거래" };
 
-/** 시세판 타일 배지: 실시간(장외 세션이면 세션 이름) · 추정 · 추정 불가. */
-export function boardBadge(it: { state: "live" | "estimate" | "unavailable"; session?: string }): string {
-  if (it.state === "live") return it.session && US_SESSION[it.session] ? `실시간 ${US_SESSION[it.session]}` : "실시간";
-  return it.state === "estimate" ? "추정" : "추정 불가";
+/** #251 거래 구간(#250 session) — 정규 · 프리 · 애프터 · 주간거래(미장, 한국 낮) */
+export const SESSION_KO: Record<string, string> = { ...US_SESSION, regular: "정규", closed: "장 마감" };
+
+/** #251 타일에 작게 쓰는 가격 출처 */
+export const QUOTE_SOURCE_SHORT: Record<string, string> = {
+  kis: "한투", toss: "토스", nxt: "NXT", yahoo: "야후(지연 가능)", "binance-estimate": "바이낸스 추정", mock: "모의",
+};
+
+type BoardLike = { state: "live" | "estimate" | "unavailable"; session?: string | null; quote_source?: string | null };
+
+/**
+ * 시세판 · 즐겨찾기 타일 배지(#251): `실시간 · 프리` / `실시간 · 정규` / `실시간 · 애프터` / `실시간 · 주간거래` /
+ * `NXT`(국장 장외) / `추정(바이낸스)` / `추정 불가`. 구간을 모르는 예전 응답이면 `실시간` 만.
+ */
+export function boardBadge(it: BoardLike): string {
+  if (it.state === "live") {
+    if (it.quote_source === "nxt") return it.session === "pre" || it.session === "post" ? `NXT · ${SESSION_KO[it.session]}` : "NXT";
+    const s = it.session && it.session !== "closed" ? SESSION_KO[it.session] : null;
+    return s ? `실시간 · ${s}` : "실시간";
+  }
+  return it.state === "estimate" ? "추정(바이낸스)" : "추정 불가";
+}
+
+/** 배지 색 — 상태(qb-live · qb-estimate · qb-unavailable)와 실시간이면 구간(qb-s-…) */
+export function boardBadgeClass(it: BoardLike | undefined): string {
+  if (!it) return "qb-badge qb-wait";
+  if (it.state !== "live") return `qb-badge qb-${it.state}`;
+  const s = it.quote_source === "nxt" ? "nxt" : it.session && it.session !== "closed" ? it.session : "regular";
+  return `qb-badge qb-live qb-s-${s}`;
+}
+
+/** 추정 · 추정 불가의 이유(툴팁 · 탭하면 보이는 한 줄) */
+export function boardReason(it: BoardLike): string | null {
+  if (it.state === "estimate") {
+    return !it.session || it.session === "closed"
+      ? "주말 · 휴장 · 장 마감 뒤라 바이낸스 무기한 선물로 낸 추정가"
+      : `${SESSION_KO[it.session] ?? "장외"} 시간인데 체결이 없어 바이낸스 무기한 선물로 낸 추정가`;
+  }
+  if (it.state === "unavailable") return "실시간 체결도 추정할 계약도 없어 가격을 낼 수 없습니다";
+  return null;
+}
+
+export function quoteSourceShort(source: string | null | undefined): string {
+  if (!source) return "";
+  return QUOTE_SOURCE_SHORT[source] ?? QUOTE_SOURCE[source] ?? source;
 }
 
 export function quoteSourceText(source: string | null | undefined): string {

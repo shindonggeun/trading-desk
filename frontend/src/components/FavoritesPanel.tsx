@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { boardBadge } from "../korean";
+import { boardBadge, boardBadgeClass, boardReason, quoteSourceShort } from "../korean";
 import { clearFavoriteError, moveFavorite, removeFavorite, useFavorites } from "../favorites";
 import { price, time } from "../format";
 import type { BoardItem, EstimatedCandles } from "../types";
@@ -85,7 +85,7 @@ function Tile({ ticker, name, it, first, last, editing, order }: {
         aria-label={`${name} 시세판에서 보기`}>
         <span className="qb-top">
           <span className="qb-name">{name}</span>
-          <span className={`qb-badge qb-${it?.state ?? "wait"}`}>{badge}</span>
+          <span className={boardBadgeClass(it)} title={(it && boardReason(it)) ?? undefined}>{badge}</span>
         </span>
         <span className="qb-price num">
           {it?.price != null ? price(it.price) : "—"}
@@ -94,6 +94,7 @@ function Tile({ ticker, name, it, first, last, editing, order }: {
         <Spark ticker={ticker} tone={tone} order={order} />
         <span className="qb-sub muted small">
           {ticker}
+          {it?.quote_source && ` · ${quoteSourceShort(it.quote_source)}`}
           {it?.close != null && ` · 기준 ${price(it.close)}${it.close_date ? `(${it.close_date.slice(5)})` : ""}`}
         </span>
       </a>

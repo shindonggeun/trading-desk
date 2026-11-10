@@ -1461,3 +1461,15 @@ a.wmb-row:hover { border-color: var(--accent); }
   .mx-cols { display: none; }
   .mx-head-title { white-space: normal; }
 }
+
+/* #251 실시간 거래 구간 배지 — 정규는 초록, 장외 구간은 같은 계열의 다른 토큰, 추정은 경고색 */
+.qb-badge { white-space: nowrap; }
+.qb-live.qb-s-pre, .qb-live.qb-s-post { color: var(--accent); }
+.qb-live.qb-s-overnight { color: var(--accent); border-style: dashed; }
+.qb-live.qb-s-nxt { color: var(--accent); }
+.qb-reason { color: var(--warn); line-height: 1.35; }
+@media (max-width: 760px) {
+  .qb-top { flex-wrap: nowrap; }
+  .qb-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qb-badge { font-size: 10px; padding: 0 4px; }
+}

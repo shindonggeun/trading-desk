@@ -706,6 +706,8 @@ export interface Instrument {
 }
 
 /** #123 시세판 한 줄(GET /api/estimates): 장중 실시간 · 장외 추정 · 추정 불가. */
+export type BoardSession = "pre" | "regular" | "post" | "overnight" | "closed";
+export type BoardQuoteSource = "kis" | "toss" | "nxt" | "yahoo" | "binance-estimate";
 export interface BoardItem {
   ticker: string;
   state: "live" | "estimate" | "unavailable";
@@ -715,9 +717,10 @@ export interface BoardItem {
   close_date: string | null;
   /** 추정 출처: 그 종목 계약 · 대용(지수 ← ETF) · 레버리지 환산(기초 × 배수) */
   source: { kind: "binance_perp_mark" | "proxy" | "leveraged"; contract: string; basis: string | null; multiple: number } | null;
-  quote_source?: string;
-  /** #238 미국 장외 실제 체결(한투): pre · post · overnight(주간거래) */
-  session?: string;
+  /** #250 지금 가격의 출처 — kis · toss · nxt · yahoo · binance-estimate, 추정 불가면 null */
+  quote_source?: BoardQuoteSource | string | null;
+  /** #250 그 종목 시장의 지금 거래 구간(#238 미국 장외 pre · post · overnight 포함) */
+  session?: BoardSession | string;
   fetched_at: string | null;
 }
 

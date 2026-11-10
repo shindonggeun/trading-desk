@@ -13,7 +13,8 @@ Intraday snapshots older than ``KEEP_INTRADAY_DAYS`` are thinned to the last one
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime, timedelta
+import math
+from datetime import UTC, date, datetime, time, timedelta
 
 from sqlalchemy import delete, func, insert, select
 from sqlalchemy.engine import Engine
@@ -24,6 +25,10 @@ from .futures_flow import KST, futures_open
 log = logging.getLogger(__name__)
 
 KEEP_INTRADAY_DAYS = 60
+OPEN, CLOSE = time(8, 45), time(15, 45)
+CLOSING_UNTIL = time(16, 0)      # the closing snapshot is taken once between CLOSE and this
+CLOSING_AT = time(15, 46)
+MAX_SLEEP_SEC = 3600.0           # outside the session the loop still wakes hourly (clock changes, restarts)
 MAX_DAYS = 250
 CLASSES = ("foreign", "individual", "institution")
 
@@ -54,14 +59,52 @@ def _point(r) -> dict:
                           for c in CLASSES}}
 
 
+def interval_min(setting: float) -> float:
+    """0 = off; anything else at least a minute (the view is cached 30 s, KIS is rate limited)."""
+    return 0.0 if setting <= 0 else max(1.0, float(setting))
+
+
+def closing_window(now: datetime) -> bool:
+    """Weekdays 15:45-16:00 KST: the day's closing snapshot belongs here."""
+    local = now.astimezone(KST)
+    return local.weekday() < 5 and CLOSE < local.time() < CLOSING_UNTIL
+
+
+def seconds_to_next(now: datetime, every_min: float) -> float:
+    """Until the next snapshot on the wall clock: the session's grid from 08:45 every ``every_min``
+    minutes (08:45, 09:00, ...), then the closing snapshot at 15:46, then the next weekday's open -
+    capped at MAX_SLEEP_SEC."""
+    local = now.astimezone(KST)
+    day = local.date()
+    open_at = datetime.combine(day, OPEN, KST)
+    close_at = datetime.combine(day, CLOSE, KST)
+    if local.weekday() < 5 and local < open_at:
+        target = open_at
+    elif local.weekday() < 5 and local <= close_at:
+        step = every_min * 60
+        n = math.floor((local - open_at).total_seconds() / step) + 1
+        target = open_at + timedelta(seconds=n * step)
+        if target > close_at:
+            target = datetime.combine(day, CLOSING_AT, KST)
+    elif local.weekday() < 5 and local < datetime.combine(day, CLOSING_AT, KST):
+        target = datetime.combine(day, CLOSING_AT, KST)
+    else:
+        nxt = day + timedelta(days=1)
+        while nxt.weekday() >= 5:
+            nxt += timedelta(days=1)
+        target = datetime.combine(nxt, OPEN, KST)
+    return max(1.0, min((target - local).total_seconds(), MAX_SLEEP_SEC))
+
+
 class FuturesHistory:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
 
     def record(self, view: dict, now: datetime | None = None) -> bool:
-        """Store the view as a snapshot when the session is open and the view is whole."""
+        """Store the view as a snapshot when the session is open (or in its closing window, for the
+        day's final totals) and the view is whole."""
         now = now or datetime.now(UTC)
-        if not futures_open(now):
+        if not (futures_open(now) or closing_window(now)):
             return False
         row = row_of(view, now)
         if row is None:

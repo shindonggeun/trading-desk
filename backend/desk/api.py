@@ -56,7 +56,7 @@ from .futures_flow import FuturesFlow, futures_open
 from .futures_flow import make as make_kis_rest
 from .futures_flow import off_reason as futures_off
 from .futures_flow import prompt_note as futures_note
-from .futures_history import FuturesHistory
+from .futures_history import FuturesHistory, closing_window, interval_min, seconds_to_next
 from .indicators import normalize as normalize_indicators
 from .leverage_analyst import fake_analyst, llm_analyst
 from .market_flow import MarketFlow
@@ -400,12 +400,19 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         async def snapshot_futures():
             # #254: the futures investor flows through the session, every DESK_FUTURES_SNAPSHOT_MIN
             # minutes (desk.futures_history); outside the session it only checks the clock
-            pruned_on = None
+            # on the wall clock's grid from 08:45, plus one closing snapshot just after 15:45 (the
+            # day's final totals: its daily row); each one fetches fresh, never a cached pre-open value
+            pruned_on, closed_on = None, None
+            every = interval_min(settings.futures_snapshot_min)
             while True:
                 try:
-                    if futures_open(datetime.now(UTC)):
-                        view = await futures.get()
+                    moment = datetime.now(UTC)
+                    today_kst = moment.astimezone(futures_kst).date()
+                    if futures_open(moment) or (closing_window(moment) and closed_on != today_kst):
+                        view = await futures.get(fresh=True)
                         await asyncio.to_thread(futures_history.record, view)
+                        if closing_window(moment):
+                            closed_on = today_kst
                     today = datetime.now(UTC).date()
                     if pruned_on != today:
                         dropped = await asyncio.to_thread(futures_history.prune)
@@ -414,11 +421,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                         pruned_on = today
                 except Exception:  # a failed pass must not stop the next one
                     log.exception("futures snapshot failed")
-                await asyncio.sleep(settings.futures_snapshot_min * 60)
+                await asyncio.sleep(seconds_to_next(datetime.now(UTC), every))
 
         refresher = asyncio.create_task(keep_listing_fresh())
         futures_task = (asyncio.create_task(snapshot_futures())
-                        if settings.futures_snapshot_min > 0 and getattr(futures, "rest", None) is not None else None)
+                        if interval_min(settings.futures_snapshot_min) > 0
+                        and getattr(futures, "rest", None) is not None else None)
         # the same switch as the news flow: off in tests and scripted runs
         credit_task = (asyncio.create_task(refresh_credit())
                        if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
@@ -808,7 +816,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         """#254: the futures investor flows per trading day (the day's last snapshot), newest first.
         History starts when the server began taking snapshots; ``supported: false`` without KIS."""
         rows = await asyncio.to_thread(futures_history.daily, days)
-        return {"supported": getattr(futures, "rest", None) is not None, "interval_min": settings.futures_snapshot_min,
+        return {"supported": getattr(futures, "rest", None) is not None,
+                "interval_min": interval_min(settings.futures_snapshot_min),
                 "days": rows}
 
     @app.get("/api/market/futures/intraday")
@@ -821,7 +830,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(422, "date must be YYYY-MM-DD") from None
         points = await asyncio.to_thread(futures_history.intraday, day)
         return {"supported": getattr(futures, "rest", None) is not None, "date": day.isoformat(),
-                "interval_min": settings.futures_snapshot_min, "market_open": futures_open(datetime.now(UTC)),
+                "interval_min": interval_min(settings.futures_snapshot_min), "market_open": futures_open(datetime.now(UTC)),
                 "points": points}
 
     @app.get("/api/bottom-zone")

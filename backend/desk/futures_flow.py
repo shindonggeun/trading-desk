@@ -314,9 +314,10 @@ class FuturesFlow:
         self._cache: tuple[float, float, dict] | None = None
         self._lock = asyncio.Lock()
 
-    async def get(self) -> dict:
+    async def get(self, fresh: bool = False) -> dict:
+        """The cached view; ``fresh`` fetches now (the #254 snapshots: no pre-open or 30 s old value)."""
         async with self._lock:
-            if self._cache and self._clock() - self._cache[0] < self._cache[1]:
+            if not fresh and self._cache and self._clock() - self._cache[0] < self._cache[1]:
                 return self._cache[2]
             value, ok = await self._fetch()
             now = self._now()

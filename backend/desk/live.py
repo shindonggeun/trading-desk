@@ -121,6 +121,15 @@ class Calendar:
             return False                       # a holiday on the calendar
         return day.opens <= now < day.closes
 
+    async def trading_day(self, market: str, day: date) -> bool | None:
+        """Whether ``day`` (the market's own date) trades at all: False on a weekend or holiday the
+        calendar shows, None when the calendar does not know (#250: off-hours sessions)."""
+        days = await self._load(market, day)
+        found = next((d for d in days or [] if d.day == day), None)
+        if found is None:
+            return False if days and any(d.day < day for d in days) and any(d.day > day for d in days) else None
+        return found.opens is not None and found.closes is not None
+
 
 async def is_open(calendar: Calendar | None, ticker: str, now: datetime | None = None) -> bool:
     """The stream's open/closed: the broker calendar when it knows the day, else ``market_open``."""

@@ -43,6 +43,7 @@ from . import (
     review,
     risk_regime,
     sector_news,
+    sessions,
     verdict,
     weekly_map,
 )
@@ -85,6 +86,8 @@ BOTTOM_NOTE_SEC = 4.0
 # #257: US pre / after / overnight trades on the board - a last trade this fresh still counts as live
 # (thin ETFs trade minutes apart off hours), and a newly watched ticker waits this long for its first
 OFF_HOURS_FRESH_SEC = 600.0
+# #250: a broker quote off hours counts as a trade only this far (as a fraction) off the last close
+OFF_HOURS_MOVE = 0.0001
 FIRST_TICK_WAIT_SEC = 2.0
 FIRST_TICK_POLL_SEC = 0.25
 FIRST_TICK_RETRY_SEC = 600.0     # a ticker the board waited for is not waited for again before this
@@ -1181,6 +1184,39 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         stream.want(ticker)
         return stream.latest(ticker, OFF_HOURS_FRESH_SEC)
 
+    async def _nxt_today(ticker: str):
+        """#250: a KRX stock's NXT / after-hours trade made today (KST): (price, traded at UTC), or
+        None - yesterday evening's trade read before 08:00 is not a live price."""
+        reader = getattr(estimator, "_nxt_trade", None)
+        if reader is None:
+            return None
+        try:
+            found = await reader(ticker[:-3])
+        except Exception as exc:  # noqa: BLE001 - Naver down: the estimate stands
+            log.info("NXT trade for %s failed: %s", ticker, exc)
+            return None
+        if not found:
+            return None
+        price, at = found[0], found[1]
+        if at.astimezone(sessions.KST).date() != datetime.now(UTC).astimezone(sessions.KST).date():
+            return None
+        return price, at
+
+    async def _toss_off_hours(ticker: str, close: float | None):
+        """#250: a US ticker's broker (Toss) quote off hours, taken only when it differs from the last
+        regular close - Toss gives no trade time, and a price equal to the close is the close."""
+        if not close:
+            return None
+        try:
+            q = await prices.quote(ticker)
+        except Exception as exc:  # noqa: BLE001 - no broker price: the estimate stands
+            log.info("off-hours broker quote for %s failed: %s", ticker, exc)
+            return None
+        broker_name = getattr(getattr(prices, "broker", None), "name", None)
+        if q.source != broker_name or abs(q.price / close - 1) < OFF_HOURS_MOVE:
+            return None
+        return q
+
     @app.get("/api/estimates")
     async def estimates(tickers: str):
         """The quote board (#123/#124): for each ticker the live price while its market is open,
@@ -1204,38 +1240,49 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 except Exception as exc:  # noqa: BLE001 - Binance or Yahoo down for this one
                     err = type(exc).__name__
                     log.warning("board estimate for %s failed: %s", ticker, exc)
-                is_open = est.market_state == "open" if est else await live.is_open(calendar, ticker)
-                row: dict = {"ticker": ticker, "close": est.last_close if est else None,
-                             "close_date": est.last_close_date if est else None,
+                # #250: one session answer; while anything trades the board shows a real price
+                session = await sessions.session(calendar, ticker)
+                if est and est.market_state == "open":
+                    session = "regular"          # the estimator's own calendar (special days) agrees
+                close = est.last_close if est else None
+                row: dict = {"ticker": ticker, "close": close,
+                             "close_date": est.last_close_date if est else None, "session": session,
                              "source": ({"kind": est.method, "contract": est.contract, "basis": est.basis,
                                          "multiple": est.multiple} if est else None)}
+
+                def live_row(price: float, source: str, at, change=None) -> dict:
+                    if change is None and close:
+                        change = round((price / close - 1) * 100, 2)
+                    return {**row, "state": "live", "price": price, "change_pct": change,
+                            "quote_source": source, "fetched_at": at}
+
                 if est and est.market_state == "nxt":
                     # #209: NXT trading (08:00-08:50, 15:40-20:00 KST) - its last trade is a real price
-                    return {**row, "state": "live", "price": est.estimate, "change_pct": est.change_pct,
-                            "quote_source": "nxt", "fetched_at": est.fetched_at}
-                if is_open:
+                    row["session"] = session if session in ("pre", "post") else "post"
+                    return live_row(est.estimate, "nxt", est.fetched_at, est.change_pct)
+                if session == "regular":
                     live.watch(prices, ticker)       # the board's tickers ride the KIS stream too
                     try:
                         q = await prices.quote(ticker)
-                        change = (round((q.price / est.last_close - 1) * 100, 2) if est and est.last_close else None)
-                        return {**row, "state": "live", "price": q.price, "change_pct": change,
-                                "quote_source": q.source, "fetched_at": q.fetched_at}
+                        return live_row(q.price, q.source, q.fetched_at)
                     except Exception as exc:  # noqa: BLE001 - fall back to the estimate below
                         log.warning("board quote for %s failed: %s", ticker, exc)
-                # #238: US pre / after market and the overnight (Korean daytime) session are real
-                # trading - a KIS trade beats the estimate; none yet (or no KIS) keeps the estimate
-                elif (kis_stream.market_of(ticker) == "US"
-                      and (session := kis_stream.us_session()) in ("pre", "post", "overnight")
-                      and (tick := _off_hours_trade(ticker)) is not None):
-                    change = (round((tick.price / est.last_close - 1) * 100, 2)
-                              if est and est.last_close else None)
-                    return {**row, "state": "live", "price": tick.price, "change_pct": change,
-                            "quote_source": "kis", "session": session, "fetched_at": tick.received_at}
+                elif session in ("pre", "post") and kis_stream.market_of(ticker) == "KR":
+                    # #250: any KRX stock trading on NXT / after hours - not only those with a contract
+                    if (nxt := await _nxt_today(ticker)) is not None:
+                        return live_row(nxt[0], "nxt", nxt[1].isoformat(timespec="seconds"))
+                elif session in ("pre", "post", "overnight") and kis_stream.market_of(ticker) == "US":
+                    # #238: a KIS trade beats the estimate; #250: without one, Toss's price when it has
+                    # moved off the close (a quote equal to the close is the close, not an off-hours trade)
+                    if (tick := _off_hours_trade(ticker)) is not None:
+                        return live_row(tick.price, "kis", tick.received_at)
+                    if (q := await _toss_off_hours(ticker, close)) is not None:
+                        return live_row(q.price, "toss", q.fetched_at)
                 if est:
                     return {**row, "state": "estimate", "price": est.estimate, "change_pct": est.change_pct,
-                            "fetched_at": est.fetched_at}
+                            "quote_source": "binance-estimate", "fetched_at": est.fetched_at}
                 return {**row, "state": "unavailable", "price": None, "change_pct": None, "error": err,
-                        "fetched_at": None}
+                        "quote_source": None, "fetched_at": None}
 
         return {"items": await asyncio.gather(*(one(t) for t in names))}
 

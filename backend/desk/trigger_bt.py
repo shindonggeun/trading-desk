@@ -12,6 +12,19 @@ the rest at T2, a bar that reaches both the stop and a target counted as the sto
 at the end of the look-ahead closed at the last close. R is each arm's own entry-to-stop, so the
 report also gives the result in the plan's ATR (what a fixed position earns) and the MAE.
 Yahoo keeps about 730 days of 60-minute bars: the sample is the last two years only.
+
+#239 stage 2 (entry confirmation): every arm also carries the plan's context - the side against the
+desk's direction call (desk.direction: with · neutral · against) and the market's selling phase
+(desk.risk_regime) - so the report can stack the conditions: ``FILTERS`` keep the arms where the
+trend agrees, where the market is not working against the side (a long while the selling runs, a
+short into its exhaustion), or both. The rows give each arm × filter, the held-out 30% and the base
+shares vs the leveraged products (desk.underlying) apart, with the win rate (R > 0) next to the R.
+Measured 2026-11-10 (swing basket, 60m bars 2024-11-15~, 10bp a side, held-out = last 30%):
+trigger alone 1618 fills, +0.051R (held-out 522, +0.103R), win 47%; + direction agrees 898 fills,
++0.082R (held-out 212, +0.105R); + market not against +0.033R (held-out +0.092R); both +0.064R
+(held-out 198, +0.107R). Over the same plans (skipped = 0): all 24 ATR → direction 47 ATR on the
+whole sample, but 16.7 → 17.0 ATR held-out - the gain is in the training part, the market filter
+loses. Neither is adopted (the held-out did not improve); the trigger stays the entry (PREFERRED).
 """
 
 from __future__ import annotations
@@ -19,7 +32,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 
-from . import backtest, horizons, playbook, trigger
+from . import backtest, horizons, playbook, trigger, underlying
 
 ENTRY_LOWER_BARS = {"60m": 70, "5m": 156, "1m": 120}     # the entry window: ~10 sessions / 2 sessions / 2 hours
 
@@ -36,6 +49,23 @@ class Arm:
     mae_atr: float | None = None
     took_t1: bool = False
     risk_atr: float | None = None
+    direction: str = "neutral"        # the side vs desk.direction's call: with | neutral | against
+    phase: str | None = None          # desk.risk_regime's phase at the plan (None: no market score)
+    leveraged: bool = False
+
+
+def _market_ok(a: Arm) -> bool:
+    """The market is not against the side: no long while the selling runs, no short into its exhaustion."""
+    return not ((a.side == "long" and a.phase == "selling") or (a.side == "short" and a.phase == "exhausting"))
+
+
+# #239 stage 2: the conditions stacked on an arm (the trigger itself is the arm)
+FILTERS = {
+    "all": lambda a: True,
+    "dir": lambda a: a.direction == "with",
+    "mkt": _market_ok,
+    "dir+mkt": lambda a: a.direction == "with" and _market_ok(a),
+}
 
 
 def _exit(bars: list[dict], up: bool, entry: float, stop: float, t1: float | None, t2: float | None) -> tuple[float, bool, float]:
@@ -87,7 +117,8 @@ def _touch(side: dict, bars: list[dict], up: bool) -> tuple[float | None, str | 
 def plan_arms(snap: backtest.Snapshot, primary: list[dict], lower: list[dict], h: horizons.Horizon,
               bps: float) -> list[Arm]:
     pb = playbook.build(snap.sr, snap.daily, snap.window, h, now=snap.plan_at, today=snap.today, vix=snap.vix,
-                        calibrate=False)                # #147: not graded by its own results
+                        calibrate=False,                # #147: not graded by its own results
+                        market=snap.risk)               # #166: the direction score reads the market too
     if not pb:
         return []
     end_t = min(snap.t + backtest.LOOKAHEAD[h.id], len(primary) - 1)
@@ -100,20 +131,29 @@ def plan_arms(snap: backtest.Snapshot, primary: list[dict], lower: list[dict], h
     if not atr:
         return []
     out = []
+    phase = snap.risk.get("phase") if isinstance(snap.risk, dict) else None
+    lev = underlying.leverage_of(snap.ticker) is not None
     for side_name, up in (("long", True), ("short", False)):
         side = pb[side_name]
         if side.get("setup") in (None, "none") or not side.get("zone"):
             continue
+        ctx = {"direction": side.get("direction") or "neutral", "phase": phase, "leveraged": lev}
         price, at = _touch(side, window, up)
-        out.append(_arm("touch", snap.ticker, snap.day, side_name, up, price, side.get("stop"), at, side, rest, atr, bps))
+        out.append(_tag(_arm("touch", snap.ticker, snap.day, side_name, up, price, side.get("stop"), at, side, rest,
+                             atr, bps), ctx))
         res = trigger.scan(window, side, up, atr)
         fill = res and res["state"] == "triggered" and res["fill"]
         t1 = next((x["price"] for x in side.get("targets") or [] if x.get("role") == "t1"), None)
         if fill and t1 is not None and (fill >= t1 if up else fill <= t1):
             fill = None                                      # the turn ran to T1 before it triggered
-        out.append(_arm("trigger", snap.ticker, snap.day, side_name, up, fill or None,
-                        res and res["invalidation"], res and res["filled_at"], side, rest, atr, bps))
+        out.append(_tag(_arm("trigger", snap.ticker, snap.day, side_name, up, fill or None,
+                             res and res["invalidation"], res and res["filled_at"], side, rest, atr, bps), ctx))
     return out
+
+
+def _tag(a: Arm, ctx: dict) -> Arm:
+    a.direction, a.phase, a.leveraged = ctx["direction"], ctx["phase"], ctx["leveraged"]
+    return a
 
 
 def tally(arms: list[Arm]) -> dict:
@@ -126,11 +166,12 @@ def tally(arms: list[Arm]) -> dict:
             "expectancy_r": mean(a.r for a in filled), "atr_per_fill": mean(a.atr_pnl for a in filled),
             "atr_per_plan": round(sum(a.atr_pnl or 0 for a in filled) / len(arms), 3) if arms else None,
             "t1_rate": round(sum(a.took_t1 for a in filled) / len(filled), 3) if filled else None,
+            "win_rate": round(sum((a.r or 0) > 0 for a in filled) / len(filled), 3) if filled else None,
             "mae_atr": mean(a.mae_atr for a in filled), "risk_atr": mean(a.risk_atr for a in filled)}
 
 
 def run(tickers: list[str], horizon: str = "swing", start: str | None = None, bps: float = backtest.COST_BPS,
-        fetch_lower=None, fetch=None, progress=None) -> dict:
+        fetch_lower=None, fetch=None, progress=None, market=True) -> dict:
     """{"horizon", "lower", "rows": {arm: tally, f"{arm}:{side}": ..., f"{arm}:valid": ...}, "notes"}."""
     from .prices import HISTORY_LIMIT_DAYS, yahoo_candles
 
@@ -144,12 +185,20 @@ def run(tickers: list[str], horizon: str = "swing", start: str | None = None, bp
     fetch = fetch or backtest.history
     fetch_lower = fetch_lower or (lambda t: [asdict(b) for b in yahoo_candles(t, lower_iv, backtest._count_for(lower_iv, limit))])
     notes = [f"하위 봉 {lower_iv} 은 야후에서 약 {limit}일까지만 받을 수 있어 {start} 부터만 비교합니다"]
+    if market is True:
+        try:
+            market = backtest.market_risk(start, list(tickers))
+            market = market if market.series else None
+        except Exception as exc:  # noqa: BLE001 - the filters read "no score" as the market not against
+            market = None
+            notes.append(f"시장 투매 지표를 받지 못해 mkt 조건이 모두 통과 — {type(exc).__name__}: {exc}")
     arms: list[Arm] = []
     for ticker in tickers:
         try:
             primary, secondary, _ = fetch(ticker, h, start)
             lower = fetch_lower(ticker)
-            for snap in backtest.snapshots(ticker, h, primary, secondary, start, None, None, progress):
+            for snap in backtest.snapshots(ticker, h, primary, secondary, start, None, None, progress,
+                                           market=market or None):
                 arms += plan_arms(snap, primary, lower, h, bps)
         except Exception as exc:  # noqa: BLE001 - one ticker failing leaves the others
             notes.append(f"{ticker}: 건너뜀 — {type(exc).__name__}: {exc}")
@@ -163,17 +212,35 @@ def run(tickers: list[str], horizon: str = "swing", start: str | None = None, bp
         if cut:
             rows[f"{name}:train"] = tally([a for a in mine if a.at < cut])
             rows[f"{name}:valid"] = tally([a for a in mine if a.at >= cut])
+    rows.update(stacked(arms, cut))
     return {"horizon": h.id, "lower": lower_iv, "start": start, "tickers": list(tickers), "cost_bps": bps,
             "rows": rows, "notes": notes}
+
+
+def stacked(arms: list[Arm], cut: str | None) -> dict:
+    """#239 stage 2: ``{arm}|{filter}`` for each FILTERS entry, then the same on the held-out part
+    (``…:valid``) and on the base shares and the leveraged products apart (``…:base`` · ``…:lev``)."""
+    rows = {}
+    for name in ("touch", "trigger"):
+        mine = [a for a in arms if a.arm == name]
+        for f, keep in FILTERS.items():
+            kept = [a for a in mine if keep(a)]
+            rows[f"{name}|{f}"] = tally(kept)
+            if cut:
+                rows[f"{name}|{f}:valid"] = tally([a for a in kept if a.at >= cut])
+            rows[f"{name}|{f}:base"] = tally([a for a in kept if not a.leveraged])
+            rows[f"{name}|{f}:lev"] = tally([a for a in kept if a.leveraged])
+    return rows
 
 
 def print_report(rep: dict, out=None) -> None:
     import sys
     out = out or sys.stdout
     print(f"{rep['horizon']} plans, entries on {rep['lower']} bars from {rep['start']}: {', '.join(rep['tickers'])}", file=out)
-    cols = ("plans", "filled", "fill_rate", "expectancy_r", "atr_per_fill", "atr_per_plan", "t1_rate", "mae_atr", "risk_atr")
-    print("row".ljust(16) + "".join(c.rjust(13) for c in cols), file=out)
+    cols = ("plans", "filled", "fill_rate", "win_rate", "expectancy_r", "atr_per_fill", "atr_per_plan", "t1_rate",
+            "mae_atr", "risk_atr")
+    print("row".ljust(24) + "".join(c.rjust(13) for c in cols), file=out)
     for name, row in rep["rows"].items():
-        print(name.ljust(16) + "".join(("-" if row[c] is None else str(row[c])).rjust(13) for c in cols), file=out)
+        print(name.ljust(24) + "".join(("-" if row[c] is None else str(row[c])).rjust(13) for c in cols), file=out)
     for n in rep["notes"]:
         print(f"- {n}", file=out)

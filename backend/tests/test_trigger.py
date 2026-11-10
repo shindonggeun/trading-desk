@@ -193,3 +193,23 @@ def test_the_fill_bar_counts_its_stop_but_not_a_target_that_may_have_come_first(
     assert not took and out == 100.8                       # T1's 102 on the fill bar was before the fill
     out, took, _ = trigger_bt._exit(_bars([(100.5, 100.6, 97.5, 98.0)]), True, 100.0, 98.0, 102.0, 104.0)
     assert out == 98.0 and not took
+
+
+def test_stacked_filters_keep_the_trend_and_market_agreeing_arms():
+    """#239 stage 2: each arm carries the direction call and the selling phase; the rows stack them."""
+    A = trigger_bt.Arm
+
+    def arm(side, direction, phase, r, at="2025-06-01", lev=False, name="trigger"):
+        return A("X", at, side, name, True, r=r, direction=direction, phase=phase, leveraged=lev)
+    arms = [arm("long", "with", None, 1.0), arm("long", "against", None, -1.0),
+            arm("long", "with", "selling", -0.5),                 # a long while the selling runs
+            arm("short", "with", "exhausting", -1.0),             # a short into the exhaustion
+            arm("short", "with", "selling", 0.8, lev=True), arm("long", "neutral", None, 0.2, at="2025-01-01")]
+    rows = trigger_bt.stacked(arms, "2025-03-01")
+    assert rows["trigger|all"]["filled"] == 6
+    assert rows["trigger|dir"]["filled"] == 4
+    assert rows["trigger|mkt"]["filled"] == 4
+    both = rows["trigger|dir+mkt"]
+    assert both["filled"] == 2 and both["expectancy_r"] == 0.9 and both["win_rate"] == 1.0
+    assert rows["trigger|dir+mkt:lev"]["filled"] == 1 and rows["trigger|dir+mkt:base"]["filled"] == 1
+    assert rows["trigger|all:valid"]["filled"] == 5 and rows["touch|all"]["plans"] == 0

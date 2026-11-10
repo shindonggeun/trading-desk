@@ -18,6 +18,7 @@ type Row = { ticker: string; name: string; z: BottomZone | null };
 /** 대시보드 "인생 타점" 구역(#241): 주요 지수는 늘, 즐겨찾기는 "접근" 이상인 것만 한 줄씩. */
 export default function BottomZoneBrief() {
   const [rows, setRows] = useState<Row[] | null>(null);
+  const [done, setDone] = useState(false);
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -26,12 +27,16 @@ export default function BottomZoneBrief() {
         .map((f) => ({ ticker: f.ticker, name: f.name ?? f.ticker }))];
       const out: Row[] = [];
       for (let i = 0; i < wanted.length; i += PARALLEL) {
+        if (!alive) return;
         const part = await Promise.all(wanted.slice(i, i + PARALLEL).map((w) =>
           api.bottomZone(w.ticker).then((z) => ({ ...w, z }), () => ({ ...w, z: null }))));
         out.push(...part);
         if (alive) setRows([...out]);
       }
-      if (alive) setRows(out);
+      if (alive) {
+        setRows(out);
+        setDone(true);
+      }
     })();
     return () => { alive = false; };
   }, []);
@@ -50,7 +55,7 @@ export default function BottomZoneBrief() {
               <BottomStageBadge z={r.z as BottomZone} />
               <span className="num small">{r.z?.score}점</span>
               <span className="num small muted">−{r.z?.drawdown_pct}%</span>
-              {r.z?.ladder && r.z.ladder.length > 0 && (
+              {r.z?.ladder && r.z.ladder.length > 0 && RANK[r.z.stage ?? "none"] >= RANK.approach && (
                 <span className="small muted bz-row-ladder">
                   줍줍 {r.z.ladder.map((s) => price(s.price)).join(" → ")}
                 </span>
@@ -59,7 +64,8 @@ export default function BottomZoneBrief() {
           </li>
         ))}
       </ul>
-      {favCount > 0 && favShown === 0 && <p className="muted small">즐겨찾기 중 "접근" 이상인 종목은 지금 없습니다.</p>}
+      {!done && <p className="muted small">즐겨찾기 종목을 살펴보는 중…</p>}
+      {done && favCount > 0 && favShown === 0 && <p className="muted small">즐겨찾기 중 "접근" 이상인 종목은 지금 없습니다.</p>}
       <p className="muted small">주봉 · 월봉 기준 장기 바닥권 판단(규칙) — 예측이 아닙니다. 종목을 누르면 차트에서 분할 매수 선을 봅니다.</p>
     </div>
   );

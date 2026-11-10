@@ -1358,3 +1358,4 @@ a.wmb-row:hover { border-color: var(--accent); }
 .bz-row:hover { background: var(--hover, rgba(127, 127, 127, 0.08)); }
 .bz-name { font-weight: 600; min-width: 7em; }
 .bz-row-ladder { flex-basis: 100%; overflow-wrap: anywhere; }
+.bz-ladder-ref { opacity: 0.6; }

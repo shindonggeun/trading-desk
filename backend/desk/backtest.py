@@ -28,7 +28,8 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
-from . import horizons, outcome, playbook, playbook_live, risk_regime, sr, summary, value_swing
+from . import exits, horizons, outcome, playbook, playbook_live, risk_regime, sr, summary, value_swing
+from .underlying import leverage_of
 
 VERSION = 1
 BASKET = ("SOXL", "TQQQ", "NVDA", "QQQ", "005930.KS", "000660.KS")
@@ -107,6 +108,8 @@ class Trade:
     direction: str = "neutral"        # with | against | neutral: the side against desk.direction (#166)
     held_bars: int | None = None      # primary bars from the first fill to the exit (the look-ahead's end if open)
     reach: int | None = None          # targets T1..Tn reached in order before the original stop (#167)
+    exits: dict | None = None         # r_net under each exit rule on the same fills (#239, desk.exits)
+    kind: str = "stock"               # stock | leveraged (#239: the product's own record)
 
 
 @dataclass
@@ -137,6 +140,7 @@ class Report:
     risk_gate: dict = field(default_factory=dict)   # the same plans with the #146 rule on / off
     equity: dict = field(default_factory=dict)      # cumulative R by plan day (#192, ``equity``)
     value_swing: dict = field(default_factory=dict)  # the oversold swing buy on its own (#167)
+    exits: dict = field(default_factory=dict)        # the exit rules side by side (#239, ``exit_report``)
 
 
 # ---------------------------------------------------------------- data
@@ -344,7 +348,15 @@ def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: C
                                                        res.get("exited_at"), atr)
             trade.held_bars, trade.reach = _held_and_reach(direction, future, side, res.get("first_fill_at"),
                                                            res.get("exited_at"))
+            if res["status"] in SETTLED + MARKED and side.get("targets"):
+                alt = exits.replay(direction, future, res.get("first_fill_at"), avg, side["stop"],
+                                   side["targets"][0]["price"], atr, res.get("r"))
+                if alt is not None:
+                    added = alt.pop("added")
+                    trade.exits = {k: (round(v * res["filled_shares"] - cost_r * (1 + (added if k == "pyramid" else 0)), 3)
+                                       if v is not None else None) for k, v in alt.items()}
         trade.risk_phase = (snap.risk or {}).get("phase") or "unknown"
+        trade.kind = "leveraged" if leverage_of(snap.ticker) else "stock"
         out.append(trade)
     return out
 
@@ -438,6 +450,34 @@ def summarize(trades: list[Trade], h: horizons.Horizon, cut: str | None) -> dict
         "by_risk": _by(trades, lambda t: f"{t.side}:{t.setup}:{t.risk_phase}"),
         "split": {"cut": cut, "embargo_days": EMBARGO_DAYS[h.id], "train": aggregate(train), "valid": aggregate(valid)},
     }
+
+
+def _exit_stats(rs: list[float]) -> dict:
+    if not rs:
+        return {"n": 0, "win_rate": None, "avg_r": None, "median_r": None, "big_share": None, "losing_streak": 0}
+    streak = best = 0
+    for r in rs:
+        streak = streak + 1 if r < 0 else 0
+        best = max(best, streak)
+    return {"n": len(rs), "win_rate": round(sum(1 for r in rs if r > 0) / len(rs), 3), "avg_r": _mean(rs),
+            "median_r": _median(rs), "big_share": round(sum(1 for r in rs if r >= exits.BIG_R) / len(rs), 3),
+            "losing_streak": best}
+
+
+def exit_report(trades: list[Trade], cut: str | None, h: horizons.Horizon) -> dict:
+    """#239: each exit rule on the same filled trades - win rate, average / median R after costs, the
+    share of big wins (>= exits.BIG_R) and the longest losing run - for stocks and leveraged products,
+    on the training dates and the held-out ones. A rule is only worth turning on if it beats ``fixed``
+    on the held-out dates."""
+    replayed = sorted((t for t in trades if t.exits), key=lambda t: (t.at, t.ticker))
+    train, valid = split(replayed, cut, h)
+    out: dict = {"cut": cut, "rules": list(exits.VARIANTS)}
+    for kind in ("all", "stock", "leveraged"):
+        pick = (lambda ts, k=kind: [t for t in ts if k == "all" or t.kind == k])
+        out[kind] = {v: {"train": _exit_stats([t.exits[v] for t in pick(train) if t.exits.get(v) is not None]),
+                         "valid": _exit_stats([t.exits[v] for t in pick(valid) if t.exits.get(v) is not None])}
+                     for v in exits.VARIANTS}
+    return out
 
 
 def losing_streak(trades: list[Trade]) -> int:
@@ -669,6 +709,7 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
     report = Report(VERSION, h.id, list(tickers), start, end, asdict(costs), **summarize(trades, h, cut), notes=notes,
                     generated_at=datetime.now(UTC).isoformat(timespec="seconds"))
     report.value_swing = value_swing_report(trades, cut, h)
+    report.exits = exit_report(trades, cut, h)
     if risk:
         report.risk_gate = {"on": gate_view(trades, cut, h),
                             "off": gate_view(evaluate(snaps, h, costs, gate=False), cut, h)}
@@ -726,6 +767,14 @@ def print_summary(report: Report, out=None) -> None:
                       f"{_fmt(pair['dip_catch']['expectancy_r'])}", file=out)
         for score, agg in vs["by_score"].items():
             print(f"value_swing score {score}: {_fmt(agg['expectancy_r'])} (settled {agg['settled']})", file=out)
+    ex = report.exits
+    for kind in ("stock", "leveraged") if ex else ():
+        for rule in ex["rules"]:
+            tr, va = ex[kind][rule]["train"], ex[kind][rule]["valid"]
+            if tr["n"] or va["n"]:
+                print(f"exit {kind}:{rule}".ljust(28) + f"valid avg {_fmt(va['avg_r'])}R win {_fmt(va['win_rate'])} "
+                      f"big {_fmt(va['big_share'])} streak {va['losing_streak']} (n {va['n']}) | "
+                      f"train avg {_fmt(tr['avg_r'])}R (n {tr['n']})", file=out)
     for row in report.sweep[:12]:
         print(f"sweep {row['param']}={row['value']}{' (now)' if row['current'] else ''}: "
               f"train {_fmt(row['train']['expectancy_r'])} / valid {_fmt(row['valid']['expectancy_r'])}"

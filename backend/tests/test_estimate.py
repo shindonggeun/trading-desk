@@ -645,3 +645,30 @@ def test_a_quiet_subscription_does_not_hold_the_board(db_url, monkeypatch):
         started = time.monotonic()
         row = client.get("/api/estimates?tickers=SOXS").json()["items"][0]
         assert row["state"] == "estimate" and time.monotonic() - started < 1.5
+
+
+def test_a_ticker_that_never_subscribes_is_waited_for_once_not_every_poll(db_url, monkeypatch):
+    """#257 review: a stream that is down (or a refused ticker) must not slow every board poll."""
+    import time
+
+    from desk import live
+    from desk.broker import kis_stream
+
+    async def closed(_cal, ticker, now=None):
+        return False
+
+    monkeypatch.setattr(live, "is_open", closed)
+    monkeypatch.setattr(kis_stream, "us_session", lambda now=None: "overnight")
+    fake = _FakeKis()
+    fake.connected = False
+    fake.subscribed = lambda t: False                        # never gets on the socket
+    monkeypatch.setattr(kis_stream, "make", lambda settings: fake)
+    with _client(db_url, _wide()) as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        started = time.monotonic()
+        assert client.get("/api/estimates?tickers=SOXS").json()["items"][0]["state"] == "estimate"
+        first = time.monotonic() - started
+        started = time.monotonic()
+        assert client.get("/api/estimates?tickers=SOXS").json()["items"][0]["state"] == "estimate"
+        again = time.monotonic() - started
+    assert first >= 1.5 and again < 1.0

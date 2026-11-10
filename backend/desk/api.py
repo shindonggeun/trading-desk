@@ -84,6 +84,7 @@ BOTTOM_NOTE_SEC = 4.0
 OFF_HOURS_FRESH_SEC = 600.0
 FIRST_TICK_WAIT_SEC = 2.0
 FIRST_TICK_POLL_SEC = 0.25
+FIRST_TICK_RETRY_SEC = 600.0     # a ticker the board waited for is not waited for again before this
 KST = timezone(timedelta(hours=9))   # Toss dates (order history from/to) are KST
 REVIEW_CACHE_SEC = 60
 REVIEW_FAIL_CACHE_SEC = 30
@@ -1075,22 +1076,39 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(503, f"no estimate for {ticker}") from None
         return result.to_dict() if result else {"ticker": ticker, "supported": False}
 
-    async def _off_hours_trade(ticker: str):
-        """#257: a KIS trade of a US ticker off hours - up to OFF_HOURS_FRESH_SEC old (thin ETFs trade
-        minutes apart); a ticker just subscribed gets FIRST_TICK_WAIT_SEC for its first trade, so the
-        board's first load is not all estimates."""
+    first_waits: dict[str, float] = {}     # #257: when the board last waited for a ticker's first trade
+
+    async def _first_trades(names: list[str]) -> None:
+        """#257: off hours, ask the KIS stream for the board's US tickers and - once per ticker every
+        FIRST_TICK_RETRY_SEC - wait up to FIRST_TICK_WAIT_SEC in all for the new ones' first trades,
+        so the board's first load is not all estimates. A ticker that never subscribes (stream down,
+        refused, over the limit) is not waited for again on every poll; nothing holds the board's gate."""
+        stream = getattr(prices, "stream", None)
+        if stream is None or kis_stream.us_session() not in ("pre", "post", "overnight"):
+            return
+        now = time.monotonic()
+        us = [t for t in names if kis_stream.market_of(t) == "US"]
+        new = [t for t in us if not stream.subscribed(t) and now - first_waits.get(t, -1e9) > FIRST_TICK_RETRY_SEC]
+        for t in us:
+            stream.want(t)
+        if len(first_waits) > 512:
+            first_waits.clear()
+        for t in new:
+            first_waits[t] = now
+        waited = 0.0
+        while new and waited < FIRST_TICK_WAIT_SEC:
+            await asyncio.sleep(FIRST_TICK_POLL_SEC)
+            waited += FIRST_TICK_POLL_SEC
+            new = [t for t in new if stream.latest(t, OFF_HOURS_FRESH_SEC) is None]
+
+    def _off_hours_trade(ticker: str):
+        """#257: a KIS trade of a US ticker off hours, up to OFF_HOURS_FRESH_SEC old (thin ETFs trade
+        minutes apart)."""
         stream = getattr(prices, "stream", None)
         if stream is None:
             return None
-        new = not stream.subscribed(ticker)     # only a fresh subscription waits; a quiet one does not
         stream.want(ticker)
-        tick = stream.latest(ticker, OFF_HOURS_FRESH_SEC)
-        waited = 0.0
-        while tick is None and new and waited < FIRST_TICK_WAIT_SEC:
-            await asyncio.sleep(FIRST_TICK_POLL_SEC)
-            waited += FIRST_TICK_POLL_SEC
-            tick = stream.latest(ticker, OFF_HOURS_FRESH_SEC)
-        return tick
+        return stream.latest(ticker, OFF_HOURS_FRESH_SEC)
 
     @app.get("/api/estimates")
     async def estimates(tickers: str):
@@ -1105,6 +1123,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         gate = asyncio.Semaphore(BOARD_PARALLEL)
+        await _first_trades(names)
 
         async def one(ticker: str) -> dict:
             async with gate:
@@ -1136,7 +1155,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 # trading - a KIS trade beats the estimate; none yet (or no KIS) keeps the estimate
                 elif (kis_stream.market_of(ticker) == "US"
                       and (session := kis_stream.us_session()) in ("pre", "post", "overnight")
-                      and (tick := await _off_hours_trade(ticker)) is not None):
+                      and (tick := _off_hours_trade(ticker)) is not None):
                     change = (round((tick.price / est.last_close - 1) * 100, 2)
                               if est and est.last_close else None)
                     return {**row, "state": "live", "price": tick.price, "change_pct": change,

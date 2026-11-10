@@ -18,6 +18,7 @@ const PREFS = "desk.futuresHistory.v1";
 const DAYS = 20;
 // 장중 자세히 보기는 스냅샷 간격(서버 설정)마다, 최소 1분 · 장 밖에는 다시 부르지 않는다
 const MIN_REFRESH_MS = 60_000;
+const CLOSED_REFRESH_MS = 600_000;
 
 function loadPrefs(): Prefs {
   const base: Prefs = { mode: "brief", on: { foreign: true, institution: true, individual: true }, table: false };
@@ -160,18 +161,30 @@ export default function FuturesHistoryView() {
     if (prefs.mode === "brief") {
       api.marketFuturesDaily(DAYS).then((d) => alive && setDaily(d), fail);
     } else {
-      const load = () => api.marketFuturesIntraday().then(async (d) => {
-        // 오늘 기록이 없으면(주말 · 장 전) 기록이 있는 마지막 거래일의 장중을 보여 준다
-        if (d.supported && d.points.length === 0 && !d.market_open) {
+      let open = false;          // 마지막으로 받은 장 상태 — 실패해도 이것으로 다음 예약을 정한다
+      let every = 15;
+      const next = () => {
+        window.clearTimeout(timer);
+        // 장중이면 다음 스냅샷 무렵, 장 밖에도 가끔(장 전에 열어 둔 화면이 개장 뒤 따라오게)
+        timer = window.setTimeout(load, open ? Math.max(MIN_REFRESH_MS, every * 60_000) : CLOSED_REFRESH_MS);
+      };
+      const load = () => api.marketFuturesIntraday().then(async (today) => {
+        open = today.market_open;
+        every = today.interval_min || every;
+        let d = today;
+        // 오늘 기록이 아직 없으면(주말 · 휴장일 · 장 전 · 첫 스냅샷 전) 마지막 거래일의 장중을 보여 준다
+        if (d.supported && d.points.length === 0) {
           const last = (await api.marketFuturesDaily(1).catch(() => null))?.days[0];
           if (last && last.date !== d.date) d = await api.marketFuturesIntraday(last.date).catch(() => d);
         }
         if (!alive) return;
         setIntraday(d);
-        window.clearTimeout(timer);
-        // 장중이면 다음 스냅샷 무렵에 다시
-        if (d.market_open) timer = window.setTimeout(load, Math.max(MIN_REFRESH_MS, d.interval_min * 60_000));
-      }, fail);
+        setFailed(null);
+        next();
+      }, (e) => {
+        fail(e);
+        if (alive) next();       // 일시 오류(배포 재시작 등) 뒤에도 갱신을 이어 간다
+      });
       load();
     }
     return () => {
@@ -229,7 +242,7 @@ export default function FuturesHistoryView() {
 
       {view?.supported && prefs.mode === "brief" && (
         <>
-          <p className="muted small futh-caption">최근 {dailyRows.length}거래일 누적 순매수(계약, 날마다 장 마감 값)</p>
+          <p className="muted small futh-caption">최근 {dailyRows.length}거래일 누적 순매수(계약, 날마다 마지막 기록 · 오늘은 진행 중)</p>
           <Lines rows={dailyRows} on={prefs.on} what="선물 일자별 누적 순매수" unitWord="그날" />
           {dailyRows.length > 0 && (
             <button type="button" className="link small" aria-expanded={prefs.table} onClick={() => update({ table: !prefs.table })}>
@@ -263,7 +276,7 @@ export default function FuturesHistoryView() {
       {view?.supported && prefs.mode === "detail" && intraday && (
         <>
           <p className="muted small futh-caption">
-            {intraday.date} 장중 누적 순매수(계약) · {intraday.interval_min}분 간격
+            {intraday.date} 장중 누적 순매수(계약){intraday.interval_min > 0 ? ` · ${intraday.interval_min}분 간격` : ""}
             {intraday.market_open ? " · 장중 자동 갱신" : " · 장 마감"}
           </p>
           <Lines rows={intraRows} on={prefs.on} what="선물 장중 누적 순매수" unitWord="" />

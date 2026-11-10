@@ -114,10 +114,18 @@ def stories(items: list[dict]) -> list[list[dict]]:
     return [m for _, m in sorted(groups, key=lambda g: -len(g[1]))]
 
 
+def _has(text: str, word: str) -> bool:
+    """English words whole ("sues" is not in "issues", "ban" not in "bank"); Korean as a substring
+    (particles attach to the word)."""
+    if re.search(r"[가-힣]", word):
+        return word in text
+    return re.search(rf"(?<![a-z0-9]){re.escape(word)}(?:e?s)?(?![a-z0-9])", text) is not None
+
+
 def tag_of(titles: list[str]) -> str | None:
     text = " ".join(titles).lower()
     for tag, words in TAGS:
-        if any(w in text for w in words):
+        if any(_has(text, w) for w in words):
             return tag
     return None
 
@@ -129,13 +137,13 @@ def summarise(topic: Topic, sector: Sector, items: list[dict], now: datetime) ->
     newest = sorted(last or dated, key=lambda i: i["seen"], reverse=True)
     grouped = stories(newest)
     top = grouped[0] if grouped else []
-    issue = ratio is not None and ratio >= SPIKE and len(last) >= MIN_24H
     tag = tag_of([i["title"] for i in top]) if top else None
     heads = top[:HEADLINES] + [i for g in grouped[1:] for i in g[:1]][:max(0, HEADLINES - len(top[:HEADLINES]))]
     return {"id": topic.id, "label": topic.label, "sector": sector.id, "lang": topic.lang,
             "tickers": list(topic.tickers), "articles_24h": len(last), "spike": ratio, "spike_raw": ratio,
             "spike_kind": "raw-share",
-            "saturated": len(dated) >= 95 and len(last) == len(dated), "issue": issue,
+            # an issue is decided against the other topics (``rebase``), never on one feed's share
+            "saturated": len(dated) >= 95 and len(last) == len(dated), "issue": False,
             "tag": tag, "tag_ko": TAG_KO.get(tag) if tag else None, "story_size": len(top),
             "headlines": [{"title": i["title"], "url": i["url"], "domain": i.get("domain"),
                            "seen": i["seen"].isoformat()} for i in heads],
@@ -157,14 +165,16 @@ def rebase(topics: dict[str, dict]) -> None:
     own share. Like desk.macro_news's fallback, a topic is measured against the others: its share
     over the median share (never below an even seventh - a quiet day must not inflate the rest)."""
     raws = [t["spike_raw"] for t in topics.values() if t.get("spike_raw") is not None]
-    if len(raws) < 4:
+    if len(raws) < 4:            # too few to compare (a pass mostly refused): no issues, no ratio
+        for k, t in topics.items():
+            topics[k] = {**t, "spike": None, "spike_kind": None, "issue": False}
         return
     base = max(median(raws), 1.0)
-    for t in topics.values():
+    for k, t in topics.items():
         raw = t.get("spike_raw")
         rel = round(raw / base, 2) if raw is not None else None
-        t.update(spike=rel, spike_kind="topics",
-                 issue=rel is not None and rel >= SPIKE and t["articles_24h"] >= MIN_24H)
+        topics[k] = {**t, "spike": rel, "spike_kind": "topics",       # new dicts: a reader keeps the old ones
+                     "issue": rel is not None and rel >= SPIKE and t["articles_24h"] >= MIN_24H}
 
 
 class Cache:

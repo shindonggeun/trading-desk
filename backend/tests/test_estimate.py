@@ -557,10 +557,47 @@ def test_the_board_shows_an_open_nxt_trade_as_a_live_price(db_url):
 
 # --- #238: US pre / after market and the overnight session are real trades on KIS ----------------
 
+class _FakeKis:
+    """The KIS stream as the board sees it (#238/#257): trades by ticker with their age."""
+
+    def __init__(self):
+        self.connected = True
+        self.trades: dict = {}            # ticker -> (price, age seconds)
+        self.subs: set = set()
+        self.on_want = None               # called with the ticker on its first want (a trade arriving)
+
+    def want(self, ticker):
+        if ticker not in self.subs:
+            self.subs.add(ticker)
+            if self.on_want:
+                self.on_want(ticker)
+
+    def subscribed(self, ticker):
+        return ticker in self.subs
+
+    def latest(self, ticker, max_age=60.0):
+        from desk.broker.kis_stream import Tick
+        hit = self.trades.get(ticker)
+        if not hit or ticker not in self.subs or hit[1] > max_age:
+            return None
+        return Tick(hit[0], None, "2026-11-09T07:49:00+00:00")
+
+    async def run(self):
+        import asyncio
+        await asyncio.Event().wait()
+
+    async def aclose(self):
+        pass
+
+    def status(self):
+        return {}
+
+
 def test_off_hours_us_trades_from_kis_are_live_and_without_one_the_estimate_stays(db_url, monkeypatch):
+    import threading
+
     from desk import live
     from desk.broker import kis_stream
-    from desk.prices import Quote
 
     est = _wide()
 
@@ -569,13 +606,10 @@ def test_off_hours_us_trades_from_kis_are_live_and_without_one_the_estimate_stay
 
     monkeypatch.setattr(live, "is_open", closed)
     monkeypatch.setattr(kis_stream, "us_session", lambda now=None: "overnight")
-    streaming = {"SOXS"}                                     # a KIS trade came in for SOXS only
-    monkeypatch.setattr(live, "watch", lambda prices, t: t in streaming)
-
-    async def quote(self, t):
-        return Quote(t, 12.0, "USD", "kis", "2026-11-09T07:49:00+00:00")
-
-    monkeypatch.setattr("desk.prices.PriceSource.quote", quote)
+    fake = _FakeKis()
+    monkeypatch.setattr(kis_stream, "make", lambda settings: fake)
+    # #257: the first trade of a new subscription arrives a moment after the board asks for it
+    fake.on_want = lambda t: threading.Timer(0.3, lambda: fake.trades.setdefault(t, (12.0, 0))).start()         if t == "SOXS" else None
     with _client(db_url, est) as client:
         client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
         rows = {r["ticker"]: r for r in client.get("/api/estimates?tickers=SOXS,CL=F").json()["items"]}
@@ -583,8 +617,31 @@ def test_off_hours_us_trades_from_kis_are_live_and_without_one_the_estimate_stay
         assert (soxs["state"], soxs["price"], soxs["quote_source"], soxs["session"]) == ("live", 12.0, "kis", "overnight")
         assert soxs["change_pct"] == round((12.0 / 10.0 - 1) * 100, 2)
         assert rows["CL=F"]["state"] == "estimate"            # not a US stock: no KIS stream
-        streaming.clear()
+        fake.trades["SOXS"] = (12.5, 300)                     # a thin ETF: last trade 5 minutes ago
+        assert client.get("/api/estimates?tickers=SOXS").json()["items"][0]["price"] == 12.5
+        fake.trades["SOXS"] = (12.5, 900)                     # 15 minutes: the estimate again
         assert client.get("/api/estimates?tickers=SOXS").json()["items"][0]["state"] == "estimate"
         monkeypatch.setattr(kis_stream, "us_session", lambda now=None: None)      # weekend
-        streaming.add("SOXS")
+        fake.trades["SOXS"] = (12.5, 0)
         assert client.get("/api/estimates?tickers=SOXS").json()["items"][0]["state"] == "estimate"
+
+
+def test_a_quiet_subscription_does_not_hold_the_board(db_url, monkeypatch):
+    import time
+
+    from desk import live
+    from desk.broker import kis_stream
+
+    async def closed(_cal, ticker, now=None):
+        return False
+
+    monkeypatch.setattr(live, "is_open", closed)
+    monkeypatch.setattr(kis_stream, "us_session", lambda now=None: "overnight")
+    fake = _FakeKis()
+    fake.subs.add("SOXS")                                     # subscribed already, no trade lately
+    monkeypatch.setattr(kis_stream, "make", lambda settings: fake)
+    with _client(db_url, _wide()) as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        started = time.monotonic()
+        row = client.get("/api/estimates?tickers=SOXS").json()["items"][0]
+        assert row["state"] == "estimate" and time.monotonic() - started < 1.5

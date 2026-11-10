@@ -379,3 +379,27 @@ def test_the_range_low_and_pullback_ladder_shapes(monkeypatch):
     assert [(e["kind"], e["price"]) for e in playbook._pair_entries(zone, 2.0)] == [("limit", 100.0), ("limit", 98.0)]
     monkeypatch.setattr(playbook, "PAIR_LADDER", "first")
     assert [(e["price"], e["share"]) for e in playbook._pair_entries(zone, 2.0)] == [(100.0, 1.0)]
+
+
+def test_a_model_t1_under_1r_is_ignored_and_a_model_price_drops_the_desk_reach():
+    """#263: the live SOXL swing (value_swing avg 44.55, stop 35) took the model's T1 46.33 at 0.19R."""
+    long = {"setup": "value_swing", "avg_entry": 44.55, "stop": 35.0, "risk": 9.55,
+            "entries": [{"step": 1, "price": 45.97, "share": 0.3, "kind": "limit"},
+                        {"step": 2, "price": 38.66, "share": 0.3, "kind": "limit"},
+                        {"step": 3, "price": 47.9, "share": 0.4, "kind": "stop"}],
+            "targets": [{"role": "t1", "price": 55.2, "rr": 1.12, "basis": "하락폭 38.2% 되돌림", "source": "desk",
+                         "hit_rate": 0.473, "hit_n": 182},
+                        {"role": "t2", "price": 60.0, "rr": 1.62, "basis": "50일선", "source": "desk",
+                         "hit_rate": 0.203, "hit_n": 182}],
+            "source": {"t1": "desk", "t2": "desk", "stop": "desk"}}
+    pb = {"frame": {"reference_price": 46.31}, "long": long, "short": {"setup": "none"}}
+    near = playbook.merge(pb, {"long": {"raw": "x", "t1": 46.33, "t2": 51.05}, "short": None, "bias": None})["long"]
+    t1, t2 = near["targets"]
+    assert t1["price"] == 55.2 and t1["source"] == "desk" and t1["hit_rate"] == 0.473
+    assert near["model"]["ignored"]["t1"] == 46.33 and near["source"]["t1"] == "desk"
+    # T2 only has to pay something; 51.05 is below the desk T1 here, so the order check takes the desk T2 back
+    assert t2["price"] == 60.0 and near["model"]["ignored"]["t2_order"] == 51.05
+    far = playbook.merge(pb, {"long": {"raw": "x", "t1": 56.0, "t2": 57.5}, "short": None, "bias": None})["long"]
+    t1, t2 = far["targets"]
+    assert t1["price"] == 56.0 and t1["source"] == "model" and t1["rr"] >= playbook.MODEL_T1_MIN_RR
+    assert "hit_rate" not in t1 and "hit_n" not in t2 and t2["price"] == 57.5

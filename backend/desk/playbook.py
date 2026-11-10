@@ -1018,6 +1018,11 @@ def _sane(price: float | None, ref: float) -> bool:
     return price is not None and price > 0 and abs(price - ref) <= LIVE_MAX_GAP * ref
 
 
+# #263: a model T1 closer than this reward/risk (from the average entry, to the stop) is ignored -
+# the desk dropped such targets on purpose (value_swing.T1_MIN_RR); the live SOXL run got T1 at 0.19R.
+MODEL_T1_MIN_RR = 1.0
+
+
 def merge(pb: dict | None, parsed: dict, *, convert=None) -> dict | None:
     """The model's prices replace the desk's only when sane: near the reference, on the right
     side, and in order. ``convert`` maps an underlying price to the product's (leveraged runs);
@@ -1055,10 +1060,17 @@ def merge(pb: dict | None, parsed: dict, *, convert=None) -> dict | None:
             s["stop"] = stop
             s["risk"] = _round(abs(s["avg_entry"] - stop))
         targets = []
+        risk0 = abs(s["avg_entry"] - s["stop"]) or 1e-9
+
+        def pays(v, role, s=s, up=up, risk0=risk0):
+            # #263: the model's T1 must pay what the desk's own first targets must (value_swing.T1_MIN_RR)
+            gain = (v - s["avg_entry"]) if up else (s["avg_entry"] - v)
+            return gain > 0 and (role != "t1" or gain / risk0 >= MODEL_T1_MIN_RR)
         for t in s.get("targets") or []:
-            v = take(t["role"], model.get(t["role"]),
-                     lambda v, s=s, up=up: (v > s["avg_entry"]) if up else (0 < v < s["avg_entry"]))
+            v = take(t["role"], model.get(t["role"]), lambda v, role=t["role"], up=up: (v > 0) and pays(v, role))
             if v is not None:
+                # the reach record (hit_rate · hit_n) was the desk target's, not this price's
+                t = {k: x for k, x in t.items() if k not in ("hit_rate", "hit_n")}
                 t = {**t, "price": v, "source": s["source"][t["role"]], "basis": "모델 제시"}
             risk = abs(s["avg_entry"] - s["stop"]) or 1e-9
             t = {**t, "rr": round(((t["price"] - s["avg_entry"]) if up else (s["avg_entry"] - t["price"])) / risk, 2)}

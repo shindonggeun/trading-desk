@@ -76,3 +76,50 @@ def test_api_answers_daily_and_intraday(db_url):
         day = client.get("/api/market/futures/intraday?date=2026-11-10").json()
         assert day["date"] == "2026-11-10" and len(day["points"]) == 1 and day["interval_min"] == 15
         assert client.get("/api/market/futures/intraday?date=11-10").status_code == 422
+
+
+def _kst(h, m, s=0, day=10):
+    return datetime(2026, 11, day, h, m, s, tzinfo=UTC) - timedelta(hours=9)    # KST wall clock -> UTC
+
+
+def test_snapshots_sit_on_the_clock_grid_from_the_open_and_close_once_after_the_bell():
+    from desk.futures_history import seconds_to_next
+
+    assert seconds_to_next(_kst(8, 0), 15) == 45 * 60                 # wait for the 08:45 open
+    assert seconds_to_next(_kst(8, 45), 15) == 15 * 60                # 08:45 taken -> 09:00
+    assert seconds_to_next(_kst(10, 7), 15) == 8 * 60                 # a restart at 10:07 -> 10:15
+    assert seconds_to_next(_kst(15, 37), 15) == 8 * 60                # 15:45 is on the grid
+    assert seconds_to_next(_kst(15, 45), 15) == 60                    # -> the closing snapshot at 15:46
+    assert seconds_to_next(_kst(15, 46), 15) == 3600                  # then the next open, an hour at most
+    assert seconds_to_next(_kst(10, 7), 5) == 3 * 60
+    fri_evening = _kst(20, 0, day=13)
+    assert seconds_to_next(fri_evening, 15) == 3600
+
+
+def test_the_closing_snapshot_is_the_days_daily_row(db_url):
+    from desk.futures_history import closing_window, interval_min
+
+    assert closing_window(_kst(15, 46)) and not closing_window(_kst(16, 0)) and not closing_window(_kst(15, 46, day=14))
+    assert interval_min(0) == 0 and interval_min(0.1) == 1.0 and interval_min(15) == 15.0
+    h = _history(db_url)
+    assert h.record(_view(foreign=-100.0), _kst(15, 45))
+    assert h.record(_view(foreign=-180.0), _kst(15, 46))               # the final totals
+    assert not h.record(_view(), _kst(16, 5))
+    assert h.daily(1)[0]["investors"]["foreign"]["net_contracts"] == -180.0
+
+
+def test_a_fresh_get_skips_the_cache():
+    import asyncio
+
+    from desk.futures_flow import FuturesFlow
+
+    calls = []
+
+    class Flow(FuturesFlow):
+        async def _fetch(self):
+            calls.append(1)
+            return {"n": len(calls)}, True
+
+    flow = Flow(None)
+    assert asyncio.run(flow.get())["n"] == 1 and asyncio.run(flow.get())["n"] == 1
+    assert asyncio.run(flow.get(fresh=True))["n"] == 2

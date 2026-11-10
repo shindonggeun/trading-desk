@@ -1016,3 +1016,46 @@ export interface FuturesPoint {
 }
 export interface FuturesDaily { supported: boolean; interval_min: number; days: FuturesPoint[] }
 export interface FuturesIntraday { supported: boolean; date: string; interval_min: number; market_open: boolean; points: FuturesPoint[] }
+
+/** #243 GET /api/calendar — 한 달의 국장 · 미장 일정(시각은 KST) */
+export interface CalEvent {
+  id: string;
+  label: string;
+  market: "kr" | "us";
+  kind: "release" | "expiry";
+  /** 2 = 시장 전체를 움직임(상), 1 = 눈여겨볼 것(중) */
+  importance: number;
+  source: string;
+  /** 그 시장의 날짜(미국 일정은 미국 날짜) */
+  date: string;
+  next_day_kst: boolean;
+  at: string;
+  at_kst: string;
+  time_kst: string;
+  time_local: string;
+}
+export interface CalEarning {
+  ticker: string;
+  name: string | null;
+  date: string;
+  market: "kr" | "us";
+  when: "pre" | "after" | "unknown";
+  eps_estimate: number | null;
+  market_cap: number | null;
+  source: string;
+  watched: boolean;
+}
+export interface CalDay {
+  date: string;
+  weekday: string;
+  kr: { open: boolean; holiday: string | null };
+  us: { open: boolean; holiday: string | null; early_close: string | null; close_kst: string | null };
+  events: CalEvent[];
+  earnings: CalEarning[];
+}
+export interface MarketMonth {
+  month: string;
+  days: CalDay[];
+  sources: Record<"economic" | "earnings", { refreshed_at: string | null; error: string | null }>;
+  notes: string[];
+}

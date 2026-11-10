@@ -1,4 +1,4 @@
-import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FuturesDaily, FuturesIntraday } from "./types";
+import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FuturesDaily, FuturesIntraday, MarketMonth } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -231,6 +231,8 @@ export const api = {
   livePlaybooks: (run: string) => call<LivePlaybooks>(`/api/playbooks?run=${encodeURIComponent(run)}`),
   /** #148 다가오는 FOMC · 주요 BLS 발표(공식 일정, 서버가 백그라운드로 갱신)와 지금 열린 진입 보류 창 */
   econCalendar: (days = 14) => call<EconCalendar>(`/api/events/calendar?days=${days}`),
+  /** #243 한 달의 휴장 · 발표(KST) · 만기 · 실적 — month "YYYY-MM", 없으면 이번 달 */
+  marketMonth: (month?: string) => call<MarketMonth>(`/api/calendar${month ? `?month=${encodeURIComponent(month)}` : ""}`),
   levels: (ticker: string) => call<SupportResistance>(`/api/levels?ticker=${encodeURIComponent(ticker)}`),
   instruments: (q: string) => call<Instrument[]>(`/api/instruments?q=${encodeURIComponent(q)}`),
   instrumentsStatus: () =>

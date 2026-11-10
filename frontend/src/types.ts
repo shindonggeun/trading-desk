@@ -1003,3 +1003,16 @@ export interface BottomZone {
   targets?: { id: string; price: number | null; text: string }[];
   leveraged_note?: string | null;
 }
+
+/** #254 선물 수급 기록 한 점(스냅샷). 투자자 값은 그날 누적 순매수. */
+export interface FuturesPoint {
+  at: string;
+  date: string;
+  code: string;
+  price: number | null;
+  open_interest: number | null;
+  market_basis: number | null;
+  investors: Record<"foreign" | "individual" | "institution", FuturesInvestor>;
+}
+export interface FuturesDaily { supported: boolean; interval_min: number; days: FuturesPoint[] }
+export interface FuturesIntraday { supported: boolean; date: string; interval_min: number; market_open: boolean; points: FuturesPoint[] }

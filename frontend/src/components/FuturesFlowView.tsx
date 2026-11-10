@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { krwShort, price } from "../format";
 import type { FuturesFlow, FuturesInvestor } from "../types";
+import FuturesHistoryView from "./FuturesHistoryView";
 
 // 시장 수급의 "선물" 보기(#161): 코스피200 근월물의 투자자별 순매수(계약 · 금액), 미결제약정, 베이시스,
 // 외국인 현물 · 선물 엇갈림. 막대 색은 현물 보기와 같은 극성(순매수 빨강 · 순매도 파랑).
@@ -152,6 +153,8 @@ export default function FuturesFlowView() {
           </p>
         </>
       )}
+      {/* #255 일자별(간결) · 장중(자세히) 기록 — 지금 시세를 못 받아도 기록은 보인다 */}
+      <FuturesHistoryView />
     </div>
   );
 }

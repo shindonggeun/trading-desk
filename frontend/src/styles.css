@@ -1359,3 +1359,8 @@ a.wmb-row:hover { border-color: var(--accent); }
 .bz-name { font-weight: 600; min-width: 7em; }
 .bz-row-ladder { flex-basis: 100%; overflow-wrap: anywhere; }
 .bz-ladder-ref { opacity: 0.6; }
+
+/* #255 선물 수급 기록(간결 · 자세히) */
+.futh { display: grid; gap: 6px; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
+.futh .flow-trend-head { gap: 6px 8px; }
+.futh-caption { margin: 0; }

@@ -1,4 +1,4 @@
-import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone } from "./types";
+import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FuturesDaily, FuturesIntraday } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -171,6 +171,10 @@ export const api = {
     call<{ symbol: string; weeks: WeeklyHistoryRow[] }>(`/api/market/weekly/${encodeURIComponent(symbol)}/history?weeks=${weeks}`),
   /** #160: 코스피200 근월물 선물 현황(한국투자증권) */
   marketFutures: () => call<FuturesFlow>("/api/market/futures"),
+  /** #254 선물 수급 기록: 날마다 마감 스냅샷 · 그날 장중 스냅샷 */
+  marketFuturesDaily: (days = 20) => call<FuturesDaily>(`/api/market/futures/daily?days=${days}`),
+  marketFuturesIntraday: (date?: string) =>
+    call<FuturesIntraday>(`/api/market/futures/intraday${date ? `?date=${encodeURIComponent(date)}` : ""}`),
   /** 코스피 · 코스닥 투자자별 매매대금(#76). 장중 60초 · 장 밖 10분 서버 캐시. */
   marketFlow: (market: FlowMarket, interval: FlowInterval, count = 20) =>
     call<MarketFlow>(`/api/market/flow?market=${market}&interval=${interval}&count=${count}`),

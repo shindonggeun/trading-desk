@@ -13,6 +13,7 @@ import RunSummaryBar from "../components/RunSummaryBar";
 import SummaryCard from "../components/SummaryCard";
 import TradeMap from "../components/TradeMap";
 import PositioningCard from "../components/PositioningCard";
+import BottomZoneCard from "../components/BottomZoneCard";
 import { WEEKLY_NAMES, WEEKLY_UNDERLYING, weeklyLink } from "../weekly";
 import { duration, STATUS_LABEL } from "../format";
 import type { DeskEvent, Plan, Run } from "../types";
@@ -239,6 +240,8 @@ export default function RunView({ runId }: { runId: string }) {
                 <TradeMap plan={plan} ticker={run.ticker} />
                 {/* #158 미국: 공매도 · 옵션, 국내: 빚투 · 예탁금(레버리지 상품은 본주 기준) */}
                 <PositioningCard ticker={run.ticker} underlying={plan.underlying?.ticker} />
+                {/* #241 인생 타점(장기 바닥권) — 지금 기준, 지원 안 하면 빠진다 */}
+                <BottomZoneCard ticker={run.ticker} />
                 {/* #205 레버리지 · 섹터 종목: 기초 지수의 주간 지도 */}
                 {WEEKLY_UNDERLYING[run.ticker.toUpperCase()] && (
                   <a className="card wm-link small" href={weeklyLink(WEEKLY_UNDERLYING[run.ticker.toUpperCase()])}>

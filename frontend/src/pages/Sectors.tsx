@@ -4,6 +4,7 @@ import { boardBadge } from "../korean";
 import { Spark } from "../components/FavoritesPanel";
 import FavoriteStar from "../components/FavoriteStar";
 import InstrumentSearch, { type Picked } from "../components/InstrumentSearch";
+import SectorNews from "../components/SectorNews";
 import PositioningView, { CreditSummary, positioningBadges } from "../components/PositioningView";
 import { price, time } from "../format";
 import type { BoardItem, CreditView, DeskConfig, Positioning, Run, Sector } from "../types";
@@ -416,6 +417,8 @@ export default function Sectors() {
           <p className="muted small qb-note">공매도 · 옵션은 미국 상장 종목만(FINRA · Cboe, 15분 지연), 추정가는 바이낸스 무기한 선물 기준이며 실제 체결이 아닙니다.</p>
         </>
       )}
+      {/* #245 고른 섹터와 겹치는 섹터 · 인물 이슈(#244) */}
+      {sector && <SectorNews key={sector.id} tickers={tickers} name={sector.name} />}
       {sheetRow && (
         <TickerSheet ticker={sheetRow.ticker} name={sheetRow.name ?? sheetRow.ticker} item={sheetRow.it}
           p={US.test(sheetRow.ticker) ? sheetRow.p : { ticker: sheetRow.ticker, supported: false, reason: "국내 · 지수 · 선물은 아직 공매도 · 옵션 요약을 지원하지 않습니다(미국 상장 종목만)", short: null, options: null, verdict: null, errors: null, sources: [], fetched_at: "" }}

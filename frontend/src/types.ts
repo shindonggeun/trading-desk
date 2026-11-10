@@ -161,8 +161,12 @@ export interface MacroTheme {
   tone: number | null;
   /** headline-words = 헤드라인 단어로 센 대략값 */
   tone_kind: "gdelt" | "headline-words";
-  headlines: { title: string; url: string; domain: string | null; country: string | null; seen: string | null }[];
+  headlines: ({ title: string; url: string; domain: string | null; country: string | null; seen: string | null } & Partial<NewsRead>)[];
   why: string;
+  /** #242 테마 한 줄 설명 */
+  about_ko?: string | null;
+  /** #242 읽은 헤드라인의 평균 긍정/부정 · 가장 큰 영향. 판정이 없으면 null */
+  digest?: { sentiment: NewsSentiment; impact: NewsImpact; read: number } | null;
   source: "gdelt" | "google-news";
   fetched_at: string;
   relevance?: 0 | 1 | 2 | null;
@@ -170,7 +174,44 @@ export interface MacroTheme {
   stale: boolean;
 }
 
+/** #242 desk/news_digest — 헤드라인을 모델이 읽은 값(예측이 아님) */
+export type NewsImpact = "high" | "mid" | "low";
+export interface NewsSentiment { pos: number; neg: number; neu: number }
+export interface NewsRead {
+  title_ko: string | null;
+  sentiment: NewsSentiment | null;
+  impact: NewsImpact | null;
+  assets: string[];
+  why_ko: string | null;
+}
+
+/** #244 GET /api/sector-news — 섹터별 기사 급증 이슈 */
+export interface SectorIssue {
+  id: string;
+  label: string;
+  sector: string;
+  lang: "en" | "ko";
+  tickers: string[];
+  articles_24h: number;
+  spike: number | null;
+  tag: string | null;
+  tag_ko: string | null;
+  story_size: number;
+  headlines: ({ title: string; url: string; domain: string | null; seen: string | null } & Partial<NewsRead>)[];
+  digest?: { sentiment: NewsSentiment; impact: NewsImpact; read: number } | null;
+  stale: boolean;
+}
+export interface SectorNewsView {
+  sectors: { id: string; label: string; issues: SectorIssue[];
+    topics: { id: string; label: string; articles_24h: number; spike: number | null; issue: boolean; stale: boolean }[] }[];
+  refreshed_at: string | null;
+  error: string | null;
+  note: string;
+}
+
 export interface MacroBrief {
+  /** #242 헤드라인 판정 회차 */
+  digest?: { refreshed_at: string | null; error: string | null; note: string };
   ticker: string | null;
   sources: ("gdelt" | "google-news")[];
   /** 마지막 성공 회차. 기동 직후 첫 회차 전엔 null + themes [] */

@@ -3,12 +3,11 @@ import { api } from "../api";
 import { time } from "../format";
 import { HORIZON } from "../korean";
 import type { DeskConfig, MacroBrief as Brief, MacroTheme } from "../types";
+import { Impact, Lean, NewsHeadline } from "./NewsRead";
 
 // 서버는 30분마다 새로 모은다 — 화면은 10분마다 다시 읽는다. 아직 비었거나 못 읽었으면 자주.
 const POLL_MS = 10 * 60_000;
 const RETRY_MS = 45_000;
-// 외부 기사 주소는 http(s) 만 링크로 — 그 밖의 주소(javascript: 등)는 제목 글자로만 둔다
-const SAFE_URL = /^https?:\/\//i;
 // 급증 경보선(desk/macro_news.py 와 같게)
 const SPIKE_ALERT = 1.5;
 
@@ -49,18 +48,6 @@ function Tone({ t }: { t: MacroTheme }) {
   );
 }
 
-function Headline({ h }: { h: MacroTheme["headlines"][number] }) {
-  return (
-    <>
-      {SAFE_URL.test(h.url) ? (
-        <a href={h.url} target="_blank" rel="noopener noreferrer" className="link">{h.title}</a>
-      ) : (
-        <span>{h.title}</span>
-      )}
-      <span className="muted small"> {[h.domain, h.seen && time(h.seen)].filter(Boolean).join(" · ")}</span>
-    </>
-  );
-}
 
 /**
  * 대시보드 맨 위 "오늘의 거시 · 정책 브리핑"(#118): 테마별 24시간 기사 수 · 급증 배수 · 톤 · 대표 헤드라인.
@@ -151,6 +138,22 @@ export default function MacroBrief() {
         {brief.error && " · 일부 테마를 가져오지 못했습니다"}
         {" · "}급증은 {spikeBase}
       </p>
+      <div className="mx-cols small muted" aria-hidden="true">
+        <span>테마</span>
+        <span title="최근 24시간 기사 수">기사(24h)</span>
+        <span title="평소(지난주) 대비 기사 수 배수 — 1.5배 이상이면 ▲">평소 대비</span>
+        <span title="기사 톤 -10(부정) ~ +10(긍정)">톤</span>
+        <span title="대표 헤드라인과 모델이 읽은 긍정/부정 % · 영향 크기">대표 헤드라인 · 긍정/부정 · 영향</span>
+      </div>
+      <details className="mx-help small">
+        <summary>ⓘ 표 읽는 법</summary>
+        <ul>
+          <li><strong>기사(24h)</strong> — 그 테마로 잡힌 최근 24시간 기사 수(100+ 는 피드가 꽉 참)</li>
+          <li><strong>평소 대비</strong> — {spikeBase} 기사 수 배수. {SPIKE_ALERT}배 이상이면 ▲ 로 표시</li>
+          <li><strong>톤</strong> — 기사 문장의 긍정/부정 정도(-10 ~ +10), 0 이 중립</li>
+          <li><strong>긍정/부정 %</strong> · <strong>영향(상 · 중 · 하)</strong> — 헤드라인을 모델이 읽은 증시 쪽 해석(예측 아님)</li>
+        </ul>
+      </details>
       <ul className="mx-themes">
         {brief.themes.map((t) => {
           const hot = t.spike != null && t.spike >= SPIKE_ALERT;
@@ -165,18 +168,29 @@ export default function MacroBrief() {
                   setPick(null);   // 다른 테마의 같은 종목 확인 창이 따라오지 않게
                   setError(null);
                 }}>
-                <span className="mx-label">{t.label}</span>
+                <span className="mx-label">
+                  <span className="mx-name">{t.label}</span>
+                  {t.about_ko && <span className="mx-about muted small">{t.about_ko}</span>}
+                </span>
                 <span className="mx-count small num" title="24시간 기사 수">{count(t)}건</span>
                 <span className={`mx-spike small num${hot ? " mx-spike-hot" : ""}`}
                   title={t.spike_kind === "week" ? "평소 주간 대비" : "다른 테마 대비"}>{hot ? "▲ " : ""}{spikeText(t)}</span>
                 <Tone t={t} />
-                <span className="mx-head small">{t.headlines[0] ? t.headlines[0].title : <span className="muted">헤드라인 없음</span>}</span>
+                <span className="mx-head small">
+                  <span className="mx-head-title">{t.headlines[0] ? t.headlines[0].title_ko || t.headlines[0].title : <span className="muted">헤드라인 없음</span>}</span>
+                  {t.digest && (
+                    <span className="mx-digest">
+                      <Lean s={t.digest.sentiment} />
+                      <Impact v={t.digest.impact} />
+                    </span>
+                  )}
+                </span>
               </button>
               {expanded && (
                 <div id={panel} className="mx-detail">
                   {t.headlines.length > 0 ? (
                     <ul className="mx-headlines small">
-                      {t.headlines.slice(0, 3).map((h, i) => <li key={`${i}-${h.url}`}><Headline h={h} /></li>)}
+                      {t.headlines.slice(0, 3).map((h, i) => <li key={`${i}-${h.url}`}><NewsHeadline h={h} /></li>)}
                     </ul>
                   ) : (
                     <p className="muted small">헤드라인이 없습니다.</p>
@@ -213,6 +227,7 @@ export default function MacroBrief() {
       </ul>
       <p className="muted small">
         뉴스 흐름의 양과 톤이지 예측이 아닙니다. 급증 ▲ 는 {SPIKE_ALERT}배 이상.{anyRough && " * 표시 톤은 헤드라인 단어로 센 대략값입니다."}
+        {brief.digest && brief.themes.some((t) => t.digest) && ` 긍정/부정 % · 영향은 ${brief.digest.note}.`}
       </p>
     </section>
   );

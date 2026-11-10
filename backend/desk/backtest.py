@@ -305,6 +305,15 @@ def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: C
     """Build the snapshot's playbooks and judge each side on the bars after it. ``gate`` applies
     the market's selling rule (#146) when the snapshot has a score. ``single`` (#221) buys each side
     all at once at desk.summary's single price instead of its ladder (a side without one is skipped)."""
+    pb = playbooks_at(snap, h, gate)
+    if not pb:
+        return []
+    future = primary[snap.t + 1: snap.t + 1 + LOOKAHEAD[h.id]]
+    return judge(pb, snap, future, h, costs, single=single)
+
+
+def playbooks_at(snap: Snapshot, h: horizons.Horizon, gate: bool = True) -> dict | None:
+    """The snapshot's playbooks as a live run would build them (market gate, oversold swing buy)."""
     pb = playbook.build(snap.sr, snap.daily, snap.window, h, now=snap.plan_at, today=snap.today, vix=snap.vix,
                         calibrate=False,                # #147: not graded by its own results
                         market=snap.risk if gate else None)   # #166: gate off = the market score unused
@@ -312,12 +321,16 @@ def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: C
         pb = risk_regime.apply(pb, snap.risk)
     # #167: the oversold swing buy takes the long slot when its evidence is there (no record: no conviction)
     # (gate off = the market score unused: the fear bundle does not read it either)
-    pb = value_swing.apply(pb, snap.daily, snap.weekly, h.id, snap.sr, snap.risk if gate else None, snap.vix,
-                           calibrate=False)
-    if not pb:
-        return []
-    future = primary[snap.t + 1: snap.t + 1 + LOOKAHEAD[h.id]]
-    opens = outcome.session_open(snap.ticker)
+    return value_swing.apply(pb, snap.daily, snap.weekly, h.id, snap.sr, snap.risk if gate else None, snap.vix,
+                             calibrate=False)
+
+
+def judge(pb: dict, snap: Snapshot, future: list[dict], h: horizons.Horizon, costs: Costs,
+          single: bool = False, ticker: str | None = None) -> list[Trade]:
+    """Each side of ``pb`` judged on ``future`` (the bars after the plan). ``ticker`` names the bars'
+    instrument when it is not the snapshot's (#239: a leveraged product on its underlying's plan)."""
+    ticker = ticker or snap.ticker
+    opens = outcome.session_open(ticker)
     regime = pb["regime"]["id"]
     atr = pb["frame"]["atr"] or 0.0
     out = []
@@ -332,7 +345,7 @@ def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: C
         # the entry stays valid as long as a live plan's would (scalp 15 min, intraday 1 h, 2~3 days 1 day)
         res = outcome.judge_playbook(side, direction, future, h, snap.plan_at, opens,
                                      horizons.valid_until(h, snap.plan_at))
-        trade = Trade(snap.ticker, snap.day, side_name, side["setup"], regime, side.get("score"), res["status"],
+        trade = Trade(ticker, snap.day, side_name, side["setup"], regime, side.get("score"), res["status"],
                       direction=side.get("direction") or "neutral")
         if res.get("filled_shares"):
             avg = res["avg_fill"]
@@ -357,7 +370,7 @@ def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: C
                     trade.exits = {k: (round(v * res["filled_shares"] - cost_r * (1 + (added if k == "pyramid" else 0)), 3)
                                        if v is not None else None) for k, v in alt.items()}
         trade.risk_phase = (snap.risk or {}).get("phase") or "unknown"
-        trade.kind = "leveraged" if leverage_of(snap.ticker) else "stock"
+        trade.kind = "leveraged" if leverage_of(ticker) else "stock"
         out.append(trade)
     return out
 

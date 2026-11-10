@@ -9,6 +9,7 @@
     python -m desk.cli backtest SOXL --horizon swing --from 2018-01-01 [--sweep] [--out report.json]
     python -m desk.cli backtest --basket             # the reference basket (desk.backtest.BASKET)
     python -m desk.cli backtest --basket --triggers  # touch entry vs the lower-bar trigger (#149)
+    python -m desk.cli backtest --leveraged          # SOXL · TQQQ on the underlying's plans (#239)
     python -m desk.cli timing [--last 20]            # where recent analyses spent their time (#171)
     python -m desk.cli calibrate [--horizon swing]   # rebuild desk/data/playbook_calibration.json (#147)
     python -m desk.cli weekly-lines [--out lines.json]  # compare the weekly map's trend-line pairs (#216)
@@ -122,6 +123,16 @@ def _backtest(args) -> int:
     if args.horizon is not None and args.horizon not in horizons.HORIZONS:
         sys.exit(f"horizon must be one of {', '.join(horizons.HORIZONS)}")
     costs = backtest.Costs(args.cost_bps) if args.cost_bps is not None else backtest.Costs()
+    if args.leveraged:
+        from . import leverage_bt
+
+        rep = leverage_bt.run(None, args.horizon or "swing", args.start or "2019-01-01", costs,
+                              progress=lambda msg: print(msg, file=sys.stderr))
+        leverage_bt.print_report(rep)
+        if args.out:
+            with open(args.out, "w", encoding="utf-8", newline="\n") as f:
+                json.dump(rep, f, ensure_ascii=False, indent=2)
+        return
     if args.triggers:
         from . import trigger_bt
 
@@ -186,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--cost-bps", type=float, default=None, help="commission + slippage per side (bp)")
     bt.add_argument("--sweep", action="store_true", help="also try the parameters one at a time")
     bt.add_argument("--out", default=None, help="write the full JSON report here")
+    bt.add_argument("--leveraged", action="store_true",
+                    help="leveraged products on their own plans vs their underlying's plans, with the decay filter (#239)")
     bt.add_argument("--triggers", action="store_true",
                     help="compare the zone-touch entry with the lower-bar trigger entry (#149; ~2 years of 60m bars)")
     bt.add_argument("--no-risk", action="store_true",

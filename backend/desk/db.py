@@ -11,6 +11,7 @@ from sqlalchemy import (
     JSON,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -131,6 +132,26 @@ favorites = Table(
 )
 
 # Sector tabs per account (#156): a named, ordered group of tickers ([{ticker, name}] in JSON).
+# KOSPI200 front-month futures, a snapshot every few minutes of the session (#254): investor net
+# contracts / value (million won), price, open interest, basis. The day's last one is its daily row.
+futures_snapshots = Table(
+    "futures_snapshots", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("at", Timestamp, nullable=False),
+    Column("trade_date", String(10), nullable=False),           # KST YYYY-MM-DD
+    Column("code", String(12), nullable=False),
+    Column("price", Float),
+    Column("open_interest", Float),
+    Column("market_basis", Float),
+    Column("foreign_contracts", Float),
+    Column("foreign_value_mn", Float),
+    Column("individual_contracts", Float),
+    Column("individual_value_mn", Float),
+    Column("institution_contracts", Float),
+    Column("institution_value_mn", Float),
+    Index("ix_futures_snapshots_trade_date_at", "trade_date", "at"),
+)
+
 sector_groups = Table(
     "sector_groups", metadata,
     Column("id", Integer, primary_key=True),

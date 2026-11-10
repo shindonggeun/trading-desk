@@ -11,7 +11,7 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager, suppress
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Annotated
 from urllib.parse import urlsplit
 
@@ -51,10 +51,12 @@ from .consensus import fake_summariser, llm_summariser
 from .db import make_engine, migrate, now
 from .estimate import CANDLE_INTERVALS, BinanceEstimator
 from .favorites import Conflict, Favorites, TooMany
-from .futures_flow import FuturesFlow
+from .futures_flow import KST as futures_kst
+from .futures_flow import FuturesFlow, futures_open
 from .futures_flow import make as make_kis_rest
 from .futures_flow import off_reason as futures_off
 from .futures_flow import prompt_note as futures_note
+from .futures_history import FuturesHistory
 from .indicators import normalize as normalize_indicators
 from .leverage_analyst import fake_analyst, llm_analyst
 from .market_flow import MarketFlow
@@ -228,6 +230,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     migrate(settings.database_url)
     engine = make_engine(settings.database_url)
     store = Store(engine)
+    futures_history = FuturesHistory(engine)    # #254
     auth = Auth(engine, timedelta(hours=settings.session_max_hours), timedelta(hours=settings.session_idle_hours))
     throttle = LoginThrottle()
     otp_box = otp.SecretBox(settings.otp_key)
@@ -394,7 +397,28 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 # a failure (KOFIA slow at boot) is retried soon: the cache lives in memory only
                 await asyncio.sleep(CREDIT_INTERVAL_SEC if ok else CREDIT_RETRY_SEC)
 
+        async def snapshot_futures():
+            # #254: the futures investor flows through the session, every DESK_FUTURES_SNAPSHOT_MIN
+            # minutes (desk.futures_history); outside the session it only checks the clock
+            pruned_on = None
+            while True:
+                try:
+                    if futures_open(datetime.now(UTC)):
+                        view = await futures.get()
+                        await asyncio.to_thread(futures_history.record, view)
+                    today = datetime.now(UTC).date()
+                    if pruned_on != today:
+                        dropped = await asyncio.to_thread(futures_history.prune)
+                        if dropped:
+                            log.info("futures history: thinned %d old snapshot(s)", dropped)
+                        pruned_on = today
+                except Exception:  # a failed pass must not stop the next one
+                    log.exception("futures snapshot failed")
+                await asyncio.sleep(settings.futures_snapshot_min * 60)
+
         refresher = asyncio.create_task(keep_listing_fresh())
+        futures_task = (asyncio.create_task(snapshot_futures())
+                        if settings.futures_snapshot_min > 0 and getattr(futures, "rest", None) is not None else None)
         # the same switch as the news flow: off in tests and scripted runs
         credit_task = (asyncio.create_task(refresh_credit())
                        if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
@@ -418,6 +442,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 await kis                   # the socket closes before its http client does
             await kis_feed.aclose()
         refresher.cancel()
+        if futures_task:
+            futures_task.cancel()
         if macro:
             macro.cancel()
         if calendar_task:
@@ -776,6 +802,27 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         class, and the foreign spot/futures split (desk.futures_flow). A KIS failure or missing
         keys come back as ``error`` / ``supported: false``, not as a 5xx."""
         return await futures.get()
+
+    @app.get("/api/market/futures/daily")
+    async def market_futures_daily(days: int = 20):
+        """#254: the futures investor flows per trading day (the day's last snapshot), newest first.
+        History starts when the server began taking snapshots; ``supported: false`` without KIS."""
+        rows = await asyncio.to_thread(futures_history.daily, days)
+        return {"supported": getattr(futures, "rest", None) is not None, "interval_min": settings.futures_snapshot_min,
+                "days": rows}
+
+    @app.get("/api/market/futures/intraday")
+    async def market_futures_intraday(date: str | None = None):
+        """#254: a trading day's snapshots (default today, KST), oldest first."""
+        try:
+            day = (datetime.fromisoformat(date).date() if date
+                   else datetime.now(UTC).astimezone(futures_kst).date())
+        except ValueError:
+            raise HTTPException(422, "date must be YYYY-MM-DD") from None
+        points = await asyncio.to_thread(futures_history.intraday, day)
+        return {"supported": getattr(futures, "rest", None) is not None, "date": day.isoformat(),
+                "interval_min": settings.futures_snapshot_min, "market_open": futures_open(datetime.now(UTC)),
+                "points": points}
 
     @app.get("/api/bottom-zone")
     async def bottom_zone_of(ticker: str):

@@ -350,7 +350,8 @@ def trades_at(snap: Snapshot, primary: list[dict], h: horizons.Horizon, costs: C
                                                            res.get("exited_at"))
             if res["status"] in SETTLED + MARKED and side.get("targets"):
                 alt = exits.replay(direction, future, res.get("first_fill_at"), avg, side["stop"],
-                                   side["targets"][0]["price"], atr, res.get("r"))
+                                   side["targets"][0]["price"], atr, res.get("r"),
+                                   (side.get("time_stop") or {}).get("bars"))
                 if alt is not None:
                     added = alt.pop("added")
                     trade.exits = {k: (round(v * res["filled_shares"] - cost_r * (1 + (added if k == "pyramid" else 0)), 3)
@@ -452,21 +453,27 @@ def summarize(trades: list[Trade], h: horizons.Horizon, cut: str | None) -> dict
     }
 
 
-def _exit_stats(rs: list[float]) -> dict:
+def _exit_stats(rows: list[tuple[str, float]]) -> dict:
+    """(plan day, r) rows. ``losing_days``: the longest run of plan days whose summed R is negative -
+    one day's trades (several tickers, overlapping plans) move together, so they count once."""
+    rs = [r for _d, r in rows]
     if not rs:
-        return {"n": 0, "win_rate": None, "avg_r": None, "median_r": None, "big_share": None, "losing_streak": 0}
+        return {"n": 0, "win_rate": None, "avg_r": None, "median_r": None, "big_share": None, "losing_days": 0}
+    by_day: dict[str, float] = {}
+    for d, r in rows:
+        by_day[d] = by_day.get(d, 0.0) + r
     streak = best = 0
-    for r in rs:
-        streak = streak + 1 if r < 0 else 0
+    for d in sorted(by_day):
+        streak = streak + 1 if by_day[d] < 0 else 0
         best = max(best, streak)
     return {"n": len(rs), "win_rate": round(sum(1 for r in rs if r > 0) / len(rs), 3), "avg_r": _mean(rs),
             "median_r": _median(rs), "big_share": round(sum(1 for r in rs if r >= exits.BIG_R) / len(rs), 3),
-            "losing_streak": best}
+            "losing_days": best}
 
 
 def exit_report(trades: list[Trade], cut: str | None, h: horizons.Horizon) -> dict:
     """#239: each exit rule on the same filled trades - win rate, average / median R after costs, the
-    share of big wins (>= exits.BIG_R) and the longest losing run - for stocks and leveraged products,
+    share of big wins (>= exits.BIG_R) and the longest run of losing plan days - for stocks and leveraged products,
     on the training dates and the held-out ones. A rule is only worth turning on if it beats ``fixed``
     on the held-out dates."""
     replayed = sorted((t for t in trades if t.exits), key=lambda t: (t.at, t.ticker))
@@ -474,8 +481,8 @@ def exit_report(trades: list[Trade], cut: str | None, h: horizons.Horizon) -> di
     out: dict = {"cut": cut, "rules": list(exits.VARIANTS)}
     for kind in ("all", "stock", "leveraged"):
         pick = (lambda ts, k=kind: [t for t in ts if k == "all" or t.kind == k])
-        out[kind] = {v: {"train": _exit_stats([t.exits[v] for t in pick(train) if t.exits.get(v) is not None]),
-                         "valid": _exit_stats([t.exits[v] for t in pick(valid) if t.exits.get(v) is not None])}
+        out[kind] = {v: {"train": _exit_stats([(t.at, t.exits[v]) for t in pick(train) if t.exits.get(v) is not None]),
+                         "valid": _exit_stats([(t.at, t.exits[v]) for t in pick(valid) if t.exits.get(v) is not None])}
                      for v in exits.VARIANTS}
     return out
 
@@ -773,7 +780,7 @@ def print_summary(report: Report, out=None) -> None:
             tr, va = ex[kind][rule]["train"], ex[kind][rule]["valid"]
             if tr["n"] or va["n"]:
                 print(f"exit {kind}:{rule}".ljust(28) + f"valid avg {_fmt(va['avg_r'])}R win {_fmt(va['win_rate'])} "
-                      f"big {_fmt(va['big_share'])} streak {va['losing_streak']} (n {va['n']}) | "
+                      f"big {_fmt(va['big_share'])} losing days {va['losing_days']} (n {va['n']}) | "
                       f"train avg {_fmt(tr['avg_r'])}R (n {tr['n']})", file=out)
     for row in report.sweep[:12]:
         print(f"sweep {row['param']}={row['value']}{' (now)' if row['current'] else ''}: "

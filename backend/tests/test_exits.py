@@ -27,7 +27,7 @@ def test_a_straight_run_up_pays_the_trailing_rules_more_than_the_fixed_exit():
 
 
 def test_a_reversal_after_one_r_gives_back_to_the_trail_not_to_the_stop():
-    path = FILL + [(100, 106, 105.5), (105, 110, 109), (101, 109, 102), (96, 102, 97)]
+    path = FILL + [(101, 106, 105.5), (105, 110, 109), (101, 109, 102), (96, 102, 97)]
     r = exits.replay(1, _bars(path), "2026-01-01T00:00:00+00:00", 100.0, 95.0, 105.0, 2.0, fixed_r=0.5)
     # trail_atr: after T1 the best high 110 trails to 106; the third bar's low 101 hits it
     assert r["trail_atr"] == round(0.5 * 1 + 0.5 * 6 / 5, 3)
@@ -80,5 +80,28 @@ def test_the_report_puts_the_rules_side_by_side_per_product_kind_and_split():
     rep = backtest.exit_report(trades, "2024-01-01", h)
     assert rep["rules"] == list(exits.VARIANTS)
     assert rep["stock"]["runner"]["train"] == {"n": 12, "win_rate": 1.0, "avg_r": 4.0, "median_r": 4.0,
-                                               "big_share": 1.0, "losing_streak": 0}
-    assert rep["leveraged"]["fixed"]["valid"]["losing_streak"] == 5 and rep["stock"]["fixed"]["valid"]["n"] == 0
+                                               "big_share": 1.0, "losing_days": 0}
+    assert rep["leveraged"]["fixed"]["valid"]["losing_days"] == 5 and rep["stock"]["fixed"]["valid"]["n"] == 0
+
+
+def test_the_fill_bar_counts_its_stop_like_the_fixed_exit():
+    """#239 review: a limit filled intrabar can fall to the stop in the same bar."""
+    path = [(94, 101, 100), (100, 120, 119)]               # fill bar dips through the stop, then a rally
+    r = exits.replay(1, _bars(path), "2026-01-01T00:00:00+00:00", 100.0, 95.0, 105.0, 2.0, fixed_r=-1.0)
+    assert r["trail_atr"] == r["trail_swing"] == r["runner"] == r["pyramid"] == -1.0
+
+
+def test_the_pyramid_adds_at_the_open_on_a_gap_and_the_worse_order_on_a_round_trip():
+    gap = _bars(FILL + [(107, 112, 111)])
+    gap[1]["open"] = 108.0                                  # opens past +1R (105)
+    r = exits.replay(1, gap, "2026-01-01T00:00:00+00:00", 100.0, 95.0, 105.0, 2.0, fixed_r=1.0)
+    assert r["pyramid"] == round((11 + 0.5 * 3) / 5, 3)    # the add bought at 108, marked at 111
+    round_trip = _bars(FILL + [(99, 106, 101), (101, 102, 101)])   # +1R and back under break-even
+    r = exits.replay(1, round_trip, "2026-01-01T00:00:00+00:00", 100.0, 95.0, 105.0, 2.0, fixed_r=0.5)
+    assert r["runner"] == 0.0 and r["pyramid"] == round(0.5 * (100 - 105) / 5, 3)
+
+
+def test_the_time_stop_closes_a_trade_that_never_got_going():
+    flat = _bars(FILL + [(99, 102, 101)] * 6)
+    r = exits.replay(1, flat, "2026-01-01T00:00:00+00:00", 100.0, 95.0, 105.0, 2.0, fixed_r=0.2, time_stop=3)
+    assert r["trail_atr"] == r["runner"] == round(1 / 5, 3)

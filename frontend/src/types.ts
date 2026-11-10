@@ -970,3 +970,36 @@ export interface PlanSummary {
   time_stop?: { bars: number; interval: string } | null;
   notes?: string[];
 }
+
+/** #240/#241 장기 바닥권(인생 타점) — GET /api/bottom-zone */
+export type BottomStage = "none" | "watch" | "approach" | "bottom";
+export interface BottomEvidence {
+  id: "drawdown" | "weekly_rsi" | "monthly_rsi" | "divergence" | "long_ma" | "support" | "capitulation";
+  met: boolean | null;
+  value: unknown;
+  threshold: string;
+  weight: number;
+}
+export interface BottomStep {
+  step: number;
+  price: number;
+  weight_pct: number;
+  from_close_pct: number;
+}
+export interface BottomZone {
+  ticker: string;
+  supported: boolean;
+  error?: string;
+  as_of?: string;
+  close?: number;
+  score?: number;
+  stage?: BottomStage;
+  stage_ko?: string;
+  drawdown_pct?: number;
+  high?: number;
+  evidence?: BottomEvidence[];
+  ladder?: BottomStep[];
+  invalidation?: { monthly_close_below: number | null; text: string };
+  targets?: { id: string; price: number | null; text: string }[];
+  leveraged_note?: string | null;
+}

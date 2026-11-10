@@ -1,4 +1,4 @@
-import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance } from "./types";
+import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -194,6 +194,8 @@ export const api = {
   deleteSector: (id: number) => call<void>(`/api/sectors/${id}`, { method: "DELETE" }),
   /** #154 공매도 · 옵션 포지션 — 미국 종목만(나머지 supported: false) */
   positioning: (ticker: string) => call<Positioning>(`/api/positioning?ticker=${encodeURIComponent(ticker)}`),
+  /** #240 장기 바닥권(인생 타점) */
+  bottomZone: (ticker: string) => call<BottomZone>(`/api/bottom-zone?ticker=${encodeURIComponent(ticker)}`),
   positioningBatch: (tickers: string[]) =>
     call<{ items: Positioning[] }>(`/api/positioning/batch?tickers=${encodeURIComponent(tickers.join(","))}`),
   /** #155 빚투 · 예탁금(금융투자협회) */

@@ -6,6 +6,7 @@ import MacroBrief from "../components/MacroBrief";
 import MarketBoard from "../components/MarketBoard";
 import MarketFlowPanel from "../components/MarketFlowPanel";
 import WeekAgenda from "../components/WeekAgenda";
+import SectorNews from "../components/SectorNews";
 import NewRunForm from "../components/NewRunForm";
 import PlanStatsCard from "../components/PlanStatsCard";
 import PortfolioPanel from "../components/PortfolioPanel";
@@ -50,10 +51,12 @@ function RegimePanel() {
   );
 }
 
-type SectionId = "macro" | "favorites" | "market" | "agenda" | "weekly" | "bottom" | "portfolio" | "recent" | "stats" | "flow" | "credit" | "regime";
+type SectionId = "macro" | "sectornews" | "favorites" | "market" | "agenda" | "weekly" | "bottom" | "portfolio" | "recent" | "stats" | "flow" | "credit" | "regime";
 /** 구역 — 순서는 이슈 #100 의 기본값. wide 는 넓은 화면에서 한 줄을 다 쓴다. */
 const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () => ReactNode }> = {
   macro: { title: "오늘의 거시 · 정책 브리핑", wide: true, render: () => <MacroBrief /> },
+  // #245 섹터 · 인물 이슈(#244) — 브리핑 바로 아래
+  sectornews: { title: "섹터 이슈", wide: true, render: () => <SectorNews /> },
   favorites: { title: "즐겨찾기 시세", wide: true, render: () => <FavoritesPanel /> },
   market: { title: "시장 · 지수 · 선물", wide: true, render: () => <MarketBoard embedded /> },
   // #246 오늘부터 7일 안의 휴장 · 중요 발표 · 만기 · 관심 종목 실적 5개

@@ -42,6 +42,7 @@ from . import (
     regime,
     review,
     risk_regime,
+    sector_news,
     verdict,
     weekly_map,
 )
@@ -368,6 +369,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                         log.info("news digest: %d headline(s) read", read)
                 except Exception:  # a failed pass must not stop the next one
                     log.exception("macro news refresh failed")
+                try:                # #244: sector / key-person surges, read the same way
+                    ok = await sector_news.CACHE.refresh()
+                    read = await news_digest.DIGEST.refresh(sector_news.CACHE.as_themes(),
+                                                            slot=app.state.manager.spare_slot)
+                    log.info("sector news: %d topic(s) refreshed, %d headline(s) read", ok, read)
+                except Exception:  # a failed pass must not stop the next one
+                    log.exception("sector news refresh failed")
                 await asyncio.sleep(settings.macro_interval_sec)
 
         async def refresh_calendar():
@@ -1045,6 +1053,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         watch = {f["ticker"] for f in favorites.list(request.state.user.id)}
         earnings.CACHE.want(watch)
         return market_calendar.month_view(month, watch)
+
+    @app.get("/api/sector-news")
+    def sector_issues(sector: str | None = None):
+        """#244: per sector its surging company / key-person stories with a Korean read."""
+        if sector is not None and sector not in {s.id for s in sector_news.SECTORS}:
+            raise HTTPException(422, "unknown sector")
+        return sector_news.CACHE.view(sector)
 
     @app.get("/api/macro/brief")
     def macro_brief(ticker: str | None = None):

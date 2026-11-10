@@ -430,7 +430,10 @@ def prompt_note(ticker: str, cache: Cache | None = None, limit: int = 5, now: da
     brief = cache.brief(ticker, now)
     rows = [r for r in brief["themes"]
             if not r["stale"] and ((r["relevance"] or 0) > 0 or (r["spike"] or 0) >= SPIKE_ALERT)][:limit]
-    if not rows:
+    from .sector_news import CACHE as SECTORS  # #244: the instrument's sector issues
+
+    sector_lines = SECTORS.note_lines(ticker, now)
+    if not rows and not sector_lines:
         return None
     lines = [(
         "Macro & policy backdrop (world news flow over the last days - GDELT or Google News; desk-computed). "
@@ -455,4 +458,4 @@ def prompt_note(ticker: str, cache: Cache | None = None, limit: int = 5, now: da
         s = read["sentiment"]
         lines.append(f'- High-impact headline ({theme_id}): "{read["title"]}" - read as positive {s["pos"]}% / '
                      f'negative {s["neg"]}% for stocks (a model reading of the headline, not a forecast).')
-    return "\n".join(lines)
+    return "\n".join(lines + sector_lines)

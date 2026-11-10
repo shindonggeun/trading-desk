@@ -227,10 +227,16 @@ class KisStream:
         self._wanted[t] = self._clock()
         self._demand.set()
 
-    def latest(self, ticker: str) -> Tick | None:
+    def subscribed(self, ticker: str) -> bool:
+        """Subscribed on the open socket now (a trade may not have come yet)."""
+        return self.connected and ticker.upper() in self._subs
+
+    def latest(self, ticker: str, max_age: float = FRESH_SEC) -> Tick | None:
+        """The last trade while the socket is up and the ticker subscribed, if no older than
+        ``max_age`` seconds (#257: off hours a thin ETF trades minutes apart)."""
         t = ticker.upper()
         tick = self._ticks.get(t) if self.connected and t in self._subs else None
-        return tick if tick is not None and self._clock() - tick.seen <= FRESH_SEC else None
+        return tick if tick is not None and self._clock() - tick.seen <= max_age else None
 
     def status(self) -> dict:
         """Connection health for the owner (GET /api/live/kis). Never the app key, secret or

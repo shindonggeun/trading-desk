@@ -79,6 +79,11 @@ BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
 # #240: the bottom-zone line of the weekly note waits this long (the scalp budget is 5 s; the line is
 # skipped, not the weekly map, when a cold cache is slower)
 BOTTOM_NOTE_SEC = 4.0
+# #257: US pre / after / overnight trades on the board - a last trade this fresh still counts as live
+# (thin ETFs trade minutes apart off hours), and a newly watched ticker waits this long for its first
+OFF_HOURS_FRESH_SEC = 600.0
+FIRST_TICK_WAIT_SEC = 2.0
+FIRST_TICK_POLL_SEC = 0.25
 KST = timezone(timedelta(hours=9))   # Toss dates (order history from/to) are KST
 REVIEW_CACHE_SEC = 60
 REVIEW_FAIL_CACHE_SEC = 30
@@ -1070,6 +1075,23 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(503, f"no estimate for {ticker}") from None
         return result.to_dict() if result else {"ticker": ticker, "supported": False}
 
+    async def _off_hours_trade(ticker: str):
+        """#257: a KIS trade of a US ticker off hours - up to OFF_HOURS_FRESH_SEC old (thin ETFs trade
+        minutes apart); a ticker just subscribed gets FIRST_TICK_WAIT_SEC for its first trade, so the
+        board's first load is not all estimates."""
+        stream = getattr(prices, "stream", None)
+        if stream is None:
+            return None
+        new = not stream.subscribed(ticker)     # only a fresh subscription waits; a quiet one does not
+        stream.want(ticker)
+        tick = stream.latest(ticker, OFF_HOURS_FRESH_SEC)
+        waited = 0.0
+        while tick is None and new and waited < FIRST_TICK_WAIT_SEC:
+            await asyncio.sleep(FIRST_TICK_POLL_SEC)
+            waited += FIRST_TICK_POLL_SEC
+            tick = stream.latest(ticker, OFF_HOURS_FRESH_SEC)
+        return tick
+
     @app.get("/api/estimates")
     async def estimates(tickers: str):
         """The quote board (#123/#124): for each ticker the live price while its market is open,
@@ -1114,13 +1136,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 # trading - a KIS trade beats the estimate; none yet (or no KIS) keeps the estimate
                 elif (kis_stream.market_of(ticker) == "US"
                       and (session := kis_stream.us_session()) in ("pre", "post", "overnight")
-                      and live.watch(prices, ticker)):
-                    q = await prices.quote(ticker)
-                    if q.source == "kis":
-                        change = (round((q.price / est.last_close - 1) * 100, 2)
-                                  if est and est.last_close else None)
-                        return {**row, "state": "live", "price": q.price, "change_pct": change,
-                                "quote_source": "kis", "session": session, "fetched_at": q.fetched_at}
+                      and (tick := await _off_hours_trade(ticker)) is not None):
+                    change = (round((tick.price / est.last_close - 1) * 100, 2)
+                              if est and est.last_close else None)
+                    return {**row, "state": "live", "price": tick.price, "change_pct": change,
+                            "quote_source": "kis", "session": session, "fetched_at": tick.received_at}
                 if est:
                     return {**row, "state": "estimate", "price": est.estimate, "change_pct": est.change_pct,
                             "fetched_at": est.fetched_at}

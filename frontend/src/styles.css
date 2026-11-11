@@ -1488,5 +1488,6 @@ a.wmb-row:hover { border-color: var(--accent); }
 .mx-quiet summary { cursor: pointer; color: var(--muted); margin-bottom: 6px; }
 @media (max-width: 760px) {
   .mx-row.mx-compact { grid-template-columns: 44px minmax(0, 1fr) auto; }
-  .mx-compact .mx-line { grid-column: 1 / -1; }
+  .mx-compact .mx-spike { grid-row: 1; grid-column: 3; }
+  .mx-compact .mx-line { grid-column: 1 / -1; grid-row: 2; }
 }

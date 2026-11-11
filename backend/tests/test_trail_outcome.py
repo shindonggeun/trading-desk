@@ -32,7 +32,7 @@ def test_a_reversal_after_t1_ends_on_the_trail_with_the_same_r_as_the_replay():
 def test_the_trail_does_not_stop_at_t2_and_marks_an_open_runner():
     bars = _bars(FILL + [(100 + 3 * i, 103 + 3 * i, 102 + 3 * i) for i in range(10)])   # to 129, past T2 115
     res = outcome.judge_playbook(_side(), 1, bars, SWING, PLAN_AT)
-    assert res["status"] == "open" and res["r"] == round(_replay(1, bars, 95.0, 105.0), 2)
+    assert res["status"] == "open" and res["trailing"] is True and res["r"] == round(_replay(1, bars, 95.0, 105.0), 2)
     fixed = outcome.judge_playbook(_side(trail=False), 1, bars, SWING, PLAN_AT)
     assert fixed["status"] == "t2" and "trailed" not in fixed
 
@@ -58,3 +58,37 @@ def test_a_stop_before_t1_and_the_time_stop_are_the_same_with_or_without_the_tra
         assert res["status"] == "stop" and res["r"] == -1.0 and "trailed" not in res
     flat = _bars(FILL + [(99, 102, 101)] * 5)
     assert outcome.judge_playbook(_side(), 1, flat, SWING, PLAN_AT)["status"] == "time_stop"
+
+
+def test_a_trail_left_at_break_even_is_the_plain_break_even():
+    side = _side()
+    side["exit"]["distance"] = 6.0                          # wider than T1's 5: the trail stays at break-even
+    bars = _bars(FILL + [(101, 105.5, 105), (99, 104, 100)])
+    res = outcome.judge_playbook(side, 1, bars, SWING, PLAN_AT)
+    assert res["status"] == "t1_be" and "trailed" not in res and res["r"] == 0.5
+
+
+def test_no_distance_falls_back_to_the_fixed_exit():
+    side = _side()
+    side["exit"]["distance"] = None
+    bars = _bars(FILL + [(100 + 3 * i, 103 + 3 * i, 102 + 3 * i) for i in range(10)])
+    assert outcome.judge_playbook(side, 1, bars, SWING, PLAN_AT)["status"] == "t2"
+
+
+def test_a_runner_still_trailing_at_the_age_limit_is_marked_not_dropped():
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+
+    bars = _bars(FILL + [(100 + 3 * i, 103 + 3 * i, 102 + 3 * i) for i in range(10)])
+
+    class Prices:
+        async def candles(self, ticker, interval, n):
+            return {"bars": bars}
+
+    plan = {"bias": "long", "entry": 100.0, "stop": 95.0, "target": 115.0, "live_price": {"fetched_at": PLAN_AT},
+            "playbooks": {"regime": {"id": "uptrend"}, "long": _side(), "short": {"setup": "none"}}}
+    run = {"ticker": "NVDA", "horizon": "swing", "plan": plan, "created_at": PLAN_AT}
+    now = datetime.fromisoformat(PLAN_AT).astimezone(UTC) + outcome.MAX_AGE["swing"] + timedelta(days=1)
+    res = asyncio.run(outcome.score(run, Prices(), now))
+    pb = res["playbooks"]["long"]
+    assert pb["status"] == "t1_be" and pb["trailed"] and pb["marked"] and pb["r"] > 2

@@ -282,7 +282,8 @@ def judge_playbook(side: dict, direction: int, bars: list[dict], horizon: horizo
         if (bar["low"] <= stop) if sign > 0 else (bar["high"] >= stop):
             gapped = (bar["open"] < stop) if sign > 0 else (bar["open"] > stop)
             exit_price = bar["open"] if gapped and i != last_fill else stop
-            extra = {"trailed": True} if trail and took_t1 else {}
+            # a trail still at break-even is the plain "T1 then break-even"
+            extra = {"trailed": True} if trail and took_t1 and sign * (exit_price - avg()) > 0 else {}
             return result("t1_be" if took_t1 else "stop", exit_price, bar["at"], **extra)
         if not took_t1 and ((bar["high"] >= t1) if sign > 0 else (bar["low"] <= t1)):
             took_t1, stop, best = True, avg(), avg()
@@ -299,7 +300,7 @@ def judge_playbook(side: dict, direction: int, bars: list[dict], horizon: horizo
     if not filled:
         return {**base, "status": "waiting", "detail": "not filled yet"}
     last = after[-1]
-    out = result("open", last["close"], last["at"])
+    out = result("open", last["close"], last["at"], **({"trailing": True} if trail and took_t1 else {}))
     return {**out, "exited_at": None, "detail": "still in the trade"}
 
 
@@ -364,7 +365,13 @@ async def score(run: dict, prices, now: datetime | None = None) -> dict:
                       "detail": f"still {result['status']} after {MAX_AGE[horizon.id].days} days: {result.get('detail', '')}"}
         for side in ("long", "short"):
             pb = (result.get("playbooks") or {}).get(side)
-            if pb and pb["status"] in PB_PENDING:
+            if pb and pb["status"] == "open" and pb.get("trailing"):
+                # #277: a runner still on its trail is the rule's best case - marked at the last close
+                # (as desk.backtest's MARKED), not dropped from the record
+                result["playbooks"][side] = {**pb, "status": "t1_be", "trailed": True, "marked": True,
+                                             "detail": f"still trailing after {MAX_AGE[horizon.id].days} days: "
+                                                       "marked at the last close"}
+            elif pb and pb["status"] in PB_PENDING:
                 result["playbooks"][side] = {**pb, "status": "unscorable", "detail": f"still {pb['status']}"}
     result["sweep_status"] = _sweep_status(result)
     return result

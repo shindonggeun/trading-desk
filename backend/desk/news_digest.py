@@ -35,6 +35,8 @@ KEEP = 2000                   # answers remembered (by URL)
 IMPACTS = ("high", "mid", "low")
 TITLE_MAX = 160
 WHY_MAX = 160
+LINE_MAX = 60                 # #273: the theme's one-line read on the page
+LEAN_GAP = 15                 # positive vs negative points apart before a theme leans one way
 ASSETS_MAX = 4
 _CONTROL = dict.fromkeys(range(32), " ")
 _URL = re.compile(r"https?://|www\.", re.IGNORECASE)
@@ -211,7 +213,7 @@ class Digest:
                 neg = round(sum(h["sentiment"]["neg"] for h in read) / len(read))
                 impact = min((h["impact"] for h in read), key=IMPACTS.index)
                 summary = {"sentiment": {"pos": pos, "neg": neg, "neu": 100 - pos - neg}, "impact": impact,
-                           "read": len(read)}
+                           "read": len(read), **one_line(read, pos, neg)}
             themes.append({**row, "about_ko": ABOUT_KO.get(row.get("id")), "headlines": heads, "digest": summary})
         return {**brief, "themes": themes, "digest": {"refreshed_at": self.refreshed_at, "error": self.error,
                                                        "note": "헤드라인을 모델이 해석한 값이며 예측이 아닙니다"}}
@@ -235,6 +237,16 @@ class Digest:
                     title = " ".join(str(h.get("title") or "").translate(_CONTROL).replace('"', "'").split())[:200]
                     out.append((row["id"], {**r, "title": title}))
         return out
+
+
+def one_line(read: list[dict], pos: int, neg: int) -> dict:
+    """#273: what happened (the biggest, then newest, read headline in Korean) and which way the
+    theme leans for stocks - "우호" | "부담" | "중립". No model call: the reads are already there."""
+    top = min(enumerate(read), key=lambda p: (IMPACTS.index(p[1]["impact"]), p[0]))[1]
+    title = top["title_ko"]
+    line = title if len(title) <= LINE_MAX else title[:LINE_MAX - 1].rstrip() + "…"
+    lean = "우호" if pos - neg >= LEAN_GAP else "부담" if neg - pos >= LEAN_GAP else "중립"
+    return {"line": line, "lean": lean}
 
 
 @asynccontextmanager

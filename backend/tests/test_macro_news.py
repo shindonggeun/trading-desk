@@ -223,3 +223,65 @@ def test_saturated_feeds_are_floors_and_stay_out_of_the_median():
     m._relative_rss_spikes(themes)
     assert themes["t0"]["spike"] == 3.5 and themes["t2"]["spike"] == 1.0 and themes["t4"]["spike"] == 2.0
     assert themes["t5"]["spike"] is None and themes["t5"]["spike_kind"] == "themes"
+
+
+def _head(title: str, hours: float | None, n: int = 0) -> dict:
+    return {"title": title, "url": f"https://x.com/{n}", "domain": "x.com",
+            "seen": (NOW - timedelta(hours=hours)).isoformat() if hours is not None else None}
+
+
+def test_recent_keeps_the_last_three_days_newest_first_one_per_story():
+    heads = [_head("Fed holds rates steady as inflation cools", 5, 1),
+             _head("Fed holds rates steady as inflation cools - update", 2, 2),   # same story, newer
+             _head("Old story from four days ago", 96, 3),
+             _head("No time on this one", None, 4),
+             _head("Treasury yields fall after jobs data", 30, 5)]
+    out = m.recent(heads, NOW)
+    assert [h["url"] for h in out] == ["https://x.com/2", "https://x.com/5"]
+    assert out[0]["age_h"] == 2.0 and out[1]["age_h"] == 30.0
+
+
+def test_the_brief_rewindows_old_snapshots_and_names_its_basis():
+    cache = m.Cache()
+    fresh = {"articles_24h": 4, "spike": 1.2, "spike_kind": "week", "tone": 0.0, "fetched_at": NOW.isoformat()}
+    cache.themes = {
+        "fed": {"id": "fed", "label": "Fed", **fresh,
+                "headlines": [_head(t, h, n) for n, (t, h) in enumerate([
+                    ("Powell signals patience on cuts", 1), ("Payrolls beat forecasts again", 20),
+                    ("Crude slides on supply glut", 40), ("Gold record as dollar weakens", 60)])]},
+        "china": {"id": "china", "label": "China", **fresh, "articles_24h": 0,
+                  "headlines": [_head("Stimulus talk from last week", 100, 9)]},
+    }
+    brief = cache.brief(now=NOW)
+    assert brief["window_h"] == 72 and brief["spike_basis"] == "24h_vs_prior_6d_avg"
+    assert brief["as_of"] == NOW.isoformat(timespec="seconds")
+    fed, china = brief["themes"]
+    assert len(fed["headlines"]) == m.SHOWN and not fed["quiet"]
+    assert china["headlines"] == [] and china["quiet"]                   # only a 4-day-old story: quiet
+    # the same snapshot read 3 days later: nothing left to show
+    later = cache.brief(now=NOW + timedelta(hours=72))
+    assert all(not t["headlines"] for t in later["themes"])
+    cache.themes["china"]["spike_kind"] = "themes"
+    assert cache.brief(now=NOW)["spike_basis"] == "mixed"
+
+
+TITLES = ["Tariff talks resume in Geneva", "Exporters brace for duties", "Court weighs levy challenge",
+          "Retailers warn on prices", "Port volumes slump", "Senate debates trade bill", "Beijing vows response",
+          "Steel mills cut output", "Farm groups seek relief", "Customs revenue jumps"]
+
+
+def test_the_rss_feed_counts_the_week_but_shows_only_the_last_three_days():
+    items = "".join(
+        f"<item><title>{TITLES[n]} - Src</title><link>https://n.com/{n}</link><source>Src</source>"
+        f"<pubDate>{(NOW - timedelta(hours=h)).strftime('%a, %d %b %Y %H:%M:%S GMT')}</pubDate></item>"
+        for n, h in enumerate([1, 10, 50, 80, 100, 120, 130, 140, 150, 160]))
+    rss = f"<rss><channel>{items}</channel></rss>"
+
+    async def run():
+        transport = httpx.MockTransport(lambda req: httpx.Response(200, text=rss))
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await m.fetch_theme_rss(m.THEMES[0], NOW, client)
+
+    row = asyncio.run(run())
+    assert row["spike"] is not None                                      # the week still sets the surge
+    assert [h["title"] for h in row["headlines"]] == TITLES[:3]

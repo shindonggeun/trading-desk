@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { price, time } from "../format";
 import type { BoardItem } from "../types";
+import { LongShortBar, LongShortToggle, useLongShort, useLongShortShown } from "./LongShortBar";
 import { boardBadge, boardBadgeClass, boardReason, quoteSourceShort } from "../korean";
 
 export type BoardTicker = { ticker: string; name?: string };
@@ -123,6 +124,8 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
     return [...new Set(all)].slice(0, 30);
   }, [watch, bundle, closedMode, bundleOpen]);
   const key = tickers.join(",");
+  const [lsShown, flipLs] = useLongShortShown();
+  const ls = useLongShort(tickers, lsShown);
 
   useEffect(() => {
     if (!tickers.length) return;
@@ -169,6 +172,7 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
           {updated ? `${time(updated)} 갱신` : "불러오는 중"}
           {failedAt && ` · ${time(failedAt)} 갱신 실패 — 마지막 값`}
         </span>
+        <LongShortToggle shown={lsShown} onFlip={flipLs} />
       </div>
       {closedMode && (
         <div className="qb-group">
@@ -189,6 +193,7 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
               {bundle.map((b) => (
                 <div key={b.ticker} className="qb-cell">
                   <Tile it={items[b.ticker]} name={b.name ?? b.ticker} on={selected === b.ticker} onPick={() => onPick(b)} />
+                  {lsShown && <LongShortBar it={ls[b.ticker]} />}
                   {editing && (
                     <button type="button" className="qb-x" aria-label={`${b.name ?? b.ticker} 빼기`} onClick={() => removeFromBundle(b.ticker)}>×</button>
                   )}
@@ -204,6 +209,7 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
           {watch.map((w) => (
             <div key={w.ticker} className="qb-cell">
               <Tile it={items[w.ticker]} name={w.name ?? w.ticker} on={selected === w.ticker} onPick={() => onPick(w)} />
+              {lsShown && <LongShortBar it={ls[w.ticker]} />}
             </div>
           ))}
         </div>

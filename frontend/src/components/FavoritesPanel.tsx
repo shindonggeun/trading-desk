@@ -3,7 +3,8 @@ import { api } from "../api";
 import { boardBadge, boardBadgeClass, boardReason, quoteSourceShort } from "../korean";
 import { clearFavoriteError, moveFavorite, removeFavorite, useFavorites } from "../favorites";
 import { price, time } from "../format";
-import type { BoardItem, EstimatedCandles } from "../types";
+import type { BoardItem, EstimatedCandles, LongShortItem } from "../types";
+import { LongShortBar, LongShortToggle, useLongShort, useLongShortShown } from "./LongShortBar";
 
 const POLL_MS = 15_000;      // 시세판과 같은 주기
 const SPARK_MS = 120_000;    // 작은 차트는 2분마다
@@ -73,8 +74,9 @@ export function Spark({ ticker, tone, order }: { ticker: string; tone: "up" | "d
   );
 }
 
-function Tile({ ticker, name, it, first, last, editing, order }: {
-  ticker: string; name: string; it: BoardItem | undefined; first: boolean; last: boolean; editing: boolean; order: number;
+function Tile({ ticker, name, it, ls, first, last, editing, order }: {
+  ticker: string; name: string; it: BoardItem | undefined; ls: LongShortItem | undefined; first: boolean; last: boolean;
+  editing: boolean; order: number;
 }) {
   const ch = it?.change_pct;
   const tone = ch == null ? "" : ch > 0 ? "up" : ch < 0 ? "down" : "";
@@ -98,6 +100,7 @@ function Tile({ ticker, name, it, first, last, editing, order }: {
           {it?.close != null && ` · 기준 ${price(it.close)}${it.close_date ? `(${it.close_date.slice(5)})` : ""}`}
         </span>
       </a>
+      <LongShortBar it={ls} />
       {editing && (
         <span className="fav-tools" role="group" aria-label={`${name} 편집`}>
           <button type="button" className="dash-move" disabled={first} aria-label={`${name} 앞으로`} onClick={() => moveFavorite(ticker, -1)}>←</button>
@@ -120,6 +123,8 @@ export default function FavoritesPanel() {
   const [editing, setEditing] = useState(false);
   const tickers = (list ?? []).slice(0, MAX_QUOTES).map((f) => f.ticker);
   const key = tickers.join(",");
+  const [lsShown, flipLs] = useLongShortShown();
+  const ls = useLongShort(tickers, lsShown);
 
   useEffect(() => {
     if (!key) return;
@@ -164,13 +169,16 @@ export default function FavoritesPanel() {
               {failedAt && ` · ${time(failedAt)} 갱신 실패 — 마지막 값`}
               {list.length > MAX_QUOTES && ` · 앞 ${MAX_QUOTES}개만 보입니다(나머지는 시세판 탭에서 보고 뺄 수 있습니다)`}
             </span>
-            <button type="button" className="link small" aria-pressed={editing} onClick={() => setEditing((v) => !v)}>
-              {editing ? "편집 끝" : "순서 · 빼기"}
-            </button>
+            <span className="qb-head-tools">
+              <LongShortToggle shown={lsShown} onFlip={flipLs} />
+              <button type="button" className="link small" aria-pressed={editing} onClick={() => setEditing((v) => !v)}>
+                {editing ? "편집 끝" : "순서 · 빼기"}
+              </button>
+            </span>
           </div>
           <div className="qb-grid fav-grid">
             {shown.map((f, i) => (
-              <Tile key={f.ticker} ticker={f.ticker} name={f.name ?? f.ticker} it={items[f.ticker]}
+              <Tile key={f.ticker} ticker={f.ticker} name={f.name ?? f.ticker} it={items[f.ticker]} ls={lsShown ? ls[f.ticker] : undefined}
                 first={i === 0} last={i === list.length - 1} editing={editing} order={i} />
             ))}
           </div>

@@ -1491,3 +1491,24 @@ a.wmb-row:hover { border-color: var(--accent); }
   .mx-compact .mx-spike { grid-row: 1; grid-column: 3; }
   .mx-compact .mx-line { grid-column: 1 / -1; grid-row: 2; }
 }
+
+/* #272 바이낸스 롱/숏 막대 — 롱 빨강 · 숏 파랑(국내 관례), 타일 아래 한 줄 */
+.qb-head-tools { display: inline-flex; gap: 12px; align-items: baseline; }
+.ls-wrap { position: relative; margin-top: 4px; }
+.ls-row { display: flex; align-items: center; gap: 5px; width: 100%; padding: 2px 2px; border: 0; background: none;
+  color: var(--muted); cursor: pointer; font: inherit; line-height: 1.2; white-space: nowrap; }
+.ls-row:focus-visible { outline: 2px solid var(--accent, var(--text)); outline-offset: 1px; border-radius: 4px; }
+.ls-word { flex: none; }
+.ls-short { flex: none; color: var(--short); }
+.ls-long { flex: none; color: var(--long); }
+.ls-bar { display: flex; flex: 1 1 auto; min-width: 24px; height: 6px; border-radius: 3px; overflow: hidden;
+  background: var(--surface-2); }
+.ls-bar-short { background: var(--short); }
+.ls-bar-long { background: var(--long); }
+.ls-pop { position: absolute; z-index: 5; top: calc(100% + 2px); left: 0; min-width: 230px; display: grid; gap: 2px;
+  padding: 7px 9px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--text) 14%, transparent); }
+@media (max-width: 760px) {
+  .ls-word { display: none; }
+  .ls-pop { left: -4px; right: -4px; min-width: 0; }
+}

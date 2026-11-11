@@ -44,9 +44,14 @@ def test_a_short_against_a_strong_uptrend_is_dropped_and_a_long_against_a_downtr
     lean = {"score": 40, "bias": "long", "strong": False, "parts": []}
     assert direction.apply(pb, lean, SWING)["short"]["setup"] == "none"      # halved ones lost too: dropped
     neutral = {"score": 10, "bias": "neutral", "strong": False, "parts": []}
-    assert direction.apply(pb, neutral, SWING)["short"]["setup"] == "fade"
+    dropped = direction.apply(pb, neutral, SWING)["short"]                     # stage 4: a fade needs a downtrend
+    assert dropped["setup"] == "none" and "-60 이하" in dropped["reason"]
+    assert direction.apply(pb, {**neutral, "score": -59}, SWING)["short"]["setup"] == "none"
+    assert direction.apply(pb, {**neutral, "score": -60}, SWING)["short"]["setup"] == "fade"
+    assert direction.apply(pb, None, SWING)["short"]["setup"] == "none"       # no score: no short
     down = {"score": -80, "bias": "short", "strong": True, "parts": []}
     kept = direction.apply(pb, down, SWING)
+    assert kept["short"]["setup"] == "fade"
     # catching the crash is the long's job: marked against the trend, not dropped
     assert kept["long"]["setup"] == "dip_catch" and kept["long"]["direction"] == "against"
     assert kept["short"]["direction"] == "with"
@@ -221,3 +226,87 @@ def test_the_note_says_what_the_index_parts_mean():
     flat = _days([100.0] * 150, wiggle=0.01)
     note = direction.prompt_note(direction.score(flat, _index(above20=False, slope20=-0.02)))
     assert "main index trend" in note and "[^NDX 20일선 아래" in note and "[^NDX 대비 20일" in note
+
+
+def test_under_the_index_20_day_line_pullback_and_range_longs_pause_and_crash_buys_stay():
+    up = {"score": 70, "bias": "long", "strong": True, "parts": []}
+    for tape in ("below_up", "below_down"):
+        for setup in ("pullback", "range_low"):
+            pb = {"long": {"setup": setup, "entries": [{"price": 1}]}, "short": {"setup": "none"}}
+            out = direction.apply(pb, {**up, "tape": tape}, SWING)["long"]
+            assert out["setup"] == "none" and "20일선 아래" in out["reason"]
+        crash = {"long": {"setup": "dip_catch", "entries": [{"price": 1}]}, "short": {"setup": "none"}}
+        assert direction.apply(crash, {**up, "tape": tape}, SWING)["long"]["setup"] == "dip_catch"
+    pb = {"long": {"setup": "pullback", "entries": [{"price": 1}]}, "short": {"setup": "none"}}
+    for tape in ("above_up", "above_down", None):
+        assert direction.apply(pb, {**up, "tape": tape}, SWING)["long"]["setup"] == "pullback"
+    marked = direction.apply(pb, {**up, "tape": "below_down"}, horizons.get("intraday"))["long"]
+    assert marked["setup"] == "pullback"                                     # swing only: elsewhere marked
+
+
+def test_the_tape_comes_from_the_market_index_and_the_weekly_trend_is_evidence():
+    assert direction.tape_of(_index(above20=False, slope20=0.01)) == "below_up"
+    assert direction.tape_of(_index(above20=True, slope20=-0.01)) == "above_down"
+    assert direction.tape_of({"score": 10}) is None and direction.tape_of(None) is None
+    up = _days([100.0 * 1.004 ** i for i in range(200)], wiggle=0.01)
+    got = direction.score(up, _index(above20=False, slope20=-0.01))
+    weekly = {p["id"]: p for p in got["parts"]}["weekly"]
+    assert got["tape"] == "below_down" and weekly["value"] == 1.0 and weekly["weight"] == 0
+    assert "주봉 상승" in weekly["text"] and not weekly["validated"]
+
+
+def test_a_turning_flag_survives_a_side_a_rule_emptied():
+    pb = {"long": {"setup": "pullback", "entries": [{"price": 1}]}, "short": {"setup": "fade", "entries": [{"price": 2}]}}
+    turning = {"score": -10, "bias": "neutral", "strong": False, "turning": True, "before": 40, "parts": []}
+    out = direction.apply(pb, turning, SWING)
+    assert out["short"]["setup"] == "none" and out["short"]["turning"] and out["long"]["turning"]
+
+
+def _uptrend_build_inputs():
+    daily = _days([50 * 1.004 ** i for i in range(230)], wiggle=0.01)
+    ref = daily[-1]["close"]
+    sr = {"atr": ref * 0.02, "reference_price": ref, "levels": [
+        {"price": ref * 1.05, "kind": "resistance", "strength": 2.0, "basis": "저항"},
+        {"price": ref * 0.95, "kind": "support", "strength": 2.0, "basis": "지지"}]}
+    return daily, ref, sr
+
+
+def test_the_index_rule_runs_through_build_and_the_backtest_keeps_it_with_the_gate_off():
+    from types import SimpleNamespace
+
+    from desk import backtest
+
+    daily, ref, sr = _uptrend_build_inputs()
+    live = {"price": ref, "source": "t", "fetched_at": "x"}
+    plain = playbook.build(sr, daily, daily, SWING, live=live)
+    assert plain["long"]["setup"] in direction.TAPE_PAUSE_SETUPS            # the rule's target
+    under = _index(above20=False, slope20=0.01)
+    paused = playbook.build(sr, daily, daily, SWING, live=live, market=under)
+    assert paused["direction"]["tape"] == "below_up"
+    assert paused["long"]["setup"] == "none" and "20일선 아래" in paused["long"]["reason"]
+    assert "size_hint" in paused["long"] and paused["long"]["entries"] == []   # desk.playbook's empty side shape
+    above = playbook.build(sr, daily, daily, SWING, live=live, market=_index(above20=True, slope20=0.01))
+    assert above["long"]["setup"] == plain["long"]["setup"]
+    # the backtest's gate-off run still hands the market to the direction (the #146 gate is what is off)
+    snap = SimpleNamespace(sr=sr, daily=daily, window=daily, plan_at=None, today=None, vix=None, risk=under,
+                           weekly=None)
+    assert backtest.playbooks_at(snap, SWING, gate=False)["long"]["setup"] == "none"
+
+
+def test_the_weekly_part_needs_30_weeks_and_reads_two_terms_before_34():
+    flat = [100.0] * 145
+    assert "weekly" not in {p["id"] for p in direction.score(_days(flat, wiggle=0.01))["parts"]}   # 29 points
+    assert "weekly" in {p["id"] for p in direction.score(_days(flat + [100.0] * 5, wiggle=0.01))["parts"]}  # 30
+    up = _days([100.0 * 1.004 ** i for i in range(160)], wiggle=0.01)            # 32 weekly points: no slope term
+    part = {p["id"]: p for p in direction.score(up)["parts"]}["weekly"]
+    assert part["value"] == 1.0
+
+
+def test_the_note_says_the_tape_in_words_and_the_rules_only_when_on(monkeypatch):
+    flat = _days([100.0] * 150, wiggle=0.01)
+    note = direction.prompt_note(direction.score(flat, _index(above20=False, slope20=0.01)))
+    assert "below its rising 20-day line" in note and "-60 or lower" in note and "pause pullback" in note
+    monkeypatch.setattr(direction, "SHORT_NEEDS", None)
+    monkeypatch.setattr(direction, "TAPE_PAUSE", ())
+    note = direction.prompt_note(direction.score(flat))
+    assert "-60" not in note and "pause pullback" not in note and "20-day line" not in note

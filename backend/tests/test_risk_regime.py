@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 from types import SimpleNamespace
 
-from desk import backtest, horizons, playbook, risk_regime
+from desk import backtest, direction, horizons, playbook, risk_regime
 from tests.test_backtest import _bars, _fetch
 from tests.test_playbook import _crash, _crash_sr
 
@@ -148,7 +148,7 @@ def test_fetch_skips_a_failing_symbol_and_the_cache_reuses_a_hit():
     assert empty.current("005930.KS") is None
 
 
-def test_the_backtest_gates_the_plans_and_compares_on_and_off():
+def test_the_backtest_gates_the_plans_and_compares_on_and_off(monkeypatch):
     daily = _bars(320)
     days = [backtest.local_day(b["at"], "SOXL") for b in daily]
     # the market dumps with the ticker's crash (bars 260~275) and stays there
@@ -165,7 +165,11 @@ def test_the_backtest_gates_the_plans_and_compares_on_and_off():
     assert on["all"]["plans"] <= off["all"]["plans"] and report.by_risk["long:dip_catch:selling"]["plans"]
     assert all(k.endswith(("selling", "calm", "exhausting", "unknown")) for k in report.by_risk)
     ungated = backtest.run(["SOXL"], "swing", fetch=_fetch(daily), vix=None)
-    assert ungated.risk_gate == {} and ungated.baseline == off["all"]
+    assert ungated.risk_gate == {}
+    # gate off keeps the direction's index rule (#166 stage 4); without it, it is the same as no market
+    monkeypatch.setattr(direction, "TAPE_PAUSE", ())
+    off = backtest.run(["SOXL"], "swing", fetch=_fetch(daily), vix=None, risk=market).risk_gate["off"]
+    assert backtest.run(["SOXL"], "swing", fetch=_fetch(daily), vix=None).baseline == off["all"]
 
 
 # --- review follow-ups: look-ahead, a slow Yahoo, the runner's path -------------------------------

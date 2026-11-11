@@ -194,7 +194,10 @@ def judge_playbook(side: dict, direction: int, bars: list[dict], horizon: horizo
     long's confirmation step after a limit fill, a lone stop entry (the short fade) after the price
     has reached its zone), then stop / T1 (stop to break-even) / T2, the time stop, and the close
     for a flat-by-close side. ``r`` is per filled share over the planned risk; ``r_size`` scales
-    it by the filled share of the full position. Pure function."""
+    it by the filled share of the full position. A side whose ``exit`` is the 2-ATR trail (#239, #277:
+    stock swing plans) does not end at T2: after T1 its stop follows the best price since the fill by
+    ``exit.distance`` (as desk.exits' ``trail_atr``), and a trailed stop ends it as ``t1_be`` with
+    ``trailed``. Pure function."""
     base = {"rules_version": PLAYBOOK_RULES_VERSION, "setup": side.get("setup")}
     entries = side.get("entries") or []
     stop0, targets = side.get("stop"), side.get("targets") or []
@@ -218,6 +221,9 @@ def judge_playbook(side: dict, direction: int, bars: list[dict], horizon: horizo
     bars_limit = (side.get("time_stop") or {}).get("bars")
     flat = bool(side.get("flat_by_close")) and not daily
     lone_stop = len(entries) == 1 and entries[0]["kind"] == "stop"
+    rule = side.get("exit") or {}
+    trail = rule.get("distance") if rule.get("rule") == "trail_atr" and (rule.get("distance") or 0) > 0 else None
+    best = None                      # the best price since the fill (the trail's anchor)
 
     def avg() -> float:
         total = sum(e["share"] for e in filled)
@@ -276,10 +282,15 @@ def judge_playbook(side: dict, direction: int, bars: list[dict], horizon: horizo
         if (bar["low"] <= stop) if sign > 0 else (bar["high"] >= stop):
             gapped = (bar["open"] < stop) if sign > 0 else (bar["open"] > stop)
             exit_price = bar["open"] if gapped and i != last_fill else stop
-            return result("t1_be" if took_t1 else "stop", exit_price, bar["at"])
+            extra = {"trailed": True} if trail and took_t1 else {}
+            return result("t1_be" if took_t1 else "stop", exit_price, bar["at"], **extra)
         if not took_t1 and ((bar["high"] >= t1) if sign > 0 else (bar["low"] <= t1)):
-            took_t1, stop = True, avg()
-        if took_t1 and t2 is not None and ((bar["high"] >= t2) if sign > 0 else (bar["low"] <= t2)):
+            took_t1, stop, best = True, avg(), avg()
+        if took_t1 and trail:
+            # desk.exits._half_then_trail: raised on this bar's best, first checked on the next bar
+            best = max(best, bar["high"]) if sign > 0 else min(best, bar["low"])
+            stop = max(stop, best - trail) if sign > 0 else min(stop, best + trail)
+        elif took_t1 and t2 is not None and ((bar["high"] >= t2) if sign > 0 else (bar["low"] <= t2)):
             return result("t2", t2, bar["at"])
         if not took_t1 and bars_limit and last_fill is not None and i - last_fill >= bars_limit:
             return result("time_stop", bar["close"], bar["at"])

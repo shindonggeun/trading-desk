@@ -374,6 +374,8 @@ export interface PlaybookOutcome {
   status: PlaybookOutcomeStatus;
   setup?: PlaybookSetup;
   took_t1?: boolean;
+  /** #277 추적 청산 계획: 남은 절반이 추적 손절로 끝났다(상태는 t1_be) */
+  trailed?: boolean;
   score?: number;
   detail?: string;
   filled_shares?: number;

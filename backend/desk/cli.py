@@ -10,6 +10,7 @@
     python -m desk.cli backtest --basket             # the reference basket (desk.backtest.BASKET)
     python -m desk.cli backtest --basket --triggers  # touch entry vs the lower-bar trigger (#149)
     python -m desk.cli backtest --leveraged          # SOXL · TQQQ on the underlying's plans (#239)
+    python -m desk.cli backtest --basket --features  # R by the chart at the plan, train / held-out (#284)
     python -m desk.cli timing [--last 20]            # where recent analyses spent their time (#171)
     python -m desk.cli calibrate [--horizon swing]   # rebuild desk/data/playbook_calibration.json (#147)
     python -m desk.cli weekly-lines [--out lines.json]  # compare the weekly map's trend-line pairs (#216)
@@ -144,7 +145,8 @@ def _backtest(args) -> int:
                 json.dump(rep, f, ensure_ascii=False, indent=1)
         return 0
     report = backtest.run(tickers, args.horizon, args.start, args.end, args.step, costs, args.sweep,
-                          progress=lambda msg: print(msg, file=sys.stderr), risk=not args.no_risk or None)
+                          progress=lambda msg: print(msg, file=sys.stderr), risk=not args.no_risk or None,
+                          features=args.features)
     backtest.print_summary(report)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
@@ -197,6 +199,9 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--cost-bps", type=float, default=None, help="commission + slippage per side (bp)")
     bt.add_argument("--sweep", action="store_true", help="also try the parameters one at a time")
     bt.add_argument("--out", default=None, help="write the full JSON report here")
+    bt.add_argument("--features", action="store_true",
+                    help="also bucket the trades by the chart at the plan (trend, oscillators, volume, gap...) "
+                         "on the training and held-out dates (#284)")
     bt.add_argument("--leveraged", action="store_true",
                     help="leveraged products on their own plans vs their underlying's plans, with the decay filter (#239)")
     bt.add_argument("--triggers", action="store_true",

@@ -839,6 +839,8 @@ class RunManager:
                 pb_main = await self._playbooks(request, main_sr, main_live, frame, related, base or request.ticker,
                                                 market)
                 pb_note = playbook.prompt_note(pb_main)
+                if lever and pb_note:   # #239: the trail was chosen for stocks - the product keeps T1 half -> T2
+                    pb_note += "\nThe leveraged product itself exits the fixed way: half at T1, the rest at T2."
                 note = "\n\n".join(part for part in (live_note(main_live, main_sr and main_sr.get("atr")),
                                                      prompt_note(main_sr), recent_note((main_sr or {}).get("recent")),
                                                      pb_note, direction_note((pb_main or {}).get("direction")),

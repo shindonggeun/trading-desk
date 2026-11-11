@@ -495,7 +495,8 @@ def exit_report(trades: list[Trade], cut: str | None, h: horizons.Horizon) -> di
     share of big wins (>= exits.BIG_R) and the longest run of losing plan days - for stocks and leveraged products,
     on the training dates and the held-out ones. A rule is only worth turning on if it beats ``fixed``
     on the held-out dates."""
-    replayed = sorted((t for t in trades if t.exits), key=lambda t: (t.at, t.ticker))
+    # the oversold swing keeps its own trail (desk.value_swing) - the rules compared here are for the rest
+    replayed = sorted((t for t in trades if t.exits and t.setup != "value_swing"), key=lambda t: (t.at, t.ticker))
     train, valid = split(replayed, cut, h)
     out: dict = {"cut": cut, "rules": list(exits.VARIANTS)}
     for kind in ("all", "stock", "leveraged"):

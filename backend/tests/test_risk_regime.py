@@ -350,3 +350,24 @@ def test_a_hung_fetch_lets_its_waiters_go():
     gate.set()
     first.join(5)
     assert cache.current("NVDA")["phase"] == "selling"
+
+
+def test_the_score_carries_the_main_index_trend_for_the_direction_score():
+    calm = risk_regime.score(_calm())
+    assert calm["index"]["symbol"] == "^NDX" and calm["index"]["slope20"] == 0.0
+    dump = risk_regime.score(_dump())["index"]
+    assert dump["ret20"] < -0.1 and dump["above20"] is False
+    rising = {**_calm(), "^NDX": _series([100.0 + i for i in range(60)])}
+    assert risk_regime.score(rising)["index"] == {"symbol": "^NDX", "ret20": round(159 / 139 - 1, 4),
+                                                  "above20": True, "slope20": round(149.5 / 139.5 - 1, 4)}
+    short = {k: v[-25:] for k, v in _calm().items()}                     # too few bars for a 10-day slope
+    assert risk_regime.score(short)["index"] is None
+
+
+def test_the_index_trend_needs_the_markets_own_index_and_31_bars():
+    assert risk_regime.score({k: v[-31:] for k, v in _calm().items()})["index"] is not None
+    assert risk_regime.score({k: v[-30:] for k, v in _calm().items()})["index"] is None
+    no_ndx = {k: v for k, v in _calm().items() if k != "^NDX"}             # ^SOX is no whole market
+    assert risk_regime.score(no_ndx)["index"] is None
+    kr = {**_calm(), "^KS11": _series([100.0] * 60), "KRW=X": _series([1300.0] * 60)}
+    assert risk_regime.score(kr, korean=True)["index"]["symbol"] == "^KS11"

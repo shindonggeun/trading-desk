@@ -261,7 +261,21 @@ def score(series: Series, korean: bool = False) -> dict | None:
         phase = "calm"
     return {"version": VERSION, "market": "KR" if korean else "US", "as_of": as_of_day,
             "score": now, "peak": peak, "phase": phase, "label": PHASE_LABEL[phase],
-            "parts": ps, "signals": sig, "missing": [s for s in (KR if korean else US) if s not in series]}
+            "parts": ps, "signals": sig, "missing": [s for s in (KR if korean else US) if s not in series],
+            "index": index_trend(series, korean)}
+
+
+def index_trend(series: Series, korean: bool = False) -> dict | None:
+    """The main index's own tape for desk.direction (#166 stage 3): its 20-day return (a ticker's
+    strength is read against it) and where it sits on its 20-day line, with that line's 10-day slope."""
+    main = "^KS11" if korean else "^NDX"       # the market's own index only: ^SOX is not a whole market
+    c = _closes(series, main)
+    if len(c) < MIN_BARS + 10:
+        return None
+    sma20 = sum(c[-20:]) / 20
+    sma20_before = sum(c[-30:-10]) / 20
+    return {"symbol": main, "ret20": round(c[-1] / c[-21] - 1, 4),
+            "above20": c[-1] > sma20, "slope20": round(sma20 / sma20_before - 1, 4)}
 
 
 # ---------------------------------------------------------------- the rule

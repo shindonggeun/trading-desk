@@ -4,8 +4,9 @@ The basket backtest (#144) says the desk loses most on trades against the trend 
 an uptrend averaged -0.4R - so the playbooks ask this score which side is "with" the trend and
 take the other side smaller or not at all (``apply``). Everything here is arithmetic on daily
 bars: the moving-average stack, the 50-day slope, the swing structure (higher highs and lows or
-lower ones) and the 20-day return. Each part is kept with its value so the page and the note can
-say why. Flows, the market's risk score and the news layer can join later as further parts.
+lower ones) and the 20-day return. Each part is kept with its value so the page and the note can say why; the
+market's selling score, the news theme, the strength against the main index and that index on its
+20-day line (#166 stage 3) are shown at weight 0 (measured with no held-out gain, or not measurable).
 """
 
 from __future__ import annotations
@@ -21,8 +22,18 @@ SWING_K = 3
 # shown as evidence at weight 0: swing basket 2019-, costs in, gated, train / held-out (2024-05-17):
 # market 0 -0.1372R / -0.1175R, 0.5 -0.1368 / -0.1169, 1.0 -0.1361 / -0.1176, 1.5 -0.1359 / -0.1178 -
 # no held-out gain. "macro" cannot be measured, so it must not move which shorts the desk drops.
-WEIGHTS = {"ma_stack": 1.5, "slope50": 1.0, "structure": 1.0, "ret20": 0.5, "market": 0.0, "macro": 0.0}
-VALIDATED = ("ma_stack", "slope50", "structure", "ret20", "market")   # the parts the backtest measured
+# #166 stage 3: "rel" is the ticker's 20-day return against its market's main index (^NDX, ^KS11 -
+# desk.risk_regime.index_trend) and "breadth" that index on or under its rising / falling 20-day line.
+# Swing basket 2019-, costs in, gated, train / held-out (2024-05-21), base -0.107R / -0.079R:
+# rel 0.5 -0.108 / -0.077, 1.0 -0.110 / -0.079 - worse on train. breadth 1.0 -0.106 / -0.077,
+# 1.5 -0.106 / -0.077, 2.0 -0.107 / -0.076, 3.0 -0.108 / -0.079 - inside the noise. Both are shown as
+# evidence at weight 0. (A first run read a 0.008R held-out gain for breadth 1.5: that was the turn
+# check comparing a score with the market against one without - a market under its line looked like
+# a price turn and paused entries. The turn is now price-only on both ends; see ``score``.)
+# If either gets a weight, desk.backtest.playbooks_at's gate-off run drops it too (market=None there).
+WEIGHTS = {"ma_stack": 1.5, "slope50": 1.0, "structure": 1.0, "ret20": 0.5, "market": 0.0, "macro": 0.0,
+           "rel": 0.0, "breadth": 0.0}
+VALIDATED = ("ma_stack", "slope50", "structure", "ret20", "market", "rel", "breadth")   # the parts the backtest measured
 MARKET_NEUTRAL = 25.0   # a selling score here votes neither way; 75 is a full short vote
 HYSTERESIS = 0          # keep an earlier lean this far under LEAN (10 was swept: -0.1361R / -0.1176R vs
                         # -0.1359R / -0.1168R without - it dropped more shorts that were not worse: off)
@@ -74,6 +85,27 @@ def _market_part(market: dict | None) -> dict | None:
             "text": f"시장 투매 점수 {market['score']}({market.get('label') or market.get('phase')})"}
 
 
+def _rel_part(closes: list[float], market: dict | None) -> dict | None:
+    """Stronger than the index over 20 sessions leans long, weaker short (10 points apart = a full vote)."""
+    index = (market or {}).get("index")
+    if not index or index.get("ret20") is None or len(closes) <= 20 or not closes[-21]:
+        return None
+    rel = closes[-1] / closes[-21] - 1 - index["ret20"]
+    return {"id": "rel", "value": round(_clip(rel / 0.10), 2),
+            "text": f"{index['symbol']} 대비 20일 {rel * 100:+.1f}%p"}
+
+
+def _breadth_part(market: dict | None) -> dict | None:
+    """The whole market's tape: the index over a rising 20-day line +1, under a falling one -1, mixed 0."""
+    index = (market or {}).get("index")
+    if not index or index.get("above20") is None or index.get("slope20") is None:
+        return None
+    value = ((1 if index["above20"] else -1) + _sign(index["slope20"])) / 2
+    return {"id": "breadth", "value": value,
+            "text": f"{index['symbol']} 20일선 {'위' if index['above20'] else '아래'}"
+                    f"(20일선 10일 {index['slope20'] * 100:+.1f}%)"}
+
+
 def _macro_part(macro: dict | None) -> dict | None:
     """The ticker's directly relevant theme, fresh and surging: its tone is the vote. The headlines
     stay untrusted input - only the counted tone and spike are used here."""
@@ -92,7 +124,7 @@ def score(daily: list[dict], market: dict | None = None, macro: dict | None = No
     with too few bars. ``market`` (desk.risk_regime.score) and ``macro`` (desk.macro_news brief)
     join as parts when given. The lean has a hysteresis against the price-only lean TURN_BARS ago:
     it is kept until the score falls HYSTERESIS under LEAN, and a score that crossed zero since then
-    is ``turning`` (fresh entries need a stated reason)."""
+    is ``turning`` (fresh entries need a stated reason) - read on the price-only score at both ends."""
     now = _score(daily, market, macro)
     if now is None:
         return None
@@ -102,7 +134,10 @@ def score(daily: list[dict], market: dict | None = None, macro: dict | None = No
         if now["bias"] == "neutral" and before["bias"] != "neutral" \
                 and (now["score"] >= keep if before["bias"] == "long" else now["score"] <= -keep):
             now["bias"], now["held"] = before["bias"], True
-        now["turning"] = _sign(now["score"]) * _sign(before["score"]) < 0 and abs(before["score"]) >= LEAN / 2
+        # the turn is the price's own: ``before`` has no market as of that day, so a market part
+        # (the index under its line for weeks) must not read as a crossing - price-only on both ends
+        price = _score(daily) if (market or macro) else now
+        now["turning"] = _sign(price["score"]) * _sign(before["score"]) < 0 and abs(before["score"]) >= LEAN / 2
         now["before"] = before["score"]
     return now
 
@@ -149,7 +184,7 @@ def _score(daily: list[dict], market: dict | None = None, macro: dict | None = N
         ret = close / closes[-21] - 1
         parts.append({"id": "ret20", "value": round(_clip(ret / 0.10), 2), "text": f"20일 수익률 {ret * 100:+.1f}%"})
 
-    parts += [p for p in (_market_part(market), _macro_part(macro)) if p]
+    parts += [p for p in (_rel_part(closes, market), _breadth_part(market), _market_part(market), _macro_part(macro)) if p]
     for p in parts:
         p["validated"] = p["id"] in VALIDATED
         p["weight"] = WEIGHTS[p["id"]]           # 0: shown as evidence, not counted in the score
@@ -210,13 +245,13 @@ def prompt_note(direction: dict | None) -> str | None:
     if not direction:
         return None
     word = {"long": "LONG-leaning", "short": "SHORT-leaning", "neutral": "neutral"}[direction["bias"]]
-    why = "; ".join(f"{p['id']} {p['value']:+.2f}" + ("" if p.get("validated", True) else " (live only, unvalidated)")
+    why = "; ".join(f"{p['id']} {p['value']:+.2f}" + (f" [{p['text']}]" if p["id"] in ("rel", "breadth") else "") + ("" if p.get("validated", True) else " (live only, unvalidated)")
                     + (" (context, not in the score)" if p.get("weight", 1) == 0 else "")
                     for p in direction["parts"])
-    return (f"Direction (desk: price trend, market selling score, news): {word} {direction['score']:+d}"
+    return (f"Direction (desk: price trend, main index trend, market selling score, news): {word} {direction['score']:+d}"
             + (" (strong)" if direction["strong"] else "")
             + (" (kept from the earlier lean)" if direction.get("held") else "")
-            + (f" - TURNING: crossed zero from {direction['before']:+d} in {TURN_BARS} sessions, a fresh entry"
+            + (f" - TURNING: the price trend crossed zero from {direction['before']:+d} in {TURN_BARS} sessions, a fresh entry"
                " either way needs a stated reason (the desk's swing playbooks pause both sides)"
                if direction.get("turning") else "")
             + f" - {why}. A plan against this direction needs a "

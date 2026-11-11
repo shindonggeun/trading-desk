@@ -861,7 +861,7 @@ def exit_rule(side: dict, up: bool, ticker: str, h: horizons.Horizon, atr: float
         follow = "아래로 따라 올린다" if up else "위로 따라 내린다"
         return {"rule": "trail_atr", "trail_atr": k, "distance": _round(k * atr),
                 "text": f"T1 에서 절반 익절 · 손절을 평단으로 → 남은 절반은 {way} {k:g} ATR({_fmt(k * atr)}) "
-                        f"{follow}. T2 는 참고 목표"}
+                        f"{follow}. T1 뒤엔 시간 손절 대신 추적, T2 는 참고 목표"}
     return {"rule": "fixed", "text": "T1 에서 절반 익절 · 손절을 평단으로 → 나머지는 T2 에서"}
 
 

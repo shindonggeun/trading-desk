@@ -105,3 +105,12 @@ def test_the_time_stop_closes_a_trade_that_never_got_going():
     flat = _bars(FILL + [(99, 102, 101)] * 6)
     r = exits.replay(1, flat, "2026-01-01T00:00:00+00:00", 100.0, 95.0, 105.0, 2.0, fixed_r=0.2, time_stop=3)
     assert r["trail_atr"] == r["runner"] == round(1 / 5, 3)
+
+
+def test_the_report_leaves_out_the_oversold_swing_which_keeps_its_own_trail():
+    from desk import backtest, horizons
+
+    t = backtest.Trade("X", "2020-01-01", "long", "value_swing", "crash", 50, "t2", filled_shares=1.0)
+    t.exits = {v: 5.0 for v in exits.VARIANTS}
+    rep = backtest.exit_report([t], "2024-01-01", horizons.HORIZONS["swing"])
+    assert rep["stock"]["fixed"]["train"]["n"] == 0

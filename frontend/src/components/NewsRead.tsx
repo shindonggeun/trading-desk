@@ -29,7 +29,14 @@ export function Impact({ v }: { v: NewsImpact }) {
   return <span className={`nr-impact nr-impact-${v}`}>{IMPACT_KO[v]}</span>;
 }
 
-type Head = { title: string; url: string; domain: string | null; seen: string | null } & Partial<NewsRead>;
+type Head = { title: string; url: string; domain: string | null; seen: string | null; age_h?: number } & Partial<NewsRead>;
+
+/** #273 "3시간 전" · "2일 전" — 없으면 시각 */
+function ago(h: Head): string | null {
+  if (h.age_h == null) return h.seen ? time(h.seen) : null;
+  if (h.age_h < 1) return "1시간 안";
+  return h.age_h < 24 ? `${Math.floor(h.age_h)}시간 전` : `${Math.floor(h.age_h / 24)}일 전`;
+}
 
 /** 한글 제목을 크게(원문 링크), 원문 제목은 작게, 긍정/부정 · 영향 · 왜 그런지 한 줄 */
 export function NewsHeadline({ h }: { h: Head }) {
@@ -42,7 +49,7 @@ export function NewsHeadline({ h }: { h: Head }) {
         ) : (
           <span>{main}</span>
         )}
-        <span className="muted small"> {[h.domain, h.seen && time(h.seen)].filter(Boolean).join(" · ")}</span>
+        <span className="muted small"> {[h.domain, ago(h)].filter(Boolean).join(" · ")}</span>
       </div>
       {h.title_ko && <div className="nr-orig muted small" lang="en">{h.title}</div>}
       {(h.sentiment || h.impact) && (

@@ -161,12 +161,16 @@ export interface MacroTheme {
   tone: number | null;
   /** headline-words = 헤드라인 단어로 센 대략값 */
   tone_kind: "gdelt" | "headline-words";
-  headlines: ({ title: string; url: string; domain: string | null; country: string | null; seen: string | null } & Partial<NewsRead>)[];
+  /** #273 최근 72시간 · 최신순 · 같은 사건 하나 · age_h = 몇 시간 전 */
+  headlines: ({ title: string; url: string; domain: string | null; country: string | null; seen: string | null; age_h?: number } & Partial<NewsRead>)[];
   why: string;
+  /** #273 3일 기사도 24시간 기사도 없음 — 화면이 접는다 */
+  quiet?: boolean;
   /** #242 테마 한 줄 설명 */
   about_ko?: string | null;
   /** #242 읽은 헤드라인의 평균 긍정/부정 · 가장 큰 영향. 판정이 없으면 null */
-  digest?: { sentiment: NewsSentiment; impact: NewsImpact; read: number } | null;
+  /** #273 line = 한 줄 결론(가장 영향 큰 최신 헤드라인), lean = 증시 쪽 방향 */
+  digest?: { sentiment: NewsSentiment; impact: NewsImpact; read: number; line?: string; lean?: MacroLean } | null;
   source: "gdelt" | "google-news";
   fetched_at: string;
   relevance?: 0 | 1 | 2 | null;
@@ -209,6 +213,8 @@ export interface SectorNewsView {
   note: string;
 }
 
+export type MacroLean = "우호" | "부담" | "중립";
+
 export interface MacroBrief {
   /** #242 헤드라인 판정 회차 */
   digest?: { refreshed_at: string | null; error: string | null; note: string };
@@ -217,6 +223,10 @@ export interface MacroBrief {
   /** 마지막 성공 회차. 기동 직후 첫 회차 전엔 null + themes [] */
   refreshed_at: string | null;
   error: string | null;
+  /** #273 헤드라인 창(시간) · 급증 기준 · 응답 시각 */
+  window_h?: number;
+  spike_basis?: "24h_vs_prior_6d_avg" | "vs_other_themes" | "mixed" | null;
+  as_of?: string;
   themes: MacroTheme[];
 }
 

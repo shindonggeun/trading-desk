@@ -1473,3 +1473,20 @@ a.wmb-row:hover { border-color: var(--accent); }
   .qb-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .qb-badge { font-size: 10px; padding: 0 4px; }
 }
+
+/* #274 거시 브리핑 간결 보기 — 방향 배지 · 테마 · 한 줄 결론 · 급증일 때만 배수, 숫자는 펼쳐서 */
+.mx-row.mx-compact { grid-template-columns: 44px 120px minmax(0, 1fr) auto; }
+.mx-lean { display: inline-block; text-align: center; padding: 1px 0; border-radius: var(--radius-s); font-size: 12px; font-weight: 650;
+  border: 1px solid currentColor; }
+.mx-lean-up { color: var(--up); }
+.mx-lean-down { color: var(--down); }
+.mx-lean-flat, .mx-lean-none { color: var(--muted); }
+.mx-compact .mx-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mx-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mx-stats { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; color: var(--muted); }
+.mx-detail .mx-about { margin: 0; }
+.mx-quiet summary { cursor: pointer; color: var(--muted); margin-bottom: 6px; }
+@media (max-width: 760px) {
+  .mx-row.mx-compact { grid-template-columns: 44px minmax(0, 1fr) auto; }
+  .mx-compact .mx-line { grid-column: 1 / -1; }
+}

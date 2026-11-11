@@ -47,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -227,6 +228,64 @@ def naver_after_hours(code: str) -> tuple[float, datetime, bool] | None:
 
 AfterHours = Callable[[str], "tuple[float, datetime, bool] | None"]
 
+# #283: the KRX's own after-hours trading - closing-price trades 15:40-16:00 and the single-price
+# auction 16:00-18:00 (KST). A stock that does not trade on NXT has only these after the close.
+OVERTIME_URL = "https://api.stock.naver.com/chart/domestic/item/{code}/minute"
+OVERTIME_FROM = (15, 40)
+SINGLE_PRICE_FROM = (16, 0)
+_KRX_CODE = re.compile(r"^[0-9A-Z]{6}$")
+_KST = ZoneInfo("Asia/Seoul")
+
+
+@dataclass(frozen=True)
+class Overtime:
+    price: float              # the last KRX after-hours trade today
+    traded_at: datetime       # its minute, UTC
+    close: float | None       # today's regular close (the 15:30 bar), the change's base
+    kind: str                 # closing (15:40-16:00, at the close) | single (16:00-18:00 auction)
+
+
+def overtime_bars(rows: list, day: date) -> Overtime | None:
+    """Naver's minute bars of one KRX day -> its last after-hours trade (#283), or None before the
+    first one. Bars carry "YYYYMMDDHHMMSS" (KST) and the minute's last price."""
+    close, last = None, None
+    for row in rows if isinstance(rows, list) else []:
+        try:
+            at = datetime.strptime(str(row["localDateTime"]), "%Y%m%d%H%M%S").replace(tzinfo=_KST)
+            price = float(row["currentPrice"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if at.date() != day or price <= 0:
+            continue
+        if (at.hour, at.minute) < OVERTIME_FROM:
+            close = price                  # the regular session's last bar is the close (15:30 auction)
+        elif last is None or at >= last[1]:
+            last = (price, at)
+    if last is None:
+        return None
+    kind = "single" if (last[1].hour, last[1].minute) >= SINGLE_PRICE_FROM else "closing"
+    return Overtime(price=last[0], traded_at=last[1].astimezone(UTC), close=close, kind=kind)
+
+
+def naver_overtime(code: str, now: datetime | None = None) -> Overtime | None:
+    """Today's last KRX after-hours trade of a KRX code from Naver's minute chart (key-less), or None.
+    Any failure means none: the board keeps the estimate or "unavailable", as before."""
+    if not _KRX_CODE.match(code):
+        return None
+    day = (now or datetime.now(UTC)).astimezone(_KST).date()
+    stamp = day.strftime("%Y%m%d")
+    try:
+        r = httpx.get(OVERTIME_URL.format(code=code), headers={"User-Agent": "Mozilla/5.0"}, timeout=5,
+                      params={"startDateTime": f"{stamp}1520", "endDateTime": f"{stamp}2000"})
+        r.raise_for_status()
+        return overtime_bars(r.json(), day)
+    except (httpx.HTTPError, ValueError) as exc:
+        log.info("no KRX after-hours price for %s: %s", code, exc)
+        return None
+
+
+OvertimeReader = Callable[[str], "Overtime | None"]
+
 
 @dataclass(frozen=True)
 class Estimate:
@@ -260,11 +319,14 @@ class BinanceEstimator:
     def __init__(self, http: httpx.AsyncClient | None = None, daily_closes: DailyCloses = yahoo_daily_closes,
                  now: Callable[[], datetime] = lambda: datetime.now(UTC),
                  clock: Callable[[], float] = time.monotonic,
-                 after_hours: AfterHours | None = naver_after_hours) -> None:
+                 after_hours: AfterHours | None = naver_after_hours,
+                 overtime: OvertimeReader | None = naver_overtime) -> None:
         self._http = http or httpx.AsyncClient(base_url=BINANCE_URL, timeout=10)
         self._daily_closes = daily_closes
         self._after_hours = after_hours
         self._nxt: dict[str, tuple[float, object]] = {}
+        self._overtime = overtime
+        self._ot: dict[str, tuple[float, object]] = {}
         self._now = now
         self._clock = clock
         self._us: dict[str, str] = {}
@@ -449,6 +511,19 @@ class BinanceEstimator:
         if len(self._nxt) >= CACHE_MAX:
             self._nxt.clear()
         self._nxt[code] = (self._clock(), found)
+        return found
+
+    async def _overtime_trade(self, code: str) -> Overtime | None:
+        """#283: today's KRX after-hours trade, cached like the NXT trade."""
+        if self._overtime is None:
+            return None
+        cached = self._ot.get(code)
+        if cached and self._clock() - cached[0] < AFTER_HOURS_TTL_SEC:
+            return cached[1]  # type: ignore[return-value]
+        found = await asyncio.to_thread(self._overtime, code)
+        if len(self._ot) >= CACHE_MAX:
+            self._ot.clear()
+        self._ot[code] = (self._clock(), found)
         return found
 
     async def candles(self, ticker: str, interval: str) -> dict | None:

@@ -83,8 +83,9 @@ def test_other_instruments_are_regular_or_closed():
 class Estimator:
     """estimate() for the tickers in ``ests``, else no estimate; NXT trades by KRX code."""
 
-    def __init__(self, ests=None, nxt=None):
-        self.ests, self.nxt = ests or {}, nxt or {}
+    def __init__(self, ests=None, nxt=None, overtime=None):
+        self.ests, self.nxt, self.overtime = ests or {}, nxt or {}, overtime or {}
+        self.asked_overtime = []
 
     async def estimate(self, ticker):
         if ticker not in self.ests:
@@ -93,6 +94,10 @@ class Estimator:
 
     async def _nxt_trade(self, code):
         return self.nxt.get(code)
+
+    async def _overtime_trade(self, code):
+        self.asked_overtime.append(code)
+        return self.overtime.get(code)
 
     async def candles(self, ticker, interval):
         return None
@@ -148,3 +153,54 @@ def test_closed_markets_show_the_estimate_with_its_source(db_url, monkeypatch):
     assert (rows["SOXL"]["state"], rows["SOXL"]["quote_source"], rows["SOXL"]["session"]) == (
         "estimate", "binance-estimate", "closed")
     assert rows["005930.KS"]["state"] == "unavailable" and rows["005930.KS"]["session"] == "closed"
+
+
+# --- #283: the KRX's own after-hours trading for stocks not on NXT ---------------------------------
+
+def _bars(*rows):
+    return [{"localDateTime": f"20261111{t}00", "currentPrice": p} for t, p in rows]
+
+
+def test_overtime_bars_take_the_close_and_the_last_after_hours_trade():
+    from desk.estimate import overtime_bars
+
+    day = date(2026, 11, 11)
+    assert overtime_bars(_bars(("1520", 31950), ("1530", 32000), ("1539", 32000)), day) is None   # not yet
+    closing = overtime_bars(_bars(("1530", 32000), ("1540", 32000), ("1559", 32050)), day)
+    assert (closing.price, closing.close, closing.kind) == (32050, 32000, "closing")
+    single = overtime_bars(_bars(("1530", 32000), ("1540", 32000), ("1600", 31950), ("1750", 31900)), day)
+    assert (single.price, single.kind) == (31900, "single")
+    assert single.traded_at == datetime(2026, 11, 11, 8, 50, tzinfo=UTC)
+    after = overtime_bars(_bars(("1530", 32000), ("1800", 31850)), day)   # the 18:00 auction is the last
+    assert (after.price, after.kind) == (31850, "single")
+    assert overtime_bars(_bars(("1600", 31950)), date(2026, 11, 12)) is None                    # another day
+    assert overtime_bars([{"localDateTime": "x"}, {"currentPrice": 1}, "junk"], day) is None
+    assert overtime_bars({"not": "a list"}, day) is None
+
+
+def test_naver_overtime_refuses_a_malformed_code():
+    from desk.estimate import naver_overtime
+
+    assert naver_overtime("../x?y") is None and naver_overtime("12345") is None
+
+
+def test_a_krx_stock_not_on_nxt_shows_its_krx_after_hours_trade(db_url, monkeypatch):
+    from desk.estimate import Overtime
+
+    at = datetime(2026, 11, 11, 8, 1, tzinfo=UTC)
+    est = Estimator(nxt={"000660": (612000.0, datetime.now(UTC) - timedelta(minutes=2), True)},
+                    overtime={"035720": Overtime(31900.0, at, 32000.0, "single"),
+                              "000660": Overtime(600000.0, at, 610000.0, "single")})
+    rows = _board(db_url, monkeypatch, est, "post", "035720.KS,000660.KS,035420.KS")
+    kakao, hynix, naver = rows["035720.KS"], rows["000660.KS"], rows["035420.KS"]
+    assert (kakao["state"], kakao["price"], kakao["quote_source"], kakao["overtime"]) ==         ("live", 31900.0, "krx-overtime", "single")
+    assert kakao["close"] == 32000.0 and kakao["change_pct"] == -0.31 and kakao["traded_at"] == at.isoformat()
+    assert hynix["quote_source"] == "nxt" and hynix["price"] == 612000.0          # NXT first
+    assert naver["state"] == "unavailable"                                          # neither: as before
+
+
+@pytest.mark.parametrize("session", ["pre", "closed"])
+def test_the_krx_after_hours_trade_is_only_read_after_the_close(db_url, monkeypatch, session):
+    est = Estimator(overtime={"035720": object()})
+    rows = _board(db_url, monkeypatch, est, session, "035720.KS")
+    assert rows["035720.KS"]["quote_source"] != "krx-overtime" and est.asked_overtime == []

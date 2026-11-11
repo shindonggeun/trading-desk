@@ -17,6 +17,7 @@ export const QUOTE_SOURCE: Record<string, string> = {
   yahoo: "야후(지연 가능)",
   mock: "모의",
   nxt: "NXT",
+  "krx-overtime": "KRX 시간외",
 };
 
 /** #238 미국 장외 세션: 프리마켓 · 애프터마켓 · 주간거래(한국 낮, 미국 밤) — 실제 체결이다. */
@@ -27,10 +28,14 @@ export const SESSION_KO: Record<string, string> = { ...US_SESSION, regular: "정
 
 /** #251 타일에 작게 쓰는 가격 출처 */
 export const QUOTE_SOURCE_SHORT: Record<string, string> = {
-  kis: "한투", toss: "토스", nxt: "NXT", yahoo: "야후(지연 가능)", "binance-estimate": "바이낸스 추정", mock: "모의",
+  kis: "한투", toss: "토스", nxt: "NXT", "krx-overtime": "KRX 시간외", yahoo: "야후(지연 가능)", "binance-estimate": "바이낸스 추정", mock: "모의",
 };
 
-type BoardLike = { state: "live" | "estimate" | "unavailable"; session?: string | null; quote_source?: string | null };
+type BoardLike = { state: "live" | "estimate" | "unavailable"; session?: string | null; quote_source?: string | null;
+  overtime?: string | null; traded_at?: string | null };
+
+/** #283 KRX 시간외 거래 — 시간외 종가(15:40~16:00) · 시간외 단일가(16:00~18:00, 10분마다 체결) */
+export const OVERTIME_KO: Record<string, string> = { closing: "시간외 종가", single: "시간외 단일가" };
 
 /**
  * 시세판 · 즐겨찾기 타일 배지(#251): `실시간 · 프리` / `실시간 · 정규` / `실시간 · 애프터` / `실시간 · 주간거래` /
@@ -39,6 +44,7 @@ type BoardLike = { state: "live" | "estimate" | "unavailable"; session?: string 
 export function boardBadge(it: BoardLike): string {
   if (it.state === "live") {
     if (it.quote_source === "nxt") return it.session === "pre" || it.session === "post" ? `NXT · ${SESSION_KO[it.session]}` : "NXT";
+    if (it.quote_source === "krx-overtime") return OVERTIME_KO[it.overtime ?? ""] ?? "시간외";
     const s = it.session && it.session !== "closed" ? SESSION_KO[it.session] : null;
     return s ? `실시간 · ${s}` : "실시간";
   }
@@ -49,7 +55,7 @@ export function boardBadge(it: BoardLike): string {
 export function boardBadgeClass(it: BoardLike | undefined): string {
   if (!it) return "qb-badge qb-wait";
   if (it.state !== "live") return `qb-badge qb-${it.state}`;
-  const s = it.quote_source === "nxt" ? "nxt" : it.session && it.session !== "closed" ? it.session : "regular";
+  const s = it.quote_source === "nxt" || it.quote_source === "krx-overtime" ? "nxt" : it.session && it.session !== "closed" ? it.session : "regular";
   return `qb-badge qb-live qb-s-${s}`;
 }
 
@@ -61,6 +67,13 @@ export function boardReason(it: BoardLike): string | null {
       : `${SESSION_KO[it.session] ?? "장외"} 시간인데 체결이 없어 바이낸스 무기한 선물로 낸 추정가`;
   }
   if (it.state === "unavailable") return "실시간 체결도 추정할 계약도 없어 가격을 낼 수 없습니다";
+  if (it.quote_source === "krx-overtime") {
+    const at = it.traded_at
+      ? new Date(it.traded_at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Seoul" })
+      : null;
+    const what = it.overtime === "closing" ? "시간외 종가(15:40~16:00)" : "시간외 단일가(16:00~18:00, 10분마다 체결)";
+    return `NXT 에 없는 종목이라 KRX ${what}의 마지막 체결가${at ? ` · ${at} 체결` : ""}`;
+  }
   return null;
 }
 

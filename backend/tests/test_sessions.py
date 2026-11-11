@@ -166,8 +166,8 @@ def test_overtime_bars_take_the_close_and_the_last_after_hours_trade():
 
     day = date(2026, 11, 11)
     assert overtime_bars(_bars(("1520", 31950), ("1530", 32000), ("1539", 32000)), day) is None   # not yet
-    closing = overtime_bars(_bars(("1530", 32000), ("1540", 32000), ("1559", 32050)), day)
-    assert (closing.price, closing.close, closing.kind) == (32050, 32000, "closing")
+    closing = overtime_bars(_bars(("1530", 32000), ("1540", 32000), ("1559", 32000)), day)   # at the close
+    assert (closing.price, closing.close, closing.kind) == (32000, 32000, "closing")
     single = overtime_bars(_bars(("1530", 32000), ("1540", 32000), ("1600", 31950), ("1750", 31900)), day)
     assert (single.price, single.kind) == (31900, "single")
     assert single.traded_at == datetime(2026, 11, 11, 8, 50, tzinfo=UTC)
@@ -195,6 +195,7 @@ def test_a_krx_stock_not_on_nxt_shows_its_krx_after_hours_trade(db_url, monkeypa
     kakao, hynix, naver = rows["035720.KS"], rows["000660.KS"], rows["035420.KS"]
     assert (kakao["state"], kakao["price"], kakao["quote_source"], kakao["overtime"]) ==         ("live", 31900.0, "krx-overtime", "single")
     assert kakao["close"] == 32000.0 and kakao["change_pct"] == -0.31 and kakao["traded_at"] == at.isoformat()
+    assert kakao["close_date"] == datetime.now(UTC).astimezone(sessions.KST).date().isoformat()
     assert hynix["quote_source"] == "nxt" and hynix["price"] == 612000.0          # NXT first
     assert naver["state"] == "unavailable"                                          # neither: as before
 
@@ -204,3 +205,57 @@ def test_the_krx_after_hours_trade_is_only_read_after_the_close(db_url, monkeypa
     est = Estimator(overtime={"035720": object()})
     rows = _board(db_url, monkeypatch, est, session, "035720.KS")
     assert rows["035720.KS"]["quote_source"] != "krx-overtime" and est.asked_overtime == []
+
+
+def test_naver_overtime_asks_for_todays_kst_window_and_survives_bad_answers(monkeypatch):
+    import httpx
+
+    from desk import estimate
+
+    asked = []
+
+    def fake_get(url, params=None, **kw):
+        asked.append((url, params))
+        body = fake_get.body
+        return httpx.Response(fake_get.status, json=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(estimate.httpx, "get", fake_get)
+    late_utc = datetime(2026, 11, 10, 23, 30, tzinfo=UTC)          # 08:30 KST on the 11th
+    fake_get.status, fake_get.body = 200, _bars(("1530", 32000), ("1610", 31950))
+    ot = estimate.naver_overtime("035720", late_utc)
+    assert ot.price == 31950 and asked[-1][0].endswith("/035720/minute")
+    assert asked[-1][1] == {"startDateTime": "202611111520", "endDateTime": "202611112000"}
+    fake_get.status = 500
+    assert estimate.naver_overtime("035720", late_utc) is None
+    fake_get.status, fake_get.body = 200, {"error": "x"}
+    assert estimate.naver_overtime("035720", late_utc) is None
+    assert estimate.naver_overtime("035720" + chr(10), late_utc) is None and len(asked) == 3
+
+
+def test_a_stock_seen_on_nxt_never_takes_the_krx_after_hours_path():
+    from desk.estimate import BinanceEstimator, Overtime
+
+    at = datetime(2026, 11, 11, 7, 30, tzinfo=UTC)
+    reads = []
+    nxt = {"005930": (205000.0, at, True)}
+
+    def overtime(code):
+        reads.append(code)
+        return Overtime(31900.0, at, 32000.0, "single")
+
+    est = BinanceEstimator(after_hours=lambda code: nxt.get(code), overtime=overtime)
+
+    async def run():
+        await est._nxt_trade("005930")                 # Samsung shows on NXT once
+        nxt.clear()                                     # ...then its NXT read fails
+        est._nxt.clear()
+        assert await est._nxt_trade("005930") is None
+        assert await est._overtime_trade("005930") is None            # not the combined feed
+        first = await est._overtime_trade("035720")
+        again = await est._overtime_trade("035720")                   # cached
+        await est.aclose()
+        return first, again
+
+    first, again = asyncio.run(run())
+    assert first is again and first.price == 31900.0 and reads == ["035720"]
+    assert BinanceEstimator()._overtime is None                       # off unless the app turns it on

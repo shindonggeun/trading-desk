@@ -26,6 +26,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
+from itertools import pairwise
 from statistics import fmean
 from typing import Any
 
@@ -42,7 +43,8 @@ TIMEOUT_SEC = 20.0
 HEADLINES = 5                  # fetched per theme (before the window and the duplicates are dropped)
 SHOWN = 3                      # headlines per theme in the briefing (#273)
 WINDOW_H = 72                  # #273: headlines, tone and the one-line read come from the last 3 days only
-DUPLICATE = 0.6                # two titles sharing this much of their words are the same story
+DUPLICATE = 0.6                # two titles sharing this much of their word pairs are the same story
+CLOCK_SKEW_SEC = 15 * 60       # a feed time this far ahead of ours is still "now" (clock lag, mislabelled zones)
 SPIKE_BASIS = {"week": "24h_vs_prior_6d_avg", "themes": "vs_other_themes"}
 SPIKE_ALERT = 1.5              # last 24h at least this many times the prior days' average
 STALE_SEC = 6 * 3600           # an older theme is left out of the agents' note (and marked stale)
@@ -176,13 +178,13 @@ def headlines(payload: Any, limit: int = HEADLINES) -> list[dict]:
     return out
 
 
-_TITLE_WORD = re.compile(r"\w{3,}")
+_TITLE_WORD = re.compile(r"\w+")
 
 
 def _seen(h: dict) -> datetime | None:
     raw = h.get("seen")
     if isinstance(raw, datetime):
-        return raw
+        return raw if raw.tzinfo else raw.replace(tzinfo=UTC)
     try:
         at = datetime.fromisoformat(raw)
     except (TypeError, ValueError):
@@ -190,17 +192,28 @@ def _seen(h: dict) -> datetime | None:
     return at if at.tzinfo else at.replace(tzinfo=UTC)
 
 
+def _pairs(title: str) -> frozenset[tuple[str, str]]:
+    """Adjacent word pairs: order matters ("China tariffs on US" is not "US tariffs on China") and
+    short words count ("EU" is not "US")."""
+    words = _TITLE_WORD.findall(title.lower())
+    return frozenset(pairwise(words)) or frozenset((w, "") for w in words)
+
+
+def in_window(at: datetime, now: datetime) -> bool:
+    return -CLOCK_SKEW_SEC <= (now - at).total_seconds() < WINDOW_H * 3600
+
+
 def recent(heads: list[dict], now: datetime, limit: int = HEADLINES) -> list[dict]:
     """#273: the window's headlines, newest first, one per story, each with ``age_h``. A headline
     without a time is dropped - it may be last week's."""
-    dated = [(at, h) for h in heads if (at := _seen(h)) is not None and 0 <= (now - at).total_seconds() < WINDOW_H * 3600]
+    dated = [(at, h) for h in heads if (at := _seen(h)) is not None and in_window(at, now)]
     out, kept = [], []
     for at, h in sorted(dated, key=lambda p: p[0], reverse=True):
-        words = frozenset(_TITLE_WORD.findall(str(h.get("title") or "").lower()))
-        if any(words and other and len(words & other) / len(words | other) >= DUPLICATE for other in kept):
+        pairs = _pairs(str(h.get("title") or ""))
+        if any(pairs and other and len(pairs & other) / len(pairs | other) >= DUPLICATE for other in kept):
             continue
-        kept.append(words)
-        out.append({**h, "age_h": round((now - at).total_seconds() / 3600, 1)})
+        kept.append(pairs)
+        out.append({**h, "age_h": max(0.0, round((now - at).total_seconds() / 3600, 1))})
         if len(out) >= limit:
             break
     return out
@@ -332,7 +345,7 @@ async def fetch_theme_rss(theme: Theme, now: datetime, client: httpx.AsyncClient
         if own:
             await client.aclose()
     dated = [i for i in items if i["seen"] is not None]
-    last = [i for i in dated if (now - i["seen"]).total_seconds() < 86400]
+    last = [i for i in dated if -CLOCK_SKEW_SEC <= (now - i["seen"]).total_seconds() < 86400]
     # The feed holds at most 100 of the week's articles: the last day's share of them, against
     # an even 1/7, stands in for GDELT's volume surge.
     ratio = round(len(last) / len(dated) * 7, 2) if len(dated) >= 10 else None
@@ -340,7 +353,7 @@ async def fetch_theme_rss(theme: Theme, now: datetime, client: httpx.AsyncClient
     saturated = len(dated) >= 95 and len(last) == len(dated)
     newest = sorted(dated, key=lambda i: i["seen"], reverse=True)
     # #273: the feed spans the week (the surge needs it); headlines and tone only the last 3 days
-    window = [i for i in newest if (now - i["seen"]).total_seconds() < WINDOW_H * 3600]
+    window = [i for i in newest if in_window(i["seen"], now)]
     return {"id": theme.id, "label": theme.label, "articles_24h": len(last), "spike": ratio, "spike_kind": "raw-share",
             "saturated": saturated,
             "tone": headline_tone([i["title"] for i in last or window[:20]], query_words(theme.query)),
@@ -427,9 +440,10 @@ class Cache:
                 continue
             # #273: re-windowed on every read - a snapshot hours old must not show a 4-day-old story
             heads = recent(row.get("headlines") or [], now, SHOWN)
-            rows.append({**row, "headlines": heads, "quiet": not heads and not row.get("articles_24h"),
-                         "relevance": relevance(theme, tags) if ticker else None,
-                         "stale": _age(row, now) > STALE_SEC})
+            stale = _age(row, now) > STALE_SEC
+            # quiet: nothing in the window - an old snapshot's 24h count no longer says otherwise
+            rows.append({**row, "headlines": heads, "quiet": not heads and (stale or not row.get("articles_24h")),
+                         "relevance": relevance(theme, tags) if ticker else None, "stale": stale})
         if ticker:
             rows.sort(key=lambda r: (-(r["relevance"] or 0), -(r["spike"] or 0), order[r["id"]]))
         sources = sorted({r.get("source") for r in rows if r.get("source")})
@@ -490,7 +504,7 @@ def prompt_note(ticker: str, cache: Cache | None = None, limit: int = 5, now: da
         count = "100+ (feed cap)" if r.get("saturated") else r["articles_24h"]
         flag = " - SURGING" if (r["spike"] or 0) >= SPIKE_ALERT else ""
         top = r["headlines"][0] if r["headlines"] else None
-        headline = f' Top: "{top["title"]}" ({top["domain"]}).' if top else ""
+        headline = f' Latest: "{top["title"]}" ({top["domain"]}).' if top else ""
         mine = " Directly relevant to this instrument." if r["relevance"] == 2 else ""
         lines.append(f"- {r['id']}: {count} articles in 24h, {surge}{flag}, {_tone_word(r['tone'], r.get('tone_kind'))}. "
                      f"Why it matters: {r['why']}.{mine}{headline}")

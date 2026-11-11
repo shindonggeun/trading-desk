@@ -126,7 +126,8 @@ def _filled() -> m.Cache:
         cache.themes[theme.id] = {"id": theme.id, "label": theme.label, "articles_24h": 40 + i,
                                   "spike": 2.0 if theme.id == "ai_capex" else 1.0, "spike_kind": "themes",
                                   "tone": -3.5, "tone_kind": "gdelt", "why": theme.why, "source": "gdelt",
-                                  "headlines": [{"title": f"{theme.id} headline", "url": "u", "domain": "d.com"}],
+                                  "headlines": [{"title": f"{theme.id} headline", "url": "u", "domain": "d.com",
+                                                 "seen": (datetime.now(UTC) - timedelta(hours=2)).isoformat()}],
                                   "fetched_at": (datetime.now(UTC) - timedelta(minutes=10)).isoformat()}
     return cache
 
@@ -136,6 +137,7 @@ def test_the_prompt_note_lists_the_instruments_themes_and_flags_surges():
     assert note.startswith("Macro & policy backdrop")
     first = note.splitlines()[1]
     assert first.startswith("- ai_capex:") and "SURGING" in first and "Directly relevant" in first
+    assert 'Latest: "ai_capex headline" (d.com).' in first
     assert "korea" not in note                                 # background-only for a US chip stock
     assert m.prompt_note("NVDA", m.Cache()) is None            # before the first refresh
     assert "untrusted third-party text" in note
@@ -285,3 +287,30 @@ def test_the_rss_feed_counts_the_week_but_shows_only_the_last_three_days():
     row = asyncio.run(run())
     assert row["spike"] is not None                                      # the week still sets the surge
     assert [h["title"] for h in row["headlines"]] == TITLES[:3]
+
+
+def test_recent_keeps_different_stories_that_share_words_apart():
+    pairs = [("EU tariffs on steel", "US tariffs on steel"),
+             ("China raises tariffs on US goods", "US raises tariffs on China goods"),
+             ("Gold hits record high", "Silver hits record high")]
+    for a, b in pairs:
+        assert len(m.recent([_head(a, 1, 1), _head(b, 2, 2)], NOW)) == 2, (a, b)
+
+
+def test_a_feed_time_slightly_ahead_of_our_clock_is_now_not_dropped():
+    out = m.recent([_head("Stocks open higher", -0.1, 1), _head("Typo in the zone: nine hours ahead", -9, 2)], NOW)
+    assert [h["url"] for h in out] == ["https://x.com/1"] and out[0]["age_h"] == 0.0
+
+
+def test_gdelt_headlines_without_a_time_or_older_than_the_window_are_dropped():
+    articles = {"articles": [
+        {"title": "Fresh story on yields", "url": "https://g.com/1", "seendate": _stamp(NOW - timedelta(hours=3))},
+        {"title": "Week old story on yields", "url": "https://g.com/2", "seendate": _stamp(NOW - timedelta(days=5))},
+        {"title": "Undated story on yields", "url": "https://g.com/3"}]}
+
+    class Fake:
+        async def get(self, query, mode, timespan, **extra):
+            return articles if mode == "ArtList" else {"timeline": []}
+
+    row = asyncio.run(m.fetch_theme(Fake(), m.THEMES[0], NOW))
+    assert [h["url"] for h in row["headlines"]] == ["https://g.com/1"]

@@ -240,8 +240,9 @@ class Digest:
 
 
 def one_line(read: list[dict], pos: int, neg: int) -> dict:
-    """#273: what happened (the biggest, then newest, read headline in Korean) and which way the
-    theme leans for stocks - "우호" | "부담" | "중립". No model call: the reads are already there."""
+    """#273: what happened (the biggest-impact read headline in Korean, the first in list order on a
+    tie - newest for the macro brief, story order for sector issues) and which way the theme leans
+    for stocks - "우호" | "부담" | "중립". No model call: the reads are already there."""
     top = min(enumerate(read), key=lambda p: (IMPACTS.index(p[1]["impact"]), p[0]))[1]
     title = top["title_ko"]
     line = title if len(title) <= LINE_MAX else title[:LINE_MAX - 1].rstrip() + "…"

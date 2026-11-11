@@ -336,6 +336,8 @@ export interface PlaybookSide {
   /** t3: #167 과매도 스윙만 — T2 뒤 trail_atr 배 ATR 추적 손절 */
   targets: { role: "t1" | "t2" | "t3"; price: number; basis: string; source: "desk" | "model" | "atr"; rr: number | null; action: "take_half" | "take_rest" | "trail"; then_stop?: number; trail_atr?: number }[];
   time_stop: { bars: number; interval: string; required: boolean; rule: string } | null;
+  /** #239 청산 규칙 — 본주 스윙은 T1 뒤 ATR 추적 손절(백테스트 채택), 나머지는 T1 절반 → T2. 옛 계획엔 없다 */
+  exit?: { rule: "trail_atr" | "fixed"; text: string; trail_atr?: number; distance?: number | null } | null;
   conditions: { id: string; met: boolean | null; how: "computed" | "watch"; value?: number | string | boolean | null }[];
   score: number;
   source?: Record<string, "desk" | "model" | "converted">;

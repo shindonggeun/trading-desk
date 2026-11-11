@@ -79,6 +79,7 @@ async def _compute(prices, ticker: str, h: horizons.Horizon, run_pb: dict | None
     if not run_pb:
         # #167: the oversold swing buy on the bars now (an analysis keeps the long it was given)
         fresh = value_swing.apply(fresh, daily, secondary if frame.secondary == "1w" else None, frame.id, sr, market)
+    playbook.set_exits(fresh, ticker, frame)            # #239
     out = playbook.track(fresh, run_pb, primary, frame)
     await _triggers(prices, ticker, out, frame, live)
     try:

@@ -461,7 +461,8 @@ class RunManager:
                                          macro=macro, today=today, market=market)
             pb = risk_regime.apply(pb, market)
             # #167: the oversold swing buy (the swing frame's secondary bars are the weekly ones)
-            return value_swing.apply(pb, daily, secondary if h.secondary == "1w" else None, h.id, sr, market, vix)
+            pb = value_swing.apply(pb, daily, secondary if h.secondary == "1w" else None, h.id, sr, market, vix)
+            return playbook.set_exits(pb, ticker, h)          # #239: the trail where the backtest chose it
         except Exception as exc:  # noqa: BLE001 - incl. timeout
             log.warning("playbooks for %s failed: %s", ticker, exc)
             return None

@@ -80,8 +80,8 @@ def test_the_report_puts_the_rules_side_by_side_per_product_kind_and_split():
     rep = backtest.exit_report(trades, "2024-01-01", h)
     assert rep["rules"] == list(exits.VARIANTS)
     assert rep["stock"]["runner"]["train"] == {"n": 12, "win_rate": 1.0, "avg_r": 4.0, "median_r": 4.0,
-                                               "big_share": 1.0, "losing_days": 0}
-    assert rep["leveraged"]["fixed"]["valid"]["losing_days"] == 5 and rep["stock"]["fixed"]["valid"]["n"] == 0
+                                               "big_share": 1.0, "losing_days": 0, "max_dd_r": 0.0}
+    assert rep["leveraged"]["fixed"]["valid"]["losing_days"] == 5 and rep["leveraged"]["fixed"]["valid"]["max_dd_r"] == 5.0 and rep["stock"]["fixed"]["valid"]["n"] == 0
 
 
 def test_the_fill_bar_counts_its_stop_like_the_fixed_exit():

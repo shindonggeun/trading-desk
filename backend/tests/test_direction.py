@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -178,3 +179,45 @@ def test_a_hard_break_of_an_uptrend_turns_the_score():
     crash = up + [up[-1] * 0.92 ** k for k in range(1, 7)]    # six sessions of -8%
     turned = direction.score(_days(crash, wiggle=0.01))
     assert turned["before"] > direction.LEAN and turned["score"] < 0 and turned["turning"]
+
+
+def _index(ret20=0.0, above20=True, slope20=0.01):
+    return {"score": 10, "phase": "calm", "label": "평상",
+            "index": {"symbol": "^NDX", "ret20": ret20, "above20": above20, "slope20": slope20}}
+
+
+def test_strength_against_the_index_and_the_index_tape_are_evidence_by_default():
+    flat = _days([100.0] * 150, wiggle=0.01)
+    got = direction.score(flat, _index(ret20=-0.08, above20=False, slope20=-0.02))
+    parts = {p["id"]: p for p in got["parts"]}
+    assert parts["rel"]["value"] > 0.5 and "^NDX 대비" in parts["rel"]["text"]    # flat beats a falling index
+    assert parts["breadth"]["value"] == -1.0 and "20일선 아래" in parts["breadth"]["text"]
+    assert parts["rel"]["weight"] == 0 == parts["breadth"]["weight"] and parts["breadth"]["validated"]
+    assert got["score"] == direction.score(flat)["score"]                        # swept: no gain
+    assert not {"rel", "breadth"} & {p["id"] for p in direction.score(flat, {"score": 10, "phase": "calm"})["parts"]}
+
+
+def test_strength_and_breadth_vote_when_weighted(monkeypatch):
+    monkeypatch.setattr(direction, "WEIGHTS", {**direction.WEIGHTS, "rel": 1.0, "breadth": 1.0})
+    flat = _days([100.0] * 150, wiggle=0.01)
+    strong = direction.score(flat, _index(ret20=-0.10, above20=True, slope20=0.01))
+    weak = direction.score(flat, _index(ret20=0.10, above20=False, slope20=-0.01))
+    mixed = {p["id"]: p for p in direction.score(flat, _index(above20=True, slope20=-0.01))["parts"]}
+    assert weak["score"] < direction.score(flat)["score"] < strong["score"]
+    assert mixed["breadth"]["value"] == 0.0
+
+
+def test_a_market_under_its_line_is_no_turn_of_a_steady_trend(monkeypatch):
+    """The turn is read on the price alone at both ends: ``before`` has no market as of its day."""
+    monkeypatch.setattr(direction, "WEIGHTS", {**direction.WEIGHTS, "breadth": 1.5})
+    up = _days([100.0 * 1.0003 ** i * (1 + 0.02 * math.sin(i / 6)) for i in range(150)], wiggle=0.01)
+    plain = direction.score(up)
+    down = direction.score(up, _index(ret20=-0.1, above20=False, slope20=-0.03))
+    assert plain["score"] > 0 > down["score"] and plain["before"] > 0          # the score crossed zero ...
+    assert not down["turning"] and down["turning"] == plain["turning"]        # ... but the price did not turn
+
+
+def test_the_note_says_what_the_index_parts_mean():
+    flat = _days([100.0] * 150, wiggle=0.01)
+    note = direction.prompt_note(direction.score(flat, _index(above20=False, slope20=-0.02)))
+    assert "main index trend" in note and "[^NDX 20일선 아래" in note and "[^NDX 대비 20일" in note

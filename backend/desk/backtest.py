@@ -468,20 +468,26 @@ def summarize(trades: list[Trade], h: horizons.Horizon, cut: str | None) -> dict
 
 def _exit_stats(rows: list[tuple[str, float]]) -> dict:
     """(plan day, r) rows. ``losing_days``: the longest run of plan days whose summed R is negative -
-    one day's trades (several tickers, overlapping plans) move together, so they count once."""
+    one day's trades (several tickers, overlapping plans) move together, so they count once.
+    ``max_dd_r``: the deepest fall of the running R total, plan day by plan day (#239 채택 조건)."""
     rs = [r for _d, r in rows]
     if not rs:
-        return {"n": 0, "win_rate": None, "avg_r": None, "median_r": None, "big_share": None, "losing_days": 0}
+        return {"n": 0, "win_rate": None, "avg_r": None, "median_r": None, "big_share": None, "losing_days": 0,
+                "max_dd_r": None}
     by_day: dict[str, float] = {}
     for d, r in rows:
         by_day[d] = by_day.get(d, 0.0) + r
     streak = best = 0
+    total = peak = dd = 0.0
     for d in sorted(by_day):
         streak = streak + 1 if by_day[d] < 0 else 0
         best = max(best, streak)
+        total += by_day[d]
+        peak = max(peak, total)
+        dd = max(dd, peak - total)
     return {"n": len(rs), "win_rate": round(sum(1 for r in rs if r > 0) / len(rs), 3), "avg_r": _mean(rs),
             "median_r": _median(rs), "big_share": round(sum(1 for r in rs if r >= exits.BIG_R) / len(rs), 3),
-            "losing_days": best}
+            "losing_days": best, "max_dd_r": round(dd, 3)}
 
 
 def exit_report(trades: list[Trade], cut: str | None, h: horizons.Horizon) -> dict:
@@ -793,8 +799,8 @@ def print_summary(report: Report, out=None) -> None:
             tr, va = ex[kind][rule]["train"], ex[kind][rule]["valid"]
             if tr["n"] or va["n"]:
                 print(f"exit {kind}:{rule}".ljust(28) + f"valid avg {_fmt(va['avg_r'])}R win {_fmt(va['win_rate'])} "
-                      f"big {_fmt(va['big_share'])} losing days {va['losing_days']} (n {va['n']}) | "
-                      f"train avg {_fmt(tr['avg_r'])}R (n {tr['n']})", file=out)
+                      f"big {_fmt(va['big_share'])} losing days {va['losing_days']} dd {_fmt(va['max_dd_r'])}R (n {va['n']}) | "
+                      f"train avg {_fmt(tr['avg_r'])}R dd {_fmt(tr['max_dd_r'])}R (n {tr['n']})", file=out)
     for row in report.sweep[:12]:
         print(f"sweep {row['param']}={row['value']}{' (now)' if row['current'] else ''}: "
               f"train {_fmt(row['train']['expectancy_r'])} / valid {_fmt(row['valid']['expectancy_r'])}"

@@ -20,8 +20,9 @@ from datetime import UTC, datetime
 from itertools import pairwise
 from statistics import median
 
-from . import calibration, direction, events_calendar, horizons, value_swing
+from . import calibration, direction, events_calendar, exits, horizons, value_swing
 from .indicators import rsi
+from .related import LEVERAGED
 
 VERSION = 1
 MIN_DAILY = 60
@@ -842,6 +843,40 @@ def hold_for_event(pb: dict, event: dict | None) -> dict:
     return pb
 
 
+# #239 채택: the backtest's exit comparison (desk.exits, `python -m desk.cli backtest`) - on swing plans
+# of stocks the 2-ATR trail after T1 beat the fixed T2 exit on both the training and the held-out dates
+# with a smaller drawdown; on leveraged products it did not (worse training average and drawdown), and
+# on short_swing it lost (held out -0.328R vs -0.300R); scalp / intraday were not measured. Only the
+# measured win changes; the rest keeps T1 half -> T2.
+TRAIL_HORIZONS = ("swing",)
+
+
+def exit_rule(side: dict, up: bool, ticker: str, h: horizons.Horizon, atr: float | None) -> dict | None:
+    """How the side's position is closed. None for no setup and for the oversold swing (its own trail)."""
+    if side.get("setup") in (None, "none", "value_swing") or not side.get("targets"):
+        return None
+    if h.id in TRAIL_HORIZONS and ticker.upper() not in LEVERAGED and not side.get("flat_by_close") and atr:
+        k = exits.TRAIL_ATR
+        way = "최고가에서" if up else "최저가에서"
+        follow = "아래로 따라 올린다" if up else "위로 따라 내린다"
+        return {"rule": "trail_atr", "trail_atr": k, "distance": _round(k * atr),
+                "text": f"T1 에서 절반 익절 · 손절을 평단으로 → 남은 절반은 {way} {k:g} ATR({_fmt(k * atr)}) "
+                        f"{follow}. T2 는 참고 목표"}
+    return {"rule": "fixed", "text": "T1 에서 절반 익절 · 손절을 평단으로 → 나머지는 T2 에서"}
+
+
+def set_exits(pb: dict | None, ticker: str, h: horizons.Horizon) -> dict | None:
+    """``exit`` on each side of a finished playbook (#239). In place; returns ``pb``."""
+    if not pb:
+        return pb
+    atr = (pb.get("frame") or {}).get("atr")
+    for name, up in (("long", True), ("short", False)):
+        side = pb.get(name)
+        if isinstance(side, dict):
+            side["exit"] = exit_rule(side, up, ticker, h, atr)
+    return pb
+
+
 def refresh(playbooks: dict | None, live: dict | None) -> dict | None:
     """The price-distance conditions again at a newer quote (the end of the run). No bars."""
     if not playbooks or not live or not live.get("price"):
@@ -930,7 +965,10 @@ def prompt_note(pb: dict | None) -> str | None:
             f"entries {entries} ({shares}%), stop {_fmt(s['stop'])}, "
             + ", ".join(f"{t['role'].upper()} {_fmt(t['price'])} ({t['basis']})" for t in tg)
             + f", time stop {s['time_stop']['bars']} x {s['time_stop']['interval']} bars, size {s['size_hint']}"
-            + (", flat before the close" if s.get("flat_by_close") else "") + f". Conditions now: {met or 'n/a'}."
+            + (", flat before the close" if s.get("flat_by_close") else "")
+            + (f", after T1 trail the rest {s['exit']['trail_atr']:g} ATR behind the best price (T2 only a reference)"
+               if (s.get("exit") or {}).get("rule") == "trail_atr" else "")
+            + f". Conditions now: {met or 'n/a'}."
             + (f" {bit}" if (bit := calibration.prompt_bit(s.get("calibration"))) else ""))
         if (vs_line := value_swing.prompt_line(s)):
             lines.append(vs_line)                       # #167: the evidence and the risk budget

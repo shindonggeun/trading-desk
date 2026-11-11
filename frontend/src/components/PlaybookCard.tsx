@@ -415,6 +415,9 @@ function Side({ side, dir, state, result, live, lower, interval, cal }: {
         {side.time_stop && (
           <div className="pb-row"><dt>시간 손절</dt><dd className="small">{side.time_stop.rule}</dd></div>
         )}
+        {side.exit && (
+          <div className="pb-row"><dt>청산</dt><dd className="small">{side.exit.text}</dd></div>
+        )}
         <div className="pb-row">
           <dt>비중</dt>
           <dd className="small">{side.size_hint === "half" ? "평소의 절반" : "평소대로"}{side.flat_by_close ? " · 그날 안에 청산" : ""} · 점수 {side.score}</dd>

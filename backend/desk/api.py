@@ -1207,6 +1207,18 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             return None
         return price, at
 
+    async def _krx_overtime(ticker: str):
+        """#283: a KRX stock's own after-hours trade today (closing-price 15:40-16:00, single-price
+        16:00-18:00) - the only real price after the close for a stock that does not trade on NXT."""
+        reader = getattr(estimator, "_overtime_trade", None)
+        if reader is None:
+            return None
+        try:
+            return await reader(ticker[:-3])
+        except Exception as exc:  # noqa: BLE001 - Naver down: the estimate stands
+            log.info("KRX after-hours trade for %s failed: %s", ticker, exc)
+            return None
+
     async def _toss_off_hours(ticker: str, close: float | None):
         """#250: a US ticker's broker (Toss) quote off hours, taken only when it differs from the last
         regular close - Toss gives no trade time, and a price equal to the close is the close."""
@@ -1276,6 +1288,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     # #250: any KRX stock trading on NXT / after hours - not only those with a contract
                     if (nxt := await _nxt_today(ticker)) is not None:
                         return live_row(nxt[0], "nxt", nxt[1].isoformat(timespec="seconds"))
+                    # #283: no NXT trade (not listed there): the KRX's own after-hours auction
+                    if session == "post" and (ot := await _krx_overtime(ticker)) is not None:
+                        if not close and ot.close:
+                            row["close"] = close = ot.close      # today's regular close, the change's base
+                        return {**live_row(ot.price, "krx-overtime", ot.traded_at.isoformat(timespec="seconds")),
+                                "overtime": ot.kind, "traded_at": ot.traded_at.isoformat(timespec="seconds")}
                 elif session in ("pre", "post", "overnight") and kis_stream.market_of(ticker) == "US":
                     # #238: a KIS trade beats the estimate; #250: without one, Toss's price when it has
                     # moved off the close (a quote equal to the close is the close, not an off-hours trade)

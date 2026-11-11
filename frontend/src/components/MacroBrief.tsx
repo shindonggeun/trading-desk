@@ -53,13 +53,23 @@ function rank(themes: MacroTheme[]): MacroTheme[] {
     .map((x) => x.t);
 }
 
+const BASIS = {
+  "24h_vs_prior_6d_avg": { short: "지난 24시간 / 앞 6일 하루 평균", long: "지난 24시간 기사 수 ÷ 그 앞 6일의 하루 평균" },
+  vs_other_themes: { short: "다른 테마 대비", long: "지난 24시간 기사 비중을 다른 테마의 중앙값과 비교" },
+  mixed: { short: "테마마다 다름(펼치면 표시)", long: "GDELT 테마는 평소 주간 대비, 뉴스 피드 테마는 다른 테마 대비" },
+};
+
 /** 급증 기준을 머리에 한 번 — 서버 spike_basis, 없으면(옛 응답) 테마의 spike_kind 로 */
 function spikeBasis(brief: Brief): { short: string; long: string } {
   const kinds = new Set(brief.themes.map((t) => t.spike_kind));
-  const b = brief.spike_basis ?? (kinds.size > 1 ? "mixed" : kinds.has("week") ? "24h_vs_prior_6d_avg" : "vs_other_themes");
-  if (b === "24h_vs_prior_6d_avg") return { short: "지난 24시간 / 앞 6일 하루 평균", long: "지난 24시간 기사 수 ÷ 그 앞 6일의 하루 평균" };
-  if (b === "vs_other_themes") return { short: "다른 테마 대비", long: "지난 24시간 기사 비중을 다른 테마의 중앙값과 비교" };
-  return { short: "테마마다 다름(평소 주간 또는 다른 테마 대비)", long: "이 테마는 GDELT 면 평소 주간 대비, 뉴스 피드면 다른 테마 대비" };
+  return BASIS[brief.spike_basis ?? (kinds.size > 1 ? "mixed" : kinds.has("week") ? "24h_vs_prior_6d_avg" : "vs_other_themes")];
+}
+
+/** 이 테마의 급증 기준(펼친 칸 · 배수 툴팁) */
+function themeBasis(t: MacroTheme): { short: string; long: string } {
+  return t.spike_kind === "week"
+    ? { short: "평소(앞 6일) 대비", long: BASIS["24h_vs_prior_6d_avg"].long }
+    : BASIS.vs_other_themes;
 }
 
 /** -10..+10 을 가운데 0 기준 막대로. */
@@ -162,6 +172,8 @@ export default function MacroBrief() {
   const loud = rank(brief.themes.filter((t) => !t.quiet));
   const quiet = brief.themes.filter((t) => t.quiet);
   const at = brief.refreshed_at ?? brief.as_of;
+  // 옛 응답(window_h 없음)은 창을 다시 걸지 않은 스냅샷 — 날 수를 적지 않는다
+  const recentText = brief.window_h ? `최근 ${Math.round(brief.window_h / 24)}일` : "최근";
 
   const row = (t: MacroTheme) => {
           const hot = t.spike != null && t.spike >= SPIKE_ALERT;
@@ -172,7 +184,6 @@ export default function MacroBrief() {
           return (
             <li key={t.id} className={`mx-theme${hot ? " mx-hot" : ""}${t.stale ? " mx-stale" : ""}`}>
               <button type="button" className="mx-row mx-compact" aria-expanded={expanded} aria-controls={expanded ? panel : undefined}
-                aria-label={`${t.label} · ${lean ?? "판정 없음"} · ${line ?? "헤드라인 없음"}${hot ? ` · 급증 ${spikeText(t)}` : ""}`}
                 onClick={() => {
                   setOpen(expanded ? null : t.id);
                   setPick(null);   // 다른 테마의 같은 종목 확인 창이 따라오지 않게
@@ -180,15 +191,15 @@ export default function MacroBrief() {
                 }}>
                 <span className={`mx-lean mx-lean-${lean ? LEAN_CLASS[lean] : "none"}`}>{lean ?? "—"}</span>
                 <span className="mx-name">{t.label}</span>
-                <span className="mx-line">{line ?? <span className="muted">최근 3일 헤드라인 없음</span>}</span>
-                {hot && <span className="mx-spike small num mx-spike-hot" title={basis.long}>▲ {spikeText(t)}</span>}
+                <span className="mx-line">{line ?? <span className="muted">{recentText} 헤드라인 없음</span>}</span>
+                {hot && <span className="mx-spike small num mx-spike-hot" title={themeBasis(t).long}>▲ {spikeText(t)}<span className="sr-only"> 급증</span></span>}
               </button>
               {expanded && (
                 <div id={panel} className="mx-detail">
                   {t.about_ko && <p className="muted small mx-about">{t.about_ko}</p>}
                   <div className="mx-stats small">
                     <span className="num">24시간 {count(t)}건</span>
-                    <span className={`num${hot ? " mx-spike-hot" : ""}`} title={basis.long}>평소 대비 {spikeText(t)}</span>
+                    <span className={`num${hot ? " mx-spike-hot" : ""}`} title={themeBasis(t).long}>{themeBasis(t).short} {spikeText(t)}</span>
                     <Tone t={t} />
                     {t.digest && <Lean s={t.digest.sentiment} />}
                     {t.digest && <Impact v={t.digest.impact} />}
@@ -198,7 +209,7 @@ export default function MacroBrief() {
                       {t.headlines.slice(0, 3).map((h, i) => <li key={`${i}-${h.url}`}><NewsHeadline h={h} /></li>)}
                     </ul>
                   ) : (
-                    <p className="muted small">최근 3일 헤드라인이 없습니다.</p>
+                    <p className="muted small">{recentText} 헤드라인이 없습니다.</p>
                   )}
                   {t.stale && <p className="muted small">6시간 넘은 값입니다({time(t.fetched_at)}).</p>}
                   {THEME_TICKERS[t.id] && (
@@ -233,14 +244,14 @@ export default function MacroBrief() {
   return (
     <section className="card macro-brief">
       <p className="muted small mx-meta">
-        최근 {Math.round((brief.window_h ?? 72) / 24)}일 기사 · 급증 = {basis.short}
+        {recentText} 기사 · 급증 = {basis.short}
         {at ? ` · ${time(at)} 기준` : " · 아직 모으는 중"}
         {failedAt && ` · ${time(failedAt)} 다시 읽기 실패 — 마지막 값`}
         {brief.error && " · 일부 테마를 가져오지 못했습니다"}
       </p>
-      <ul className="mx-themes">{loud.map(row)}</ul>
+      {loud.length > 0 && <ul className="mx-themes">{loud.map(row)}</ul>}
       {quiet.length > 0 && (
-        <details className="mx-quiet small">
+        <details className="mx-quiet small" open={loud.length === 0}>
           <summary>조용한 테마 {quiet.length}개</summary>
           <ul className="mx-themes">{quiet.map(row)}</ul>
         </details>

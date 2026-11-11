@@ -376,6 +376,9 @@ export interface PlaybookOutcome {
   took_t1?: boolean;
   /** #277 추적 청산 계획: 남은 절반이 추적 손절로 끝났다(상태는 t1_be) */
   trailed?: boolean;
+  /** 보유 중(open)에 추적 손절이 걸려 있음 · 기한까지 추적 중이라 마지막 종가로 매김(상태 t1_be) */
+  trailing?: boolean;
+  marked?: boolean;
   score?: number;
   detail?: string;
   filled_shares?: number;

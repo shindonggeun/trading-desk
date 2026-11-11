@@ -162,7 +162,8 @@ def test_the_fake_digest_parses_and_the_note_names_high_impact_headlines(monkeyp
     note = macro_news.prompt_note("NVDA", cache, now=now)
     assert "High-impact headline (fed)" in note and "not a forecast" in note
     quoted = {**THEMES["fed"]["headlines"][0], "title": 'He said "buy" now'}
-    cache.themes["fed"] = {**cache.themes["fed"], "headlines": [quoted, quoted]}
+    # the same URL under another title: recent() keeps both stories, high_impact names the URL once
+    cache.themes["fed"] = {**cache.themes["fed"], "headlines": [quoted, {**quoted, "title": "Bond desks brace for supply"}]}
     note = macro_news.prompt_note("NVDA", cache, now=now)
     assert note.count("High-impact headline") == 1 and "\"He said 'buy' now\"" in note
 

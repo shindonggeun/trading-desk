@@ -72,7 +72,7 @@ export function boardReason(it: BoardLike): string | null {
       ? new Date(it.traded_at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Seoul" })
       : null;
     const what = it.overtime === "closing" ? "시간외 종가(15:40~16:00)" : "시간외 단일가(16:00~18:00, 10분마다 체결)";
-    return `NXT 에 없는 종목이라 KRX ${what}의 마지막 체결가${at ? ` · ${at} 체결` : ""}`;
+    return `NXT 체결이 없어 KRX ${what}의 마지막 체결가를 씁니다${at ? ` · ${at} 체결` : ""}`;
   }
   return null;
 }

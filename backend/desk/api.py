@@ -51,7 +51,7 @@ from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
 from .broker import kis_stream, make_broker
 from .consensus import fake_summariser, llm_summariser
 from .db import make_engine, migrate, now
-from .estimate import CANDLE_INTERVALS, BinanceEstimator
+from .estimate import CANDLE_INTERVALS, BinanceEstimator, naver_overtime
 from .favorites import Conflict, Favorites, TooMany
 from .futures_flow import KST as futures_kst
 from .futures_flow import FuturesFlow, futures_open
@@ -262,7 +262,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # #203: years of Yahoo bars for the RSI / Stochastic extremes and what followed them
     # (read when called: a test's price source may have no Yahoo at all)
     oscillator_fetch = oscillator.yahoo_fetch(lambda *args: prices._yahoo_candles(*args))
-    estimator = estimator or BinanceEstimator()
+    estimator = estimator or BinanceEstimator(overtime=naver_overtime)   # #283: KRX after-hours, live only
     # #271: Binance futures traders' long / short split, on the estimate's own contract mapping
     longshort = longshort or LongShort(lambda ticker: estimator.resolve(ticker))   # read when asked (test fakes)
     book = book or Portfolio(broker, prices)
@@ -1290,8 +1290,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                         return live_row(nxt[0], "nxt", nxt[1].isoformat(timespec="seconds"))
                     # #283: no NXT trade (not listed there): the KRX's own after-hours auction
                     if session == "post" and (ot := await _krx_overtime(ticker)) is not None:
-                        if not close and ot.close:
-                            row["close"] = close = ot.close      # today's regular close, the change's base
+                        today = datetime.now(UTC).astimezone(sessions.KST).date().isoformat()
+                        if ot.close and (not close or (row["close_date"] or "") < today):
+                            # today's regular close is the change's base (no estimate, or Yahoo not caught up)
+                            row["close"], row["close_date"] = ot.close, today
+                            close = ot.close
                         return {**live_row(ot.price, "krx-overtime", ot.traded_at.isoformat(timespec="seconds")),
                                 "overtime": ot.kind, "traded_at": ot.traded_at.isoformat(timespec="seconds")}
                 elif session in ("pre", "post", "overnight") and kis_stream.market_of(ticker) == "US":

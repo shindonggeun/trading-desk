@@ -270,7 +270,7 @@ def overtime_bars(rows: list, day: date) -> Overtime | None:
 def naver_overtime(code: str, now: datetime | None = None) -> Overtime | None:
     """Today's last KRX after-hours trade of a KRX code from Naver's minute chart (key-less), or None.
     Any failure means none: the board keeps the estimate or "unavailable", as before."""
-    if not _KRX_CODE.match(code):
+    if not _KRX_CODE.fullmatch(code):
         return None
     day = (now or datetime.now(UTC)).astimezone(_KST).date()
     stamp = day.strftime("%Y%m%d")
@@ -320,13 +320,16 @@ class BinanceEstimator:
                  now: Callable[[], datetime] = lambda: datetime.now(UTC),
                  clock: Callable[[], float] = time.monotonic,
                  after_hours: AfterHours | None = naver_after_hours,
-                 overtime: OvertimeReader | None = naver_overtime) -> None:
+                 overtime: OvertimeReader | None = None) -> None:
         self._http = http or httpx.AsyncClient(base_url=BINANCE_URL, timeout=10)
         self._daily_closes = daily_closes
         self._after_hours = after_hours
         self._nxt: dict[str, tuple[float, object]] = {}
         self._overtime = overtime
         self._ot: dict[str, tuple[float, object]] = {}
+        # #283: codes Naver has shown an NXT quote for - their minute chart is the combined KRX + NXT
+        # feed, so a failed NXT read must not pass that off as the KRX after-hours auction
+        self._nxt_listed: set[str] = set()
         self._now = now
         self._clock = clock
         self._us: dict[str, str] = {}
@@ -508,14 +511,18 @@ class BinanceEstimator:
         if cached and self._clock() - cached[0] < AFTER_HOURS_TTL_SEC:
             return cached[1]  # type: ignore[return-value]
         found = await asyncio.to_thread(self._after_hours, code)
+        if found:
+            if len(self._nxt_listed) >= CACHE_MAX:
+                self._nxt_listed.clear()
+            self._nxt_listed.add(code)
         if len(self._nxt) >= CACHE_MAX:
             self._nxt.clear()
         self._nxt[code] = (self._clock(), found)
         return found
 
     async def _overtime_trade(self, code: str) -> Overtime | None:
-        """#283: today's KRX after-hours trade, cached like the NXT trade."""
-        if self._overtime is None:
+        """#283: today's KRX after-hours trade, cached like the NXT trade. None for a stock seen on NXT."""
+        if self._overtime is None or code in self._nxt_listed:
             return None
         cached = self._ot.get(code)
         if cached and self._clock() - cached[0] < AFTER_HOURS_TTL_SEC:

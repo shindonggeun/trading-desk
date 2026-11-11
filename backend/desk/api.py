@@ -61,6 +61,7 @@ from .futures_flow import prompt_note as futures_note
 from .futures_history import FuturesHistory, closing_window, interval_min, seconds_to_next
 from .indicators import normalize as normalize_indicators
 from .leverage_analyst import fake_analyst, llm_analyst
+from .longshort import LongShort
 from .market_flow import MarketFlow
 from .portfolio import Portfolio
 from .prices import INTERVALS, PriceSource
@@ -229,7 +230,8 @@ def purge_expired_runs(store: Store, retention_days: int) -> int:
 def create_app(settings: Settings | None = None, runner=None, prices: PriceSource | None = None,
                estimator: BinanceEstimator | None = None, book: Portfolio | None = None,
                flow: MarketFlow | None = None, futures: FuturesFlow | None = None,
-               weekly: weekly_map.Maps | None = None, bottoms: bottom_zone.Zones | None = None) -> FastAPI:
+               weekly: weekly_map.Maps | None = None, bottoms: bottom_zone.Zones | None = None,
+               longshort: LongShort | None = None) -> FastAPI:
     settings = settings or load()
     migrate(settings.database_url)
     engine = make_engine(settings.database_url)
@@ -261,6 +263,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # (read when called: a test's price source may have no Yahoo at all)
     oscillator_fetch = oscillator.yahoo_fetch(lambda *args: prices._yahoo_candles(*args))
     estimator = estimator or BinanceEstimator()
+    # #271: Binance futures traders' long / short split, on the estimate's own contract mapping
+    longshort = longshort or LongShort(lambda ticker: estimator.resolve(ticker))   # read when asked (test fakes)
     book = book or Portfolio(broker, prices)
     flow = flow or MarketFlow(broker)
     # KOSPI200 futures from KIS REST (#160); without the KIS keys it answers supported: false
@@ -474,6 +478,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if purger:
             purger.cancel()
         await estimator.aclose()
+        await longshort.aclose()
         await futures.aclose()
         engine.dispose()
 
@@ -1285,6 +1290,20 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                         "quote_source": None, "fetched_at": None}
 
         return {"items": await asyncio.gather(*(one(t) for t in names))}
+
+    @app.get("/api/longshort")
+    async def long_short(tickers: str):
+        """#271: per ticker the long / short split of its Binance perpetual (all accounts, top traders'
+        positions, taker volume) and the 24 h change; ``contract: null`` without one. One failing
+        contract does not fail the others."""
+        names = [t for t in (x.strip() for x in tickers.split(",")) if t]
+        if not names or len(names) > MAX_BOARD:
+            raise HTTPException(422, f"between 1 and {MAX_BOARD} tickers")
+        try:
+            names = list(dict.fromkeys(clean_ticker(t) for t in names))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return {"items": await asyncio.gather(*(longshort.get(t) for t in names))}
 
     @app.get("/api/estimate/candles")
     async def estimate_candles(ticker: str, interval: str = "5m"):

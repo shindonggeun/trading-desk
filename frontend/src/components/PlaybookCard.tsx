@@ -436,7 +436,7 @@ function Side({ side, dir, state, result, live, lower, interval, cal }: {
         </ul>
       )}
       {result && result.status !== "waiting" && (
-        <p className="small pb-result">채점: <strong>{RESULT[result.status] ?? result.status}</strong>{result.r != null && ` · ${result.r > 0 ? "+" : ""}${result.r}R`}</p>
+        <p className="small pb-result">채점: <strong>{result.trailed ? "T1 뒤 추적 청산" : RESULT[result.status] ?? result.status}</strong>{result.r != null && ` · ${result.r > 0 ? "+" : ""}${result.r}R`}</p>
       )}
     </div>
   );

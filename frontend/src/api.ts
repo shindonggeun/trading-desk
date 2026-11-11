@@ -1,4 +1,4 @@
-import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FuturesDaily, FuturesIntraday, MarketMonth, SectorNewsView } from "./types";
+import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FuturesDaily, FuturesIntraday, MarketMonth, SectorNewsView, LongShortItem } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -188,6 +188,9 @@ export const api = {
   /** #123 시세판: 여러 종목(최대 30)의 실시간 · 추정가 */
   board: (tickers: string[]) =>
     call<{ items: BoardItem[] }>(`/api/estimates?tickers=${encodeURIComponent(tickers.join(","))}`),
+  /** #271 바이낸스 선물 롱/숏 비율(최대 30종목, 계약 없으면 contract: null) */
+  longShort: (tickers: string[]) =>
+    call<{ items: LongShortItem[] }>(`/api/longshort?tickers=${encodeURIComponent(tickers.join(","))}`),
   /** #156 섹터 탭(계정별). 처음 읽으면 기본 섹터가 생긴다 — 쓰기 전에 먼저 읽는다. */
   sectors: () => call<Sector[]>("/api/sectors"),
   createSector: (name: string, tickers: { ticker: string; name?: string | null }[] = []) =>

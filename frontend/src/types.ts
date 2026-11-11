@@ -1120,3 +1120,24 @@ export interface MarketMonth {
   sources: Record<"economic" | "earnings", { refreshed_at: string | null; error: string | null }>;
   notes: string[];
 }
+
+/** #271 바이낸스 선물 롱/숏 비율(공개 통계, 계약당 5분 갱신) */
+export interface LongShortSplit {
+  long_pct: number;
+  short_pct: number;
+  ratio: number | null;
+  at: string | null;
+}
+export interface LongShortItem {
+  ticker: string;
+  contract: string | null;
+  /** 자기 계약이 아니라 프록시 · 레버리지 기초자산 계약을 쓸 때 그 종목 */
+  basis?: string | null;
+  multiple?: number;
+  accounts?: LongShortSplit | null;
+  top_positions?: LongShortSplit | null;
+  taker?: { buy_sell_ratio: number | null; buy_pct_1h: number | null; at: string | null } | null;
+  change_24h?: { long_pct: number | null };
+  source?: "binance";
+  error?: string;
+}

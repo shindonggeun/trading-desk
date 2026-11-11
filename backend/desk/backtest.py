@@ -28,7 +28,18 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
-from . import exits, horizons, outcome, playbook, playbook_live, risk_regime, sr, summary, value_swing
+from . import (
+    entry_features,
+    exits,
+    horizons,
+    outcome,
+    playbook,
+    playbook_live,
+    risk_regime,
+    sr,
+    summary,
+    value_swing,
+)
 from .underlying import leverage_of
 
 VERSION = 1
@@ -50,6 +61,8 @@ MARKED = ("open",)
 EMBARGO_DAYS = {"scalp": 1, "intraday": 3, "short_swing": 20, "swing": 60}
 # A sweep row needs this many settled trades on the training dates to rank (or it is listed last).
 MIN_SETTLED = 100
+# #284: a feature bucket needs this many settled trades on the held-out dates to count as checked
+MIN_VALID = 30
 COST_BPS = 10.0          # commission + slippage per side, in basis points of the fill
 TRAIN_SHARE = 0.7        # the first 70% of the plan dates choose a parameter, the rest check it
 
@@ -110,6 +123,7 @@ class Trade:
     reach: int | None = None          # targets T1..Tn reached in order before the original stop (#167)
     exits: dict | None = None         # r_net under each exit rule on the same fills (#239, desk.exits)
     kind: str = "stock"               # stock | leveraged (#239: the product's own record)
+    features: dict | None = None      # the chart at the plan (#284, desk.entry_features) - never changes the plan
 
 
 @dataclass
@@ -141,6 +155,7 @@ class Report:
     equity: dict = field(default_factory=dict)      # cumulative R by plan day (#192, ``equity``)
     value_swing: dict = field(default_factory=dict)  # the oversold swing buy on its own (#167)
     exits: dict = field(default_factory=dict)        # the exit rules side by side (#239, ``exit_report``)
+    features: dict = field(default_factory=dict)     # R by the chart at the plan (#284, ``feature_report``)
 
 
 # ---------------------------------------------------------------- data
@@ -507,6 +522,96 @@ def exit_report(trades: list[Trade], cut: str | None, h: horizons.Horizon) -> di
     return out
 
 
+def attach_features(trades: list[Trade], snaps: Iterable[tuple[Snapshot, list[dict]]]) -> None:
+    """#284: each trade gets the chart of its own snapshot (desk.entry_features, the plan's bars
+    only) - only when the report asks, so a sweep or a calibration does not pay for it."""
+    by_plan = {(s.ticker, s.day): s for s, _ in snaps}
+    memo: dict[tuple[str, str], dict] = {}
+    for t in trades:
+        key = (t.ticker, t.at)
+        snap = by_plan.get(key)
+        if snap is None:
+            continue
+        if key not in memo:
+            memo[key] = entry_features.compute(snap.daily, snap.weekly, snap.risk)
+        t.features = memo[key]
+
+
+def _quartile_edges(values: list[float]) -> list[float]:
+    """The 25 / 50 / 75% cut points (duplicates dropped: a feature stuck on one value has fewer
+    buckets, and a bucket's number is its place among the cut points, so q1 may be missing)."""
+    xs = sorted(values)
+    return sorted({xs[min(len(xs) - 1, int(len(xs) * q))] for q in (0.25, 0.5, 0.75)})
+
+
+def _bucket(value, edges: list[float] | None) -> str | None:
+    if value is None:
+        return None
+    if edges is None:                     # a category
+        return str(value)
+    i = bisect.bisect_right(edges, value)
+    lo = f"{edges[i - 1]:g}" if i else "-inf"
+    hi = f"{edges[i]:g}" if i < len(edges) else "+inf"
+    return f"q{i + 1} [{lo}, {hi})"
+
+
+def _feature_stats(trades: list[Trade]) -> dict:
+    rows = [(t.at, t.r_net) for t in trades]
+    out = _exit_stats(rows)
+    out["t1_rate"] = round(sum(1 for t in trades if t.took_t1) / len(trades), 3) if trades else None
+    return out
+
+
+def feature_report(trades: list[Trade], cut: str | None, h: horizons.Horizon) -> dict:
+    """#284: per side:setup, the settled trades bucketed by each feature of the chart at the plan
+    (desk.entry_features) - numeric ones by the training dates' quartiles, so the held-out dates
+    never choose an edge - with the win rate, T1 rate, average R after costs and the deepest fall
+    of the running R, on the training dates and the held-out ones. ``top`` lists the buckets that
+    are above 0 R on both halves with enough trades (MIN_SETTLED training, MIN_VALID held-out),
+    best held-out first; ``beats_base`` marks those that also beat their setup's own average on both."""
+    done = [t for t in trades if t.features and t.filled_shares and t.r_net is not None
+            and t.status in SETTLED + MARKED]
+    train, valid = split(done, cut, h)
+    keys = sorted({f"{t.side}:{t.setup}" for t in done})
+    out: dict = {"cut": cut, "min_train": MIN_SETTLED, "min_valid": MIN_VALID, "names": entry_features.NAMES,
+                 "setups": {}, "top": []}
+    for key in keys:
+        tr = [t for t in train if f"{t.side}:{t.setup}" == key]
+        va = [t for t in valid if f"{t.side}:{t.setup}" == key]
+        base = {"train": _feature_stats(tr), "valid": _feature_stats(va)}
+        feats: dict[str, list[dict]] = {}
+        for name in (*entry_features.CATEGORICAL, *entry_features.NUMERIC):
+            if name in entry_features.NUMERIC:
+                seen = [t.features[name] for t in tr if t.features.get(name) is not None]
+                if len(seen) < 8:
+                    continue
+                edges = _quartile_edges(seen)
+            else:
+                edges = None
+            groups: dict[str, tuple[list[Trade], list[Trade]]] = {}
+            for half, ts in ((0, tr), (1, va)):
+                for t in ts:
+                    b = _bucket(t.features.get(name), edges)
+                    if b is not None:
+                        groups.setdefault(b, ([], []))[half].append(t)
+            rows = []
+            for b, (gt, gv) in sorted(groups.items()):
+                row = {"feature": name, "bucket": b, "train": _feature_stats(gt), "valid": _feature_stats(gv)}
+                tr_r, va_r = row["train"]["avg_r"], row["valid"]["avg_r"]
+                row["enough"] = row["train"]["n"] >= MIN_SETTLED and row["valid"]["n"] >= MIN_VALID
+                row["positive"] = row["enough"] and tr_r is not None and va_r is not None and tr_r > 0 and va_r > 0
+                row["beats_base"] = (row["enough"] and tr_r is not None and va_r is not None
+                                     and base["train"]["avg_r"] is not None and base["valid"]["avg_r"] is not None
+                                     and tr_r > base["train"]["avg_r"] and va_r > base["valid"]["avg_r"])
+                rows.append(row)
+                if row["positive"]:
+                    out["top"].append({"setup": key, **row})
+            feats[name] = rows
+        out["setups"][key] = {"base": base, "features": feats}
+    out["top"].sort(key=lambda r: -(r["valid"]["avg_r"] or 0))
+    return out
+
+
 def losing_streak(trades: list[Trade]) -> int:
     """The longest run of losing settled trades in plan order (ties by ticker)."""
     best = n = 0
@@ -688,11 +793,12 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
         fetch: Callable[[str, horizons.Horizon, str | None], tuple[list[dict], list[dict], list[str]]] | None = None,
         progress: Callable[[str], None] | None = None,
         vix: dict[str, float] | None | bool = True, risk: MarketRisk | None | bool = None,
-        on_trades: Callable[[list[Trade], str | None], None] | None = None) -> Report:
+        on_trades: Callable[[list[Trade], str | None], None] | None = None, features: bool = False) -> Report:
     """``vix=True`` loads ^VIX daily closes (the regime's fear evidence); a dict supplies them; None skips.
     ``risk=True`` loads the market's indices for the selling score (#146, desk.risk_regime; the CLI
     does); a MarketRisk supplies them; None leaves the playbooks ungated. ``on_trades(trades, cut)``
-    receives the gated trades and the train/held-out cut (desk.cli calibrate, #147)."""
+    receives the gated trades and the train/held-out cut (desk.cli calibrate, #147). ``features``
+    adds the R by the chart at the plan (#284, ``feature_report``)."""
     h = horizons.get(horizon)
     costs = costs or Costs()
     fetch = fetch or history
@@ -737,6 +843,9 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
                     generated_at=datetime.now(UTC).isoformat(timespec="seconds"))
     report.value_swing = value_swing_report(trades, cut, h)
     report.exits = exit_report(trades, cut, h)
+    if features:
+        attach_features(trades, snaps)
+        report.features = feature_report(trades, cut, h)
     if risk:
         report.risk_gate = {"on": gate_view(trades, cut, h),
                             "off": gate_view(evaluate(snaps, h, costs, gate=False), cut, h)}
@@ -802,6 +911,19 @@ def print_summary(report: Report, out=None) -> None:
                 print(f"exit {kind}:{rule}".ljust(28) + f"valid avg {_fmt(va['avg_r'])}R win {_fmt(va['win_rate'])} "
                       f"big {_fmt(va['big_share'])} losing days {va['losing_days']} dd {_fmt(va['max_dd_r'])}R (n {va['n']}) | "
                       f"train avg {_fmt(tr['avg_r'])}R dd {_fmt(tr['max_dd_r'])}R (n {tr['n']})", file=out)
+    fr = report.features
+    if fr:
+        print(f"features: above 0 R on both halves (train n >= {fr['min_train']}, valid n >= {fr['min_valid']}, "
+              f"buckets by the training quartiles)", file=out)
+        for row in fr["top"]:
+            tr, va = row["train"], row["valid"]
+            base = fr["setups"][row["setup"]]["base"]["valid"]
+            print(f"  {row['setup']} {row['feature']} {row['bucket']}".ljust(56)
+                  + f"valid {_fmt(va['avg_r'])}R (base {_fmt(base['avg_r'])}) win {_fmt(va['win_rate'])} "
+                  f"dd {_fmt(va['max_dd_r'])}R n {va['n']} | train {_fmt(tr['avg_r'])}R n {tr['n']}"
+                  f"{' *' if row['beats_base'] else ''}", file=out)
+        if not fr["top"]:
+            print("  (none)", file=out)
     for row in report.sweep[:12]:
         print(f"sweep {row['param']}={row['value']}{' (now)' if row['current'] else ''}: "
               f"train {_fmt(row['train']['expectancy_r'])} / valid {_fmt(row['valid']['expectancy_r'])}"

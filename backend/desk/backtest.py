@@ -331,11 +331,12 @@ def playbooks_at(snap: Snapshot, h: horizons.Horizon, gate: bool = True) -> dict
     """The snapshot's playbooks as a live run would build them (market gate, oversold swing buy)."""
     pb = playbook.build(snap.sr, snap.daily, snap.window, h, now=snap.plan_at, today=snap.today, vix=snap.vix,
                         calibrate=False,                # #147: not graded by its own results
-                        market=snap.risk if gate else None)   # #166: gate off = the market score unused
+                        market=snap.risk)   # #166: the direction's index rules stay on; the gate is #146 below
     if gate:
         pb = risk_regime.apply(pb, snap.risk)
     # #167: the oversold swing buy takes the long slot when its evidence is there (no record: no conviction)
-    # (gate off = the market score unused: the fear bundle does not read it either)
+    # (gate off = the #146 selling score unused here: the fear bundle does not read it either; the
+    # direction above still gets the market for its index rules - #166 stage 4)
     return value_swing.apply(pb, snap.daily, snap.weekly, h.id, snap.sr, snap.risk if gate else None, snap.vix,
                              calibrate=False)
 

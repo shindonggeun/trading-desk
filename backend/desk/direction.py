@@ -30,9 +30,10 @@ SWING_K = 3
 # evidence at weight 0. (A first run read a 0.008R held-out gain for breadth 1.5: that was the turn
 # check comparing a score with the market against one without - a market under its line looked like
 # a price turn and paused entries. The turn is now price-only on both ends; see ``score``.)
-# If either gets a weight, desk.backtest.playbooks_at's gate-off run drops it too (market=None there).
+# desk.backtest.playbooks_at hands the market to the direction with the #146 gate off too: the index
+# rules (and any part given a weight) stay in both runs of the gate comparison.
 WEIGHTS = {"ma_stack": 1.5, "slope50": 1.0, "structure": 1.0, "ret20": 0.5, "market": 0.0, "macro": 0.0,
-           "rel": 0.0, "breadth": 0.0}
+           "rel": 0.0, "breadth": 0.0, "weekly": 0.0}
 VALIDATED = ("ma_stack", "slope50", "structure", "ret20", "market", "rel", "breadth")   # the parts the backtest measured
 MARKET_NEUTRAL = 25.0   # a selling score here votes neither way; 75 is a full short vote
 HYSTERESIS = 0          # keep an earlier lean this far under LEAN (10 was swept: -0.1361R / -0.1176R vs
@@ -48,6 +49,19 @@ APPLY_HORIZONS = ("swing",)   # the backtest that decided the rule ran on swing;
 # -0.127R / -0.113R -> -0.125R / -0.105R (all -0.126R -> -0.122R, ~10% fewer plans). Keeping only the
 # new direction's side (-0.123R / -0.112R) or only the old one's (-0.129R / -0.106R) did not win on both.
 TURN_PAUSE = True
+# #166 stage 4 (swing basket 2019-, costs in, gated; train / held-out, base -0.107R / -0.079R, 14,586 plans).
+# Every short group lost (with the trend -0.156R, neutral -0.174R); only a strong downtrend came close:
+# a short now needs the score at or under SHORT_NEEDS. 0 -0.106 / -0.074, -30 -0.098 / -0.073,
+# -45 -0.094 / -0.069, -60 -0.092 / -0.069, -75 -0.089 / -0.070 (flat past -60): -60.
+SHORT_NEEDS: int | None = -60
+# Pullback and range-low longs while the market's main index is under its 20-day line lost in both
+# halves (rising line -0.17R, falling -0.13R). With the short rule: pausing them under a rising line
+# -0.084 / -0.066, under any -0.084 / -0.062; all longs (dip catches too) -0.079 / -0.071 - the crash
+# buys stay. Together: -0.084R / -0.062R (all -0.077R, 10,066 plans; every ticker better over the whole
+# run). Rejected: no pullback long over a score cap (50-80: train better, held-out worse -0.082~-0.090),
+# a weekly 10/30-week part (0.5-2.0: held-out -0.062 -> -0.070).
+TAPE_PAUSE: tuple[str, ...] = ("below_up", "below_down")
+TAPE_PAUSE_SETUPS = ("pullback", "range_low")
 
 
 def _sma(values: list[float], n: int) -> float | None:
@@ -180,6 +194,14 @@ def _score(daily: list[dict], market: dict | None = None, macro: dict | None = N
                       else "직전 저점 이탈" if value <= -0.5 and close < lows[pl[-1]]
                       else "고점 · 저점 엇갈림"})
 
+    weekly = closes[::-1][::5][::-1]           # every 5th session back from the last: a weekly close
+    if len(weekly) >= 30:                      # the 30-week line; its 4-week slope from 34 points
+        w10, w30 = sum(weekly[-10:]) / 10, sum(weekly[-30:]) / 30
+        w30_before = sum(weekly[-34:-4]) / 30 if len(weekly) >= 34 else None
+        value = (_sign(weekly[-1] - w10) + _sign(w10 - w30) + (_sign(w30 - w30_before) if w30_before else 0)) / (3 if w30_before else 2)
+        parts.append({"id": "weekly", "value": round(value, 2),
+                      "text": f"주봉 {'상승' if value > 0.5 else '하락' if value < -0.5 else '혼조'}(10주선 {'>' if w10 > w30 else '<'} 30주선)"})
+
     if len(closes) > 20:
         ret = close / closes[-21] - 1
         parts.append({"id": "ret20", "value": round(_clip(ret / 0.10), 2), "text": f"20일 수익률 {ret * 100:+.1f}%"})
@@ -192,7 +214,20 @@ def _score(daily: list[dict], market: dict | None = None, macro: dict | None = N
     value = round(100 * sum(WEIGHTS[p["id"]] * p["value"] for p in parts) / total) if total else 0
     bias = "long" if value >= LEAN else "short" if value <= -LEAN else "neutral"
     return {"score": value, "bias": bias, "strong": abs(value) >= STRONG, "turning": False, "held": False,
-            "parts": parts}
+            "parts": parts, "tape": tape_of(market)}
+
+
+TAPE_WORDS = {"above_up": "above its rising 20-day line", "above_down": "above its falling (or flat) 20-day line",
+              "below_up": "below its rising 20-day line", "below_down": "below its falling (or flat) 20-day line"}
+
+
+def tape_of(market: dict | None) -> str | None:
+    """The main index on its 20-day line: above_up | above_down | below_up | below_down, or None. A
+    flat line (slope rounded to 0) counts as down; both "below" tapes pause the same setups."""
+    index = (market or {}).get("index")
+    if not index or index.get("above20") is None or index.get("slope20") is None:
+        return None
+    return f"{'above' if index['above20'] else 'below'}_{'up' if index['slope20'] > 0 else 'down'}"
 
 
 def side_vs(direction: dict | None, side: str) -> str:
@@ -225,12 +260,26 @@ def apply(pb: dict, direction: dict | None, h: horizons.Horizon, empty=None) -> 
         if APPLY and h.id in APPLY_HORIZONS and rel == "against" and name == "short"                 and side.get("setup") not in (None, "none"):
             reason = f"방향 판정 롱 우세({direction['score']:+d}) — 상승 추세를 거스르는 숏은 쉼"
             side = {**(empty(reason) if empty else _none(side, h)), "direction": rel, "reason": reason}
+        elif (APPLY and h.id in APPLY_HORIZONS and name == "short" and SHORT_NEEDS is not None
+              and side.get("setup") not in (None, "none")
+              and (not direction or direction["score"] > SHORT_NEEDS)):
+            score = direction["score"] if direction else None
+            reason = (f"방향 판정 {score:+d} — 숏은 하락 추세({SHORT_NEEDS:+d} 이하)에서만" if score is not None
+                      else "방향 판정 없음 — 숏 쉼")
+            side = {**(empty(reason) if empty else _none(side, h)), "direction": rel, "reason": reason}
+        elif (APPLY and h.id in APPLY_HORIZONS and name == "long" and direction
+              and direction.get("tape") in TAPE_PAUSE and side.get("setup") in TAPE_PAUSE_SETUPS):
+            reason = "시장 지수가 20일선 아래 — 눌림 · 박스 하단 매수는 쉼(투매 하따 · 과매도 스윙은 그대로)"
+            side = {**(empty(reason) if empty else _none(side, h)), "direction": rel, "reason": reason}
         elif (TURN_PAUSE and APPLY and h.id in APPLY_HORIZONS and direction and direction.get("turning")
               and side.get("setup") not in (None, "none")):
             reason = (f"방향 전환 중({direction.get('before', 0):+d} → {direction['score']:+d}, {TURN_BARS}거래일) "
                       "— 새 진입 쉼")
             side = {**(empty(reason) if empty else _none(side, h)), "direction": rel, "reason": reason,
                     "turning": True}
+        if direction and direction.get("turning"):
+            side["turning"] = True             # kept on a side a rule emptied too (desk.value_swing, run
+                                               # after, replaces a long it fills and does not carry it)
         out[name] = side
     return out
 
@@ -254,5 +303,10 @@ def prompt_note(direction: dict | None) -> str | None:
             + (f" - TURNING: the price trend crossed zero from {direction['before']:+d} in {TURN_BARS} sessions, a fresh entry"
                " either way needs a stated reason (the desk's swing playbooks pause both sides)"
                if direction.get("turning") else "")
+            + (f" - market index {TAPE_WORDS[direction['tape']]}" if direction.get("tape") in TAPE_WORDS else "")
             + f" - {why}. A plan against this direction needs a "
-            "stated reason (a crash low to catch, an exhausted move); the desk drops shorts against an uptrend.")
+            "stated reason (a crash low to catch, an exhausted move)."
+            + (f" The desk's swing playbooks take a short only at a score of {SHORT_NEEDS} or lower."
+               if SHORT_NEEDS is not None else "")
+            + (" They pause pullback / range-low longs while the market index is under its 20-day line."
+               if TAPE_PAUSE else ""))

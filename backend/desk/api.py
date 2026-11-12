@@ -1452,7 +1452,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     chats = chat.ChatStore(engine)
     chatter = chatter or (chat.FakeChatter() if settings.fake_runs else chat.LangChainChatter())
-    chatting: set[int] = set()            # one answer at a time per account
+    # one answer at a time per account: user id -> when it started. Stale after the answer's time
+    # limit, so a stream that never started (the client left first) cannot hold the account.
+    chatting: dict[int, float] = {}
 
     def _chat_tools() -> dict[str, chat.Tool]:
         """Read-only desk lookups. No order tool; nothing reads the broker account."""
@@ -1554,7 +1556,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     @app.get("/api/chat/threads/{thread_id}/messages")
     def chat_messages_of(thread_id: str, request: Request):
         user_id = request.state.user.id
-        items = chats.messages(user_id, thread_id)
+        items = chats.messages(user_id, thread_id, chat.READ_LAST)
         if items is None:
             raise HTTPException(404, "thread not found")
         return {"thread": chats.get(user_id, thread_id), "items": items}
@@ -1573,16 +1575,24 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             minutes = max(1, round(wait / 60))
             return JSONResponse({"detail": f"모델 속도 제한 중 — 약 {minutes}분 뒤 다시"}, status_code=429,
                                 headers={"Retry-After": str(int(wait))})
-        if user_id in chatting:
+        clock = asyncio.get_running_loop().time
+        started = chatting.get(user_id)
+        if started is not None and clock() - started < chat.ANSWER_TIMEOUT_SEC + 30:
             raise HTTPException(409, "an answer is still being written")
-        chatting.add(user_id)
+        chatting[user_id] = clock()
         try:
             earlier = chats.messages(user_id, thread_id, chat.HISTORY + 1) or []
             dropped = len(earlier) > chat.HISTORY
             title = body.text.strip().splitlines()[0][:40] if not earlier and thread["title"] == "새 대화" else None
             mine = chats.add(user_id, thread_id, "user", body.text, title=title)
+        except LookupError:
+            chatting.pop(user_id, None)
+            raise HTTPException(404, "thread not found") from None
+        except chat.TooMany as exc:
+            chatting.pop(user_id, None)
+            raise HTTPException(409, str(exc)) from None
         except Exception:
-            chatting.discard(user_id)
+            chatting.pop(user_id, None)
             raise
         messages = chat.build_messages(earlier[-chat.HISTORY:], body.text, body.ticker, dropped)
         token = request.cookies.get(COOKIE)
@@ -1623,7 +1633,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                         return
             finally:
                 task.cancel()
-                chatting.discard(user_id)
+                chatting.pop(user_id, None)
 
         return StreamingResponse(frames(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

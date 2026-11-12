@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react
 import { api } from "../api";
 import InstrumentSearch, { type Picked } from "../components/InstrumentSearch";
 import type { ExtraLine, Interval } from "../components/PriceChart";
+import { openChat } from "../chat";
 import { useFavorites } from "../favorites";
 import { price } from "../format";
 import type { Run, WeeklyMap, WeeklyMapError } from "../types";
@@ -184,6 +185,7 @@ export default function Charts({ query }: { query: URLSearchParams }) {
               </button>
             )}
             <a href={analyze}>이 종목으로 분석 시작 →</a>
+            <button type="button" className="secondary" onClick={() => openChat({ ticker, run: lastRun?.id ?? null })}>AI 에게 묻기</button>
             {lastRun && <a href={`#/runs/${lastRun.id}`}>최근 분석({lastRun.trade_date}) 열기</a>}
           </div>
         )}

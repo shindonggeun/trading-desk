@@ -137,6 +137,8 @@ export interface ReviewResponse {
 }
 
 export const api = {
+  /** #315 채팅처럼 이 파일 밖에서 같은 인증 · 오류 처리로 부를 때 */
+  raw: <T>(path: string, init?: RequestInit) => call<T>(path, init),
   login: (username: string, password: string) =>
     call<LoginStep>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
   /** 2단계: 6자리 코드 또는 복구 코드. 맞으면 세션 쿠키가 생긴다. */

@@ -1321,3 +1321,20 @@ export interface StockProfile {
   computed_at?: string;
   errors?: Record<string, string>;
 }
+
+/** #314 AI 채팅 — 대화 · 메시지 · 스트림 프레임 */
+export interface ChatThread { id: string; title: string; created_at: string; updated_at: string }
+export interface ChatTool { name: string; args: Record<string, unknown> | null; summary: string | null }
+export interface ChatMessageRow {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  tools: ChatTool[];
+  created_at: string;
+}
+export type ChatEvent =
+  | { type: "tool_call"; name: string; args: Record<string, unknown> | null }
+  | { type: "tool_result"; name: string; summary: string | null }
+  | { type: "token"; text: string }
+  | { type: "done"; message_id: string; user_message_id: string }
+  | { type: "error"; message: string };

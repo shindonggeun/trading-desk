@@ -1540,6 +1540,60 @@ a.wmb-row:hover { border-color: var(--accent); }
 .ep-checks ul, .ep-foot ul { margin: 4px 0; padding-left: 18px; }
 .ep-foot { margin-top: 10px; }
 .fav-earn { align-self: flex-start; margin-top: 4px; padding: 1px 8px; border: 1px solid var(--warn); border-radius: 999px; background: transparent; color: var(--warn); cursor: pointer; }
+/* #315 AI 채팅 — 화면 · 옆 패널 */
+.chat-page { max-width: 1200px; }
+.ch { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 12px; height: calc(100dvh - var(--topbar-h, 64px) - 40px); min-height: 420px; }
+.ch-compact { grid-template-columns: minmax(0, 1fr); height: 100%; min-height: 0; }
+.ch-side { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow-y: auto; padding: 10px; }
+.ch-list { display: grid; gap: 8px; }
+.ch-list ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.ch-list li { display: flex; align-items: center; gap: 4px; border-radius: var(--radius-s); }
+.ch-list li.ch-on { background: var(--surface-3); }
+.ch-thread { flex: 1; min-width: 0; display: grid; text-align: left; background: transparent; border: 0; color: var(--text); padding: 6px; cursor: pointer; font: inherit; }
+.ch-thread-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ch-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.ch-top { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.ch-top select { max-width: 70%; }
+.ch-drawer-btn { display: none; }
+.ch-log { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.ch-hello { margin: auto 0; text-align: center; }
+.ch-row { display: flex; }
+.ch-user { justify-content: flex-end; }
+.ch-bubble { max-width: min(760px, 88%); padding: 8px 12px; border-radius: 14px; background: var(--surface-2); overflow-wrap: anywhere; }
+.ch-user .ch-bubble { background: var(--surface-3); border-bottom-right-radius: 4px; }
+.ch-user .ch-bubble p { margin: 0; white-space: pre-wrap; }
+.ch-ai .ch-bubble { border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+.ch-tag { display: inline-block; font-size: 11px; color: var(--muted); border: 1px dashed var(--border); border-radius: 999px; padding: 0 6px; margin: 4px 0 2px; }
+.ch-md > :first-child { margin-top: 2px; }
+.ch-md > :last-child { margin-bottom: 2px; }
+.ch-tools { display: flex; flex-wrap: wrap; gap: 4px; }
+.ch-tool { font-size: 12px; border: 1px solid var(--accent); border-radius: 8px; padding: 2px 8px; background: var(--surface); }
+.ch-tool summary { cursor: pointer; list-style: none; }
+.ch-tool summary::-webkit-details-marker { display: none; }
+.ch-tool[open] { flex-basis: 100%; }
+.ch-tool-busy { border-style: dashed; color: var(--muted); }
+.ch-tool-sum { margin: 4px 0 2px; white-space: pre-wrap; font-variant-numeric: tabular-nums; }
+.ch-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px; }
+.ch-time { font-size: 11px; color: var(--muted); margin-left: auto; }
+.ch-user .ch-time { display: block; text-align: right; }
+.ch-error { margin: 0 10px; }
+.ch-quick { padding: 6px 10px 0; }
+.ch-input { display: flex; gap: 8px; padding: 8px 10px 10px; align-items: flex-end; }
+.ch-input textarea { flex: 1; resize: none; min-height: 44px; max-height: 160px; font: inherit; }
+.ch-panel { position: fixed; top: 0; right: 0; bottom: 0; z-index: 70; width: min(440px, 100vw); display: flex; flex-direction: column;
+  background: var(--bg, var(--surface)); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgb(0 0 0 / .25); padding: 8px; gap: 8px; }
+.ch-panel-head { display: flex; align-items: center; gap: 10px; }
+.ch-panel-head strong { margin-right: auto; }
+.ch-panel .ch { flex: 1; }
+.run-ask { margin-left: auto; }
+@media (max-width: 760px) {
+  .ch { grid-template-columns: minmax(0, 1fr); height: calc(100dvh - var(--topbar-h, 96px) - 24px); }
+  .ch-side { display: none; position: fixed; inset: var(--topbar-h, 96px) 25% 0 0; z-index: 65; }
+  .ch-side.ch-side-open { display: block; }
+  .ch-drawer-btn { display: inline-block; }
+  .ch-bubble { max-width: 94%; }
+  .ch-panel { width: 100vw; }
+}
 /* #296 종목 정보 카드 */
 .fav-info { align-self: flex-start; margin-top: 2px; }
 .sp-card { margin-top: 12px; }

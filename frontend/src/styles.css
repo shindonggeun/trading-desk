@@ -1518,3 +1518,7 @@ a.wmb-row:hover { border-color: var(--accent); }
 .pattern-list li { border-left: 3px solid var(--warn); }
 .pattern-list .sr-kind { color: var(--warn); }
 .pattern-broke_up .sr-kind, .pattern-broke_down .sr-kind { opacity: 0.8; }
+
+/* #300 차트 예상도 설명 */
+.proj-note { margin: 6px 0 0; line-height: 1.5; }
+.proj-note strong { color: var(--text); }

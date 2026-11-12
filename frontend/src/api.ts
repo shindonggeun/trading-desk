@@ -1,4 +1,4 @@
-import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FuturesDaily, FuturesIntraday, MarketMonth, SectorNewsView, LongShortItem } from "./types";
+import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FuturesDaily, FuturesIntraday, MarketMonth, SectorNewsView, LongShortItem, Projection } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -239,6 +239,9 @@ export const api = {
   /** #243 한 달의 휴장 · 발표(KST) · 만기 · 실적 — month "YYYY-MM", 없으면 이번 달 */
   marketMonth: (month?: string) => call<MarketMonth>(`/api/calendar${month ? `?month=${encodeURIComponent(month)}` : ""}`),
   levels: (ticker: string) => call<SupportResistance>(`/api/levels?ticker=${encodeURIComponent(ticker)}`),
+  /** #299 차트 예상도: 보정한 확률 원뿔 · 레벨 경로 · 설명 */
+  projection: (ticker: string, horizon: string) =>
+    call<Projection>(`/api/projection?ticker=${encodeURIComponent(ticker)}&horizon=${encodeURIComponent(horizon)}`),
   instruments: (q: string) => call<Instrument[]>(`/api/instruments?q=${encodeURIComponent(q)}`),
   instrumentsStatus: () =>
     call<{ source: string; count: number; updated_at: string | null; error: string | null }>("/api/instruments/status"),

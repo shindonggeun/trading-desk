@@ -1182,3 +1182,23 @@ export interface LongShortItem {
   source?: "binance";
   error?: string;
 }
+
+/** #299 차트 예상도(GET /api/projection) — 확률 범위 · 시나리오이지 예측이 아니다 */
+export interface ProjectionPoint { bar: number; price: number; why: string }
+export interface ProjectionPath { name: "bull" | "bear" | "range"; label: string; prob: number; points: ProjectionPoint[] }
+export interface ProjectionCone { bar: number; p50: number; p16: number; p84: number; p2_5: number; p97_5: number }
+export interface Projection {
+  ticker: string;
+  horizon: string;
+  timeframe: string;
+  steps: number;
+  price: number | null;
+  sigma: number | null;
+  cone: ProjectionCone[];
+  paths: ProjectionPath[];
+  note_ko: string;
+  note_source: "ai" | "desk";
+  note_pending: boolean;
+  fallback?: { from: string; reason: string } | null;
+  calibration: { coverage68_valid?: number; coverage95_valid?: number; n?: number } | null;
+}

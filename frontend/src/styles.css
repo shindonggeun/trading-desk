@@ -1512,3 +1512,9 @@ a.wmb-row:hover { border-color: var(--accent); }
   .ls-word { display: none; }
   .ls-pop { left: -4px; right: -4px; min-width: 0; }
 }
+
+/* #298 차트 표시 묶음 · 삼각수렴 목록 */
+.chart-presets { flex-wrap: wrap; }
+.pattern-list li { border-left: 3px solid var(--warn); }
+.pattern-list .sr-kind { color: var(--warn); }
+.pattern-broke_up .sr-kind, .pattern-broke_down .sr-kind { opacity: 0.8; }

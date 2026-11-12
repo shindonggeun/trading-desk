@@ -235,6 +235,9 @@ export const api = {
   /** 지지 · 저항(backend desk/sr.py) — 지금 봉 기준, 서버가 몇 분 캐시. */
   /** #128: 분석(run)의 구역 · 사다리 · 손절 · 목표는 그대로, 조건 · 점수 · 상태만 지금 값. ticker · horizon 은 run 에서 */
   livePlaybooks: (run: string) => call<LivePlaybooks>(`/api/playbooks?run=${encodeURIComponent(run)}`),
+  /** #317 분석 없이 종목만으로 — 지금 봉 · 현재가로 새로 계산한 롱 · 숏 플레이북 */
+  playbooksFor: (ticker: string, horizon?: string) =>
+    call<LivePlaybooks>(`/api/playbooks?ticker=${encodeURIComponent(ticker)}${horizon ? `&horizon=${encodeURIComponent(horizon)}` : ""}`),
   /** #148 다가오는 FOMC · 주요 BLS 발표(공식 일정, 서버가 백그라운드로 갱신)와 지금 열린 진입 보류 창 */
   /** #244 섹터 · 인물 이슈(기사 급증) — 헤드라인에 한글 판정 */
   sectorNews: (sector?: string) => call<SectorNewsView>(`/api/sector-news${sector ? `?sector=${encodeURIComponent(sector)}` : ""}`),

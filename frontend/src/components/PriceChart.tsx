@@ -20,7 +20,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles, type OscillatorView, type OscReading, type ReviewRow } from "../api";
 import { price } from "../format";
 import { keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands, volumeProfileDrawing, withAlpha, zoneHalfWidth } from "./chartBands";
-import type { BottomZone, FibLevel, Fibonacci, Plan, Positioning, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
+import type { BottomZone, ChartPattern, FibLevel, Fibonacci, Plan, Positioning, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 
 export type Interval = Exclude<CandleInterval, "1m">;
 const INTERVALS: { iv: Interval; label: string; count: number }[] = [
@@ -45,9 +45,9 @@ const MAX_BARS = 2000;
 // 보이는 범위의 왼쪽 끝이 첫 봉에서 이만큼 안쪽이면 더 받는다
 const OLDER_EDGE = 5;
 
-type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean; bz: boolean };
+type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; pattern: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean; bz: boolean };
 const SHOW_LABEL: Record<keyof Show, string> = {
-  levels: "타점선", pb: "플레이북", sr: "지지 · 저항", all: "모든 지지 · 저항", vp: "매물대", trend: "추세선", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
+  levels: "타점선", pb: "플레이북", sr: "지지 · 저항", all: "모든 지지 · 저항", vp: "매물대", trend: "추세선", pattern: "삼각수렴 · 쐐기", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
   opt: "옵션 벽 · 맥스 페인",
   bz: "인생 타점 줍줍",
   stoch: "스토캐스틱", bb: "볼린저밴드(20)", osc: "과열 · 침체 표시",
@@ -57,7 +57,21 @@ const US_TICKER = /^[A-Z]{1,6}(?:[.-][A-Z])?$/;
 const WALL_RANGE = 0.15;
 const WALLS_SHOWN = 2;
 // #98: 지지 · 저항은 가까운 3개씩만, 피보나치는 켤 때만 — 차트가 선으로 덮이지 않게
-const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true, bz: true };
+const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, pattern: false, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true, bz: true };
+// #298 표시 묶음: 가격 칸 위의 선 · 표시만 한 번에 바꾼다(RSI · 스토캐스틱 칸은 그대로). 체크를 손으로 바꾸면 "직접".
+type Preset = "sr" | "trend" | "all" | "custom";
+const PRESET_LABEL: Record<Preset, string> = { sr: "지지·저항만", trend: "추세·패턴", all: "전부", custom: "직접" };
+const OVERLAYS: (keyof Show)[] = ["levels", "pb", "sr", "all", "vp", "trend", "pattern", "fib", "fills", "analysis", "opt", "bb", "osc", "bz"];
+const PRESET_ON: Record<Exclude<Preset, "custom">, (keyof Show)[]> = {
+  sr: ["sr", "vp"],
+  trend: ["sr", "trend", "pattern", "fib"],
+  all: OVERLAYS,
+};
+function applyPreset(show: Show, p: Exclude<Preset, "custom">): Show {
+  const out = { ...show };
+  for (const k of OVERLAYS) out[k] = PRESET_ON[p].includes(k);
+  return out;
+}
 const NEAR_LEVELS = 3;
 /** RSI 패널 높이 — 낮은 화면(가로 모드 · 크게 보기)에서 가격 패널을 누르지 않게 차트 높이에 비례 */
 const rsiHeight = (h: number) => Math.round(Math.min(110, Math.max(56, h * 0.22)));
@@ -65,7 +79,7 @@ const rsiHeight = (h: number) => Math.round(Math.min(110, Math.max(56, h * 0.22)
 // 주기 · 표시 선택은 이 브라우저에 기억한다(사생활 모드 · 막힌 저장소에서도 화면은 그대로 동작).
 const PREFS_KEY = "desk.priceChart.v2";
 const OLD_PREFS_KEY = "desk.priceChart.v1";   // #98 전 — 피보나치는 기본 꺼짐으로 바뀌어 옮기지 않는다
-function loadPrefs(): { interval: Interval; show: Show } {
+function loadPrefs(): { interval: Interval; show: Show; preset: Preset; custom: Show } {
   try {
     const stored = localStorage.getItem(PREFS_KEY);
     const raw = JSON.parse(stored ?? localStorage.getItem(OLD_PREFS_KEY) ?? "{}");
@@ -73,14 +87,17 @@ function loadPrefs(): { interval: Interval; show: Show } {
     const interval = INTERVALS.some((i) => i.iv === raw.interval) ? (raw.interval as Interval) : "1d";
     const show = { ...DEFAULT_SHOW };
     for (const k of Object.keys(DEFAULT_SHOW) as (keyof Show)[]) if (typeof raw.show?.[k] === "boolean") show[k] = raw.show[k];
-    return { interval, show };
+    const preset: Preset = raw.preset in PRESET_LABEL ? raw.preset : "custom";
+    const custom = { ...show };
+    for (const k of Object.keys(DEFAULT_SHOW) as (keyof Show)[]) if (typeof raw.custom?.[k] === "boolean") custom[k] = raw.custom[k];
+    return { interval, show, preset, custom };
   } catch {
-    return { interval: "1d", show: { ...DEFAULT_SHOW } };
+    return { interval: "1d", show: { ...DEFAULT_SHOW }, preset: "custom" as Preset, custom: { ...DEFAULT_SHOW } };
   }
 }
-function savePrefs(interval: Interval, show: Show) {
+function savePrefs(interval: Interval, show: Show, preset: Preset, custom: Show) {
   try {
-    localStorage.setItem(PREFS_KEY, JSON.stringify({ interval, show }));
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ interval, show, preset, custom }));
   } catch {
     /* 저장소가 막혀 있으면 기억만 못 한다 */
   }
@@ -167,6 +184,21 @@ function tfLabel(tf: string): string {
 }
 const TREND_NAME: Record<Trendline["kind"], string> = { support: "상승 지지선", resistance: "하락 저항선" };
 const TREND_STATE: Record<Trendline["state"], string> = { intact: "유지", testing: "시험 중", broken: "이탈" };
+const PATTERN_STATE: Record<ChartPattern["state"], string> = { converging: "수렴 중", broke_up: "위로 이탈", broke_down: "아래로 이탈" };
+const TEXTBOOK: Record<ChartPattern["expected"], string> = { up: "위", down: "아래", none: "정해진 쪽 없음" };
+/** #297 측정 한 줄: 검증 구간이 무작위로 섞은 가격과 다른지 */
+function patternRecord(p: ChartPattern): string {
+  const s = p.stats;
+  if (!s) return "이 주기는 과거 측정이 없습니다 — 선으로만 보세요.";
+  const v = s.valid, b = s.null;
+  const head = v?.expected_pct != null && b?.expected_pct != null
+    ? `과거 검증 ${v.n}건 중 교과서 방향(${TEXTBOOK[p.expected]}) 이탈 ${v.expected_pct}% · 무작위로 섞은 가격 ${b.expected_pct}%`
+    : `과거 ${s.n}건 측정`;
+  const verdict = s.verdict === "edge" ? `→ 우위 있음(${s.edge_pct && s.edge_pct > 0 ? "+" : ""}${s.edge_pct}%p)`
+    : s.verdict === "unstable" ? "→ 학습 · 검증 구간이 엇갈려 믿기 어려움"
+      : "→ 무작위와 차이 없음: 방향 근거가 아니라 지지 · 저항선으로만";
+  return `${head} ${verdict}`;
+}
 const signed = (v: number) => `${v > 0 ? "+" : ""}${v}`;
 
 /**
@@ -265,6 +297,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const [prefs] = useState(loadPrefs);
   const [interval, setBarInterval] = useState<Interval>(initialInterval ?? prefs.interval);
   const [show, setShow] = useState<Show>(prefs.show);
+  const [preset, setPreset] = useState<Preset>(prefs.preset);
+  const [custom, setCustom] = useState<Show>(prefs.custom);   // "직접" 으로 돌아오면 이 고름으로
   const [candles, setCandles] = useState<Candles | null>(null);
   // 과거 봉 배수(1 · 2 · 4 …) — 종목 · 주기가 바뀌면 처음으로
   const [older, setOlder] = useState({ key: "", times: 1 });
@@ -313,17 +347,29 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   );
   // 추세선 · 피보나치(#73) — 지지 · 저항과 같은 출처(분석 당시 / 지금)
   const trendLines: Trendline[] = useMemo(() => (show.trend ? srSource?.trendlines ?? [] : []), [show.trend, srSource]);
+  const patterns: ChartPattern[] = useMemo(() => (show.pattern ? srSource?.patterns ?? [] : []), [show.pattern, srSource]);
   const fib: Fibonacci | null = show.fib ? srSource?.fibonacci ?? null : null;
   // 매물대(#108) — 지지 · 저항과 같은 출처, 거래량이 없는 지수 · 옛 분석은 없다
   const vp: VolumeProfile | null = show.vp && srSource?.volume_profile?.bins.length ? srSource.volume_profile : null;
-  const wantSr = show.sr || show.trend || show.fib || show.vp;
+  const wantSr = show.sr || show.trend || show.pattern || show.fib || show.vp;
   // 분석 당시 값이면 "지금" 이라 하지 않는다 — 선은 오늘까지 그어도 거리 · 상태는 그때 기준
   const when = mode === "plan" ? "분석 당시" : "지금";
   const [trendDrawn, setTrendDrawn] = useState<{ line: Trendline; series: ISeriesApi<"Line"> }[]>([]);
 
-  useEffect(() => savePrefs(interval, show), [interval, show]);
+  useEffect(() => savePrefs(interval, show, preset, custom), [interval, show, preset, custom]);
   useEffect(() => onIntervalChange?.(interval), [interval, onIntervalChange]);
-  const toggle = (k: keyof Show) => setShow((s) => ({ ...s, [k]: !s[k] }));
+  const toggle = (k: keyof Show) => {
+    const next = { ...show, [k]: !show[k] };
+    setShow(next);
+    if (OVERLAYS.includes(k)) {   // 손으로 고르면 그 고름이 "직접"
+      setPreset("custom");
+      setCustom(next);
+    }
+  };
+  const pickPreset = (p: Preset) => {
+    setPreset(p);
+    setShow((s) => (p === "custom" ? { ...custom, rsi: s.rsi, stoch: s.stoch } : applyPreset(s, p)));
+  };
 
   // #158 옵션 벽 · 맥스 페인(#154 positioning) — 켤 때만 읽는다
   const [optionData, setOptionData] = useState<Positioning["options"] | null>(null);
@@ -873,6 +919,66 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     };
   }, [drawn, trendLines, fib, ticker, srSource]);
 
+  // #298 삼각수렴 · 쐐기 — 윗선 · 아랫선을 첫 터치부터 마지막 봉까지 점선으로, 윗선 끝에 종류 · 상태 · 정점까지 남은 봉.
+  // 추세선과 같은 규칙(같은 주기는 로그 가격 × 봉 순서 직선, 다른 주기는 시각으로)이고 축 범위엔 넣지 않는다.
+  useEffect(() => {
+    if (!drawn || patterns.length === 0) return;
+    const { chart, rows, intraday } = drawn;
+    const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
+    const keys = rows.map((r) => r.key);
+    const first = Date.parse(rows[0].bar.at);
+    const index = new Map(keys.map((k, i) => [k, i]));
+    const keyOf = (iso: string, tf: string): Key | null => {
+      if (!Number.isFinite(Date.parse(iso))) return null;
+      if (intraday && !isIntradayTf(tf)) return rows.find((r) => r.day === marketDay(iso, ticker))?.key ?? null;
+      return barFor(keys, intraday ? kstStamp(iso) : kstDay(iso));
+    };
+    const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, autoscaleInfoProvider: () => null };
+    const added: ISeriesApi<"Line">[] = [];
+    const detach: (() => void)[] = [];
+    const color = css("--warn", "#e5a23a");
+    for (const p of patterns) {
+      try {
+        const series: ISeriesApi<"Line">[] = [];
+        for (const side of [p.upper, p.lower]) {
+          const t0 = Date.parse(side.from.at), t1 = Date.parse(side.to.at);
+          if (!(side.from.price > 0 && side.to.price > 0) || !Number.isFinite(t0) || !Number.isFinite(t1)) continue;
+          const rate = Math.log(side.to.price / side.from.price);
+          const i0 = t0 >= first ? index.get(keyOf(side.from.at, p.timeframe) ?? "") : undefined;
+          const i1 = index.get(keyOf(side.to.at, p.timeframe) ?? "");
+          const value = p.timeframe === drawn.interval && i0 !== undefined && i1 !== undefined && i1 > i0
+            ? (i: number) => side.from.price * Math.exp((rate * (i - i0)) / (i1 - i0))
+            : (i: number) => side.from.price * Math.exp((rate * (Date.parse(rows[i].bar.at) - t0)) / Math.max(1, t1 - t0));
+          const start = i0 ?? (t0 < first ? 0 : -1);
+          if (start < 0) continue;
+          const data = [];
+          for (let i = start; i < rows.length; i++) {
+            const v = value(i);
+            if (Number.isFinite(v) && v > 0) data.push({ time: time(rows[i].key), value: v });
+          }
+          if (data.length < 2) continue;
+          const s = chart.addSeries(LineSeries, { ...quiet, color, lineWidth: 2, lineStyle: LineStyle.Dashed });
+          s.setData(data);
+          added.push(s);
+          series.push(s);
+        }
+        if (series[0]) {
+          const state = p.state === "converging" ? `수렴 중 · 정점 ${Math.round(p.apex.bars_ahead)}봉 뒤` : PATTERN_STATE[p.state];
+          const m = createSeriesMarkers(series[0], [{ time: time(rows[rows.length - 1].key), position: "aboveBar", shape: "square",
+            color, text: `${p.label}(${tfLabel(p.timeframe)}) · ${state}`, size: 0.5 } as SeriesMarker<Time>]);
+          detach.push(() => m.detach());
+        }
+      } catch {
+        /* 이상한 패턴 하나는 건너뛴다 — 차트는 그대로 */
+      }
+    }
+    return () => {
+      if (!drawn.alive.current) return;
+      for (const d of detach) d();
+      for (const s of added) chart.removeSeries(s);
+    };
+  }, [drawn, patterns, ticker]);
+
   // 선 근처(5px)에 마우스를 올리면 근거 — 지지 · 저항 · 피보나치(가로선)와 추세선(그 봉에서의 선 높이).
   useEffect(() => {
     if (!drawn) return;
@@ -944,6 +1050,14 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           {INTERVALS.map(({ iv, label }) => (
             <button key={iv} type="button" className={`chip ${iv === interval ? "chip-on" : ""}`} aria-pressed={iv === interval} onClick={() => setBarInterval(iv)}>
               {label}
+            </button>
+          ))}
+        </div>
+        <div className="chips chart-presets" role="group" aria-label="표시 묶음">
+          {(Object.keys(PRESET_LABEL) as Preset[]).map((p) => (
+            <button key={p} type="button" className={`chip chip-sub ${p === preset ? "chip-on" : ""}`} aria-pressed={p === preset}
+              onClick={() => pickPreset(p)}>
+              {PRESET_LABEL[p]}
             </button>
           ))}
         </div>
@@ -1070,7 +1184,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       ) : wantSr && mode === "now" && !nowSr ? (
         <p className="muted small">지지 · 저항 · 추세선 계산 중…</p>
       ) : null}
-      {lists && srSource && (show.sr || show.trend || !!fib) && (
+      {lists && srSource && (show.sr || show.trend || show.pattern || !!fib) && (
         <details className="level-list">
           <summary>레벨 목록 <span className="muted small">지지 · 저항 · 추세선{fib ? " · 피보나치" : ""}</span></summary>
       {show.sr && (
@@ -1112,6 +1226,28 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
               : srSource.trendlines === undefined
                 ? "이 분석에는 추세선 기록이 없습니다 — '지금' 기준으로 보세요."
                 : "조건(터치 3회 이상 · 종가 이탈 없음)을 채운 추세선이 없습니다."}
+          </p>
+        )
+      )}
+      {show.pattern && srSource && (
+        patterns.length > 0 ? (
+          <ul className="sr-list pattern-list" aria-label="삼각수렴 · 쐐기">
+            {patterns.map((p) => (
+              <li key={`${p.kind}-${p.timeframe}-${p.upper.from.at}`} className={`pattern-${p.state}`}>
+                <span className="sr-kind">{p.label}</span>
+                <strong className="num">{price(p.upper.to.price)} / {price(p.lower.to.price)}</strong>
+                <span className="muted small">
+                  {tfLabel(p.timeframe)} · {PATTERN_STATE[p.state]}{p.state === "converging" ? ` · 정점 ${Math.round(p.apex.bars_ahead)}봉 뒤` : ""} · 폭 {p.width_pct}%
+                </span>
+                <span className="small">{patternRecord(p)}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted small">
+            {srSource.patterns_error ? "삼각수렴을 계산하지 못했습니다."
+              : srSource.patterns === undefined ? "이 분석에는 삼각수렴 기록이 없습니다 — '지금' 기준으로 보세요."
+                : "지금 좁혀지는 삼각수렴 · 쐐기가 없습니다."}
           </p>
         )
       )}

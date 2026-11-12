@@ -510,6 +510,9 @@ export interface SupportResistance {
   /** 매물대 계산이 실패한 이유(있으면 volume_profile 은 null) */
   volume_profile_error?: string;
   trend_error?: string;
+  /** #297 삼각수렴 · 쐐기(주 · 보조 주기 각 최대 1개) — 예전 run 은 없다 */
+  patterns?: ChartPattern[];
+  patterns_error?: string;
 }
 
 export interface TrendPoint {
@@ -531,6 +534,40 @@ export interface Trendline {
   /** 지금 가격 − 선, 주 시간축 ATR 단위 */
   distance_atr: number;
   state: "intact" | "testing" | "broken";
+}
+
+/** #297 수렴 패턴의 한 선: 첫 터치 → 마지막 봉 */
+export interface PatternSide {
+  from: TrendPoint;
+  to: TrendPoint;
+  touches: string[];
+  slope_pct_per_bar: number;
+}
+/** #297 desk.patterns_bt 의 측정 — 검증 구간이 무작위로 섞은 가격과 다른지가 판정이다 */
+export interface PatternStats {
+  n: number;
+  up_pct: number | null;
+  down_pct: number | null;
+  expected_pct: number | null;
+  false_break_pct: number | null;
+  move_atr_avg: number | null;
+  valid?: { n: number; expected_pct: number | null } | null;
+  null?: { n: number; expected_pct: number | null } | null;
+  edge_pct?: number | null;
+  verdict?: "edge" | "no_edge" | "unstable" | "unmeasured";
+}
+export interface ChartPattern {
+  kind: "symmetric" | "ascending" | "descending" | "rising_wedge" | "falling_wedge";
+  label: string;
+  timeframe: string;
+  state: "converging" | "broke_up" | "broke_down";
+  expected: "up" | "down" | "none";
+  upper: PatternSide;
+  lower: PatternSide;
+  apex: { bars_ahead: number; price: number };
+  width_pct: number;
+  narrowed: number;
+  stats: PatternStats | null;
 }
 
 export interface FibLevel {

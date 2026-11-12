@@ -20,6 +20,7 @@ previous value.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import re
 import xml.etree.ElementTree as ET
@@ -70,28 +71,91 @@ class Theme:
     query: str                 # GDELT DOC query (English keywords, any source language)
     tags: tuple[str, ...]      # instrument groups it matters most to ("all" = everything)
     why: str                   # one line for the agents: what the market fears or hopes here
+    # #291: a headline belongs to the theme only when its title says so. Google News (and GDELT)
+    # match the query anywhere in the article, so a CEO scandal whose story mentions a rate hike
+    # came back as the rates theme's lead. A title is on the theme when it has a ``strong`` word,
+    # or one of ``terms`` and none of ``exclude`` (another story that shares a weak word: a
+    # utility's rate hike, Powell County, a blue-chip index, a price war). Words match whole, any
+    # case, a plural s/es allowed, words joined by a space or a hyphen; "cs:" = case-sensitive and
+    # no plural (Xi, not Section XI); "re:" = a regular expression between word boundaries; Korean
+    # by substring.
+    terms: tuple[str, ...] = ()
+    strong: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
 
 
 THEMES: tuple[Theme, ...] = (
     Theme("us_politics", "미국 정치 · 선거",
           '(midterm OR "election results" OR congress OR senate OR "white house" OR "blue wave")',
-          ("us", "all"), "policy risk: taxes, regulation, spending and who controls Congress"),
+          ("us", "all"), "policy risk: taxes, regulation, spending and who controls Congress",
+          terms=("midterm", "election", "congress", "congressional", "senate", "senator", "house speaker",
+                 "white house", "blue wave", "democrat", "democratic", "republican", "gop", "lawmaker",
+                 "shutdown", "trump", "의회", "선거", "백악관")),
     Theme("fed", "연준 · 금리", '("federal reserve" OR fomc OR powell OR "rate cut" OR "rate hike" OR "treasury yields")',
-          ("all",), "discount rates and liquidity: the multiple every growth stock trades on"),
+          ("all",), "discount rates and liquidity: the multiple every growth stock trades on",
+          strong=(r"re:fed(?![\s\-‐‑]+(?:up|to)\b)", "federal reserve", "fomc", "fed chair", "jerome powell",
+                  "central bank", "monetary policy", "treasury yield", "treasuries", "bond yield", "연준"),
+          terms=("powell", "interest rate", "rate cut", "rate hike", "rate-cut", "rate-hike", "금리", "국채"),
+          exclude=("utility", "utilities", "electric", "ratepayer", "customers", "power bill", "pge", "tuition",
+                   "proposal", "sewer", "gas rate", "water rate", "county", "coach")),
     Theme("tariffs", "관세 · 무역", '(tariff OR tariffs OR "trade war" OR "trade deal")',
-          ("all", "semis", "kr"), "costs, supply chains and retaliation"),
+          ("all", "semis", "kr"), "costs, supply chains and retaliation",
+          terms=("tariff", "trade war", "trade deal", "trade talks", "trade pact", "duties", "levy", "levies",
+                 "import tax", "customs", "관세", "무역")),
     Theme("ai_capex", "AI 설비투자 · 데이터센터",
           '(hyperscaler OR "data center" OR "ai capex" OR "ai spending" OR "ai bubble")',
-          ("semis", "bigtech", "power"), "whether the AI build-out keeps its pace: the demand behind chips and power"),
+          ("semis", "bigtech", "power"), "whether the AI build-out keeps its pace: the demand behind chips and power",
+          terms=("hyperscaler", "data center", "datacenter", "ai capex", "ai spending", "ai bubble", "capex",
+                 "ai infrastructure", "ai investment", "gpu", "데이터센터", "설비투자")),
     Theme("chips", "반도체 · 수출 규제", '(semiconductor OR chipmaker OR "chip export" OR "export controls")',
-          ("semis", "kr"), "chip demand, pricing and export limits"),
+          ("semis", "kr"), "chip demand, pricing and export limits",
+          strong=("semiconductor", "chipmaker", "export control", "반도체"),
+          terms=("chip", "export ban", "foundry", "wafer", "memory chip", "dram", "hbm", "nand", "수출 규제"),
+          exclude=("blue chip", "poker", "chocolate chip", "potato chip")),
     Theme("china", "중국", '("chinese economy" OR beijing OR "xi jinping" OR "china stimulus")',
-          ("semis", "kr", "all"), "growth, stimulus and US-China tension"),
+          ("semis", "kr", "all"), "growth, stimulus and US-China tension",
+          terms=("china", "chinese", "beijing", "cs:Xi", "xi jinping", "yuan", "pboc", "중국", "시진핑")),
     Theme("korea", "한국 정책 · 시장", '(kospi OR "bank of korea" OR "south korea economy" OR "korean won")',
-          ("kr",), "Korean rates, the won and domestic policy"),
+          ("kr",), "Korean rates, the won and domestic policy",
+          terms=("kospi", "kosdaq", "bank of korea", "korea", "korean", "seoul", "코스피", "코스닥", "한국은행",
+                 "원화", "한국")),
     Theme("geopolitics", "지정학", '(war OR missile OR sanctions OR "middle east" OR ukraine OR taiwan)',
-          ("all", "energy", "gold"), "risk-off shocks, oil and safe havens"),
+          ("all", "energy", "gold"), "risk-off shocks, oil and safe havens",
+          terms=("war", "missile", "sanction", "middle east", "ukraine", "taiwan", "russia", "iran", "israel",
+                 "gaza", "nato", "ceasefire", "peace talks", "putin", "military", "troops", "strait of hormuz",
+                 "taiwan strait", "전쟁", "제재", "지정학"),
+          exclude=("price war", "bidding war", "star wars", "talent war", "console war", "war chest")),
 )
+
+_SEP = r"[\s\-‐‑–]+"   # a space, a hyphen, a non-breaking hyphen or an en dash between words
+
+
+def _term(word: str) -> re.Pattern:
+    if word.startswith("re:"):
+        return re.compile(r"(?<![a-z0-9])" + word[3:] + r"(?![a-z0-9])", re.IGNORECASE)
+    if word.startswith("cs:"):
+        return re.compile(r"(?<![A-Za-z0-9])" + re.escape(word[3:]) + r"(?![A-Za-z0-9])")
+    if not word.isascii():
+        return re.compile(re.escape(word))
+    body = _SEP.join(re.escape(w) for w in word.lower().split())
+    return re.compile(r"(?<![a-z0-9])" + body + r"(?:s|es)?(?![a-z0-9])", re.IGNORECASE)
+
+
+@functools.cache
+def _patterns(theme: Theme) -> tuple[list[re.Pattern], list[re.Pattern], list[re.Pattern]]:
+    return ([_term(w) for w in theme.strong], [_term(w) for w in theme.terms], [_term(w) for w in theme.exclude])
+
+
+def on_topic(theme: Theme, title: str | None) -> bool:
+    """#291: whether a headline's title is about ``theme`` (a theme without words keeps everything)."""
+    if not theme.terms and not theme.strong:
+        return True
+    strong, weak, exclude = _patterns(theme)
+    text = title or ""
+    if any(p.search(text) for p in strong):
+        return True
+    return any(p.search(text) for p in weak) and not any(p.search(text) for p in exclude)
+
 
 # Which groups an instrument belongs to. Unknown US tickers are "us"; .KS/.KQ are "kr".
 _GROUPS: dict[str, set[str]] = {
@@ -256,7 +320,7 @@ async def fetch_theme(gdelt: Gdelt, theme: Theme, now: datetime) -> dict:
     try:
         volume = _rows(await gdelt.get(theme.query, "TimelineVolRaw", "7d"), "article")
         tones = _rows(await gdelt.get(theme.query, "TimelineTone", "72h"), "tone")
-        articles = await gdelt.get(theme.query, "ArtList", "72h", maxrecords=str(HEADLINES * 2), sort="HybridRel")
+        articles = await gdelt.get(theme.query, "ArtList", "72h", maxrecords=str(HEADLINES * 4), sort="HybridRel")
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 429:
             raise RateLimited from exc
@@ -266,9 +330,12 @@ async def fetch_theme(gdelt: Gdelt, theme: Theme, now: datetime) -> dict:
             raise RateLimited from exc
         raise
     count, ratio = spike(volume, now)
+    # #291: the volume and tone timelines are GDELT's (whole articles); the headlines are the ones titled on the theme
+    found = [h for h in headlines(articles, HEADLINES * 4) if (at := _seen(h)) and in_window(at, now)]
+    mine = [h for h in found if on_topic(theme, h["title"])]     # off_topic: in the window, as on RSS
     return {"id": theme.id, "label": theme.label, "articles_24h": count, "spike": ratio, "spike_kind": "week",
-            "tone": tone(tones), "tone_kind": "gdelt", "headlines": recent(headlines(articles, HEADLINES * 2), now), "why": theme.why, "source": "gdelt",
-            "fetched_at": now.isoformat()}
+            "tone": tone(tones), "tone_kind": "gdelt", "headlines": recent(mine, now), "off_topic": len(found) - len(mine),
+            "why": theme.why, "source": "gdelt", "fetched_at": now.isoformat()}
 
 
 # --- Google News RSS fallback ----------------------------------------------------------------
@@ -354,11 +421,15 @@ async def fetch_theme_rss(theme: Theme, now: datetime, client: httpx.AsyncClient
     newest = sorted(dated, key=lambda i: i["seen"], reverse=True)
     # #273: the feed spans the week (the surge needs it); headlines and tone only the last 3 days
     window = [i for i in newest if in_window(i["seen"], now)]
+    # #291: and only the ones titled on the theme - the search also matches inside an article's text
+    mine = [i for i in window if on_topic(theme, i["title"])]
+    mine_last = [i for i in last if on_topic(theme, i["title"])]
     return {"id": theme.id, "label": theme.label, "articles_24h": len(last), "spike": ratio, "spike_kind": "raw-share",
             "saturated": saturated,
-            "tone": headline_tone([i["title"] for i in last or window[:20]], query_words(theme.query)),
+            "tone": headline_tone([i["title"] for i in mine_last or mine[:20]], query_words(theme.query)),
             "tone_kind": "headline-words",
-            "headlines": [{**h, "seen": h["seen"].isoformat(), "country": None} for h in recent(window, now)],
+            "headlines": [{**h, "seen": h["seen"].isoformat(), "country": None} for h in recent(mine, now)],
+            "off_topic": len(window) - len(mine),
             "why": theme.why, "source": "google-news", "fetched_at": now.isoformat()}
 
 
@@ -439,10 +510,12 @@ class Cache:
             if row is None:
                 continue
             # #273: re-windowed on every read - a snapshot hours old must not show a 4-day-old story
-            heads = recent(row.get("headlines") or [], now, SHOWN)
+            heads = recent([h for h in row.get("headlines") or [] if on_topic(theme, h.get("title"))], now, SHOWN)
             stale = _age(row, now) > STALE_SEC
             # quiet: nothing in the window - an old snapshot's 24h count no longer says otherwise
-            rows.append({**row, "headlines": heads, "quiet": not heads and (stale or not row.get("articles_24h")),
+            # #291: a feed whose window holds only other stories is quiet too, not a headline-less surge
+            quiet = not heads and (stale or not row.get("articles_24h") or bool(row.get("off_topic")))
+            rows.append({**row, "headlines": heads, "quiet": quiet,
                          "relevance": relevance(theme, tags) if ticker else None, "stale": stale})
         if ticker:
             rows.sort(key=lambda r: (-(r["relevance"] or 0), -(r["spike"] or 0), order[r["id"]]))

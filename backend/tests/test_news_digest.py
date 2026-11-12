@@ -161,11 +161,11 @@ def test_the_fake_digest_parses_and_the_note_names_high_impact_headlines(monkeyp
     monkeypatch.setattr(news_digest, "DIGEST", d)
     note = macro_news.prompt_note("NVDA", cache, now=now)
     assert "High-impact headline (fed)" in note and "not a forecast" in note
-    quoted = {**THEMES["fed"]["headlines"][0], "title": 'He said "buy" now'}
+    quoted = {**THEMES["fed"]["headlines"][0], "title": 'Fed chair said "buy" now'}
     # the same URL under another title: recent() keeps both stories, high_impact names the URL once
-    cache.themes["fed"] = {**cache.themes["fed"], "headlines": [quoted, {**quoted, "title": "Bond desks brace for supply"}]}
+    cache.themes["fed"] = {**cache.themes["fed"], "headlines": [quoted, {**quoted, "title": "Bond desks brace for Fed supply"}]}
     note = macro_news.prompt_note("NVDA", cache, now=now)
-    assert note.count("High-impact headline") == 1 and "\"He said 'buy' now\"" in note
+    assert note.count("High-impact headline") == 1 and "\"Fed chair said 'buy' now\"" in note
 
 
 def test_the_brief_api_carries_the_reads(db_url, monkeypatch):

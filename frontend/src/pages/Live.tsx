@@ -9,6 +9,7 @@ import FavoriteStar from "../components/FavoriteStar";
 import { addFavorite, removeFavorite, useFavorites } from "../favorites";
 import { price, time } from "../format";
 import type { Run } from "../types";
+import StockProfileCard from "../components/StockProfileCard";
 
 /** #/live?t=NVDA — 대시보드 즐겨찾기 타일에서 넘어온 종목 */
 function linkedTicker(): string | null {
@@ -49,6 +50,7 @@ export default function Live() {
     }
     return weekendKst() ? "bars" : "live";
   });
+  const [infoOn, setInfoOn] = useState(false);   // #296 선택 종목의 종목 정보 카드
   const pickView = (v: "live" | "bars") => {
     setView(v);
     try {
@@ -149,10 +151,12 @@ export default function Live() {
           )}
           <button type="button" className={`chip${view === "live" ? " chip-on" : ""}`} aria-pressed={view === "live"} onClick={() => pickView("live")}>1분 실시간</button>
           <button type="button" className={`chip${view === "bars" ? " chip-on" : ""}`} aria-pressed={view === "bars"} onClick={() => pickView("bars")}>봉 · 장외 추정</button>
+          <button type="button" className={`chip${infoOn ? " chip-on" : ""}`} aria-pressed={infoOn} onClick={() => setInfoOn((v) => !v)}>정보</button>
         </div>
       )}
       {shown && view === "bars" && <BoardChart key={shown.ticker} ticker={shown.ticker} name={shown.name} />}
       {focus && view === "live" && <LiveChart ticker={focus.ticker} plan={null} />}
+      {shown && infoOn && <StockProfileCard key={shown.ticker} ticker={shown.ticker} onClose={() => setInfoOn(false)} />}
       {!focus && tab && (
         <>
           <div className="live-plan muted small">

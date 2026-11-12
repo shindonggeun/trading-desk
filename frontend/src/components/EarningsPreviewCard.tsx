@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { EarningsEstimate, EarningsPreview } from "../types";
+import type { EarningsEstimate, EarningsPreview, KrConsensusRow } from "../types";
 
 /**
  * #294 실적 프리뷰 카드(#293 GET /api/earnings/preview) — 다음 발표 · EPS/매출 컨센서스 · 서프라이즈 기록 ·
@@ -37,6 +37,27 @@ function Estimate({ label, e, fmt }: { label: string; e: EarningsEstimate | null
       <strong className="num">{fmt(e.avg)}</strong>
       <span className="muted small num">범위 {fmt(e.low)} ~ {fmt(e.high)}{e.growth_pct != null && ` · 전년 대비 ${pct(e.growth_pct)}`}</span>
     </div>
+  );
+}
+
+/** 네이버 분기 실적 — 지난 실적과 추정(컨센서스) 칸을 함께. */
+function KrTable({ rows, unit }: { rows: KrConsensusRow[]; unit: string }) {
+  return (
+    <table className="ep-history">
+      <caption className="muted small">네이버 분기 실적 · 컨센서스(단위 {unit}, 이익률 %) — "추정" 은 아직 발표 전</caption>
+      <thead><tr><th>분기</th><th className="num">매출</th><th className="num">영업이익</th><th className="num">순이익</th><th className="num">영업이익률</th></tr></thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.period}>
+            <td>{r.period}{r.consensus && <span className="pill">추정</span>}</td>
+            <td className="num">{num(r.revenue, 0)}</td>
+            <td className="num">{num(r.op_income, 0)}</td>
+            <td className="num">{num(r.net_income, 0)}</td>
+            <td className="num">{num(r.op_margin, 1)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -108,6 +129,8 @@ export function EarningsPreviewBody({ p }: { p: EarningsPreview }) {
           </tbody>
         </table>
       )}
+
+      {p.kr_consensus?.quarter && p.kr_consensus.quarter.length > 0 && <KrTable rows={p.kr_consensus.quarter} unit={p.kr_consensus.unit} />}
 
       {p.checkpoints && p.checkpoints.length > 0 && (
         <div className="ep-checks">

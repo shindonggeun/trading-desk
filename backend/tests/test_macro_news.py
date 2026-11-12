@@ -249,10 +249,10 @@ def test_the_brief_rewindows_old_snapshots_and_names_its_basis():
     cache.themes = {
         "fed": {"id": "fed", "label": "Fed", **fresh,
                 "headlines": [_head(t, h, n) for n, (t, h) in enumerate([
-                    ("Powell signals patience on cuts", 1), ("Payrolls beat forecasts again", 20),
-                    ("Crude slides on supply glut", 40), ("Gold record as dollar weakens", 60)])]},
+                    ("Fed's Powell signals patience on cuts", 1), ("Treasury yields rise as payrolls beat forecasts", 20),
+                    ("Rate cut bets fade as crude slides", 40), ("Gold record as Fed rate cut odds rise", 60)])]},
         "china": {"id": "china", "label": "China", **fresh, "articles_24h": 0,
-                  "headlines": [_head("Stimulus talk from last week", 100, 9)]},
+                  "headlines": [_head("China stimulus talk from last week", 100, 9)]},
     }
     brief = cache.brief(now=NOW)
     assert brief["window_h"] == 72 and brief["spike_basis"] == "24h_vs_prior_6d_avg"
@@ -282,7 +282,7 @@ def test_the_rss_feed_counts_the_week_but_shows_only_the_last_three_days():
     async def run():
         transport = httpx.MockTransport(lambda req: httpx.Response(200, text=rss))
         async with httpx.AsyncClient(transport=transport) as client:
-            return await m.fetch_theme_rss(m.THEMES[0], NOW, client)
+            return await m.fetch_theme_rss(next(t for t in m.THEMES if t.id == "tariffs"), NOW, client)
 
     row = asyncio.run(run())
     assert row["spike"] is not None                                      # the week still sets the surge
@@ -304,13 +304,94 @@ def test_a_feed_time_slightly_ahead_of_our_clock_is_now_not_dropped():
 
 def test_gdelt_headlines_without_a_time_or_older_than_the_window_are_dropped():
     articles = {"articles": [
-        {"title": "Fresh story on yields", "url": "https://g.com/1", "seendate": _stamp(NOW - timedelta(hours=3))},
-        {"title": "Week old story on yields", "url": "https://g.com/2", "seendate": _stamp(NOW - timedelta(days=5))},
-        {"title": "Undated story on yields", "url": "https://g.com/3"}]}
+        {"title": "Fresh story on Treasury yields", "url": "https://g.com/1", "seendate": _stamp(NOW - timedelta(hours=3))},
+        {"title": "Week old story on Treasury yields", "url": "https://g.com/2", "seendate": _stamp(NOW - timedelta(days=5))},
+        {"title": "Undated story on Treasury yields", "url": "https://g.com/3"}]}
 
     class Fake:
         async def get(self, query, mode, timespan, **extra):
             return articles if mode == "ArtList" else {"timeline": []}
 
-    row = asyncio.run(m.fetch_theme(Fake(), m.THEMES[0], NOW))
+    row = asyncio.run(m.fetch_theme(Fake(), next(t for t in m.THEMES if t.id == "fed"), NOW))
     assert [h["url"] for h in row["headlines"]] == ["https://g.com/1"]
+
+
+FED = next(t for t in m.THEMES if t.id == "fed")
+# #291: the 2026-11-12 feed - a CEO scandal came back for the rates query (matched inside the article)
+SCANDAL = ["Jensen Huang Said to Have Had Relationship With Nvidia Executive Who Reports to Him",
+           "Nvidia stock slides after NYT report alleges Jensen Huang had a second affair \u2014 with an employee",
+           "Jensen Huang \u2018also had affair with Nvidia executive\u2019"]
+RATES = ["Trading Day: AI cheer banishes rate hike fear", "Dollar Rises to 19-Month High on Fed Rate-Hike Bets",
+         "Dollar advances as markets price in December Fed rate hike", "Fed's Waller says more cuts may be needed",
+         "Treasury yields climb after hot CPI", "FOMC minutes show split on pace of easing",
+         "Central banks hold interest rates steady", "Jerome Powell testifies before Senate", "연준, 기준금리 동결",
+         # a strong word wins over the other-story words; Powell on his own; a non-breaking hyphen
+         "Fed rate cut hopes lift utility stocks", "Utilities rally as Treasury yields fall",
+         "Fed proposal eases bank capital rules", "Fed rate decision: what it means for county budgets",
+         "Powell warns on inflation", "Powell\u2019s term ends; markets watch successor", "Markets eye rate\u2011hike path"]
+
+
+def test_a_title_must_be_about_the_theme():
+    assert not any(m.on_topic(FED, t) for t in SCANDAL)
+    assert all(m.on_topic(FED, t) for t in RATES), [t for t in RATES if not m.on_topic(FED, t)]
+    # words that only look like it: another kind of rate hike, a place, a coach, a word inside a word
+    for t in ("Customers push back as PGE seeks 8th straight rate hike", "Steep utility rate hike in Conn.",
+              "Advocacy Groups Weigh in on MLGW Rate Hike Proposal",
+              "Powell County man accused of kidnapping", "Powell Named National Coach of the Week",
+              "Federated Hermes reports earnings", "Fedex beats estimates", "Fed up with high prices, shoppers cut back",
+              "Data fed to AI models", "Feds raid home of ex-official", None):
+        assert not m.on_topic(FED, t), t
+    chips = next(t for t in m.THEMES if t.id == "chips")
+    assert m.on_topic(chips, "Chips rally as HBM demand surges") and m.on_topic(chips, "반도체 수출 규제 강화")
+    assert not m.on_topic(chips, "Blue-chip stocks rally") and m.on_topic(chips, "Blue-chip semiconductor names rally")
+    geo = next(t for t in m.THEMES if t.id == "geopolitics")
+    assert not m.on_topic(geo, "Price war hits EV makers") and not m.on_topic(geo, "Star Wars box office")
+    assert m.on_topic(geo, "War in Ukraine enters new phase")
+    china = next(t for t in m.THEMES if t.id == "china")
+    assert m.on_topic(china, "Xi\u2019s visit to Moscow") and not m.on_topic(china, "Section XI of the bill")
+    assert all(t.terms for t in m.THEMES)
+
+
+def test_the_rss_theme_keeps_only_titles_on_the_theme_and_counts_the_rest():
+    fmt = "%a, %d %b %Y %H:%M:%S GMT"
+    titles = SCANDAL[:2] + [RATES[0]] + SCANDAL[2:] + RATES[1:3]
+    items = "".join(f"<item><title>{t} - Src</title><link>https://n.com/{n}</link><source>Src</source>"
+                    f"<pubDate>{(NOW - timedelta(hours=1 + n)).strftime(fmt)}</pubDate></item>"
+                    for n, t in enumerate(titles))
+
+    async def run():
+        transport = httpx.MockTransport(lambda req: httpx.Response(200, text=f"<rss><channel>{items}</channel></rss>"))
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await m.fetch_theme_rss(FED, NOW, client)
+
+    row = asyncio.run(run())
+    assert [h["title"] for h in row["headlines"]] == RATES[:3]
+    assert row["off_topic"] == 3 and row["articles_24h"] == 6        # the surge still counts the whole feed
+
+
+def test_a_theme_with_only_off_topic_titles_is_quiet_not_filled_with_them():
+    cache = m.Cache()
+    cache.themes = {"fed": {"id": "fed", "label": "Fed", "articles_24h": 0, "spike": None, "spike_kind": "themes",
+                            "tone": None, "fetched_at": NOW.isoformat(),
+                            # a snapshot taken before the rule: filtered on read as well
+                            "headlines": [_head(t, 1 + n, n) for n, t in enumerate(SCANDAL)]}}
+    fed = cache.brief(now=NOW)["themes"][0]
+    assert fed["headlines"] == [] and fed["quiet"]
+    # a fresh feed with a busy day but only other stories in its window is quiet as well
+    cache.themes["fed"] = {**cache.themes["fed"], "articles_24h": 30, "off_topic": 3, "headlines": []}
+    assert cache.brief(now=NOW)["themes"][0]["quiet"]
+
+
+def test_gdelt_headlines_are_titled_on_the_theme_too():
+    articles = {"articles": [
+        {"title": SCANDAL[0], "url": "https://g.com/1", "seendate": _stamp(NOW - timedelta(hours=1))},
+        {"title": RATES[3], "url": "https://g.com/2", "seendate": _stamp(NOW - timedelta(hours=2))},
+        {"title": SCANDAL[1], "url": "https://g.com/3"},                                  # no time: not counted
+        {"title": SCANDAL[2], "url": "https://g.com/4", "seendate": _stamp(NOW - timedelta(days=5))}]}
+
+    class Fake:
+        async def get(self, query, mode, timespan, **extra):
+            return articles if mode == "ArtList" else {"timeline": []}
+
+    row = asyncio.run(m.fetch_theme(Fake(), FED, NOW))
+    assert [h["url"] for h in row["headlines"]] == ["https://g.com/2"] and row["off_topic"] == 1

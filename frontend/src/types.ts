@@ -1227,3 +1227,47 @@ export interface EarningsPreview {
   note: string;
   checkpoints?: { title_ko: string; why_ko: string | null; sentiment: string | null; impact: string | null; url: string; seen: string | null }[];
 }
+/** #296 GET /api/stock/profile (#295) — 종목 정보 카드 */
+export interface ProfileStep {
+  step: number;
+  price: number;
+  distance_pct: number | null;
+  source: "level" | "volume";
+}
+export interface StockProfile {
+  ticker: string;
+  price: number | null;
+  price_source: "live" | "close" | null;
+  quote_source?: string | null;
+  facts: {
+    name: string | null;
+    market_cap?: number | null;
+    currency?: string | null;
+    exchange?: string | null;
+    first_trade_date?: string | null;
+    first_trade_note?: string | null;
+  } | null;
+  recent: {
+    days: { date: string; close: number; change_pct: number | null; highest_close: boolean; lowest_close: boolean }[];
+    high_close: number | null;
+    low_close: number | null;
+  } | null;
+  indicators: {
+    week52?: { high: number | null; low: number | null; from_high_pct?: number | null; from_low_pct?: number | null; full?: boolean } | null;
+    bollinger?: { upper: number; mid: number; lower: number; to_upper_pct: number | null; to_lower_pct: number | null } | null;
+    moving_averages?: { days: number; value: number | null; vs_pct: number | null }[];
+    rsi?: { value: number; zone: "overbought" | "neutral" | "oversold" } | null;
+  } | null;
+  levels: { supports: ProfileStep[]; resistances: ProfileStep[]; poc?: number | null; volume_bars?: number | null } | null;
+  short: {
+    available: boolean;
+    reason?: string;
+    shares?: number | null;
+    percent_of_float?: number | null;
+    days_to_cover?: number | null;
+    as_of?: string | null;
+  } | null;
+  bars_source?: string | null;
+  computed_at?: string;
+  errors?: Record<string, string>;
+}

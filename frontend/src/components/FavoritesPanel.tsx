@@ -37,6 +37,7 @@ function useEarningsSoon(key: string): Record<string, number> {
   }, [key]);
   return soon;
 }
+import StockProfileCard from "./StockProfileCard";
 
 const POLL_MS = 15_000;      // 시세판과 같은 주기
 const SPARK_MS = 120_000;    // 작은 차트는 2분마다
@@ -106,9 +107,9 @@ export function Spark({ ticker, tone, order }: { ticker: string; tone: "up" | "d
   );
 }
 
-function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEarn }: {
+function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEarn, onInfo }: {
   ticker: string; name: string; it: BoardItem | undefined; ls: LongShortItem | undefined; first: boolean; last: boolean;
-  editing: boolean; order: number; earnIn?: number; onEarn: () => void;
+  editing: boolean; order: number; earnIn?: number; onEarn: () => void; onInfo: (ticker: string) => void;
 }) {
   const ch = it?.change_pct;
   const tone = ch == null ? "" : ch > 0 ? "up" : ch < 0 ? "down" : "";
@@ -138,6 +139,7 @@ function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEar
           실적 {earnIn === 0 ? "오늘" : `D-${earnIn}`}
         </button>
       )}
+      <button type="button" className="link small fav-info" aria-label={`${name} 종목 정보`} onClick={() => onInfo(ticker)}>정보</button>
       {editing && (
         <span className="fav-tools" role="group" aria-label={`${name} 편집`}>
           <button type="button" className="dash-move" disabled={first} aria-label={`${name} 앞으로`} onClick={() => moveFavorite(ticker, -1)}>←</button>
@@ -158,6 +160,7 @@ export default function FavoritesPanel() {
   const [items, setItems] = useState<Record<string, BoardItem>>({});
   const [failedAt, setFailedAt] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [info, setInfo] = useState<string | null>(null);
   const tickers = (list ?? []).slice(0, MAX_QUOTES).map((f) => f.ticker);
   const key = tickers.join(",");
   const [lsShown, flipLs] = useLongShortShown();
@@ -219,9 +222,11 @@ export default function FavoritesPanel() {
             {shown.map((f, i) => (
               <Tile key={f.ticker} ticker={f.ticker} name={f.name ?? f.ticker} it={items[f.ticker]} ls={lsShown ? ls[f.ticker] : undefined}
                 first={i === 0} last={i === list.length - 1} editing={editing} order={i}
-                earnIn={earnSoon[f.ticker]} onEarn={() => setPreview({ ticker: f.ticker, name: f.name ?? f.ticker })} />
+                earnIn={earnSoon[f.ticker]} onEarn={() => setPreview({ ticker: f.ticker, name: f.name ?? f.ticker })}
+                onInfo={(t) => setInfo((cur) => (cur === t ? null : t))} />
             ))}
           </div>
+          {info && <StockProfileCard ticker={info} onClose={() => setInfo(null)} />}
           <p className="muted small qb-note">추정가 · 점선은 바이낸스 무기한 선물로 낸 장외 추정이며 실제 체결가가 아닙니다.</p>
         </>
       )}

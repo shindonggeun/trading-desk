@@ -9,6 +9,7 @@ import EvidenceLevels from "../components/Evidence";
 import { GlossaryPanel, GlossaryProvider } from "../components/Glossary";
 import PlanCard from "../components/PlanCard";
 import FavoriteStar from "../components/FavoriteStar";
+import { openChat } from "../chat";
 import RunSummaryBar from "../components/RunSummaryBar";
 import SummaryCard from "../components/SummaryCard";
 import TradeMap from "../components/TradeMap";
@@ -204,6 +205,8 @@ export default function RunView({ runId }: { runId: string }) {
         <h1>{run.options.name ?? run.ticker} <span className="muted">{run.options.name ? `${run.ticker} · ` : ""}{run.trade_date}</span></h1>
         <span className={`status status-${status}`}>{STATUS_LABEL[status]}</span>
         <span className="muted small">{duration(run.started_at, run.finished_at)}</span>
+        {/* #315 이 분석을 문맥으로 AI 채팅 옆 패널 */}
+        <button type="button" className="secondary small run-ask" onClick={() => openChat({ ticker: run.ticker, run: run.id })}>AI 에게 묻기</button>
       </div>
       <RunSummaryBar ref={runBar} run={run} plan={plan} status={status} events={events} />
       <div className="run-tabs" role="tablist" aria-label="분석 보기" ref={tabs} onKeyDown={onTabKey}>

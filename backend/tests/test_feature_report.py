@@ -2,7 +2,7 @@
 
 import json
 
-from desk import backtest, cli, entry_features, horizons
+from desk import backtest, cli, entry_features, horizons, setup_filter
 from tests.test_backtest import _bars, _fetch, _weekly
 
 SWING = horizons.get("swing")
@@ -120,6 +120,7 @@ def test_cli_features_flag_writes_them(tmp_path, monkeypatch, capsys):
 
 
 def test_features_are_only_computed_when_asked(monkeypatch):
+    monkeypatch.setattr(setup_filter, "ENABLED", False)     # #285 reads the chart for every plan
     daily = _bars(330)
     plain = backtest.run(["SOXL"], "swing", fetch=_fetch(daily), vix=None)
 

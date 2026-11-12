@@ -36,6 +36,7 @@ from . import (
     playbook,
     playbook_live,
     risk_regime,
+    setup_filter,
     sr,
     summary,
     value_swing,
@@ -337,8 +338,10 @@ def playbooks_at(snap: Snapshot, h: horizons.Horizon, gate: bool = True) -> dict
     # #167: the oversold swing buy takes the long slot when its evidence is there (no record: no conviction)
     # (gate off = the #146 selling score unused here: the fear bundle does not read it either; the
     # direction above still gets the market for its index rules - #166 stage 4)
-    return value_swing.apply(pb, snap.daily, snap.weekly, h.id, snap.sr, snap.risk if gate else None, snap.vix,
-                             calibrate=False)
+    pb = value_swing.apply(pb, snap.daily, snap.weekly, h.id, snap.sr, snap.risk if gate else None, snap.vix,
+                           calibrate=False)
+    # #285: the setups kept where the chart showed an edge, scored on it
+    return setup_filter.apply(pb, snap.daily, snap.weekly, snap.risk, h.id, calibrate=False)
 
 
 def judge(pb: dict, snap: Snapshot, future: list[dict], h: horizons.Horizon, costs: Costs,

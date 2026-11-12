@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 from types import SimpleNamespace
 
-from desk import backtest, direction, horizons, playbook, risk_regime
+from desk import backtest, direction, horizons, playbook, risk_regime, setup_filter
 from tests.test_backtest import _bars, _fetch
 from tests.test_playbook import _crash, _crash_sr
 
@@ -149,6 +149,8 @@ def test_fetch_skips_a_failing_symbol_and_the_cache_reuses_a_hit():
 
 
 def test_the_backtest_gates_the_plans_and_compares_on_and_off(monkeypatch):
+    # the gate alone: a long it turns into another setup may pass the #285 filter the original did not
+    monkeypatch.setattr(setup_filter, "ENABLED", False)
     daily = _bars(320)
     days = [backtest.local_day(b["at"], "SOXL") for b in daily]
     # the market dumps with the ticker's crash (bars 260~275) and stays there

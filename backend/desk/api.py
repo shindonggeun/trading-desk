@@ -27,6 +27,7 @@ from . import (
     calibration,
     credit,
     earnings,
+    earnings_preview,
     events_calendar,
     filings,
     horizons,
@@ -1068,6 +1069,18 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if sector is not None and sector not in {s.id for s in sector_news.SECTORS}:
             raise HTTPException(422, "unknown sector")
         return sector_news.CACHE.view(sector)
+
+    @app.get("/api/earnings/preview")
+    async def earnings_preview_of(ticker: str):
+        """#293: what the street expects before the ticker's report - EPS / revenue consensus, past
+        surprises, price targets, ratings, the implied and past moves (free sources only; the rest
+        named in ``unavailable``) and the ticker's digested headlines as check points."""
+        try:
+            ticker = clean_ticker(ticker)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        preview = await earnings_preview.CACHE.get(ticker)
+        return {**preview, "checkpoints": earnings_preview.checkpoints(ticker)}
 
     @app.get("/api/macro/brief")
     def macro_brief(ticker: str | None = None):

@@ -1118,7 +1118,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         the chart's support / resistance as steps, short interest. ``tickers`` (comma separated,
         up to 30) answers {"items": [...]}; a failing source leaves its part null, never the card."""
         names = [t for t in (x.strip() for x in (tickers or ticker or "").split(",")) if t]
-        if not names or len(names) > PROFILE_MAX or (ticker and tickers):
+        if not names or len(names) > PROFILE_MAX or (ticker and tickers) or (ticker and "," in ticker):
             raise HTTPException(422, f"ticker, or between 1 and {PROFILE_MAX} tickers")
         try:
             names = list(dict.fromkeys(clean_ticker(t) for t in names))

@@ -4,6 +4,8 @@ the support / resistance steps around it, and short interest where a free source
 Everything comes from sources the desk already reads:
 
 - Yahoo daily bars through desk.prices (260 sessions: the 52-week range and the 250-day average).
+  That is more than the broker's 200-bar cap, so the indicators always come from Yahoo's bars
+  (``bars_source``) - a Korean chart's own daily bars may be Toss's; the levels below are the chart's.
 - The support / resistance levels of the chart itself - desk.sr.support_resistance with the default
   horizon, the very call (and cache entry) behind GET /api/levels - plus the volume profile's thick
   nodes the chart draws (매물대). The steps are therefore the chart's lines, never a second opinion.
@@ -21,11 +23,12 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
-from statistics import fmean, pstdev
+from datetime import UTC, datetime, timedelta
+from statistics import fmean
 
+from .indicators import bollinger as indicators_bollinger
 from .indicators import rsi as indicators_rsi
-from .sr import support_resistance
+from .sr import _local_day, support_resistance
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +43,8 @@ SUPPORT_STEPS = 3
 RESISTANCE_STEPS = 10
 SAME_STEP = 0.005               # a volume node within 0.5% of a chart level is that level
 INFO_TTL_SEC = 24 * 3600.0
+INFO_RETRY_SEC = 10 * 60.0      # a failed or empty Yahoo answer is asked again after this, not a day
+PARALLEL = 4                    # cards built at once for ?tickers= (Yahoo and the shared thread pool)
 INFO_CACHE_MAX = 512
 MAX_TICKERS = 30
 KR_SHORT_NOTE = "한국 공매도 잔고는 KRX 정보데이터시스템이 로그인을 요구해 무료로 받을 수 없습니다"
@@ -65,21 +70,29 @@ def korean(ticker: str) -> bool:
 
 # --- the bars ---------------------------------------------------------------------------------
 
-def recent(bars: list[dict], days: int = RECENT_DAYS) -> dict:
+def _day(at, ticker: str) -> str:
+    """The market's own date of a bar (a Korean bar's UTC stamp is the evening before)."""
+    try:
+        return _local_day(str(at), ticker).isoformat()
+    except (TypeError, ValueError):
+        return str(at)[:10]
+
+
+def recent(bars: list[dict], ticker: str = "", days: int = RECENT_DAYS) -> dict:
     """The last ``days`` sessions, newest first, each with its change on the session before; the
-    window's highest and lowest close are flagged."""
+    window's highest and lowest close are flagged (closes, not intraday highs and lows)."""
     rows = []
     for i in range(max(len(bars) - days, 0), len(bars)):
         close = bars[i]["close"]
         prev = bars[i - 1]["close"] if i > 0 else None
-        rows.append({"date": str(bars[i]["at"])[:10], "close": _round(close), "change_pct": _pct(close, prev)})
+        rows.append({"date": _day(bars[i]["at"], ticker), "close": _round(close), "change_pct": _pct(close, prev)})
     rows.reverse()
     if rows:
         top = max(rows, key=lambda r: r["close"])
         low = min(rows, key=lambda r: r["close"])
         for r in rows:
-            r["high"], r["low"] = r is top, r is low
-    return {"days": rows, "high": top["close"] if rows else None, "low": low["close"] if rows else None}
+            r["highest_close"], r["lowest_close"] = r is top, r is low
+    return {"days": rows, "high_close": top["close"] if rows else None, "low_close": low["close"] if rows else None}
 
 
 def rsi(closes: list[float]) -> float | None:
@@ -102,10 +115,9 @@ def indicators(bars: list[dict], price: float) -> dict:
                          "from_low_pct": _pct(price, lo), "full": len(year) >= YEAR_BARS}
     else:
         out["week52"] = None
-    if len(closes) >= BB_N:
-        window = closes[-BB_N:]
-        mid, sd = fmean(window), pstdev(window)
-        upper, lower = mid + BB_MULT * sd, mid - BB_MULT * sd
+    band = indicators_bollinger(closes, BB_N, BB_MULT)[-1] if len(closes) >= BB_N else None
+    if band:
+        upper, mid, lower = band["upper"], band["mid"], band["lower"]
         out["bollinger"] = {"upper": _round(upper), "mid": _round(mid), "lower": _round(lower),
                             "to_upper_pct": _pct(price, upper), "to_lower_pct": _pct(price, lower)}
     else:
@@ -159,9 +171,10 @@ def _date(value) -> str | None:
     try:
         if value is None:
             return None
-        seconds = float(value) / (1000 if float(value) > 1e11 else 1)
-        return datetime.fromtimestamp(seconds, UTC).date().isoformat()
-    except (TypeError, ValueError, OverflowError, OSError):
+        seconds = float(value) / (1000 if abs(float(value)) > 1e11 else 1)
+        # epoch + delta: a listing before 1970 is a negative stamp (fromtimestamp refuses it on Windows)
+        return (datetime(1970, 1, 1, tzinfo=UTC) + timedelta(seconds=seconds)).date().isoformat()
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -199,13 +212,23 @@ class Profiles:
 
     async def _info(self, ticker: str) -> dict:
         cached = _INFO.get(ticker)
-        if cached and self.clock() - cached[0] < INFO_TTL_SEC:
+        if cached and self.clock() < cached[0]:
+            if isinstance(cached[1], Exception):
+                raise cached[1]
             return cached[1]
-        found = await asyncio.to_thread(self.info, ticker)
+        try:
+            found = await asyncio.to_thread(self.info, ticker)
+        except Exception as exc:
+            self._keep(ticker, exc, INFO_RETRY_SEC)   # a refusing Yahoo is not asked on every refresh
+            raise
+        whole = bool(found.get("marketCap") or found.get("longName") or found.get("shortName"))
+        self._keep(ticker, found, INFO_TTL_SEC if whole else INFO_RETRY_SEC)
+        return found
+
+    def _keep(self, ticker: str, value, ttl: float) -> None:
         if len(_INFO) >= INFO_CACHE_MAX:
             _INFO.clear()
-        _INFO[ticker] = (self.clock(), found)
-        return found
+        _INFO[ticker] = (self.clock() + ttl, value)
 
     async def one(self, ticker: str) -> dict:
         errors: dict[str, str] = {}
@@ -223,19 +246,41 @@ class Profiles:
             part("info", self._info(ticker)),
             part("levels", self.levels(self.prices, ticker)))
         quote = await part("quote", self.prices.quote(ticker))
+        listing = await part("listing", asyncio.to_thread(self.listing, ticker))
         bars = (candles or {}).get("bars") or []
         price = quote.price if quote is not None else (bars[-1]["close"] if bars else None)
-        listing = self.listing(ticker)
-        out = {"ticker": ticker, "price": _round(price),
-               "price_source": "live" if quote is not None else "close" if bars else None,
-               "facts": facts(info or {}, ticker, listing),
-               "recent": recent(bars) if bars else None,
-               "indicators": indicators(bars, price) if bars and price else None,
-               "levels": steps(levels, price) if levels and price else None,
-               "short": short_interest(info or {}, ticker) if info is not None or korean(ticker) else None,
-               "bars_source": (candles or {}).get("source"),
-               "computed_at": datetime.now(UTC).isoformat(timespec="seconds"), "errors": errors}
-        return out
+
+        def section(name: str, build):
+            try:
+                return build()
+            except Exception as exc:  # noqa: BLE001 - an odd input breaks its own section only
+                errors[name] = type(exc).__name__
+                log.info("stock profile %s for %s failed: %s", name, ticker, exc)
+                return None
+
+        return {"ticker": ticker, "price": _round(price),
+                # live: the broker's (or Yahoo's) quote now, see quote_source; close: the last bar
+                "price_source": "live" if quote is not None else "close" if bars else None,
+                "quote_source": getattr(quote, "source", None),
+                "facts": section("facts", lambda: facts(info or {}, ticker, listing)),
+                "recent": section("recent", lambda: recent(bars, ticker)) if bars else None,
+                "indicators": section("indicators", lambda: indicators(bars, price)) if bars and price else None,
+                "levels": section("levels", lambda: steps(levels, price)) if levels and price else None,
+                "short": section("short", lambda: short_interest(info or {}, ticker))
+                if info is not None or korean(ticker) else None,
+                "bars_source": (candles or {}).get("source"),
+                "computed_at": datetime.now(UTC).isoformat(timespec="seconds"), "errors": errors}
 
     async def many(self, tickers: list[str]) -> list[dict]:
-        return list(await asyncio.gather(*(self.one(t) for t in tickers)))
+        """Several cards, PARALLEL at a time; one that fails outright is {"ticker", "error"}."""
+        gate = asyncio.Semaphore(PARALLEL)
+
+        async def card(ticker: str) -> dict:
+            async with gate:
+                try:
+                    return await self.one(ticker)
+                except Exception as exc:  # noqa: BLE001 - never the whole answer for one card
+                    log.warning("stock profile for %s failed: %s", ticker, exc)
+                    return {"ticker": ticker, "error": type(exc).__name__}
+
+        return list(await asyncio.gather(*(card(t) for t in tickers)))

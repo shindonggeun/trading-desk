@@ -21,10 +21,20 @@ def test_recent_lists_the_last_ten_sessions_newest_first_and_flags_the_extremes(
     out = sp.recent(bars)
     days = out["days"]
     assert len(days) == 10 and days[0]["close"] == 108 and days[0]["change_pct"] == -1.82
-    assert out["high"] == 110 and out["low"] == 97
-    assert [d["close"] for d in days if d["high"]] == [110] and [d["close"] for d in days if d["low"]] == [97]
+    assert out["high_close"] == 110 and out["low_close"] == 97
+    assert [d["close"] for d in days if d["highest_close"]] == [110]
+    assert [d["close"] for d in days if d["lowest_close"]] == [97]
     assert sp.recent(_bars([50]))["days"] == [{"date": "2025-01-01", "close": 50, "change_pct": None,
-                                               "high": True, "low": True}]
+                                               "highest_close": True, "lowest_close": True}]
+
+
+def test_a_korean_session_keeps_its_own_date():
+    # Yahoo stamps a Seoul session at local midnight = 15:00 UTC the evening before
+    bars = [{"at": "2026-11-11T15:00:00+00:00", "close": 210000.0}, {"at": "2026-11-08T15:00:00+00:00", "close": 1.0}]
+    bars = [bars[1], bars[0]]
+    days = sp.recent(bars, "005930.KS")["days"]
+    assert [d["date"] for d in days] == ["2026-11-12", "2026-11-09"]       # Thursday, Monday
+    assert sp.recent(bars, "MU")["days"][0]["date"] == "2026-11-11"
 
 
 def test_indicators_on_a_short_history_leave_what_cannot_be_computed_null():
@@ -74,6 +84,8 @@ def test_facts_and_short_interest():
     assert short["available"] and short["percent_of_float"] == 2.07 and short["as_of"] == "2026-10-30"
     assert sp.short_interest(info, "005930.KS") == {"available": False, "reason": sp.KR_SHORT_NOTE}
     assert sp.short_interest({}, "AAPL")["available"] is False
+    assert sp._date(-252460800000) == "1962-01-01"                          # listed before 1970 (ms)
+    assert sp._date(-252460800) == "1962-01-01" and sp._date("x") is None
 
 
 class _Prices:
@@ -118,6 +130,55 @@ def test_one_source_failing_leaves_the_rest_of_the_card(monkeypatch):
     assert kr["facts"]["name"] == "카카오" and kr["short"]["available"] is False
 
 
+def test_one_card_failing_outright_does_not_fail_the_others(monkeypatch):
+    monkeypatch.setattr(sp, "_INFO", {})
+
+    async def levels(prices, ticker):
+        if ticker == "BAD":
+            return {"levels": [{"price": 0, "kind": "support"}], "volume_profile": {"nodes": [{"price": 1, "kind": "thick"}]}}
+        return {"levels": []}
+
+    def listing(ticker):
+        if ticker == "DB":
+            raise ConnectionError("db blip")
+
+    p = sp.Profiles(_Prices(_bars([10 + i for i in range(30)]), 40.0), info=lambda t: {"longName": t},
+                    levels=levels, listing=listing)
+    cards = {c["ticker"]: c for c in asyncio.run(p.many(["MU", "BAD", "DB"]))}
+    assert cards["MU"]["errors"] == {} and cards["MU"]["recent"]
+    assert cards["BAD"]["errors"] == {"levels": "ZeroDivisionError"} and cards["BAD"]["levels"] is None
+    assert cards["DB"]["errors"] == {"listing": "ConnectionError"} and cards["DB"]["facts"]["name"] == "DB"
+
+    async def broken(self, ticker):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sp.Profiles, "one", broken)
+    assert asyncio.run(p.many(["MU"])) == [{"ticker": "MU", "error": "RuntimeError"}]
+
+
+def test_a_failed_or_empty_info_is_asked_again_in_minutes_not_a_day(monkeypatch):
+    monkeypatch.setattr(sp, "_INFO", {})
+    now = [0.0]
+    answers = [ValueError("429"), {}, {"longName": "Micron"}]
+
+    def info(ticker):
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    async def levels(prices, ticker):
+        return {"levels": []}
+
+    p = sp.Profiles(_Prices(_bars([1, 2, 3])), info=info, levels=levels, clock=lambda: now[0])
+    assert asyncio.run(p.one("MU"))["errors"]["info"] == "ValueError"
+    assert asyncio.run(p.one("MU"))["errors"]["info"] == "ValueError"      # not asked again yet
+    now[0] = sp.INFO_RETRY_SEC + 1
+    assert asyncio.run(p.one("MU"))["facts"]["name"] is None               # empty: kept only minutes
+    now[0] = 2 * sp.INFO_RETRY_SEC + 2
+    assert asyncio.run(p.one("MU"))["facts"]["name"] == "Micron" and answers == []
+
+
 def test_info_is_cached_for_a_day(monkeypatch):
     monkeypatch.setattr(sp, "_INFO", {})
     now = [0.0]
@@ -149,6 +210,7 @@ def test_the_profile_api_needs_a_session_and_checks_its_tickers(db_url, monkeypa
         assert many == {"items": [{"ticker": "MU"}, {"ticker": "005930.KS"}]}
         assert client.get("/api/stock/profile").status_code == 422
         assert client.get("/api/stock/profile?ticker=MU&tickers=NVDA").status_code == 422
+        assert client.get("/api/stock/profile?ticker=MU,NVDA").status_code == 422
         assert client.get("/api/stock/profile?tickers=" + ",".join(f"T{i}" for i in range(31))).status_code == 422
         assert client.get("/api/stock/profile?ticker=../etc").status_code == 422
 

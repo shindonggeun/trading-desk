@@ -186,6 +186,60 @@ def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
     return plan
 
 
+_ACTION_SIDE = {"buy": "long", "overweight": "long", "sell": "short", "underweight": "short"}
+_ACTION_KO = {"long": "매수안", "short": "매도안"}
+
+
+def levels_side(entry: float | None, stop: float | None, target: float | None) -> str | None:
+    """long when stop < entry < target, short when target < entry < stop; without a target the
+    stop alone decides; None when the levels contradict each other or are missing."""
+    if entry is None or stop is None or stop == entry:
+        return None
+    side = "long" if stop < entry else "short"
+    if target is not None and (target <= entry if side == "long" else target >= entry):
+        return None
+    return side
+
+
+def sides(plan: dict | None) -> dict:
+    """#311: which way the plan's entry / stop / target point, against its rating and triggers.
+
+    ``levels_side`` long | short | None (contradictory levels), ``levels_note`` (where the numbers
+    come from, e.g. the trader's sell plan), ``side_conflict`` (the rating's bias - Hold is flat -
+    differs from the levels' side) and ``trigger_warnings`` (a trigger already met at the price the
+    agents saw, or a short threshold above the long one). Pure: a stored plan is read again with it."""
+    plan = plan or {}
+    side = levels_side(plan.get("entry_price"), plan.get("stop_loss"), plan.get("price_target"))
+    action = str(plan.get("trader_action") or "").strip().lower().split()[:1]
+    acted = _ACTION_SIDE.get(action[0]) if action else None
+    if side is None:
+        note = ("진입 · 손절 · 목표가 서로 맞지 않음 — 롱 · 숏 어느 쪽으로도 읽히지 않음"
+                if plan.get("entry_price") is not None and plan.get("stop_loss") is not None else None)
+    elif acted == side:
+        note = f"트레이더 {_ACTION_KO[side]}의 숫자({'롱' if side == 'long' else '숏'} 관점)"
+    else:
+        note = f"레벨 모양으로 {'롱' if side == 'long' else '숏'} 관점(손절이 진입 {'아래' if side == 'long' else '위'})"
+    bias = plan.get("bias")
+    conflict = bool(side and bias in ("long", "short", "flat") and bias != side)
+
+    warnings: list[str] = []
+    long_t, short_t = plan.get("long_trigger"), plan.get("short_trigger")
+    price = (plan.get("live_price") or {}).get("price") or (plan.get("reference_price") or {}).get("price")
+    if long_t is not None and short_t is not None and short_t > long_t:
+        warnings.append(f"숏 · 축소 기준({short_t})이 롱 진입 기준({long_t})보다 위 — 두 트리거가 엇갈림")
+    if price:
+        if short_t is not None and price < short_t:
+            warnings.append(f"숏 · 축소 조건({short_t} 이탈)은 분석 때 가격 {price} 에서 이미 충족")
+        if long_t is not None and price > long_t:
+            warnings.append(f"롱 진입 조건({long_t} 회복 · 돌파)은 분석 때 가격 {price} 에서 이미 충족")
+    return {"levels_side": side, "levels_note": note, "side_conflict": conflict, "trigger_warnings": warnings}
+
+
+def with_sides(plan: dict | None) -> dict | None:
+    """The plan with ``sides`` added (None and non-dict plans pass through)."""
+    return {**plan, **sides(plan)} if isinstance(plan, dict) else plan
+
+
 _ENTRY_LINE = re.compile(r"\bEntry\s*\**\s*:\s*\**\s*(?:now|limit|stop)\b.*$", re.IGNORECASE | re.MULTILINE)
 _ENTRY_TYPE = re.compile(r"\bEntry\s*\**\s*:\s*\**\s*(now|limit|stop)\b", re.IGNORECASE)
 _INVALIDATION = re.compile(r"\bInvalidation\s*\**\s*:\s*\**\s*(.+?)\s*(?:/\s*\**\s*Exit by\b|$)",

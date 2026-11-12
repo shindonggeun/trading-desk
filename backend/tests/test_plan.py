@@ -143,3 +143,47 @@ def test_prose_number_far_from_every_level_is_dropped():
     trader = "**Entry Price**: 85.75\n\n**Stop Loss**: 110.77"
     plan = parse_plan({"trader_investment_plan": trader, "final_trade_decision": _pm("손절가 9.8 로 둔다.")})
     assert plan["stop_loss"] == 110.77
+
+
+# --- #311: which way the levels point ---------------------------------------------------------------
+
+def test_levels_side_reads_long_short_and_contradictions():
+    from desk.plan import levels_side
+
+    assert levels_side(100, 95, 110) == "long"
+    assert levels_side(8.09, 10.16, 6.52) == "short"           # KORU: stop above, target below
+    assert levels_side(100, 95, None) == "long" and levels_side(100, 105, None) == "short"
+    assert levels_side(100, 95, 90) is None                      # a long stop with a short target
+    assert levels_side(100, None, 110) is None and levels_side(100, 100, 110) is None
+
+
+def test_a_hold_plan_with_the_traders_short_numbers_says_so_and_flags_the_triggers():
+    from desk.plan import sides, with_sides
+
+    koru = {"rating": "Hold", "bias": "flat", "trader_action": "Sell", "entry_price": 8.09, "stop_loss": 10.16,
+            "price_target": 6.52, "long_trigger": 8.82, "short_trigger": 8.99, "live_price": {"price": 8.01}}
+    s = sides(koru)
+    assert s["levels_side"] == "short" and s["side_conflict"] is True
+    assert s["levels_note"] == "트레이더 매도안의 숫자(숏 관점)"
+    assert any("두 트리거가 엇갈림" in w for w in s["trigger_warnings"])
+    assert any("8.99 이탈" in w and "이미 충족" in w for w in s["trigger_warnings"])
+    assert not any("롱 진입 조건" in w for w in s["trigger_warnings"])      # 8.01 is under 8.82
+    buy = {"bias": "long", "trader_action": "Buy", "entry_price": 100, "stop_loss": 95, "price_target": 112}
+    assert sides(buy) == {"levels_side": "long", "levels_note": "트레이더 매수안의 숫자(롱 관점)",
+                          "side_conflict": False, "trigger_warnings": []}
+    odd = sides({"bias": "long", "entry_price": 100, "stop_loss": 95, "price_target": 90})
+    assert odd["levels_side"] is None and "맞지 않음" in odd["levels_note"] and odd["side_conflict"] is False
+    assert with_sides(None) is None and with_sides({})["levels_side"] is None
+
+
+def test_a_stored_plan_gets_its_sides_on_read(db_url):
+    from desk.db import make_engine, migrate
+    from desk.store import Store
+
+    migrate(db_url)
+    store = Store(make_engine(db_url))
+    run_id = store.create_run("KORU", "2026-11-12", {})
+    store.mark_done(run_id, {"rating": "Hold", "bias": "flat", "trader_action": "Sell", "entry_price": 8.09,
+                             "stop_loss": 10.16, "price_target": 6.52}, None)   # saved before #311
+    plan = store.get_run(run_id)["plan"]
+    assert plan["levels_side"] == "short" and plan["side_conflict"] is True

@@ -15,6 +15,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.engine import Engine, RowMapping
 
 from .db import aware, events, now, runs
+from .plan import with_sides
 
 TERMINAL = ("done", "failed")
 
@@ -202,7 +203,7 @@ def _run(row: RowMapping) -> dict:
         "trade_date": row["trade_date"],
         "status": row["status"],
         "options": row["options"],
-        "plan": row["plan"],
+        "plan": with_sides(row["plan"]),     # #311: worked out again on read, older runs included
         "error": row["error"],
         "report_path": row["report_path"],
         "created_at": iso(row["created_at"]),

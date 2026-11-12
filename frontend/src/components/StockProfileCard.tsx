@@ -30,8 +30,9 @@ function Steps({ title, steps, ticker }: { title: string; steps: ProfileStep[]; 
     <div className="sp-steps">
       <h4 className="small">{title}</h4>
       {steps.map((s) => (
-        // 누르면 시세판 큰 차트로 그 가격을 넘긴다(#296) — 차트 강조는 시세판 쪽 후속 작업
-        <a key={`${s.step}-${s.price}`} className="sp-row sp-step" href={`#/live?t=${encodeURIComponent(ticker)}&p=${s.price}`}
+        // 누르면 시세판 봉 차트로 그 가격을 넘겨 강조선을 긋는다(#296)
+        <a key={`${s.step}-${s.price}`} className="sp-row sp-step"
+          href={`#/live?t=${encodeURIComponent(ticker)}&p=${s.price}&l=${encodeURIComponent(`${title.replace("선", "")} ${s.step}단계`)}`}
           title={s.source === "volume" ? "매물대(거래량 두꺼운 가격대)" : "차트 지지 · 저항선"}>
           <span className="muted small">{s.step}단계{s.source === "volume" ? " · 매물대" : ""}</span>
           <span className="num">{price(s.price)}</span>

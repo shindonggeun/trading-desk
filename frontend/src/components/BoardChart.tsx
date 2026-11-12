@@ -1,12 +1,4 @@
-import {
-  CandlestickSeries,
-  ColorType,
-  createChart,
-  LineStyle,
-  type IChartApi,
-  type ISeriesApi,
-  type UTCTimestamp,
-} from "lightweight-charts";
+import { CandlestickSeries, ColorType, createChart, LineStyle, type IChartApi, type ISeriesApi, type UTCTimestamp, type AutoscaleInfo } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles } from "../api";
 import { price } from "../format";
@@ -76,7 +68,10 @@ function merge10(bars: Bar[]): Bar[] {
  * 시세판 차트(#124): 실제 봉(/api/candles) 뒤에 장외 추정 봉(/api/estimate/candles)을 옅은 색으로 이어 그리고
  * 기준 종가 선을 둔다. 1분마다 다시 읽는다. 추정 봉이 없으면(계약 없음 · 장중) 실제 봉만.
  */
-export default function BoardChart({ ticker, name }: { ticker: string; name?: string }) {
+/**
+ * mark: #296 종목 정보 카드의 지지/저항 단계를 눌러 넘어온 가격 — 굵은 강조선을 긋고 축이 그 가격까지 보이게 넓힌다.
+ */
+export default function BoardChart({ ticker, name, mark }: { ticker: string; name?: string; mark?: { price: number; label: string } | null }) {
   const box = useRef<HTMLDivElement>(null);
   const ref = useRef<{ chart: IChartApi; real: ISeriesApi<"Candlestick">; est: ISeriesApi<"Candlestick"> } | null>(null);
   const [interval, setIv] = useState<BoardInterval>(() => {
@@ -118,6 +113,26 @@ export default function BoardChart({ ticker, name }: { ticker: string; name?: st
       chart.remove();
     };
   }, [ticker]);
+
+  // #296 강조선: 축 자동 범위에 그 가격을 넣어 멀리 있어도 화면에 보이게 한다
+  useEffect(() => {
+    const c = ref.current;
+    if (!c || !mark) return;
+    const color = css("--accent") || "#c9d1db";
+    const line = c.real.createPriceLine({ price: mark.price, title: mark.label, color, lineWidth: 3, lineStyle: LineStyle.Solid, axisLabelVisible: true });
+    c.real.applyOptions({
+      autoscaleInfoProvider: (original: () => AutoscaleInfo | null) => {
+        const r = original();
+        if (!r || !r.priceRange) return r;
+        return { ...r, priceRange: { minValue: Math.min(r.priceRange.minValue, mark.price), maxValue: Math.max(r.priceRange.maxValue, mark.price) } };
+      },
+    });
+    return () => {
+      if (ref.current !== c) return;
+      c.real.removePriceLine(line);
+      c.real.applyOptions({ autoscaleInfoProvider: undefined });
+    };
+  }, [ticker, mark]);
 
   useEffect(() => {
     try {

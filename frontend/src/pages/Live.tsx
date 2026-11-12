@@ -18,6 +18,15 @@ function linkedTicker(): string | null {
   return t ? t.trim().toUpperCase() : null;
 }
 
+/** #/live?t=NVDA&p=182.5&l=지지 2단계 — #296 종목 정보 카드의 지지/저항 단계에서 넘어온 강조 가격 */
+function linkedMark(): { ticker: string; price: number; label: string } | null {
+  const q = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+  const t = q.get("t");
+  const p = Number(q.get("p"));
+  if (!t || !q.get("p") || !Number.isFinite(p) || p <= 0) return null;
+  return { ticker: t.trim().toUpperCase(), price: p, label: (q.get("l") ?? "").slice(0, 24) || "지지/저항" };
+}
+
 const VIEW_KEY = "desk.board.view";
 function weekendKst(): boolean {
   const day = new Date(Date.now() + 9 * 3600_000).getUTCDay();
@@ -69,8 +78,14 @@ export default function Live() {
 
   // 대시보드 타일에서 넘어오면(#/live?t=…) 그 종목을 고른다 — 목록을 읽은 뒤 한 번
   const [linked, setLinked] = useState<string | null>(linkedTicker);
+  const [mark, setMark] = useState(linkedMark);
   useEffect(() => {
-    const on = () => setLinked(linkedTicker());
+    // 강조 가격이 오면 강조선을 그릴 수 있는 봉 차트로
+    if (mark) pickView("bars");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mark]);
+  useEffect(() => {
+    const on = () => { setLinked(linkedTicker()); setMark(linkedMark()); };
     window.addEventListener("hashchange", on);
     return () => window.removeEventListener("hashchange", on);
   }, []);
@@ -154,7 +169,10 @@ export default function Live() {
           <button type="button" className={`chip${infoOn ? " chip-on" : ""}`} aria-pressed={infoOn} onClick={() => setInfoOn((v) => !v)}>정보</button>
         </div>
       )}
-      {shown && view === "bars" && <BoardChart key={shown.ticker} ticker={shown.ticker} name={shown.name} />}
+      {shown && view === "bars" && (
+        <BoardChart key={shown.ticker} ticker={shown.ticker} name={shown.name}
+          mark={mark && mark.ticker === shown.ticker ? mark : null} />
+      )}
       {focus && view === "live" && <LiveChart ticker={focus.ticker} plan={null} />}
       {shown && infoOn && <StockProfileCard key={shown.ticker} ticker={shown.ticker} onClose={() => setInfoOn(false)} />}
       {!focus && tab && (

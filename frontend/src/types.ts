@@ -1101,13 +1101,23 @@ export interface BottomStep {
   price: number;
   weight_pct: number;
   from_close_pct: number;
+  /** #310 지금가 대비 % · 상태(now = 지금가 단계, below = 아래 대기, passed = 지금가가 이미 아래로 지나간 옛 단계) */
+  from_now_pct?: number;
+  status?: "now" | "below" | "passed";
 }
 export interface BottomZone {
   ticker: string;
   supported: boolean;
   error?: string;
   as_of?: string;
+  /** 주봉 종가(판정 기준) */
   close?: number;
+  /** #310 사다리 기준 지금가 · 출처 · 시각 */
+  price_now?: number;
+  price_source?: "kis" | "toss" | "yahoo" | "daily_close" | "weekly_close" | string;
+  price_at?: string;
+  /** 1차가 지금가보다 3% 넘게 아래면 그 거리(음수 %), 아니면 0 */
+  first_step_gap_pct?: number;
   score?: number;
   stage?: BottomStage;
   stage_ko?: string;

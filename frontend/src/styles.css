@@ -1594,3 +1594,8 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .pb-drift-strong { color: var(--ok); }
 .pb-filtered { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
 .pb-edge { font-size: 11px; }
+/* #310 인생 타점 사다리를 지금가 기준으로 — 머리의 지금가 · 지나간 단계 */
+.bz-now { margin: 4px 0; }
+.bz-gap { margin: 4px 0; color: var(--warn); }
+.bz-ladder tr.bz-passed td { opacity: .5; text-decoration: line-through; }
+.bz-ladder tr.bz-passed td:last-child { text-decoration: none; }

@@ -433,6 +433,18 @@ class RunManager:
             log.warning("run %s hit the model provider's rate limit: one run at a time for %.0f min",
                         run_id, self._slots._cooldown / 60)
 
+    # #314: the desk chat draws on the same model plan as the runs - it reads and feeds this cooldown
+    def rate_limit_wait(self) -> float:
+        """Seconds left of the cooldown after a rate limit (0 when there is none)."""
+        return max(0.0, self._slots._calm_until - self._slots._clock())
+
+    def note_rate_limit(self, source: str, error: BaseException | str | None) -> bool:
+        """A rate limit seen outside a run (the chat): start the shared cooldown. True when it was one."""
+        if not rate_limited(error):
+            return False
+        self._note_rate_limit(source, error)
+        return True
+
     async def _playbooks(self, request: RunRequest, sr: dict | None, live: dict | None, h: horizons.Horizon,
                          related: dict | None, ticker: str, market: dict | None = None) -> dict | None:
         """desk.playbook from the frame's bars (a cache hit right after the levels), gated by the

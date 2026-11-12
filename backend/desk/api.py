@@ -25,6 +25,7 @@ from . import (
     backtest_reports,
     bottom_zone,
     calibration,
+    chat,
     credit,
     earnings,
     earnings_preview,
@@ -189,6 +190,20 @@ class RunIn(BaseModel):
         return v
 
 
+class ChatThreadIn(BaseModel):
+    title: str | None = Field(default=None, max_length=chat.MAX_TITLE)
+
+
+class ChatMessageIn(BaseModel):
+    text: str = Field(min_length=1, max_length=chat.MAX_TEXT)
+    ticker: str | None = Field(default=None, max_length=20)
+
+    @field_validator("ticker")
+    @classmethod
+    def _ticker(cls, v: str | None) -> str | None:
+        return clean_ticker(v) if v else None
+
+
 class FavoriteIn(BaseModel):
     ticker: str = Field(min_length=1, max_length=20)
     name: str | None = Field(default=None, max_length=200)   # looked up from the listing when absent
@@ -235,7 +250,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                estimator: BinanceEstimator | None = None, book: Portfolio | None = None,
                flow: MarketFlow | None = None, futures: FuturesFlow | None = None,
                weekly: weekly_map.Maps | None = None, bottoms: bottom_zone.Zones | None = None,
-               longshort: LongShort | None = None) -> FastAPI:
+               longshort: LongShort | None = None, chatter: chat.Chatter | None = None) -> FastAPI:
     settings = settings or load()
     migrate(settings.database_url)
     engine = make_engine(settings.database_url)
@@ -1402,6 +1417,186 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             log.warning("estimated candles for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no estimated candles for {ticker}") from None
         return result if result else {"ticker": ticker, "supported": False}
+
+    # --- the desk chat (#314): per account, the model looks the desk up --------------------
+
+    chats = chat.ChatStore(engine)
+    chatter = chatter or (chat.FakeChatter() if settings.fake_runs else chat.LangChainChatter())
+    chatting: set[int] = set()            # one answer at a time per account
+
+    def _chat_tools() -> dict[str, chat.Tool]:
+        """Read-only desk lookups. No order tool; nothing reads the broker account."""
+        def keep(d: dict | None, *keys: str) -> dict:
+            return {k: (d or {}).get(k) for k in keys}
+
+        async def macro_brief(_a: dict):
+            b = macro_news.CACHE.brief()
+            return {"refreshed_at": b.get("refreshed_at"), "themes": [
+                {**keep(t, "label", "tone", "spike", "articles_24h", "stale"),
+                 "headlines": [h.get("title") for h in (t.get("headlines") or [])[:2]]}
+                for t in (b.get("themes") or [])[:8]]}
+
+        async def market_risk(a: dict):
+            if risk is None:
+                return {"error": "시장 투매 점수를 쓸 수 없는 환경"}
+            return await asyncio.to_thread(risk, clean_ticker(a.get("ticker") or "SPY"))
+
+        async def calendar_week(_a: dict):
+            today = datetime.now(market_calendar.KST).date()
+            end = today + timedelta(days=7)
+            months = {today.strftime("%Y-%m"), end.strftime("%Y-%m")}
+            days = []
+            for month in sorted(months):
+                view = await asyncio.to_thread(market_calendar.month_view, month)
+                days += [{"date": d["date"], "kr_open": d["kr"]["open"], "us_open": d["us"]["open"],
+                          "events": [keep(e, "label", "at", "importance") for e in d["events"]],
+                          "earnings": [keep(r, "ticker", "name", "when") for r in d["earnings"][:8]]}
+                         for d in view["days"] if today.isoformat() <= d["date"] <= end.isoformat()]
+            return days
+
+        async def quote(a: dict):
+            ticker = clean_ticker(a["ticker"])
+            q = await prices.quote(ticker)
+            return {"ticker": ticker, "price": q.price, "currency": q.currency, "source": q.source, "at": q.fetched_at}
+
+        async def levels(a: dict):
+            sr = await support_resistance(prices, clean_ticker(a["ticker"]))
+            return {**keep(sr, "last_close", "atr", "as_of"), "levels": (sr or {}).get("levels", [])[:8]}
+
+        async def playbooks(a: dict):
+            pb = await playbook_live.current(prices, clean_ticker(a["ticker"]), a.get("horizon"), risk=risk)
+            side_keys = ("setup", "reason", "zone", "entries", "stop", "targets", "score", "direction")
+            return {**keep(pb, "summary", "fetched_at", "direction"),
+                    "long": keep(pb.get("long"), *side_keys), "short": keep(pb.get("short"), *side_keys)}
+
+        async def bottom(a: dict):
+            z = await asyncio.to_thread(bottoms.one, clean_ticker(a["ticker"]))
+            return keep(z, "supported", "stage_ko", "score", "close", "as_of", "ladder", "invalidation", "error")
+
+        async def recent_runs(a: dict):
+            want = clean_ticker(a["ticker"]) if a.get("ticker") else None
+            rows = [r for r in store.list_runs(40) if not want or r["ticker"] == want][:8]
+            return [{**keep(r, "id", "ticker", "created_at", "status"),
+                     **keep(r.get("plan"), "rating", "bias", "entry_price", "stop_loss", "price_target",
+                            "levels_side", "horizon")} for r in rows]
+
+        ticker_opt = {"type": "object", "properties": {"ticker": {"type": "string"}}}
+        tools = [
+            chat.Tool("macro_brief", "오늘의 거시 · 정책 뉴스 테마(톤 · 급증 · 대표 헤드라인)", chat.NO_ARGS, macro_brief),
+            chat.Tool("market_risk", "시장 투매 · 위험 점수와 국면(지수 기준)", ticker_opt, market_risk),
+            chat.Tool("calendar_week", "앞으로 7일 국장 · 미장 휴장 · 경제 발표 · 주요 실적", chat.NO_ARGS, calendar_week),
+            chat.Tool("quote", "종목의 지금 가격과 출처 · 시각", chat.TICKER_ARG, quote),
+            chat.Tool("levels", "종목의 일 · 주봉 지지 · 저항 레벨과 ATR", chat.TICKER_ARG, levels),
+            chat.Tool("playbooks", "종목의 지금 롱 · 숏 플레이북(구역 · 분할 진입 · 손절 · 목표)과 요약 결론",
+                      chat.TICKER_ARG, playbooks),
+            chat.Tool("bottom_zone", "종목의 장기 바닥(인생 타점) 단계 · 점수 · 분할 매수 사다리", chat.TICKER_ARG, bottom),
+            chat.Tool("recent_runs", "데스크의 최근 분석 결과(등급 · 방향 · 진입 · 손절 · 목표)", ticker_opt, recent_runs),
+        ]
+        try:                                   # #312: the entry now, once that module is in
+            from . import entry_now as entry_mod
+
+            async def entry_now(a: dict):
+                return await entry_mod.entry_now(prices, clean_ticker(a["ticker"]), a.get("horizon"), risk=risk)
+
+            tools.append(chat.Tool("entry_now", "지금가 기준 진입 타점", chat.TICKER_ARG, entry_now))
+        except ImportError:
+            pass
+        return {t.name: t for t in tools}
+
+    chat_tools = _chat_tools()
+    app.state.chat_tools = chat_tools     # what the model may look up (tests check it stays read-only)
+
+    @app.get("/api/chat/threads")
+    def chat_threads_of(request: Request):
+        return {"items": chats.threads(request.state.user.id)}
+
+    @app.post("/api/chat/threads", status_code=201)
+    def chat_new_thread(body: ChatThreadIn, request: Request):
+        try:
+            return chats.create(request.state.user.id, body.title)
+        except chat.TooMany as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.delete("/api/chat/threads/{thread_id}", status_code=204)
+    def chat_delete_thread(thread_id: str, request: Request):
+        chats.delete(request.state.user.id, thread_id)       # another account's: nothing, the same 204
+
+    @app.get("/api/chat/threads/{thread_id}/messages")
+    def chat_messages_of(thread_id: str, request: Request):
+        user_id = request.state.user.id
+        items = chats.messages(user_id, thread_id)
+        if items is None:
+            raise HTTPException(404, "thread not found")
+        return {"thread": chats.get(user_id, thread_id), "items": items}
+
+    @app.post("/api/chat/threads/{thread_id}/messages")
+    async def chat_send(thread_id: str, body: ChatMessageIn, request: Request):
+        """The answer as SSE: token · tool_call · tool_result · done · error. One answer at a time per
+        account; during the runs' rate-limit cooldown (the same model plan) a 429 says when."""
+        user_id = request.state.user.id
+        thread = chats.get(user_id, thread_id)
+        if thread is None:
+            raise HTTPException(404, "thread not found")
+        manager = getattr(request.app.state, "manager", None)
+        wait = manager.rate_limit_wait() if manager is not None else 0.0
+        if wait > 0:
+            minutes = max(1, round(wait / 60))
+            return JSONResponse({"detail": f"모델 속도 제한 중 — 약 {minutes}분 뒤 다시"}, status_code=429,
+                                headers={"Retry-After": str(int(wait))})
+        if user_id in chatting:
+            raise HTTPException(409, "an answer is still being written")
+        chatting.add(user_id)
+        try:
+            earlier = chats.messages(user_id, thread_id, chat.HISTORY + 1) or []
+            dropped = len(earlier) > chat.HISTORY
+            title = body.text.strip().splitlines()[0][:40] if not earlier and thread["title"] == "새 대화" else None
+            mine = chats.add(user_id, thread_id, "user", body.text, title=title)
+        except Exception:
+            chatting.discard(user_id)
+            raise
+        messages = chat.build_messages(earlier[-chat.HISTORY:], body.text, body.ticker, dropped)
+        token = request.cookies.get(COOKIE)
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def work() -> None:
+            try:
+                text, used = await asyncio.wait_for(chatter(messages, chat_tools, queue.put_nowait),
+                                                    chat.ANSWER_TIMEOUT_SEC)
+                saved = chats.add(user_id, thread_id, "assistant", text or "(빈 답)", used)
+                queue.put_nowait({"type": "done", "message_id": saved["id"], "user_message_id": mine["id"]})
+            except Exception as exc:  # noqa: BLE001 - the page gets a fixed word, the log the detail
+                log.warning("chat answer in %s failed: %s", thread_id, exc)
+                limited = manager is not None and manager.note_rate_limit(f"chat:{thread_id}", exc)
+                queue.put_nowait({"type": "error", "message": "모델 속도 제한 — 잠시 뒤 다시 물어봐 주세요" if limited
+                                  else "답을 만들지 못했습니다"})
+
+        async def frames():
+            task = asyncio.create_task(work())
+            checked = asyncio.get_running_loop().time()
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), 5.0)
+                    except TimeoutError:
+                        event = None
+                    loop_now = asyncio.get_running_loop().time()
+                    if event is None or loop_now - checked >= 5.0:
+                        # docs/security.md §2: an open stream re-checks the session within 5 s
+                        checked = loop_now
+                        if await asyncio.to_thread(auth.resolve, token) is None or await request.is_disconnected():
+                            return
+                        if event is None:
+                            yield ": ping\n\n"
+                            continue
+                    yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    if event["type"] in ("done", "error"):
+                        return
+            finally:
+                task.cancel()
+                chatting.discard(user_id)
+
+        return StreamingResponse(frames(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     # --- favorites (#134): per account, ordered ----------------------------------------
 

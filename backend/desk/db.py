@@ -165,6 +165,29 @@ sector_groups = Table(
     UniqueConstraint("user_id", "name", name="uq_sector_groups_user_id_name"),
 )
 
+# The desk chat (#314): a conversation per thread, scoped to its account. ``tools`` keeps what the
+# model looked up for an answer (name, arguments, a short summary) - never the raw tool output.
+chat_threads = Table(
+    "chat_threads", metadata,
+    Column("id", String(32), primary_key=True),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("title", String(80), nullable=False),
+    Column("created_at", Timestamp, nullable=False),
+    Column("updated_at", Timestamp, nullable=False),
+    Index("ix_chat_threads_user_id_updated_at", "user_id", "updated_at"),
+)
+
+chat_messages = Table(
+    "chat_messages", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("thread_id", String(32), ForeignKey("chat_threads.id", ondelete="CASCADE"), nullable=False),
+    Column("role", String(16), nullable=False),                  # user | assistant
+    Column("content", Text, nullable=False),
+    Column("tools", Json),
+    Column("created_at", Timestamp, nullable=False),
+    Index("ix_chat_messages_thread_id_id", "thread_id", "id"),
+)
+
 
 def now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)

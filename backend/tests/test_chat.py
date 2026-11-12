@@ -183,3 +183,33 @@ def test_the_desk_tools_are_read_only_and_the_fake_model_uses_one():
                                                 events.append))
     assert used[0]["name"] == "macro_brief" and events[0]["type"] == "tool_call"
     assert "투자 권유가 아닙니다" in text and events[-1]["type"] == "token"
+
+
+def test_the_store_checks_the_owner_itself_and_caps_a_thread(db_url, monkeypatch):
+    import pytest
+
+    from desk.db import migrate
+
+    migrate(db_url)
+    engine = make_engine(db_url)
+    auth = Auth(engine, timedelta(hours=1), timedelta(hours=1))
+    auth.create_user(OWNER, PASSWORD)
+    auth.create_user(OTHER, PASSWORD)
+    from sqlalchemy import select
+
+    from desk.db import users
+
+    with engine.connect() as conn:
+        ids = dict(conn.execute(select(users.c.username, users.c.id)).all())
+    owner_id, other_id = ids[OWNER], ids[OTHER]
+    store = chat.ChatStore(engine)
+    thread = store.create(owner_id)
+    with pytest.raises(LookupError):
+        store.add(other_id, thread["id"], "user", "끼어들기")          # not through the route either
+    assert store.messages(owner_id, thread["id"]) == []
+    monkeypatch.setattr(chat, "MAX_MESSAGES", 2)
+    store.add(owner_id, thread["id"], "user", "a")
+    store.add(owner_id, thread["id"], "assistant", "b")
+    with pytest.raises(chat.TooMany):
+        store.add(owner_id, thread["id"], "user", "c")
+    assert [m["content"] for m in store.messages(owner_id, thread["id"], last=1)] == ["b"]

@@ -12,7 +12,8 @@
   message keeps only each lookup's name, arguments and a one-line summary.
 - Limits: a message of MAX_TEXT characters, MAX_THREADS threads per account, HISTORY earlier
   messages sent with a new one (older ones are left out, said in the prompt), MAX_TOOL_ROUNDS
-  rounds of lookups, MAX_TOOL_CALLS lookups and MAX_ANSWER_CHARS characters per answer.
+  rounds of lookups, MAX_TOOL_CALLS lookups and MAX_ANSWER_CHARS characters per answer,
+  MAX_MESSAGES per thread and READ_LAST of them returned by a read.
 - The answer streams as events: token · tool_call · tool_result · done · error (desk.api turns
   them into SSE). ``FakeChatter`` scripts one lookup and an answer for DESK_FAKE_RUNS.
 """
@@ -38,6 +39,8 @@ log = logging.getLogger(__name__)
 MAX_TEXT = 2000
 MAX_TITLE = 80
 MAX_THREADS = 100
+MAX_MESSAGES = 400          # per thread; a longer conversation starts a new thread
+READ_LAST = 200             # the messages GET returns (the newest)
 HISTORY = 16
 MAX_TOOL_ROUNDS = 4
 MAX_TOOL_CALLS = 6
@@ -123,8 +126,17 @@ class ChatStore:
 
     def add(self, user_id: int, thread_id: str, role: str, content: str, tools: list[dict] | None = None,
             title: str | None = None) -> dict:
+        """Append to the account's own thread - checked here too, not only by the caller. Raises
+        LookupError for another account's (or a deleted) thread, TooMany past MAX_MESSAGES."""
         stamp = now()
         with self.engine.begin() as conn:
+            mine = select(chat_threads.c.id).where(chat_threads.c.id == thread_id, chat_threads.c.user_id == user_id)
+            if conn.execute(mine).first() is None:
+                raise LookupError("thread not found")
+            count = conn.execute(select(func.count()).select_from(chat_messages)
+                                 .where(chat_messages.c.thread_id == thread_id)).scalar_one()
+            if count >= MAX_MESSAGES:
+                raise TooMany(f"at most {MAX_MESSAGES} messages in a thread - start a new one")
             new_id = conn.execute(chat_messages.insert().values(
                 thread_id=thread_id, role=role, content=content, tools=tools or None, created_at=stamp)).inserted_primary_key[0]
             values: dict[str, Any] = {"updated_at": stamp}

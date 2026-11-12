@@ -173,7 +173,8 @@ def month_view(month: str, watch: set[str] | None = None, *, calendar: events_ca
     return {"month": month, "days": days,
             "sources": {"economic": {"refreshed_at": (calendar or events_calendar.CACHE).refreshed_at,
                                      "error": (calendar or events_calendar.CACHE).error},
-                        "earnings": {"refreshed_at": earn.refreshed_at, "error": earn.error}},
+                        # #308: refreshed_at, a Korean error, stale (older rows shown), failed_sources
+                        "earnings": earn.source_status()},
             "notes": [("시각은 한국 시간(KST)이며 미국 서머타임을 반영합니다 — 미국 일정은 미국 날짜에 두고 "
                        "한국 시간으로 다음 날이면 next_day_kst 로 표시합니다"),
                       "실적 장 전 = 미국 개장 전(한국 밤), 장 후 = 미국 마감 뒤(한국 다음 날 아침)",

@@ -1001,6 +1001,8 @@ export interface PlaybookCalibration {
   recent?: { n: number; p_t1: number | null; exp_r: number | null } | null;
   /** #286 최근 기대 R 이 장기와 뚜렷이 다름(표준오차 1.645배 · n 30 이상) */
   drift?: "weaker" | "stronger" | null;
+  /** #286 drift 가 있을 때만: 위의 p_t1 · exp_r · n · p_range 는 최근 값으로 바뀌고 장기 값은 여기로 옮겨 온다 */
+  long_term?: { n: number; p_t1: number | null; exp_r: number | null; p_range: [number, number] | null } | null;
 }
 
 /** #167 desk/value_swing.conviction — 0~100, 묶음 4개 이상 + 데스크 실적 양수면 승부(active) */

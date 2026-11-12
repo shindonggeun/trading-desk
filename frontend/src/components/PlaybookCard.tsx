@@ -233,6 +233,13 @@ const CAL_LEVEL: Record<NonNullable<PlaybookCalibration["level"]>, string> = {
 /** #147 데스크 실적 — 이 셋업이 지금까지 T1 에 먼저 닿은 비율과 비용 차감 기대 R. 표본이 모자라면 숫자를 내지 않는다 */
 const signedR = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(2)}R`;
 
+/** "— 장기 +0.10R → 최근 −0.30R": drift 가 있으면 위쪽 exp_r 이 최근 값, 장기 값은 long_term(#286) */
+function driftText(cal: PlaybookCalibration): string {
+  const was = cal.long_term?.exp_r;
+  const now = cal.recent?.exp_r ?? cal.exp_r;
+  return was != null && now != null ? ` — 장기 ${signedR(was)} → 최근 ${signedR(now)}` : "";
+}
+
 /** #287 최근 1년 실적(#286) 한 줄 + 최근 약세 · 강세 배지(아이콘 + 글자) */
 function RecentRow({ cal }: { cal: PlaybookCalibration }) {
   const r = cal.recent;
@@ -246,13 +253,13 @@ function RecentRow({ cal }: { cal: PlaybookCalibration }) {
         {r.exp_r != null && <>기대 <strong className={`num ${r.exp_r > 0 ? "up" : r.exp_r < 0 ? "down" : ""}`}>{signedR(r.exp_r)}</strong></>}
         <span className="muted"> (n {r.n.toLocaleString("ko-KR")})</span>
         {cal.drift === "weaker" && (
-          <span className="pb-drift pb-drift-weak" title="최근 12개월 기대 R 이 장기 평균보다 뚜렷이 낮습니다 — 최근 값을 우선합니다">
-            <span aria-hidden>⚠</span> 최근 약세
+          <span className="pb-drift pb-drift-weak" title="최근 12개월 기대 R 이 장기 평균보다 뚜렷이 낮습니다 — 위 데스크 실적은 최근 값입니다">
+            <span aria-hidden>⚠</span> 최근 약세{driftText(cal)}
           </span>
         )}
         {cal.drift === "stronger" && (
-          <span className="pb-drift pb-drift-strong" title="최근 12개월 기대 R 이 장기 평균보다 뚜렷이 높습니다">
-            <span aria-hidden>▲</span> 최근 강세
+          <span className="pb-drift pb-drift-strong" title="최근 12개월 기대 R 이 장기 평균보다 뚜렷이 높습니다 — 위 데스크 실적은 최근 값입니다">
+            <span aria-hidden>▲</span> 최근 강세{driftText(cal)}
           </span>
         )}
       </dd>

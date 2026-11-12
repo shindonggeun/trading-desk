@@ -88,6 +88,7 @@ BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
 # #240: the bottom-zone line of the weekly note waits this long (the scalp budget is 5 s; the line is
 # skipped, not the weekly map, when a cold cache is slower)
 BOTTOM_NOTE_SEC = 4.0
+BOTTOM_QUOTE_SEC = 2.0   # #310: the price the bottom-zone ladder is cut at, per lookup
 # #257: US pre / after / overnight trades on the board - a last trade this fresh still counts as live
 # (thin ETFs trade minutes apart off hours), and a newly watched ticker waits this long for its first
 OFF_HOURS_FRESH_SEC = 600.0
@@ -285,13 +286,34 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # #240: the long-term bottom zone of the ticker itself (Yahoo weekly bars, cached an hour)
     bottoms = bottoms or bottom_zone.Zones()
 
+    async def _price_now(ticker: str, daily: bool = True) -> tuple[float | None, str | None, str | None]:
+        """#310: (price, source, at) for the bottom-zone ladder - the live quote, else (``daily``) the
+        last daily close; (None, None, None) leaves the weekly close in charge."""
+        try:
+            q = await asyncio.wait_for(prices.quote(ticker), BOTTOM_QUOTE_SEC)
+            return q.price, q.source, q.fetched_at
+        except Exception as exc:  # noqa: BLE001 - no quote: the daily close, then the weekly one
+            log.info("bottom zone quote for %s failed: %s", ticker, type(exc).__name__)
+        if daily:
+            try:
+                bars = (await asyncio.wait_for(prices.candles(ticker, "1d", 5), BOTTOM_QUOTE_SEC))["bars"]
+                if bars:
+                    return bars[-1]["close"], "daily_close", bars[-1]["at"]
+            except Exception as exc:  # noqa: BLE001
+                log.info("bottom zone daily close for %s failed: %s", ticker, type(exc).__name__)
+        return None, None, None
+
+    async def _bottom_note(ticker: str) -> str | None:
+        price, source, _at = await _price_now(ticker, daily=False)    # the note's budget is short
+        return await asyncio.to_thread(bottoms.note_for, ticker, price, source)
+
     async def _weekly_note(ticker: str) -> str | None:
         # the index's weekly map (#202) and the ticker's own long-term bottom zone (#240), one note.
         # The bottom zone gets its own short budget (a cold cache fetches ~20 years of weekly bars)
         # so it never makes the weekly map late, and either one failing leaves the other.
         lines = await asyncio.gather(
             asyncio.to_thread(weekly.note_for, ticker),
-            asyncio.wait_for(asyncio.to_thread(bottoms.note_for, ticker), BOTTOM_NOTE_SEC),
+            asyncio.wait_for(_bottom_note(ticker), BOTTOM_NOTE_SEC),
             return_exceptions=True)
         for line in lines:
             if isinstance(line, BaseException):
@@ -858,13 +880,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     async def bottom_zone_of(ticker: str):
         """#240: the long-term bottom zone ("인생 타점") of a stock or an index - score, stage,
         evidence, the staged buys over months and the monthly close that voids the plan.
-        ``supported: false`` with too little weekly history."""
+        ``supported: false`` with too little weekly history. #310: the steps are cut at the price
+        now (``price_now`` · ``price_source`` · ``price_at``; each step ``from_now_pct`` · ``status``)."""
         try:
             ticker = clean_ticker(ticker)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
+        price, source, at = await _price_now(ticker)
         try:
-            return await asyncio.to_thread(bottoms.one, ticker)
+            return await asyncio.to_thread(bottoms.one, ticker, price, source, at)
         except Exception as exc:  # noqa: BLE001 - Yahoo down
             log.warning("bottom zone for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no bottom zone for {ticker}") from None

@@ -181,3 +181,76 @@ def test_a_slow_bottom_zone_does_not_hold_back_the_weekly_note(db_url, monkeypat
 
     line, took = asyncio.run(timed())               # (asyncio.run then waits for the sleeping thread)
     assert line == "weekly map line" and took < 0.9
+
+
+# --- #310: the ladder cut at the price now ----------------------------------------------------------
+
+def test_a_price_under_the_weekly_close_starts_a_new_ladder_there():
+    z = bz.assess(_bars(_crash()))
+    close = z["close"]
+    now = round(close * 0.94, 2)                         # 6% under the weekly close (KORU 8.01 vs 8.54)
+    live = bz.live_ladder(z, now, "toss", "2026-11-12T08:42:00+00:00")
+    assert (live["price_now"], live["price_source"], live["price_at"]) == (now, "toss", "2026-11-12T08:42:00+00:00")
+    passed = [s for s in live["ladder"] if s["status"] == "passed"]
+    fresh = [s for s in live["ladder"] if s["status"] != "passed"]
+    assert passed and all(s["price"] > now for s in passed)
+    assert fresh[0]["status"] == "now" and fresh[0]["price"] <= now and fresh[0]["from_now_pct"] == 0.0
+    assert [s["weight_pct"] for s in fresh] == list(bz.LADDER_WEIGHTS)
+    assert all(s["status"] == "below" and s["from_now_pct"] < 0 for s in fresh[1:])
+    assert live["invalidation"]["monthly_close_below"] < fresh[-1]["price"]
+    # the reading stays the weekly one
+    assert (live["score"], live["stage"], live["close"]) == (z["score"], z["stage"], close)
+    assert "from the price now" in bz.note(live, "KORU") and str(fresh[0]["price"]) in bz.note(live, "KORU")
+
+
+def test_a_price_well_above_the_first_step_waits_for_it():
+    z = bz.assess(_bars(_crash()))
+    first = z["ladder"][0]["price"]
+    near = bz.live_ladder(z, first * 1.02, "kis")
+    assert near["ladder"][0]["status"] == "now" and near["first_step_gap_pct"] == 0.0
+    far = bz.live_ladder(z, first * 1.10, "kis")
+    assert far["ladder"][0]["status"] == "below" and far["first_step_gap_pct"] == round((1 / 1.10 - 1) * 100, 1)
+    assert far["ladder"][0]["from_now_pct"] == far["first_step_gap_pct"]
+    assert "not a buy yet" in bz.note(far, "NVDA")
+
+
+def test_without_a_price_the_weekly_close_stands_in():
+    z = bz.assess(_bars(_crash()))
+    live = bz.live_ladder(z, None)
+    assert live["price_source"] == "weekly_close" and live["price_now"] == bz._round(z["close"])
+    assert live["ladder"][0]["status"] == "now" and [s["price"] for s in live["ladder"]] == [s["price"] for s in z["ladder"]]
+    assert "from the last weekly close" in bz.note(live, "NVDA")
+
+
+def test_the_api_cuts_the_ladder_at_the_quote(db_url, monkeypatch):
+    from desk import api
+    from desk.auth import Auth
+    from desk.db import make_engine
+    from desk.prices import Quote
+    from desk.settings import Settings
+    from tests.test_api import OWNER, PASSWORD
+
+    def candles(symbol, interval, count):
+        return [SimpleNamespace(**b) for b in _bars(_crash())]
+
+    close = bz.assess(_bars(_crash()))["close"]
+
+    async def quote(self, t):
+        if t == "DOWN":
+            raise ConnectionError("no quote")
+        return Quote(t, round(close * 0.9, 2), "USD", "toss", "2026-11-12T08:42:00+00:00")
+
+    monkeypatch.setattr("desk.prices.PriceSource.quote", quote)
+    zones = bz.Zones(candles=candles, leveraged=lambda t: False)
+    client = TestClient(api.create_app(Settings(database_url=db_url, fake_runs=True, fake_delay=0), bottoms=zones),
+                        base_url="https://testserver")
+    engine = make_engine(db_url)
+    Auth(engine, td(hours=1), td(hours=1)).create_user(OWNER, PASSWORD)
+    engine.dispose()
+    with client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        body = client.get("/api/bottom-zone", params={"ticker": "KORU"}).json()
+        assert body["price_source"] == "toss" and body["price_now"] == round(close * 0.9, 2)
+        assert any(s["status"] == "passed" for s in body["ladder"])
+        down = client.get("/api/bottom-zone", params={"ticker": "DOWN"}).json()
+        assert down["price_source"] in ("daily_close", "weekly_close")       # the quote failed

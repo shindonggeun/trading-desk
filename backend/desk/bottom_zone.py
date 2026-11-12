@@ -181,6 +181,8 @@ def assess(bars: list[dict], i: int | None = None, capitulation: dict | None = N
     ladder = _ladder(close, supports, [m for m in (ma60, ma120) if m and m < close])
     deepest = ladder[-1]["price"]
     return {
+        # #310: the lines the ladder stands on, so live_ladder can cut it again at the price now
+        "ladder_basis": {"supports": supports, "lines": [round(m, 4) for m in (ma60, ma120) if m]},
         "version": VERSION, "as_of": seen[-1]["at"], "close": round(close, 4), "score": score,
         "stage": stage, "stage_ko": STAGE_KO[stage], "drawdown_pct": dd, "high": round(high, 4),
         "evidence": evidence, "ladder": ladder if stage != "none" else [],
@@ -226,15 +228,71 @@ def _ladder(close: float, supports: list[float], lines_below: list[float]) -> li
             for n, (p, w) in enumerate(zip(prices, LADDER_WEIGHTS, strict=True))]
 
 
+NOW_BAND_PCT = 3.0     # the first step is "now" while the price is at most this far above it
+
+
+def _invalidation(deepest: float) -> dict:
+    return {"monthly_close_below": _round(deepest * (1 - INVALIDATION_BUFFER / 100)),
+            "text": f"월봉 종가가 마지막 단계보다 {INVALIDATION_BUFFER:.0f}% 아래에서 끝나면 바닥 판단을 접는다"}
+
+
+def live_ladder(z: dict, price: float | None, source: str | None = None, at: str | None = None) -> dict:
+    """#310: the zone with its ladder cut again at the price now - the reading (score, stage,
+    evidence) stays the weekly one, only the buy steps move.
+
+    - Under the weekly close: the steps above the price have ``passed``; a new ladder starts at the
+      price with only the supports and long lines below it, and the invalidation follows its
+      deepest step.
+    - Within NOW_BAND_PCT above the first step: the first step is ``now``.
+    - Further above: the first step waits (``below``) and ``first_step_gap_pct`` says how far.
+
+    Every step gets ``from_now_pct`` and ``status`` (now | below | passed); without a price the
+    weekly close stands in (``price_source: weekly_close``)."""
+    if not z or not z.get("ladder"):
+        return z
+    close = z["close"]
+    if not price or price <= 0:
+        price, source, at = close, "weekly_close", z.get("as_of")
+    basis = z.get("ladder_basis") or {"supports": [], "lines": []}
+    out = {**z, "price_now": _round(price), "price_source": source, "price_at": at}
+
+    def mark(steps: list[dict], first_now: bool) -> list[dict]:
+        rows = []
+        for n, s in enumerate(steps):
+            status = "now" if n == 0 and first_now else "below"
+            rows.append({**s, "from_now_pct": round((s["price"] / price - 1) * 100, 1), "status": status})
+        return rows
+
+    if price < close * (1 - 1e-9):
+        below = [s for s in basis["supports"] if s < price]
+        lines = [m for m in basis["lines"] if m < price]
+        fresh = _ladder(price, below, lines)
+        passed = [{**s, "from_now_pct": round((s["price"] / price - 1) * 100, 1), "status": "passed"}
+                  for s in z["ladder"] if s["price"] > price]
+        out["ladder"] = passed + mark(fresh, True)
+        out["invalidation"] = _invalidation(fresh[-1]["price"])
+        out["first_step_gap_pct"] = 0.0
+        return out
+    first = z["ladder"][0]["price"]
+    now = price <= first * (1 + NOW_BAND_PCT / 100)
+    out["ladder"] = mark(z["ladder"], now)
+    out["first_step_gap_pct"] = 0.0 if now else round((first / price - 1) * 100, 1)
+    return out
+
+
 def note(z: dict | None, ticker: str) -> str | None:
     """One line for the analysts: the stage, its reasons and the ladder (only when there is a zone)."""
     if not z or z["stage"] in ("none",):
         return None
     met = [e["id"] for e in z["evidence"] if e["met"]]
-    steps = " / ".join(f"{s['price']}({s['weight_pct']}%)" for s in z["ladder"])
+    steps = " / ".join(f"{s['price']}({s['weight_pct']}%)" for s in z["ladder"] if s.get("status") != "passed")
+    basis = (f" (from the price now {z['price_now']}, {z['price_source']})" if z.get("price_now") is not None
+             and z.get("price_source") != "weekly_close" else " (from the last weekly close)")
+    wait = (f"; the first step is {abs(z['first_step_gap_pct'])}% under the price now - not a buy yet"
+            if z.get("first_step_gap_pct") else "")
     return (f"Long-term bottom zone ({ticker}, weekly/monthly, desk rules #240): stage {z['stage']} "
             f"score {z['score']}/100, down {z['drawdown_pct']}% from the high; met: {', '.join(met) or 'none'}. "
-            f"Staged buys over months: {steps}; the plan is void on a monthly close under "
+            f"Staged buys over months{basis}: {steps}{wait}; the plan is void on a monthly close under "
             f"{z['invalidation']['monthly_close_below']}. A rule-based reading, not a forecast."
             + (" Leveraged/inverse product: daily rebalancing decay makes it recover less than its "
                "underlying over months - accumulate the underlying or an index ETF, or at most half the size."
@@ -422,16 +480,18 @@ class Zones:
                 self._rows.pop(next(iter(self._rows)))
         return got
 
-    def one(self, ticker: str) -> dict:
+    def one(self, ticker: str, price: float | None = None, source: str | None = None,
+            at: str | None = None) -> dict:
+        """The zone, its ladder cut at ``price`` (#310; the weekly close without one)."""
         z = assess(self.bars(ticker), leveraged=self._leveraged(ticker))
         if z is None:
             return {"ticker": ticker, "supported": False,
                     "error": f"주봉이 {MIN_WEEKS}주보다 적어 장기 바닥을 판단할 수 없습니다"}
-        return {"ticker": ticker, "supported": True, **z}
+        return {"ticker": ticker, "supported": True, **live_ladder(z, price, source, at)}
 
-    def note_for(self, ticker: str) -> str | None:
+    def note_for(self, ticker: str, price: float | None = None, source: str | None = None) -> str | None:
         try:
-            z = self.one(ticker)
+            z = self.one(ticker, price, source)
         except Exception as exc:  # noqa: BLE001 - Yahoo down: the run goes on without the line
             log.info("bottom zone note for %s failed: %s", ticker, type(exc).__name__)
             return None

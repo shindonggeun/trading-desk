@@ -1572,3 +1572,18 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .today-zone { color: var(--ok); }
 .today-earnings { color: var(--warn); }
 .today-range { color: var(--accent); }
+
+/* #309 캘린더: 일요일 시작 · 일 빨강 · 토 파랑 톤, 칸의 실적 회사명, 실적 상세 줄, 노란 안내 */
+.cal-wd.cal-sun, .cal-cell.cal-sun .cal-num { color: var(--up); }
+.cal-wd.cal-sat, .cal-cell.cal-sat .cal-num { color: var(--down); }
+.cal-earn-names { display: flex; flex-wrap: wrap; gap: 0 4px; font-size: 11px; line-height: 1.3; color: var(--muted); max-width: 100%; }
+.cal-earn-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-earn-names.cal-watched .cal-earn-name:first-child { color: var(--accent); font-weight: 650; }
+.cal-earn-more { color: var(--muted); }
+.cal-cell .cal-earn-n { display: none; }
+.cal-earn-detail { display: block; margin-top: 2px; }
+.warn-line { color: var(--warn); margin: 0 0 4px; }
+@media (max-width: 760px) {
+  .cal-earn-names { display: none; }
+  .cal-cell .cal-earn-n { display: inline; }
+}

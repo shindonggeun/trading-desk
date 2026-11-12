@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import { addMonths, analyzeLink, closures, eps, FLAG, IMPORTANCE, kstTime, nextDay, todayKst, WHEN } from "../calendar";
+import { addMonths, analyzeLink, closures, earnDetail, earningsNotice, FLAG, IMPORTANCE, kstTime, nextDay, shortTicker, todayKst, WHEN } from "../calendar";
 import type { CalDay, MarketMonth } from "../types";
 import EarningsPreviewCard from "../components/EarningsPreviewCard";
 
@@ -15,7 +15,9 @@ type View = "grid" | "list";
 const FILTER_KEY = "desk.calendar.filters";
 const VIEW_KEY = "desk.calendar.view";
 const DEFAULT_FILTERS: Filters = { kr: true, us: true, earningsOnly: false, topOnly: false };
-const WEEK = ["월", "화", "수", "목", "금", "토", "일"];
+// #309 주 시작은 일요일
+const WEEK = ["일", "월", "화", "수", "목", "금", "토"];
+const dayTone = (w: string) => (w === "일" ? " cal-sun" : w === "토" ? " cal-sat" : "");
 
 function load<T>(key: string, fallback: T, ok: (v: unknown) => v is T): T {
   try {
@@ -76,10 +78,11 @@ function DayItems({ day, f, onPreview }: { day: CalDay; f: Filters; onPreview: (
         <li key={`${r.ticker}-${r.date}`} className={`cal-item cal-earn${r.watched ? " cal-watched" : ""}`}>
           <span className="cal-time">실적 · {WHEN[r.when]}</span>
           <span>
-            {FLAG[r.market]} <strong>{r.name || r.ticker}</strong>{r.name && <span className="muted small"> {r.ticker}</span>}
-            <span className="muted small">{eps(r.eps_estimate)}</span>
+            {FLAG[r.market]} <strong>{r.name || shortTicker(r.ticker)}</strong>{r.name && <span className="muted small"> {shortTicker(r.ticker)}</span>}
+            {r.stale && <span className="muted small" title="이번 회차에 새로 받지 못해 이전 자료를 보입니다"> · 이전 자료</span>}
             {" "}<button type="button" className="link small" onClick={() => onPreview(r.ticker, r.name || r.ticker)}>프리뷰</button>
             {r.watched && <> <span className="pill">관심</span> <a className="small" href={analyzeLink(r)}>바로 분석 →</a></>}
+            {earnDetail(r).length > 0 && <span className="cal-earn-detail muted small">{earnDetail(r).join(" · ")}</span>}
           </span>
         </li>
       ))}
@@ -134,7 +137,7 @@ export default function CalendarView({ query }: { query: URLSearchParams }) {
 
   const cells = useMemo(() => {
     if (!data) return [];
-    const lead = WEEK.indexOf(data.days[0]?.weekday ?? "월");
+    const lead = WEEK.indexOf(data.days[0]?.weekday ?? "일");
     return [...Array<null>(Math.max(lead, 0)).fill(null), ...data.days];
   }, [data]);
   const selected = data?.days.find((d) => d.date === day) ?? null;
@@ -169,7 +172,7 @@ export default function CalendarView({ query }: { query: URLSearchParams }) {
       {data && view === "grid" && (
         <section className="card cal-grid-card">
           <div className="cal-grid" role="grid" aria-label={`${y}년 ${Number(m)}월 달력`}>
-            {WEEK.map((w) => <div key={w} className={`cal-wd${w === "토" || w === "일" ? " cal-weekend" : ""}`} role="columnheader">{w}</div>)}
+            {WEEK.map((w) => <div key={w} className={`cal-wd${w === "토" || w === "일" ? " cal-weekend" : ""}${dayTone(w)}`} role="columnheader">{w}</div>)}
             {cells.map((d, i) => {
               if (!d) return <div key={`pad-${i}`} className="cal-cell cal-pad" />;
               const s = shownDay(d, filters);
@@ -178,7 +181,7 @@ export default function CalendarView({ query }: { query: URLSearchParams }) {
               const watched = s.earnings.filter((r) => r.watched).length;
               return (
                 <button key={d.date} type="button" role="gridcell"
-                  className={`cal-cell${d.date === day ? " cal-on" : ""}${d.date === today ? " cal-today" : ""}${d.weekday === "토" || d.weekday === "일" ? " cal-weekend" : ""}`}
+                  className={`cal-cell${d.date === day ? " cal-on" : ""}${d.date === today ? " cal-today" : ""}${d.weekday === "토" || d.weekday === "일" ? " cal-weekend" : ""}${dayTone(d.weekday)}`}
                   aria-selected={d.date === day} onClick={() => setPicked(d.date)}
                   aria-label={`${Number(d.date.slice(8))}일 ${d.weekday}요일${s.closed.length ? ` · ${s.closed.map((c) => c.text).join(", ")}` : ""}${s.events.length ? ` · 발표 ${s.events.length}건` : ""}${s.earnings.length ? ` · 실적 ${s.earnings.length}건` : ""}`}>
                   <span className="cal-num">{Number(d.date.slice(8))}</span>
@@ -192,6 +195,12 @@ export default function CalendarView({ query }: { query: URLSearchParams }) {
                     {Array.from({ length: Math.min(rest, 3) }, (_, k) => <span key={`r${k}`} className="cal-dot" />)}
                     {s.earnings.length > 0 && <span className={`cal-earn-n${watched ? " cal-watched" : ""}`}>실적 {s.earnings.length}</span>}
                   </span>
+                  {s.earnings.length > 0 && (
+                    <span className={`cal-earn-names${watched ? " cal-watched" : ""}`} aria-hidden>
+                      {s.earnings.slice(0, 2).map((r) => <span key={r.ticker} className="cal-earn-name">{r.name || shortTicker(r.ticker)}</span>)}
+                      {s.earnings.length > 2 && <span className="cal-earn-more">+{s.earnings.length - 2}</span>}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -229,7 +238,10 @@ export default function CalendarView({ query }: { query: URLSearchParams }) {
       {data && (
         <section className="muted small cal-notes">
           {data.sources.economic.error && <p className="error small">경제 일정 일부를 받지 못했습니다 — {data.sources.economic.error}</p>}
-          {data.sources.earnings.error && <p className="error small">실적 일정 일부를 받지 못했습니다 — {data.sources.earnings.error}</p>}
+          {(() => {
+            const n = earningsNotice(data.sources.earnings, data.days.reduce((k, d) => k + d.earnings.length, 0));
+            return n && <p className={n.red ? "error small" : "warn-line small"} role="status">{n.text}</p>;
+          })()}
           <ul>{data.notes.map((n) => <li key={n}>{n}</li>)}</ul>
         </section>
       )}

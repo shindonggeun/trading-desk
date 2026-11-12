@@ -1,0 +1,241 @@
+"""One instrument's card (#295): basic facts, the last ten sessions, indicators against the price,
+the support / resistance steps around it, and short interest where a free source has it.
+
+Everything comes from sources the desk already reads:
+
+- Yahoo daily bars through desk.prices (260 sessions: the 52-week range and the 250-day average).
+- The support / resistance levels of the chart itself - desk.sr.support_resistance with the default
+  horizon, the very call (and cache entry) behind GET /api/levels - plus the volume profile's thick
+  nodes the chart draws (매물대). The steps are therefore the chart's lines, never a second opinion.
+- Yahoo ``info`` (cached a day) for the name, market cap, exchange, first trade and - US only -
+  short interest. The KRX short-balance pages need a login (checked 2026-11-12: the data portal
+  answers "LOGOUT"), so a Korean stock carries no short interest and says why.
+
+Each section fails on its own: a missing source leaves its key null with the reason under
+``errors`` and the rest of the card stands.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections.abc import Callable
+from datetime import UTC, datetime
+from statistics import fmean, pstdev
+
+from .indicators import rsi as indicators_rsi
+from .sr import support_resistance
+
+log = logging.getLogger(__name__)
+
+DAILY_COUNT = 260               # 52 weeks + the 250-day average
+YEAR_BARS = 252
+RECENT_DAYS = 10
+MOVING_AVERAGES = (5, 20, 60, 120, 250)
+BB_N, BB_MULT = 20, 2.0
+RSI_N = 14
+RSI_HIGH, RSI_LOW = 70.0, 30.0
+SUPPORT_STEPS = 3
+RESISTANCE_STEPS = 10
+SAME_STEP = 0.005               # a volume node within 0.5% of a chart level is that level
+INFO_TTL_SEC = 24 * 3600.0
+INFO_CACHE_MAX = 512
+MAX_TICKERS = 30
+KR_SHORT_NOTE = "한국 공매도 잔고는 KRX 정보데이터시스템이 로그인을 요구해 무료로 받을 수 없습니다"
+
+_INFO: dict[str, tuple[float, dict]] = {}
+
+
+def _pct(price: float | None, base: float | None) -> float | None:
+    if price is None or not base:
+        return None
+    return round((price / base - 1) * 100, 2)
+
+
+def _round(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(value, 4) if abs(value) < 1 else round(value, 2)
+
+
+def korean(ticker: str) -> bool:
+    return ticker.upper().endswith((".KS", ".KQ"))
+
+
+# --- the bars ---------------------------------------------------------------------------------
+
+def recent(bars: list[dict], days: int = RECENT_DAYS) -> dict:
+    """The last ``days`` sessions, newest first, each with its change on the session before; the
+    window's highest and lowest close are flagged."""
+    rows = []
+    for i in range(max(len(bars) - days, 0), len(bars)):
+        close = bars[i]["close"]
+        prev = bars[i - 1]["close"] if i > 0 else None
+        rows.append({"date": str(bars[i]["at"])[:10], "close": _round(close), "change_pct": _pct(close, prev)})
+    rows.reverse()
+    if rows:
+        top = max(rows, key=lambda r: r["close"])
+        low = min(rows, key=lambda r: r["close"])
+        for r in rows:
+            r["high"], r["low"] = r is top, r is low
+    return {"days": rows, "high": top["close"] if rows else None, "low": low["close"] if rows else None}
+
+
+def rsi(closes: list[float]) -> float | None:
+    """RSI(14) of the last close - desk.indicators.rsi, the line the chart draws."""
+    values = indicators_rsi(closes, RSI_N) if len(closes) > RSI_N else []
+    last = values[-1] if values else None
+    return None if last is None else round(last, 1)
+
+
+def indicators(bars: list[dict], price: float) -> dict:
+    """52-week range, Bollinger (20, 2), the moving averages and RSI(14) - each against ``price``.
+    A history too short for one leaves that one null."""
+    closes = [b["close"] for b in bars]
+    year = bars[-YEAR_BARS:]
+    out: dict = {"price": _round(price), "bars": len(bars)}
+    if year:
+        hi = max(b["high"] for b in year)
+        lo = min(b["low"] for b in year)
+        out["week52"] = {"high": _round(hi), "low": _round(lo), "from_high_pct": _pct(price, hi),
+                         "from_low_pct": _pct(price, lo), "full": len(year) >= YEAR_BARS}
+    else:
+        out["week52"] = None
+    if len(closes) >= BB_N:
+        window = closes[-BB_N:]
+        mid, sd = fmean(window), pstdev(window)
+        upper, lower = mid + BB_MULT * sd, mid - BB_MULT * sd
+        out["bollinger"] = {"upper": _round(upper), "mid": _round(mid), "lower": _round(lower),
+                            "to_upper_pct": _pct(price, upper), "to_lower_pct": _pct(price, lower)}
+    else:
+        out["bollinger"] = None
+    out["moving_averages"] = [
+        {"days": n, "value": _round(fmean(closes[-n:])) if len(closes) >= n else None,
+         "vs_pct": _pct(price, fmean(closes[-n:])) if len(closes) >= n else None}
+        for n in MOVING_AVERAGES]
+    value = rsi(closes)
+    out["rsi"] = None if value is None else {
+        "value": value, "zone": "overbought" if value >= RSI_HIGH else "oversold" if value <= RSI_LOW else "neutral"}
+    return out
+
+
+# --- support / resistance steps ----------------------------------------------------------------
+
+def steps(levels: dict, price: float) -> dict:
+    """The chart's levels and thick volume nodes as steps away from ``price``: supports below
+    (nearest first, up to SUPPORT_STEPS), resistances above (up to RESISTANCE_STEPS). A volume node
+    on top of a chart level is that level, not a step of its own."""
+    found = [{"price": lv["price"], "source": "level", "strength": lv.get("strength"), "basis": lv.get("basis"),
+              "timeframe": lv.get("timeframe")} for lv in levels.get("levels") or []]
+    vp = levels.get("volume_profile") or {}
+    for node in vp.get("nodes") or []:
+        if node.get("kind") != "thick":
+            continue
+        if any(abs(node["price"] / s["price"] - 1) <= SAME_STEP for s in found if s["source"] == "level"):
+            continue
+        found.append({"price": node["price"], "source": "volume", "share": node.get("share"),
+                      "interval": vp.get("interval"), "bars": vp.get("bars")})
+    below = sorted((s for s in found if s["price"] < price), key=lambda s: -s["price"])[:SUPPORT_STEPS]
+    above = sorted((s for s in found if s["price"] >= price), key=lambda s: s["price"])[:RESISTANCE_STEPS]
+    for n, s in enumerate(below, 1):
+        s.update(step=n, distance_pct=_pct(s["price"], price))
+    for n, s in enumerate(above, 1):
+        s.update(step=n, distance_pct=_pct(s["price"], price))
+    return {"supports": below, "resistances": above, "reference_price": levels.get("reference_price"),
+            "as_of": levels.get("as_of"), "poc": vp.get("poc"),
+            "volume_bars": vp.get("bars"), "volume_interval": vp.get("interval")}
+
+
+# --- facts and short interest (Yahoo info) -----------------------------------------------------
+
+def yahoo_info(ticker: str) -> dict:
+    import yfinance as yf
+
+    return yf.Ticker(ticker).info or {}
+
+
+def _date(value) -> str | None:
+    try:
+        if value is None:
+            return None
+        seconds = float(value) / (1000 if float(value) > 1e11 else 1)
+        return datetime.fromtimestamp(seconds, UTC).date().isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def facts(info: dict, ticker: str, listing: dict | None) -> dict:
+    name = (listing or {}).get("name") or info.get("longName") or info.get("shortName")
+    cap = info.get("marketCap")
+    return {"name": name, "market_cap": cap if isinstance(cap, (int, float)) and cap > 0 else None,
+            "currency": info.get("currency"), "exchange": info.get("fullExchangeName") or info.get("exchange"),
+            "market": (listing or {}).get("market"),
+            # Yahoo's first trade in its own data: a Korean listing before 2000 shows 2000-01-04
+            "first_trade_date": _date(info.get("firstTradeDateMilliseconds") or info.get("firstTradeDateEpochUtc")),
+            "first_trade_note": "야후 기록의 첫 거래일(2000년 이전 상장 국내 종목은 2000-01-04)" if korean(ticker) else None}
+
+
+def short_interest(info: dict, ticker: str) -> dict:
+    if korean(ticker):
+        return {"available": False, "reason": KR_SHORT_NOTE}
+    shares = info.get("sharesShort")
+    if not isinstance(shares, (int, float)) or shares <= 0:
+        return {"available": False, "reason": "야후에 공매도 잔고가 없습니다"}
+    pct = info.get("shortPercentOfFloat")
+    return {"available": True, "shares": int(shares),
+            "percent_of_float": round(pct * 100, 2) if isinstance(pct, (int, float)) else None,
+            "days_to_cover": info.get("shortRatio"), "as_of": _date(info.get("dateShortInterest")),
+            "source": "yahoo (FINRA 격주 보고)"}
+
+
+class Profiles:
+    """GET /api/stock/profile. ``info`` and ``levels`` are injectable (tests, no network)."""
+
+    def __init__(self, prices, listing: Callable[[str], dict | None] = lambda t: None,
+                 info: Callable[[str], dict] = yahoo_info, levels=support_resistance,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.prices, self.listing, self.info, self.levels, self.clock = prices, listing, info, levels, clock
+
+    async def _info(self, ticker: str) -> dict:
+        cached = _INFO.get(ticker)
+        if cached and self.clock() - cached[0] < INFO_TTL_SEC:
+            return cached[1]
+        found = await asyncio.to_thread(self.info, ticker)
+        if len(_INFO) >= INFO_CACHE_MAX:
+            _INFO.clear()
+        _INFO[ticker] = (self.clock(), found)
+        return found
+
+    async def one(self, ticker: str) -> dict:
+        errors: dict[str, str] = {}
+
+        async def part(name: str, coro):
+            try:
+                return await coro
+            except Exception as exc:  # noqa: BLE001 - one source down leaves the rest of the card
+                errors[name] = type(exc).__name__
+                log.info("stock profile %s for %s failed: %s", name, ticker, exc)
+                return None
+
+        candles, info, levels = await asyncio.gather(
+            part("bars", self.prices.candles(ticker, "1d", DAILY_COUNT)),
+            part("info", self._info(ticker)),
+            part("levels", self.levels(self.prices, ticker)))
+        quote = await part("quote", self.prices.quote(ticker))
+        bars = (candles or {}).get("bars") or []
+        price = quote.price if quote is not None else (bars[-1]["close"] if bars else None)
+        listing = self.listing(ticker)
+        out = {"ticker": ticker, "price": _round(price),
+               "price_source": "live" if quote is not None else "close" if bars else None,
+               "facts": facts(info or {}, ticker, listing),
+               "recent": recent(bars) if bars else None,
+               "indicators": indicators(bars, price) if bars and price else None,
+               "levels": steps(levels, price) if levels and price else None,
+               "short": short_interest(info or {}, ticker) if info is not None or korean(ticker) else None,
+               "bars_source": (candles or {}).get("source"),
+               "computed_at": datetime.now(UTC).isoformat(timespec="seconds"), "errors": errors}
+        return out
+
+    async def many(self, tickers: list[str]) -> list[dict]:
+        return list(await asyncio.gather(*(self.one(t) for t in tickers)))

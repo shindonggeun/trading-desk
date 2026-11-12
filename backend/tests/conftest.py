@@ -60,3 +60,12 @@ def no_yahoo_network(monkeypatch):
     monkeypatch.setattr(filings, "FILINGS", Offline())
     monkeypatch.setattr(positioning, "POSITIONING", Offline())
     sr._CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
+def earnings_cache_in_tmp(monkeypatch, tmp_path):
+    """#308: an earnings pass saves its rows - into the test's folder, never the developer's
+    ~/.tradingagents (which the server volume mirrors)."""
+    from desk import earnings
+
+    monkeypatch.setattr(earnings, "CACHE_FILE", tmp_path / "earnings.json")

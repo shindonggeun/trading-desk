@@ -254,6 +254,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     def listing_name(ticker: str) -> str | None:
         return (universe.lookup(ticker) or {}).get("name")
 
+    earnings.CACHE.name_of = listing_name      # #308: a Korean report shows its listed name
+
     favorites = Favorites(engine, listing_name)
     sectors = Sectors(engine)
     hub = Hub()
@@ -392,6 +394,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         async def refresh_calendar():
             # #148: FOMC + BLS release dates change rarely; a few reads a day keep them current
+            # #308: the earnings saved before a restart show until the first pass answers
+            if await asyncio.to_thread(earnings.CACHE.load):
+                log.info("earnings calendar: last saved rows loaded")
             while True:
                 try:
                     ok = await events_calendar.CACHE.refresh()
@@ -403,7 +408,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.info("earnings calendar: %d day(s)/ticker(s) refreshed", ok)
                 except Exception:
                     log.exception("earnings calendar refresh failed")
-                await asyncio.sleep(CALENDAR_INTERVAL_SEC)
+                # #308: a failed earnings pass comes back sooner (30 min, 1 h, 2 h, 4 h)
+                await asyncio.sleep(earnings.CACHE.next_delay(CALENDAR_INTERVAL_SEC))
 
         async def refresh_credit():
             # #155: margin loans and investor deposits (KOFIA) - a few reads a day catch the new day

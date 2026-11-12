@@ -106,7 +106,7 @@ def test_refresh_reads_each_weekday_and_the_korean_tickers_and_keeps_old_rows_on
     e.us["2026-11-19"] = [{"ticker": "OLD", "market_cap": 2e11}]
     e.want({"005930.KS", "NVDA"})
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    ok = asyncio.run(e.refresh(client, today=date(2026, 11, 9), gap=0))
+    ok = asyncio.run(e.refresh(client, today=date(2026, 11, 9), gap=0, waits=()))
     assert asked[0] == "2026-11-02" and asked[-1] == "2026-12-31" and "2026-11-07" not in asked
     assert ok > 40 and e.us["2026-11-19"] == [{"ticker": "OLD", "market_cap": 2e11}] and "nasdaq 2026-11-19" in e.error
     assert e.kr["005930.KS"]["date"] == "2026-11-27" and "NVDA" not in e.want_kr
@@ -140,8 +140,8 @@ def test_a_stalled_nasdaq_stops_the_pass_and_want_takes_only_korean_tickers():
     e = earnings.Earnings(yahoo=lambda t: None)
     e.want({"NVDA", "035420.KS"})
     assert "NVDA" not in e.want_kr and "035420.KS" in e.want_kr
-    asyncio.run(e.refresh(httpx.AsyncClient(transport=httpx.MockTransport(handler)), today=date(2026, 12, 9), gap=0))
-    assert len(calls) == earnings.MAX_FAILS_IN_ROW and e.error.startswith(f"{earnings.MAX_FAILS_IN_ROW + 1} failed")
+    asyncio.run(e.refresh(httpx.AsyncClient(transport=httpx.MockTransport(handler)), today=date(2026, 12, 9), gap=0, waits=()))
+    assert len(calls) == earnings.MAX_FAILS_IN_ROW * (earnings.NASDAQ_RETRIES + 1) and e.error.startswith(f"{earnings.MAX_FAILS_IN_ROW + 1} failed")
 
 
 def test_a_december_month_reads_into_january_and_a_year_boundary_view():
@@ -152,7 +152,7 @@ def test_a_december_month_reads_into_january_and_a_year_boundary_view():
         return httpx.Response(200, json={"data": None})
 
     e = earnings.Earnings(yahoo=lambda t: None)
-    asyncio.run(e.refresh(httpx.AsyncClient(transport=httpx.MockTransport(handler)), today=date(2026, 12, 31), gap=0))
+    asyncio.run(e.refresh(httpx.AsyncClient(transport=httpx.MockTransport(handler)), today=date(2026, 12, 31), gap=0, waits=()))
     assert asked[0] == "2026-12-01" and asked[-1] == "2027-01-29"
     v = mc.month_view("2027-01", calendar=_calendar(), earn=e)
     assert v["days"][0]["kr"]["holiday"] and v["days"][0]["us"]["holiday"] == "새해 첫날"

@@ -71,6 +71,8 @@ from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run
 from .sectors import Duplicate, NotFound, Sectors, clean_name, clean_tickers
 from .settings import Settings, load
 from .sr import support_resistance
+from .stock_profile import MAX_TICKERS as PROFILE_MAX
+from .stock_profile import Profiles
 from .store import TERMINAL, Store, iso
 from .universe import Universe
 
@@ -266,6 +268,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # #271: Binance futures traders' long / short split, on the estimate's own contract mapping
     longshort = longshort or LongShort(lambda ticker: estimator.resolve(ticker))   # read when asked (test fakes)
     book = book or Portfolio(broker, prices)
+    profiles = Profiles(prices, universe.lookup)   # #295 the stock card
     flow = flow or MarketFlow(broker)
     # KOSPI200 futures from KIS REST (#160); without the KIS keys it answers supported: false
     futures = futures or FuturesFlow(make_kis_rest(settings) if not settings.fake_runs else None, flow,
@@ -1108,6 +1111,22 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except Exception as exc:  # noqa: BLE001 - no bars or too few
             log.warning("levels for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no levels for {ticker}") from None
+
+    @app.get("/api/stock/profile")
+    async def stock_profile(ticker: str | None = None, tickers: str | None = None):
+        """#295 one instrument's card (desk.stock_profile): facts, the last ten sessions, indicators,
+        the chart's support / resistance as steps, short interest. ``tickers`` (comma separated,
+        up to 30) answers {"items": [...]}; a failing source leaves its part null, never the card."""
+        names = [t for t in (x.strip() for x in (tickers or ticker or "").split(",")) if t]
+        if not names or len(names) > PROFILE_MAX or (ticker and tickers):
+            raise HTTPException(422, f"ticker, or between 1 and {PROFILE_MAX} tickers")
+        try:
+            names = list(dict.fromkeys(clean_ticker(t) for t in names))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if ticker:
+            return await profiles.one(names[0])
+        return {"items": await profiles.many(names)}
 
     @app.get("/api/playbooks")
     async def live_playbooks(ticker: str | None = None, horizon: str | None = None, run: str | None = None):

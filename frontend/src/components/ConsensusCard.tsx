@@ -39,10 +39,18 @@ function Levels({ plan }: { plan: Plan }) {
 function Triggers({ plan }: { plan: Plan }) {
   if (plan.long_trigger == null && plan.short_trigger == null) return null;
   return (
-    <ul className="cs-triggers small">
-      {plan.long_trigger != null && <li><span className="cs-long">롱</span> {price(plan.long_trigger)} 회복 · 돌파 시</li>}
-      {plan.short_trigger != null && <li><span className="cs-short">숏</span> {price(plan.short_trigger)} 이탈 시</li>}
-    </ul>
+    <>
+      <ul className="cs-triggers small">
+        {plan.long_trigger != null && <li><span className="cs-long">롱</span> {price(plan.long_trigger)} 회복 · 돌파 시</li>}
+        {plan.short_trigger != null && <li><span className="cs-short">숏</span> {price(plan.short_trigger)} 이탈 시</li>}
+      </ul>
+      {/* #311 이미 충족됐거나 롱 · 숏 기준이 엇갈린 트리거 */}
+      {plan.trigger_warnings && plan.trigger_warnings.length > 0 && (
+        <ul className="plan-trigger-warn small">
+          {plan.trigger_warnings.map((w) => <li key={w}><span aria-hidden>⚠</span> {w}</li>)}
+        </ul>
+      )}
+    </>
   );
 }
 

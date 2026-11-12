@@ -8,6 +8,14 @@ export interface Plan {
   entry_price: number | null;
   stop_loss: number | null;
   price_target: number | null;
+  /** #311 레벨 모양으로 본 방향: 손절 < 진입 < 목표 = long, 목표 < 진입 < 손절 = short, 모순 · 누락 = null(옛 run 도 읽을 때 계산) */
+  levels_side?: "long" | "short" | null;
+  /** #311 그 방향의 근거 한 줄(예 "트레이더 매도안의 숫자(숏 관점)"), 레벨이 없으면 null */
+  levels_note?: string | null;
+  /** #311 등급 bias(Hold = flat 포함)와 levels_side 가 다르다 */
+  side_conflict?: boolean;
+  /** #311 트리거가 이미 충족됐거나 롱 · 숏 기준이 엇갈릴 때의 한국어 경고 */
+  trigger_warnings?: string[];
   reward_risk: number | null;
   time_horizon: string | null;
   position_sizing: string | null;

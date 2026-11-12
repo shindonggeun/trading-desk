@@ -1599,3 +1599,18 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .bz-gap { margin: 4px 0; color: var(--warn); }
 .bz-ladder tr.bz-passed td { opacity: .5; text-decoration: line-through; }
 .bz-ladder tr.bz-passed td:last-child { text-decoration: none; }
+
+/* #311 레벨 관점(롱 · 숏) 배지 · 트리거 경고 · 손절 = 손실색 / 목표 = 이익색 */
+.plan-side-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 6px 0; }
+.plan-side { display: inline-flex; align-items: center; gap: 3px; padding: 1px 8px; border: 1px solid currentColor; border-radius: 999px; font-size: 12px; font-weight: 650; white-space: nowrap; }
+.plan-side-long { color: var(--long); }
+.plan-side-short { color: var(--short); }
+.plan-side-none { color: var(--muted); }
+.plan-side-warn { color: var(--warn); }
+.plan-trigger-warn { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 2px; color: var(--warn); }
+.ladder:has(.ladder-side) { margin-top: 24px; }
+.ladder-side { position: absolute; top: -22px; left: 0; font-size: 11px; font-weight: 650; white-space: nowrap; }
+.ladder-stop .ladder-tick { background: var(--danger); }
+.ladder-target .ladder-tick { background: var(--ok); }
+.lg-stop { border-color: var(--danger); }
+.lg-target { border-color: var(--ok); }

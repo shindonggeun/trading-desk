@@ -165,8 +165,9 @@ export default function LiveChart({ ticker, plan, onPrice }: {
     if (!c) return;
     const lines: [number | null | undefined, string, string, LineStyle][] = [
       [plan?.entry_price, "진입", css("--accent", "#c9d1db"), LineStyle.Solid],
-      [plan?.stop_loss, "손절", css("--short", "#3a86f8"), LineStyle.Solid],
-      [plan?.price_target, "목표", css("--long", "#f2464b"), LineStyle.Solid],
+      // #311 손절 = 손실색 · 목표 = 이익색
+      [plan?.stop_loss, "손절", css("--danger", "#ff6a3d"), LineStyle.Solid],
+      [plan?.price_target, "목표", css("--ok", "#3fb68b"), LineStyle.Solid],
       [plan?.long_trigger, "롱 조건", css("--long", "#f2464b"), LineStyle.Dotted],
       [plan?.short_trigger, "숏 조건", css("--short", "#3a86f8"), LineStyle.Dotted],
     ];

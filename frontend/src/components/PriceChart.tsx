@@ -709,8 +709,9 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const planLines: [number | null | undefined, string, string, LineStyle][] = show.levels
       ? [
           [plan?.entry_price, "진입", css("--accent", "#c9d1db"), LineStyle.Solid],
-          [plan?.stop_loss, "손절", css("--short", "#3a86f8"), LineStyle.Solid],
-          [plan?.price_target, "목표", css("--long", "#f2464b"), LineStyle.Solid],
+          // #311 손절 = 손실색 · 목표 = 이익색(롱 · 숏 어느 관점이든 같은 뜻)
+          [plan?.stop_loss, "손절", css("--danger", "#ff6a3d"), LineStyle.Solid],
+          [plan?.price_target, "목표", css("--ok", "#3fb68b"), LineStyle.Solid],
           ...(extraLines ?? []).map(
             (l): [number, string, string, LineStyle] => [l.price, l.label, l.color, l.dashed ? LineStyle.Dotted : LineStyle.Solid],
           ),

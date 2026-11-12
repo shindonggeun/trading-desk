@@ -27,7 +27,7 @@ export function RatingText({ rating }: { rating: string }) {
 
 type LevelKey = "entry_price" | "stop_loss" | "price_target";
 
-/** 가격 사다리: 손절 · 진입 · 목표를 한 축에 놓는다. */
+/** 가격 사다리: 손절 · 진입 · 목표를 한 축에 놓는다. #311 위에 관점을 적는다. */
 function Ladder({ plan }: { plan: Plan }) {
   const levels = [
     { key: "target", label: "목표", v: plan.price_target },
@@ -39,8 +39,10 @@ function Ladder({ plan }: { plan: Plan }) {
   const hi = Math.max(...vs);
   const lo = Math.min(...vs);
   const span = hi - lo || 1;
+  const side = levelsSide(plan);
   return (
-    <div className="ladder" aria-label="가격 레벨">
+    <div className="ladder" aria-label={`가격 레벨${side ? ` — ${LEVEL_SIDE_KO[side]}` : ""}`}>
+      {side && <span className={`ladder-side plan-side-${side}`}>{LEVEL_SIDE_KO[side]}</span>}
       <div className="ladder-axis" />
       {levels.map((l) => (
         <div key={l.key} className={`ladder-level ladder-${l.key}`} style={{ top: `${((hi - l.v) / span) * 100}%` }}>
@@ -200,6 +202,46 @@ function pct(from: number | null, to: number | null): string {
   if (from === null || to === null || from === 0) return "";
   const p = ((to - from) / from) * 100;
   return ` (${p > 0 ? "+" : ""}${p.toFixed(1)}%)`;
+}
+
+/** #311 레벨이 어느 관점인지 — 서버 levels_side, 옛 응답이면 bias */
+function levelsSide(plan: Plan): "long" | "short" | null {
+  if (plan.levels_side !== undefined) return plan.levels_side;
+  return plan.bias === "long" || plan.bias === "short" ? plan.bias : null;
+}
+
+/** #311 손절 · 목표를 손실 · 이익으로: 롱이면 손절 아래 = 손실, 숏이면 손절 위 = 손실 */
+function outcomePct(plan: Plan, side: "long" | "short", k: "stop_loss" | "price_target"): string {
+  const e = plan.entry_price;
+  const v = plan[k];
+  if (e === null || v === null || e === 0) return "";
+  const move = ((v - e) / e) * 100 * (side === "long" ? 1 : -1);   // 그 방향의 손익
+  const word = move >= 0 ? "이익" : "손실";
+  return `${word} ${move >= 0 ? "+" : "−"}${Math.abs(move).toFixed(1)}%`;
+}
+
+const LEVEL_SIDE_KO = { long: "롱 관점", short: "숏 관점" } as const;
+
+/** #311 레벨 표 머리: 관점 배지(색 + 글자) · 관망이면 "들어간다면 …" · 등급과 어긋남 · 레벨 모순 */
+function SideHead({ plan }: { plan: Plan }) {
+  const side = levelsSide(plan);
+  if (plan.entry_price === null && plan.stop_loss === null && plan.price_target === null) return null;
+  return (
+    <div className="plan-side-head">
+      {side ? (
+        <span className={`plan-side plan-side-${side}`}>{side === "long" ? "▲" : "▼"} {LEVEL_SIDE_KO[side]}</span>
+      ) : plan.levels_side === null ? (
+        <span className="plan-side plan-side-none">? 방향 불명</span>
+      ) : null}
+      {plan.bias === "flat" && side && (
+        <span className="small"><strong>관망</strong> · 들어간다면 {side === "long" ? "롱" : "숏"} 기준</span>
+      )}
+      {plan.side_conflict && plan.bias !== "flat" && side && (
+        <span className="small plan-side-warn">등급({plan.bias === "long" ? "롱" : "숏"})과 레벨 방향({side === "long" ? "롱" : "숏"})이 다릅니다</span>
+      )}
+      {plan.levels_note && <span className="muted small">{plan.levels_note}</span>}
+    </div>
+  );
 }
 
 /** 계획이 지금 가격과 어긋날 때: 진입이 멀거나, 손절 · 목표를 이미 지났을 때. */
@@ -466,6 +508,12 @@ export default function PlanCard({ plan, ticker, code, symbol, profile, profileI
           트레이더 행동: <strong>{action.ko}</strong> ({plan.trader_action}) — {action.desc}
         </p>
       )}
+      <SideHead plan={plan} />
+      {plan.trigger_warnings && plan.trigger_warnings.length > 0 && (
+        <ul className="plan-trigger-warn small" aria-label="트리거 경고">
+          {plan.trigger_warnings.map((w) => <li key={w}><span aria-hidden>⚠</span> {w}</li>)}
+        </ul>
+      )}
       <div className="plan-body">
         <dl className="plan-grid">
           {live && (
@@ -518,8 +566,17 @@ export default function PlanCard({ plan, ticker, code, symbol, profile, profileI
           <dd>
             {plan.reward_risk !== null ? `${plan.reward_risk} : 1` : "—"}
             <span className="muted small">
-              {plan.stop_loss !== null && ` 손절${pct(plan.entry_price, plan.stop_loss)}`}
-              {plan.price_target !== null && ` 목표${pct(plan.entry_price, plan.price_target)}`}
+              {levelsSide(plan) ? (
+                <>
+                  {plan.stop_loss !== null && ` 손절 ${outcomePct(plan, levelsSide(plan)!, "stop_loss")}`}
+                  {plan.price_target !== null && ` · 목표 ${outcomePct(plan, levelsSide(plan)!, "price_target")}`}
+                </>
+              ) : (
+                <>
+                  {plan.stop_loss !== null && ` 손절${pct(plan.entry_price, plan.stop_loss)}`}
+                  {plan.price_target !== null && ` 목표${pct(plan.entry_price, plan.price_target)}`}
+                </>
+              )}
             </span>
           </dd>
           {plan.score && (

@@ -1559,3 +1559,16 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 @media (max-width: 640px) {
   .sp-grid { grid-template-columns: 1fr; }
 }
+/* #317 대시보드 "오늘 볼 것" 한 줄 */
+.today-strip { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; padding: 8px 12px; margin: 0 0 12px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.today-title { font-weight: 650; white-space: nowrap; }
+.today-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.today-chip { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 3px 10px; border: 1px solid var(--border);
+  border-radius: 999px; color: var(--text); text-decoration: none; background: var(--surface-2); font-size: 13px; }
+.today-chip:hover { border-color: var(--accent); }
+.today-why { font-size: 12px; color: var(--muted); }
+.today-why + .today-why::before { content: "· "; }
+.today-zone { color: var(--ok); }
+.today-earnings { color: var(--warn); }
+.today-range { color: var(--accent); }

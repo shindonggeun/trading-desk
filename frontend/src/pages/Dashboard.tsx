@@ -13,6 +13,7 @@ import PortfolioPanel from "../components/PortfolioPanel";
 import RecentRuns from "../components/RecentRuns";
 import WeeklyMapBrief from "../components/WeeklyMapBrief";
 import BottomZoneBrief from "../components/BottomZoneBrief";
+import TodayStrip from "../components/TodayStrip";
 import { time } from "../format";
 import type { RegimeSnapshot } from "../types";
 
@@ -141,6 +142,8 @@ export default function Dashboard() {
       <div className="dash-search">
         <NewRunForm />
       </div>
+      {/* #317 즐겨찾기 가운데 지금 손댈 종목 */}
+      <TodayStrip />
       <div className="dash-sections">
         {prefs.order.map((id, i) => {
           const s = SECTIONS[id];

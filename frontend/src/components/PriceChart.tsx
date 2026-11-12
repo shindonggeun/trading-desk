@@ -20,7 +20,8 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles, type OscillatorView, type OscReading, type ReviewRow } from "../api";
 import { price } from "../format";
 import { keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands, volumeProfileDrawing, withAlpha, zoneHalfWidth } from "./chartBands";
-import type { BottomZone, ChartPattern, FibLevel, Fibonacci, Plan, Positioning, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
+import type { BottomZone, ChartPattern, FibLevel, Fibonacci, Plan, Positioning, Projection, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
+import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
 
 export type Interval = Exclude<CandleInterval, "1m">;
 const INTERVALS: { iv: Interval; label: string; count: number }[] = [
@@ -45,9 +46,9 @@ const MAX_BARS = 2000;
 // 보이는 범위의 왼쪽 끝이 첫 봉에서 이만큼 안쪽이면 더 받는다
 const OLDER_EDGE = 5;
 
-type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; pattern: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean; bz: boolean };
+type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; pattern: boolean; proj: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean; bz: boolean };
 const SHOW_LABEL: Record<keyof Show, string> = {
-  levels: "타점선", pb: "플레이북", sr: "지지 · 저항", all: "모든 지지 · 저항", vp: "매물대", trend: "추세선", pattern: "삼각수렴 · 쐐기", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
+  levels: "타점선", pb: "플레이북", sr: "지지 · 저항", all: "모든 지지 · 저항", vp: "매물대", trend: "추세선", pattern: "삼각수렴 · 쐐기", proj: "예상도", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
   opt: "옵션 벽 · 맥스 페인",
   bz: "인생 타점 줍줍",
   stoch: "스토캐스틱", bb: "볼린저밴드(20)", osc: "과열 · 침체 표시",
@@ -57,11 +58,11 @@ const US_TICKER = /^[A-Z]{1,6}(?:[.-][A-Z])?$/;
 const WALL_RANGE = 0.15;
 const WALLS_SHOWN = 2;
 // #98: 지지 · 저항은 가까운 3개씩만, 피보나치는 켤 때만 — 차트가 선으로 덮이지 않게
-const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, pattern: false, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true, bz: true };
+const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, pattern: false, proj: false, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true, bz: true };
 // #298 표시 묶음: 가격 칸 위의 선 · 표시만 한 번에 바꾼다(RSI · 스토캐스틱 칸은 그대로). 체크를 손으로 바꾸면 "직접".
 type Preset = "sr" | "trend" | "all" | "custom";
 const PRESET_LABEL: Record<Preset, string> = { sr: "지지·저항만", trend: "추세·패턴", all: "전부", custom: "직접" };
-const OVERLAYS: (keyof Show)[] = ["levels", "pb", "sr", "all", "vp", "trend", "pattern", "fib", "fills", "analysis", "opt", "bb", "osc", "bz"];
+const OVERLAYS: (keyof Show)[] = ["levels", "pb", "sr", "all", "vp", "trend", "pattern", "proj", "fib", "fills", "analysis", "opt", "bb", "osc", "bz"];
 const PRESET_ON: Record<Exclude<Preset, "custom">, (keyof Show)[]> = {
   sr: ["sr", "vp"],
   trend: ["sr", "trend", "pattern", "fib"],
@@ -348,6 +349,30 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   // 추세선 · 피보나치(#73) — 지지 · 저항과 같은 출처(분석 당시 / 지금)
   const trendLines: Trendline[] = useMemo(() => (show.trend ? srSource?.trendlines ?? [] : []), [show.trend, srSource]);
   const patterns: ChartPattern[] = useMemo(() => (show.pattern ? srSource?.patterns ?? [] : []), [show.pattern, srSource]);
+  // #300 예상도: 이 봉 주기와 짝인 시간축만(일봉 · 1시간 · 5분). 모델 설명이 오는 중이면 20초 뒤 한 번 더 읽는다.
+  const projFor = PROJECTION_HORIZON[interval];
+  const [proj, setProj] = useState<Projection | null>(null);
+  const [projFailed, setProjFailed] = useState(false);
+  useEffect(() => {
+    setProj(null);
+    setProjFailed(false);
+    if (!show.proj || !projFor) return;
+    let alive = true;
+    let again: number | undefined;
+    const load = (tries: number) =>
+      api.projection(ticker, projFor.horizon)
+        .then((p) => {
+          if (!alive) return;
+          setProj(p);
+          if (p.note_pending && tries < 3) again = window.setTimeout(() => load(tries + 1), 20_000);
+        })
+        .catch(() => alive && setProjFailed(true));
+    load(0);
+    return () => {
+      alive = false;
+      window.clearTimeout(again);
+    };
+  }, [show.proj, projFor, ticker]);
   const fib: Fibonacci | null = show.fib ? srSource?.fibonacci ?? null : null;
   // 매물대(#108) — 지지 · 저항과 같은 출처, 거래량이 없는 지수 · 옛 분석은 없다
   const vp: VolumeProfile | null = show.vp && srSource?.volume_profile?.bins.length ? srSource.volume_profile : null;
@@ -979,6 +1004,57 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     };
   }, [drawn, patterns, ticker]);
 
+  // #300 예상도 — 마지막 봉 뒤 미래 칸에 확률 원뿔(68% 실선 · 95% 점선 · 가운데 점선)과 시나리오 경로(강세 · 약세 · 범위)를 그린다.
+  // 축 범위엔 95% 띠를 넣지 않는다(먼 범위가 봉을 누르지 않게). 이 차트 주기와 같은 시간축의 예상도만 그린다.
+  useEffect(() => {
+    if (!drawn || !proj || proj.timeframe !== drawn.interval || proj.cone.length === 0 || !proj.price) return;
+    const { chart, rows, intraday } = drawn;
+    const time = (k: string | number) => (intraday ? (k as UTCTimestamp) : (k as Time));
+    const last = rows[rows.length - 1].key;
+    const future = futureKeys(last, drawn.interval, proj.steps);
+    const keyAt = (bar: number) => (bar <= 0 ? last : future[Math.min(bar, future.length) - 1]);
+    const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false };
+    const noScale = { ...quiet, autoscaleInfoProvider: () => null };
+    const muted = css("--muted", "#8c939d");
+    const added: ISeriesApi<"Line">[] = [];
+    const detach: (() => void)[] = [];
+    const line = (values: number[], opts: object) => {
+      const s = chart.addSeries(LineSeries, { ...quiet, lineWidth: 1, ...opts });
+      s.setData([{ time: time(last), value: proj.price as number }, ...values.map((v, i) => ({ time: time(future[i]), value: v }))]);
+      added.push(s);
+      return s;
+    };
+    try {
+      line(proj.cone.map((c) => c.p84), { color: withAlpha(muted, 0.9) });
+      line(proj.cone.map((c) => c.p16), { color: withAlpha(muted, 0.9) });
+      line(proj.cone.map((c) => c.p97_5), { ...noScale, color: withAlpha(muted, 0.6), lineStyle: LineStyle.Dotted });
+      line(proj.cone.map((c) => c.p2_5), { ...noScale, color: withAlpha(muted, 0.6), lineStyle: LineStyle.Dotted });
+      line(proj.cone.map((c) => c.p50), { color: withAlpha(muted, 0.7), lineStyle: LineStyle.Dashed });
+      const color = { bull: css("--long", "#f2464b"), bear: css("--short", "#3a86f8"), range: muted };
+      for (const path of proj.paths) {
+        const pts = path.points.filter((p) => p.price > 0);
+        if (pts.length < 2) continue;
+        const s = chart.addSeries(LineSeries, { ...quiet, color: color[path.name], lineWidth: 2, lineStyle: LineStyle.LargeDashed });
+        // 같은 칸에 두 점이 오면(마지막 칸에서 멈춤) 뒤 점만 둔다 — 시각이 겹치면 그릴 수 없다
+        const data = new Map<string | number, number>();
+        for (const p of pts) data.set(keyAt(p.bar), p.price);
+        s.setData([...data].map(([k, v]) => ({ time: time(k), value: v })).sort((a, b) => (a.time < b.time ? -1 : 1)));
+        added.push(s);
+        const end = pts[pts.length - 1];
+        const m = createSeriesMarkers(s, [{ time: time(keyAt(end.bar)), position: path.name === "bear" ? "belowBar" : "aboveBar",
+          shape: "circle", color: color[path.name], text: `${path.label} ${Math.round(path.prob * 100)}%`, size: 0.6 } as SeriesMarker<Time>]);
+        detach.push(() => m.detach());
+      }
+    } catch {
+      /* 예상도를 못 그려도 차트는 그대로 */
+    }
+    return () => {
+      if (!drawn.alive.current) return;
+      for (const d of detach) d();
+      for (const s of added) chart.removeSeries(s);
+    };
+  }, [drawn, proj]);
+
   // 선 근처(5px)에 마우스를 올리면 근거 — 지지 · 저항 · 피보나치(가로선)와 추세선(그 봉에서의 선 높이).
   useEffect(() => {
     if (!drawn) return;
@@ -1151,6 +1227,25 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           <span className="lg lg-entry" /> 진입 {price(plan.entry_price)} · <span className="lg lg-stop" /> 손절 {price(plan.stop_loss)} ·{" "}
           <span className="lg lg-target" /> 목표 {price(plan.price_target)}
           {outOfRange && " · 현재가와 너무 먼 선은 축 범위에서 뺐습니다"}
+        </p>
+      )}
+      {show.proj && (
+        <p className="muted small proj-note" aria-live="polite">
+          {!projFor ? "예상도는 일봉 · 1시간봉 · 5분봉에서만 그립니다."
+            : projFailed ? "예상도를 계산하지 못했습니다."
+              : !proj ? "예상도 계산 중…"
+                : proj.timeframe !== interval ? `예상도는 ${proj.timeframe} 봉으로 계산되어 이 주기 차트에는 그리지 않습니다.`
+                  : (
+                    <>
+                      <strong>예상도</strong>{" "}
+                      {proj.note_ko}{" "}
+                      <span>({proj.note_source === "ai" ? "AI 설명 · 숫자는 데스크 계산" : proj.note_pending ? "데스크 계산 · AI 설명 준비 중" : "데스크 계산"})</span>
+                      {proj.calibration?.coverage68_valid != null && (
+                        <> · 과거 검증 68% 범위 적중 {proj.calibration.coverage68_valid}%{proj.calibration.n ? `(n ${proj.calibration.n.toLocaleString()})` : ""}</>
+                      )}
+                      {" · "}<strong>예측이 아니라 확률 범위 · 시나리오입니다.</strong>
+                    </>
+                  )}
         </p>
       )}
       {((show.fills && fills.length > 0) || rsiOn || stochOn || (drawn && LOG_SCALE.has(interval))) && (

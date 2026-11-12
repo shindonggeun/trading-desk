@@ -1206,6 +1206,8 @@ export interface Projection {
 /** #293 GET /api/earnings/preview — 실적 프리뷰(무료 출처만). 값은 모두 선택값이다. */
 export interface EarningsEstimate { avg: number | null; low: number | null; high: number | null; analysts: number | null; year_ago: number | null; growth_pct: number | null; currency: string | null }
 export interface EarningsHistoryRow { at: string; date: string; when: "pre" | "after" | "during" | null; estimate: number | null; actual: number | null; surprise_pct: number | null; beat: boolean | null }
+/** 네이버 분기 · 연간 실적(억원, 이익률 %) — consensus 면 추정치 */
+export interface KrConsensusRow { period: string; consensus: boolean; revenue: number | null; op_income: number | null; net_income: number | null; op_margin: number | null }
 export interface EarningsPreview {
   ticker: string;
   next: { date: string; when: "pre" | "after" | "during" | null; estimate: number | null; time_kst: string | null; days: number } | null;
@@ -1217,7 +1219,7 @@ export interface EarningsPreview {
   targets: { mean: number | null; median: number | null; high: number | null; low: number | null; current: number | null; upside_pct: number | null } | null;
   ratings: { strong_buy: number; buy: number; hold: number; sell: number; strong_sell: number; total: number; buy_pct: number } | null;
   short_interest: Record<string, unknown> | null;
-  kr_consensus: { unit: string; quarter?: Record<string, unknown>[]; annual?: Record<string, unknown>[] } | null;
+  kr_consensus: { unit: string; quarter?: KrConsensusRow[]; annual?: KrConsensusRow[] } | null;
   sources: Record<string, { source: string; at: string }>;
   unavailable: { id: string; label: string; why: string }[];
   errors: string[];

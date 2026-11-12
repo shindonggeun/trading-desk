@@ -1205,10 +1205,10 @@ export interface Projection {
 
 /** #293 GET /api/earnings/preview — 실적 프리뷰(무료 출처만). 값은 모두 선택값이다. */
 export interface EarningsEstimate { avg: number | null; low: number | null; high: number | null; analysts: number | null; year_ago: number | null; growth_pct: number | null; currency: string | null }
-export interface EarningsHistoryRow { at: string; date: string; when: "pre" | "post" | "during" | null; estimate: number | null; actual: number | null; surprise_pct: number | null; beat: boolean | null }
+export interface EarningsHistoryRow { at: string; date: string; when: "pre" | "after" | "during" | null; estimate: number | null; actual: number | null; surprise_pct: number | null; beat: boolean | null }
 export interface EarningsPreview {
   ticker: string;
-  next: { date: string; when: "pre" | "post" | "during" | null; estimate: number | null; time_kst: string | null; days: number } | null;
+  next: { date: string; when: "pre" | "after" | "during" | null; estimate: number | null; time_kst: string | null; days: number } | null;
   eps: Record<string, EarningsEstimate> | null;
   revenue: Record<string, EarningsEstimate> | null;
   history: EarningsHistoryRow[];

@@ -8,7 +8,7 @@ import type { EarningsEstimate, EarningsPreview } from "../types";
  * 투자 조언이 아니라 읽기 도우미다.
  */
 
-const WHEN: Record<string, string> = { pre: "장 전", post: "장 후", during: "장중" };
+const WHEN: Record<string, string> = { pre: "장 전", after: "장 후", during: "장중" };
 
 const num = (v: number | null | undefined, digits = 2) =>
   v == null ? "—" : v.toLocaleString("ko-KR", { maximumFractionDigits: digits });
@@ -23,10 +23,10 @@ const big = (v: number | null | undefined) => {
   return num(v);
 };
 
-/** 이번 분기("0q") 추정을 먼저, 없으면 첫 항목. */
+/** 이번 분기(this_quarter) 추정을 먼저, 없으면 첫 항목. */
 function current(rows: Record<string, EarningsEstimate> | null): EarningsEstimate | null {
   if (!rows) return null;
-  return rows["0q"] ?? Object.values(rows)[0] ?? null;
+  return rows.this_quarter ?? Object.values(rows)[0] ?? null;
 }
 
 function Estimate({ label, e, fmt }: { label: string; e: EarningsEstimate | null; fmt: (v: number | null | undefined) => string }) {

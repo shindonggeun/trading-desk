@@ -179,3 +179,10 @@ def test_the_endpoint_answers_on_fake_bars_and_says_when_the_levels_fell_back(db
         # minute bars this fake source lacks: the levels fall back to the swing frame and so does the cone
         assert (got["fallback"] is not None) == (got["timeframe"] == "1d") and got["horizon"] == "scalp"
     assert isinstance(source, PriceSource) and _Bars
+
+
+def test_the_desk_note_itself_always_passes_even_with_numbers_in_level_names():
+    sr = {"levels": [{"price": 110.0, "kind": "resistance", "basis": "일봉 스윙 저점 (이탈됨) ×2"},
+                     {"price": 92.0, "kind": "support", "basis": "주봉 고점 ×3"}]}
+    p = projection.project(sr, _bars(), "1d")
+    assert "×2" in p["note_ko"] and projection.checked(p["note_ko"], p) == p["note_ko"]

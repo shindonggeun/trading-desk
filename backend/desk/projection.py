@@ -218,6 +218,8 @@ def allowed_numbers(p: dict) -> set[str]:
     out = {_norm(fmt(x)) for x in prices if x} | {_norm(str(x)) for x in prices if x}
     out |= {str(b) for b in bars}
     out |= {_norm(f"{x}") + "%" for x in pcts}
+    out |= {_norm(t) for t in _NUM.findall(desk_note(p))}   # the desk's own sentences (level names: "×2")
+    out |= {_norm(t) for x in p["levels"]["above"] + p["levels"]["below"] for t in _NUM.findall(x["why"])}
     return out
 
 

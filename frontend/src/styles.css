@@ -1522,3 +1522,21 @@ a.wmb-row:hover { border-color: var(--accent); }
 /* #300 차트 예상도 설명 */
 .proj-note { margin: 6px 0 0; line-height: 1.5; }
 .proj-note strong { color: var(--text); }
+
+/* #294 실적 프리뷰 카드 */
+.ep-overlay { position: fixed; inset: 0; z-index: 60; background: rgb(0 0 0 / 0.45); display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px; overflow-y: auto; }
+.ep-card { width: min(720px, 100%); margin: 0; }
+.ep-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ep-head h3 { margin: 0; }
+.ep-next { margin: 8px 0 12px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.ep-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.ep-stat { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.ep-stat strong { font-size: 1.15em; }
+.ep-warn { color: var(--warn); }
+.ep-history { width: 100%; margin-top: 12px; border-collapse: collapse; }
+.ep-history caption { text-align: left; padding-bottom: 4px; }
+.ep-history th, .ep-history td { padding: 3px 6px; border-bottom: 1px solid var(--border); text-align: left; }
+.ep-history .num { text-align: right; }
+.ep-checks ul, .ep-foot ul { margin: 4px 0; padding-left: 18px; }
+.ep-foot { margin-top: 10px; }
+.fav-earn { align-self: flex-start; margin-top: 4px; padding: 1px 8px; border: 1px solid var(--warn); border-radius: 999px; background: transparent; color: var(--warn); cursor: pointer; }

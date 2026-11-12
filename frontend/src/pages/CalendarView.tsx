@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { addMonths, analyzeLink, closures, eps, FLAG, IMPORTANCE, kstTime, nextDay, todayKst, WHEN } from "../calendar";
 import type { CalDay, MarketMonth } from "../types";
+import EarningsPreviewCard from "../components/EarningsPreviewCard";
 
 /**
  * #246 국장 · 미장 월간 캘린더(#243 GET /api/calendar) — 휴장 · 조기 폐장, 경제 발표(한국 시간), 만기, 실적.
@@ -51,7 +52,7 @@ function go(month: string, day: string | null) {
   window.history.replaceState(null, "", `#/calendar?${q}`);
 }
 
-function DayItems({ day, f }: { day: CalDay; f: Filters }) {
+function DayItems({ day, f, onPreview }: { day: CalDay; f: Filters; onPreview: (ticker: string, name: string) => void }) {
   const s = shownDay(day, f);
   if (s.empty) return <p className="muted small">일정이 없습니다.</p>;
   return (
@@ -77,6 +78,7 @@ function DayItems({ day, f }: { day: CalDay; f: Filters }) {
           <span>
             {FLAG[r.market]} <strong>{r.name || r.ticker}</strong>{r.name && <span className="muted small"> {r.ticker}</span>}
             <span className="muted small">{eps(r.eps_estimate)}</span>
+            {" "}<button type="button" className="link small" onClick={() => onPreview(r.ticker, r.name || r.ticker)}>프리뷰</button>
             {r.watched && <> <span className="pill">관심</span> <a className="small" href={analyzeLink(r)}>바로 분석 →</a></>}
           </span>
         </li>
@@ -95,6 +97,8 @@ export default function CalendarView({ query }: { query: URLSearchParams }) {
   const [view, setView] = useState<View>(() => load<View>(VIEW_KEY, phone() ? "list" : "grid", isView));
   const [data, setData] = useState<MarketMonth | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ ticker: string; name: string } | null>(null);
+  const openPreview = (ticker: string, name: string) => setPreview({ ticker, name });
 
   useEffect(() => {
     let alive = true;
@@ -204,7 +208,7 @@ export default function CalendarView({ query }: { query: URLSearchParams }) {
           {selected ? (
             <>
               <h3>{Number(selected.date.slice(5, 7))}월 {Number(selected.date.slice(8))}일 ({selected.weekday})</h3>
-              <DayItems day={selected} f={filters} />
+              <DayItems day={selected} f={filters} onPreview={openPreview} />
             </>
           ) : <p className="muted small">날짜를 누르면 그날 일정이 나옵니다.</p>}
         </section>
@@ -215,7 +219,7 @@ export default function CalendarView({ query }: { query: URLSearchParams }) {
           {data.days.filter((d) => !shownDay(d, filters).empty).map((d) => (
             <div key={d.date} id={`cal-${d.date}`} className={`cal-list-day${d.date === today ? " cal-today" : ""}`}>
               <h3>{Number(d.date.slice(5, 7))}/{Number(d.date.slice(8))} ({d.weekday}){d.date === today && <span className="pill">오늘</span>}</h3>
-              <DayItems day={d} f={filters} />
+              <DayItems day={d} f={filters} onPreview={openPreview} />
             </div>
           ))}
           {data.days.every((d) => shownDay(d, filters).empty) && <p className="muted small">이 달에 보여 줄 일정이 없습니다.</p>}
@@ -229,6 +233,7 @@ export default function CalendarView({ query }: { query: URLSearchParams }) {
           <ul>{data.notes.map((n) => <li key={n}>{n}</li>)}</ul>
         </section>
       )}
+      {preview && <EarningsPreviewCard ticker={preview.ticker} name={preview.name} onClose={() => setPreview(null)} />}
     </main>
   );
 }

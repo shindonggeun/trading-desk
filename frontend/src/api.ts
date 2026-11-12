@@ -1,3 +1,4 @@
+import type { EarningsPreview } from "./types";
 import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FuturesDaily, FuturesIntraday, MarketMonth, SectorNewsView, LongShortItem, Projection } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
@@ -158,6 +159,8 @@ export const api = {
   regime: () => call<RegimeSnapshot>("/api/regime"),
   /** #115 거시 · 정책 뉴스 흐름 — 서버가 30분마다 새로 모은다. */
   macroBrief: () => call<MacroBrief>("/api/macro/brief"),
+  /** #293 실적 프리뷰 — 종목당 서버 캐시. */
+  earningsPreview: (ticker: string) => call<EarningsPreview>(`/api/earnings/preview?ticker=${encodeURIComponent(ticker)}`),
   /** 계획 채점 통계(#64 desk/outcome.py) — 서버가 보관 기간까지로 자른다. */
   planStats: (days = 90) => call<PlanStats>(`/api/stats/plans?days=${days}`),
   /** #185 저장소에 커밋한 바스켓 백테스트 스냅샷 — 보기별 요약과 한 보기의 리포트 */

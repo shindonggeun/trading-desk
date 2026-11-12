@@ -5,6 +5,38 @@ import { clearFavoriteError, moveFavorite, removeFavorite, useFavorites } from "
 import { price, time } from "../format";
 import type { BoardItem, EstimatedCandles, LongShortItem } from "../types";
 import { LongShortBar, LongShortToggle, useLongShort, useLongShortShown } from "./LongShortBar";
+import EarningsPreviewCard from "./EarningsPreviewCard";
+import { addMonths, todayKst } from "../calendar";
+
+const EARN_SOON_DAYS = 3;     // #294 실적 발표가 이 날 수 안이면 타일에 D-n 배지
+
+/** #294 즐겨찾기 종목의 가까운 실적 발표일(이번 달 · 다음 달 캘린더에서). 실패하면 배지만 없다. */
+function useEarningsSoon(key: string): Record<string, number> {
+  const [soon, setSoon] = useState<Record<string, number>>({});
+  useEffect(() => {
+    if (!key) return;
+    let alive = true;
+    const today = todayKst();
+    const month = today.slice(0, 7);
+    Promise.allSettled([api.marketMonth(month), api.marketMonth(addMonths(month, 1))]).then((rs) => {
+      if (!alive) return;
+      const want = new Set(key.split(","));
+      const out: Record<string, number> = {};
+      const t0 = Date.parse(today);
+      for (const r of rs) {
+        if (r.status !== "fulfilled") continue;
+        for (const d of r.value.days) {
+          const days = Math.round((Date.parse(d.date) - t0) / 86_400_000);
+          if (days < 0 || days > EARN_SOON_DAYS) continue;
+          for (const e of d.earnings) if (want.has(e.ticker) && !(e.ticker in out)) out[e.ticker] = days;
+        }
+      }
+      setSoon(out);
+    });
+    return () => { alive = false; };
+  }, [key]);
+  return soon;
+}
 
 const POLL_MS = 15_000;      // 시세판과 같은 주기
 const SPARK_MS = 120_000;    // 작은 차트는 2분마다
@@ -74,9 +106,9 @@ export function Spark({ ticker, tone, order }: { ticker: string; tone: "up" | "d
   );
 }
 
-function Tile({ ticker, name, it, ls, first, last, editing, order }: {
+function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEarn }: {
   ticker: string; name: string; it: BoardItem | undefined; ls: LongShortItem | undefined; first: boolean; last: boolean;
-  editing: boolean; order: number;
+  editing: boolean; order: number; earnIn?: number; onEarn: () => void;
 }) {
   const ch = it?.change_pct;
   const tone = ch == null ? "" : ch > 0 ? "up" : ch < 0 ? "down" : "";
@@ -101,6 +133,11 @@ function Tile({ ticker, name, it, ls, first, last, editing, order }: {
         </span>
       </a>
       <LongShortBar it={ls} />
+      {earnIn != null && (
+        <button type="button" className="fav-earn small" onClick={onEarn} aria-label={`${name} 실적 프리뷰 열기`}>
+          실적 {earnIn === 0 ? "오늘" : `D-${earnIn}`}
+        </button>
+      )}
       {editing && (
         <span className="fav-tools" role="group" aria-label={`${name} 편집`}>
           <button type="button" className="dash-move" disabled={first} aria-label={`${name} 앞으로`} onClick={() => moveFavorite(ticker, -1)}>←</button>
@@ -125,6 +162,8 @@ export default function FavoritesPanel() {
   const key = tickers.join(",");
   const [lsShown, flipLs] = useLongShortShown();
   const ls = useLongShort(tickers, lsShown);
+  const earnSoon = useEarningsSoon(key);
+  const [preview, setPreview] = useState<{ ticker: string; name: string } | null>(null);
 
   useEffect(() => {
     if (!key) return;
@@ -179,12 +218,14 @@ export default function FavoritesPanel() {
           <div className="qb-grid fav-grid">
             {shown.map((f, i) => (
               <Tile key={f.ticker} ticker={f.ticker} name={f.name ?? f.ticker} it={items[f.ticker]} ls={lsShown ? ls[f.ticker] : undefined}
-                first={i === 0} last={i === list.length - 1} editing={editing} order={i} />
+                first={i === 0} last={i === list.length - 1} editing={editing} order={i}
+                earnIn={earnSoon[f.ticker]} onEarn={() => setPreview({ ticker: f.ticker, name: f.name ?? f.ticker })} />
             ))}
           </div>
           <p className="muted small qb-note">추정가 · 점선은 바이낸스 무기한 선물로 낸 장외 추정이며 실제 체결가가 아닙니다.</p>
         </>
       )}
+      {preview && <EarningsPreviewCard ticker={preview.ticker} name={preview.name} onClose={() => setPreview(null)} />}
     </section>
   );
 }

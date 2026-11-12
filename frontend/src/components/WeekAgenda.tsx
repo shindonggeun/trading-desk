@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { addDays, addMonths, analyzeLink, closures, FLAG, todayKst, WHEN } from "../calendar";
+import { addDays, addMonths, analyzeLink, closures, FLAG, shortTicker, todayKst, WHEN } from "../calendar";
 import type { CalDay } from "../types";
 
 /**
@@ -29,7 +29,7 @@ function rows(days: CalDay[], from: string, to: string): Row[] {
     for (const r of d.earnings) {
       if (!r.watched) continue;
       out.push({ key: `${r.ticker}-${r.date}`, date: d.date, sort: `${d.date} 99:${r.ticker}`, when: `실적 ${WHEN[r.when]}`,
-        text: r.name || r.ticker, market: r.market, top: false, href: analyzeLink(r) });
+        text: r.name || shortTicker(r.ticker), market: r.market, top: false, href: analyzeLink(r) });
     }
   }
   return out.sort((a, b) => a.sort.localeCompare(b.sort));

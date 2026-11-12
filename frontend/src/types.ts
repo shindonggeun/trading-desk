@@ -1146,6 +1146,20 @@ export interface CalEarning {
   market_cap: number | null;
   source: string;
   watched: boolean;
+  /** #308 상세 — 서버 배포 전엔 없다(모두 선택값), 없는 값은 null */
+  eps_low?: number | null;
+  eps_high?: number | null;
+  eps_year_ago?: number | null;
+  revenue_estimate?: number | null;
+  revenue_low?: number | null;
+  revenue_high?: number | null;
+  analysts?: number | null;
+  /** 예 "Oct/2026" */
+  fiscal_quarter?: string | null;
+  currency?: "USD" | "KRW" | string | null;
+  refreshed_at?: string | null;
+  /** 이번 회차에 못 받아 이전 행을 보여 주는 중 */
+  stale?: boolean;
 }
 export interface CalDay {
   date: string;
@@ -1158,7 +1172,11 @@ export interface CalDay {
 export interface MarketMonth {
   month: string;
   days: CalDay[];
-  sources: Record<"economic" | "earnings", { refreshed_at: string | null; error: string | null }>;
+  sources: {
+    economic: { refreshed_at: string | null; error: string | null };
+    /** #308 error 는 사람용 한국어(문제 없으면 null), stale = 마지막 자료를 보이는 중 */
+    earnings: { refreshed_at: string | null; error: string | null; stale?: boolean; failed_sources?: string[] };
+  };
   notes: string[];
 }
 

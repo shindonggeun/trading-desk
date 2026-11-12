@@ -174,8 +174,12 @@ _STATE_EN = {"intact": "holding", "testing": "testing it", "broken": "closed thr
 
 def prompt_note(sr: dict | None) -> str | None:
     """Trendlines and the retracement as a reference block for the deciding agents."""
-    if not sr or not (sr.get("trendlines") or sr.get("fibonacci")):
+    if not sr or not (sr.get("trendlines") or sr.get("fibonacci") or sr.get("patterns")):
         return None
+    from .patterns import prompt_note as pattern_note  # desk.patterns builds on this module
+
+    if not (sr.get("trendlines") or sr.get("fibonacci")):
+        return pattern_note(sr.get("patterns"))   # no lines: the trendline header and advice do not apply
     lines = []
     for t in sr.get("trendlines") or []:
         name = "Rising support" if t["kind"] == "support" else "Falling resistance"
@@ -193,6 +197,8 @@ def prompt_note(sr: dict | None) -> str | None:
             parts.append(f"{lv['ratio']} {lv['price']}" + (f" (= zone {c['price']}, strength {c['strength']})" if c else ""))
         lines.append(f"- Fibonacci retracement of the {move} {fib['from']['price']} ({fib['from']['at'][:10]}) → "
                      f"{fib['to']['price']} ({fib['to']['at'][:10]}): " + ", ".join(parts))
+    if (note := pattern_note(sr.get("patterns"))):
+        lines.append(f"- {note}")
     return ("Desk-computed trendlines (straight in log price) and Fibonacci retracement:\n" + "\n".join(lines) + "\n"
             "Where the price is testing a trendline, give both scenarios with their entry condition: the line "
             "holding (e.g. a long on a close back above rising support, stop below it) and a close through it "

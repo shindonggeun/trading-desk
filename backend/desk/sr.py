@@ -19,7 +19,7 @@ from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from zoneinfo import ZoneInfo
 
-from . import horizons, recent, trend, volume_profile
+from . import horizons, patterns, recent, trend, volume_profile
 
 DAILY_BARS = 200
 WEEKLY_BARS = 156          # three years
@@ -271,6 +271,20 @@ def add_trend(result: dict, days: list[dict], weeks: list[dict], h: horizons.Hor
         result["trend_error"] = f"{type(exc).__name__}: {exc}"
 
 
+def add_patterns(result: dict, days: list[dict], weeks: list[dict], h: horizons.Horizon,
+                 price: float | None = None) -> None:
+    """#297: a converging pattern on each timeframe (its own ATR), with its measured record
+    (desk.patterns). Live only - the backtest's snapshots skip it (its plans do not read it)."""
+    try:
+        found = patterns.find(days, h.primary_k, result["atr"] or (_atr(days) or 0.0), h.primary, price)
+        if weeks:
+            found += patterns.find(weeks, h.secondary_k, _atr(weeks) or 0.0, h.secondary, price)
+        result["patterns"] = found
+    except Exception as exc:  # noqa: BLE001 - the levels and lines stand without it
+        result["patterns"] = []
+        result["patterns_error"] = f"{type(exc).__name__}: {exc}"
+
+
 def add_volume_profile(result: dict, days: list[dict], h: horizons.Horizon) -> None:
     """The primary bars' volume profile (desk.volume_profile, #106) onto a ``compute`` result;
     None when the bars carry no volume (an index), a failure leaves the levels as they are."""
@@ -372,6 +386,7 @@ async def _frame(prices, ticker: str, trade_date: str | None, price: float | Non
                      partial=live_day and forming(days, ticker))
     # pairs of swings × bars: off the event loop so it never stalls the streams
     await asyncio.to_thread(add_trend, result, days, weeks, h, price)
+    await asyncio.to_thread(add_patterns, result, days, weeks, h, price)
     await asyncio.to_thread(add_volume_profile, result, days, h)
     result.update(ticker=ticker, sources={h.primary: primary["source"], h.secondary: secondary["source"]},
                   intervals={"primary": h.primary, "secondary": h.secondary},

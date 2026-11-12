@@ -31,6 +31,7 @@ MIN_DAILY = 60
 MERGE_ATR = 0.5
 ZONE_WIDTH_ATR = 1.0     # a zone never spans more than this: dense levels make several zones, not one range
 MIN_GAP_ATR = 0.3
+EDGE_BANDS = (0, 40, 60, 80, 101)  # #285: the score band by the edges met (desk.calibration.BANDS + the top)
 MAX_ZONE_ATR = {"scalp": 3.0, "intraday": 3.0, "short_swing": 4.0, "swing": 6.0}
 # ...and never further than this share of the price (#151): after a -32% day an ATR swollen by that
 # one bar times 6 reaches back into the range the price fell out of, +50% away
@@ -510,9 +511,19 @@ def _short_conditions(zone: dict, primary: list[dict], ref: float, atr: float, k
 
 
 def _score(zone_score: float, conditions: list[dict]) -> int:
+    """Zone confluence 60 + met conditions 40. With the #285 edge conditions (desk.setup_filter) - the
+    only part the backtest found to separate good plans from bad - the number met picks the band
+    (none 0-39 · one 40-59 · two 60-79 · all 80-100, desk.calibration.BANDS) and the rest places the
+    score inside it."""
     known = [c for c in conditions if c["how"] == "computed" and c["met"] is not None]
     met = sum(1 for c in known if c["met"])
-    return round(min(zone_score, 6) / 6 * 60 + (met / len(known) * 40 if known else 0))
+    base = min(zone_score, 6) / 6 * 60 + (met / len(known) * 40 if known else 0)
+    edges = [c for c in conditions if c["how"] == "edge"]
+    if not edges:
+        return round(base)
+    k = round(sum(1 for c in edges if c["met"]) / len(edges) * (len(EDGE_BANDS) - 2))
+    lo, hi = EDGE_BANDS[k], EDGE_BANDS[k + 1]
+    return int(lo + base / 100 * (hi - lo - 1))
 
 
 def _target(role: str, price: float, basis: str, source: str, entry: float, stop: float, up: bool, **extra) -> dict:
@@ -1196,6 +1207,8 @@ def track(fresh: dict, run_pb: dict | None, primary: list[dict], h: horizons.Hor
             if up:
                 conditions = _long_conditions(zone, primary, ref, atr, h.primary_k,
                                               fresh["regime"]["flags"]["climax_recent"])
+                # #285: the chart edges the plan was scored on stay (desk.setup_filter)
+                conditions += [c for c in s.get("conditions") or [] if c.get("how") == "edge"]
             else:
                 conditions = _short_conditions(zone, primary, ref, atr, h.primary_k, vwap, _sma(closes, 20),
                                                s.get("setup"))

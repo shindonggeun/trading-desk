@@ -13,7 +13,18 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from . import horizons, macro_news, playbook, risk_regime, summary, timing, trade_map, value_swing, verdict
+from . import (
+    horizons,
+    macro_news,
+    playbook,
+    risk_regime,
+    setup_filter,
+    summary,
+    timing,
+    trade_map,
+    value_swing,
+    verdict,
+)
 from . import underlying as under
 from .broker.base import Broker
 from .consensus import CONSENSUS_TIMEOUT_SEC, ConsensusContext, llm_summariser
@@ -462,6 +473,8 @@ class RunManager:
             pb = risk_regime.apply(pb, market)
             # #167: the oversold swing buy (the swing frame's secondary bars are the weekly ones)
             pb = value_swing.apply(pb, daily, secondary if h.secondary == "1w" else None, h.id, sr, market, vix)
+            # #285: the setups kept where the chart showed an edge, scored on it
+            pb = setup_filter.apply(pb, daily, secondary if h.secondary == "1w" else None, market, h.id)
             return playbook.set_exits(pb, ticker, h)          # #239: the trail where the backtest chose it
         except Exception as exc:  # noqa: BLE001 - incl. timeout
             log.warning("playbooks for %s failed: %s", ticker, exc)

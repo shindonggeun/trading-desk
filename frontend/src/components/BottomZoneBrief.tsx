@@ -57,7 +57,7 @@ export default function BottomZoneBrief() {
               <span className="num small muted">−{r.z?.drawdown_pct}%</span>
               {r.z?.ladder && r.z.ladder.length > 0 && RANK[r.z.stage ?? "none"] >= RANK.approach && (
                 <span className="small muted bz-row-ladder">
-                  줍줍 {r.z.ladder.map((s) => price(s.price)).join(" → ")}
+                  줍줍 {r.z.ladder.filter((s) => s.status !== "passed").map((s) => price(s.price)).join(" → ")}
                 </span>
               )}
             </a>

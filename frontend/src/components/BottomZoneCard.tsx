@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { price } from "../format";
-import type { BottomEvidence, BottomZone } from "../types";
+import type { BottomEvidence, BottomZone, BottomStep } from "../types";
 
 /** 근거 이름 — 초보자가 읽는 말로 */
 const EVIDENCE_KO: Record<BottomEvidence["id"], string> = {
@@ -38,6 +38,21 @@ export function BottomStageBadge({ z }: { z: BottomZone }) {
   return <span className={`bz-badge bz-${z.stage}`}>{z.stage_ko}</span>;
 }
 
+const PRICE_SOURCE: Record<string, string> = { kis: "한투", toss: "토스", yahoo: "야후", daily_close: "일봉 종가", weekly_close: "주봉 종가" };
+const hhmm = (iso: string) => {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  const k = new Date(t + 9 * 3600_000);
+  return `${k.getUTCMonth() + 1}/${k.getUTCDate()} ${String(k.getUTCHours()).padStart(2, "0")}:${String(k.getUTCMinutes()).padStart(2, "0")}`;
+};
+/** #310 지금가 대비(새 서버는 from_now_pct · status, 옛 서버는 주봉 종가 대비) */
+function stepVsNow(s: BottomStep): string {
+  if (s.status === "passed") return "지나감";
+  if (s.status === "now") return "지금";
+  const v = s.from_now_pct ?? s.from_close_pct;
+  return v === 0 ? "지금" : `${v}%`;
+}
+
 /** 분석 화면 요약 탭의 인생 타점(장기 바닥권, #240) 카드. 지원하지 않거나 실패하면 그리지 않는다. */
 export default function BottomZoneCard({ ticker }: { ticker: string }) {
   const [z, setZ] = useState<BottomZone | null | undefined>(undefined);
@@ -69,19 +84,32 @@ export default function BottomZoneCard({ ticker }: { ticker: string }) {
           {z.stage === "watch" && (
             <p className="small muted">아직 "관찰" 단계라 지금 사라는 뜻이 아닙니다. "접근" 단계가 되면 1차부터 나눠서 봅니다.</p>
           )}
+          <p className="small muted bz-now">
+            {z.price_now != null ? (
+              <>지금 <strong className="num">{price(z.price_now)}</strong>
+                {(z.price_source || z.price_at) && ` (${[z.price_source ? PRICE_SOURCE[z.price_source] ?? z.price_source : null, z.price_at ? hhmm(z.price_at) : null].filter(Boolean).join(" · ")})`}
+                {z.close != null && ` · 주봉 종가 ${price(z.close)}`}</>
+            ) : z.close != null ? `주봉 종가 ${price(z.close)} 기준` : null}
+          </p>
+          {z.first_step_gap_pct != null && z.first_step_gap_pct < 0 && (
+            <p className="small bz-gap">지금가는 1차보다 위 — 1차까지 {z.first_step_gap_pct}%. 지금 사는 단계가 아닙니다.</p>
+          )}
           <table className={`bz-ladder${z.stage === "watch" ? " bz-ladder-ref" : ""}`}>
             <thead><tr><th scope="col">단계</th><th scope="col">가격</th><th scope="col">비중</th><th scope="col">지금가 대비</th></tr></thead>
             <tbody>
-              {(z.ladder ?? []).map((s) => (
-                <tr key={s.step}>
-                  <td>{s.step}차</td>
+              {(z.ladder ?? []).map((s, i) => (
+                <tr key={`${s.status ?? ""}-${s.step}-${i}`} className={s.status === "passed" ? "bz-passed" : undefined}>
+                  <td>{s.step}차{s.status === "passed" && <span className="sr-only"> (지나간 단계)</span>}</td>
                   <td className="num">{price(s.price)}</td>
                   <td className="num">{s.weight_pct}%</td>
-                  <td className="num muted">{s.from_close_pct === 0 ? "지금" : `${s.from_close_pct}%`}</td>
+                  <td className="num muted">{stepVsNow(s)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {(z.ladder ?? []).some((s) => s.status === "passed") && (
+            <p className="small muted">줄 그은 단계는 지금가가 이미 아래로 지나간 옛 계획 — 남은 비중을 지금가부터 다시 나눴습니다.</p>
+          )}
           {z.invalidation && (
             <p className="small bz-void">
               <strong>계획 접기:</strong> 월봉 종가 {z.invalidation.monthly_close_below != null ? price(z.invalidation.monthly_close_below) : "—"} 아래

@@ -731,7 +731,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     // #241 인생 타점 줍줍 선: 단계별 가격(비중) · 계획 접는 선 — 옵션 벽처럼 축 라벨 · 축 범위 없이
     if (show.bz && bottom?.supported && (bottom.stage === "approach" || bottom.stage === "bottom")) {
       const color = css("--long", "#f2464b");
-      for (const s of bottom.ladder ?? []) {
+      // #310 지금가가 이미 지나간 옛 단계는 그리지 않는다
+      for (const s of (bottom.ladder ?? []).filter((x) => x.status !== "passed")) {
         made.push(series.createPriceLine({ price: s.price, title: `줍줍${s.step} ${s.weight_pct}%`, color: withAlpha(color, 0.7),
           lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false }));
       }

@@ -348,7 +348,15 @@ export interface PlaybookSide {
   time_stop: { bars: number; interval: string; required: boolean; rule: string } | null;
   /** #239 청산 규칙 — 본주 스윙은 T1 뒤 ATR 추적 손절(백테스트 채택), 나머지는 T1 절반 → T2. 옛 계획엔 없다 */
   exit?: { rule: "trail_atr" | "fixed"; text: string; trail_atr?: number; distance?: number | null } | null;
-  conditions: { id: string; met: boolean | null; how: "computed" | "watch"; value?: number | string | boolean | null }[];
+  /** how "edge": #285 학습 · 검증 모두 우위가 확인된 차트 조건(남은 스윙 롱), label 이 이름표 */
+  conditions: { id: string; met: boolean | null; how: "computed" | "watch" | "edge"; value?: number | string | boolean | null; label?: string }[];
+  /** #285 근거가 약해 걸러진 셋업(이때 setup 은 "none", reason 은 filtered.reason 과 같은 문장) */
+  filtered?: {
+    setup: PlaybookSetup;
+    rule: string;
+    reason: string;
+    values?: { rel20?: number | null; ret20?: number | null; vol_ratio?: number | null };
+  } | null;
   score: number;
   source?: Record<string, "desk" | "model" | "converted">;
   model?: { raw?: string; confirm_text?: string; ignored?: Record<string, unknown> } | null;
@@ -989,6 +997,10 @@ export interface PlaybookCalibration {
   live_n: number;
   /** 표본이 충분한데 기대 R 90% 상한까지 음수 */
   negative: boolean;
+  /** #286 기준일부터 최근 12개월(백테스트 + 운영 채점) — 옛 보정표엔 없다 */
+  recent?: { n: number; p_t1: number | null; exp_r: number | null } | null;
+  /** #286 최근 기대 R 이 장기와 뚜렷이 다름(표준오차 1.645배 · n 30 이상) */
+  drift?: "weaker" | "stronger" | null;
 }
 
 /** #167 desk/value_swing.conviction — 0~100, 묶음 4개 이상 + 데스크 실적 양수면 승부(active) */

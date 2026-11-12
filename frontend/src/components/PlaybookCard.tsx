@@ -231,13 +231,45 @@ const CAL_LEVEL: Record<NonNullable<PlaybookCalibration["level"]>, string> = {
 };
 
 /** #147 데스크 실적 — 이 셋업이 지금까지 T1 에 먼저 닿은 비율과 비용 차감 기대 R. 표본이 모자라면 숫자를 내지 않는다 */
+const signedR = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(2)}R`;
+
+/** #287 최근 1년 실적(#286) 한 줄 + 최근 약세 · 강세 배지(아이콘 + 글자) */
+function RecentRow({ cal }: { cal: PlaybookCalibration }) {
+  const r = cal.recent;
+  if (!r || (r.p_t1 == null && r.exp_r == null && !cal.drift)) return null;
+  return (
+    <div className="pb-row pb-recent">
+      <dt>최근 1년</dt>
+      <dd className="small">
+        {r.p_t1 != null && <>T1 <strong className="num">{Math.round(r.p_t1 * 100)}%</strong></>}
+        {r.p_t1 != null && r.exp_r != null && " · "}
+        {r.exp_r != null && <>기대 <strong className={`num ${r.exp_r > 0 ? "up" : r.exp_r < 0 ? "down" : ""}`}>{signedR(r.exp_r)}</strong></>}
+        <span className="muted"> (n {r.n.toLocaleString("ko-KR")})</span>
+        {cal.drift === "weaker" && (
+          <span className="pb-drift pb-drift-weak" title="최근 12개월 기대 R 이 장기 평균보다 뚜렷이 낮습니다 — 최근 값을 우선합니다">
+            <span aria-hidden>⚠</span> 최근 약세
+          </span>
+        )}
+        {cal.drift === "stronger" && (
+          <span className="pb-drift pb-drift-strong" title="최근 12개월 기대 R 이 장기 평균보다 뚜렷이 높습니다">
+            <span aria-hidden>▲</span> 최근 강세
+          </span>
+        )}
+      </dd>
+    </div>
+  );
+}
+
 function CalibrationRow({ cal }: { cal: PlaybookCalibration }) {
   if (cal.thin || cal.p_t1 == null || cal.exp_r == null) {
     return (
-      <div className="pb-row">
-        <dt>데스크 실적</dt>
-        <dd className="small"><span className="pb-cal-thin">표본 부족</span> <span className="muted">({cal.n}건 — 확률을 내지 않습니다)</span></dd>
-      </div>
+      <>
+        <div className="pb-row">
+          <dt>데스크 실적</dt>
+          <dd className="small"><span className="pb-cal-thin">표본 부족</span> <span className="muted">({cal.n}건 — 확률을 내지 않습니다)</span></dd>
+        </div>
+        <RecentRow cal={cal} />
+      </>
     );
   }
   const r = `${cal.exp_r > 0 ? "+" : ""}${cal.exp_r.toFixed(2)}R`;
@@ -337,9 +369,16 @@ function Side({ side, dir, state, result, live, lower, interval, cal }: {
       <div className={`pb-side pb-${dir} pb-empty`}>
         <div className="pb-side-head">
           <strong>{name}</strong>
-          <span className="pb-state pb-state-none">{side.gate ? "시장 위험으로 쉼" : STATE.none}</span>
+          <span className="pb-state pb-state-none">{side.filtered ? "관망 — 근거 부족" : side.gate ? "시장 위험으로 쉼" : STATE.none}</span>
         </div>
-        <p className="muted small">{side.reason ?? "이번 국면에는 이 방향 타점을 두지 않습니다."}</p>
+        {side.filtered ? (
+          <p className="small pb-filtered">
+            <strong>근거 부족:</strong> {side.filtered.reason}
+            <span className="muted"> · 원래 셋업 {SETUP[side.filtered.setup] ?? side.filtered.setup}</span>
+          </p>
+        ) : (
+          <p className="muted small">{side.reason ?? "이번 국면에는 이 방향 타점을 두지 않습니다."}</p>
+        )}
         {side.gate?.setup && <p className="muted small">원래 셋업: {SETUP[side.gate.setup] ?? side.gate.setup}</p>}
       </div>
     );
@@ -423,13 +462,15 @@ function Side({ side, dir, state, result, live, lower, interval, cal }: {
           <dd className="small">{side.size_hint === "half" ? "평소의 절반" : "평소대로"}{side.flat_by_close ? " · 그날 안에 청산" : ""} · 점수 {side.score}</dd>
         </div>
         {cal && <CalibrationRow cal={cal} />}
+        {cal && !(cal.thin || cal.p_t1 == null || cal.exp_r == null) && <RecentRow cal={cal} />}
       </dl>
       {conditions.length > 0 && (
         <ul className="pb-conditions" aria-label={`${name} 확인 신호`}>
           {conditions.map((c) => (
             <li key={c.id} className={c.how === "watch" || c.met == null ? "pb-watch" : c.met ? "pb-met" : "pb-unmet"}>
               <span aria-hidden>{c.how === "watch" ? "◌" : c.met == null ? "–" : c.met ? "●" : "○"}</span>{" "}
-              {CONDITION[c.id] ?? c.id}
+              {CONDITION[c.id] ?? c.label ?? c.id}
+              {c.how === "edge" && <span className="pb-edge muted"> · 우위 조건</span>}
               <span className="sr-only">{c.how === "watch" ? " — 직접 지켜볼 것" : c.met == null ? " — 판단 불가(데이터 없음)" : c.met ? " — 충족" : " — 미충족"}</span>
             </li>
           ))}

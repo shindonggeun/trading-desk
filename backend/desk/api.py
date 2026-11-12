@@ -40,6 +40,7 @@ from . import (
     outcome,
     playbook_live,
     positioning,
+    projection,
     regime,
     review,
     risk_regime,
@@ -71,7 +72,7 @@ from .related import collect as collect_related
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
 from .sectors import Duplicate, NotFound, Sectors, clean_name, clean_tickers
 from .settings import Settings, load
-from .sr import support_resistance
+from .sr import frame_bars, support_resistance
 from .stock_profile import MAX_TICKERS as PROFILE_MAX
 from .stock_profile import Profiles
 from .store import TERMINAL, Store, iso
@@ -1140,6 +1141,33 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if ticker:
             return await profiles.one(names[0])
         return {"items": await profiles.many(names)}
+
+    # #299 차트 예상도: 확률 원뿔 · 레벨 경로 · 설명(모델 문장은 슬롯이 빌 때만, 숫자는 데스크 것만)
+    projections = projection.Projections(projection.fake_note if settings.fake_runs else projection.llm_note)
+
+    @app.get("/api/projection")
+    async def projection_view(ticker: str, horizon: str | None = None):
+        """The look ahead for the chart (#299): a calibrated cone, paths through the desk's levels and
+        a note. Probability ranges and scenarios, not a forecast."""
+        try:
+            ticker = clean_ticker(ticker)
+            if horizon is not None and horizon not in horizons.HORIZONS:
+                raise ValueError(f"horizon must be one of {', '.join(horizons.HORIZONS)}")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        h = horizons.get(horizon)
+
+        async def bars_for(levels: dict):
+            # the levels fell back to the swing frame (intraday bars missing): the cone uses it too
+            frame = horizons.get(None) if levels.get("fallback") else h
+            return (await frame_bars(prices, ticker, None, frame))[0], frame.primary
+
+        try:
+            return await projections.get(ticker, h.id, h.sr_ttl_sec, lambda: support_resistance(prices, ticker, horizon=horizon),
+                                         bars_for, slot=app.state.manager.spare_slot)
+        except Exception as exc:  # noqa: BLE001 - no bars or too few
+            log.warning("projection for %s failed: %s", ticker, exc)
+            raise HTTPException(503, f"no projection for {ticker}") from None
 
     @app.get("/api/playbooks")
     async def live_playbooks(ticker: str | None = None, horizon: str | None = None, run: str | None = None):

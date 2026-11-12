@@ -1587,3 +1587,10 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   .cal-earn-names { display: none; }
   .cal-cell .cal-earn-n { display: inline; }
 }
+/* #287 최근 1년 실적 · 최근 약세 배지 · 근거 부족으로 걸러진 셋업 */
+.pb-recent dd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; }
+.pb-drift { display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; border: 1px solid currentColor; border-radius: 999px; font-size: 11px; white-space: nowrap; }
+.pb-drift-weak { color: var(--warn); }
+.pb-drift-strong { color: var(--ok); }
+.pb-filtered { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
+.pb-edge { font-size: 11px; }

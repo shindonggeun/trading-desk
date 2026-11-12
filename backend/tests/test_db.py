@@ -32,7 +32,9 @@ def test_store_keeps_order_json_and_utc_times(db_url):
 
     store.mark_done(run_id, {"rating": "Hold"}, None)
     run = store.get_run(run_id)
-    assert run["status"] == "done" and run["plan"] == {"rating": "Hold"}
+    # what was saved comes back as saved; #311's level sides are worked out on read
+    assert run["status"] == "done" and run["plan"] == {"rating": "Hold", "levels_side": None, "levels_note": None,
+                                                       "side_conflict": False, "trigger_warnings": []}
     assert run["options"] == {"analysts": ["market"]}
     assert run["created_at"].endswith("+00:00")
     assert store.run_status(run_id) == "done" and store.run_status("nope") is None

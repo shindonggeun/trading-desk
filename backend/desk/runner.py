@@ -41,7 +41,7 @@ from .leverage_analyst import (
     parse_pair,
     strip_extras,
 )
-from .plan import BIAS, parse_plan
+from .plan import BIAS, parse_plan, with_sides
 from .prices import CRYPTO_SUFFIXES, PriceSource, is_market_symbol
 from .profile import desk_portfolio
 from .recent import prompt_note as recent_note
@@ -942,6 +942,7 @@ class RunManager:
                 # the side calls catch their own failures; a rate limit there still slows the queue
                 for error in (plan.get("leverage_analyst_error"), plan.get("consensus_error")):
                     self._note_rate_limit(run_id, error)
+                plan = with_sides(plan)     # #311: long / short view of the levels, conflicts, trigger warnings
                 self.store.mark_done(run_id, plan, result.report_path)
                 self._publish(run_id, {"type": "plan", "agent": "portfolio_manager", "data": plan})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "done"})

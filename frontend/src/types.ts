@@ -1202,3 +1202,26 @@ export interface Projection {
   fallback?: { from: string; reason: string } | null;
   calibration: { coverage68_valid?: number; coverage95_valid?: number; n?: number } | null;
 }
+
+/** #293 GET /api/earnings/preview — 실적 프리뷰(무료 출처만). 값은 모두 선택값이다. */
+export interface EarningsEstimate { avg: number | null; low: number | null; high: number | null; analysts: number | null; year_ago: number | null; growth_pct: number | null; currency: string | null }
+export interface EarningsHistoryRow { at: string; date: string; when: "pre" | "post" | "during" | null; estimate: number | null; actual: number | null; surprise_pct: number | null; beat: boolean | null }
+export interface EarningsPreview {
+  ticker: string;
+  next: { date: string; when: "pre" | "post" | "during" | null; estimate: number | null; time_kst: string | null; days: number } | null;
+  eps: Record<string, EarningsEstimate> | null;
+  revenue: Record<string, EarningsEstimate> | null;
+  history: EarningsHistoryRow[];
+  implied_move: { expiry: string; strike: number; call: number; put: number; move_pct: number; days_after_report?: number | null } | null;
+  past_moves: { moves: { date: string; session: string; move_pct: number }[]; avg_abs_pct: number; up: number; n: number } | null;
+  targets: { mean: number | null; median: number | null; high: number | null; low: number | null; current: number | null; upside_pct: number | null } | null;
+  ratings: { strong_buy: number; buy: number; hold: number; sell: number; strong_sell: number; total: number; buy_pct: number } | null;
+  short_interest: Record<string, unknown> | null;
+  kr_consensus: { unit: string; quarter?: Record<string, unknown>[]; annual?: Record<string, unknown>[] } | null;
+  sources: Record<string, { source: string; at: string }>;
+  unavailable: { id: string; label: string; why: string }[];
+  errors: string[];
+  fetched_at: string;
+  note: string;
+  checkpoints?: { title_ko: string; why_ko: string | null; sentiment: string | null; impact: string | null; url: string; seen: string | null }[];
+}

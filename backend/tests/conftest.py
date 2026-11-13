@@ -69,3 +69,5 @@ def earnings_cache_in_tmp(monkeypatch, tmp_path):
     from desk import earnings
 
     monkeypatch.setattr(earnings, "CACHE_FILE", tmp_path / "earnings.json")
+    # #338: a Nasdaq failure asks Yahoo's calendar - never the network in a test (nothing stands in)
+    monkeypatch.setattr(earnings, "_yahoo_calendar", lambda first, last: {})

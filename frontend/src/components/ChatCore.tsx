@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { chatApi, chatError, sendChat, toolLabel } from "../chat";
+import { chatApi, chatError, sendChat, toolLabel, toolSummary } from "../chat";
 import type { ChatMessageRow, ChatThread, ChatTool } from "../types";
 
 /**
@@ -47,14 +47,18 @@ function Tools({ tools }: { tools: (ChatTool & { pending?: boolean })[] }) {
   if (!tools.length) return null;
   return (
     <div className="ch-tools" aria-label="데스크 숫자(도구 조회)">
-      {tools.map((t, i) => (
-        <details key={`${t.name}-${i}`} className={`ch-tool${t.pending ? " ch-tool-busy" : ""}`}>
-          <summary>
-            <span aria-hidden>{t.pending ? "⏳" : "📊"}</span> {toolLabel(t.name, t.args)}{t.pending ? " 조회 중…" : ""}
-          </summary>
-          {t.summary ? <p className="ch-tool-sum">{t.summary}</p> : <p className="muted small">요약 없음</p>}
-        </details>
-      ))}
+      {tools.map((t, i) => {
+        const s = toolSummary(t.summary);
+        return (
+          <details key={`${t.name}-${i}`} className={`ch-tool${t.pending ? " ch-tool-busy" : ""}${s.error ? " ch-tool-err" : ""}`}>
+            <summary>
+              <span aria-hidden>{t.pending ? "⏳" : s.error ? "⚠" : "📊"}</span> {toolLabel(t.name, t.args)}
+              {t.pending ? " 조회 중…" : <span className="ch-tool-line"> — {s.line}</span>}
+            </summary>
+            {s.raw && <pre className="ch-tool-raw">{s.raw}</pre>}
+          </details>
+        );
+      })}
     </div>
   );
 }
@@ -83,9 +87,11 @@ function Bubble({ m, ctxTicker }: { m: ChatMessageRow; ctxTicker: string | null 
   );
 }
 
-export default function ChatCore({ ticker = null, run = null, prompt = null, compact = false, initialThread = null, onThread }: {
+export default function ChatCore({ ticker = null, run = null, prompt = null, compact = false, initialThread = null, onThread, onDone }: {
   ticker?: string | null; run?: string | null; prompt?: string | null; compact?: boolean;
   initialThread?: string | null; onThread?: (id: string | null) => void;
+  /** #340 답 하나가 끝났을 때(위젯이 닫혀 있으면 새 답 점) */
+  onDone?: () => void;
 }) {
   const [threads, setThreads] = useState<ChatThread[] | null>(null);
   const [current, setCurrent] = useState<string | null>(initialThread);
@@ -153,6 +159,7 @@ export default function ChatCore({ ticker = null, run = null, prompt = null, com
           const at = new Date().toISOString();
           setMessages((old) => [...old.map((m) => (m.id === mine.id ? { ...m, id: ev.user_message_id } : m)),
             { id: ev.message_id, role: "assistant", content: acc.text, tools: acc.tools.map(({ pending: _p, ...t }) => t), created_at: at }]);
+          onDone?.();
         }
         setLive(acc);
       });
@@ -219,7 +226,7 @@ export default function ChatCore({ ticker = null, run = null, prompt = null, com
           ) : (
             <button type="button" className="secondary ch-drawer-btn" aria-expanded={drawer} onClick={() => setDrawer((v) => !v)}>대화 목록</button>
           )}
-          {ticker && <span className="pill" title="질문과 함께 보내는 종목 문맥">{ticker}{run ? " · 분석" : ""}</span>}
+          {ticker && !compact && <span className="pill" title="질문과 함께 보내는 종목 문맥">{ticker}{run ? " · 분석" : ""}</span>}
         </div>
         <div className="ch-log" aria-live="polite">
           {!current && messages.length === 0 && !busy && (

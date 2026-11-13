@@ -1572,7 +1572,10 @@ a.wmb-row:hover { border-color: var(--accent); }
 .ch-tool summary::-webkit-details-marker { display: none; }
 .ch-tool[open] { flex-basis: 100%; }
 .ch-tool-busy { border-style: dashed; color: var(--muted); }
-.ch-tool-sum { margin: 4px 0 2px; white-space: pre-wrap; font-variant-numeric: tabular-nums; }
+.ch-tool-line { color: var(--muted); font-variant-numeric: tabular-nums; }
+.ch-tool-err { border-color: var(--warn); }
+.ch-tool-err .ch-tool-line { color: var(--warn); }
+.ch-tool-raw { margin: 4px 0 2px; max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: 11px; color: var(--muted); }
 .ch-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px; }
 .ch-time { font-size: 11px; color: var(--muted); margin-left: auto; }
 .ch-user .ch-time { display: block; text-align: right; }
@@ -1580,11 +1583,26 @@ a.wmb-row:hover { border-color: var(--accent); }
 .ch-quick { padding: 6px 10px 0; }
 .ch-input { display: flex; gap: 8px; padding: 8px 10px 10px; align-items: flex-end; }
 .ch-input textarea { flex: 1; resize: none; min-height: 44px; max-height: 160px; font: inherit; }
-.ch-panel { position: fixed; top: 0; right: 0; bottom: 0; z-index: 70; width: min(440px, 100vw); display: flex; flex-direction: column;
-  background: var(--bg, var(--surface)); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgb(0 0 0 / .25); padding: 8px; gap: 8px; }
-.ch-panel-head { display: flex; align-items: center; gap: 10px; }
-.ch-panel-head strong { margin-right: auto; }
-.ch-panel .ch { flex: 1; }
+/* #340 오른쪽 아래 채널톡형 위젯 — 둥근 런처 + 떠 있는 창(휴대폰은 전체 화면) */
+.cw-launcher { position: fixed; right: 20px; bottom: 20px; z-index: 75; width: 56px; height: 56px; padding: 0; border: 0; border-radius: 50%;
+  display: grid; place-items: center; background: var(--accent); color: #fff; font-size: 26px; line-height: 1; cursor: pointer;
+  box-shadow: 0 6px 18px rgb(0 0 0 / .3); transition: transform .15s ease; }
+.cw-launcher:hover { transform: scale(1.05); }
+.cw-launcher[hidden] { display: none; }
+.cw-launcher:focus-visible { outline: 3px solid var(--text); outline-offset: 2px; }
+.cw-dot { position: absolute; top: 4px; right: 4px; width: 12px; height: 12px; border-radius: 50%; background: var(--up); border: 2px solid var(--bg, var(--surface)); }
+.cw-panel { position: fixed; right: 20px; bottom: 88px; z-index: 74; width: min(400px, calc(100vw - 32px)); height: min(640px, calc(100dvh - 120px));
+  display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 16px;
+  background: var(--bg, var(--surface)); box-shadow: 0 12px 40px rgb(0 0 0 / .35); }
+.cw-panel[hidden] { display: none; }
+.cw-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.cw-avatar { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: #fff; font-size: 12px; font-weight: 700; flex: none; }
+.cw-title { display: grid; margin-right: auto; min-width: 0; }
+.cw-close { background: transparent; border: 0; color: var(--text); font-size: 22px; line-height: 1; padding: 2px 6px; cursor: pointer; }
+.cw-ctx { padding: 6px 12px 0; }
+.cw-ctx .chip.on { border-color: var(--accent); color: var(--text); }
+.cw-panel .ch { flex: 1; min-height: 0; height: auto; }
+.cw-panel .ch-main { border: 0; border-radius: 0; }
 .run-ask { margin-left: auto; }
 @media (max-width: 760px) {
   .ch { grid-template-columns: minmax(0, 1fr); height: calc(100dvh - var(--topbar-h, 96px) - 24px); }
@@ -1592,7 +1610,9 @@ a.wmb-row:hover { border-color: var(--accent); }
   .ch-side.ch-side-open { display: block; }
   .ch-drawer-btn { display: inline-block; }
   .ch-bubble { max-width: 94%; }
-  .ch-panel { width: 100vw; }
+  .cw-panel { inset: 0; width: 100vw; height: 100dvh; border-radius: 0; border: 0; z-index: 80; }
+  .cw-launcher { right: 16px; bottom: 16px; }
+  .cw-on { display: none; }
 }
 /* #296 종목 정보 카드 */
 .fav-info { align-self: flex-start; margin-top: 2px; }

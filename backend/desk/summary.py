@@ -12,6 +12,9 @@ the first target is at least MIN_RR; the next best otherwise; none when no price
 
 from __future__ import annotations
 
+from .horizons import HORIZONS
+from .plan import levels_side
+
 VERSION = 1
 OVERLAP_ATR = 0.25       # members this close (in the frame's ATR) count as the same price
 MIN_RR = 1.5             # a single entry below this reward-to-risk to T1 is not offered
@@ -102,7 +105,16 @@ def single_entry(side: dict, up: bool, atr: float) -> dict | None:
 
 
 def build(plan: dict | None, pb: dict | None) -> dict | None:
-    """The card. None without playbooks."""
+    """The card. None without playbooks. #331: with ``action`` (what to do now, in one sentence),
+    ``ladder_split`` (dip buys vs adds on confirmation), ``reference`` and ``alt`` (the plan's own
+    numbers when they differ from the desk's) - fields added, the old ones unchanged."""
+    card = _card(plan, pb)
+    if card is None:
+        return None
+    return {**card, **_action_parts(card, plan, pb)}
+
+
+def _card(plan: dict | None, pb: dict | None) -> dict | None:
     if not pb:
         return None
     ref = (pb.get("frame") or {}).get("reference_price")
@@ -164,6 +176,141 @@ def build(plan: dict | None, pb: dict | None) -> dict | None:
         # why the ladder is shorter or waits: the market's selling rule (#146) · an economic release (#148)
         "notes": [n for n in ((side.get("gate") or {}).get("text"),
                               f"{pb['event_hold']['label']} 발표 전후 — 1차만" if pb.get("event_hold") else None) if n],
+    }
+
+
+# #331 ---------------------------------------------------------------------------------------------
+NOW_TEXT = {"buy_now": "지금 매수", "short_now": "지금 숏", "wait_for_zone": "구역 대기", "wait_short": "구역 대기(숏)",
+            "watch": "관망", "stand_aside": "관망"}
+REFERENCE_VERDICTS = ("watch", "stand_aside")
+SAME_PCT = 0.5            # the plan's and the desk's stop / target within this % are the same number
+DAILY_FRAMES = ("1d", "1w", "1M")
+
+
+def confirm_of(pb: dict | None) -> str:
+    """How a trigger counts as met: on the daily close for a daily frame, on the bar's close of an
+    intraday frame (no explicit rule in the plan or the playbook = the close)."""
+    primary = ((pb or {}).get("frame") or {}).get("primary")
+    return "intraday" if primary and primary not in DAILY_FRAMES else "close"
+
+
+def confirm_label(confirm: str, primary: str | None) -> str:
+    """"일봉 종가" or the intraday frame's bar close ("60분봉 마감") - never an intraday touch."""
+    if confirm == "intraday":
+        label = next((h.primary_label for h in HORIZONS.values() if h.primary == primary), None)
+        return f"{label or '봉'} 마감"
+    return "일봉 종가"
+
+
+def confirm_text(confirm: str, primary: str | None) -> str:
+    label = confirm_label(confirm, primary)
+    return f"{label}{'가' if label.endswith('종가') else '이'}"
+
+
+def split_ladder(ladder: list[dict], up: bool) -> dict:
+    """Dip buys (limit, nearest first: price down for a long, up for a short) apart from the adds
+    that wait for a reclaim / break (``kind: stop``) - a 3rd step above the 1st read as a mistake."""
+    dip = sorted((e for e in ladder if e.get("kind") != "stop"), key=lambda e: -e["price"] if up else e["price"])
+    confirm = sorted((e for e in ladder if e.get("kind") == "stop"), key=lambda e: e["price"] if up else -e["price"])
+    return {"dip": [{**e, "label": f"눌림 {i}차"} for i, e in enumerate(dip, 1)],
+            "confirm": [{**e, "label": "확인 추가"} for e in confirm]}
+
+
+def _pct_off(a: float | None, b: float | None) -> float | None:
+    return round((a / b - 1) * 100, 2) if a is not None and b else None
+
+
+def alt_numbers(card: dict, plan: dict | None) -> dict | None:
+    """The plan's (the model's) entry / stop / target when any differs from the desk's (more than
+    SAME_PCT) - the card uses the desk's numbers, this line says what the plan said and how far off.
+    The plan's one target is compared with the nearest desk target (it is often the desk's T2)."""
+    plan = plan or {}
+    entry, stop, target = plan.get("entry_price"), plan.get("stop_loss"), plan.get("price_target")
+    if levels_side(entry, stop, target) != card.get("side"):
+        return None          # the plan's numbers point the other way (or nowhere): not the same trade
+    targets = [t["price"] for t in card.get("targets") or [] if t.get("price") is not None]
+    near = min(targets, key=lambda p: abs(p - target)) if target is not None and targets else None
+    off = {"entry_diff_pct": _pct_off(entry, card.get("avg_entry")), "stop_diff_pct": _pct_off(stop, card.get("stop")),
+           "target_diff_pct": _pct_off(target, near)}
+    if not any(v is not None and abs(v) > SAME_PCT for v in off.values()):
+        return None
+    parts = [f"{k} {_round(v)}" for k, v in (("진입", entry), ("손절", stop), ("목표", target)) if v is not None]
+    return {"entry": _round(entry), "stop": _round(stop), "target": _round(target), **off,
+            "text": f"AI 계획 {' · '.join(parts)} (데스크와 다름 — 카드는 데스크 숫자)"}
+
+
+def _then(pb: dict, side: str, trigger: float) -> dict:
+    """The stop and first target for an entry on the trigger itself: the desk side's stop when it is
+    on the far side of the trigger, and its first target past the trigger. The desk's levels are
+    built for the side's zone, not the break, so a stop on the wrong side or no target past the
+    trigger leaves that part None rather than a number pointing the wrong way."""
+    s = (pb or {}).get(side) or {}
+    up = side == "long"
+    stop = s.get("stop") if s.get("setup") not in (None, "none") else None
+    if stop is not None and not (stop < trigger if up else stop > trigger):
+        stop = None
+    t1 = next((t["price"] for t in s.get("targets") or []
+               if t.get("price") is not None and (t["price"] > trigger if up else t["price"] < trigger)), None)
+    rr = round(abs(t1 - trigger) / abs(trigger - stop), 2) if stop is not None and t1 is not None else None
+    return {"stop": stop, "t1": t1, "rr": rr}
+
+
+def _triggers(card: dict, plan: dict | None, pb: dict) -> list[dict]:
+    plan = plan or {}
+    confirm = confirm_of(pb)
+    out = []
+    for side, key in (("long", "long_trigger"), ("short", "short_trigger")):
+        price = plan.get(key)
+        if price is None:
+            continue
+        then = _then(pb, side, price)
+        out.append({"side": side, "price": _round(price), "confirm": confirm,
+                    "confirm_label": confirm_label(confirm, ((pb or {}).get("frame") or {}).get("primary")),
+                    "then": {"entry": _round(price), **then}})
+    return out
+
+
+def _trigger_text(t: dict, primary: str | None) -> str:
+    up = t["side"] == "long"
+    words = f"{confirm_text(t['confirm'], primary)} {t['price']} {'위면 롱' if up else '아래면 숏'}"
+    then = t.get("then") or {}
+    extra = [f"손절 {then['stop']}" if then.get("stop") is not None else None,
+             f"1차 {then['t1']}" if then.get("t1") is not None else None,
+             (f"손익비 {then['rr']}" + (" — 낮음" if then["rr"] < MIN_T1_RR else "")) if then.get("rr") is not None else None]
+    extra = [e for e in extra if e]
+    return words + (f"({' · '.join(extra)})" if extra else "")
+
+
+def _action_parts(card: dict, plan: dict | None, pb: dict) -> dict:
+    side = card.get("side")
+    up = side != "short"
+    verdict = card.get("verdict")
+    primary = ((pb or {}).get("frame") or {}).get("primary")
+    now = NOW_TEXT.get(verdict, "관망")
+    price = card.get("price")
+    lead = f"지금 {price} — {now}" if price is not None else now
+    ladder = card.get("ladder") or []
+    split = split_ladder(ladder, up) if ladder else None
+    stop = card.get("stop")
+    t1 = next((t["price"] for t in card.get("targets") or [] if t.get("role") == "t1"), None)
+    tail = ", ".join(x for x in (f"손절 {stop}" if stop is not None else None, f"1차 {t1}" if t1 is not None else None) if x)
+    first_dip = (split or {}).get("dip", [{}])[0].get("price") if split and split["dip"] else None
+    pieces = [lead]
+    if verdict in ("buy_now", "short_now") and first_dip is not None:
+        pieces.append(f"{first_dip}부터 나눠서 {'매수' if up else '숏'}({tail})" if tail else f"{first_dip}부터 나눠서")
+    elif verdict in ("wait_for_zone", "wait_short") and first_dip is not None:
+        pieces.append(f"{first_dip}까지 {'내려오면 매수' if up else '올라오면 숏'}({tail})" if tail
+                      else f"{first_dip}까지 기다린다")
+    triggers = _triggers(card, plan, pb)
+    if triggers:
+        pieces.append(", ".join(_trigger_text(t, primary) for t in triggers))
+    elif verdict in REFERENCE_VERDICTS and card.get("why"):
+        pieces.append(card["why"])
+    return {
+        "action": {"now": now, "sentence": ". ".join(pieces) + ".", "triggers": triggers},
+        "ladder_split": split,
+        "reference": verdict in REFERENCE_VERDICTS,
+        "alt": alt_numbers(card, plan) if side else None,
     }
 
 

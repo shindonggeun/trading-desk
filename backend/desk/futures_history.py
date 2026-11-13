@@ -33,6 +33,7 @@ MAX_DAYS = 250
 CLASSES = ("foreign", "individual", "institution")
 SPOT_MARKETS = ("kospi", "kosdaq")
 SPOT_CLASSES = ("foreign", "institution", "individual")
+SPOT_SOURCE = {"foreign": "foreigner", "institution": "institution", "individual": "individual"}   # Toss keys
 
 
 def spot_cols(spot: dict | None, today: str) -> dict:
@@ -43,7 +44,7 @@ def spot_cols(spot: dict | None, today: str) -> dict:
         record = (((spot or {}).get(m) or {}).get("records") or [None])[0] or {}
         same_day = record.get("date") == today
         for c in SPOT_CLASSES:
-            net = ((record.get("investors") or {}).get(c) or {}).get("net") if same_day else None
+            net = ((record.get("investors") or {}).get(SPOT_SOURCE[c]) or {}).get("net") if same_day else None
             out[f"{m}_{c}_100m"] = round(net / 1e8, 2) if isinstance(net, (int, float)) else None
     return out
 

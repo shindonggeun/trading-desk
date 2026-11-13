@@ -55,8 +55,15 @@ function hhmm(iso: string): string {
   const d = new Date(Date.parse(iso) + KST_MS);
   return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
 }
-function signed(v: number, unit: string): string {
-  const s = Math.round(v).toLocaleString("ko-KR");
+// 지금(KST)이 평일 15:45 이전인가 — 장 시작 전이면 아직 기다릴 장이 남았다.
+function beforeClose(): boolean {
+  const k = new Date(Date.now() + KST_MS);
+  const day = k.getUTCDay();
+  return day !== 0 && day !== 6 && k.getUTCHours() * 60 + k.getUTCMinutes() < 15 * 60 + 45;
+}
+function signed(raw: number, unit: string): string {
+  const v = Math.round(raw) || 0; // -0.4 → "−0" 대신 0
+  const s = v.toLocaleString("ko-KR");
   return `${v > 0 ? "+" : v < 0 ? "−" : ""}${s.replace("-", "")}${unit}`;
 }
 function lastValue<T>(rows: T[], pick: (r: T) => number | null): number | null {
@@ -129,7 +136,10 @@ export default function IntradayFlowView() {
         .then((d) => {
           if (!alive) return;
           setData(d); setFailed(null);
+          // 장중: 봉 간격(최소 30초). 장 시작 전(평일 15:45 이전): 60초로 열리기를 기다린다. 마감 뒤: 멈춘다.
+          if (d.supported === false) return;
           if (d.market_open) timer = window.setTimeout(load, Math.max(30, prefs.bucket * 60) * 1000);
+          else if (beforeClose()) timer = window.setTimeout(load, 60_000);
         })
         .catch((e) => {
           if (!alive) return;
@@ -169,13 +179,17 @@ export default function IntradayFlowView() {
     const barData = rows.filter((b) => b.foreign_delta != null).map((b) => ({
       time: kstTime(b.t), value: b.foreign_delta as number, color: (b.foreign_delta as number) >= 0 ? up : down,
     }));
-    // 봉 시각은 08:45 부터의 격자라 마지막 봉이 15:45 일 수 있다 — 같은 시각을 두 번 넣으면 차트가 던진다.
+    // 가로축은 시각 비례가 아니라 점 순서라, 08:45~15:45 의 bucket 격자 전체를 막대 시리즈에 깐다
+    // (봉이 없는 칸은 빈 시각). 봉 시각은 모두 격자 위이고, 격자를 넘는 봉(마감 스냅샷)만 뒤에 붙인다.
     const open = sessionEdge(data.date, "08:45"), close = sessionEdge(data.date, "15:45");
-    bars.setData([
-      ...(barData.length && barData[0].time <= open ? [] : [{ time: open }]),
-      ...barData,
-      ...(barData.length && barData[barData.length - 1].time >= close ? [] : [{ time: close }]),
-    ]);
+    const step = Math.max(1, data.bucket_min) * 60;
+    const byTime = new Map(barData.map((b) => [b.time as number, b]));
+    const slots: ({ time: UTCTimestamp } | (typeof barData)[number])[] = [];
+    for (let t = open; t <= close; t = (t + step) as UTCTimestamp) slots.push(byTime.get(t) ?? { time: t });
+    const onGrid = new Set(slots.map((s) => s.time as number));
+    for (const b of barData) if (!onGrid.has(b.time as number)) slots.push(b);
+    slots.sort((a, b) => (a.time as number) - (b.time as number));
+    bars.setData(slots);
 
     const markersFor: Record<string, ISeriesApi<"Line">> = {};
     for (const w of WHO) {
@@ -239,7 +253,7 @@ export default function IntradayFlowView() {
         <>
           <p className="intraday-summary">
             {summary ?? <span className="muted">아직 장중 수급이 없습니다.</span>}
-            {!data.market_open && <span className="badge muted"> 장 마감</span>}
+            {!data.market_open && <span className="badge muted"> {beforeClose() ? "장 시작 전" : "장 마감"}</span>}
           </p>
           <div className="intraday-chart" ref={box} aria-label="오늘 장중 현물 · 선물 수급 차트" />
           <p className="muted small">실선 = 현물 누적(억원, 오른쪽 축) · 점선 = 선물 누적(계약, 왼쪽 축) · 막대 = 현물 외국인 {data.bucket_min}분 순매수</p>

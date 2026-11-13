@@ -1822,7 +1822,70 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     def regime_view():
         return regime.snapshot(settings.semibot_db_path)
 
+    _push_routes(app, engine, settings)
     return app
+
+
+# --- #361 web push · foreign-flow turn alerts (kept at the end: #359 edits this file too) ---
+
+class PushKeysIn(BaseModel):
+    p256dh: str = Field(min_length=1, max_length=200)
+    auth: str = Field(min_length=1, max_length=100)
+
+
+class PushSubscriptionIn(BaseModel):
+    endpoint: str = Field(min_length=1, max_length=1024, pattern=r"^https://")
+    keys: PushKeysIn
+    device: str = Field(default="", max_length=80)
+    kinds: dict[str, bool] = Field(default_factory=dict)
+
+
+class PushEndpointIn(BaseModel):
+    endpoint: str = Field(min_length=1, max_length=1024)
+
+
+def _push_routes(app: FastAPI, engine, settings: Settings) -> None:
+    """Subscriptions are the caller's own only. ``app.state.pusher`` is read per request (tests swap it)."""
+    from . import flow_alerts, push
+
+    store = push.PushStore(engine)
+    app.state.pusher = push.Pusher(store, settings.vapid_public_key, settings.vapid_private_key,
+                                   settings.vapid_subject)
+    app.state.flow_alerts = flow_alerts.FlowAlerts(engine, app.state.pusher)
+
+    @app.get("/api/push/key")
+    def push_key():
+        sender = app.state.pusher
+        return {"enabled": sender.enabled, "public_key": sender.public_key if sender.enabled else None}
+
+    @app.post("/api/push/subscriptions", status_code=201)
+    def push_subscribe(body: PushSubscriptionIn, request: Request):
+        if not app.state.pusher.enabled:
+            raise HTTPException(503, "push is off")
+        try:
+            return store.subscribe(request.state.user.id, body.endpoint, body.keys.model_dump(),
+                                   body.device.strip() or "기기", body.kinds)
+        except push.TooMany as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.delete("/api/push/subscriptions", status_code=204)
+    def push_unsubscribe(body: PushEndpointIn, request: Request):
+        store.unsubscribe(request.state.user.id, body.endpoint)     # another account's: nothing, the same 204
+
+    @app.post("/api/push/test")
+    def push_test(request: Request):
+        sender = app.state.pusher
+        if not sender.enabled:
+            raise HTTPException(503, "push is off")
+        return {"sent": sender.to_user(request.state.user.id,
+                                       {"title": "트레이딩 데스크", "body": "시험 알림입니다.", "tag": "test"})}
+
+    @app.get("/api/alerts/flow")
+    def flow_alert_list(date: str | None = None):
+        if date is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            raise HTTPException(422, "date: YYYY-MM-DD")
+        day = date or datetime.now(futures_kst).date().isoformat()
+        return {"date": day, "items": app.state.flow_alerts.list(day)}
 
 
 def _client_ip(request: Request) -> str:

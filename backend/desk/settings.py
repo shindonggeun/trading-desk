@@ -79,6 +79,11 @@ class Settings:
     # semibot's SQLite (regime/trigger log), read-only. Empty = panel hidden.
     semibot_db_path: str = field(default_factory=lambda: os.getenv("SEMIBOT_DB_PATH", ""))
 
+    # #361 web push (VAPID). Any of the three empty = push off.
+    vapid_public_key: str = field(default_factory=lambda: os.getenv("DESK_VAPID_PUBLIC_KEY", ""))
+    vapid_private_key: str = field(default_factory=lambda: os.getenv("DESK_VAPID_PRIVATE_KEY", ""), repr=False)
+    vapid_subject: str = field(default_factory=lambda: os.getenv("DESK_VAPID_SUBJECT", ""))
+
 
 def load() -> Settings:
     return Settings()

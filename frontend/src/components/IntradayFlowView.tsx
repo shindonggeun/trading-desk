@@ -169,7 +169,13 @@ export default function IntradayFlowView() {
     const barData = rows.filter((b) => b.foreign_delta != null).map((b) => ({
       time: kstTime(b.t), value: b.foreign_delta as number, color: (b.foreign_delta as number) >= 0 ? up : down,
     }));
-    bars.setData([{ time: sessionEdge(data.date, "08:45") }, ...barData, { time: sessionEdge(data.date, "15:45") }]);
+    // 봉 시각은 08:45 부터의 격자라 마지막 봉이 15:45 일 수 있다 — 같은 시각을 두 번 넣으면 차트가 던진다.
+    const open = sessionEdge(data.date, "08:45"), close = sessionEdge(data.date, "15:45");
+    bars.setData([
+      ...(barData.length && barData[0].time <= open ? [] : [{ time: open }]),
+      ...barData,
+      ...(barData.length && barData[barData.length - 1].time >= close ? [] : [{ time: close }]),
+    ]);
 
     const markersFor: Record<string, ISeriesApi<"Line">> = {};
     for (const w of WHO) {
@@ -186,13 +192,13 @@ export default function IntradayFlowView() {
     // 전향 마커: 외국인 선이 켜져 있을 때 해당 선 위에
     for (const [market, series] of Object.entries(markersFor)) {
       const unit = market === "futures" ? "계약" : "억";
-      const ms: SeriesMarker<Time>[] = data.turns.filter((t) => t.market === market).map((t) => ({
+      const ms: SeriesMarker<Time>[] = data.turns.filter((t) => t.market === market).map((t): SeriesMarker<Time> => ({
         time: kstTime(t.t),
         position: t.kind === "buy_turn" ? "belowBar" : "aboveBar",
         shape: t.kind === "buy_turn" ? "arrowUp" : "arrowDown",
         color: t.kind === "buy_turn" ? up : down,
         text: `${hhmm(t.t)} ${TURN_LABEL[t.kind]}${t.value != null ? ` ${signed(t.value, unit)}` : ""}`,
-      }));
+      })).sort((a, b) => (a.time as number) - (b.time as number));
       if (ms.length) createSeriesMarkers(series, ms);
     }
     chart.timeScale().fitContent();

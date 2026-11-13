@@ -1512,7 +1512,7 @@ export interface EntryNow {
 // #360 오늘 장중 현물 · 선물 수급(#359 GET /api/market/flow/intraday). 값이 없으면 null.
 export type IntradayBucket = 1 | 3 | 5 | 10 | 15 | 30 | 60;
 export interface IntradaySpotBar {
-  t: string; // 봉 끝 ISO
+  t: string; // 봉 끝 KST ISO(+09:00), 08:45 부터 bucket 격자. 스냅샷 없는 봉은 빠진다. 첫 봉 *_delta = 그 봉 누적값
   foreign: number | null; institution: number | null; individual: number | null; // 누적 억원
   foreign_delta: number | null; institution_delta: number | null; individual_delta: number | null; // 구간 억원
 }
@@ -1526,7 +1526,7 @@ export interface IntradayTurn {
   t: string; market: "futures" | "kospi" | "kosdaq"; who: "foreign"; kind: "buy_turn" | "sell_turn"; value: number | null;
 }
 export interface IntradayFlow {
-  supported?: boolean; // false 면 KIS 키 없음
+  supported: boolean; // false 면 KIS 키 없음
   date: string; bucket_min: number; market_open: boolean;
   spot: { kospi: IntradaySpotBar[]; kosdaq: IntradaySpotBar[] };
   futures: IntradayFuturesBar[];

@@ -13,14 +13,15 @@ export default function EntrySummary({ entry, failed, fromRun }: { entry: EntryN
   const when = fromRun ? "지금 기준" : "타점";
   if (!best) {
     return (
-      <p className="small entry-sum entry-aside" role="status">
+      <p className="small entry-sum entry-aside">
         <strong>관망</strong> — {entry.stand_aside?.reason ?? "타점 근거가 없다"}
       </p>
     );
   }
   const aside = entry.stand_aside;
   return (
-    <div className={`small entry-sum${aside ? " entry-aside" : ""}`} role="status">
+    // 1분마다 % 가 바뀌므로 role="status" 를 두지 않는다(화면 낭독기가 매번 다시 읽는다)
+    <div className={`small entry-sum${aside ? " entry-aside" : ""}`}>
       <p>
         {aside ? (
           <><strong>관망</strong> — {aside.reason} <span className="muted">· 참고: {line(best)}</span></>
@@ -42,6 +43,7 @@ export default function EntrySummary({ entry, failed, fromRun }: { entry: EntryN
         </p>
       )}
       {fromRun && <p className="muted">차트의 진입 · 손절 · 목표선은 분석 당시 값, 색 띠는 지금 기준입니다.</p>}
+      {failed && <p className="muted">갱신하지 못해 마지막으로 받은 값입니다.</p>}
       <details>
         <summary className="muted">근거</summary>
         <ul>{best.why.map((w) => <li key={w}>{w}</li>)}</ul>
@@ -55,5 +57,6 @@ function line(k: EntryCandidate): string {
   const [lo, hi] = k.zone;
   const zone = lo != null && hi != null ? `${price(lo)}~${price(hi)}` : price(k.first);
   const t1 = k.targets[0];
-  return `${zone} (지금 ${pctText(k.from_now_pct)}) · 손절 ${price(k.stop)} · 목표 ${t1 ? price(t1.price) : "—"}`;
+  const now = k.from_now_pct != null ? ` (지금 ${pctText(k.from_now_pct)})` : "";
+  return `${zone}${now} · 손절 ${price(k.stop)} · 목표 ${t1 ? price(t1.price) : "—"}`;
 }

@@ -21,11 +21,15 @@ export function useEntryNow(ticker: string, on: boolean): { entry: EntryNow | nu
     setFailed(false);
     if (!on) return;
     let alive = true;
-    const load = () =>
+    let seq = 0;                       // a slow answer never overwrites a newer one
+    const load = () => {
+      if (document.hidden) return;     // a hidden tab does not poll
+      const mine = ++seq;
       entryNow(ticker).then(
-        (e) => { if (alive) { setEntry(e); setFailed(false); } },
-        () => { if (alive) setFailed(true); },
+        (e) => { if (alive && mine === seq) { setEntry(e); setFailed(false); } },
+        () => { if (alive && mine === seq) setFailed(true); },
       );
+    };
     load();
     const timer = window.setInterval(load, REFRESH_MS);
     return () => { alive = false; window.clearInterval(timer); };

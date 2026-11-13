@@ -101,8 +101,11 @@ function loadPrefs(): { interval: Interval; show: Show; preset: Preset; custom: 
     const show = { ...DEFAULT_SHOW };
     for (const k of Object.keys(DEFAULT_SHOW) as (keyof Show)[]) if (typeof raw.show?.[k] === "boolean") show[k] = raw.show[k];
     const preset: Preset = raw.preset in PRESET_LABEL ? raw.preset : "custom";
+    // #313 저장된 설정에 entry 가 없으면(이 기능 전) 고른 묶음을 따른다 — 버튼과 화면이 어긋나지 않게
+    if (typeof raw.show?.entry !== "boolean") show.entry = preset !== "custom" && PRESET_ON[preset].includes("entry");
     const custom = { ...show };
     for (const k of Object.keys(DEFAULT_SHOW) as (keyof Show)[]) if (typeof raw.custom?.[k] === "boolean") custom[k] = raw.custom[k];
+    if (typeof raw.custom?.entry !== "boolean") custom.entry = false;
     return { interval, show, preset, custom };
   } catch {
     return { interval: "1d", show: applyPreset({ ...DEFAULT_SHOW }, "entry"), preset: "entry" as Preset, custom: { ...DEFAULT_SHOW } };

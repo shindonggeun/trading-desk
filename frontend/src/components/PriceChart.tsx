@@ -19,6 +19,7 @@ import {
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles, type OscillatorView, type OscReading, type ReviewRow } from "../api";
 import { price } from "../format";
+import FillsTable from "./FillsTable";
 import {
   buyZoneDrawing, keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands, stopInsideZone,
   volumeProfileDrawing, withAlpha, zoneEdges,
@@ -112,6 +113,16 @@ const AUTOSCALE_MAX_GAP = 0.5;
 // 체결 마커는 복기 API(브로커 체결 + 종목별 일봉)를 쓴다. 분석 화면을 오갈 때마다 다시 부르지 않게 잠깐 기억한다.
 const FILLS_TTL_MS = 60_000;
 let fillsMemo: { at: number; rows: Promise<ReviewRow[]> } | null = null;
+
+/** 체결이 든 봉 — 분봉은 체결 시각이 든 봉(장 전 · 시간외는 그날 첫 봉, 그날 봉이 없으면 null), 일봉 이상은 그 거래일이 든 봉. */
+function fillBar(f: ReviewRow, rows: { key: Key; day?: string }[], intraday: boolean, ticker: string): Key | null {
+  const keys = rows.map((r) => r.key);
+  const fillOn = marketDay(f.filled_at, ticker);
+  const at = barFor(keys, intraday ? kstStamp(f.filled_at) : fillOn);
+  if (at == null) return null;
+  if (intraday && rows.find((r) => r.key === at)?.day !== fillOn) return rows.find((r) => r.day === fillOn)?.key ?? null;
+  return at;
+}
 
 function recentFills(): Promise<ReviewRow[]> {
   if (!fillsMemo || Date.now() - fillsMemo.at > FILLS_TTL_MS) {
@@ -315,6 +326,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const keepView = useRef<{ from: number; to: number; bars: number } | null>(null);
   const loadingOlder = useRef(false);
   const [fills, setFills] = useState<ReviewRow[]>([]);
+  // #334 체결 표에서 고른 체결(filled_at) — 그 봉의 마커를 크게
+  const [pickedFill, setPickedFill] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   // #206 과열 · 침체 판정(일봉 · 주봉만 — 분봉 · 월 · 년봉은 일봉 판정을 배지로만)
   const [osc, setOsc] = useState<OscillatorView | null>(null);
@@ -770,18 +783,23 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (at != null) list.push({ key: at, m: { position: "aboveBar", shape: "arrowDown", color: css("--warn", "#e5a23a"), text: "분석" } });
     }
     if (show.fills) {
+      // #334 같은 봉의 체결은 하나로 — 매수만 ↑ · 매도만 ↓ · 둘 다 ●, 글자 없이 작게(가격은 옆 표에). 표에서 고른 날은 크게.
+      const byBar = new Map<Key, { buy: boolean; sell: boolean; picked: boolean }>();
       for (const f of fills) {
-        // 분봉: 체결 시각이 든 봉, 일봉 이상: 체결한 거래일이 든 봉(토스 체결 시각은 KST)
-        const fillOn = marketDay(f.filled_at, ticker);
-        let at = barFor(keys, intraday ? kstStamp(f.filled_at) : fillOn);
+        const at = fillBar(f, rows, intraday, ticker);
         if (at == null) continue;
-        // 분봉은 정규장만 온다 — 장 전 · 시간외 체결이 전날 마지막 봉에 붙지 않게, 그날 첫 봉으로(그날 봉이 없으면 뺀다).
-        if (intraday && rows.find((r) => r.key === at)?.day !== fillOn) {
-          at = rows.find((r) => r.day === fillOn)?.key ?? null;
-          if (at == null) continue;
-        }
-        const buy = f.side === "BUY";
-        list.push({ key: at, m: { position: buy ? "belowBar" : "aboveBar", shape: buy ? "arrowUp" : "arrowDown", color: buy ? up : down, text: `${buy ? "매수" : "매도"} ${price(f.price)}` } });
+        const g = byBar.get(at) ?? { buy: false, sell: false, picked: false };
+        if (f.side === "BUY") g.buy = true;
+        else g.sell = true;
+        if (f.filled_at === pickedFill) g.picked = true;
+        byBar.set(at, g);
+      }
+      for (const [at, g] of byBar) {
+        const size = g.picked ? 1.6 : 0.7;
+        const text = g.picked ? "선택한 체결" : "";
+        if (g.buy && g.sell) list.push({ key: at, m: { position: "aboveBar", shape: "circle", size, color: css("--warn", "#e5a23a"), text } });
+        else if (g.buy) list.push({ key: at, m: { position: "belowBar", shape: "arrowUp", size, color: up, text } });
+        else list.push({ key: at, m: { position: "aboveBar", shape: "arrowDown", size, color: down, text } });
       }
     }
     if (show.osc && osc && !intraday && osc.interval === (drawn.interval === "1w" ? "1w" : drawn.interval === "1d" ? "1d" : null)) {
@@ -804,7 +822,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       stopLabels(drawn.alive.current);
       if (drawn.alive.current) for (const line of made) series.removePriceLine(line);
     };
-  }, [drawn, plan, fills, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines, show.opt, optionData, show.osc, osc, show.bz, bottom]);
+  }, [drawn, plan, fills, pickedFill, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines, show.opt, optionData, show.osc, osc, show.bz, bottom]);
 
   // 지지 · 저항 구역 띠 · 타점의 손실 · 이익 영역 · 피보나치(#98) — 캔들 아래에 칠하고 축 라벨은 달지 않는다.
   useEffect(() => {
@@ -1154,6 +1172,24 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     osc.underlying ? oscLine(osc.underlying, `기초자산 ${osc.underlying.ticker}(${osc.underlying.leverage ?? ""}배 기준)`) : null,
   ].filter((x): x is string => !!x) : [];
   const hot = show.osc && (osc?.own.zone === "hot" || osc?.underlying?.zone === "hot");
+  // #334 표에는 이 종목 · 차트에 보이는 기간의 체결만(마커와 같은 봉 규칙으로 봉이 있는 것)
+  const tableFills = useMemo(
+    () => (show.fills && drawn ? fills.filter((f) => fillBar(f, drawn.rows, drawn.intraday, ticker) != null) : []),
+    [show.fills, drawn, fills, ticker],
+  );
+  const pickFill = (filledAt: string) => {
+    setPickedFill(filledAt);
+    const f = fills.find((x) => x.filled_at === filledAt);
+    if (!drawn || !f) return;
+    const at = fillBar(f, drawn.rows, drawn.intraday, ticker);
+    const i = drawn.rows.findIndex((r) => r.key === at);
+    if (i < 0) return;
+    const ts = drawn.chart.timeScale();
+    const span = ts.getVisibleLogicalRange();
+    const half = span ? Math.max(10, (span.to - span.from) / 2) : 40;
+    ts.setVisibleLogicalRange({ from: i - half, to: i + half });
+  };
+
   return (
     <section ref={section} className={`card price-chart${expanded ? " price-chart-expanded" : ""}`}
       {...(expanded ? { role: "dialog", "aria-modal": true, "aria-label": `${title ?? ticker} 큰 차트` } : {})}>
@@ -1212,6 +1248,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         </div>
       )}
       {limited != null && <p className="muted small chart-limit">야후 보관 한도로 {LABEL[interval]}봉은 최근 {limited}일만 제공됩니다.</p>}
+      <div className={`chart-and-fills${tableFills.length > 0 ? " has-fills" : ""}`}>
       {failed ? (
         <p className="muted small">시세를 불러오지 못했습니다.</p>
       ) : candles && candles.bars.length === 0 ? (
@@ -1278,6 +1315,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           )}
         </div>
       )}
+      {tableFills.length > 0 && <FillsTable fills={tableFills} picked={pickedFill} onPick={pickFill} />}
+      </div>
       {plan && hasLevels && show.levels && (
         <p id={legendId} className="muted small price-chart-legend">
           <span className="lg lg-entry" /> 진입 {price(plan.entry_price)} · <span className="lg lg-stop" /> 손절 {price(plan.stop_loss)} ·{" "}

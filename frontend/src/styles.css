@@ -1739,3 +1739,24 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 @media (max-width: 760px) {
   .fav-tile .qb-sub { white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 }
+
+/* #334 내 체결 표 — 넓은 화면은 차트 옆, 좁은 화면은 차트 아래 */
+.chart-and-fills { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+@media (min-width: 1100px) { .chart-and-fills.has-fills { grid-template-columns: minmax(0, 1fr) 280px; } }
+.fills-table { min-width: 0; }
+.fills-sum { margin: 0 0 6px; }
+.fills-scroll { max-height: 360px; overflow-y: auto; }
+@media (max-width: 1099px) { .fills-scroll { max-height: 240px; } }
+.fills-table table { width: 100%; border-collapse: collapse; }
+.fills-table th, .fills-table td { padding: 3px 6px; text-align: right; white-space: nowrap; }
+.fills-table th:first-child, .fills-table td:first-child, .fills-table td:nth-child(2), .fills-table th:nth-child(2) { text-align: left; }
+.fills-table tbody tr { cursor: pointer; }
+.fills-table tbody tr:hover, .fills-table tbody tr:focus-visible { background: var(--panel-2, rgba(127, 127, 127, 0.12)); outline: none; }
+.fills-table tbody tr.picked { background: rgba(229, 162, 58, 0.18); }
+/* 펼친 차트(차트 탭 · 휴대폰)는 상자 높이를 flex 로 받는다 — 감싼 틀도 그 사슬을 잇는다 */
+.price-chart-expanded .chart-and-fills { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.price-chart-expanded .chart-and-fills > .price-chart-box { flex: 1 1 auto; min-height: 240px; }
+@media (min-width: 1100px) {
+  .price-chart-expanded .chart-and-fills.has-fills { flex-direction: row; }
+  .price-chart-expanded .chart-and-fills.has-fills > .fills-table { flex: 0 0 280px; }
+}

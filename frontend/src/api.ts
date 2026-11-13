@@ -1,4 +1,4 @@
-import type { EarningsPreview } from "./types";
+import type { EarningsPreview, TipsView } from "./types";
 import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FuturesDaily, FuturesIntraday, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
@@ -255,6 +255,8 @@ export const api = {
     call<{ source: string; count: number; updated_at: string | null; error: string | null }>("/api/instruments/status"),
   /** #296 종목 정보 카드(#295) */
   stockProfile: (ticker: string) => call<StockProfile>(`/api/stock/profile?ticker=${encodeURIComponent(ticker)}`),
+  /** #332 금리 · 달러 국면과 매매 팁(#330) */
+  tips: (ticker?: string) => call<TipsView>(`/api/tips${ticker ? `?ticker=${encodeURIComponent(ticker)}` : ""}`),
 };
 
 /** Follow a run's events. The server replays from the start, then streams live. */

@@ -13,6 +13,7 @@ import ChartView from "./pages/ChartView";
 import Settings from "./pages/Settings";
 import Backtest from "./pages/Backtest";
 import WeeklyMap from "./pages/WeeklyMap";
+import Tips from "./pages/Tips";
 import Charts from "./pages/Charts";
 import CalendarView from "./pages/CalendarView";
 import Chat from "./pages/Chat";
@@ -87,6 +88,7 @@ export default function App() {
   const chartsMatch = route.match(/^#\/charts(?:\?(.*))?$/);
   const calendarMatch = route.match(/^#\/calendar(?:\?(.*))?$/);
   const chatMatch = route.match(/^#\/chat(?:\?(.*))?$/);
+  const tipsMatch = route.match(/^#\/tips(?:\?(.*))?$/);
   // 큰 차트(#97): #/chart/<티커>?run=…&interval=…
   const chartMatch = route.match(/^#\/chart\/([^?]+)(?:\?(.*))?$/);
 
@@ -98,7 +100,7 @@ export default function App() {
         </a>
         {user && (
           <nav aria-label="메뉴">
-            <a href="#/" className={!runMatch && !onSettings && !onReview && !onLive && !onHistory && !onSectors && !onBacktest && !weeklyMatch && !chartsMatch && !calendarMatch && !chatMatch ? "active" : ""}>대시보드</a>
+            <a href="#/" className={!runMatch && !onSettings && !onReview && !onLive && !onHistory && !onSectors && !onBacktest && !weeklyMatch && !chartsMatch && !calendarMatch && !chatMatch && !tipsMatch ? "active" : ""}>대시보드</a>
             <a href="#/history" className={onHistory ? "active" : ""}>분석 기록</a>
             <a href="#/live" className={onLive ? "active" : ""}>시세판</a>
             <a href="#/sectors" className={onSectors ? "active" : ""}>섹터</a>
@@ -106,6 +108,7 @@ export default function App() {
             <a href="#/charts" className={chartsMatch ? "active" : ""}>차트</a>
             <a href="#/weekly" className={weeklyMatch ? "active" : ""}>주간 지도</a>
             <a href="#/calendar" className={calendarMatch ? "active" : ""}>캘린더</a>
+            <a href="#/tips" className={tipsMatch ? "active" : ""}>매매 팁</a>
             <a href="#/chat" className={chatMatch ? "active" : ""}>채팅</a>
             <a href="#/backtest" className={onBacktest ? "active" : ""}>백테스트</a>
             <a href="#/settings" className={onSettings ? "active" : ""}>설정</a>
@@ -142,6 +145,8 @@ export default function App() {
         <Chat key={route.split("thread=")[1] ?? ""} query={new URLSearchParams(chatMatch[1] ?? "")} />
       ) : calendarMatch ? (
         <CalendarView query={new URLSearchParams(calendarMatch[1] ?? "")} />
+      ) : tipsMatch ? (
+        <Tips key={route} query={new URLSearchParams(tipsMatch[1] ?? "")} />
       ) : weeklyMatch ? (
         <WeeklyMap query={new URLSearchParams(weeklyMatch[1] ?? "")} />
       ) : onBacktest ? (

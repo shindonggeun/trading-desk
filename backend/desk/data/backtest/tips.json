@@ -1,0 +1,268 @@
+{
+ "as_of": "2026-11-13",
+ "start": "2000-01-01",
+ "split": "2015-01-01",
+ "basis": {
+  "horizons": [
+   20,
+   60
+  ],
+  "worse_pp": 2.0,
+  "decay_pp": 1.0,
+  "min_days": 60,
+  "rule": "weak unless the 60-session median on regime days is worse than on all days by the gap in both train and held-out"
+ },
+ "tips": {
+  "gold-miners-tightening": {
+   "proxy": "^XAU",
+   "metric": "return",
+   "split": "2015",
+   "train": {
+    "episodes": 14,
+    "regime_share": 3.29,
+    "20": {
+     "n": 124,
+     "median": -0.51,
+     "win": 47.58,
+     "all_median": 0.55,
+     "all_win": 52.29,
+     "vs_all": -1.06
+    },
+    "60": {
+     "n": 124,
+     "median": -8.79,
+     "win": 25.0,
+     "all_median": 1.08,
+     "all_win": 53.25,
+     "vs_all": -9.87,
+     "drawdown_median": -16.6,
+     "all_drawdown_median": -8.97
+    }
+   },
+   "held_out": {
+    "episodes": 16,
+    "regime_share": 7.54,
+    "20": {
+     "n": 220,
+     "median": -1.56,
+     "win": 44.55,
+     "all_median": 1.08,
+     "all_win": 53.88,
+     "vs_all": -2.63
+    },
+    "60": {
+     "n": 195,
+     "median": -7.12,
+     "win": 40.51,
+     "all_median": 2.43,
+     "all_win": 56.16,
+     "vs_all": -9.55,
+     "drawdown_median": -12.73,
+     "all_drawdown_median": -8.57
+    }
+   },
+   "since": "2000-01-03",
+   "weak": false
+  },
+  "commodities-strong-dollar": {
+   "proxy": "DBC",
+   "metric": "return",
+   "split": "2015",
+   "train": {
+    "episodes": 41,
+    "regime_share": 22.72,
+    "20": {
+     "n": 495,
+     "median": -2.09,
+     "win": 39.6,
+     "all_median": 0.16,
+     "all_win": 50.99,
+     "vs_all": -2.26
+    },
+    "60": {
+     "n": 495,
+     "median": -3.42,
+     "win": 41.21,
+     "all_median": -0.07,
+     "all_win": 49.43,
+     "vs_all": -3.34,
+     "drawdown_median": -7.96,
+     "all_drawdown_median": -4.73
+    }
+   },
+   "held_out": {
+    "episodes": 51,
+    "regime_share": 17.56,
+    "20": {
+     "n": 523,
+     "median": 0.45,
+     "win": 52.96,
+     "all_median": 0.8,
+     "all_win": 56.31,
+     "vs_all": -0.35
+    },
+    "60": {
+     "n": 523,
+     "median": -1.15,
+     "win": 42.64,
+     "all_median": 1.37,
+     "all_win": 57.39,
+     "vs_all": -2.52,
+     "drawdown_median": -5.98,
+     "all_drawdown_median": -4.48
+    }
+   },
+   "since": "2006-05-08",
+   "weak": false
+  },
+  "emerging-strong-dollar": {
+   "proxy": "EEM",
+   "metric": "return",
+   "split": "2015",
+   "train": {
+    "episodes": 52,
+    "regime_share": 22.2,
+    "20": {
+     "n": 641,
+     "median": 1.13,
+     "win": 56.79,
+     "all_median": 1.29,
+     "all_win": 58.69,
+     "vs_all": -0.16
+    },
+    "60": {
+     "n": 641,
+     "median": 2.54,
+     "win": 56.79,
+     "all_median": 4.27,
+     "all_win": 63.68,
+     "vs_all": -1.73,
+     "drawdown_median": -6.51,
+     "all_drawdown_median": -4.94
+    }
+   },
+   "held_out": {
+    "episodes": 51,
+    "regime_share": 17.56,
+    "20": {
+     "n": 523,
+     "median": -0.03,
+     "win": 48.95,
+     "all_median": 0.62,
+     "all_win": 54.62,
+     "vs_all": -0.65
+    },
+    "60": {
+     "n": 523,
+     "median": 1.17,
+     "win": 54.49,
+     "all_median": 1.97,
+     "all_win": 58.48,
+     "vs_all": -0.79,
+     "drawdown_median": -5.77,
+     "all_drawdown_median": -4.69
+    }
+   },
+   "since": "2003-07-15",
+   "weak": true
+  },
+  "growth-yield-spike": {
+   "proxy": "QQQ",
+   "metric": "return",
+   "split": "2015",
+   "train": {
+    "episodes": 51,
+    "regime_share": 6.25,
+    "20": {
+     "n": 236,
+     "median": 1.52,
+     "win": 55.93,
+     "all_median": 1.18,
+     "all_win": 58.23,
+     "vs_all": 0.33
+    },
+    "60": {
+     "n": 236,
+     "median": 4.36,
+     "win": 66.95,
+     "all_median": 2.97,
+     "all_win": 61.14,
+     "vs_all": 1.39,
+     "drawdown_median": -6.02,
+     "all_drawdown_median": -5.05
+    }
+   },
+   "held_out": {
+    "episodes": 39,
+    "regime_share": 6.13,
+    "20": {
+     "n": 183,
+     "median": 1.18,
+     "win": 57.92,
+     "all_median": 1.89,
+     "all_win": 66.43,
+     "vs_all": -0.72
+    },
+    "60": {
+     "n": 172,
+     "median": 3.7,
+     "win": 61.05,
+     "all_median": 4.8,
+     "all_win": 74.01,
+     "vs_all": -1.1,
+     "drawdown_median": -4.19,
+     "all_drawdown_median": -3.46
+    }
+   },
+   "since": "2000-01-03",
+   "weak": true
+  },
+  "leverage-decay-sideways": {
+   "proxy": "QQQ",
+   "metric": "decay",
+   "split": "2015",
+   "train": {
+    "episodes": 180,
+    "regime_share": 33.47,
+    "20": {
+     "n": 1263,
+     "median": -0.17,
+     "win": 40.46,
+     "all_median": -0.3,
+     "all_win": 34.16,
+     "vs_all": 0.13
+    },
+    "60": {
+     "n": 1263,
+     "median": -0.53,
+     "win": 41.65,
+     "all_median": -1.02,
+     "all_win": 33.61,
+     "vs_all": 0.5
+    }
+   },
+   "held_out": {
+    "episodes": 148,
+    "regime_share": 36.96,
+    "20": {
+     "n": 1093,
+     "median": -0.2,
+     "win": 38.79,
+     "all_median": -0.24,
+     "all_win": 35.22,
+     "vs_all": 0.05
+    },
+    "60": {
+     "n": 1059,
+     "median": -0.34,
+     "win": 45.61,
+     "all_median": -1.06,
+     "all_win": 34.06,
+     "vs_all": 0.72
+    }
+   },
+   "since": "2000-01-03",
+   "weak": true
+  }
+ }
+}

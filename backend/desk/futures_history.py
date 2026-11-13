@@ -31,9 +31,24 @@ CLOSING_AT = time(15, 46)
 MAX_SLEEP_SEC = 3600.0           # outside the session the loop still wakes hourly (clock changes, restarts)
 MAX_DAYS = 250
 CLASSES = ("foreign", "individual", "institution")
+SPOT_MARKETS = ("kospi", "kosdaq")
+SPOT_CLASSES = ("foreign", "institution", "individual")
 
 
-def row_of(view: dict, now: datetime) -> dict | None:
+def spot_cols(spot: dict | None, today: str) -> dict:
+    """#359: today's spot investor net per market (desk.market_flow 1d views keyed kospi/kosdaq),
+    in 100 million KRW; a record of another day (before the open) is not today's flow."""
+    out = {}
+    for m in SPOT_MARKETS:
+        record = (((spot or {}).get(m) or {}).get("records") or [None])[0] or {}
+        same_day = record.get("date") == today
+        for c in SPOT_CLASSES:
+            net = ((record.get("investors") or {}).get(c) or {}).get("net") if same_day else None
+            out[f"{m}_{c}_100m"] = round(net / 1e8, 2) if isinstance(net, (int, float)) else None
+    return out
+
+
+def row_of(view: dict, now: datetime, spot: dict | None = None) -> dict | None:
     """The snapshot row for a futures view (desk.futures_flow), or None when it has no price or
     no investors (a failed fetch is not history)."""
     price, investors = view.get("price") or {}, view.get("investors") or {}
@@ -47,6 +62,7 @@ def row_of(view: dict, now: datetime) -> dict | None:
         side = investors.get(c) or {}
         row[f"{c}_contracts"] = side.get("net_contracts")
         row[f"{c}_value_mn"] = side.get("net_value_mn")
+    row.update(spot_cols(spot, row["trade_date"]))
     return row
 
 
@@ -56,7 +72,8 @@ def _point(r) -> dict:
             "date": r["trade_date"], "code": r["code"], "price": r["price"], "open_interest": r["open_interest"],
             "market_basis": r["market_basis"],
             "investors": {c: {"net_contracts": r[f"{c}_contracts"], "net_value_mn": r[f"{c}_value_mn"]}
-                          for c in CLASSES}}
+                          for c in CLASSES},
+            "spot": {m: {c: r.get(f"{m}_{c}_100m") for c in SPOT_CLASSES} for m in SPOT_MARKETS}}
 
 
 def interval_min(setting: float) -> float:
@@ -100,13 +117,13 @@ class FuturesHistory:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
 
-    def record(self, view: dict, now: datetime | None = None) -> bool:
+    def record(self, view: dict, now: datetime | None = None, spot: dict | None = None) -> bool:
         """Store the view as a snapshot when the session is open (or in its closing window, for the
         day's final totals) and the view is whole."""
         now = now or datetime.now(UTC)
         if not (futures_open(now) or closing_window(now)):
             return False
-        row = row_of(view, now)
+        row = row_of(view, now, spot)
         if row is None:
             return False
         with self.engine.begin() as conn:

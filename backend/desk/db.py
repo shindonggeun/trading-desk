@@ -149,6 +149,8 @@ futures_snapshots = Table(
     Column("individual_value_mn", Float),
     Column("institution_contracts", Float),
     Column("institution_value_mn", Float),
+    # #359 spot investor net at the same moment (running total for the day, 100 million KRW)
+    *[Column(f"{m}_{c}_100m", Float) for m in ("kospi", "kosdaq") for c in ("foreign", "institution", "individual")],
     Index("ix_futures_snapshots_trade_date_at", "trade_date", "at"),
 )
 

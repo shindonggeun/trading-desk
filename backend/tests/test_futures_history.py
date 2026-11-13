@@ -74,7 +74,7 @@ def test_api_answers_daily_and_intraday(db_url):
         daily = client.get("/api/market/futures/daily?days=5").json()
         assert daily["supported"] is False and daily["days"][0]["date"] == "2026-11-10"   # fake runs: no KIS
         day = client.get("/api/market/futures/intraday?date=2026-11-10").json()
-        assert day["date"] == "2026-11-10" and len(day["points"]) == 1 and day["interval_min"] == 15
+        assert day["date"] == "2026-11-10" and len(day["points"]) == 1 and day["interval_min"] == 1
         assert client.get("/api/market/futures/intraday?date=11-10").status_code == 422
 
 

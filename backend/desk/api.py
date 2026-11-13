@@ -32,6 +32,7 @@ from . import (
     entry_now,
     events_calendar,
     filings,
+    flow_intraday,
     horizons,
     live,
     macro_news,
@@ -247,6 +248,9 @@ def purge_expired_runs(store: Store, retention_days: int) -> int:
     if deleted:
         log.info("retention: deleted %d run(s) older than %d days", deleted, retention_days)
     return deleted
+
+
+SPOT_TIMEOUT_SEC = 10.0      # #359 the spot flows fetched with each futures snapshot
 
 
 def create_app(settings: Settings | None = None, runner=None, prices: PriceSource | None = None,
@@ -479,7 +483,16 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     today_kst = moment.astimezone(futures_kst).date()
                     if futures_open(moment) or (closing_window(moment) and closed_on != today_kst):
                         view = await futures.get(fresh=True)
-                        await asyncio.to_thread(futures_history.record, view)
+                        # #359 the spot flows at the same moment (a broker failure is an ``error`` body)
+                        # (bounded: a hung broker must not cost the futures snapshot)
+                        try:
+                            got = await asyncio.wait_for(asyncio.gather(
+                                flow.get("KOSPI", "1d", 1), flow.get("KOSDAQ", "1d", 1)), SPOT_TIMEOUT_SEC)
+                            spot = {"kospi": got[0], "kosdaq": got[1]}
+                        except TimeoutError:
+                            log.warning("spot flow for the futures snapshot timed out")
+                            spot = None
+                        await asyncio.to_thread(futures_history.record, view, None, spot)
                         if closing_window(moment):
                             closed_on = today_kst
                     today = datetime.now(UTC).date()
@@ -889,6 +902,23 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return {"supported": getattr(futures, "rest", None) is not None,
                 "interval_min": interval_min(settings.futures_snapshot_min),
                 "days": rows}
+
+    @app.get("/api/market/flow/intraday")
+    async def market_flow_intraday(date: str | None = None, bucket: int = 5):
+        """#359: a trading day's spot (KOSPI / KOSDAQ) and futures investor flows as ``bucket``-minute
+        bars, with the foreign buy/sell turns (desk.flow_intraday). Default today, KST."""
+        try:
+            day = (datetime.fromisoformat(date).date() if date
+                   else datetime.now(UTC).astimezone(futures_kst).date())
+        except ValueError:
+            raise HTTPException(422, "date must be YYYY-MM-DD") from None
+        points = await asyncio.to_thread(futures_history.intraday, day)
+        try:
+            body = flow_intraday.view(points, bucket)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return {"supported": getattr(futures, "rest", None) is not None, "date": day.isoformat(),
+                "market_open": futures_open(datetime.now(UTC)), **body}
 
     @app.get("/api/market/futures/intraday")
     async def market_futures_intraday(date: str | None = None):

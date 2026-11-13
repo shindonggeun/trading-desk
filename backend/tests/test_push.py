@@ -12,7 +12,7 @@ from desk.runner import make_fake_runner
 from desk.settings import Settings
 
 OWNER, OTHER, PASSWORD = "owner@local", "other@local", "correct horse battery staple"
-SUB = {"endpoint": "https://push.example/abc", "keys": {"p256dh": "BPk", "auth": "au"}, "device": "폰"}
+SUB = {"endpoint": "https://fcm.googleapis.com/fcm/send/abc", "keys": {"p256dh": "BPk", "auth": "au"}, "device": "폰"}
 
 
 def _turn(t, kind, market="futures", value=-620.0):
@@ -111,14 +111,27 @@ def test_own_subscriptions_only(db_url):
         app.state.pusher = push.Pusher(app.state.pusher.store, "pub", "priv", "mailto:x@y", send=sent)
         _login(client, OWNER)
         assert client.get("/api/push/key").json() == {"enabled": True, "public_key": "pub"}
-        assert client.post("/api/push/subscriptions", json={**SUB, "endpoint": "http://x"}).status_code == 422
+        for bad in ("http://fcm.googleapis.com/x", "https://192.168.0.9/x", "https://fcm.googleapis.com:8443/x",
+                    "https://u@fcm.googleapis.com/x", "https://evil.example/x", "https://fcm.googleapis.com.evil.io/x"):
+            assert client.post("/api/push/subscriptions", json={**SUB, "endpoint": bad}).status_code == 422, bad
         assert client.post("/api/push/subscriptions", json=SUB).status_code == 201
         client.post("/api/auth/logout")
         _login(client, OTHER)
         assert client.request("DELETE", "/api/push/subscriptions", json={"endpoint": SUB["endpoint"]}).status_code == 204
+        assert client.post("/api/push/subscriptions", json=SUB).status_code == 409   # not taken over
         assert client.post("/api/push/test").json() == {"sent": 0}          # OTHER has no device
         client.post("/api/auth/logout")
         _login(client, OWNER)
         assert client.post("/api/push/test").json() == {"sent": 1}          # still there
         assert client.get("/api/alerts/flow?date=2026-11-13").json() == {"date": "2026-11-13", "items": []}
         assert client.get("/api/alerts/flow?date=bad").status_code == 422
+
+
+def test_a_stored_endpoint_off_the_push_services_is_never_called(db_url):
+    engine = _store_with_sub(db_url)
+    store = push.PushStore(engine)
+    store.subscribe(1, "https://10.0.0.1/hook", {"p256dh": "k", "auth": "a"}, "lan", {})
+    sent = _Sent()
+    assert _pusher(engine, sent).broadcast("flow", {"body": "x"}) == 1
+    assert [c[0] for c in sent.calls] == [SUB["endpoint"]]
+    engine.dispose()

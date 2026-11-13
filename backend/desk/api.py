@@ -1803,11 +1803,24 @@ class PushKeysIn(BaseModel):
     auth: str = Field(min_length=1, max_length=100)
 
 
+class PushKindsIn(BaseModel):
+    flow: bool = True
+
+
 class PushSubscriptionIn(BaseModel):
-    endpoint: str = Field(min_length=1, max_length=1024, pattern=r"^https://")
+    endpoint: str = Field(min_length=1, max_length=1024)
     keys: PushKeysIn
     device: str = Field(default="", max_length=80)
-    kinds: dict[str, bool] = Field(default_factory=dict)
+    kinds: PushKindsIn = Field(default_factory=lambda: PushKindsIn())
+
+    @field_validator("endpoint")
+    @classmethod
+    def _push_service(cls, v: str) -> str:
+        from .push import allowed_endpoint
+
+        if not allowed_endpoint(v):
+            raise ValueError("not a browser push service endpoint")
+        return v
 
 
 class PushEndpointIn(BaseModel):
@@ -1834,8 +1847,8 @@ def _push_routes(app: FastAPI, engine, settings: Settings) -> None:
             raise HTTPException(503, "push is off")
         try:
             return store.subscribe(request.state.user.id, body.endpoint, body.keys.model_dump(),
-                                   body.device.strip() or "기기", body.kinds)
-        except push.TooMany as exc:
+                                   body.device.strip() or "기기", body.kinds.model_dump())
+        except (push.TooMany, push.Taken) as exc:
             raise HTTPException(409, str(exc)) from None
 
     @app.delete("/api/push/subscriptions", status_code=204)

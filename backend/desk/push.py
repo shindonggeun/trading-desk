@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from urllib.parse import urlsplit
 
 from sqlalchemy import delete, insert, select, update
 from sqlalchemy.engine import Engine
@@ -19,10 +20,30 @@ log = logging.getLogger(__name__)
 
 KINDS = ("flow",)
 MAX_PER_USER = 10
+# The server only ever POSTs to the browsers' push services - never a host a caller names (SSRF).
+PUSH_HOSTS = ("fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com")
+PUSH_HOST_SUFFIXES = (".push.services.mozilla.com", ".notify.windows.com", ".push.apple.com")
 
 
 class TooMany(Exception):
     pass
+
+
+class Taken(Exception):
+    """The endpoint is another account's subscription."""
+
+
+def allowed_endpoint(url: str) -> bool:
+    """https on 443 to a known push service; no IP literal, no userinfo."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or parts.username or parts.password or port not in (None, 443) or not host:
+        return False
+    return host in PUSH_HOSTS or host.endswith(PUSH_HOST_SUFFIXES)
 
 
 class PushStore:
@@ -34,7 +55,10 @@ class PushStore:
         row = {"user_id": user_id, "keys": {"p256dh": keys["p256dh"], "auth": keys["auth"]},
                "device": device, "kinds": {k: bool(kinds.get(k, True)) for k in KINDS}}
         with self.engine.begin() as conn:
-            got = conn.execute(select(push_subscriptions.c.id).where(push_subscriptions.c.endpoint == endpoint)).first()
+            got = conn.execute(select(push_subscriptions.c.id, push_subscriptions.c.user_id)
+                               .where(push_subscriptions.c.endpoint == endpoint)).first()
+            if got and got.user_id != user_id:
+                raise Taken("이미 다른 계정의 구독")
             if got:
                 conn.execute(update(push_subscriptions).where(push_subscriptions.c.id == got.id).values(**row))
             else:
@@ -97,6 +121,9 @@ class Pusher:
         data = json.dumps(payload, ensure_ascii=False)
         sent = 0
         for sub in subs:
+            if not allowed_endpoint(sub["endpoint"]):
+                log.warning("push skipped: %s is not a push service", sub.get("device"))
+                continue
             try:
                 status = self._send(sub, data)
             except Exception as exc:  # noqa: BLE001 - one bad endpoint never stops the rest

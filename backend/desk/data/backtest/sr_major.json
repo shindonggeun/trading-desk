@@ -1,0 +1,85 @@
+{
+ "tickers": [
+  "SOXL",
+  "TQQQ",
+  "NVDA",
+  "QQQ",
+  "SPY",
+  "IWM",
+  "AAPL",
+  "MSFT",
+  "AMZN",
+  "GOOGL",
+  "META",
+  "TSLA",
+  "AMD",
+  "AVGO",
+  "MU",
+  "005930.KS",
+  "000660.KS",
+  "035420.KS",
+  "005380.KS",
+  "035720.KS"
+ ],
+ "cut": "2022-06-16",
+ "step_weeks": 4,
+ "forward_days": 120,
+ "react": {
+  "bars": 10,
+  "atr": 1.0,
+  "through_atr": 0.25
+ },
+ "distance_atr": [
+  0.5,
+  6.0
+ ],
+ "table": {
+  "major": {
+   "train": {
+    "n": 1119,
+    "bounce_pct": 58.7,
+    "se_pct": 1.5,
+    "mean_dist_atr": 2.4
+   },
+   "valid": {
+    "n": 594,
+    "bounce_pct": 57.9,
+    "se_pct": 2.0,
+    "mean_dist_atr": 2.53
+   }
+  },
+  "current": {
+   "train": {
+    "n": 5321,
+    "bounce_pct": 54.4,
+    "se_pct": 0.7,
+    "mean_dist_atr": 2.2
+   },
+   "valid": {
+    "n": 2109,
+    "bounce_pct": 56.2,
+    "se_pct": 1.1,
+    "mean_dist_atr": 2.21
+   }
+  },
+  "control": {
+   "train": {
+    "n": 871,
+    "bounce_pct": 60.5,
+    "se_pct": 1.7,
+    "mean_dist_atr": 3.61
+   },
+   "valid": {
+    "n": 442,
+    "bounce_pct": 60.4,
+    "se_pct": 2.3,
+    "mean_dist_atr": 3.72
+   }
+  }
+ },
+ "verdict": {
+  "beats_control": false,
+  "beats_current": false,
+  "train_beats_control": false
+ }
+}

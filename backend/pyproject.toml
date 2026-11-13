@@ -23,6 +23,7 @@ dependencies = [
     "argon2-cffi>=23.1",
     "pyotp>=2.9",
     "cryptography>=42",
+    "pywebpush>=2.0",          # web push with VAPID (desk.push, #361)
     "holidays>=0.60",          # KRX / NYSE closed days for the market calendar (desk.market_calendar)
 ]
 

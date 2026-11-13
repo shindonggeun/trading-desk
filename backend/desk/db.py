@@ -188,6 +188,33 @@ chat_messages = Table(
     Index("ix_chat_messages_thread_id_id", "thread_id", "id"),
 )
 
+# #361: web push subscriptions per account (endpoint + the browser's keys) and the foreign-flow
+# turns already pushed (one row per turn - a re-judged snapshot does not push it twice).
+push_subscriptions = Table(
+    "push_subscriptions", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True),
+    Column("endpoint", String(1024), nullable=False, unique=True),
+    Column("keys", Json, nullable=False),                         # {p256dh, auth}
+    Column("device", String(80), nullable=False),
+    Column("kinds", Json, nullable=False),                        # {"flow": true}
+    Column("created_at", Timestamp, nullable=False),
+)
+
+flow_alerts_sent = Table(
+    "flow_alerts_sent", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("trade_date", String(10), nullable=False),
+    Column("market", String(16), nullable=False),                 # futures | kospi | kosdaq
+    Column("kind", String(16), nullable=False),                   # buy_turn | sell_turn
+    Column("turned_at", String(32), nullable=False),              # the turn's ISO time
+    Column("value", Float),
+    Column("text", String(300), nullable=False),
+    Column("created_at", Timestamp, nullable=False),
+    UniqueConstraint("trade_date", "market", "kind", "turned_at", name="uq_flow_alerts_sent_turn"),
+    Index("ix_flow_alerts_sent_trade_date", "trade_date"),
+)
+
 
 def now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)

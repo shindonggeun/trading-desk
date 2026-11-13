@@ -14,7 +14,7 @@ def _kst(h, m):
 
 
 def _spot(foreign_won, day="2026-11-10"):
-    rec = {"date": day, "investors": {"foreign": {"net": foreign_won}, "institution": {"net": -foreign_won / 2},
+    rec = {"date": day, "investors": {"foreigner": {"net": foreign_won}, "institution": {"net": -foreign_won / 2},
                                       "individual": {"net": None}}}
     return {"kospi": {"records": [rec]}, "kosdaq": {"error": "down", "records": []}}
 
@@ -60,6 +60,10 @@ def test_bars_close_at_the_last_snapshot_and_carry_what_the_bar_added():
     one = fi.bars(pts, "kospi", 1)
     assert [b["foreign"] for b in one] == [10.0, 40.0, 70.0, 90.0] and one[1]["foreign_delta"] == 30.0
     assert "price" in five[0] and "price" not in one[0]
+    # the closing snapshot at 15:46 is the 15:45 bar, whatever the bucket
+    close = [_point(15, 44, 10.0, 1.0), _point(15, 46, 20.0, 2.0)]
+    assert [b["t"][11:16] for b in fi.bars(close, "futures", 1)] == ["15:44", "15:45"]
+    assert [b["t"][11:16] for b in fi.bars(close, "futures", 60)] == ["15:45"]
 
 
 def test_a_turn_needs_the_dead_band_and_two_snapshots():

@@ -20,7 +20,7 @@ from datetime import datetime, time, timedelta
 from .futures_flow import KST
 
 BUCKETS = (1, 3, 5, 10, 15, 30, 60)
-OPEN = time(8, 45)
+OPEN, CLOSE = time(8, 45), time(15, 45)
 TURN_BAND = {"futures": 500.0, "kospi": 300.0, "kosdaq": 300.0}   # contracts / 100 million KRW
 TURN_HOLD = 2
 CLASSES = ("foreign", "institution", "individual")
@@ -36,7 +36,8 @@ def _bucket_end(at: datetime, minutes: int) -> datetime:
         return open_at
     step = timedelta(minutes=minutes)
     n = -(-(at - open_at) // step)          # ceil: a snapshot at 09:00 closes the 08:45-09:00 bar
-    return open_at + n * step
+    # the closing snapshot (15:46) and a bar running past the bell belong to the 15:45 close
+    return min(open_at + n * step, datetime.combine(at.date(), CLOSE, KST))
 
 
 def series(points: list[dict], market: str) -> list[tuple[datetime, dict]]:

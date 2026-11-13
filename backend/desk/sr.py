@@ -19,7 +19,7 @@ from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from zoneinfo import ZoneInfo
 
-from . import horizons, patterns, recent, sr_zones, trend, volume_profile
+from . import horizons, patterns, recent, sr_major, sr_zones, trend, volume_profile
 
 DAILY_BARS = 200
 WEEKLY_BARS = 156          # three years
@@ -37,6 +37,13 @@ CACHE_TTL_SEC = 300.0
 # #321: rank by the zone's record - held visits lift it, a role change more. Off: on the swing basket it
 # moved held-out R by -0.001 (0.022 -> 0.021), so the record is shown, not ranked by.
 REACTION_RANK = False
+# #328: major levels from years of weekly bars (desk.sr_major) join the swing levels as tier "major".
+# Off: in the event study (desk.sr_major_bt, 20 tickers, held-out from 2022-07) the price bounced at
+# major supports 57.9% of first touches, at same-distance random zones 60.4% and at the current
+# supports 56.2% - no edge over chance, so they are not drawn or ranked until one is shown.
+MAJOR_TIER = False
+MAJOR_PER_SIDE = 2          # majors kept on each side whatever the distance ranking says
+LONG_WEEKS = 520            # ten years of weekly bars for them (one extra request per ticker)
 FLIP_FACTOR = 1.5
 _CACHE: dict[tuple[str, str | None], tuple[float, dict]] = {}
 
@@ -149,12 +156,36 @@ def _round(price: float) -> float:
     return float(round(price)) if price >= 1000 else round(price, 2)
 
 
+def _merge_majors(levels: list[dict], majors: list[dict], reference: float, max_distance: float) -> None:
+    """#328: a major zone that overlaps a level of the same side makes it major (its zone the union,
+    its basis the record); one that overlaps none is a level of its own."""
+    for m in majors:
+        lo, hi = m["zone"]
+        if abs(m["price"] - reference) > max_distance:
+            continue
+        kind = "support" if m["price"] < reference else "resistance"
+        overlap = [lv for lv in levels if lv["kind"] == kind and lv.get("tier") != "major"
+                   and lv["zone"][0] <= hi and lv["zone"][1] >= lo]
+        hit = min(overlap, key=lambda lv: abs(lv["price"] - m["price"]), default=None)
+        if hit:
+            hit["tier"] = "major"
+            hit["zone"] = [min(hit["zone"][0], lo), max(hit["zone"][1], hi)]
+            hit["_core"] = [min(hit["_core"][0], lo), max(hit["_core"][1], hi)]
+            hit["strength"] = round(max(hit["strength"], m["score"]), 1)
+            hit["basis"] = f"주요: {m['basis']} · {hit['basis']}"
+        else:
+            levels.append({"price": _round(m["price"]), "kind": kind, "timeframe": "1w", "strength": m["score"],
+                           "basis": f"주요: {m['basis']}", "zone": [lo, hi], "_core": [lo, hi], "tier": "major"})
+
+
 def compute(daily: list[dict], weekly: list[dict], price: float | None = None,
-            weekly_complete: bool = False, *, horizon: str | None = None, partial: bool = False) -> dict:
+            weekly_complete: bool = False, *, horizon: str | None = None, partial: bool = False,
+            long_weekly: list[dict] | None = None) -> dict:
     """``daily``/``weekly`` are bars oldest first ({"at","open","high","low","close","volume"}):
     the horizon's primary and secondary bars (desk.horizons; swing = daily and weekly).
     ``weekly_complete``: the last secondary bar has ended (otherwise it may still be trading).
-    ``partial``: the last daily bar is today's session, still trading (desk.sr.forming)."""
+    ``partial``: the last daily bar is today's session, still trading (desk.sr.forming).
+    ``long_weekly``: up to ten years of finished weekly bars for the major levels (#328, swing only)."""
     h = horizons.get(horizon)
     if len(daily) < ATR_DAYS + 1:
         raise ValueError(f"not enough {h.primary} bars for support/resistance")
@@ -213,6 +244,11 @@ def compute(daily: list[dict], weekly: list[dict], price: float | None = None,
                        "zone": list(sr_zones.zone_of([(c.price, c.body) for c in zone], atr, level)),
                        "_core": list(sr_zones.zone_of([(c.price, c.body) for c in zone if not c.recent]
                                                       or [(c.price, c.body) for c in zone], atr, level))})
+    majors = sr_major.find(long_weekly, reference) if MAJOR_TIER and long_weekly and h.primary == "1d" else []
+    if majors:
+        _merge_majors(levels, majors, reference, max_distance)
+        for lv in levels:
+            lv.setdefault("tier", "minor")
     # a forming session is no evidence yet: its visit and its "close back" are still moving
     judged = daily[:-1] if partial and h.primary == "1d" else daily
     events = sr_zones.enrich(levels, judged, atr, weekly, _atr(weekly) if weekly else None)
@@ -232,7 +268,12 @@ def compute(daily: list[dict], weekly: list[dict], price: float | None = None,
         side = [lv for lv in levels if lv["kind"] == kind]
         # strong and near first: a zone two ATR away needs twice the reasons of one at the price
         side.sort(key=lambda lv: -rank[id(lv)] / (1 + abs(lv["price"] - reference) / unit))
-        picked += side[:PER_SIDE]
+        kept = side[:PER_SIDE]
+        # #328: the nearest majors stay whatever the ranking - a close weak line must not push out the big zone
+        near = sorted((lv for lv in side if lv.get("tier") == "major" and lv not in kept),
+                      key=lambda lv: abs(lv["price"] - reference))
+        need = MAJOR_PER_SIDE - sum(lv.get("tier") == "major" for lv in kept)
+        picked += kept + near[:max(0, need)]
     picked.sort(key=lambda lv: -lv["price"])
     sr_zones.add_buy_zones(picked, atr)
     for lv in levels:
@@ -257,6 +298,13 @@ def prompt_note(sr: dict | None) -> str | None:
         return trend_note
     lines = [f"- {'R' if lv['kind'] == 'resistance' else 'S'} {lv['price']} "
              f"({lv['timeframe']}, {lv['basis']}; strength {lv['strength']}{_zone_text(lv)})" for lv in sr["levels"]]
+    majors = [lv for lv in sr["levels"] if lv.get("tier") == "major" and lv.get("zone")]
+    if majors:   # #328: the big zones first - entries and stops are set around them
+        lines = [f"- MAJOR {'support' if lv['kind'] == 'support' else 'resistance'} zone {lv['zone'][0]}-{lv['zone'][1]} "
+                 f"({lv['basis']}): a zone the price turned at in several separate years; set a long's entry "
+                 "in it and its stop below it, never inside it" if lv["kind"] == "support" else
+                 f"- MAJOR resistance zone {lv['zone'][0]}-{lv['zone'][1]} ({lv['basis']}): take profit before it"
+                 for lv in majors] + lines
     intervals = sr.get("intervals") or {"primary": "1d", "secondary": "1w"}
     frame = ("daily and weekly bars" if intervals == {"primary": "1d", "secondary": "1w"}
              else f"{intervals['primary']} and {intervals['secondary']} bars")
@@ -437,12 +485,26 @@ async def frame_bars(prices, ticker: str, trade_date: str | None, h: horizons.Ho
     return days, weeks, complete, primary, secondary
 
 
+async def _long_weeks(prices, ticker: str, trade_date: str | None, days: list[dict],
+                      complete: bool) -> list[dict] | None:
+    """#328: ten years of weekly bars, finished by ``trade_date`` - None when the source has none."""
+    try:
+        got = (await prices.candles(ticker, "1w", LONG_WEEKS))["bars"]
+    except Exception:  # noqa: BLE001 - the major levels are extra; the swing levels stand without them
+        return None
+    if trade_date:
+        _, got = _until(days, got, ticker, trade_date)
+    return got if complete else got[:-1]
+
+
 async def _frame(prices, ticker: str, trade_date: str | None, price: float | None,
                  h: horizons.Horizon) -> dict:
     days, weeks, complete, primary, secondary = await frame_bars(prices, ticker, trade_date, h)
     live_day = trade_date is None or trade_date == date.today().isoformat()
+    long_weekly = await _long_weeks(prices, ticker, trade_date, days, complete) \
+        if MAJOR_TIER and h.primary == "1d" else None
     result = compute(days, weeks, price, weekly_complete=complete, horizon=h.id,
-                     partial=live_day and forming(days, ticker))
+                     partial=live_day and forming(days, ticker), long_weekly=long_weekly)
     # pairs of swings × bars: off the event loop so it never stalls the streams
     await asyncio.to_thread(add_trend, result, days, weeks, h, price)
     await asyncio.to_thread(add_patterns, result, days, weeks, h, price)

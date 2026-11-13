@@ -13,6 +13,7 @@
     python -m desk.cli backtest --basket --features  # R by the chart at the plan, train / held-out (#284)
     python -m desk.cli timing [--last 20]            # where recent analyses spent their time (#171)
     python -m desk.cli calibrate [--horizon swing]   # rebuild desk/data/playbook_calibration.json (#147)
+    python -m desk.cli entry-backtest [--horizon swing]  # the entry-now pick vs the score pick; desk/data/entry_reach.json (#312)
     python -m desk.cli weekly-lines [--out lines.json]  # compare the weekly map's trend-line pairs (#216)
 
 In Docker: ``docker compose exec backend python -m desk.cli create-user <name>``.
@@ -106,6 +107,38 @@ def _calibrate(args) -> int:
     calibration.write(cells, {"source": "backtest", "tickers": list(backtest.BASKET), "start": args.start,
                               "costs_bps": backtest.COST_BPS, "reliability": checks})
     print(f"written: {calibration.PATH}")
+    return 0
+
+
+def _entry_backtest(args) -> int:
+    """#312: the expected-R pick (desk.entry_now) against the score pick on the basket, train / held-out,
+    and the fill-by-distance table the live page reads (every date, like the calibration prior)."""
+    from . import backtest, entry_now, horizons
+
+    reach = entry_now.Reach.load()
+    for name in args.horizon or ["swing"]:
+        if name not in horizons.HORIZONS:
+            sys.exit(f"horizon must be one of {', '.join(horizons.HORIZONS)}")
+        h = horizons.get(name)
+        tickers = list(backtest.BASKET)
+        snaps, notes = entry_now.gather(tickers, h, args.start, progress=lambda msg: print(msg, file=sys.stderr))
+        rows = entry_now.replay(snaps, h, progress=lambda msg: print(msg, file=sys.stderr))
+        report = {"version": entry_now.VERSION, "horizon": name, "tickers": tickers, "start": args.start,
+                  "costs_bps": backtest.COST_BPS, **entry_now.compare(rows, h), "notes": notes}
+        out = entry_now.REPORT_DIR / f"entry_now_{name}.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("w", encoding="utf-8", newline="\n") as f:      # LF on Windows too
+            f.write(json.dumps(report, ensure_ascii=False, indent=1) + "\n")
+        print(f"{name}: {len(rows)} plans, cut {report.get('cut')} -> {out}")
+        for arm, parts in (report.get("arms") or {}).items():
+            for part, a in parts.items():
+                print(f"  {arm:<9} {part:<5} taken {a['taken']:>5}/{a['plans']:<5} fill {a['fill_rate']}  "
+                      f"T1 {a['t1_first_rate']}  R/filled {a['expectancy_r']}  R/plan {a['expectancy_per_plan_r']}  "
+                      f"maxDD {a['max_dd_r']}")
+        reach.cells = {k: v for k, v in reach.cells.items() if not k.startswith(f"{name}|")}
+        reach.cells.update(entry_now.full_reach(rows, h).cells)
+    reach.write({"source": "backtest", "tickers": list(backtest.BASKET), "start": args.start})
+    print(f"written: {entry_now.REACH_PATH}")
     return 0
 
 
@@ -214,6 +247,11 @@ def main(argv: list[str] | None = None) -> int:
     cb.add_argument("--horizon", action="append", default=None,
                     help="repeatable; default swing (the other frames have few bars on Yahoo)")
     cb.add_argument("--from", dest="start", default="2019-01-01", help="first plan date, YYYY-MM-DD")
+    eb = sub.add_parser("entry-backtest", help=(
+        "the entry-now pick (expected R per plan) against the score pick on the basket, train / held-out (#312); "
+        "rewrites desk/data/entry_reach.json"))
+    eb.add_argument("--horizon", action="append", default=None, help="repeatable; default swing")
+    eb.add_argument("--from", dest="start", default="2019-01-01", help="first plan date, YYYY-MM-DD")
     wl = sub.add_parser("weekly-lines", help=(
         "compare the weekly map's black / red line pairs on the indices' weekly history (#216)"))
     wl.add_argument("--out", default=None, help="write the full JSON report here")
@@ -231,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
         return _backtest(args)
     if args.command == "calibrate":
         return _calibrate(args)
+    if args.command == "entry-backtest":
+        return _entry_backtest(args)
     if args.command == "weekly-lines":
         return _weekly_lines(args)
     if args.command == "bottom-backtest":

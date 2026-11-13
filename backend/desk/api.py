@@ -29,6 +29,7 @@ from . import (
     credit,
     earnings,
     earnings_preview,
+    entry_now,
     events_calendar,
     filings,
     horizons,
@@ -1245,6 +1246,22 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             log.warning("live playbooks for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no playbooks for {ticker}") from None
 
+    @app.get("/api/entry-now")
+    async def entry_now_of(ticker: str, horizon: str | None = None):
+        """#312: one entry on the price now - the long or short side worth more per plan (fill rate by
+        distance x expected R), its zone, stop, targets and why; ``stand_aside`` when none is worth it."""
+        try:
+            ticker = clean_ticker(ticker)
+            if horizon is not None and horizon not in horizons.HORIZONS:
+                raise ValueError(f"horizon must be one of {', '.join(horizons.HORIZONS)}")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        try:
+            return await entry_now.entry_now(prices, ticker, horizon, risk=risk, bottoms=bottoms)
+        except Exception as exc:  # noqa: BLE001 - no bars, too few, or a source down
+            log.warning("entry now for %s failed: %s", ticker, exc)
+            raise HTTPException(503, f"no entry for {ticker}") from None
+
     @app.get("/api/estimate")
     async def estimate(ticker: str):
         """Off-hours estimate from the ticker's Binance stock perpetual (desk.estimate).
@@ -1524,15 +1541,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             chat.Tool("bottom_zone", "종목의 장기 바닥(인생 타점) 단계 · 점수 · 분할 매수 사다리", chat.TICKER_ARG, bottom),
             chat.Tool("recent_runs", "데스크의 최근 분석 결과(등급 · 방향 · 진입 · 손절 · 목표)", ticker_opt, recent_runs),
         ]
-        try:                                   # #312: the entry now, once that module is in
-            from . import entry_now as entry_mod
+        async def entry(a: dict):                  # #312
+            horizon = a.get("horizon") if a.get("horizon") in horizons.HORIZONS else None
+            got = await entry_now.entry_now(prices, clean_ticker(a["ticker"]), horizon, risk=risk, bottoms=bottoms)
+            return keep(got, "price_now", "price_at", "best", "other", "stand_aside", "bottom", "basis")
 
-            async def entry_now(a: dict):
-                return await entry_mod.entry_now(prices, clean_ticker(a["ticker"]), a.get("horizon"), risk=risk)
-
-            tools.append(chat.Tool("entry_now", "지금가 기준 진입 타점", chat.TICKER_ARG, entry_now))
-        except ImportError:
-            pass
+        tools.append(chat.Tool("entry_now", "지금가 기준 최적 타점(롱 · 숏 중 계획당 기대 R 이 큰 쪽, 관망 이유)",
+                               chat.TICKER_ARG, entry))
         return {t.name: t for t in tools}
 
     chat_tools = _chat_tools()

@@ -1,0 +1,60 @@
+{
+ "version": 1,
+ "generated_at": "2026-11-13T01:03:58+00:00",
+ "source": "backtest",
+ "tickers": [
+  "SOXL",
+  "TQQQ",
+  "NVDA",
+  "QQQ",
+  "005930.KS",
+  "000660.KS"
+ ],
+ "start": "2019-01-01",
+ "cells": {
+  "swing|long|*|*": {
+   "n": 5292,
+   "filled": 3691
+  },
+  "swing|long|*|<=0.25": {
+   "n": 2609,
+   "filled": 2213
+  },
+  "swing|long|*|<=1": {
+   "n": 1947,
+   "filled": 1264
+  },
+  "swing|long|*|<=2": {
+   "n": 565,
+   "filled": 194
+  },
+  "swing|long|*|<=3": {
+   "n": 116,
+   "filled": 15
+  },
+  "swing|long|*|>3": {
+   "n": 55,
+   "filled": 5
+  },
+  "swing|long|limit|<=0.25": {
+   "n": 2609,
+   "filled": 2213
+  },
+  "swing|long|limit|<=1": {
+   "n": 1947,
+   "filled": 1264
+  },
+  "swing|long|limit|<=2": {
+   "n": 565,
+   "filled": 194
+  },
+  "swing|long|limit|<=3": {
+   "n": 116,
+   "filled": 15
+  },
+  "swing|long|limit|>3": {
+   "n": 55,
+   "filled": 5
+  }
+ }
+}

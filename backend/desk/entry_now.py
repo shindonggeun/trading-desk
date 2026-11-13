@@ -45,6 +45,7 @@ MIN_N = calibration.MIN_N        # a record or a reach cell thinner than this gi
 TIE_R = 0.02                     # expected R per plan this close: the side with the trend wins (#166)
 BOTTOM_SEC = 5.0                 # the bottom zone's own budget (a cold cache fetches ~20 years of weeks)
 BOTTOM_NEAR_ATR = 0.5            # a bottom ladder step this close to the long zone counts as in it
+BOTTOM_STAGES = ("approach", "bottom")   # the stages whose ladder the chart draws (#241) - the overlap is named only then
 KIND_KO = {"now": "지금 구역 안", "limit": "지정가(구역까지 기다림)", "breakout": "돌파 · 이탈 확인 뒤(스톱 진입)"}
 SIDE_KO = {"long": "롱", "short": "숏"}
 
@@ -155,7 +156,9 @@ def candidate(name: str, side: dict | None, frame: dict, horizon: str, reach: Re
     first = _first(side)["price"]
     stop, avg = side["stop"], side.get("avg_entry")
     targets = [{"role": t.get("role"), "price": t.get("price"), "rr": t.get("rr")} for t in side.get("targets") or []]
-    how = "now" if dist == 0.0 else ("breakout" if kind == "stop" else "limit")
+    # the live page's zone state allows a little slack (desk.playbook.side_state): "in the zone" there is "now" here
+    inside = dist == 0.0 or (kind == "limit" and side.get("state") in ("in_zone", "confirmed"))
+    how = "now" if inside else ("breakout" if kind == "stop" else "limit")
     members = [m.get("basis") or m.get("source") for m in zone.get("members") or []]
     why = list(dict.fromkeys(m for m in members if m))[:4]
     if cal and not thin:
@@ -244,6 +247,9 @@ def _bottom_note(best: dict | None, other: dict | None, z: dict | None, atr: flo
     """The bottom zone in one line; its ladder steps inside the long zone go to that candidate's why."""
     if not z or not z.get("supported", True) or z.get("stage") in (None, "none"):
         return None
+    out = {"stage": z.get("stage"), "stage_ko": z.get("stage_ko"), "score": z.get("score")}
+    if z.get("stage") not in BOTTOM_STAGES:      # "watch": its first step is just the price now - no overlap to speak of
+        return out
     for c in (best, other):
         if not c or c["side"] != "long" or not atr:
             continue
@@ -254,7 +260,7 @@ def _bottom_note(best: dict | None, other: dict | None, z: dict | None, atr: flo
             p = step.get("price")
             if p is not None and lo - BOTTOM_NEAR_ATR * atr <= p <= hi + BOTTOM_NEAR_ATR * atr:
                 c["why"].append(f"인생 타점 {step.get('step')}차 {p} 와 겹침({z.get('stage_ko')})")
-    return {"stage": z.get("stage"), "stage_ko": z.get("stage_ko"), "score": z.get("score")}
+    return out
 
 
 async def entry_now(prices, ticker: str, horizon: str | None = None, risk=None, bottoms=None,

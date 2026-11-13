@@ -139,6 +139,17 @@ def test_the_bottom_zone_steps_in_the_long_zone_are_named():
     assert any("인생 타점 1차 99.2" in w for w in got["best"]["why"])
     assert not any("2차" in w for w in got["best"]["why"])
     assert entry_now._bottom_note(got["best"], None, {"stage": "none"}, 2.0) is None
+    # "watch": the stage is said, but its first step (the price now) is no overlap
+    fresh = entry_now.choose(_pb(), "swing", _reach())
+    watch = {**z, "stage": "watch", "stage_ko": "관찰"}
+    assert entry_now._bottom_note(fresh["best"], None, watch, 2.0)["stage_ko"] == "관찰"
+    assert not any("인생 타점" in w for w in fresh["best"]["why"])
+
+
+def test_the_playbooks_in_zone_state_reads_as_now():
+    # 0.5 ATR above the zone by distance, but the live page already calls it in the zone (its slack)
+    got = entry_now.choose(_pb(long=_long(state="in_zone")), "swing", _reach())
+    assert got["best"]["kind"] == "now" and got["best"]["distance_atr"] == 0.5
 
 
 def test_live_entry_reads_the_live_playbooks(monkeypatch):
@@ -152,12 +163,12 @@ def test_live_entry_reads_the_live_playbooks(monkeypatch):
     class Bottoms:
         def one(self, ticker, price, source):
             assert price == 101.0
-            return {"stage": "watch", "stage_ko": "관찰", "score": 17, "ladder": [{"step": 1, "price": 99.0}]}
+            return {"stage": "approach", "stage_ko": "접근", "score": 57, "ladder": [{"step": 1, "price": 99.0}]}
 
     monkeypatch.setattr(entry_now.playbook_live, "current", fake_current)
     got = asyncio.run(entry_now.entry_now(None, "KORU", "swing", bottoms=Bottoms(), reach=_reach()))
     assert got["price_now"] == 101.0 and got["price_source"] == "toss" and got["stale"] is False
-    assert got["best"]["side"] == "long" and got["bottom"]["stage_ko"] == "관찰"
+    assert got["best"]["side"] == "long" and got["bottom"]["stage_ko"] == "접근"
     assert any("인생 타점 1차" in w for w in got["best"]["why"]) and "과거 성적" in got["basis"]
 
 

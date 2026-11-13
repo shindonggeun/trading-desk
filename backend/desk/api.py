@@ -493,6 +493,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                             log.warning("spot flow for the futures snapshot timed out")
                             spot = None
                         await asyncio.to_thread(futures_history.record, view, None, spot)
+                        try:                     # #361: a push problem never stops the snapshots
+                            await asyncio.to_thread(app.state.flow_alerts.after_snapshot, futures_history.intraday)
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning("flow turn alerts failed: %s", exc)
                         if closing_window(moment):
                             closed_on = today_kst
                     today = datetime.now(UTC).date()

@@ -1457,3 +1457,54 @@ export interface PlanSummary {
     entry_diff_pct: number | null; stop_diff_pct: number | null; target_diff_pct: number | null; text: string;
   } | null;
 }
+
+/** #312 지금가 기준 타점 하나 — 롱 또는 숏 쪽 계획(GET /api/entry-now 의 best · other) */
+export interface EntryCandidate {
+  side: "long" | "short";
+  side_ko: string;
+  setup: string;
+  /** now = 지금 구역 안 · limit = 구역까지 기다림 · breakout = 돌파 · 이탈 확인 뒤 */
+  kind: "now" | "limit" | "breakout";
+  kind_ko: string;
+  zone: [number | null, number | null];
+  first: number;
+  entries: { step: number; price: number; share: number | null; kind: string | null }[];
+  avg_entry: number | null;
+  stop: number;
+  stop_pct: number | null;
+  targets: { role: string | null; price: number; rr: number | null }[];
+  from_now_pct: number | null;
+  distance_atr: number | null;
+  /** 지금가에서 같은 거리의 과거 체결률(0 ~ 1) */
+  reach_prob: number | null;
+  reach_n: number;
+  p_t1: number | null;
+  /** 체결된 거래의 기대 R(데스크 기록) */
+  expected_r: number | null;
+  /** 계획당 기대 R = reach_prob × expected_r */
+  ev_r: number | null;
+  n: number;
+  thin: boolean;
+  score: number | null;
+  direction: string;
+  state: string | null;
+  why: string[];
+}
+export interface EntryNow {
+  version: number;
+  ticker: string;
+  horizon: string;
+  price_now: number | null;
+  price_source: string | null;
+  price_at: string | null;
+  stale: boolean;
+  atr: number | null;
+  regime: string | null;
+  /** 가장 나은 쪽 — 관망이어도 참고로 남는다(stand_aside 가 이유) */
+  best: EntryCandidate | null;
+  other: EntryCandidate | null;
+  stand_aside: { reason: string } | null;
+  bottom: { stage: string; stage_ko: string; score: number } | null;
+  as_of: string | null;
+  basis: string;
+}

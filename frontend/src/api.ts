@@ -402,3 +402,9 @@ export interface OscillatorView {
   own: OscReading;
   underlying: OscReading | null;
 }
+
+/** #312 지금가 기준 최적 타점(롱 · 숏 중 계획당 기대 R 이 큰 쪽, 관망 이유) — #313 차트 "타점 보기" */
+export function entryNow(ticker: string, horizon?: string): Promise<import("./types").EntryNow> {
+  const q = new URLSearchParams({ ticker, ...(horizon ? { horizon } : {}) });
+  return call(`/api/entry-now?${q}`);
+}

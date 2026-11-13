@@ -1760,3 +1760,16 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   .price-chart-expanded .chart-and-fills.has-fills { flex-direction: row; }
   .price-chart-expanded .chart-and-fills.has-fills > .fills-table { flex: 0 0 280px; }
 }
+
+/* #313 차트 "타점 보기" 한 줄 요약 — 방향은 색 + 글자 */
+.entry-sum { margin: 4px 0 6px; padding: 6px 10px; border-left: 3px solid var(--accent); background: var(--surface-2, transparent); border-radius: 4px; }
+.entry-sum p { margin: 2px 0; }
+.entry-sum.entry-aside { border-left-color: var(--muted); }
+.entry-sum .entry-long { color: var(--long); }
+.entry-sum .entry-short { color: var(--short); }
+.entry-sum .entry-now { color: var(--warn); }
+.entry-sum details { margin-top: 2px; }
+.entry-sum ul { margin: 4px 0; padding-left: 18px; }
+@media (max-width: 600px) {
+  .entry-sum { font-size: 12px; }
+}

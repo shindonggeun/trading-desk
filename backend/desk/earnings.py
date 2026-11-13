@@ -18,6 +18,13 @@
   change). A day that failed keeps its previous rows, marked ``stale`` with their ``refreshed_at``.
 - A Korean row is named by the broker's listing (``name_of``, desk.universe).
 
+#338: Nasdaq refuses the server outright (403 on every pass), so a refusal is no longer the end of it.
+- Yahoo's earnings calendar (yfinance ``Calendars.get_earnings_calendar``: every report of a range
+  with company, market cap, timing and the EPS estimate, ``YAHOO_CAL_CAP`` and up) fills each US day
+  Nasdaq did not answer this pass; those rows are fresh, not stale (``source: "yahoo"``).
+- After a 403 Nasdaq is asked again only after ``REFUSED_SKIP_SEC`` - Yahoo carries the passes between.
+- The page's line says what happened and what stands in: "Nasdaq 차단 — Yahoo 실적 캘린더로 대신 표시".
+
 A background pass (desk.api, with the economic calendar) refreshes this month and the next.
 Unofficial endpoints: when they change the calendar shows fewer earnings, it does not fail.
 """
@@ -53,6 +60,12 @@ DEFAULT_KR = ("005930.KS", "000660.KS", "373220.KS", "207940.KS", "005380.KS", "
 MAJOR_US = ("AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "AVGO", "TSLA", "BRK-B", "JPM", "LLY", "V", "WMT",
             "ORCL", "MA", "NFLX", "XOM", "COST", "JNJ", "HD", "PG", "ABBV", "BAC", "AMD", "KO", "CRM", "UNH",
             "CVX", "MU", "PLTR")
+YAHOO_CAL_CAP = 10e9           # #338: the Yahoo calendar's floor (the page shows MAJOR_CAP and the watched)
+YAHOO_CAL_PAGE = 100           # rows per Yahoo calendar request
+YAHOO_CAL_PAGES = 8            # requests per pass at most
+REFUSED_SKIP_SEC = 12 * 3600   # after a Nasdaq 403, passes skip Nasdaq this long (Yahoo stands in)
+YAHOO_WHEN = {"BMO": "pre", "AMC": "after"}
+NY = ZoneInfo("America/New_York")
 DETAIL_TTL_SEC = 24 * 3600     # a US ticker's Yahoo consensus is fetched again after a day
 DETAIL_MAX = 40                # Yahoo consensus lookups per pass
 CACHE_FILE = Path.home() / ".tradingagents" / "desk-cache" / "earnings.json"   # the backend's volume
@@ -137,6 +150,59 @@ def _yahoo_next(ticker: str) -> dict | None:
     return row
 
 
+def _otc(sym: str) -> bool:
+    """A five-letter OTC symbol ending F (foreign ordinary) or Y (ADR) - the same company is listed
+    under its exchange symbol (BABAF / BABA, TCTZF / TCEHY): the calendar keeps one row."""
+    return len(sym) == 5 and sym.isalpha() and sym.endswith(("F", "Y"))
+
+
+def parse_yahoo_calendar(records: list[dict], first: date, last: date) -> dict[str, list[dict]]:
+    """Yahoo calendar rows (``frame.reset_index().to_dict("records")``) -> ISO US day -> rows.
+    The start time is UTC; the day is New York's. A ticker listed twice keeps its first row."""
+    out: dict[str, list[dict]] = {}
+    seen: set[str] = set()
+    for r in records:
+        sym = str(r.get("Symbol") or r.get("index") or r.get("Ticker") or "").strip().upper()
+        start = r.get("Event Start Date")
+        if not _TICKER.match(sym) or sym in seen or start is None or _otc(sym):
+            continue
+        try:
+            at = start.to_pydatetime() if hasattr(start, "to_pydatetime") else datetime.fromisoformat(str(start))
+        except (TypeError, ValueError):
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+        day = at.astimezone(NY).date()
+        if not first <= day <= last or day.weekday() >= 5:
+            continue
+        seen.add(sym)
+        name = r.get("Company")
+        out.setdefault(day.isoformat(), []).append(blank(
+            ticker=sym, name=str(name)[:80] if isinstance(name, str) and name.strip() else None, date=day.isoformat(),
+            market="us", when=YAHOO_WHEN.get(str(r.get("Timing") or "").upper(), "unknown"),
+            eps_estimate=_num(r.get("EPS Estimate")), market_cap=_num(r.get("Marketcap")), currency="USD",
+            source="yahoo"))
+    return out
+
+
+def _yahoo_calendar(first: date, last: date) -> dict[str, list[dict]]:
+    """Yahoo's earnings calendar for ``first`` .. ``last`` (yfinance), paged; raises on failure."""
+    import yfinance as yf
+
+    cal = yf.Calendars(start=first, end=last + timedelta(days=1))
+    records: list[dict] = []
+    for page in range(YAHOO_CAL_PAGES):
+        frame = cal.get_earnings_calendar(market_cap=YAHOO_CAL_CAP, filter_most_active=False,
+                                          limit=YAHOO_CAL_PAGE, offset=page * YAHOO_CAL_PAGE, force=True)
+        if frame is None or frame.empty:
+            break
+        frame = frame.reset_index()
+        records += frame.rename(columns={frame.columns[0]: "Symbol"}).to_dict("records")
+        if len(frame) < YAHOO_CAL_PAGE:
+            break
+    return parse_yahoo_calendar(records, first, last)
+
+
 class DayFailed(Exception):
     """One Nasdaq day failed after its retries; ``code`` is the status (or timeout / error name)."""
 
@@ -195,7 +261,11 @@ def _stamp(iso: str | None) -> str:
 
 class Earnings:
     def __init__(self, yahoo=_yahoo_next, name_of: Callable[[str], str | None] | None = None,
-                 cache_file: Path | None = None) -> None:
+                 cache_file: Path | None = None, yahoo_calendar=None) -> None:
+        # looked up when used, so a test can stand the module's function in
+        self._yahoo_cal = yahoo_calendar or (lambda first, last: _yahoo_calendar(first, last))
+        self.refused_at: str | None = None        # #338: the last Nasdaq 403 (passes skip Nasdaq for a while)
+        self.substituted: int = 0                 # US days the last pass took from Yahoo's calendar
         self.us: dict[str, list[dict]] = {}       # ISO day -> Nasdaq rows
         self.us_at: dict[str, str] = {}           # ISO day -> when its rows were fetched
         self.kr: dict[str, dict] = {}             # ticker -> next report (Yahoo)
@@ -235,7 +305,8 @@ class Earnings:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps({"us": self.us, "us_at": self.us_at, "kr": self.kr, "fallback": self.fallback,
-                                       "details": self.details, "refreshed_at": self.refreshed_at}), encoding="utf-8")
+                                       "details": self.details, "refreshed_at": self.refreshed_at,
+                                       "refused_at": self.refused_at}), encoding="utf-8")
             tmp.replace(path)
         except OSError as exc:
             log.warning("earnings cache not saved (%s): %s", path, exc)
@@ -253,6 +324,7 @@ class Earnings:
         self.us, self.us_at = data.get("us") or {}, data.get("us_at") or {}
         self.kr, self.fallback = data.get("kr") or {}, data.get("fallback") or {}
         self.details, self.refreshed_at = data.get("details") or {}, data.get("refreshed_at")
+        self.refused_at = data.get("refused_at")
         return True
 
     # --- the pass ----------------------------------------------------------------------------
@@ -276,8 +348,15 @@ class Earnings:
         own = client is None
         client = client or httpx.AsyncClient(timeout=TIMEOUT_SEC, headers={
             "User-Agent": "trading-desk (personal calendar)", "Accept": "application/json"})
+        # #338: a recent 403 - do not knock again yet; Yahoo's calendar carries this pass
+        refused_at = self.refused_at
+        skip = refused_at is not None and (
+            datetime.now(UTC) - datetime.fromisoformat(refused_at)).total_seconds() < REFUSED_SKIP_SEC
+        if skip:
+            failures.append("nasdaq: 403 earlier, not asked this pass")
+            refused = nasdaq_failed = True
         try:
-            for d in weekdays(first, last):
+            for d in [] if skip else weekdays(first, last):
                 try:
                     us[d.isoformat()] = await nasdaq_day(client, d, waits)
                     us_at[d.isoformat()] = stamp
@@ -286,6 +365,7 @@ class Earnings:
                 except Refused:
                     failures.append(f"nasdaq {d}: 403")
                     refused = nasdaq_failed = True
+                    refused_at = stamp
                     break
                 except DayFailed as exc:   # one day down keeps its last rows
                     failures.append(f"nasdaq {d}: {exc.code}")
@@ -299,6 +379,24 @@ class Earnings:
         finally:
             if own:
                 await client.aclose()
+
+        # #338: the US days Nasdaq did not answer this pass come from Yahoo's calendar
+        substituted = 0
+        missing = [d.isoformat() for d in weekdays(first, last) if us_at.get(d.isoformat()) != stamp]
+        if nasdaq_failed and missing:
+            try:
+                alt = await asyncio.to_thread(self._yahoo_cal, first, last)
+            except Exception as exc:  # noqa: BLE001 - the last rows stay, marked stale
+                failures.append(f"yahoo-cal: {type(exc).__name__}")
+                alt = {}
+            if alt:
+                for day in missing:
+                    us[day] = alt.get(day, [])
+                    us_at[day] = stamp
+                substituted = len(missing)
+                ok += 1
+            else:          # nothing listed: no stand-in, the last rows stay (stale) as before
+                log.info("yahoo earnings calendar %s..%s: no rows", first, last)
 
         async def yahoo(t: str) -> dict | None:
             try:
@@ -337,11 +435,14 @@ class Earnings:
         if ok:
             self.refreshed_at = stamp
         self.refused = refused
+        self.refused_at = refused_at if refused else None
+        self.substituted = substituted
         self.error = f"{len(failures)} failed (first: {failures[0]})" if failures else None
         if failures:
             log.warning("earnings pass: %s", "; ".join(failures[:8]))
         self.failed_sources = sorted({f.split(" ", 1)[0].rstrip(":") for f in failures})
-        self.failed_passes = self.failed_passes + 1 if nasdaq_failed else 0
+        # a Nasdaq failure Yahoo's calendar covered is not retried sooner than usual
+        self.failed_passes = self.failed_passes + 1 if nasdaq_failed and not substituted else 0
         self.save()
         return ok
 
@@ -349,19 +450,27 @@ class Earnings:
 
     @property
     def stale(self) -> bool:
-        """Some shown rows are older than the last pass (a source failed)."""
-        return bool(self.failed_sources)
+        """Some shown rows are older than the last pass (a source failed and nothing stood in)."""
+        return bool(set(self.failed_sources) - ({"nasdaq"} if self.substituted else set()))
 
     def message(self) -> str | None:
-        """What the page says when a source failed (Korean)."""
+        """What the page says when a source failed (Korean): what happened and what stands in."""
         if not self.failed_sources:
             return None
         parts = []
+        if "nasdaq" in self.failed_sources and self.substituted:
+            parts.append(("Nasdaq 차단(403)" if self.refused else "Nasdaq 일부 날짜 실패")
+                         + " — Yahoo 실적 캘린더로 대신 표시 중(시총 100억 달러 이상, 발표 시각 일부 미정)")
+            if "yahoo" in self.failed_sources:
+                parts.append("Yahoo 일부 종목 실패")
+            return " · ".join(parts)
         if "nasdaq" in self.failed_sources:
             first = (self.error or "").split("(first: ", 1)[-1]
             code = first.split(": ", 1)[-1].rstrip(")") if first.startswith("nasdaq") else ""
             parts.append("Nasdaq 응답 거부(403)" if self.refused else f"Nasdaq 일부 날짜 실패({code})" if code
                          else "Nasdaq 일부 날짜 실패")
+        if "yahoo-cal" in self.failed_sources:
+            parts.append("Yahoo 실적 캘린더도 실패")
         if "yahoo" in self.failed_sources:
             parts.append("Yahoo 일부 종목 실패")
         return f"{' · '.join(parts)} — 마지막 자료({_stamp(self.refreshed_at)}) 표시 중"

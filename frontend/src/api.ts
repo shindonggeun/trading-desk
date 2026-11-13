@@ -1,5 +1,5 @@
 import type { EarningsPreview, TipsView } from "./types";
-import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FuturesDaily, FuturesIntraday, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
+import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -183,6 +183,9 @@ export const api = {
   /** 코스피 · 코스닥 투자자별 매매대금(#76). 장중 60초 · 장 밖 10분 서버 캐시. */
   marketFlow: (market: FlowMarket, interval: FlowInterval, count = 20) =>
     call<MarketFlow>(`/api/market/flow?market=${market}&interval=${interval}&count=${count}`),
+  /** #360 오늘 장중 현물 · 선물 수급 분 단위 봉과 외국인 전향 지점(#359). */
+  marketFlowIntraday: (bucket: IntradayBucket, date?: string) =>
+    call<IntradayFlow>(`/api/market/flow/intraday?bucket=${bucket}${date ? `&date=${encodeURIComponent(date)}` : ""}`),
   /** 매매 복기(백엔드 desk/review.py): 최근 days 일 체결을 그때의 분석 계획과 묶는다. 읽기 전용. */
   review: (days: number) => call<ReviewResponse>(`/api/review?days=${days}`),
   quote: (ticker: string) =>

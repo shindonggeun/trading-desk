@@ -1430,3 +1430,30 @@ export interface TipsView {
   evidence_as_of?: string | null;
   basis?: { horizons: number[]; worse_pp: number; decay_pp: number; min_days: number; rule: string } | null;
 }
+
+/** #333 plan.summary 의 지금 할 일(#331) — 예전 run 에는 없다 */
+export interface ActionTrigger {
+  side: "long" | "short";
+  price: number;
+  confirm: "close" | "intraday";
+  /** "일봉 종가" · "60분봉 마감" — 장중 터치가 아니라 그 봉의 마감 */
+  confirm_label?: string;
+  then: { entry: number | null; stop: number | null; t1: number | null; rr?: number | null };
+}
+export interface LadderStep {
+  step: number;
+  price: number;
+  share: number | null;
+  kind?: string;
+  when: string;
+  label?: string;
+}
+export interface PlanSummary {
+  action?: { now: string; sentence: string; triggers: ActionTrigger[] };
+  ladder_split?: { dip: LadderStep[]; confirm: LadderStep[] } | null;
+  reference?: boolean;
+  alt?: {
+    entry: number | null; stop: number | null; target: number | null;
+    entry_diff_pct: number | null; stop_diff_pct: number | null; target_diff_pct: number | null; text: string;
+  } | null;
+}

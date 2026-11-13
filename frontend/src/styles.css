@@ -1697,3 +1697,12 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .stop-warn {
   color: var(--warn, #e5a23a);
 }
+
+/* #333 계획 카드: 지금 할 일 한 문장 · 분할 매수 두 묶음 · 참고용 표시 */
+.pa-action { margin: 0 0 8px; padding: 8px 10px; border-left: 3px solid var(--accent, var(--warn)); background: var(--surface-2, rgba(127, 127, 127, 0.08)); border-radius: 4px; }
+.pa-sentence { margin: 0; font-size: 1.05rem; font-weight: 600; line-height: 1.45; }
+.pa-action .small { margin: 4px 0 0; }
+.pa-group { margin: 6px 0 2px; }
+.pa-near { color: var(--warn); font-size: var(--fs-s); }
+.pa-ref { grid-column: 1 / -1; margin: 0; color: var(--warn); font-weight: 600; }
+.pa-alt { margin: 8px 0 0; }

@@ -1,5 +1,5 @@
 import { price } from "../format";
-import type { HorizonId, PlanSummary } from "../types";
+import type { ActionTrigger, HorizonId, LadderStep, PlanSummary } from "../types";
 import { useLivePlaybooks } from "./PlaybookCard";
 
 /**
@@ -9,6 +9,31 @@ import { useLivePlaybooks } from "./PlaybookCard";
 const SHARE = (s: number | null | undefined) => (s == null ? "" : `${Math.round(s * 100)}%`);
 const PCT = (v: number | null | undefined, digits = 1) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(digits)}%`);
 const ROLE: Record<string, string> = { t1: "1차 목표", t2: "2차 목표", t3: "3차 목표" };
+
+const NEAR_PCT = 0.5;   // 지금가가 1차와 이만큼 안이면 "지금가 ≈ 1차"
+
+/** #333 트리거 한 줄: "일봉 종가 75.05 위 → 롱 (+4.5%)" */
+function triggerLine(t: ActionTrigger, now: number | null): string {
+  const up = t.side === "long";
+  const how = t.confirm_label ?? (t.confirm === "close" ? "일봉 종가" : "봉 마감");
+  const dist = now ? ` (지금가에서 ${PCT((t.price / now - 1) * 100)})` : "";
+  return `${how} ${price(t.price)} ${up ? "위 → 롱" : "아래 → 숏"}${dist}`;
+}
+
+function Steps({ steps, now }: { steps: LadderStep[]; now: number | null }) {
+  return (
+    <>
+      {steps.map((l, i) => (
+        <div key={`${l.step}-${l.price}`} className="sum-row">
+          <span>{l.label ?? `${l.step}차`} <b>{price(l.price)}</b>
+            {i === 0 && now != null && Math.abs(l.price / now - 1) * 100 <= NEAR_PCT && <span className="pa-near"> 지금가 ≈ 여기</span>}
+          </span>
+          <span className="muted">{SHARE(l.share)} · {l.when}</span>
+        </div>
+      ))}
+    </>
+  );
+}
 
 function tone(v: PlanSummary["verdict"]): string {
   if (v === "buy_now") return "v-buy";
@@ -35,6 +60,14 @@ export default function SummaryCard({ summary, runId, horizon, live: liveOn }: {
 
   return (
     <section className="card sum-card" aria-label="한눈에 요약">
+      {s.action && !broke && (
+        <div className="pa-action">
+          <p className="pa-sentence">{s.action.sentence}</p>
+          {s.action.triggers.length > 0 && (
+            <p className="muted small">{s.action.triggers.map((t) => triggerLine(t, now)).join(" · ")}</p>
+          )}
+        </div>
+      )}
       <div className={`sum-verdict ${broke ? "" : tone(s.verdict)}`}>
         {broke ? "구역을 뚫고 나가 이 타점은 무효 — 관망" : s.text}
       </div>
@@ -50,15 +83,20 @@ export default function SummaryCard({ summary, runId, horizon, live: liveOn }: {
       {s.notes && s.notes.length > 0 && <p className="small error">{s.notes.join(" · ")}</p>}
 
       {s.side && (
-        <div className={`sum-grid ${s.verdict === "watch" || s.verdict === "stand_aside" ? "sum-ref" : ""}`}>
+        <div className={`sum-grid ${s.reference ?? (s.verdict === "watch" || s.verdict === "stand_aside") ? "sum-ref" : ""}`}>
+          {s.reference && <p className="pa-ref small">참고용 — 지금 지시 아님</p>}
           <div className="sum-box">
             <h4>나눠서 {buyWord}한다면</h4>
-            {(s.ladder ?? []).map((l) => (
-              <div key={l.step} className="sum-row">
-                <span>{l.step}차 <b>{price(l.price)}</b></span>
-                <span className="muted">{SHARE(l.share)} · {l.when}</span>
-              </div>
-            ))}
+            {s.ladder_split ? (
+              <>
+                {s.ladder_split.dip.length > 0 && <p className="muted small pa-group">눌림 {buyWord} (지정가)</p>}
+                <Steps steps={s.ladder_split.dip} now={now} />
+                {s.ladder_split.confirm.length > 0 && <p className="muted small pa-group">확인 뒤 추가 (스톱 진입)</p>}
+                <Steps steps={s.ladder_split.confirm} now={null} />
+              </>
+            ) : (
+              <Steps steps={s.ladder ?? []} now={null} />
+            )}
             {s.avg_entry != null && <p className="muted small">평균 단가 {price(s.avg_entry)}</p>}
           </div>
 
@@ -120,6 +158,7 @@ export default function SummaryCard({ summary, runId, horizon, live: liveOn }: {
           </div>
         </div>
       )}
+      {s.alt && <p className="muted small pa-alt">{s.alt.text}</p>}
     </section>
   );
 }

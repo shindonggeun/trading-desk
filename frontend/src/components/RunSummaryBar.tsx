@@ -55,7 +55,13 @@ const RunSummaryBar = forwardRef<HTMLDivElement, { run: Run; plan: Plan | null; 
                   <strong className="lv-target">{price(plan.price_target)}</strong>
                 </>
               ) : (
-                <>롱 {price(plan.long_trigger ?? null)} 돌파 · 숏 {price(plan.short_trigger ?? null)} 이탈</>
+                plan.summary?.action ? (
+                  // #333 지금 할 일 — 무엇을 · 어떤 마감에서
+                  <>{plan.summary.action.triggers.map((t) =>
+                    `${t.confirm_label ?? (t.confirm === "close" ? "종가" : "봉 마감")} ${price(t.price)} ${t.side === "long" ? "위 롱" : "아래 숏"}`).join(" · ")}</>
+                ) : (
+                  <>롱 {price(plan.long_trigger ?? null)} 돌파 · 숏 {price(plan.short_trigger ?? null)} 이탈</>
+                )
               )}
             </span>
           )}

@@ -41,6 +41,9 @@ CALM_TR = 1.25           # zones, stops and distances use min(ATR, this x the me
 #                          fall from 9 to 5 a dollar ATR from the 9s does not either
 SHOCK_PCT, SHOCK_ATR, SHOCK_BARS = 0.08, 2.0, 5    # a recent day that moved this much leaves its own levels
 LONG_STOP_ATR = 0.5
+# #321: a long's stop under the sr zone's low (swing wicks included), not the merged zone's.
+# Swing basket: held-out +0.022R -> +0.046R, train 0.000R -> +0.014R, stops 35% -> 30%.
+ZONE_STOP = True
 SHORT_STOP_ATR = 0.3
 CONFIRM_ATR = 0.25
 TRIGGER_ATR = 0.1
@@ -230,7 +233,7 @@ def candidates(sr: dict, primary: list[dict], intraday: bool) -> list[dict]:
     for lv in sr.get("levels") or []:
         out.append({"price": lv["price"], "source": "sr", "weight": float(lv.get("strength") or 1.0),
                     "basis": lv.get("basis") or ("지지" if lv.get("kind") == "support" else "저항"),
-                    "kind": lv.get("kind")})
+                    "kind": lv.get("kind"), "zone": lv.get("zone")})
     vp = sr.get("volume_profile") or {}
     va = vp.get("value_area") or {}
     if va.get("low") is not None:
@@ -415,7 +418,10 @@ def zones(cands: list[dict], ref: float, atr: float, below: bool, max_atr: float
             low, high = (low, min(high, ref)) if below else (max(low, ref), high)
         score = round(sum(c["weight"] for c in g), 2)
         distance = abs((high + low) / 2 - ref) / atr
+        # #321: the sr zones' own lows (wicks and bodies of the swings) - where a stop must not sit
+        floor = min((c["zone"][0] for c in g if c.get("zone")), default=None)
         out.append({"low": _round(low), "high": _round(high), "mid": _round((low + high) / 2), "score": score,
+                    "floor": _round(min(floor, low)) if floor is not None else None,
                     "distance_atr": round(distance, 2), "rank": score / (1 + distance / 2),
                     "members": [{"price": _round(c["price"]), "source": c["source"], "basis": c["basis"],
                                  "weight": c["weight"]} for c in g]})
@@ -578,7 +584,7 @@ def _long(regime: dict, cands: list[dict], primary: list[dict], ref: float, atr:
     else:                        # the dip catch's average is its two limits (the third waits for the turn)
         avg = (entries[0]["price"] * entries[0]["share"] + entries[1]["price"] * entries[1]["share"]) / \
             (entries[0]["share"] + entries[1]["share"])
-    stop = _round(zone["low"] - LONG_STOP_ATR * zatr)
+    stop = _round(min(zone["low"], zone.get("floor") or zone["low"]) - LONG_STOP_ATR * zatr) if ZONE_STOP         else _round(zone["low"] - LONG_STOP_ATR * zatr)
     ups = [c for c in cands if c.get("tag") != "round"]
     t1c = _next_level(ups, max(avg, zone["high"]), True, zatr, within=2 * cap, ref=ref)
     t1 = _target("t1", t1c["price"], t1c["basis"], "desk", avg, stop, True, action="take_half", then_stop=_round(avg)) \

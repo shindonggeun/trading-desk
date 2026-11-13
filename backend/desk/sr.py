@@ -19,7 +19,7 @@ from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from zoneinfo import ZoneInfo
 
-from . import horizons, patterns, recent, trend, volume_profile
+from . import horizons, patterns, recent, sr_zones, trend, volume_profile
 
 DAILY_BARS = 200
 WEEKLY_BARS = 156          # three years
@@ -34,6 +34,10 @@ HALF_LIFE_DAYS = 365.0     # a swing a year old counts half: an old, busy range 
 BROKEN_ATR = 1.0           # a close this far through a swing level broke it: it counts half (#152)
 BROKEN_FACTOR = 0.5
 CACHE_TTL_SEC = 300.0
+# #321: rank by the zone's record - held visits lift it, a role change more. Off: on the swing basket it
+# moved held-out R by -0.001 (0.022 -> 0.021), so the record is shown, not ranked by.
+REACTION_RANK = False
+FLIP_FACTOR = 1.5
 _CACHE: dict[tuple[str, str | None], tuple[float, dict]] = {}
 
 
@@ -43,6 +47,8 @@ class _Candidate:
     timeframe: str          # 1d | 1w
     basis: str
     weight: float
+    body: float | None = None   # a swing bar's body edge: the zone spans wick and body (#321)
+    recent: bool = False        # the last sessions' own highs / lows: a sweep is judged against the zone without them
 
 
 def _atr(bars: list[dict]) -> float | None:
@@ -89,11 +95,13 @@ def _swings(bars: list[dict], k: int, timeframe: str, label: str, weight: float,
         if bars[i]["high"] == max(b["high"] for b in window):
             broken = bool(atr and hi_after[i + 1] > bars[i]["high"] + BROKEN_ATR * atr)
             out.append(_Candidate(bars[i]["high"], timeframe, f"{label} 스윙 고점" + (" (돌파됨)" if broken else ""),
-                                  decayed * (BROKEN_FACTOR if broken else 1.0)))
+                                  decayed * (BROKEN_FACTOR if broken else 1.0),
+                                  max(bars[i]["open"], bars[i]["close"])))
         if bars[i]["low"] == min(b["low"] for b in window):
             broken = bool(atr and lo_after[i + 1] < bars[i]["low"] - BROKEN_ATR * atr)
             out.append(_Candidate(bars[i]["low"], timeframe, f"{label} 스윙 저점" + (" (이탈됨)" if broken else ""),
-                                  decayed * (BROKEN_FACTOR if broken else 1.0)))
+                                  decayed * (BROKEN_FACTOR if broken else 1.0),
+                                  min(bars[i]["open"], bars[i]["close"])))
     return out
 
 
@@ -134,7 +142,7 @@ def _recent(days: list[dict] | None, h: horizons.Horizon, partial: bool = False)
     for price, name, weight in named:
         w, names = by_price.get(price, (0.0, []))
         by_price[price] = (max(w, weight), [*names, name])
-    return [_Candidate(p, "1d", " = ".join(names), w) for p, (w, names) in by_price.items()]
+    return [_Candidate(p, "1d", " = ".join(names), w, recent=True) for p, (w, names) in by_price.items()]
 
 
 def _round(price: float) -> float:
@@ -201,18 +209,38 @@ def compute(daily: list[dict], weekly: list[dict], price: float | None = None,
                            for name, n in sorted(counts.items(), key=lambda kv: -kv[1]))
         levels.append({"price": _round(level), "kind": "support" if level < reference else "resistance",
                        "timeframe": h.secondary if any(c.timeframe == h.secondary for c in zone) else h.primary,
-                       "strength": round(weight, 1), "basis": basis})
+                       "strength": round(weight, 1), "basis": basis,
+                       "zone": list(sr_zones.zone_of([(c.price, c.body) for c in zone], atr, level)),
+                       "_core": list(sr_zones.zone_of([(c.price, c.body) for c in zone if not c.recent]
+                                                      or [(c.price, c.body) for c in zone], atr, level))})
+    # a forming session is no evidence yet: its visit and its "close back" are still moving
+    judged = daily[:-1] if partial and h.primary == "1d" else daily
+    events = sr_zones.enrich(levels, judged, atr, weekly, _atr(weekly) if weekly else None)
+    for lv in levels:
+        if lv["flipped"] == ("resistance_to_support" if lv["kind"] == "support" else "support_to_resistance"):
+            lv["basis"] += " · " + ("저항→지지 전환" if lv["kind"] == "support" else "지지→저항 전환")
+    rank = {id(lv): lv["strength"] for lv in levels}
+    if REACTION_RANK:
+        for lv in levels:
+            if lv["touches"] >= 2:
+                rank[id(lv)] *= 0.5 + lv["hold_rate"]
+            if "전환" in lv["basis"]:
+                rank[id(lv)] *= FLIP_FACTOR
 
     picked = []
     for kind in ("resistance", "support"):
         side = [lv for lv in levels if lv["kind"] == kind]
         # strong and near first: a zone two ATR away needs twice the reasons of one at the price
-        side.sort(key=lambda lv: -lv["strength"] / (1 + abs(lv["price"] - reference) / unit))
+        side.sort(key=lambda lv: -rank[id(lv)] / (1 + abs(lv["price"] - reference) / unit))
         picked += side[:PER_SIDE]
     picked.sort(key=lambda lv: -lv["price"])
+    sr_zones.add_buy_zones(picked, atr)
+    for lv in levels:
+        lv.pop("_core", None)
     return {"reference_price": _round(reference), "reference": "live" if price else "close",
             "last_close": _round(daily[-1]["close"]),
             "atr": _round(atr), "as_of": daily[-1]["at"], "levels": picked,
+            "events": [e for e in events if any(e["level"] == lv["price"] for lv in picked)],
             "recent": recent.compare(sessions or [], partial=partial and h.primary == "1d")}
 
 
@@ -228,7 +256,7 @@ def prompt_note(sr: dict | None) -> str | None:
     if not sr or not sr.get("levels"):
         return trend_note
     lines = [f"- {'R' if lv['kind'] == 'resistance' else 'S'} {lv['price']} "
-             f"({lv['timeframe']}, {lv['basis']}; strength {lv['strength']})" for lv in sr["levels"]]
+             f"({lv['timeframe']}, {lv['basis']}; strength {lv['strength']}{_zone_text(lv)})" for lv in sr["levels"]]
     intervals = sr.get("intervals") or {"primary": "1d", "secondary": "1w"}
     frame = ("daily and weekly bars" if intervals == {"primary": "1d", "secondary": "1w"}
              else f"{intervals['primary']} and {intervals['secondary']} bars")
@@ -239,7 +267,38 @@ def prompt_note(sr: dict | None) -> str | None:
             "Use them when you set levels: an entry near a support (long) or resistance (short), a stop "
             "beyond the next zone, a target before the opposite zone. Say which zone a level relies on. "
             "They are arithmetic from price history, not a forecast."
+            + (" A zone is a range, not a line: a long's stop goes below the zone's low (its wicks included), "
+               "never inside it, or one wick through the zone stops the trade out before it turns."
+               if any(lv.get("zone") for lv in sr["levels"]) else "")
+            + _sweep_text(sr.get("events"))
             + ("\n\n" + trend_note if trend_note else ""))
+
+
+def _zone_text(lv: dict) -> str:
+    """#321: a level's zone, record and buy zone for the prompt line (older saved levels have none)."""
+    if not lv.get("zone"):
+        return ""
+    out = f"; zone {lv['zone'][0]}-{lv['zone'][1]}"
+    if lv.get("touches"):
+        out += f", held {lv['held']} of {lv['touches']} past visits"
+    bz = lv.get("buy_zone")
+    if bz:
+        out += f"; buy zone stop {bz['stop']}" + ("" if bz["ok"] else " (thin record or reward below risk)")
+    return out
+
+
+def _sweep_text(events: list[dict] | None) -> str:
+    sweeps = [e for e in events or [] if e.get("kind") == "sweep_reclaim"]
+    if not sweeps:
+        return ""
+    e = sweeps[-1]
+    if e["side"] == "support":
+        moved = f"took out the prior lows {'through' if e.get('through') else 'into'} the support zone at {e['level']}"
+        back = "closed back above it"
+    else:
+        moved = f"took out the prior highs {'through' if e.get('through') else 'into'} the resistance zone at {e['level']}"
+        back = "closed back below it"
+    return f" On {e['at'][:10]} the price {moved} and {back} (a sweep and reclaim: the stops there were run)."
 
 
 def _bars_behind(last: str, now: str, bar_days: int) -> float:

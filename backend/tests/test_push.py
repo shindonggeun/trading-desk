@@ -135,3 +135,24 @@ def test_a_stored_endpoint_off_the_push_services_is_never_called(db_url):
     assert _pusher(engine, sent).broadcast("flow", {"body": "x"}) == 1
     assert [c[0] for c in sent.calls] == [SUB["endpoint"]]
     engine.dispose()
+
+
+def test_after_snapshot_judges_each_market_on_todays_points(db_url, monkeypatch):
+    from datetime import date
+
+    from desk import flow_intraday
+
+    engine = _store_with_sub(db_url)
+    seen = []
+
+    def turns(points, market):
+        seen.append((points, market))
+        return [_turn("10:32", "sell_turn")] if market == "futures" else []
+
+    monkeypatch.setattr(flow_intraday, "turns", turns)
+    alerts = flow_alerts.FlowAlerts(engine, None)
+    got = alerts.after_snapshot(lambda day: [{"day": day}], day=date(2026, 11, 13))
+    assert [m for _, m in seen] == ["futures", "kospi", "kosdaq"] and seen[0][0] == [{"day": date(2026, 11, 13)}]
+    assert [(r["trade_date"], r["market"]) for r in got] == [("2026-11-13", "futures")]
+    assert alerts.after_snapshot(lambda day: [], day=date(2026, 11, 13)) == []
+    engine.dispose()

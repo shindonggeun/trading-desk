@@ -3,6 +3,7 @@ import { api } from "../api";
 import { krwShort, price } from "../format";
 import type { FlowInterval, FlowMarket, FlowRecord, FlowSide, InstitutionKind, Investor, MarketFlow } from "../types";
 import FuturesFlowView from "./FuturesFlowView";
+import IntradayFlowView from "./IntradayFlowView";
 
 // 메인 화면 "시장 수급"(#78): 코스피 · 코스닥에서 개인 · 외국인 · 기관 · 기타법인이 얼마를 사고팔았는지.
 // 막대 색은 극성(순매수 빨강 · 순매도 파랑, 한국식), 추이 선 색은 주체(외국인 · 기관 · 개인) —
@@ -10,8 +11,8 @@ import FuturesFlowView from "./FuturesFlowView";
 
 const MARKETS: { key: FlowMarket; label: string }[] = [{ key: "KOSPI", label: "코스피" }, { key: "KOSDAQ", label: "코스닥" }];
 // 탭: 현물 두 시장 + 코스피200 선물(#161)
-type Tab = FlowMarket | "FUTURES";
-const TABS: { key: Tab; label: string }[] = [...MARKETS, { key: "FUTURES", label: "선물" }];
+type Tab = FlowMarket | "FUTURES" | "INTRADAY";
+const TABS: { key: Tab; label: string }[] = [...MARKETS, { key: "FUTURES", label: "선물" }, { key: "INTRADAY", label: "오늘 장중" }];
 const INTERVALS: { key: FlowInterval; label: string }[] = [
   { key: "1d", label: "일" }, { key: "1w", label: "주" }, { key: "1mo", label: "월" }, { key: "1y", label: "년" },
 ];
@@ -243,7 +244,7 @@ export default function MarketFlowPanel() {
     return next;
   });
 
-  const spotMarket: FlowMarket | null = prefs.market === "FUTURES" ? null : prefs.market;
+  const spotMarket: FlowMarket | null = prefs.market === "FUTURES" || prefs.market === "INTRADAY" ? null : prefs.market;
 
   useEffect(() => {
     if (!spotMarket) return; // 선물 탭은 FuturesFlowView 가 따로 부른다
@@ -306,7 +307,7 @@ export default function MarketFlowPanel() {
           ))}
         </div>
       </div>
-      {!spotMarket ? <FuturesFlowView /> : <>
+      {prefs.market === "INTRADAY" ? <IntradayFlowView /> : !spotMarket ? <FuturesFlowView /> : <>
       <div className="flow-sub">
         <div className="flow-index">
           {data?.index ? <><strong>{price(data.index.price)}</strong> <span className="muted small">{marketLabel}</span></> : <span className="muted small">{marketLabel}</span>}

@@ -1789,3 +1789,15 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 @media (max-width: 600px) {
   .entry-sum { font-size: 12px; }
 }
+
+/* #360 시장 수급 "오늘 장중" */
+.intraday-flow { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.intraday-controls { flex-wrap: wrap; gap: 6px 10px; }
+.intraday-controls .chips { gap: 4px; }
+.chip-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--chip-dot, var(--muted)); margin-right: 5px; }
+.intraday-summary { margin: 0; font-variant-numeric: tabular-nums; }
+.intraday-summary .badge { margin-left: 6px; }
+.intraday-chart { width: 100%; height: 300px; min-width: 0; }
+@media (max-width: 640px) {
+  .intraday-chart { height: 240px; }
+}

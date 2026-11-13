@@ -8,7 +8,7 @@ import Review from "./pages/Review";
 import Live from "./pages/Live";
 import Sectors from "./pages/Sectors";
 import History from "./pages/History";
-import { navigation } from "./nav";
+import { activeNav, NAV, navigation } from "./nav";
 import ChartView from "./pages/ChartView";
 import Settings from "./pages/Settings";
 import Backtest from "./pages/Backtest";
@@ -92,6 +92,8 @@ export default function App() {
   // 큰 차트(#97): #/chart/<티커>?run=…&interval=…
   const chartMatch = route.match(/^#\/chart\/([^?]+)(?:\?(.*))?$/);
 
+  const here = activeNav(route);
+
   return (
     <div className="shell">
       <header className="topbar">
@@ -99,18 +101,19 @@ export default function App() {
           <span className="brand-mark">TD</span> Trading Desk
         </a>
         {user && (
-          <nav aria-label="메뉴">
-            <a href="#/" className={!runMatch && !onSettings && !onReview && !onLive && !onHistory && !onSectors && !onBacktest && !weeklyMatch && !chartsMatch && !calendarMatch && !chatMatch && !tipsMatch ? "active" : ""}>대시보드</a>
-            <a href="#/history" className={onHistory ? "active" : ""}>분석 기록</a>
-            <a href="#/live" className={onLive ? "active" : ""}>시세판</a>
-            <a href="#/sectors" className={onSectors ? "active" : ""}>섹터</a>
-            <a href="#/review" className={onReview ? "active" : ""}>매매 복기</a>
-            <a href="#/charts" className={chartsMatch ? "active" : ""}>차트</a>
-            <a href="#/weekly" className={weeklyMatch ? "active" : ""}>주간 지도</a>
-            <a href="#/calendar" className={calendarMatch ? "active" : ""}>캘린더</a>
-            <a href="#/tips" className={tipsMatch ? "active" : ""}>매매 팁</a>
-            <a href="#/backtest" className={onBacktest ? "active" : ""}>백테스트</a>
-            <a href="#/settings" className={onSettings ? "active" : ""}>설정</a>
+          <nav aria-label="메뉴" className="nav-main">
+            {NAV.map((g) => (
+              <a key={g.id} href={g.items[0].href} className={here?.group.id === g.id ? "active" : ""}
+                aria-current={here?.group.id === g.id ? "page" : undefined}>{g.label}</a>
+            ))}
+          </nav>
+        )}
+        {user && here && here.group.items.length > 1 && (
+          <nav aria-label={`${here.group.label} 하위 메뉴`} className="nav-sub">
+            {here.group.items.map((i) => (
+              <a key={i.href} href={i.href} className={here.item === i ? "active" : ""}
+                aria-current={here.item === i ? "page" : undefined}>{i.label}</a>
+            ))}
           </nav>
         )}
         <div className="topbar-right">
@@ -120,6 +123,8 @@ export default function App() {
           {user && (
             <>
               <span className="pill pill-user" title={user}>{user}</span>
+              <a href="#/settings" className={`topbar-settings${onSettings ? " active" : ""}`} aria-label="설정"
+                aria-current={onSettings ? "page" : undefined} title="설정">⚙<span className="topbar-settings-label"> 설정</span></a>
               <button type="button" className="logout" onClick={logout}>로그아웃</button>
             </>
           )}

@@ -20,6 +20,8 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles, type OscillatorView, type OscReading, type ReviewRow } from "../api";
 import { price } from "../format";
 import FillsTable from "./FillsTable";
+import { drawEntry, useEntryNow } from "./chartEntry";
+import EntrySummary from "./EntrySummary";
 import {
   buyZoneDrawing, keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands, stopInsideZone,
   volumeProfileDrawing, withAlpha, zoneEdges,
@@ -50,11 +52,12 @@ const MAX_BARS = 2000;
 // 보이는 범위의 왼쪽 끝이 첫 봉에서 이만큼 안쪽이면 더 받는다
 const OLDER_EDGE = 5;
 
-type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; pattern: boolean; proj: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean; bz: boolean };
+type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; pattern: boolean; proj: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean; bz: boolean; entry: boolean };
 const SHOW_LABEL: Record<keyof Show, string> = {
   levels: "타점선", pb: "플레이북", sr: "지지 · 저항", all: "모든 지지 · 저항", vp: "매물대", trend: "추세선", pattern: "삼각수렴 · 쐐기", proj: "예상도", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
   opt: "옵션 벽 · 맥스 페인",
   bz: "인생 타점 줍줍",
+  entry: "지금 타점(최적)",
   stoch: "스토캐스틱", bb: "볼린저밴드(20)", osc: "과열 · 침체 표시",
 };
 // #158 옵션 벽: 미국 상장 종목만(Cboe), 현재가에서 이 범위 안의 벽만 그린다(멀리 있는 벽이 가격 축을 늘이지 않게)
@@ -62,12 +65,14 @@ const US_TICKER = /^[A-Z]{1,6}(?:[.-][A-Z])?$/;
 const WALL_RANGE = 0.15;
 const WALLS_SHOWN = 2;
 // #98: 지지 · 저항은 가까운 3개씩만, 피보나치는 켤 때만 — 차트가 선으로 덮이지 않게
-const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, pattern: false, proj: false, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true, bz: true };
+const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, pattern: false, proj: false, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true, bz: true, entry: true };
 // #298 표시 묶음: 가격 칸 위의 선 · 표시만 한 번에 바꾼다(RSI · 스토캐스틱 칸은 그대로). 체크를 손으로 바꾸면 "직접".
-type Preset = "sr" | "trend" | "all" | "custom";
-const PRESET_LABEL: Record<Preset, string> = { sr: "지지·저항만", trend: "추세·패턴", all: "전부", custom: "직접" };
-const OVERLAYS: (keyof Show)[] = ["levels", "pb", "sr", "all", "vp", "trend", "pattern", "proj", "fib", "fills", "analysis", "opt", "bb", "osc", "bz"];
+// #313 "타점 보기" = 지금가 기준 최적 타점 + 분석 타점선 · 체결 · 분석일만(처음 여는 사람의 기본)
+type Preset = "entry" | "sr" | "trend" | "all" | "custom";
+const PRESET_LABEL: Record<Preset, string> = { entry: "타점 보기", sr: "지지·저항만", trend: "추세·패턴", all: "전부", custom: "직접" };
+const OVERLAYS: (keyof Show)[] = ["levels", "pb", "sr", "all", "vp", "trend", "pattern", "proj", "fib", "fills", "analysis", "opt", "bb", "osc", "bz", "entry"];
 const PRESET_ON: Record<Exclude<Preset, "custom">, (keyof Show)[]> = {
+  entry: ["entry", "levels", "fills", "analysis"],
   sr: ["sr", "vp"],
   trend: ["sr", "trend", "pattern", "fib"],
   all: OVERLAYS,
@@ -87,6 +92,9 @@ const OLD_PREFS_KEY = "desk.priceChart.v1";   // #98 전 — 피보나치는 기
 function loadPrefs(): { interval: Interval; show: Show; preset: Preset; custom: Show } {
   try {
     const stored = localStorage.getItem(PREFS_KEY);
+    if (stored == null && localStorage.getItem(OLD_PREFS_KEY) == null) {
+      return { interval: "1d", show: applyPreset({ ...DEFAULT_SHOW }, "entry"), preset: "entry", custom: { ...DEFAULT_SHOW } };
+    }
     const raw = JSON.parse(stored ?? localStorage.getItem(OLD_PREFS_KEY) ?? "{}");
     if (stored == null && raw.show) delete raw.show.fib;
     const interval = INTERVALS.some((i) => i.iv === raw.interval) ? (raw.interval as Interval) : "1d";
@@ -97,7 +105,7 @@ function loadPrefs(): { interval: Interval; show: Show; preset: Preset; custom: 
     for (const k of Object.keys(DEFAULT_SHOW) as (keyof Show)[]) if (typeof raw.custom?.[k] === "boolean") custom[k] = raw.custom[k];
     return { interval, show, preset, custom };
   } catch {
-    return { interval: "1d", show: { ...DEFAULT_SHOW }, preset: "custom" as Preset, custom: { ...DEFAULT_SHOW } };
+    return { interval: "1d", show: applyPreset({ ...DEFAULT_SHOW }, "entry"), preset: "entry" as Preset, custom: { ...DEFAULT_SHOW } };
   }
 }
 function savePrefs(interval: Interval, show: Show, preset: Preset, custom: Show) {
@@ -431,6 +439,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     api.bottomZone(ticker).then((z) => alive && setBottom(z), () => {});
     return () => { alive = false; };
   }, [ticker, show.bz]);
+  // #313 지금가 기준 최적 타점(#312) — 분석 없이도
+  const { entry, failed: entryFailed } = useEntryNow(ticker, show.entry);
 
   // 크게 보기(#97): 브라우저 전체 화면을 쓰고, 안 되면(iOS Safari 등) 화면을 꽉 채운 고정 레이어로.
   const section = useRef<HTMLElement>(null);
@@ -865,6 +875,15 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     };
   }, [drawn, srShown, srSource, plan, fib, vp, show.levels, show.pb, tradeDate]);
 
+  // #313 타점 보기 — 자기 띠 · 선을 붙이고 뗀다(다른 그리기와 섞지 않는다)
+  useEffect(() => {
+    if (!drawn || !show.entry || !entry) return;
+    return drawEntry(drawn.series, entry, {
+      long: css("--long", "#f2464b"), short: css("--short", "#3a86f8"), loss: css("--danger", "#ff6a3d"),
+      profit: css("--ok", "#3fb68b"), muted: css("--muted", "#8c939d"),
+    }, price, `11px ${getComputedStyle(document.body).fontFamily}`, () => drawn.alive.current);
+  }, [drawn, entry, show.entry]);
+
   // RSI 패널은 차트 높이(크게 보기 · 가로 모드 · 창 크기)에 맞춰 다시 잰다
   useEffect(() => {
     const el = box.current;
@@ -1242,6 +1261,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         </button>
       </div>
       {notice && <p className="error small chart-limit">{notice}</p>}
+      {show.entry && <EntrySummary entry={entry} failed={entryFailed} fromRun={!!plan} />}
       {oscLines.length > 0 && (
         <div className={`small chart-limit ${hot ? "error" : "muted"}`} role="status">
           {oscLines.map((t) => <p key={t} className="chart-osc">{hot && t.includes("과열") ? "⚠ " : ""}{t}</p>)}

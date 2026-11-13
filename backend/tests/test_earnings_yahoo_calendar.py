@@ -51,7 +51,16 @@ def _client(calls: list):
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-def test_a_403_is_covered_by_yahoos_calendar_and_nasdaq_rests(tmp_path):
+def test_a_403_is_covered_by_yahoos_calendar_and_nasdaq_rests(tmp_path, monkeypatch):
+    # every pass inside one second - a fast runner did that, and the second pass found no day to fill
+    frozen = datetime.now(UTC)
+
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen.astimezone(tz) if tz else frozen.replace(tzinfo=None)
+
+    monkeypatch.setattr(earnings, "datetime", Frozen)
     asked: list = []
 
     def alt(first, last):

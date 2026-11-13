@@ -127,10 +127,11 @@ function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEar
           <span className={`small ${tone}`}>{ch != null ? ` ${ch > 0 ? "+" : ""}${ch.toFixed(2)}%` : ""}</span>
         </span>
         <Spark ticker={ticker} tone={tone} order={order} />
-        <span className="qb-sub muted small">
+        {/* #316 기준 종가는 툴팁으로 — 좁은 카드에서 아래 줄이 잘리지 않게 */}
+        <span className="qb-sub muted small"
+          title={it?.close != null ? `등락률 기준 종가 ${price(it.close)}${it.close_date ? `(${it.close_date.slice(5)})` : ""}` : undefined}>
           {ticker}
           {it?.quote_source && ` · ${quoteSourceShort(it.quote_source)}`}
-          {it?.close != null && ` · 기준 ${price(it.close)}${it.close_date ? `(${it.close_date.slice(5)})` : ""}`}
         </span>
       </a>
       <LongShortBar it={ls} />

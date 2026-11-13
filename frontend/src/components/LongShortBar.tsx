@@ -70,12 +70,19 @@ export function useLongShort(tickers: string[], enabled: boolean): Record<string
   return items;
 }
 
+/** #316 어느 계약의 비율인지 — 자기 계약 "SAMSUNG 선물", 프록시 · 레버리지 기초자산 계약이면 "SMH 선물 기준". */
+export function contractLabel(it: LongShortItem): string {
+  const name = (it.contract ?? "").replace(/USDT$/, "");
+  return it.basis ? `${name} 선물 기준` : `${name} 선물`;
+}
+
 function splitText(s: LongShortSplit | null | undefined): string {
   return s ? `롱 ${s.long_pct.toFixed(1)} · 숏 ${s.short_pct.toFixed(1)}` : "—";
 }
 
 /**
- * 타일 아래 한 줄: "바이낸스 숏NN [막대] 롱NN"(전체 계정 기준). 올리거나 누르면 세 기준과 24시간 변화.
+ * 타일 아래 한 줄: "바이낸스 SAMSUNG 선물 숏NN [막대] 롱NN"(전체 계정 기준) — 어느 계약의 비율인지 늘 보인다(#316,
+ * 좁은 화면은 "바이낸스" 만 뺀다). 올리거나 누르면 세 기준과 24시간 변화.
  * 계약이 없거나 값이 없으면 아무것도 그리지 않는다.
  */
 export function LongShortBar({ it }: { it: LongShortItem | undefined }) {
@@ -83,12 +90,14 @@ export function LongShortBar({ it }: { it: LongShortItem | undefined }) {
   const acc = it?.accounts;
   if (!it || !it.contract || !acc) return null;
   const change = it.change_24h?.long_pct;
-  const label = `바이낸스 롱 ${acc.long_pct.toFixed(0)}% · 숏 ${acc.short_pct.toFixed(0)}%`;
+  const which = contractLabel(it);
+  const label = `바이낸스 ${which} 롱 ${acc.long_pct.toFixed(0)}% · 숏 ${acc.short_pct.toFixed(0)}%`;
   return (
     <div className="ls-wrap" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
       <button type="button" className="ls-row small" aria-expanded={open} aria-label={`${label} — 자세히`}
         onClick={() => setOpen((v) => !v)}>
-        <span className="ls-word">바이낸스</span>
+        {/* #316 계약 이름은 막대 위 한 줄 — 좁은 카드에서도 잘리지 않게 */}
+        <span className="ls-label" title={`바이낸스 ${which}`}><span className="ls-src">바이낸스 </span>{which}</span>
         <span className="ls-short num">숏{acc.short_pct.toFixed(0)}</span>
         <span className="ls-bar" aria-hidden="true">
           <span className="ls-bar-short" style={{ width: `${acc.short_pct}%` }} />

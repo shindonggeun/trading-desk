@@ -48,6 +48,7 @@ from . import (
     risk_regime,
     sector_news,
     sessions,
+    tips,
     verdict,
     weekly_map,
 )
@@ -282,6 +283,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # #146: the market's selling score from the same Yahoo source as the prices (cached ~15 min)
     risk = None if settings.fake_runs else risk_regime.Cache(
         fetcher=lambda symbols: risk_regime.fetch(symbols, candles=prices._yahoo_candles)).current
+    # #330: rate / dollar regime and its tips (^IRX ^TNX DX-Y.NYB QQQ, cached 3 h)
+    tip_cache = tips.Cache(fetcher=lambda symbols: risk_regime.fetch(symbols, candles=prices._yahoo_candles,
+                                                                     count=tips.HISTORY_BARS))
     # #203: years of Yahoo bars for the RSI / Stochastic extremes and what followed them
     # (read when called: a test's price source may have no Yahoo at all)
     oscillator_fetch = oscillator.yahoo_fetch(lambda *args: prices._yahoo_candles(*args))
@@ -357,6 +361,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        summariser=fake_summariser if settings.fake_runs else llm_summariser,
                                        # world news flow: the background cache below, never fetched in a run
                                        macro=None if settings.fake_runs else macro_news.prompt_note,
+                                       tips=None if settings.fake_runs else tip_cache.note,
                                        # #148: the economic calendar (background cache, same-day runs)
                                        calendar=None if settings.fake_runs else events_calendar.prompt_note,
                                        # #155: margin debt vs deposits (background cache, Korean same-day runs)
@@ -1190,6 +1195,19 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     # #299 차트 예상도: 확률 원뿔 · 레벨 경로 · 설명(모델 문장은 슬롯이 빌 때만, 숫자는 데스크 것만)
     projections = projection.Projections(projection.fake_note if settings.fake_runs else projection.llm_note)
+
+    @app.get("/api/tips")
+    async def tips_view(ticker: str | None = None):
+        """#330 the rate / dollar regime now and the tips with their backtest evidence; ``ticker``
+        keeps only the tips that instrument is in."""
+        try:
+            ticker = clean_ticker(ticker) if ticker else None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        out = await asyncio.to_thread(tip_cache.view, ticker)
+        if out is None:
+            raise HTTPException(503, "rate / dollar series unavailable")
+        return out
 
     @app.get("/api/projection")
     async def projection_view(ticker: str, horizon: str | None = None):

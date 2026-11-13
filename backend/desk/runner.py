@@ -367,6 +367,7 @@ class RunManager:
                  levels=fill_levels, prices: PriceSource | None = None, related=collect_related,
                  lever_analyst=llm_analyst, summariser=llm_summariser,
                  macro: Callable[[str], str | None] | None = None,
+                 tips: Callable[[str], str | None] | None = None,
                  filings: Callable[[str], Awaitable[str | None]] | None = None,
                  positioning: Callable[[str], Awaitable[str | None]] | None = None,
                  calendar: Callable[[], str | None] | None = None,
@@ -400,6 +401,8 @@ class RunManager:
         self.weekly = weekly
         # #115: the world news-flow note (desk.macro_news.prompt_note) - None leaves it out
         self.macro = macro
+        # #330: rate / dollar regime tips on the run's own ticker (desk.tips.Cache.note, Yahoo in a thread)
+        self.tips = tips
         self.summariser = summariser
         self.lever_analyst = lever_analyst
         self.related = related
@@ -837,6 +840,8 @@ class RunManager:
                         _quiet("oscillator", self.oscillator(base or request.ticker)))
                 if self.weekly and same_day:
                     notes["weekly"] = asyncio.ensure_future(_quiet("weekly", self.weekly(request.ticker)))
+                if self.tips and same_day:     # #330: the run's own ticker (a leveraged product is in a tip)
+                    notes["tips"] = asyncio.ensure_future(_quiet("tips", asyncio.to_thread(self.tips, request.ticker)))
                 # the levels and #146's selling score gate the playbooks: waited for in full
                 sr, sr_u, market = await asyncio.gather(
                     self._support_resistance(request, start),
@@ -856,6 +861,8 @@ class RunManager:
                 main_live, main_sr = (start_u, sr_u) if lever else (start, sr)
                 lever_note = under.prompt_note(request.ticker, *lever) if lever else None
                 macro_note = self._macro_note(base or request.ticker)
+                tips_note = notes["tips"].result() if "tips" in notes and notes["tips"].done() else None
+                macro_note = "\n\n".join(n for n in (macro_note, tips_note) if n) or None
                 calendar_note = self._calendar_note() if same_day else None
                 credit_note = self._credit_note(base or request.ticker) if same_day else None
                 frame = horizons.get(None) if main_sr and main_sr.get("fallback") else horizon

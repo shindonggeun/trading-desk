@@ -492,6 +492,41 @@ export interface SrLevel {
   strength: number;
   /** 근거 — 예: "weekly swing low ×3 · 52w low" */
   basis: string;
+  /** #321 구역 하단 · 상단(스윙 꼬리 · 몸통) — 예전 run 은 없다 */
+  zone?: [number, number];
+  /** 과거 방문 수 · 그중 지켜진 수 · 비율 */
+  touches?: number;
+  held?: number;
+  hold_rate?: number | null;
+  flipped?: "resistance_to_support" | "support_to_resistance" | null;
+  /** 지지마다 저가매수 구간(손절은 구역 하단 밖) */
+  buy_zone?: BuyZone;
+}
+
+/** #321 desk/sr_zones.buy_zone */
+export interface BuyZone {
+  lo: number;
+  hi: number;
+  stop: number;
+  target: number | null;
+  rr: number | null;
+  why: string[];
+  hold_rate: number | null;
+  n: number;
+  ok: boolean;
+  note: string | null;
+}
+
+/** #321 직전 저점(고점)을 깨고 구역에 들어왔다가 되돌아 마감한 봉 */
+export interface SrEvent {
+  kind: "sweep_reclaim";
+  at: string;
+  level: number;
+  side: "support" | "resistance";
+  low?: number;
+  high?: number;
+  close: number;
+  through: boolean;
 }
 
 /** backend desk/leverage_analyst.parse_pair — always a buy of the pair (stop < entry < target). */
@@ -515,6 +550,8 @@ export interface SupportResistance {
   atr: number | null;
   as_of: string;
   levels: SrLevel[];
+  /** #321 휩소(스윕 후 회복) — 예전 run 은 없다 */
+  events?: SrEvent[];
   computed_at: string;
   /** 레벨을 계산한 봉 주기(#63 시간축) */
   intervals?: { primary: string; secondary: string };

@@ -1692,3 +1692,8 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   .tip-regime { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tip-list { grid-template-columns: 1fr; }
 }
+
+/* #321 계획 손절이 지지 구역 안쪽일 때 */
+.stop-warn {
+  color: var(--warn, #e5a23a);
+}

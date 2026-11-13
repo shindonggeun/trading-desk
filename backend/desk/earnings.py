@@ -345,6 +345,7 @@ class Earnings:
         us, us_at, kr = dict(self.us), dict(self.us_at), dict(self.kr)
         fallback, details = dict(self.fallback), dict(self.details)
         ok, failures, in_row, refused, nasdaq_failed = 0, [], 0, False, False
+        answered: set[str] = set()      # the US days Nasdaq answered this pass (not by stamp: two passes can share a second)
         own = client is None
         client = client or httpx.AsyncClient(timeout=TIMEOUT_SEC, headers={
             "User-Agent": "trading-desk (personal calendar)", "Accept": "application/json"})
@@ -360,6 +361,7 @@ class Earnings:
                 try:
                     us[d.isoformat()] = await nasdaq_day(client, d, waits)
                     us_at[d.isoformat()] = stamp
+                    answered.add(d.isoformat())
                     ok += 1
                     in_row = 0
                 except Refused:
@@ -382,7 +384,7 @@ class Earnings:
 
         # #338: the US days Nasdaq did not answer this pass come from Yahoo's calendar
         substituted = 0
-        missing = [d.isoformat() for d in weekdays(first, last) if us_at.get(d.isoformat()) != stamp]
+        missing = [d.isoformat() for d in weekdays(first, last) if d.isoformat() not in answered]
         if nasdaq_failed and missing:
             try:
                 alt = await asyncio.to_thread(self._yahoo_cal, first, last)

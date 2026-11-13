@@ -104,3 +104,75 @@ def test_a_ladder_whose_t1_pays_under_1r_is_not_a_buy():
         card = summary.build(plan, _pb(long=poor))
         assert card["verdict"] == "stand_aside" and "손익비" in card["text"] and "0.06" in card["why"]
         assert card["side"] == "long" and card["stop"] == 94.0        # the numbers stay, for reference
+
+
+def _gdxu() -> tuple[dict, dict]:
+    """#331: GDXU 2026-11-13 - 71.85, stand aside (T1 0.76R), triggers 75.05 / 64.39, a 3rd step at 74.99."""
+    plan = {"bias": "flat", "rating": "HOLD", "entry_price": 68.54, "stop_loss": 59.65, "price_target": 88.16,
+            "long_trigger": 75.05, "short_trigger": 64.39}
+    long = _long(avg_entry=71.2, stop=59.78, zone={"low": 66.0, "high": 72.5, "members": []},
+                 entries=[{"step": 1, "price": 72.3, "share": 0.25, "kind": "limit"},
+                          {"step": 2, "price": 67.41, "share": 0.25, "kind": "limit"},
+                          {"step": 3, "price": 74.99, "share": 0.5, "kind": "stop"}],
+                 targets=[{"role": "t1", "price": 77.59, "rr": 0.76}, {"role": "t2", "price": 88.22, "rr": 2.1}])
+    pb = _pb(ref=71.85, long=long)
+    pb["frame"]["primary"] = "1d"
+    return plan, pb
+
+
+def test_the_action_says_what_to_do_now_and_on_which_close():
+    plan, pb = _gdxu()
+    card = summary.build(plan, pb)
+    act = card["action"]
+    assert act["now"] == "관망" and card["reference"] is True
+    assert act["sentence"].startswith("지금 71.85 — 관망.")
+    assert "일봉 종가가 75.05 위면 롱(손절 59.78 · 1차 77.59 · 손익비 0.17 — 낮음)" in act["sentence"]
+    assert "일봉 종가가 64.39 아래면 숏" in act["sentence"]
+    assert [(t["side"], t["price"], t["confirm"]) for t in act["triggers"]] == [("long", 75.05, "close"), ("short", 64.39, "close")]
+    assert act["triggers"][0]["then"] == {"entry": 75.05, "stop": 59.78, "t1": 77.59, "rr": 0.17}
+    assert act["triggers"][0]["confirm_label"] == "일봉 종가"
+    pb["frame"]["primary"] = "60m"
+    assert "60분봉 마감이 75.05 위면 롱" in summary.build(plan, pb)["action"]["sentence"]
+
+
+def test_a_triggers_stop_and_target_never_point_the_wrong_way():
+    plan, pb = _gdxu()
+    pb["short"] = {"setup": "fade", "stop": 63.0, "entries": [{"step": 1, "price": 74.0, "share": 1.0, "kind": "limit"}],
+                   "targets": [{"role": "t1", "price": 66.0, "rr": 1.0}, {"role": "t2", "price": 60.0, "rr": 2.0}]}
+    short = summary.build(plan, pb)["action"]["triggers"][1]
+    # the fade's stop 63 is below the 64.39 break and its T1 66 above it: neither fits a short on the break
+    assert short["then"] == {"entry": 64.39, "stop": None, "t1": 60.0, "rr": None}
+    high = {**plan, "long_trigger": 90.0}
+    assert summary.build(high, pb)["action"]["triggers"][0]["then"]["t1"] is None   # no desk target past 90
+
+
+def test_the_ladder_splits_dip_buys_from_adds_on_confirmation():
+    plan, pb = _gdxu()
+    split = summary.build(plan, pb)["ladder_split"]
+    assert [(e["price"], e["label"]) for e in split["dip"]] == [(72.3, "눌림 1차"), (67.41, "눌림 2차")]
+    assert [(e["price"], e["label"]) for e in split["confirm"]] == [(74.99, "확인 추가")]
+    short = summary.split_ladder([{"price": 10, "kind": "limit"}, {"price": 11, "kind": "limit"}, {"price": 9, "kind": "stop"}],
+                                 up=False)
+    assert [e["price"] for e in short["dip"]] == [10, 11] and [e["price"] for e in short["confirm"]] == [9]
+
+
+def test_the_plans_own_numbers_go_to_alt_when_they_differ_from_the_desks():
+    plan, pb = _gdxu()
+    alt = summary.build(plan, pb)["alt"]
+    assert alt["text"] == "AI 계획 진입 68.54 · 손절 59.65 · 목표 88.16 (데스크와 다름 — 카드는 데스크 숫자)"
+    assert alt["entry_diff_pct"] == -3.74                # 68.54 vs the desk's average 71.2
+    assert alt["stop_diff_pct"] == -0.22 and alt["target_diff_pct"] == -0.07   # vs 59.78 and T2 88.22
+    same = {**plan, "entry_price": 71.0, "stop_loss": 59.8, "price_target": 77.5}
+    assert summary.build(same, pb)["alt"] is None
+    assert summary.build({"bias": "flat"}, pb)["alt"] is None       # no numbers in the plan
+    short_numbers = {**plan, "entry_price": 70.0, "stop_loss": 75.0, "price_target": 60.0}
+    assert summary.build(short_numbers, pb)["alt"] is None            # a short plan vs the long card
+
+
+def test_a_buy_now_card_is_an_instruction_and_an_old_card_keeps_its_fields():
+    card = summary.build({"bias": "long"}, _pb(ref=99.5))
+    assert card["verdict"] == "buy_now" and card["reference"] is False and card["alt"] is None
+    assert card["action"]["sentence"] == "지금 99.5 — 지금 매수. 100.0부터 나눠서 매수(손절 94.0, 1차 108.0)."
+    assert card["ladder"] and {"verdict", "text", "stop", "targets"} <= set(card)
+    aside = summary.build({"bias": "long"}, _pb(long={"setup": "none", "entries": []}))
+    assert aside["action"]["now"] == "관망" and aside["ladder_split"] is None and aside["reference"] is True

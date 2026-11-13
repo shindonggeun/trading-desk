@@ -86,6 +86,8 @@ def _calibrate(args) -> int:
     from . import backtest, calibration, horizons
 
     cells: dict = {}
+    recent: dict = {}
+    windows: dict = {}
     checks: dict = {}
     for name in args.horizon or ["swing"]:
         if name not in horizons.HORIZONS:
@@ -96,6 +98,12 @@ def _calibrate(args) -> int:
                      on_trades=lambda trades, cut, got=got: got.update(trades=trades, cut=cut))
         trades, cut = got.get("trades") or [], got.get("cut")
         cells.update(calibration.from_trades(trades, name))
+        # #286: the last twelve months up to the backtest's last plan
+        last = max((t.at for t in trades), default=None)
+        if last:
+            since = calibration.recent_since(last)
+            recent.update(calibration.from_trades(trades, name, since=since))
+            windows[name] = {"since": since, "as_of": str(last)[:10]}
         train = [t for t in trades if cut is None or t.at < cut]
         valid = [t for t in trades if cut is not None and t.at >= cut]
         bands = calibration.reliability(calibration.from_trades(train, name), valid, name)
@@ -105,8 +113,12 @@ def _calibrate(args) -> int:
             print(f"  band {row['band']:>2}+  n {row['n']:>5}  predicted {row['predicted']:.3f}  "
                   f"actual {row['actual']:.3f}  gap {row['gap']:+.3f}")
     calibration.write(cells, {"source": "backtest", "tickers": list(backtest.BASKET), "start": args.start,
-                              "costs_bps": backtest.COST_BPS, "reliability": checks})
+                              "costs_bps": backtest.COST_BPS, "reliability": checks, "recent_window": windows},
+                      recent=recent)
     print(f"written: {calibration.PATH}")
+    for row in calibration.drifted(cells, recent):
+        print(f"  drift {row['drift']:8} {row['key']}: long {row['long_exp_r']:+.3f}R (n {row['long_n']}) "
+              f"recent {row['recent_exp_r']:+.3f}R (n {row['recent_n']})")
     return 0
 
 

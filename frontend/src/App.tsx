@@ -17,7 +17,7 @@ import Tips from "./pages/Tips";
 import Charts from "./pages/Charts";
 import CalendarView from "./pages/CalendarView";
 import Chat from "./pages/Chat";
-import ChatPanel from "./components/ChatPanel";
+import ChatWidget from "./components/ChatWidget";
 import { resetFavorites } from "./favorites";
 
 function safeDecode(v: string): string {
@@ -109,7 +109,6 @@ export default function App() {
             <a href="#/weekly" className={weeklyMatch ? "active" : ""}>주간 지도</a>
             <a href="#/calendar" className={calendarMatch ? "active" : ""}>캘린더</a>
             <a href="#/tips" className={tipsMatch ? "active" : ""}>매매 팁</a>
-            <a href="#/chat" className={chatMatch ? "active" : ""}>채팅</a>
             <a href="#/backtest" className={onBacktest ? "active" : ""}>백테스트</a>
             <a href="#/settings" className={onSettings ? "active" : ""}>설정</a>
           </nav>
@@ -158,8 +157,8 @@ export default function App() {
       ) : (
         <Dashboard />
       )}
-      {/* #315 어디서든 여는 AI 채팅 옆 패널(채팅 화면 자체에선 열지 않음) */}
-      {user && !chatMatch && <ChatPanel />}
+      {/* #340 어디서든 오른쪽 아래에서 여는 AI 채팅(채팅 크게 보기 화면에선 숨김) */}
+      {user && <ChatWidget />}
     </div>
   );
 }

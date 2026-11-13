@@ -85,9 +85,49 @@ const TOOL_KO: Record<string, string> = {
   macro_brief: "거시 브리핑", calendar: "일정", playbook: "플레이북", playbooks: "플레이북", quote: "시세", price: "시세",
   bottom_zone: "인생 타점", projection: "예상도", runs: "분석 기록", run: "분석", sector_news: "섹터 이슈", levels: "지지 · 저항",
   longshort: "롱/숏 비율", futures: "선물 수급", flow: "시장 수급", weekly_map: "주간 지도",
+  market_risk: "시장 위험", calendar_week: "이번 주 일정", recent_runs: "최근 분석", entry_now: "지금 타점",
 };
 export function toolLabel(name: string, args?: Record<string, unknown> | null): string {
   const base = TOOL_KO[name] ?? name.replace(/^get_|^desk_/, "").replace(/_/g, " ");
   const t = typeof args?.ticker === "string" ? args.ticker : null;
   return t ? `${t} ${base}` : base;
+}
+
+/**
+ * #340 도구 요약 한 줄 — 서버 요약은 결과 JSON 앞부분이라 그대로 보이면 읽기 어렵다.
+ * 오류면 그 이유를, JSON 이면 "N개 항목" 같은 한 줄을 보이고 원문은 펼쳐야 보인다.
+ */
+export function toolSummary(summary: string | null | undefined): { line: string; raw: string | null; error: boolean } {
+  const text = (summary ?? "").trim();
+  if (!text) return { line: "요약 없음", raw: null, error: false };
+  const err = text.match(/^\{\s*"error"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (err) {
+    const why = err[1].replace(/\\"/g, '"');
+    return { line: /[가-힣]/.test(why) ? why : `조회 실패(${why})`, raw: null, error: true };
+  }
+  if (/^오류[:：]/.test(text)) {
+    const why = text.replace(/^오류[:：]\s*/, "");
+    return { line: /[가-힣]/.test(why) ? why : `조회 실패(${why})`, raw: null, error: true };
+  }
+  if (text.startsWith("[")) {
+    // 잘리지 않은 원문만 실제로 읽어 센다 — 잘린 목록은 개수를 짐작하지 않는다
+    let n: number | null = null;
+    if (!text.endsWith("…")) {
+      try {
+        const v: unknown = JSON.parse(text);
+        if (Array.isArray(v)) n = v.length;
+      } catch {
+        n = null;
+      }
+    }
+    return { line: n !== null ? `${n}개 항목을 가져왔습니다` : "목록을 가져왔습니다", raw: text, error: false };
+  }
+  if (text.startsWith("{")) {
+    const keys = [...text.matchAll(/"([a-z_]+)"\s*:/g)].map((m) => m[1]).filter((k, i, a) => a.indexOf(k) === i);
+    const price = text.match(/"(?:price|last_close|close)"\s*:\s*(-?[\d.]+)/);
+    const at = text.match(/"(?:as_of|at|fetched_at|refreshed_at)"\s*:\s*"([^"]{10,16})/);
+    const bits = [price ? `가격 ${Number(price[1]).toLocaleString("ko-KR")}` : null, at ? `${at[1].replace("T", " ")} 기준` : null].filter(Boolean);
+    return { line: bits.length ? bits.join(" · ") : `데스크 숫자를 가져왔습니다(${keys.slice(0, 3).join(", ")}${keys.length > 3 ? " …" : ""})`, raw: text, error: false };
+  }
+  return { line: text, raw: null, error: false };
 }

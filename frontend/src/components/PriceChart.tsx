@@ -19,7 +19,10 @@ import {
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles, type OscillatorView, type OscReading, type ReviewRow } from "../api";
 import { price } from "../format";
-import { keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands, volumeProfileDrawing, withAlpha, zoneHalfWidth } from "./chartBands";
+import {
+  buyZoneDrawing, keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands, stopInsideZone,
+  volumeProfileDrawing, withAlpha, zoneEdges,
+} from "./chartBands";
 import type { BottomZone, ChartPattern, FibLevel, Fibonacci, Plan, Positioning, Projection, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
 
@@ -821,14 +824,18 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const book = show.pb && plan?.playbooks
       ? playbookDrawing(plan.playbooks, { long: css("--long", "#f2464b"), short: css("--short", "#3a86f8") }, price)
       : { bands: [], marks: [] };
+    // #321 저가매수 구간 — 지지 · 저항을 켰을 때만(가까운 지지 몇 개)
+    const buyZones = buyZoneDrawing(srShown.filter((lv) => lv.kind === "support"), css("--ok", "#3fb68b"), price);
     bands.set(
       [
         ...profile.bands,
         ...book.bands,
         ...(show.levels ? planBands(plan, at == null ? null : time(at), { loss: css("--danger", css("--up", "#f2464b")), profit: css("--ok", "#3fb68b") }) : []),
-        ...srBands(srShown, srSource?.atr, { support: css("--sr-support", "#2bb3a3"), resistance: css("--sr-resistance", "#b58cf0") }),
+        ...srBands(srShown, srSource?.atr, { support: css("--sr-support", "#2bb3a3"), resistance: css("--sr-resistance", "#b58cf0") }, price),
+        ...buyZones.bands,
       ],
       [
+        ...buyZones.marks,
         ...(fib?.levels ?? []).filter((lv) => Number.isFinite(lv.price)).map((lv) => ({ price: lv.price, color: withAlpha(muted, 0.85), label: String(lv.ratio) })),
         ...profile.marks,
         ...book.marks,
@@ -945,6 +952,35 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (swing) chart.removeSeries(swing);
     };
   }, [drawn, trendLines, fib, ticker, srSource]);
+
+  // #321 휩소 — 직전 저점(고점)을 깨고 구역에 들어왔다가 되돌아 마감한 봉에 "스윕 후 회복". 지지 · 저항을 켰을 때만.
+  const sweeps = show.sr ? srSource?.events ?? null : null;
+  useEffect(() => {
+    if (!drawn || !sweeps?.length) return;
+    const tf = srSource?.intervals?.primary ?? "1d";
+    if (tf !== interval) return;                     // 다른 주기 봉에는 달지 않는다
+    const { rows, intraday } = drawn;
+    const keys = rows.map((r) => r.key);
+    const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
+    const keyOf = (iso: string): Key | null =>
+      Number.isFinite(Date.parse(iso)) ? barFor(keys, intraday ? kstStamp(iso) : kstDay(iso)) : null;
+    const list: SeriesMarker<Time>[] = [];
+    for (const e of sweeps) {
+      if (e.kind !== "sweep_reclaim") continue;
+      const key = keyOf(e.at);
+      if (key == null) continue;
+      const up = e.side === "support";
+      list.push({ time: time(key), position: up ? "belowBar" : "aboveBar", shape: up ? "arrowUp" : "arrowDown",
+                  color: css(up ? "--ok" : "--danger", up ? "#3fb68b" : "#ff6a3d"), text: "스윕 후 회복" } as SeriesMarker<Time>);
+    }
+    list.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+    // 이웃한 봉의 글자가 겹치니 글자는 가장 최근 것에만(앞의 것은 화살표만)
+    for (const mk of list.slice(0, -1)) mk.text = "";
+    const m = createSeriesMarkers(drawn.series, list);
+    return () => {
+      if (drawn.alive.current) m.detach();
+    };
+  }, [drawn, sweeps, srSource, interval]);
 
   // #298 삼각수렴 · 쐐기 — 윗선 · 아랫선을 첫 터치부터 마지막 봉까지 점선으로, 윗선 끝에 종류 · 상태 · 정점까지 남은 봉.
   // 추세선과 같은 규칙(같은 주기는 로그 가격 × 봉 순서 직선, 다른 주기는 시각으로)이고 축 범위엔 넣지 않는다.
@@ -1077,9 +1113,9 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       for (const level of srShown) {
         const make = (y: number): Hover => ({ type: "sr", level, key: `sr-${level.kind}-${level.price}`, x: pt.x, y });
         consider(level.price, make);
-        const hw = zoneHalfWidth(level, srSource?.atr);
-        const a = series.priceToCoordinate(level.price + hw);
-        const b = series.priceToCoordinate(level.price - hw);
+        const [lo, hi] = zoneEdges(level, srSource?.atr);
+        const a = series.priceToCoordinate(hi);
+        const b = series.priceToCoordinate(lo);
         if (a != null && b != null && pt.y >= Math.min(a, b) && pt.y <= Math.max(a, b)) {
           const d = Math.abs((a + b) / 2 - pt.y);   // 겹친 띠는 가운데에 가까운 쪽
           if (!inBand || d < inBand.d) inBand = { hit: make((a + b) / 2), d };
@@ -1106,6 +1142,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const currency = isKorean(ticker) ? "원" : "달러";
   const levels = [...(plan ? [plan.entry_price, plan.stop_loss, plan.price_target] : []), ...(extraLines ?? []).map((l) => l.price)];
   const hasLevels = levels.some((v) => v != null);
+  // #321 계획 손절이 지지 구역 안쪽이면 경고 — 그 분석이 본 레벨(없으면 지금 레벨)로
+  const stopWarn = show.levels && plan ? stopInsideZone(plan.stop_loss, plan.entry_price, sr) : null;
   const outOfRange = show.levels && !!drawn && levels.some((v) => v != null && Math.abs(v - drawn.lastClose) / drawn.lastClose > AUTOSCALE_MAX_GAP);
   // 보관 한도 안내는 분봉일 때만 — 년봉은 늘 요청보다 적게 오지만 한도 탓이 아니다.
   const limited = candles?.truncated && candles.history_limit_days != null ? candles.history_limit_days : null;
@@ -1195,6 +1233,22 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
                   <strong>{hover.level.kind === "support" ? "지지" : "저항"} {price(hover.level.price)}</strong>{" "}
                   <span className="muted">{TF_LABEL[hover.level.timeframe] ?? hover.level.timeframe} · 강도 {hover.level.strength}</span>
                   <div>{hover.level.basis}</div>
+                  {hover.level.zone && (
+                    <div>
+                      구역 {price(hover.level.zone[0])} ~ {price(hover.level.zone[1])}
+                      {hover.level.touches ? ` · 과거 ${hover.level.touches}번 중 ${hover.level.held}번 ${hover.level.kind === "support" ? "반등" : "저지"}` : " · 반응 기록 없음"}
+                    </div>
+                  )}
+                  {hover.level.buy_zone && (
+                    <div className={hover.level.buy_zone.ok ? undefined : "muted"}>
+                      저가매수 구간 {price(hover.level.buy_zone.lo)} ~ {price(hover.level.buy_zone.hi)} · 손절 {price(hover.level.buy_zone.stop)}(구역 하단 밖)
+                      {hover.level.buy_zone.target != null && ` · 첫 목표 ${price(hover.level.buy_zone.target)}`}
+                      {hover.level.buy_zone.rr != null && ` · 손익비 ${hover.level.buy_zone.rr}`}
+                      {` · 표본 ${hover.level.buy_zone.n}`}
+                      {hover.level.buy_zone.why.length > 0 && ` · ${hover.level.buy_zone.why.join(" · ")}`}
+                      {hover.level.buy_zone.note && ` — ${hover.level.buy_zone.note}`}
+                    </div>
+                  )}
                 </>
               ) : hover.type === "vp" ? (
                 <>
@@ -1229,6 +1283,11 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           <span className="lg lg-entry" /> 진입 {price(plan.entry_price)} · <span className="lg lg-stop" /> 손절 {price(plan.stop_loss)} ·{" "}
           <span className="lg lg-target" /> 목표 {price(plan.price_target)}
           {outOfRange && " · 현재가와 너무 먼 선은 축 범위에서 뺐습니다"}
+          {stopWarn && (
+            <span className="stop-warn">
+              {" "}· 구역 안 손절 — 지지 {price(stopWarn.level.zone![0])}~{price(stopWarn.level.zone![1])} 안이라 꼬리에 털릴 수 있음, 제안 손절 {price(stopWarn.suggest)}
+            </span>
+          )}
         </p>
       )}
       {show.proj && (

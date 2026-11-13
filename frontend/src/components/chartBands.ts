@@ -246,21 +246,71 @@ export function nearestLevels(levels: SrLevel[], reference: number, n: number, a
   return [...side("resistance"), ...side("support")];
 }
 
-/** 지지 · 저항 구역 띠 — 강도가 셀수록 진하게, 주봉 근거는 가운데 선. */
-export function srBands(levels: SrLevel[], atr: number | null | undefined, colors: { support: string; resistance: string }): Band[] {
+/** 구역 하단 · 상단 — 서버가 준 구역(#321)이 있으면 그것, 없으면(예전 run) 가격 ± 반폭. */
+export function zoneEdges(level: SrLevel, atr: number | null | undefined): [number, number] {
+  if (level.zone && level.zone[0] <= level.zone[1]) return level.zone;
+  const hw = zoneHalfWidth(level, atr);
+  return [level.price - hw, level.price + hw];
+}
+
+/** 반응 기록이 이만큼 안 되면 근거 부족 — 띠를 흐리게(desk/sr_zones.MIN_TOUCHES 와 같게) */
+const MIN_TOUCHES = 3;
+const FLIP_KO = { resistance_to_support: "저항→지지", support_to_resistance: "지지→저항" } as const;
+
+/** 띠 라벨 — 반응 기록이 있으면 "지지 150.2~152.8 · 반등 6/8 · 저항→지지", 없으면(예전 run) 주기 · 강도. */
+export function srLabel(lv: SrLevel, fmt: (v: number) => string): string {
+  if (!lv.zone) return `${KIND_KO[lv.kind]} · ${TF_KO[lv.timeframe] ?? lv.timeframe} · 강도 ${lv.strength}`;
+  const parts = [`${KIND_KO[lv.kind]} ${fmt(lv.zone[0])}~${fmt(lv.zone[1])}`];
+  if (lv.touches) parts.push(`${lv.kind === "support" ? "반등" : "저지"} ${lv.held ?? 0}/${lv.touches}`);
+  if (lv.flipped) parts.push(FLIP_KO[lv.flipped]);
+  if (lv.buy_zone?.ok) parts.push("저가매수 구간");
+  return parts.join(" · ");
+}
+
+/** 지지 · 저항 구역 띠 — 강도가 셀수록 진하게, 주봉 근거는 가운데 선, 반응 기록이 적으면 흐리게(#321). */
+export function srBands(levels: SrLevel[], atr: number | null | undefined, colors: { support: string; resistance: string },
+                        fmt: (v: number) => string = String): Band[] {
   return levels.map((lv) => {
-    const hw = zoneHalfWidth(lv, atr);
+    const [bottom, top] = zoneEdges(lv, atr);
     const base = colors[lv.kind];
-    const alpha = 0.07 + Math.min(lv.strength, 8) * 0.018;
+    const thin = lv.zone != null && (lv.touches ?? 0) < MIN_TOUCHES && !lv.flipped;
+    const alpha = (0.07 + Math.min(lv.strength, 8) * 0.018) * (thin ? 0.55 : 1);
     return {
-      top: lv.price + hw,
-      bottom: lv.price - hw,
+      top,
+      bottom,
       fill: withAlpha(base, alpha),
-      edge: lv.timeframe === "1w" ? withAlpha(base, 0.7) : undefined,
-      label: `${KIND_KO[lv.kind]} · ${TF_KO[lv.timeframe] ?? lv.timeframe} · 강도 ${lv.strength}`,
-      labelColor: withAlpha(base, 0.95),
+      edge: lv.timeframe === "1w" ? withAlpha(base, thin ? 0.4 : 0.7) : undefined,
+      label: srLabel(lv, fmt),
+      labelColor: withAlpha(base, thin ? 0.6 : 0.95),
     };
   });
+}
+
+/** 저가매수 구간(#321 buy_zone) — 근거가 된 것만 초록 띠(이름은 지지 라벨에, 손절 · 목표는 설명에). */
+export function buyZoneDrawing(levels: SrLevel[], color: string, fmt: (v: number) => string): { bands: Band[]; marks: Mark[] } {
+  const bands: Band[] = [];
+  const marks: Mark[] = [];
+  for (const lv of levels) {
+    const bz = lv.buy_zone;
+    if (!bz?.ok) continue;
+    // 이름은 그 지지 띠 라벨에 붙인다(같은 높이에 라벨 둘이면 휴대폰에서 겹친다, #98)
+    bands.push({ top: bz.hi, bottom: bz.lo, fill: withAlpha(color, 0.13), edge: withAlpha(color, 0.55) });
+    // 손절은 마우스를 올린 설명에만 — 지지가 몰린 곳에 선 · 글자를 더하면 휴대폰에서 읽을 수 없다
+    void fmt;
+  }
+  return { bands, marks };
+}
+
+/** 계획 손절이 지지 구역 안쪽이면 그 구역과 제안 손절(구역 하단 밖) — 롱 손절만(진입 아래). */
+export function stopInsideZone(stop: number | null | undefined, entry: number | null | undefined, levels: SrLevel[]):
+  { level: SrLevel; suggest: number } | null {
+  if (stop == null || entry == null || stop >= entry) return null;
+  for (const lv of levels) {
+    if (lv.kind !== "support" || !lv.zone) continue;
+    const [lo, hi] = lv.zone;
+    if (stop > lo && stop <= hi) return { level: lv, suggest: lv.buy_zone?.stop ?? lo };
+  }
+  return null;
 }
 
 /** 타점의 손실(손절 ~ 진입) · 이익(진입 ~ 목표) 영역 — 트레이딩뷰 포지션 도구처럼, 분석한 날부터. */

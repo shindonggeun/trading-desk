@@ -18,6 +18,7 @@ import BottomZoneCard from "../components/BottomZoneCard";
 import { WEEKLY_NAMES, WEEKLY_UNDERLYING, weeklyLink } from "../weekly";
 import { duration, STATUS_LABEL } from "../format";
 import type { DeskEvent, Plan, Run } from "../types";
+import TipBadges from "../components/TipBadges";
 
 // 백엔드 desk/profile.py 의 label 과 같다. 옛 분석(성향 없음)은 표시하지 않는다
 const PROFILE_LABEL: Record<string, string> = { aggressive_leverage: "공격형 · 레버리지", balanced: "균형형" };
@@ -237,6 +238,8 @@ export default function RunView({ runId }: { runId: string }) {
                   <SummaryCard summary={plan.summary} runId={run.id} live={stillOpen(run.trade_date)}
                     horizon={plan.horizon ?? run.options.horizon ?? undefined} />
                 )}
+                {/* #332 이 종목에 지금 켜진 금리 · 달러 국면 팁 */}
+                <TipBadges ticker={run.ticker} />
                 <MoreDetails collapsible={!!plan.summary}>
                 {status === "done" && <ConsensusCard plan={plan} ticker={run.ticker} />}
                 <PlaybookCard plan={plan} symbol={stillOpen(run.trade_date) ? run.ticker : undefined} outcome={run.outcome} runId={run.id} horizon={plan.horizon ?? run.options.horizon ?? undefined} />

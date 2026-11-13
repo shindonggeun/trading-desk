@@ -1338,3 +1338,58 @@ export type ChatEvent =
   | { type: "token"; text: string }
   | { type: "done"; message_id: string; user_message_id: string }
   | { type: "error"; message: string };
+
+/** #332 GET /api/tips (#330) — 금리 · 달러 국면과 국면별 매매 팁 */
+export interface TipStats {
+  n: number;
+  median: number | null;
+  win: number | null;
+  all_median: number | null;
+  all_win: number | null;
+  vs_all: number | null;
+  drawdown_median?: number | null;
+  all_drawdown_median?: number | null;
+}
+export interface TipPeriod {
+  episodes: number;
+  regime_share: number | null;
+  "20"?: TipStats;
+  "60"?: TipStats;
+}
+export interface TipEvidence {
+  proxy: string;
+  metric: "return" | "decay";
+  split: string;
+  since: string | null;
+  weak: boolean;
+  train: TipPeriod;
+  held_out: TipPeriod;
+}
+export interface Tip {
+  id: string;
+  title: string;
+  condition: string;
+  active: boolean;
+  known: boolean;
+  why: string;
+  proxy: string;
+  metric: "return" | "decay";
+  applies_to: string[];
+  evidence: TipEvidence | null;
+  weak: boolean;
+  exceptions: string[];
+}
+export interface TipsView {
+  regime: {
+    rates: "hiking" | "cutting" | "hold" | null;
+    yield10: "rising" | "falling" | "flat" | null;
+    yield_spike: boolean | null;
+    dollar: "strong" | "weak" | "flat" | null;
+    sideways: boolean | null;
+    values: Record<string, number | null>;
+  };
+  tips: Tip[];
+  as_of: string | null;
+  evidence_as_of?: string | null;
+  basis?: { horizons: number[]; worse_pp: number; decay_pp: number; min_days: number; rule: string } | null;
+}

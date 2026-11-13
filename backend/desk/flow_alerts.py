@@ -9,6 +9,8 @@ is kept in ``flow_alerts_sent`` so judging the same snapshots again sends nothin
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import insert, select
 from sqlalchemy.engine import Engine
@@ -17,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from .db import flow_alerts_sent, now
 
 log = logging.getLogger(__name__)
+KST = ZoneInfo("Asia/Seoul")
 
 MARKETS = {"futures": "선물", "kospi": "코스피 현물", "kosdaq": "코스닥 현물"}
 KINDS = {"buy_turn": "순매수 전향", "sell_turn": "순매도 전향"}
@@ -70,6 +73,16 @@ class FlowAlerts:
                 except Exception as exc:  # noqa: BLE001 - a push never stops recording
                     log.warning("flow push failed: %s", exc)
         return out
+
+    def after_snapshot(self, intraday, day: date | None = None) -> list[dict]:
+        """#359's snapshot loop calls this after each record: today's points (``intraday(day)``),
+        each market's turns (``flow_intraday.turns``), the ones not sent yet pushed."""
+        from . import flow_intraday
+
+        day = day or datetime.now(KST).date()
+        points = intraday(day)
+        turns = [t for market in MARKETS for t in flow_intraday.turns(points, market)]
+        return self.dispatch(turns, day.isoformat())
 
     def list(self, day: str) -> list[dict]:
         with self.engine.connect() as conn:

@@ -6,6 +6,8 @@ import httpx
 import pytest
 
 from desk import futures_flow as ff
+from desk import market_flow
+from desk.broker.base import INVESTORS, FlowRecord
 from tests.test_api import _client
 
 KEY, SECRET = "app-key-not-real", "app-secret-not-real"
@@ -110,9 +112,17 @@ def test_an_expired_token_is_renewed_once_and_issues_are_spaced():
     assert sum(1 for c in calls2 if c.url.path == ff.TOKEN_PATH) == 1
 
 
+def _spot_record(day: str, net: int) -> dict:
+    """A spot record exactly as MarketFlow.get serves it (desk.market_flow.normalize over Toss keys)."""
+    rec = FlowRecord(date=day, updated_at=f"{day}T11:00:00+09:00",
+                     investors={"foreigner": (net, 0) if net >= 0 else (0, -net), "individual": (1, 1)},
+                     institution_breakdown={})
+    return market_flow.normalize(rec, "1d", datetime(2026, 11, 6, 2, 0, tzinfo=UTC))
+
+
 class _Spot:
     async def get(self, market, interval, count):
-        return {"records": [{"date": "2026-11-06", "investors": {"foreign": {"buy": 9, "sell": 4, "net": 320_000_000_000}}}]}
+        return {"records": [_spot_record("2026-11-06", 320_000_000_000)]}
 
 
 def _flow(rest, spot=None):
@@ -129,11 +139,22 @@ def test_the_flow_shows_futures_and_flags_a_foreign_split():
 
 def test_a_split_needs_the_same_day_and_real_size():
     inv = {"foreign": {"net_contracts": -4100, "net_value_mn": -422670}}
-    spot = lambda d, n: {"records": [{"date": d, "investors": {"foreign": {"net": n}}}]}
+    spot = lambda d, n: {"records": [_spot_record(d, int(n))]}
     today = date(2026, 11, 6)
     assert ff.foreign_split(spot("2026-11-05", 3.2e11), inv, today)["reason"] == "spot_not_today"
     assert ff.foreign_split(spot("2026-11-06", 1e8), inv, today)["reason"] == "small"
     assert ff.foreign_split(spot("2026-11-06", -3.2e11), inv, today)["split"] is False   # both selling
+
+
+def test_a_split_reads_the_spot_foreigner_key_not_the_futures_one():
+    """#370: spot records carry Toss' "foreigner"; a "foreign" key there is not the foreign class."""
+    inv = {"foreign": {"net_contracts": -4100, "net_value_mn": -422670}}
+    today = date(2026, 11, 6)
+    real = ff.foreign_split({"records": [_spot_record("2026-11-06", 320_000_000_000)]}, inv, today)
+    assert real["spot_net"] == 320_000_000_000 and real["split"] is True
+    wrong = {"records": [{"date": "2026-11-06", "investors": {"foreign": {"net": 320_000_000_000}}}]}
+    assert ff.foreign_split(wrong, inv, today)["reason"] == "no_data"
+    assert ff.SPOT_FOREIGNER in INVESTORS
 
 
 def test_without_keys_or_with_a_failure_the_flow_says_why():

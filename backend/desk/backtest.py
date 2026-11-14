@@ -29,7 +29,9 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
 from . import (
+    calibration,
     entry_features,
+    entry_now,
     exits,
     horizons,
     outcome,
@@ -125,6 +127,8 @@ class Trade:
     exits: dict | None = None         # r_net under each exit rule on the same fills (#239, desk.exits)
     kind: str = "stock"               # stock | leveraged (#239: the product's own record)
     features: dict | None = None      # the chart at the plan (#284, desk.entry_features) - never changes the plan
+    entry_kind: str | None = None     # the first step's kind (limit | stop) and its distance from the price
+    distance_atr: float | None = None  # at the plan, in the frame's ATR (#166 stage 5: the #312 reach)
 
 
 @dataclass
@@ -157,6 +161,7 @@ class Report:
     value_swing: dict = field(default_factory=dict)  # the oversold swing buy on its own (#167)
     exits: dict = field(default_factory=dict)        # the exit rules side by side (#239, ``exit_report``)
     features: dict = field(default_factory=dict)     # R by the chart at the plan (#284, ``feature_report``)
+    ev_gate: dict = field(default_factory=dict)      # the #312 expected-R gate on / off (#166 stage 5, ``ev_gate_report``)
 
 
 # ---------------------------------------------------------------- data
@@ -366,6 +371,8 @@ def judge(pb: dict, snap: Snapshot, future: list[dict], h: horizons.Horizon, cos
                                      horizons.valid_until(h, snap.plan_at))
         trade = Trade(ticker, snap.day, side_name, side["setup"], regime, side.get("score"), res["status"],
                       direction=side.get("direction") or "neutral")
+        trade.entry_kind = entry_now._kind(side)
+        trade.distance_atr = entry_now.distance_atr(side, direction > 0, pb["frame"].get("reference_price"), atr)
         if res.get("filled_shares"):
             avg = res["avg_fill"]
             trade.filled_shares = res["filled_shares"]
@@ -467,6 +474,93 @@ def split(trades: list[Trade], cut: str | None, h: horizons.Horizon) -> tuple[li
         return [], []
     edge = (date.fromisoformat(cut) - timedelta(days=EMBARGO_DAYS[h.id])).isoformat()
     return [t for t in trades if t.at < edge], [t for t in trades if t.at >= cut]
+
+
+EV_GATE_HORIZONS = ("swing",)
+EV_GATE_FOLDS = 4          # the training dates' own check: each block judged by a table of the others
+
+
+def _ev_tables(trades: list[Trade], h: horizons.Horizon):
+    """The calibration table and the #312 reach table from ``trades`` only."""
+    reach = entry_now.Reach()
+    for t in trades:
+        if t.distance_atr is not None and t.entry_kind:
+            reach.add(h.id, t.side, t.entry_kind, t.distance_atr, bool(t.filled_shares))
+    return calibration.Table(calibration.from_trades(trades, h.id)), reach
+
+
+def _ev(t: Trade, table, reach, h: horizons.Horizon) -> float | None:
+    """Expected R per plan as desk.entry_now gives it: the fill rate at the plan's distance x the
+    record's expected R once filled. None when either is thin."""
+    cal = table.look(h.id, t.side, t.setup, t.regime, t.score)
+    got = reach.look(h.id, t.side, t.entry_kind or "limit", t.distance_atr)
+    if cal["thin"] or got["p"] is None:
+        return None
+    return got["p"] * cal["exp_r"]
+
+
+def _gate_view(kept: list[Trade], every: list[Trade]) -> dict:
+    """``kept`` against all the plans: R per kept fill, and per plan of ``every`` (a skipped plan is 0 R)."""
+    agg = aggregate(kept)
+    rows = [(t.at, t.r_net) for t in kept if t.filled_shares and t.r_net is not None
+            and t.status in SETTLED + MARKED]
+    total = sum(r for _d, r in rows)
+    return {"plans": len(every), "kept": len(kept), "filled": agg["filled"], "settled": agg["settled"],
+            "t1_first_rate": agg["t1_first_rate"], "expectancy_r": agg["expectancy_r"],
+            "per_plan_r": round(total / len(every), 4) if every else None, "total_r": round(total, 1),
+            "max_dd_r": _exit_stats(rows)["max_dd_r"]}
+
+
+def ev_gate_report(trades: list[Trade], cut: str | None, h: horizons.Horizon) -> dict:
+    """#166 stage 5: the #312 gate - "stand aside when the expected R per plan is not above 0" - as a
+    step after desk.direction, side by side with no gate. ``ev>0`` skips a side whose expected R per
+    plan is 0 or below and keeps one of unknown worth; ``ev>0+known`` also skips the unknown ones.
+    No date is judged by a table that saw it: the held-out dates by the training dates' tables, and
+    the training dates by ``EV_GATE_FOLDS`` blocks, each by a table of the other blocks (the choice
+    is made there, not on the held-out dates). by_direction and the crash windows are over every date
+    (each judged out of its own block).
+
+    Measured 2026-11-14 (swing basket 2019-, 10bp a side, held-out from 2024-06-20): training -0.035R
+    a fill → -0.093R with the gate (kept 753 of 3585 plans; per plan -0.024R → -0.016R only because
+    fewer were taken) - the plans it kept were mostly dip-catch against the trend (-0.198R), whose
+    record in the other blocks looked better than it went. Held-out +0.022R → +0.242R on 62 fills.
+    Not adopted on the training dates: the report stays to re-check when the plans change."""
+    if h.id not in EV_GATE_HORIZONS or not cut:
+        return {}
+    train, valid = split(trades, cut, h)
+    days = sorted({t.at for t in train})
+    if len(days) < EV_GATE_FOLDS:
+        return {}
+    bounds = [days[len(days) * i // EV_GATE_FOLDS] for i in range(1, EV_GATE_FOLDS)]
+    fold = {d: sum(1 for b in bounds if d >= b) for d in days}
+    ev: dict[int, float | None] = {}
+    for k in range(EV_GATE_FOLDS):
+        table, reach = _ev_tables([t for t in train if fold[t.at] != k], h)
+        for t in train:
+            if fold[t.at] == k:
+                ev[id(t)] = _ev(t, table, reach, h)
+    table, reach = _ev_tables(train, h)
+    for t in valid:
+        ev[id(t)] = _ev(t, table, reach, h)
+    judged = train + valid
+    gates = {
+        "off": lambda t: True,
+        "ev>0": lambda t: ev.get(id(t)) is None or ev[id(t)] > 0,
+        "ev>0+known": lambda t: ev.get(id(t)) is not None and ev[id(t)] > 0,
+    }
+    out: dict = {"cut": cut, "folds": EV_GATE_FOLDS, "gates": {}}
+    for name, keep in gates.items():
+        kept = [t for t in judged if keep(t)]
+        k_train, k_valid = [t for t in train if keep(t)], [t for t in valid if keep(t)]
+        out["gates"][name] = {
+            "train": _gate_view(k_train, train), "valid": _gate_view(k_valid, valid),
+            "by_direction": _by(kept, lambda t: f"{t.side}:{t.setup}:{t.direction}"),
+            "by_setup": _by(kept, lambda t: f"{t.side}:{t.setup}"),
+            "crash_windows": {cw: _gate_view([t for t in kept if _in(t.at, lo, hi)],
+                                             [t for t in judged if _in(t.at, lo, hi)])
+                              for cw, (lo, hi) in CRASH_WINDOWS.items()},
+        }
+    return out
 
 
 def summarize(trades: list[Trade], h: horizons.Horizon, cut: str | None) -> dict:
@@ -854,6 +948,7 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
         report.risk_gate = {"on": gate_view(trades, cut, h),
                             "off": gate_view(evaluate(snaps, h, costs, gate=False), cut, h)}
     report.equity = equity(trades)
+    report.ev_gate = ev_gate_report(trades, cut, h)
     if do_sweep:
         report.sweep = sweep(snaps, h, costs)
     return report
@@ -928,6 +1023,14 @@ def print_summary(report: Report, out=None) -> None:
                   f"{' *' if row['beats_base'] else ''}", file=out)
         if not fr["top"]:
             print("  (none)", file=out)
+    eg = report.ev_gate
+    for name, g in (eg.get("gates") or {}).items():
+        tr, va = g["train"], g["valid"]
+        crash = " ".join(f"{cw} {_fmt(v['expectancy_r'])}R/{_fmt(v['per_plan_r'])}" for cw, v in g["crash_windows"].items())
+        print(f"ev_gate {name}".ljust(22) + f"train {_fmt(tr['expectancy_r'])}R per plan {_fmt(tr['per_plan_r'])} "
+              f"dd {_fmt(tr['max_dd_r'])}R kept {tr['kept']}/{tr['plans']} | valid {_fmt(va['expectancy_r'])}R "
+              f"per plan {_fmt(va['per_plan_r'])} dd {_fmt(va['max_dd_r'])}R kept {va['kept']}/{va['plans']} | {crash}",
+              file=out)
     for row in report.sweep[:12]:
         print(f"sweep {row['param']}={row['value']}{' (now)' if row['current'] else ''}: "
               f"train {_fmt(row['train']['expectancy_r'])} / valid {_fmt(row['valid']['expectancy_r'])}"

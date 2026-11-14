@@ -203,7 +203,9 @@ export default function IntradayFlowView() {
       if (w.key === "foreign") { markersFor[prefs.spot] = spotLine; markersFor.futures = futLine; }
     }
 
-    // 전향 마커: 외국인 선이 켜져 있을 때 해당 선 위에
+    // 전향 마커: 외국인 선이 켜져 있을 때 해당 선 위에. 좁은 화면(휴대폰)은 글자가 오른쪽 끝에서 잘리지 않게 "10:41 매도" 로 줄인다
+    // — 값 · 전향 이름 전체는 위 요약 줄에 있다
+    const narrow = (box.current?.clientWidth ?? 1000) < 560;
     for (const [market, series] of Object.entries(markersFor)) {
       const unit = market === "futures" ? "계약" : "억";
       const ms: SeriesMarker<Time>[] = data.turns.filter((t) => t.market === market).map((t): SeriesMarker<Time> => ({
@@ -211,7 +213,9 @@ export default function IntradayFlowView() {
         position: t.kind === "buy_turn" ? "belowBar" : "aboveBar",
         shape: t.kind === "buy_turn" ? "arrowUp" : "arrowDown",
         color: t.kind === "buy_turn" ? up : down,
-        text: `${hhmm(t.t)} ${TURN_LABEL[t.kind]}${t.value != null ? ` ${signed(t.value, unit)}` : ""}`,
+        text: narrow
+          ? `${hhmm(t.t)} ${t.kind === "buy_turn" ? "매수" : "매도"}`
+          : `${hhmm(t.t)} ${TURN_LABEL[t.kind]}${t.value != null ? ` ${signed(t.value, unit)}` : ""}`,
       })).sort((a, b) => (a.time as number) - (b.time as number));
       if (ms.length) createSeriesMarkers(series, ms);
     }

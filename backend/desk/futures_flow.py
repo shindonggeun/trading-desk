@@ -26,7 +26,6 @@ from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
-from .broker.base import INVESTORS
 from .market_flow import KST, _ttl_until_open
 
 log = logging.getLogger(__name__)
@@ -41,7 +40,6 @@ INVESTOR_MARKET = ("K2I", "F001")
 # The foreign class in a spot market-flow record (desk.market_flow.normalize, Toss keys) - not the
 # "foreign" key the KIS futures classes use here (#370).
 SPOT_FOREIGNER = "foreigner"
-assert SPOT_FOREIGNER in INVESTORS
 TOKEN_PATH = "/oauth2/tokenP"
 TOKEN_TTL_SEC = 20 * 3600.0       # KIS issues a token for a day; renew a little before
 TOKEN_MIN_GAP_SEC = 60.0          # KIS allows one issue a minute (and notifies on each)

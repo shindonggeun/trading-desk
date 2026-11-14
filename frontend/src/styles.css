@@ -1801,3 +1801,22 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 @media (max-width: 640px) {
   .intraday-chart { height: 240px; }
 }
+
+/* #362 알림 설정 · 앱 안 수급 전향 토스트 */
+.push-settings h3 { margin: 4px 0 0; font-size: var(--fs-m); }
+.push-markets { display: flex; flex-wrap: wrap; gap: 8px; }
+.flow-toasts {
+  position: fixed; top: 64px; right: 16px; z-index: 60;
+  display: grid; gap: 8px; width: min(360px, calc(100vw - 32px));
+}
+.flow-toast {
+  display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px;
+  background: var(--surface-2); border: 1px solid var(--border); border-left: 3px solid var(--flat);
+  border-radius: var(--radius); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); font-size: var(--fs-m);
+}
+.flow-toast-buy { border-left-color: var(--up); }
+.flow-toast-sell { border-left-color: var(--down); }
+.flow-toast a { flex: 1; color: var(--text); text-decoration: none; line-height: 1.4; }
+.flow-toast a:hover { text-decoration: underline; }
+.flow-toast-close { background: none; border: 0; color: var(--muted); font-size: var(--fs-l); line-height: 1; padding: 0 2px; cursor: pointer; }
+@media (max-width: 600px) { .flow-toasts { top: 56px; right: 16px; left: 16px; width: auto; } }

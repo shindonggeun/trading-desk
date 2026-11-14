@@ -244,6 +244,20 @@ export default function MarketFlowPanel() {
     return next;
   });
 
+  // #362 알림 클릭(#/?flow=intraday): "오늘 장중" 탭을 열고 이 카드로 스크롤한다
+  const card = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const open = () => {
+      if (!/[?&]flow=intraday(?:&|$)/.test(window.location.hash)) return;
+      update({ market: "INTRADAY" });
+      window.history.replaceState(null, "", "#/"); // 새로고침 · 뒤로 가기에 다시 끌려오지 않게
+      window.requestAnimationFrame(() => card.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    };
+    open();
+    window.addEventListener("hashchange", open);
+    return () => window.removeEventListener("hashchange", open);
+  }, []);
+
   const spotMarket: FlowMarket | null = prefs.market === "FUTURES" || prefs.market === "INTRADAY" ? null : prefs.market;
 
   useEffect(() => {
@@ -297,7 +311,7 @@ export default function MarketFlowPanel() {
   const marketLabel = TABS.find((m) => m.key === prefs.market)!.label;
 
   return (
-    <section className="card flow" aria-label="시장 수급">
+    <section className="card flow" id="market-flow" ref={card} aria-label="시장 수급">
       <div className="flow-head">
         <h3>시장 수급</h3>
         <div className="seg" role="group" aria-label="시장">

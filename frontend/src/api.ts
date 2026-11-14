@@ -260,7 +260,37 @@ export const api = {
   stockProfile: (ticker: string) => call<StockProfile>(`/api/stock/profile?ticker=${encodeURIComponent(ticker)}`),
   /** #332 금리 · 달러 국면과 매매 팁(#330) */
   tips: (ticker?: string) => call<TipsView>(`/api/tips${ticker ? `?ticker=${encodeURIComponent(ticker)}` : ""}`),
+  /** #362 웹 푸시(#361): 서버 공개키 · 이 기기 구독 · 시험 알림 */
+  pushKey: () => call<{ enabled: boolean; public_key: string | null }>("/api/push/key"),
+  pushSubscribe: (sub: PushSubscriptionJSON, device: string, kinds: PushKinds) =>
+    call<{ endpoint: string; device: string; kinds: PushKinds }>("/api/push/subscriptions", {
+      method: "POST", body: JSON.stringify({ endpoint: sub.endpoint, keys: sub.keys, device, kinds }),
+    }),
+  pushUnsubscribe: (endpoint: string) =>
+    call<void>("/api/push/subscriptions", { method: "DELETE", body: JSON.stringify({ endpoint }) }),
+  pushTest: () => call<{ sent: number }>("/api/push/test", { method: "POST" }),
+  /** #362 오늘(또는 date) 보낸 수급 전향 알림 — 앱 안 토스트가 폴링한다 */
+  flowAlerts: (date?: string) =>
+    call<{ date: string; items: FlowAlert[] }>(`/api/alerts/flow${date ? `?date=${encodeURIComponent(date)}` : ""}`),
 };
+
+/** #361 구독 알림 종류 — flow 는 전체 스위치, 나머지는 그 시장의 전향만(빠진 키는 서버가 켜짐으로) */
+export interface PushKinds {
+  flow: boolean;
+  flow_futures: boolean;
+  flow_kospi: boolean;
+  flow_kosdaq: boolean;
+}
+
+/** #361 수급 전향 한 건 */
+export interface FlowAlert {
+  trade_date: string;
+  market: "futures" | "kospi" | "kosdaq";
+  kind: "buy_turn" | "sell_turn";
+  t: string;
+  value: number | null;
+  text: string;
+}
 
 /** Follow a run's events. The server replays from the start, then streams live. */
 export function followRun(id: string, onEvent: (e: DeskEvent) => void): () => void {

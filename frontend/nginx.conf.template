@@ -36,6 +36,17 @@ server {
         add_header X-Content-Type-Options nosniff always;
     }
 
+    # #362 서비스 워커 · 매니페스트는 늘 새로 확인한다 — 배포한 sw.js 가 바로 바뀌게
+    location = /sw.js {
+        add_header Cache-Control "no-cache" always;
+        add_header X-Content-Type-Options nosniff always;
+    }
+    location = /manifest.webmanifest {
+        default_type application/manifest+json;
+        add_header Cache-Control "no-cache" always;
+        add_header X-Content-Type-Options nosniff always;
+    }
+
     location / {
         # index.html 은 캐시하지 않는다 — 배포 직후 새 자산 이름을 바로 읽게
         add_header Cache-Control "no-cache" always;

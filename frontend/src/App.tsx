@@ -18,6 +18,7 @@ import Charts from "./pages/Charts";
 import CalendarView from "./pages/CalendarView";
 import Chat from "./pages/Chat";
 import ChatWidget from "./components/ChatWidget";
+import FlowAlertToast, { FLOW_ROUTE } from "./components/FlowAlertToast";
 import { resetFavorites } from "./favorites";
 
 function safeDecode(v: string): string {
@@ -76,6 +77,11 @@ export default function App() {
     setUser(null);
     window.location.hash = "#/";
   }, []);
+
+  // #362 알림 · 토스트의 "#/market" → 대시보드 시장 수급 카드의 "오늘 장중" 탭
+  useEffect(() => {
+    if (route === FLOW_ROUTE) window.location.replace("#/?flow=intraday");
+  }, [route]);
 
   const runMatch = route.match(/^#\/runs\/([\w-]+)/);
   const onSettings = route.startsWith("#/settings");
@@ -164,6 +170,8 @@ export default function App() {
       )}
       {/* #340 어디서든 오른쪽 아래에서 여는 AI 채팅(채팅 크게 보기 화면에선 숨김) */}
       {user && <ChatWidget />}
+      {/* #362 장중 수급 전향을 앱 안 토스트로 */}
+      {user && <FlowAlertToast />}
     </div>
   );
 }

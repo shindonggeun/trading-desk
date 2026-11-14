@@ -1,5 +1,6 @@
 """#361: web push subscriptions and foreign-flow turn alerts."""
 
+import json
 from datetime import timedelta
 
 from fastapi.testclient import TestClient
@@ -68,12 +69,35 @@ def test_markets_are_separate_and_text_reads(db_url):
     engine.dispose()
 
 
+def test_a_market_toggle_or_the_master_switch_keeps_that_push_off(db_url):
+    engine = _store_with_sub(db_url)                                   # the default: every kind on
+    store = push.PushStore(engine)
+    store.subscribe(1, "https://fcm.googleapis.com/fcm/send/nokospi", {"p256dh": "k", "auth": "a"}, "탭",
+                    {"flow_kospi": False})
+    store.subscribe(1, "https://fcm.googleapis.com/fcm/send/off", {"p256dh": "k", "auth": "a"}, "끔",
+                    {"flow": False})
+    sent = _Sent()
+    alerts = flow_alerts.FlowAlerts(engine, _pusher(engine, sent))
+    alerts.dispatch([_turn("10:32", "sell_turn"), _turn("10:33", "buy_turn", "kospi", 900)], "2026-11-13")
+    to = [(c[0].rsplit("/", 1)[1], json.loads(c[1])["market"]) for c in sent.calls]
+    assert to == [("abc", "futures"), ("nokospi", "futures"), ("abc", "kospi")]
+    payload = json.loads(sent.calls[0][1])
+    assert payload["url"] == flow_alerts.ALERT_URL and payload["kind"] == "sell_turn" and payload["tag"] == "flow-futures"
+    assert store.of_user(1)[0]["kinds"] == {k: True for k in push.KINDS}
+    # the same account sending the same endpoint again overwrites its kinds (a toggle in settings)
+    store.subscribe(1, SUB["endpoint"], SUB["keys"], "폰", {"flow_futures": False})
+    mine = next(r for r in store.of_user(1) if r["endpoint"] == SUB["endpoint"])
+    assert mine["kinds"] == {**{k: True for k in push.KINDS}, "flow_futures": False}
+    assert len(store.of_user(1)) == 3
+    engine.dispose()
+
+
 def test_a_gone_subscription_is_deleted_and_no_keys_means_off(db_url):
     engine = _store_with_sub(db_url)
     store = push.PushStore(engine)
-    assert _pusher(engine, _Sent(), keys=False).broadcast("flow", {"body": "x"}) == 0
+    assert _pusher(engine, _Sent(), keys=False).broadcast("flow", payload={"body": "x"}) == 0
     assert len(store.for_kind("flow")) == 1
-    assert _pusher(engine, _Sent(410)).broadcast("flow", {"body": "x"}) == 0
+    assert _pusher(engine, _Sent(410)).broadcast("flow", payload={"body": "x"}) == 0
     assert store.for_kind("flow") == []
     engine.dispose()
 
@@ -112,9 +136,13 @@ def test_own_subscriptions_only(db_url):
         _login(client, OWNER)
         assert client.get("/api/push/key").json() == {"enabled": True, "public_key": "pub"}
         for bad in ("http://fcm.googleapis.com/x", "https://192.168.0.9/x", "https://fcm.googleapis.com:8443/x",
-                    "https://u@fcm.googleapis.com/x", "https://evil.example/x", "https://fcm.googleapis.com.evil.io/x"):
+                    "https://u@fcm.googleapis.com/x", "https://evil.example/x", "https://fcm.googleapis.com.evil.io/x",
+                    "https://evil.com\\.notify.windows.com/x", "https://evil%2ecom.push.apple.com/x",
+                    "https://fcm.googleapis.com./x"):
             assert client.post("/api/push/subscriptions", json={**SUB, "endpoint": bad}).status_code == 422, bad
         assert client.post("/api/push/subscriptions", json=SUB).status_code == 201
+        got = client.post("/api/push/subscriptions", json={**SUB, "device": "폰\n가짜 로그 줄"}).json()
+        assert got["device"] == "폰가짜 로그 줄"
         client.post("/api/auth/logout")
         _login(client, OTHER)
         assert client.request("DELETE", "/api/push/subscriptions", json={"endpoint": SUB["endpoint"]}).status_code == 204
@@ -132,7 +160,7 @@ def test_a_stored_endpoint_off_the_push_services_is_never_called(db_url):
     store = push.PushStore(engine)
     store.subscribe(1, "https://10.0.0.1/hook", {"p256dh": "k", "auth": "a"}, "lan", {})
     sent = _Sent()
-    assert _pusher(engine, sent).broadcast("flow", {"body": "x"}) == 1
+    assert _pusher(engine, sent).broadcast("flow", payload={"body": "x"}) == 1
     assert [c[0] for c in sent.calls] == [SUB["endpoint"]]
     engine.dispose()
 

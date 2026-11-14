@@ -26,6 +26,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
+from .broker.base import INVESTORS
 from .market_flow import KST, _ttl_until_open
 
 log = logging.getLogger(__name__)
@@ -37,6 +38,10 @@ INVESTOR_TR = "FHPTJ04030000"
 # HTS [0403] market / sector codes for KOSPI200 futures (KIS' code list for the screen; the sample
 # in the KIS repository shows the stock-futures pair "999" / "S001").
 INVESTOR_MARKET = ("K2I", "F001")
+# The foreign class in a spot market-flow record (desk.market_flow.normalize, Toss keys) - not the
+# "foreign" key the KIS futures classes use here (#370).
+SPOT_FOREIGNER = "foreigner"
+assert SPOT_FOREIGNER in INVESTORS
 TOKEN_PATH = "/oauth2/tokenP"
 TOKEN_TTL_SEC = 20 * 3600.0       # KIS issues a token for a day; renew a little before
 TOKEN_MIN_GAP_SEC = 60.0          # KIS allows one issue a minute (and notifies on each)
@@ -387,7 +392,7 @@ def foreign_split(spot: dict | None, investors: dict | None, today: date) -> dic
         return None
     fut = investors["foreign"].get("net_contracts")
     record = ((spot or {}).get("records") or [None])[0]
-    spot_net = ((record or {}).get("investors") or {}).get("foreign", {}).get("net") if record else None
+    spot_net = ((record or {}).get("investors") or {}).get(SPOT_FOREIGNER, {}).get("net") if record else None
     out = {"spot_net": spot_net, "spot_date": (record or {}).get("date"), "futures_net_contracts": fut,
            "split": False, "kind": None, "reason": None}
     if fut is None or spot_net is None:

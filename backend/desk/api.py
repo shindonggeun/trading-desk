@@ -1838,7 +1838,10 @@ class PushKeysIn(BaseModel):
 
 
 class PushKindsIn(BaseModel):
-    flow: bool = True
+    flow: bool = True               # every market's turns (the master switch)
+    flow_futures: bool = True
+    flow_kospi: bool = True
+    flow_kosdaq: bool = True
 
 
 class PushSubscriptionIn(BaseModel):
@@ -1846,6 +1849,11 @@ class PushSubscriptionIn(BaseModel):
     keys: PushKeysIn
     device: str = Field(default="", max_length=80)
     kinds: PushKindsIn = Field(default_factory=lambda: PushKindsIn())
+
+    @field_validator("device")
+    @classmethod
+    def _printable(cls, v: str) -> str:
+        return "".join(ch for ch in v if ch.isprintable())      # no control characters into the logs
 
     @field_validator("endpoint")
     @classmethod

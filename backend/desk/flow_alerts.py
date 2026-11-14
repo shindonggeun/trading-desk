@@ -23,6 +23,7 @@ KST = ZoneInfo("Asia/Seoul")
 
 MARKETS = {"futures": "선물", "kospi": "코스피 현물", "kosdaq": "코스닥 현물"}
 KINDS = {"buy_turn": "순매수 전향", "sell_turn": "순매도 전향"}
+ALERT_URL = "/#/market"           # the page a tapped notification opens (the FE service worker reads ``url``)
 
 
 def text(turn: dict) -> str:
@@ -68,8 +69,9 @@ class FlowAlerts:
             out.append(row)
             if self.pusher is not None:
                 try:
-                    self.pusher.broadcast("flow", {"title": "외국인 수급 전향", "body": row["text"],
-                                                   "tag": f"flow-{turn['market']}", "url": "/#/market"})
+                    self.pusher.broadcast("flow", f"flow_{turn['market']}", payload={
+                        "title": "외국인 수급 전향", "body": row["text"], "tag": f"flow-{turn['market']}",
+                        "url": ALERT_URL, "market": turn["market"], "kind": turn["kind"]})
                 except Exception as exc:  # noqa: BLE001 - a push never stops recording
                     log.warning("flow push failed: %s", exc)
         return out

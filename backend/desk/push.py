@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
@@ -18,11 +19,13 @@ from .db import now, push_subscriptions
 
 log = logging.getLogger(__name__)
 
-KINDS = ("flow",)
+# "flow" switches every foreign-flow turn; flow_<market> one market of it (#362: a toggle per market).
+KINDS = ("flow", "flow_futures", "flow_kospi", "flow_kosdaq")
 MAX_PER_USER = 10
 # The server only ever POSTs to the browsers' push services - never a host a caller names (SSRF).
 PUSH_HOSTS = ("fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com")
 PUSH_HOST_SUFFIXES = (".push.services.mozilla.com", ".notify.windows.com", ".push.apple.com")
+_HOST = re.compile(r"[a-z0-9-]+(\.[a-z0-9-]+)+")      # plain DNS labels: no "\\", "%", trailing dot
 
 
 class TooMany(Exception):
@@ -42,6 +45,9 @@ def allowed_endpoint(url: str) -> bool:
         return False
     host = (parts.hostname or "").lower()
     if parts.scheme != "https" or parts.username or parts.password or port not in (None, 443) or not host:
+        return False
+    # the allow-list closes on its own, not on how the HTTP client later reads an odd host
+    if not _HOST.fullmatch(host) or parts.netloc.lower() not in (host, f"{host}:443"):
         return False
     return host in PUSH_HOSTS or host.endswith(PUSH_HOST_SUFFIXES)
 
@@ -80,10 +86,11 @@ class PushStore:
             rows = conn.execute(select(push_subscriptions).where(push_subscriptions.c.user_id == user_id)).mappings()
             return [dict(r) for r in rows]
 
-    def for_kind(self, kind: str) -> list[dict]:
+    def for_kind(self, *kinds: str) -> list[dict]:
+        """Subscriptions with every one of ``kinds`` on; a kind a row never stored counts as on."""
         with self.engine.connect() as conn:
-            rows = conn.execute(select(push_subscriptions)).mappings().all()
-        return [dict(r) for r in rows if (r["kinds"] or {}).get(kind, True)]
+            rows = conn.execute(select(push_subscriptions).order_by(push_subscriptions.c.id)).mappings().all()
+        return [dict(r) for r in rows if all((r["kinds"] or {}).get(k, True) for k in kinds)]
 
     def remove(self, endpoint: str) -> None:
         with self.engine.begin() as conn:
@@ -122,12 +129,12 @@ class Pusher:
         sent = 0
         for sub in subs:
             if not allowed_endpoint(sub["endpoint"]):
-                log.warning("push skipped: %s is not a push service", sub.get("device"))
+                log.warning("push skipped: %r is not a push service", sub.get("device"))
                 continue
             try:
                 status = self._send(sub, data)
             except Exception as exc:  # noqa: BLE001 - one bad endpoint never stops the rest
-                log.warning("push to %s failed: %s", sub.get("device"), exc)
+                log.warning("push to %r failed: %s", sub.get("device"), exc)
                 continue
             if status in (404, 410):
                 self.store.remove(sub["endpoint"])
@@ -135,9 +142,9 @@ class Pusher:
                 sent += 1
         return sent
 
-    def broadcast(self, kind: str, payload: dict) -> int:
-        """To every subscription that has ``kind`` on; the number delivered."""
-        return self._deliver(self.store.for_kind(kind), payload)
+    def broadcast(self, *kinds: str, payload: dict) -> int:
+        """To every subscription that has all of ``kinds`` on; the number delivered."""
+        return self._deliver(self.store.for_kind(*kinds), payload)
 
     def to_user(self, user_id: int, payload: dict) -> int:
         return self._deliver(self.store.of_user(user_id), payload)

@@ -1,5 +1,5 @@
 import asyncio
-from datetime import date
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from desk.broker import Bar, MockBroker, TossBroker
 from desk.levels import fill_levels
 from desk.prices import QUOTE_TTL_SEC, PriceSource, broker_symbol
+from desk.prices import yahoo_candles as real_yahoo_candles  # conftest 가 막기 전의 것
 from desk.runner import make_fake_runner
 from desk.settings import Settings
 from tests.test_api import OWNER, PASSWORD, _wait_done
@@ -217,3 +218,78 @@ def test_run_still_finishes_when_no_price_source_answers(db_url):
         run = client.post("/api/runs", json={"ticker": "NVDA", "trade_date": date.today().isoformat()}).json()
         done = _wait_done(client, run["id"])
         assert done["status"] == "done" and "live_price" not in done["plan"]
+
+
+# --- #379 120분봉 · 국장 분봉의 늦은 구간을 토스 1분봉으로 ---------------------------------
+
+def _min(kst: str, close: float, volume: float = 1.0) -> Bar:
+    """1분봉 하나 — kst 는 "2026-11-13 09:07" 꼴."""
+    at = datetime.fromisoformat(kst).replace(tzinfo=timezone(timedelta(hours=9))).astimezone(UTC)
+    return Bar(at.isoformat(timespec="seconds"), close, close + 1, close - 1, close, volume)
+
+
+def test_krx_buckets_count_from_the_open_and_skip_the_after_market():
+    from desk.prices import _at, krx_bucket
+    at = lambda s: _at(_min(s, 1).at)
+    assert krx_bucket(at("2026-11-13 09:07"), 5) == at("2026-11-13 09:05")
+    assert krx_bucket(at("2026-11-13 12:59"), 120) == at("2026-11-13 11:00")
+    assert krx_bucket(at("2026-11-13 15:10"), 240) == at("2026-11-13 13:00")
+    assert krx_bucket(at("2026-11-13 15:30"), 15) == at("2026-11-13 15:15")  # 종가 단일가는 마지막 봉에
+    assert krx_bucket(at("2026-11-13 08:30"), 5) is None and krx_bucket(at("2026-11-13 16:00"), 5) is None
+
+
+def test_recent_one_minute_bars_replace_the_late_tail_of_the_history():
+    from desk.prices import fill_recent, fold_minutes
+    history = [_min("2026-11-13 09:00", 100), _min("2026-11-13 09:05", 101), _min("2026-11-13 09:10", 102)]
+    # 토스 1분봉: 09:07 부터(09:05 봉은 일부만) 09:16 까지
+    recent = [_min(f"2026-11-13 09:{m:02d}", 200 + m) for m in range(7, 17)]
+    folded = fold_minutes(recent, 5)
+    assert [b.close for b in folded] == [209, 214, 216]
+    assert folded[1].open == 210 and folded[1].high == 215 and folded[1].volume == 5
+    out = fill_recent(history, recent, 5)
+    # 09:05 는 토스가 뒷부분만 덮는다 — 시가는 야후, 종가는 토스, 고저는 둘을 합친다. 09:15 는 새 봉
+    assert [b.close for b in out] == [100, 209, 214, 216]
+    assert (out[1].open, out[1].high, out[1].low) == (101, 210, 100)
+    assert out[-1].at == _min("2026-11-13 09:15", 0).at
+    # 야후에 없는 구간이면 토스 것만
+    assert [b.open for b in fill_recent(history[:1], recent, 5)][1] == 207
+    # 장외(NXT) 1분봉만 있으면 그대로
+    assert fill_recent(history, [_min("2026-11-13 19:00", 1)], 5) == history
+
+
+def test_krx_minute_charts_take_the_brokers_recent_bars_and_120m_exists():
+    class Toss(MockBroker):
+        name = "toss"
+
+        async def candles(self, symbol, interval, count):
+            assert interval == "1m"
+            return [_min(f"2026-11-13 10:{m:02d}", 300 + m) for m in range(30)]
+
+    yahoo = [_min("2026-11-13 09:00", 100), _min("2026-11-13 10:00", 101)]
+    source = PriceSource(Toss(), yahoo_candles=lambda t, i, c: list(yahoo))
+    out = asyncio.run(source.candles("005930.KS", "15m", 10))
+    assert out["source"] == "yahoo+toss"
+    assert [b["close"] for b in out["bars"]] == [100, 314, 329]
+    two_hours = asyncio.run(source.candles("005930.KS", "120m", 10))
+    assert two_hours["source"] == "yahoo+toss"
+    assert [(b["open"], b["close"]) for b in two_hours["bars"]] == [(100, 329)]  # 09:00 봉: 시가는 야후
+    # 미국 종목 · 브로커가 없으면 야후만
+    assert asyncio.run(source.candles("NVDA", "15m", 10))["source"] == "yahoo"
+    plain = PriceSource(MockBroker(), yahoo_candles=lambda t, i, c: list(yahoo))
+    assert asyncio.run(plain.candles("005930.KS", "15m", 10))["source"] == "yahoo"
+
+
+def test_yahoo_120m_bars_pair_up_hours_inside_one_day(monkeypatch):
+    import sys
+    import types
+
+    import pandas as pd
+
+    index = pd.DatetimeIndex(["2026-11-12 13:00", "2026-11-12 14:00", "2026-11-12 15:00",
+                              "2026-11-13 09:00", "2026-11-13 10:00", "2026-11-13 11:00"], tz="Asia/Seoul")
+    frame = pd.DataFrame({"Open": [1, 2, 3, 4, 5, 6], "High": [1, 2, 3, 4, 5, 6], "Low": [1, 2, 3, 4, 5, 6],
+                          "Close": [1, 2, 3, 4, 5, 6], "Volume": [1, 1, 1, 1, 1, 1]}, index=index)
+    fake = types.SimpleNamespace(Ticker=lambda t: types.SimpleNamespace(history=lambda **kw: frame))
+    monkeypatch.setitem(sys.modules, "yfinance", fake)
+    bars = real_yahoo_candles("005930.KS", "120m", 10)
+    assert [(b.open, b.close, b.volume) for b in bars] == [(1, 2, 2), (3, 3, 1), (4, 5, 2), (6, 6, 1)]

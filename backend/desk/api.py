@@ -1083,7 +1083,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     @app.get("/api/candles")
     async def candles(ticker: str, interval: str = "1d", count: int = 120, indicators: str = ""):
         """Bars for the chart, oldest first. 1m/1d: Toss then Yahoo; minute bars, 1w, 1M, 1y
-        (and > 200 bars): Yahoo. ``indicators=rsi,stoch,bb`` (or rsi14, bb20, bb50) adds each bar's
+        (and > 200 bars): Yahoo - for KRX minute bars (5m~240m) with their late tail rebuilt from
+        Toss 1m (source "yahoo+toss", #379; buckets count from 09:00 KST, ``at`` = bucket start). ``indicators=rsi,stoch,bb`` (or rsi14, bb20, bb50) adds each bar's
         RSI(14), Stochastic (14, 1, 3) and Bollinger Bands (20 / 50, 2σ) - desk.indicators (#203)."""
         try:
             ticker = clean_ticker(ticker)

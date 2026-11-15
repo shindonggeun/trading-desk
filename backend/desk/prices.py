@@ -16,7 +16,7 @@ import logging
 import math
 import time
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 from .broker.base import Bar, Broker
 from .indicators import WARMUP, annotate, normalize
@@ -26,21 +26,21 @@ log = logging.getLogger(__name__)
 QUOTE_TTL_SEC = 10.0
 CANDLE_TTL_SEC = 30.0
 CACHE_MAX = 256
-# 1M is a month, 1m a minute. 240m and 1y are built here from Yahoo's 60m and monthly bars.
-INTERVALS = ("1m", "5m", "15m", "30m", "60m", "240m", "1d", "1w", "1M", "1y")
+# 1M is a month, 1m a minute. 120m / 240m and 1y are built here from Yahoo's 60m and monthly bars.
+INTERVALS = ("1m", "5m", "15m", "30m", "60m", "120m", "240m", "1d", "1w", "1M", "1y")
 # #206: the chart loads older bars as it scrolls left (doubling the count) up to this many.
 MAX_COUNT = 2000
 # Toss serves at most 200 bars and only 1m / 1d ("지원하지 않는 캔들 주기"); everything else,
 # and longer histories, come straight from Yahoo.
 BROKER_MAX_COUNT = 200
 BROKER_INTERVALS = ("1m", "1d")
-_YAHOO_INTERVAL = {"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m", "60m": "60m", "240m": "60m",
+_YAHOO_INTERVAL = {"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m", "60m": "60m", "120m": "60m", "240m": "60m",
                    "1d": "1d", "1w": "1wk", "1M": "1mo", "1y": "1mo"}
-_MINUTES = {"5m": 5, "15m": 15, "30m": 30, "60m": 60, "240m": 240}
+_MINUTES = {"5m": 5, "15m": 15, "30m": 30, "60m": 60, "120m": 120, "240m": 240}
 # How far back Yahoo keeps intraday bars; the chart says "최근 N일만" when a request runs past it.
-HISTORY_LIMIT_DAYS = {"1m": 7, "5m": 60, "15m": 60, "30m": 60, "60m": 730, "240m": 730}
+HISTORY_LIMIT_DAYS = {"1m": 7, "5m": 60, "15m": 60, "30m": 60, "60m": 730, "120m": 730, "240m": 730}
 # Short bars move, long ones barely do: cache each for about as long as it stays useful.
-_CANDLE_TTL = {"1m": CANDLE_TTL_SEC, "5m": CANDLE_TTL_SEC, "15m": 60.0, "30m": 60.0, "60m": 120.0,
+_CANDLE_TTL = {"1m": CANDLE_TTL_SEC, "5m": CANDLE_TTL_SEC, "15m": 60.0, "30m": 60.0, "60m": 120.0, "120m": 120.0,
                "240m": 300.0, "1d": CANDLE_TTL_SEC, "1w": 300.0, "1M": 3600.0, "1y": 3600.0}
 
 
@@ -130,8 +130,8 @@ def yahoo_candles(ticker: str, interval: str, count: int) -> list[Bar]:
         rows.append((index, Bar(at=index.to_pydatetime().astimezone(UTC).isoformat(timespec="seconds"),
                                 open=float(row["Open"]), high=float(row["High"]), low=float(row["Low"]),
                                 close=float(row["Close"]), volume=0.0 if math.isnan(volume) else float(volume))))
-    if interval == "240m":
-        bars = group_bars([(index.date(), bar) for index, bar in rows], size=4)
+    if interval in ("120m", "240m"):
+        bars = group_bars([(index.date(), bar) for index, bar in rows], size=_MINUTES[interval] // 60)
     elif interval == "1y":
         bars = group_bars([(index.year, bar) for index, bar in rows])
     else:
@@ -151,6 +151,60 @@ def group_bars(keyed: list[tuple[object, Bar]], size: int | None = None) -> list
         last_key = key
     return [Bar(at=g[0].at, open=g[0].open, high=max(b.high for b in g), low=min(b.low for b in g),
                 close=g[-1].close, volume=sum(b.volume for b in g)) for g in groups]
+
+
+KST = timezone(timedelta(hours=9))
+KRX_OPEN_MIN, KRX_CLOSE_MIN = 9 * 60, 15 * 60 + 30   # KRX regular session, minutes after midnight KST
+
+
+def is_krx(ticker: str) -> bool:
+    return ticker.upper().endswith((".KS", ".KQ"))
+
+
+def _at(iso: str) -> datetime:
+    return datetime.fromisoformat(iso).astimezone(UTC)
+
+
+def krx_bucket(at: datetime, minutes: int) -> datetime | None:
+    """Start of the ``minutes`` bar that holds ``at`` - counted from 09:00 KST each day, like
+    Yahoo's KRX bars (and so 120m / 240m: 09:00 · 11:00 · 13:00 · 15:00 / 09:00 · 13:00).
+    None outside the regular session (NXT pre / after market): Yahoo has no bars there.
+    The 15:30 closing print belongs to the bar before it."""
+    kst = at.astimezone(KST)
+    minute = kst.hour * 60 + kst.minute
+    if not KRX_OPEN_MIN <= minute <= KRX_CLOSE_MIN:
+        return None
+    minute = min(minute, KRX_CLOSE_MIN - 1)   # the 15:30 closing print ends the last bar
+    start = KRX_OPEN_MIN + (minute - KRX_OPEN_MIN) // minutes * minutes
+    return kst.replace(hour=start // 60, minute=start % 60, second=0, microsecond=0).astimezone(UTC)
+
+
+def fold_minutes(bars: list[Bar], minutes: int) -> list[Bar]:
+    """1-minute bars -> ``minutes`` bars stamped with their bucket start (see krx_bucket)."""
+    keyed = [(start, bar) for bar in bars if (start := krx_bucket(_at(bar.at), minutes)) is not None]
+    folded = group_bars(keyed)
+    starts = list(dict.fromkeys(start for start, _ in keyed))
+    return [Bar(at=start.isoformat(timespec="seconds"), open=b.open, high=b.high, low=b.low,
+                close=b.close, volume=b.volume) for start, b in zip(starts, folded, strict=True)]
+
+
+def fill_recent(history: list[Bar], recent: list[Bar], minutes: int) -> list[Bar]:
+    """Yahoo's KRX minute bars run 15+ minutes late: from the first bucket the broker's recent
+    1-minute bars reach, use those (folded) instead. When they reach only the tail of that first
+    bucket, Yahoo's bar for it keeps its open and the two share high / low (volume: the larger,
+    as neither side knows the other's minutes)."""
+    inside = [b for b in recent if krx_bucket(_at(b.at), minutes) is not None]
+    folded = fold_minutes(inside, minutes)
+    if not folded:
+        return history
+    first = _at(folded[0].at)
+    if _at(inside[0].at) > first:
+        old = next((b for b in history if _at(b.at) == first), None)
+        if old is not None:
+            head = folded[0]
+            folded[0] = Bar(at=head.at, open=old.open, high=max(old.high, head.high), low=min(old.low, head.low),
+                            close=head.close, volume=max(old.volume, head.volume))
+    return [b for b in history if _at(b.at) < first] + folded
 
 
 class PriceSource:
@@ -217,6 +271,8 @@ class PriceSource:
                 log.info("broker candles for %s failed, using Yahoo: %s", ticker, exc)
             bars = await asyncio.to_thread(self._yahoo_candles, ticker, interval, fetch)
             source = "yahoo"
+            if interval in _MINUTES and is_krx(ticker):
+                bars, source = await self._fill_krx(ticker, interval, bars)
         rows = [asdict(bar) for bar in bars]
         annotate(rows, indicators)
         rows = rows[-count:]
@@ -225,6 +281,19 @@ class PriceSource:
                   "history_limit_days": HISTORY_LIMIT_DAYS.get(interval), "truncated": len(rows) < count}
         _remember(self._candles, key, (self._clock(), result, ttl), ttl, self._clock)
         return result
+
+    async def _fill_krx(self, ticker: str, interval: str, bars: list[Bar]) -> tuple[list[Bar], str]:
+        """KRX minute bars from Yahoo, their late tail replaced by the broker's 1-minute bars
+        (#379) - the live chart folds its stream into the same buckets. Yahoo alone on a miss."""
+        try:
+            recent = await self.candles(ticker, "1m", BROKER_MAX_COUNT)
+        except Exception as exc:  # noqa: BLE001 - the history still stands
+            log.info("recent 1m for %s failed, Yahoo only: %s", ticker, exc)
+            return bars, "yahoo"
+        if recent["source"] != self.broker.name:
+            return bars, "yahoo"                 # Yahoo's own 1m lags just the same
+        filled = fill_recent(bars, [Bar(**b) for b in recent["bars"]], _MINUTES[interval])
+        return filled, ("yahoo" if filled is bars else f"yahoo+{self.broker.name}")
 
 
 def _remember(cache: dict, key, entry: tuple, ttl: float, clock) -> None:

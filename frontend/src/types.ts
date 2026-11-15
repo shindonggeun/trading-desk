@@ -995,6 +995,9 @@ export interface BacktestSummary {
   plans: number | null;
   filled: number | null;
   expectancy_r: number | null;
+  commit?: string | null;
+  /** #388 규칙 코드가 스냅샷을 만든 뒤 바뀌었나(null = 모름, 지문이 없던 예전 스냅샷) */
+  stale?: boolean | null;
 }
 /** GET /api/backtest/reports/{horizon} — desk.backtest.Report */
 export interface BacktestReport {
@@ -1004,6 +1007,10 @@ export interface BacktestReport {
   start: string | null;
   end: string | null;
   generated_at: string | null;
+  /** #388 만든 develop 커밋 · 규칙 코드 지문 · 지금 코드와 지문이 다른가 */
+  commit?: string | null;
+  rules?: string;
+  stale?: boolean | null;
   costs: { bps_per_side: number };
   baseline: BacktestAgg;
   by_setup: Record<string, BacktestAgg>;

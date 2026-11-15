@@ -54,3 +54,24 @@ def test_the_committed_snapshots_are_reports_of_their_horizon():
     rows = backtest_reports.summaries()
     assert {r["horizon"] for r in rows} >= {"swing", "intraday"}
     assert all(r["plans"] and r["generated_at"] for r in rows)
+
+
+def test_a_snapshot_says_stale_when_the_rule_code_changed_since_it_was_made(snapshots, tmp_path):
+    now = backtest_reports.rules_fingerprint()
+    (snapshots / "swing.json").write_text(json.dumps({**_report("swing"), "rules": now, "commit": "39c64981caa8"}),
+                                          encoding="utf-8")
+    (snapshots / "intraday.json").write_text(json.dumps({**_report("intraday"), "rules": "000000000000"}), encoding="utf-8")
+    rows = {r["horizon"]: r for r in backtest_reports.summaries()}
+    assert rows["swing"]["stale"] is False and rows["swing"]["commit"] == "39c64981caa8"
+    assert rows["intraday"]["stale"] is True
+    assert backtest_reports.get("intraday")["stale"] is True
+    (snapshots / "swing.json").write_text(json.dumps(_report("swing")), encoding="utf-8")       # made before #388
+    assert backtest_reports.get("swing")["stale"] is None
+
+
+def test_the_rule_code_is_the_import_closure_of_the_backtest():
+    mods = backtest_reports.rule_modules()
+    assert {"backtest", "playbook", "setup_filter", "direction", "horizons"} <= set(mods)
+    assert "api" not in mods and "store" not in mods
+    assert backtest_reports.rules_fingerprint() == backtest_reports.rules_fingerprint()
+    assert len(backtest_reports.rules_fingerprint()) == 12

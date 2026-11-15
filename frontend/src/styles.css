@@ -1260,6 +1260,8 @@ h1 .fav-star { font-size: var(--fs-xl); }
 .bt-curve-x { display: flex; justify-content: space-between; gap: 8px; padding-left: 52px; margin-top: 4px; }
 .bt-curve-cut-note { margin: 4px 0 0; }
 .bt-curve-sum { margin: 6px 0 0; }
+/* #388 백테스트 스냅샷이 지금 규칙 코드보다 오래됐을 때 */
+.bt-stale { margin: 0 0 10px; padding: 6px 10px; border-radius: var(--radius-s); border: 1px solid var(--warn); color: var(--warn); }
 
 /* #198 과매도 스윙 · 승부 타점(#167) */
 .pb-vs { display: grid; gap: 4px; padding: 6px 8px; border: 1px dashed var(--border); border-radius: var(--radius-s, 6px); }

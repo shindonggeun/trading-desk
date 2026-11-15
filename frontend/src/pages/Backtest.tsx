@@ -243,9 +243,16 @@ export default function Backtest() {
         {report && base && (
           <>
             <p className="muted small bt-meta">
-              {report.start ? `${day(report.start)} ~ ${report.end ? day(report.end) : "최근"}` : "받을 수 있는 전체 기간"} · 만든 날 {day(report.generated_at)} · 비용 편도 {report.costs.bps_per_side}bp ·{" "}
+              {report.start ? `${day(report.start)} ~ ${report.end ? day(report.end) : "최근"}` : "받을 수 있는 전체 기간"} · 만든 날 {day(report.generated_at)}{report.commit ? ` (커밋 ${report.commit.slice(0, 7)})` : ""} · 비용 편도 {report.costs.bps_per_side}bp ·{" "}
               {report.tickers.join(" · ")}
             </p>
+            {report.stale !== false && (
+              <p className="bt-stale small" role="status">
+                {report.stale
+                  ? "이 스냅샷을 만든 뒤 계획 규칙 코드가 바뀌었습니다 — 숫자가 지금 규칙의 성적과 다를 수 있습니다."
+                  : "이 스냅샷은 만든 커밋 · 규칙 지문이 없어 지금 규칙으로 만든 것인지 알 수 없습니다."}
+              </p>
+            )}
             <div className="bt-tiles">
               <Tile name="계획" value={base.plans.toLocaleString("ko-KR")} />
               <Tile name="체결률" value={pct(base.fill_rate)} />

@@ -12,6 +12,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY index.html tsconfig.json vite.config.ts ./
 COPY src ./src
+# #377 public/(sw.js · 매니페스트 · 아이콘)은 Vite 가 dist 루트로 그대로 복사한다
+COPY public ./public
 RUN npm run build
 
 FROM ${NGINX_IMAGE}

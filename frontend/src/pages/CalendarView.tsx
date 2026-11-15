@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import { addMonths, analyzeLink, closures, earnDetail, earningsNotice, FLAG, IMPORTANCE, kstTime, nextDay, shortTicker, todayKst, WHEN } from "../calendar";
+import { addMonths, analyzeLink, closures, earnDetail, earningsNotice, FLAG, IMPORTANCE, kstTime, mergeEarnings, nextDay, shortTicker, todayKst, WHEN } from "../calendar";
 import type { CalDay, MarketMonth } from "../types";
 import EarningsPreviewCard from "../components/EarningsPreviewCard";
 
@@ -44,7 +44,8 @@ export function shownDay(d: CalDay, f: Filters) {
   const market = (m: "kr" | "us") => (m === "kr" ? f.kr : f.us);
   const closed = closures(d).filter((c) => market(c.market));
   const events = f.earningsOnly ? [] : d.events.filter((e) => market(e.market) && (!f.topOnly || e.importance >= 2));
-  const earnings = d.earnings.filter((r) => market(r.market) && (!f.topOnly || r.watched));
+  // #386 같은 날 같은 회사(보통주 · 우선주 등)는 한 줄
+  const earnings = mergeEarnings(d.earnings.filter((r) => market(r.market) && (!f.topOnly || r.watched)));
   return { closed, events, earnings, empty: !closed.length && !events.length && !earnings.length };
 }
 
@@ -78,7 +79,7 @@ function DayItems({ day, f, onPreview }: { day: CalDay; f: Filters; onPreview: (
         <li key={`${r.ticker}-${r.date}`} className={`cal-item cal-earn${r.watched ? " cal-watched" : ""}`}>
           <span className="cal-time">실적 · {WHEN[r.when]}</span>
           <span>
-            {FLAG[r.market]} <strong>{r.name || shortTicker(r.ticker)}</strong>{r.name && <span className="muted small"> {shortTicker(r.ticker)}</span>}
+            {FLAG[r.market]} <strong>{r.name || shortTicker(r.ticker)}</strong>{r.name && <span className="muted small"> {[r.ticker, ...(r.also ?? [])].map(shortTicker).join(" · ")}</span>}
             {r.stale && <span className="muted small" title="이번 회차에 새로 받지 못해 이전 자료를 보입니다"> · 이전 자료</span>}
             {" "}<button type="button" className="link small" onClick={() => onPreview(r.ticker, r.name || r.ticker)}>프리뷰</button>
             {r.watched && <> <span className="pill">관심</span> <a className="small" href={analyzeLink(r)}>바로 분석 →</a></>}
@@ -101,6 +102,7 @@ export default function CalendarView({ query }: { query: URLSearchParams }) {
   const [data, setData] = useState<MarketMonth | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ ticker: string; name: string } | null>(null);
+  const [showPast, setShowPast] = useState(false);
   const openPreview = (ticker: string, name: string) => setPreview({ ticker, name });
 
   useEffect(() => {
@@ -195,6 +197,13 @@ export default function CalendarView({ query }: { query: URLSearchParams }) {
                     {Array.from({ length: Math.min(rest, 3) }, (_, k) => <span key={`r${k}`} className="cal-dot" />)}
                     {s.earnings.length > 0 && <span className={`cal-earn-n${watched ? " cal-watched" : ""}`}>실적 {s.earnings.length}</span>}
                   </span>
+                  {/* #386 실적이 없는 날도 무슨 발표인지 한 줄 — 중요도 높은 것부터 */}
+                  {s.earnings.length === 0 && s.events.length > 0 && (
+                    <span className="cal-earn-names cal-ev-names" aria-hidden>
+                      <span className="cal-earn-name">{[...s.events].sort((a, b) => b.importance - a.importance)[0].label}</span>
+                      {s.events.length > 1 && <span className="cal-earn-more">+{s.events.length - 1}</span>}
+                    </span>
+                  )}
                   {s.earnings.length > 0 && (
                     <span className={`cal-earn-names${watched ? " cal-watched" : ""}`} aria-hidden>
                       {s.earnings.slice(0, 2).map((r) => <span key={r.ticker} className="cal-earn-name">{r.name || shortTicker(r.ticker)}</span>)}
@@ -223,17 +232,29 @@ export default function CalendarView({ query }: { query: URLSearchParams }) {
         </section>
       )}
 
-      {data && view === "list" && (
+      {data && view === "list" && (() => {
+        // #386 이번 달이면 지난 날은 접고 오늘(없으면 다음 일정 날)부터
+        const shown = data.days.filter((d) => !shownDay(d, filters).empty);
+        const past = month === today.slice(0, 7) ? shown.filter((d) => d.date < today) : [];
+        const rest = showPast ? shown : shown.filter((d) => !past.includes(d));
+        return (
         <section className="card cal-list">
-          {data.days.filter((d) => !shownDay(d, filters).empty).map((d) => (
-            <div key={d.date} id={`cal-${d.date}`} className={`cal-list-day${d.date === today ? " cal-today" : ""}`}>
+          {past.length > 0 && (
+            <button type="button" className="link small cal-past-toggle" aria-expanded={showPast} onClick={() => setShowPast(!showPast)}>
+              {showPast ? "지난 일정 접기" : `지난 일정 ${past.length}일 보기`}
+            </button>
+          )}
+          {rest.map((d) => (
+            <div key={d.date} id={`cal-${d.date}`} className={`cal-list-day${d.date === today ? " cal-today" : ""}${d.date < today ? " cal-past" : ""}`}>
               <h3>{Number(d.date.slice(5, 7))}/{Number(d.date.slice(8))} ({d.weekday}){d.date === today && <span className="pill">오늘</span>}</h3>
               <DayItems day={d} f={filters} onPreview={openPreview} />
             </div>
           ))}
-          {data.days.every((d) => shownDay(d, filters).empty) && <p className="muted small">이 달에 보여 줄 일정이 없습니다.</p>}
+          {shown.length === 0 && <p className="muted small">이 달에 보여 줄 일정이 없습니다.</p>}
+          {shown.length > 0 && rest.length === 0 && <p className="muted small">이번 달 남은 일정이 없습니다.</p>}
         </section>
-      )}
+        );
+      })()}
 
       {data && (
         <section className="muted small cal-notes">

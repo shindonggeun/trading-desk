@@ -1215,6 +1215,8 @@ export interface CalEarning {
   market_cap: number | null;
   source: string;
   watched: boolean;
+  /** #386 같은 날 같은 회사로 합친 다른 상장 티커(보통주 · 우선주 등) — 화면에서만 채운다 */
+  also?: string[];
   /** #308 상세 — 서버 배포 전엔 없다(모두 선택값), 없는 값은 null */
   eps_low?: number | null;
   eps_high?: number | null;

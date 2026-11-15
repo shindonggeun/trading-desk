@@ -112,3 +112,25 @@ export function closures(d: CalDay): { market: "kr" | "us"; text: string; early?
   if (d.us.early_close) out.push({ market: "us", text: `미장 조기 폐장(${d.us.early_close}) · 한국 ${d.us.close_kst} 마감`, early: true });
   return out;
 }
+
+/** #386 같은 회사 판정 키: 이름(대소문자 · 구두점 · 주식 종류 말 무시), 이름이 없으면 티커 뿌리(PBR-A → PBR) */
+const SHARE_WORDS = /\b(common|ordinary|preferred|pref|class [a-z]|series [a-z]|adr|ads|depositary|shares?|stock|inc|corp|corporation|co|ltd|plc|sa|s a|nv|ag)\b/g;
+export function companyKey(r: CalEarning): string {
+  const name = (r.name ?? "").toLowerCase().replace(/[^a-z0-9가-힣 ]+/g, " ").replace(SHARE_WORDS, " ").replace(/\s+/g, " ").trim();
+  const root = shortTicker(r.ticker).toUpperCase().replace(/[-.][A-Z]{1,2}$/, "");
+  return `${r.market}:${name || root}`;
+}
+
+/** #386 같은 날 같은 회사 실적을 한 줄로 — 관심 종목 · 시가총액 큰 쪽을 대표로, 나머지 티커는 also 에 */
+export function mergeEarnings(rows: CalEarning[]): CalEarning[] {
+  const out = new Map<string, CalEarning>();
+  for (const r of rows) {
+    const k = `${r.date}|${companyKey(r)}`;
+    const had = out.get(k);
+    if (!had) { out.set(k, r); continue; }
+    const better = (r.watched && !had.watched) || (r.watched === had.watched && (r.market_cap ?? 0) > (had.market_cap ?? 0));
+    const [keep, drop] = better ? [r, had] : [had, r];
+    out.set(k, { ...keep, watched: keep.watched || drop.watched, also: [...(keep.also ?? []), drop.ticker, ...(drop.also ?? [])] });
+  }
+  return [...out.values()];
+}

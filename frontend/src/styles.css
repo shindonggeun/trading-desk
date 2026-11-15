@@ -1394,6 +1394,15 @@ a.wmb-row:hover { border-color: var(--accent); }
 .cal-view { margin-left: auto; }
 .cal-filters { display: flex; flex-wrap: wrap; gap: 4px 14px; }
 .cal-filters label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+/* #386 달력 칸의 발표 이름 한 줄 · 목록의 지난 일정 접기 */
+.cal-ev-names .cal-earn-name { color: var(--muted); }
+.cal-past-toggle { justify-self: start; margin-bottom: 4px; }
+.cal-list-day.cal-past { opacity: .6; }
+@media (max-width: 760px) {
+  /* 휴대폰 달력 칸은 좁아 실적 이름은 "실적 N" 으로 줄이지만, 발표만 있는 날은 이름 한 줄(말줄임)을 남긴다 */
+  .cal-earn-names.cal-ev-names { display: flex; flex-wrap: nowrap; font-size: 10px; }
+  .cal-ev-names .cal-earn-more { display: none; }
+}
 .cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
 .cal-wd { text-align: center; font-size: 12px; color: var(--muted); padding: 2px 0; }
 .cal-weekend.cal-wd { color: var(--muted); opacity: .7; }

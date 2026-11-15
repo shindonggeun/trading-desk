@@ -1820,3 +1820,9 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .flow-toast a:hover { text-decoration: underline; }
 .flow-toast-close { background: none; border: 0; color: var(--muted); font-size: var(--fs-l); line-height: 1; padding: 0 2px; cursor: pointer; }
 @media (max-width: 600px) { .flow-toasts { top: 56px; right: 16px; left: 16px; width: auto; } }
+
+/* #383 휴대폰: 봉 주기 줄과 표시 묶음 칩이 한 줄을 나눠 쓰면 주기 줄이 두 칸만 남는다 - 각자 한 줄, 넘치면 줄바꿈 */
+@media (max-width: 760px) {
+  .price-chart-head .chart-intervals { flex: 1 1 100%; flex-wrap: wrap; overflow-x: visible; }
+  .price-chart-head .chart-presets { flex: 1 1 auto; min-width: 0; }
+}

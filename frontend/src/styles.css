@@ -326,7 +326,7 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .review-more { display: flex; justify-content: center; padding-top: 12px; }
 .review-table td.review-toggle { display: none; }
 @media (max-width: 640px) {
-  .review-table tr:not(.open) { grid-template-columns: minmax(0, 1fr) auto auto auto auto; gap: 6px 8px; align-items: center; }
+  table.review-table.stack-table tr:not(.open) { grid-template-columns: minmax(0, 1fr) auto auto auto auto; gap: 6px 8px; align-items: center; }
   /* 접힌 줄은 한 줄에 — 종목 코드 · 통화는 펼쳤을 때만 */
   .review-table tr:not(.open) td .muted.small { display: none; }
   .review-table tr:not(.open) td:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

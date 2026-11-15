@@ -1166,6 +1166,8 @@ h1 .fav-star { font-size: var(--fs-xl); }
 .sector-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .ss-item { display: grid; gap: 2px; min-width: 0; }
 .ss-item strong { font-size: var(--fs-l); }
+/* #382 요약 · 빚투 칸의 숫자는 표가 아니라 라벨 아래 값이다 — 전역 .num 오른쪽 정렬을 받지 않는다 */
+.ss-item .num, .credit-grid .num { text-align: left; }
 .sector-sort { align-items: center; gap: 6px; }
 .sector-sort .chip { min-height: 44px; }
 .sector-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }

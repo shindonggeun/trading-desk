@@ -35,7 +35,7 @@ function weekendKst(): boolean {
 
 /**
  * 시세판(#124 · 예전 실시간 차트 #26): 관심 종목 = 즐겨찾기(#135, 서버 저장). 위에 즐겨찾기 · 주말 추정 타일(장중 실시간 · 장외 추정가),
- * 아래에 고른 종목 차트 — "1분 실시간"(타점 겹쳐 보기 · 도달 알림 #42) 또는 "봉 · 추정"(5분 ~ 주봉 + 장외 추정 봉).
+ * 아래에 고른 종목 차트 — "실시간"(1분 ~ 4시간봉, 타점 겹쳐 보기 · 도달 알림 #42) 또는 "봉 · 추정"(5분 ~ 주봉 + 장외 추정 봉).
  */
 export default function Live() {
   const { list, error: favError } = useFavorites();
@@ -164,7 +164,7 @@ export default function Live() {
               <FavoriteStar ticker={focus.ticker} name={focus.name} /> <strong>{focus.name ?? focus.ticker}</strong> <span className="muted">{focus.ticker}</span>
             </span>
           )}
-          <button type="button" className={`chip${view === "live" ? " chip-on" : ""}`} aria-pressed={view === "live"} onClick={() => pickView("live")}>1분 실시간</button>
+          <button type="button" className={`chip${view === "live" ? " chip-on" : ""}`} aria-pressed={view === "live"} onClick={() => pickView("live")}>실시간</button>
           <button type="button" className={`chip${view === "bars" ? " chip-on" : ""}`} aria-pressed={view === "bars"} onClick={() => pickView("bars")}>봉 · 장외 추정</button>
           <button type="button" className={`chip${infoOn ? " chip-on" : ""}`} aria-pressed={infoOn} onClick={() => setInfoOn((v) => !v)}>정보</button>
         </div>

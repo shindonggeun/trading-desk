@@ -63,7 +63,7 @@ export interface Me {
 }
 
 /** 봉 주기(backend desk/prices.py INTERVALS). 대소문자 구분: 1m = 1분, 1M = 월봉. */
-export type CandleInterval = "1m" | "5m" | "15m" | "30m" | "60m" | "240m" | "1d" | "1w" | "1M" | "1y";
+export type CandleInterval = "1m" | "5m" | "15m" | "30m" | "60m" | "120m" | "240m" | "1d" | "1w" | "1M" | "1y";
 
 /** GET /api/candles — 봉은 오래된 것부터, at 은 봉 시작 시각(UTC ISO). */
 export interface Candles {

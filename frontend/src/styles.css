@@ -655,6 +655,8 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .live-alerts { margin-top: 12px; }
 .live-alerts-head { display: flex; justify-content: space-between; align-items: center; }
 .live-alert-list { margin: 6px 0 0; padding-left: 18px; }
+/* #380 실시간 차트 봉 간격 */
+.live-intervals { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 
 /* #75 — 대시보드 "시장" 패널 · 설정의 종목 목록 */
 .market-board { grid-column: 1 / -1; }

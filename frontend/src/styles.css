@@ -1611,6 +1611,18 @@ a.wmb-row:hover { border-color: var(--accent); }
 .cw-launcher[hidden] { display: none; }
 .cw-launcher:focus-visible { outline: 3px solid var(--text); outline-offset: 2px; }
 .cw-dot { position: absolute; top: 4px; right: 4px; width: 12px; height: 12px; border-radius: 50%; background: var(--up); border: 2px solid var(--bg, var(--surface)); }
+/* #384 떠 있는 채팅 버튼이 마지막 카드 · 차트 눈금을 덮지 않게:
+   페이지 끝에 버튼 높이만큼 여백을 두고(채팅 화면은 제 높이를 쓰므로 뺀다),
+   차트(canvas)가 있는 화면에선 버튼을 작고 반투명하게 — 가리켜지거나 포커스 · 열림이면 원래대로 */
+.shell { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
+.shell:has(.chat-page) { padding-bottom: env(safe-area-inset-bottom); }
+.shell:has(main canvas, main .bt-curve) .cw-launcher:not(.cw-on) { width: 44px; height: 44px; font-size: 20px; opacity: .45; transition: opacity .15s ease, transform .15s ease; }
+.shell:has(main canvas, main .bt-curve) .cw-launcher:not(.cw-on) svg { width: 20px; height: 20px; }
+.shell:has(main canvas, main .bt-curve) .cw-launcher:not(.cw-on):hover,
+.shell:has(main canvas, main .bt-curve) .cw-launcher:not(.cw-on):focus-visible { opacity: 1; }
+@media (max-width: 760px) {
+  .shell { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
+}
 .cw-panel { position: fixed; right: 20px; bottom: 88px; z-index: 74; width: min(400px, calc(100vw - 32px)); height: min(640px, calc(100dvh - 120px));
   display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 16px;
   background: var(--bg, var(--surface)); box-shadow: 0 12px 40px rgb(0 0 0 / .35); }

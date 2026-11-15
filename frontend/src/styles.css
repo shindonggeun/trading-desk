@@ -314,6 +314,28 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .review-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; margin-top: 4px; }
 .review-summary > div { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
 .review-summary strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+/* #385 매매 복기: 요약 카드로 거르기 · 거르기 칩 · 더 보기 · 휴대폰 한 줄 요약 */
+.review-summary > .review-card {
+  display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: none; color: inherit; text-align: left; font: inherit; cursor: pointer;
+}
+.review-summary > .review-card:hover { background: var(--surface-2); }
+.review-summary > .review-card.on { border-color: var(--accent); background: var(--surface-2); }
+.review-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.review-filters .muted { margin-left: 4px; }
+.review-more { display: flex; justify-content: center; padding-top: 12px; }
+.review-table td.review-toggle { display: none; }
+@media (max-width: 640px) {
+  .review-table tr:not(.open) { grid-template-columns: minmax(0, 1fr) auto auto auto auto; gap: 6px 8px; align-items: center; }
+  /* 접힌 줄은 한 줄에 — 종목 코드 · 통화는 펼쳤을 때만 */
+  .review-table tr:not(.open) td .muted.small { display: none; }
+  .review-table tr:not(.open) td:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .review-table tr:not(.open) td.review-detail { display: none; }
+  table.review-table.stack-table tr:not(.open) td { grid-column: auto; }
+  table.review-table tr:not(.open) td[data-label]::before { display: none; }
+  table.review-table td.review-toggle { display: block; }
+  table.review-table tr.open td.review-toggle { grid-column: 1 / -1; text-align: right; }
+}
 .review-pnl { grid-column: span 2; }
 .review-table td, .review-table th { white-space: nowrap; }
 .review-plan { display: grid; color: inherit; text-decoration: none; }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, type Alignment, type ReviewResponse, type ReviewRow } from "../api";
 import { price } from "../format";
 import { RATING, term } from "../korean";
@@ -18,6 +18,34 @@ const OUTCOME: Record<string, { ko: string; cls: string }> = {
   both: { ko: "같은 날 둘 다", cls: "out-both" },
   open: { ko: "아직 미도달", cls: "out-open" },
 };
+
+// #385 거르기 — 칩(전체 · 계획 있음 · 분석 없음 · 매수 · 매도)과 요약 카드가 같은 값을 쓴다
+type Filter = "all" | "plan" | "no_plan" | "buy" | "sell" | "with_plan" | "against_plan" | "plan_flat" | "target" | "stop";
+const CHIPS: { key: Filter; ko: string }[] = [
+  { key: "all", ko: "전체" },
+  { key: "plan", ko: "계획 있음" },
+  { key: "no_plan", ko: "분석 없음" },
+  { key: "buy", ko: "매수" },
+  { key: "sell", ko: "매도" },
+];
+const FILTER_KO: Record<Filter, string> = {
+  all: "전체", plan: "계획 있음", no_plan: "분석 없음", buy: "매수", sell: "매도",
+  with_plan: "계획대로", against_plan: "반대 방향 · 청산", plan_flat: "관망 중", target: "목표 도달", stop: "손절 도달",
+};
+const PAGE = 50;
+
+function matches(row: ReviewRow, f: Filter): boolean {
+  switch (f) {
+    case "all": return true;
+    case "plan": return row.alignment !== "no_plan";
+    case "no_plan": return row.alignment === "no_plan";
+    case "buy": return row.side === "BUY";
+    case "sell": return row.side === "SELL";
+    case "target": return row.outcome?.result === "target";
+    case "stop": return row.outcome?.result === "stop";
+    default: return row.alignment === f;
+  }
+}
 
 function when(iso: string): string {
   // 토스 체결 시각은 KST 다(+09:00). 표에는 날짜 · 시각까지만.
@@ -72,12 +100,20 @@ export default function Review() {
   const [data, setData] = useState<ReviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState<string | null>(null);
+  const [filter, setFilter] = useState<Filter>("all");
+  const [shown, setShown] = useState(PAGE);
+  const [open, setOpen] = useState<Set<string>>(new Set()); // 휴대폰에서 펼친 체결
+  const pick = (f: Filter) => {
+    setFilter(f);
+    setShown(PAGE);
+  };
 
   useEffect(() => {
     let live = true;
     setLoading(true);
     setFailed(null);
     setData(null); // 이전 기간의 숫자가 새 기간 버튼 아래 남지 않게
+    setShown(PAGE);
     api
       .review(days)
       .then((d) => live && setData(d))
@@ -89,6 +125,21 @@ export default function Review() {
   }, [days]);
 
   const s = data?.summary;
+  const rows = useMemo(() => (data?.fills ?? []).filter((r) => matches(r, filter)), [data, filter]);
+  const count = (f: Filter) => (data?.fills ?? []).filter((r) => matches(r, f)).length;
+  const toggle = (id: string) => setOpen((o) => {
+    const next = new Set(o);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+  // 요약 카드 — 누르면 그 조건으로 거르고, 다시 누르면 푼다
+  const card = (f: Filter, value: number, label: string, title?: string, cls?: string) => (
+    <button type="button" className={`review-card${filter === f ? " on" : ""}`} title={title} aria-pressed={filter === f}
+      onClick={() => pick(filter === f ? "all" : f)}>
+      <strong className={cls}>{value}</strong><span className="muted small">{label}</span>
+    </button>
+  );
   return (
     <div className="review">
       <section className="card review-head">
@@ -115,13 +166,13 @@ export default function Review() {
 
         {s && (
           <div className="review-summary">
-            <div><strong>{s.fills}</strong><span className="muted small">체결</span></div>
-            <div title={ALIGN.with_plan.desc}><strong>{s.with_plan}</strong><span className="muted small">계획대로</span></div>
-            <div title="계획과 반대 방향 매매 — 청산(차익 · 손절) 포함"><strong>{s.against_plan}</strong><span className="muted small">반대 방향 · 청산</span></div>
-            <div title={ALIGN.plan_flat.desc}><strong>{s.plan_flat}</strong><span className="muted small">관망 중</span></div>
-            <div title={ALIGN.no_plan.desc}><strong>{s.no_plan}</strong><span className="muted small">분석 없음</span></div>
-            <div><strong className="pnl-up">{s.outcomes.target}</strong><span className="muted small">목표 도달</span></div>
-            <div><strong className="pnl-down">{s.outcomes.stop}</strong><span className="muted small">손절 도달</span></div>
+            {card("all", s.fills, "체결")}
+            {card("with_plan", s.with_plan, "계획대로", ALIGN.with_plan.desc)}
+            {card("against_plan", s.against_plan, "반대 방향 · 청산", "계획과 반대 방향 매매 — 청산(차익 · 손절) 포함")}
+            {card("plan_flat", s.plan_flat, "관망 중", ALIGN.plan_flat.desc)}
+            {card("no_plan", s.no_plan, "분석 없음", ALIGN.no_plan.desc)}
+            {card("target", s.outcomes.target, "목표 도달", undefined, "pnl-up")}
+            {card("stop", s.outcomes.stop, "손절 도달", undefined, "pnl-down")}
             <div className="review-pnl">
               {Object.keys(s.realized_pnl).length === 0 ? (
                 <span className="muted small">실현 손익 없음</span>
@@ -144,6 +195,21 @@ export default function Review() {
         ) : data.fills.length === 0 ? (
           <p className="muted">이 기간에 체결이 없습니다.</p>
         ) : (
+          <>
+          <div className="review-filters" role="group" aria-label="거르기">
+            {CHIPS.map((c) => (
+              <button key={c.key} type="button" className={`chip${filter === c.key ? " chip-on" : ""}`} aria-pressed={filter === c.key}
+                onClick={() => pick(c.key)}>{c.ko} <span className="muted small">{count(c.key)}</span></button>
+            ))}
+            {!CHIPS.some((c) => c.key === filter) && (
+              <button type="button" className="chip chip-on" aria-pressed onClick={() => pick("all")} title="거르기 풀기">
+                {FILTER_KO[filter]} {rows.length} ×
+              </button>
+            )}
+          </div>
+          {rows.length === 0 ? (
+            <p className="muted">이 조건에 맞는 체결이 없습니다.</p>
+          ) : (
           <div className="table-wrap">
             <table role="table" className="review-table stack-table">
               <thead role="rowgroup">
@@ -161,7 +227,7 @@ export default function Review() {
                 </tr>
               </thead>
               <tbody role="rowgroup">
-                {data.fills.map((row) => {
+                {rows.slice(0, shown).map((row) => {
                   // 롱 계획 중 매도 · 숏 계획 중 매수는 보통 차익 실현 · 청산이다 — "반대 방향" 만으로 읽히지 않게.
                   const closing = row.alignment === "against_plan" && (
                     (row.side === "SELL" && row.plan?.bias === "long") || (row.side === "BUY" && row.plan?.bias === "short"));
@@ -172,18 +238,18 @@ export default function Review() {
                       : ALIGN[row.alignment];
                   const o = row.outcome ? OUTCOME[row.outcome.result] : null;
                   return (
-                    <tr role="row" key={row.order_id}>
-                      <td role="cell" className="muted small stack-wide" data-label="체결 시각">{when(row.filled_at)}</td>
+                    <tr role="row" key={row.order_id} className={open.has(row.order_id) ? "open" : undefined}>
+                      <td role="cell" className="muted small stack-wide review-detail" data-label="체결 시각">{when(row.filled_at)}</td>
                       <td role="cell" className="stack-wide" data-label="종목">
                         {row.name ?? row.symbol} <span className="muted small">{row.ticker}</span>
                       </td>
                       <td role="cell" data-label="구분" className={row.side === "BUY" ? "side-buy" : "side-sell"}>{row.side === "BUY" ? "매수" : "매도"}</td>
-                      <td role="cell" className="num" data-label="수량">{row.quantity}</td>
+                      <td role="cell" className="num review-detail" data-label="수량">{row.quantity}</td>
                       <td role="cell" className="num" data-label="체결가">{price(row.price)} <span className="muted small">{row.currency}</span></td>
-                      <td role="cell" className="stack-wide" data-label="그때의 계획"><Plan row={row} /></td>
+                      <td role="cell" className="stack-wide review-detail" data-label="그때의 계획"><Plan row={row} /></td>
                       <td role="cell" data-label="계획과"><span className={`pill ${a.cls}`} title={a.desc}>{a.ko}</span></td>
-                      <td role="cell" className="num" data-label="진입가 대비">{pct(row.entry_gap_pct)}</td>
-                      <td role="cell" data-label="이후 결과">
+                      <td role="cell" className="num review-detail" data-label="진입가 대비">{pct(row.entry_gap_pct)}</td>
+                      <td role="cell" className="review-detail" data-label="이후 결과">
                         {o ? (
                           <span className={o.cls}>
                             {o.ko}
@@ -193,13 +259,27 @@ export default function Review() {
                           <span className="muted small" title="계획대로 한 매매이고 손절 · 목표가 있을 때만 봅니다">—</span>
                         )}
                       </td>
-                      <td role="cell" className="num" data-label="실현 손익"><Realized row={row} /></td>
+                      <td role="cell" className="num review-detail" data-label="실현 손익"><Realized row={row} /></td>
+                      <td role="cell" className="review-toggle">
+                        <button type="button" className="link" aria-expanded={open.has(row.order_id)} onClick={() => toggle(row.order_id)}>
+                          {open.has(row.order_id) ? "접기" : "자세히"}
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
+          )}
+          {rows.length > shown && (
+            <div className="review-more">
+              <button type="button" className="secondary" onClick={() => setShown((n) => n + PAGE)}>
+                더 보기 ({shown} / {rows.length}건)
+              </button>
+            </div>
+          )}
+          </>
         )}
       </section>
     </div>

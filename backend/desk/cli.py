@@ -27,7 +27,7 @@ import getpass
 import json
 import os
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy.exc import IntegrityError
 
@@ -154,6 +154,34 @@ def _entry_backtest(args) -> int:
     return 0
 
 
+def _flow_history(args) -> int:
+    """#389: the broker from the settings (.env) - its keys are read there, never printed."""
+    import asyncio
+    from datetime import date
+
+    from . import flow_history
+    from .broker import make_broker
+    from .market_flow import KST
+
+    settings = load()
+    if settings.broker != "toss":
+        print(f"broker is {settings.broker!r}: the mock's sample flow is not history - set DESK_BROKER=toss")
+        return 1
+    markets = flow_history.MARKETS if args.market.lower() == "all" else (args.market.upper(),)
+    start, today = date.fromisoformat(args.start), datetime.now(KST).date()
+
+    async def go() -> None:
+        broker = make_broker(settings)
+        for market in markets:
+            path = flow_history.path_for(args.out_dir, market)
+            data = await flow_history.collect(broker, market, start, path, today=today)
+            days = sorted(data["rows"])
+            print(f"{market}: {len(days)}일 {days[0] if days else '-'} ~ {days[-1] if days else '-'} -> {path}")
+
+    asyncio.run(go())
+    return 0
+
+
 def _backtest(args) -> int:
     """No settings or database: bars come from Yahoo, the report goes to stdout and ``--out``."""
     import json
@@ -271,6 +299,12 @@ def main(argv: list[str] | None = None) -> int:
         "the long-term bottom zone (#240) on past big lows: signals, how early, staged-buy returns"))
     bz.add_argument("tickers", nargs="*", default=["^NDX", "^GSPC", "^SOX", "^KS11", "005930.KS", "000660.KS"])
     bz.add_argument("--out", default=None, help="write the full JSON report here")
+    fh = sub.add_parser("flow-history", help=(
+        "page KOSPI / KOSDAQ daily net buying by investor back to --from into <out-dir>/<market>.json "
+        "(#389; Toss answers only from its registered IP - run on the server; resumes where it stopped)"))
+    fh.add_argument("--market", default="all", help="kospi | kosdaq | all (default all)")
+    fh.add_argument("--from", dest="start", default="2019-01-01", help="oldest day kept, YYYY-MM-DD")
+    fh.add_argument("--out-dir", default="data/flow", help="directory of the files (default data/flow)")
     tm = sub.add_parser("timing", help="average time per stage and per agent over the latest finished runs")
     tm.add_argument("--last", type=int, default=20, help="how many recent finished runs (default 20)")
     args = parser.parse_args(argv)
@@ -285,6 +319,8 @@ def main(argv: list[str] | None = None) -> int:
         return _entry_backtest(args)
     if args.command == "weekly-lines":
         return _weekly_lines(args)
+    if args.command == "flow-history":
+        return _flow_history(args)
     if args.command == "bottom-backtest":
         from . import bottom_zone
 

@@ -33,13 +33,14 @@ SWING_K = 3
 # desk.backtest.playbooks_at hands the market to the direction with the #146 gate off too: the index
 # rules (and any part given a weight) stay in both runs of the gate comparison.
 WEIGHTS = {"ma_stack": 1.5, "slope50": 1.0, "structure": 1.0, "ret20": 0.5, "market": 0.0, "macro": 0.0,
-           "rel": 0.0, "breadth": 0.0, "weekly": 0.0}
+           "rel": 0.0, "breadth": 0.0, "weekly": 0.0, "flow": 0.0}   # flow: #389, not yet measured
 VALIDATED = ("ma_stack", "slope50", "structure", "ret20", "market", "rel", "breadth")   # the parts the backtest measured
 MARKET_NEUTRAL = 25.0   # a selling score here votes neither way; 75 is a full short vote
 HYSTERESIS = 0          # keep an earlier lean this far under LEAN (10 was swept: -0.1361R / -0.1176R vs
                         # -0.1359R / -0.1168R without - it dropped more shorts that were not worse: off)
 TURN_BARS = 5           # the lean this many sessions ago, for the hysteresis and the turn
 MACRO_SPIKE = 1.5
+FLOW_MIN = 10           # #389: sessions of foreign net buying the flow part needs (of desk.flow_history.WINDOW)
 APPLY = True       # set False to re-measure the counter-trend rows (desk.backtest by_direction)
 APPLY_HORIZONS = ("swing",)   # the backtest that decided the rule ran on swing; other horizons are only marked
 # While the lean is turning (crossed zero within TURN_BARS) no fresh entry on either side; the oversold
@@ -133,13 +134,27 @@ def _macro_part(macro: dict | None) -> dict | None:
     return None
 
 
-def score(daily: list[dict], market: dict | None = None, macro: dict | None = None) -> dict | None:
+def _flow_part(flow: dict | None) -> dict | None:
+    """#389: the market's foreign net buying over the last sessions before the plan (desk.flow_history
+    ``window``): net / gross, so buying every day is +1 and selling every day -1. Needs half the window."""
+    nets = (flow or {}).get("foreigner") or []
+    gross = sum(abs(x) for x in nets)
+    if len(nets) < FLOW_MIN or not gross:
+        return None
+    total = sum(nets)
+    return {"id": "flow", "value": round(_clip(total / gross), 2),
+            "text": f"{flow.get('market') or '시장'} 외국인 {len(nets)}일 순매수 {total / 1e12:+.2f}조"
+                    f"(순매수 {sum(1 for x in nets if x > 0)}일)"}
+
+
+def score(daily: list[dict], market: dict | None = None, macro: dict | None = None,
+          flow: dict | None = None) -> dict | None:
     """{"score", "bias": long|short|neutral, "strong", "turning", "held", "parts": [...]} or None
-    with too few bars. ``market`` (desk.risk_regime.score) and ``macro`` (desk.macro_news brief)
-    join as parts when given. The lean has a hysteresis against the price-only lean TURN_BARS ago:
+    with too few bars. ``market`` (desk.risk_regime.score), ``macro`` (desk.macro_news brief) and
+    ``flow`` ({"market", "foreigner": [net, ...]} before the plan day, #389) join as parts when given. The lean has a hysteresis against the price-only lean TURN_BARS ago:
     it is kept until the score falls HYSTERESIS under LEAN, and a score that crossed zero since then
     is ``turning`` (fresh entries need a stated reason) - read on the price-only score at both ends."""
-    now = _score(daily, market, macro)
+    now = _score(daily, market, macro, flow)
     if now is None:
         return None
     before = _score(daily[:-TURN_BARS])
@@ -150,13 +165,14 @@ def score(daily: list[dict], market: dict | None = None, macro: dict | None = No
             now["bias"], now["held"] = before["bias"], True
         # the turn is the price's own: ``before`` has no market as of that day, so a market part
         # (the index under its line for weeks) must not read as a crossing - price-only on both ends
-        price = _score(daily) if (market or macro) else now
+        price = _score(daily) if (market or macro or flow) else now
         now["turning"] = _sign(price["score"]) * _sign(before["score"]) < 0 and abs(before["score"]) >= LEAN / 2
         now["before"] = before["score"]
     return now
 
 
-def _score(daily: list[dict], market: dict | None = None, macro: dict | None = None) -> dict | None:
+def _score(daily: list[dict], market: dict | None = None, macro: dict | None = None,
+           flow: dict | None = None) -> dict | None:
     if len(daily) < MIN_BARS:
         return None
     closes = [b["close"] for b in daily]
@@ -206,7 +222,8 @@ def _score(daily: list[dict], market: dict | None = None, macro: dict | None = N
         ret = close / closes[-21] - 1
         parts.append({"id": "ret20", "value": round(_clip(ret / 0.10), 2), "text": f"20일 수익률 {ret * 100:+.1f}%"})
 
-    parts += [p for p in (_rel_part(closes, market), _breadth_part(market), _market_part(market), _macro_part(macro)) if p]
+    parts += [p for p in (_rel_part(closes, market), _breadth_part(market), _market_part(market), _macro_part(macro),
+                          _flow_part(flow)) if p]
     for p in parts:
         p["validated"] = p["id"] in VALIDATED
         p["weight"] = WEIGHTS[p["id"]]           # 0: shown as evidence, not counted in the score

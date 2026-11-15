@@ -147,7 +147,7 @@ def test_a_lean_is_kept_inside_the_hysteresis_and_a_zero_cross_is_a_turn(monkeyp
     real = direction._score
 
     def fake(now: int, before: int):
-        def _score(daily, market=None, macro=None):
+        def _score(daily, market=None, macro=None, flow=None):
             got = real(daily, market, macro)
             value = now if len(daily) == len(days) else before
             bias = "long" if value >= direction.LEAN else "short" if value <= -direction.LEAN else "neutral"

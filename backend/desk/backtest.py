@@ -29,6 +29,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
 from . import (
+    backtest_reports,
     calibration,
     entry_features,
     entry_now,
@@ -158,6 +159,8 @@ class Report:
     by_risk: dict = field(default_factory=dict)
     risk_gate: dict = field(default_factory=dict)   # the same plans with the #146 rule on / off
     equity: dict = field(default_factory=dict)      # cumulative R by plan day (#192, ``equity``)
+    commit: str | None = None   # #388: the develop commit the snapshot was made from
+    rules: str = ""             # #388: fingerprint of the rule code (desk.backtest_reports.rules_fingerprint)
     value_swing: dict = field(default_factory=dict)  # the oversold swing buy on its own (#167)
     exits: dict = field(default_factory=dict)        # the exit rules side by side (#239, ``exit_report``)
     features: dict = field(default_factory=dict)     # R by the chart at the plan (#284, ``feature_report``)
@@ -938,7 +941,8 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
     notes.append("R 은 평균 체결가에서 손절까지를 1R 로 본 값 × 체결 비중입니다(깊게 체결될수록 1R 금액이 작아짐)")
     notes.append("사다리 비중(SHARES) 스윕은 하따(dip_catch)에만 영향 — 박스 하단 · 눌림목은 50/50 고정")
     report = Report(VERSION, h.id, list(tickers), start, end, asdict(costs), **summarize(trades, h, cut), notes=notes,
-                    generated_at=datetime.now(UTC).isoformat(timespec="seconds"))
+                    generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
+                    commit=backtest_reports.source_commit(), rules=backtest_reports.rules_fingerprint())
     report.value_swing = value_swing_report(trades, cut, h)
     report.exits = exit_report(trades, cut, h)
     if features:

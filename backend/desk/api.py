@@ -112,6 +112,10 @@ OPEN_PATHS = frozenset({"/api/health", "/api/auth/login"})
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
+# #431 what a run cut off by a restart (a deploy) says on its failed screen
+RESTART_REASON = "서버가 다시 시작돼 분석이 중단됐습니다."
+
+
 class LoginIn(BaseModel):
     """Step 1: username + password. Step 2 (OTP on): the challenge step 1 returned + a code.
     Both steps use the one route so the ingress fail2ban rule (login 401s) covers code guessing too."""
@@ -355,7 +359,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        stale = store.fail_unfinished("The server restarted while this run was in progress.")
+        stale = store.fail_unfinished(RESTART_REASON)
         if stale:
             log.warning("marked %d unfinished run(s) as failed", stale)
         # Scripted runs keep levels on the script's numbers instead of fetching a live quote.

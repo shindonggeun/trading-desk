@@ -34,7 +34,22 @@ compose 프로젝트 이름은 `trading-desk-backend-prod` · `trading-desk-web-
 scripts/deploy.sh                  # HEAD 를 올린다 (커밋 안 된 변경이 있으면 멈춘다)
 scripts/deploy.sh <커밋|태그>
 scripts/deploy.sh HEAD backend     # 백엔드만 (web | backend | all)
+scripts/deploy.sh --dry-run <커밋> backend   # 진행 중인 분석만 확인하고 배포하지 않는다
+scripts/deploy.sh --force <커밋> backend     # 진행 중인 분석이 있어도 바로 올린다 (그 분석은 실패로 끝난다)
 ```
+
+**진행 중인 분석을 기다린다**(#431). 백엔드를 다시 띄우면 진행 중인 분석이 끊긴다("서버가 다시 시작돼 분석이 중단됐습니다").
+그래서 `backend` · `all` 배포는 먼저 서버의 백엔드 컨테이너 안에서 `python -m desk.cli unfinished` 로
+queued/running run 을 묻는다(SSH 와 `docker exec` 만 쓰고 세션 · 비밀값은 쓰지 않는다).
+
+- 없으면 그대로 진행한다.
+- 있으면 종목 · 상태를 보이고 30초마다 다시 묻는다. `DESK_DEPLOY_WAIT_MIN` 분(기본 30)이 지나도 남아 있으면 종료 코드 3 으로 멈춘다 — 끊어도 되면 `--force`.
+- 새 백엔드 이미지를 빌드한 뒤, 컨테이너를 바꾸기 직전에 서버에서 한 번 더 묻는다. 빌드하는 몇 분 사이에 제출된 분석도 같은 규칙으로 기다린다. 거기서 멈추면 `src/` 를 직전 배포로 되돌린다.
+- SSH 로 묻지 못하면(접속 실패) 배포하지 않고 종료 코드 3 으로 멈춘다.
+- `--dry-run` 은 확인만 한다. 진행 중인 분석이 있으면 종료 코드 3, 없으면 0.
+- `web` 만 올릴 때는 묻지 않는다. 컨테이너가 없거나 이 명령이 없는 옛 이미지면 확인할 수 없다고 알리고 진행한다.
+
+끊긴 분석은 실패 화면의 "다시 분석" 버튼으로 같은 종목 · 같은 설정의 새 run 을 낼 수 있다.
 
 서버 `~/deploy/trading-desk/` 구조:
 

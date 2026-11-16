@@ -892,6 +892,9 @@ span.cs-hold-text { color: var(--warn); }
 @media (max-width: 760px) { .sum-verdict { font-size: 1.3rem; } .sum-big { font-size: 1.5rem; } }
 .result-chart-switch { margin-bottom: 2px; }
 .run-empty p { margin: 0; }
+/* #431 실패한 분석: 같은 설정으로 다시 분석 */
+.run-retry { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; }
+.run-retry .error { flex-basis: 100%; }
 .run-debate-glossary { display: contents; }
 @media (max-width: 1199px) { .run-debate-glossary { display: none; } }
 @media (max-width: 760px) {

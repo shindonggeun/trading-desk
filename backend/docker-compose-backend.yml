@@ -18,14 +18,13 @@ x-backend-environment: &backend_environment
   DESK_FAKE_RUNS: ${DESK_FAKE_RUNS:-false}
   DESK_FAKE_DELAY: ${DESK_FAKE_DELAY:-0.6}
   DESK_MAX_CONCURRENT_RUNS: ${DESK_MAX_CONCURRENT_RUNS:-1}
-  # AI 채팅이 고를 수 있는 모델(쉼표 목록)과 기본값(#414). 비면 gpt-6-luna,gpt-6-sol · 목록 첫 항목
+  # AI 채팅이 고를 수 있는 모델(쉼표 목록)과 기본값(#414). 비면 gpt-6-luna,gpt-6-sol
   DESK_CHAT_MODELS: ${DESK_CHAT_MODELS:-}
   DESK_CHAT_MODEL: ${DESK_CHAT_MODEL:-}
   # 모델 속도 제한(429) 뒤 이 시간(분) 동안은 1개씩만 돌린다(#171)
   DESK_RATE_LIMIT_COOLDOWN_MIN: ${DESK_RATE_LIMIT_COOLDOWN_MIN:-30}
-  # 채팅 모델(#404) — run 과 따로. 등급 quick | deep(기본 deep), 비우면 그 등급의 TRADINGAGENTS_* 값
+  # 채팅 모델이 얹히는 등급(#404) quick | deep(기본 deep)과 채팅만의 추론 강도. DESK_CHAT_MODEL 이 비면 그 등급 모델(목록에 있을 때)
   DESK_CHAT_MODEL_TIER: ${DESK_CHAT_MODEL_TIER:-deep}
-  DESK_CHAT_LLM: ${DESK_CHAT_LLM:-}
   DESK_CHAT_REASONING_EFFORT: ${DESK_CHAT_REASONING_EFFORT:-}
   # 같은 종목 · 날짜 · 보기 · 언어로 N분 안에 다시 분석하면 뉴스 · 펀더멘털 보고서를 재사용(#171). 0 = 끔
   DESK_REUSE_REPORTS_MIN: ${DESK_REUSE_REPORTS_MIN:-0}

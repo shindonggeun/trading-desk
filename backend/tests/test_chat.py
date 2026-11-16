@@ -218,7 +218,6 @@ def test_the_store_checks_the_owner_itself_and_caps_a_thread(db_url, monkeypatch
     assert [m["content"] for m in store.messages(owner_id, thread["id"], last=1)] == ["b"]
 
 
-<<<<<<< HEAD
 def test_the_answer_keeps_the_model_it_was_written_with(db_url, monkeypatch):
     """#404: the done event and the stored answer name the chat's model; a chatter that cannot say gives None."""
     named = quote_then_answer()
@@ -231,7 +230,8 @@ def test_the_answer_keeps_the_model_it_was_written_with(db_url, monkeypatch):
         kept = client.get(f"/api/chat/threads/{thread['id']}/messages").json()["items"]
         assert [m["model"] for m in kept] == [None, "gpt-6-sol"]
     assert chat.model_of(quote_then_answer()) is None and chat.model_of(chat.FakeChatter()) == "fake"
-=======
+
+
 def test_the_chat_offers_its_models_and_answers_with_the_one_picked(db_url, monkeypatch):
     """#414: the allowed list with labels, the default when none is picked, 422 off the list."""
     model = quote_then_answer()
@@ -258,4 +258,10 @@ def test_the_chat_models_come_from_the_settings():
         "default": "my-model", "items": [{"id": "gpt-6-sol", "label": "Sol · 고급 추론"},
                                          {"id": "my-model", "label": "my-model"}]}
     assert chat.model_options(["gpt-6-sol"], "not-offered")["default"] == "gpt-6-sol"
->>>>>>> 138a0e4 ([BE] feat: AI 채팅이 허용 목록의 모델을 골라 답하고 채팅 기본 모델을 분석 모델과 따로 둔다 (#414))
+
+
+def test_the_default_model_is_the_chat_tiers_own_when_offered():
+    """#404 + #414: no DESK_CHAT_MODEL - the chat tier's model when the list offers it, else the first."""
+    assert chat.model_options(["gpt-6-luna", "gpt-6-sol"], "", "gpt-6-sol")["default"] == "gpt-6-sol"
+    assert chat.model_options(["gpt-6-luna", "gpt-6-sol"], "", "gpt-6-astra")["default"] == "gpt-6-luna"
+    assert chat.model_options(["gpt-6-luna", "gpt-6-sol"], "gpt-6-luna", "gpt-6-sol")["default"] == "gpt-6-luna"

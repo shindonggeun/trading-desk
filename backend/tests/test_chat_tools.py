@@ -134,11 +134,11 @@ def test_the_chat_takes_its_own_tier_model_and_effort_and_leaves_the_runs_config
     assert made[-1][1] == "deep" and made[-1][0]["deep_think_llm"] == "sol"            # default: deep tier as set
     assert chat.LangChainChatter().model_name() == "sol"
 
-    chatter = chat.LangChainChatter(tier="deep", model="sol-pro", effort="high")
-    asyncio.run(chatter(chat.build_messages([], "거시?", None, False), {}, lambda _e: None))
+    chatter = chat.LangChainChatter(tier="deep", effort="high")
+    asyncio.run(chatter(chat.build_messages([], "거시?", None, False), {}, lambda _e: None, model="sol-pro"))
     config, tier = made[-1]
     assert tier == "deep" and config["deep_think_llm"] == "sol-pro" and config["deep_think_reasoning_effort"] == "high"
-    assert chatter.model_name() == "sol-pro"
+    assert chatter.model_name() == "sol"                  # the tier's own model; the pick is per answer
 
     quick = chat.LangChainChatter(tier="quick")
     asyncio.run(quick(chat.build_messages([], "거시?", None, False), {}, lambda _e: None))
@@ -162,14 +162,13 @@ class _Client:
 
 
 def test_the_chat_settings_fall_back_instead_of_failing(monkeypatch):
-    """#404: a bad tier is deep, a misspelt effort is empty (the tier's own), an empty model is None."""
+    """#404: a bad tier is deep, a misspelt effort is empty (the tier's own)."""
     from desk.settings import Settings
 
     monkeypatch.setenv("DESK_CHAT_MODEL_TIER", "Quick ")
     monkeypatch.setenv("DESK_CHAT_REASONING_EFFORT", "HIGH")
-    monkeypatch.setenv("DESK_CHAT_LLM", "")
     s = Settings()
-    assert (s.chat_model_tier, s.chat_reasoning_effort, s.chat_llm) == ("quick", "high", "")
+    assert (s.chat_model_tier, s.chat_reasoning_effort) == ("quick", "high")
     monkeypatch.setenv("DESK_CHAT_MODEL_TIER", "fast")
     monkeypatch.setenv("DESK_CHAT_REASONING_EFFORT", "hgih")
     s = Settings()

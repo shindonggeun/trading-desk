@@ -1,6 +1,6 @@
 import { lazy, Suspense, useMemo, useState } from "react";
 import { price, time } from "../format";
-import type { Plan } from "../types";
+import type { Plan, RunOutlook } from "../types";
 import type { ExtraLine, Interval } from "./PriceChart";
 import LevelLadder from "./LevelLadder";
 import SectionBoundary from "./SectionBoundary";
@@ -48,7 +48,7 @@ function triggerLines(plan: Plan | null): ExtraLine[] {
 // 계획의 시간축(#63)에 맞는 봉: 스캘핑 · 단타는 5분봉, 2~3일은 1시간봉, 스윙은 일봉.
 const HORIZON_INTERVAL: Record<string, Interval> = { scalp: "5m", intraday: "5m", short_swing: "60m", swing: "1d" };
 
-function Chart({ ticker, tradeDate, plan, title }: { ticker: string; tradeDate: string; plan: Plan | null; title: string }) {
+function Chart({ ticker, tradeDate, plan, title, outlook = null }: { ticker: string; tradeDate: string; plan: Plan | null; title: string; outlook?: RunOutlook | null }) {
   const extra = useMemo(() => triggerLines(plan), [plan]);
   const [picked, setPicked] = useState<number | null>(null);   // #440 사다리에서 고른 가격
   return (
@@ -56,7 +56,7 @@ function Chart({ ticker, tradeDate, plan, title }: { ticker: string; tradeDate: 
       <SectionBoundary fallback={<section className="card price-chart"><p className="muted small">{title} 차트를 불러오지 못했습니다.</p></section>}>
         <Suspense fallback={<section className="card price-chart"><p className="muted small">{title} 차트 불러오는 중…</p></section>}>
           <PriceChart ticker={ticker} tradeDate={tradeDate} plan={plan} title={title} extraLines={extra} lists={false}
-            initialInterval={plan ? HORIZON_INTERVAL[plan.horizon ?? "swing"] ?? "1d" : undefined} highlight={picked} />
+            initialInterval={plan ? HORIZON_INTERVAL[plan.horizon ?? "swing"] ?? "1d" : undefined} highlight={picked} outlook={outlook} />
         </Suspense>
       </SectionBoundary>
       {plan && <LevelLadder ticker={ticker} plan={plan} onPick={setPicked} />}
@@ -68,10 +68,10 @@ function Chart({ ticker, tradeDate, plan, title }: { ticker: string; tradeDate: 
  * 분석 화면 차트 탭(#99): 차트 하나. 레버리지 상품이면 본주 · 상품을 전환한다(처음은 입력한 상품).
  * 분석 중(계획 없음)에는 레벨 없이 시세만.
  */
-export function ResultChart({ plan, ticker, tradeDate }: { plan: Plan | null; ticker: string; tradeDate: string }) {
+export function ResultChart({ plan, ticker, tradeDate, outlook = null }: { plan: Plan | null; ticker: string; tradeDate: string; outlook?: RunOutlook | null }) {
   const u = plan?.underlying;
   const [side, setSide] = useState<"product" | "underlying">("product");
-  if (!u) return <Chart ticker={ticker} tradeDate={tradeDate} plan={plan} title={plan ? `${ticker} · 분석 결과` : `${ticker} · 가격`} />;
+  if (!u) return <Chart ticker={ticker} tradeDate={tradeDate} plan={plan} title={plan ? `${ticker} · 분석 결과` : `${ticker} · 가격`} outlook={outlook} />;
   const lev = `${u.leverage > 0 ? "+" : ""}${u.leverage}배`;
   return (
     <div className="result-chart">
@@ -82,7 +82,8 @@ export function ResultChart({ plan, ticker, tradeDate }: { plan: Plan | null; ti
           onClick={() => setSide("underlying")}>{u.ticker} · 본주</button>
       </div>
       {side === "product" ? (
-        <Chart key="product" ticker={ticker} tradeDate={tradeDate} plan={plan} title={`${ticker} · ${lev} 상품`} />
+        // #438 전망은 분석한 종목(상품) 가격 기준 — 본주 차트에는 그리지 않는다
+        <Chart key="product" ticker={ticker} tradeDate={tradeDate} plan={plan} title={`${ticker} · ${lev} 상품`} outlook={outlook} />
       ) : (
         <Chart key="underlying" ticker={u.ticker} tradeDate={tradeDate} plan={u} title={`${u.ticker} · 본주 기준`} />
       )}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { api, followRun } from "../api";
 import AgentRail from "../components/AgentRail";
 import { RelatedTable, ResultChart, type Related } from "../components/AnalysisResult";
@@ -18,7 +18,7 @@ import BottomZoneCard from "../components/BottomZoneCard";
 import { WEEKLY_NAMES, WEEKLY_UNDERLYING, weeklyLink } from "../weekly";
 import { duration, STATUS_LABEL } from "../format";
 import { navigation } from "../nav";
-import type { DeskEvent, Plan, Run } from "../types";
+import type { DeskEvent, Plan, Run, RunOutlook } from "../types";
 import TipBadges from "../components/TipBadges";
 import RetryRunButton from "../components/RetryRunButton";
 
@@ -153,6 +153,12 @@ export default function RunView({ runId }: { runId: string }) {
   }, [run?.status]);
 
   const plan: Plan | null = run?.plan ?? (events.find((e) => e.type === "plan")?.data as Plan | undefined) ?? null;
+  // #438 방향 전망 — 상세의 outlook, 없으면 방금 온 outlook 이벤트(마지막 것)
+  const outlook: RunOutlook | null = useMemo(() => {
+    if (run?.outlook) return run.outlook;
+    for (let i = events.length - 1; i >= 0; i--) if (events[i].type === "outlook") return events[i].data as RunOutlook;
+    return null;
+  }, [run?.outlook, events]);
   const status = run ? ((events.some((e) => e.type === "done") && run.status === "running") ? "done" : run.status) : null;
   const working = status === "running" || status === "queued";
   const tab: Tab = chosen ?? (working ? "debate" : "summary");
@@ -285,7 +291,7 @@ export default function RunView({ runId }: { runId: string }) {
               </section>
             )
           )}
-          {tab === "chart" && <ResultChart plan={plan} ticker={run.ticker} tradeDate={run.trade_date} />}
+          {tab === "chart" && <ResultChart plan={plan} ticker={run.ticker} tradeDate={run.trade_date} outlook={outlook} />}
           {tab === "debate" && (
             <div className="run-body has-glossary">
               <AgentRail events={events} status={status} analysts={run.options.analysts} />

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f1115" />
+    <title>연결 없음 · Trading Desk</title>
+    <!-- #451 서비스 워커(sw.js)가 오프라인일 때만 보여 주는 안내. 외부 자원 없이 이 파일 하나로 그린다. -->
+    <style>
+      :root { color-scheme: dark light; --bg: #0f1115; --fg: #e6e8eb; --muted: #9aa3ad; --line: #2a2f37; --accent: #22c55e; }
+      @media (prefers-color-scheme: light) { :root { --bg: #f6f7f9; --fg: #14171c; --muted: #5b6470; --line: #d5d9df; --accent: #15803d; } }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--fg);
+        font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+        padding: max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+                 max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+      }
+      main { width: min(420px, 100%); text-align: center; }
+      h1 { font-size: 20px; margin: 16px 0 8px; }
+      p { margin: 0 0 8px; color: var(--muted); line-height: 1.55; font-size: 15px; }
+      button {
+        margin-top: 16px; min-height: 44px; padding: 0 20px; border-radius: 10px; border: 1px solid var(--line);
+        background: var(--fg); color: var(--bg); font: inherit; font-weight: 600; cursor: pointer;
+      }
+      svg { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M2 8.8a15 15 0 0 1 20 0" /><path d="M5 12.5a10 10 0 0 1 14 0" /><path d="M8.5 16a5 5 0 0 1 7 0" />
+        <path d="M12 20h.01" /><path d="M3 3l18 18" />
+      </svg>
+      <h1>연결 없음</h1>
+      <p>인터넷에 연결되어 있지 않아 데스크를 열 수 없습니다.</p>
+      <p>분석 · 시세 · 계획은 서버에서 바로 읽기 때문에 오프라인에서는 보여 드리지 않습니다.</p>
+      <button type="button" id="retry">다시 시도</button>
+    </main>
+    <script>
+      document.getElementById("retry").addEventListener("click", () => window.location.reload());
+      window.addEventListener("online", () => window.location.reload());
+    </script>
+  </body>
+</html>

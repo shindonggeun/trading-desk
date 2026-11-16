@@ -2,6 +2,7 @@ import QRCode from "qrcode";
 import { useEffect, useState } from "react";
 import { api, ApiError, type Me } from "../api";
 import MarketListEditor from "../components/MarketListEditor";
+import InstallApp from "../components/InstallApp";
 import PushSettings from "../components/PushSettings";
 
 type Step =
@@ -212,6 +213,7 @@ export default function Settings() {
           </form>
         )}
       </section>
+      <InstallApp />
       <PushSettings />
       <MarketListEditor />
     </div>

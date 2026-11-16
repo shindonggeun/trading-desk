@@ -1065,12 +1065,13 @@
   }
  },
  "notes": [
+  "방향 판정 항목 중 이 백테스트가 재현한 것: ma_stack, slope50, structure, ret20, market, rel, breadth · 실시간에만 있는 것: macro, weekly, flow",
   "이어진 시점의 계획은 기간이 겹칩니다 — 규칙의 성적이지 실제 계좌 곡선이 아닙니다",
   "R 은 평균 체결가에서 손절까지를 1R 로 본 값 × 체결 비중입니다(깊게 체결될수록 1R 금액이 작아짐)",
   "사다리 비중(SHARES) 스윕은 하따(dip_catch)에만 영향 — 박스 하단 · 눌림목은 50/50 고정"
  ],
  "sweep": [],
- "generated_at": "2026-11-16T11:06:25+00:00",
+ "generated_at": "2026-11-16T11:27:48+00:00",
  "by_risk": {
   "long:dip_catch:calm": {
    "plans": 1512,
@@ -4172,8 +4173,8 @@
    "long:value_swing": 180
   }
  },
- "commit": "ccf72358cd1e",
- "rules": "c719806bd6ae",
+ "commit": "d9bf8653c083",
+ "rules": "72b433509a70",
  "value_swing": {
   "all": {
    "plans": 199,

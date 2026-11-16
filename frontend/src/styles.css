@@ -1459,6 +1459,32 @@ a.wmb-row:hover { border-color: var(--accent); }
 .bz-row-ladder { flex-basis: 100%; overflow-wrap: anywhere; }
 .bz-ladder-ref { opacity: 0.6; }
 
+/* #444 코스피200 선물 주간 · 야간 시세 — 대시보드 카드(fq-) · 전용 화면(fv-) */
+.fq-card { display: grid; gap: 8px; color: inherit; text-decoration: none; min-width: 0; }
+.fq-card:hover { border-color: var(--muted); }
+.fq-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.fq-badge { font-size: 0.75rem; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+.fq-badge.fq-live { color: var(--ok); box-shadow: inset 0 0 0 1px var(--ok); }
+.fq-price-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.fq-price { font-size: 1.6rem; font-weight: 800; }
+.fq-spark { width: 100%; height: 56px; display: block; }
+.fq-spark path { stroke: var(--muted); stroke-width: 1.6; }
+.fq-spark.up path { stroke: var(--up); } .fq-spark.down path { stroke: var(--down); }
+.fq-spark .fq-base { stroke: var(--muted); stroke-dasharray: 3 3; stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.7; }
+.fq-spark-empty { display: grid; place-items: center; height: 56px; }
+.fq-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.fv-card { display: grid; gap: 10px; min-width: 0; }
+.fv-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.fv-title { margin: 0; font-size: 1.1rem; flex: 1 1 100%; }
+.fv-head .chip .muted { margin-left: 5px; }   /* 세션 이름과 시간 사이(inline-flex 라 공백이 사라진다) */
+.fv-quote { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.fv-price { font-size: 1.8rem; font-weight: 800; }
+.fv-stats { display: flex; flex-wrap: wrap; gap: 2px 12px; flex-basis: 100%; }
+.fv-chart-wrap { position: relative; }
+.fv-chart { height: 440px; min-width: 0; }
+.fv-chart-empty { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; pointer-events: none; }
+@media (max-width: 760px) { .fv-chart { height: 320px; } .fv-price { font-size: 1.5rem; } }
+
 /* #255 선물 수급 기록(간결 · 자세히) */
 .futh { display: grid; gap: 6px; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
 .futh .flow-trend-head { gap: 6px 8px; }

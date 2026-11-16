@@ -16,6 +16,7 @@ export const NAV: NavGroup[] = [
     id: "market", label: "시장", items: [
       { label: "시세판", href: "#/live", match: starts("#/live") },
       { label: "차트", href: "#/charts", match: starts("#/charts", "#/chart") },
+      { label: "선물 시세", href: "#/futures", match: starts("#/futures") },
       { label: "섹터", href: "#/sectors", match: starts("#/sectors") },
       { label: "주간 지도", href: "#/weekly", match: starts("#/weekly") },
     ],

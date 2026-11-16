@@ -13,6 +13,7 @@ import ChartView from "./pages/ChartView";
 import Settings from "./pages/Settings";
 import Backtest from "./pages/Backtest";
 import WeeklyMap from "./pages/WeeklyMap";
+import FuturesView from "./pages/FuturesView";
 import Tips from "./pages/Tips";
 import Charts from "./pages/Charts";
 import CalendarView from "./pages/CalendarView";
@@ -96,6 +97,7 @@ export default function App() {
   const calendarMatch = route.match(/^#\/calendar(?:\?(.*))?$/);
   const chatMatch = route.match(/^#\/chat(?:\?(.*))?$/);
   const tipsMatch = route.match(/^#\/tips(?:\?(.*))?$/);
+  const futuresMatch = route.match(/^#\/futures(?:\?(.*))?$/);   // #444 코스피200 선물 시세
   // 큰 차트(#97): #/chart/<티커>?run=…&interval=…
   const chartMatch = route.match(/^#\/chart\/([^?]+)(?:\?(.*))?$/);
 
@@ -157,6 +159,8 @@ export default function App() {
         <CalendarView query={new URLSearchParams(calendarMatch[1] ?? "")} />
       ) : tipsMatch ? (
         <Tips key={route} query={new URLSearchParams(tipsMatch[1] ?? "")} />
+      ) : futuresMatch ? (
+        <FuturesView query={new URLSearchParams(futuresMatch[1] ?? "")} />
       ) : weeklyMatch ? (
         <WeeklyMap query={new URLSearchParams(weeklyMatch[1] ?? "")} />
       ) : onBacktest ? (

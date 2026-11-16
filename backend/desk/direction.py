@@ -22,6 +22,8 @@ SWING_K = 3
 # shown as evidence at weight 0: swing basket 2019-, costs in, gated, train / held-out (2024-05-17):
 # market 0 -0.1372R / -0.1175R, 0.5 -0.1368 / -0.1169, 1.0 -0.1361 / -0.1176, 1.5 -0.1359 / -0.1178 -
 # no held-out gain. "macro" cannot be measured, so it must not move which shorts the desk drops.
+# #390: "macro" can now be replayed from GDELT's past (desk.news_history, backtest --news-dir) - it
+# stays at 0 and out of VALIDATED until such a run shows a held-out gain.
 # #166 stage 3: "rel" is the ticker's 20-day return against its market's main index (^NDX, ^KS11 -
 # desk.risk_regime.index_trend) and "breadth" that index on or under its rising / falling 20-day line.
 # Swing basket 2019-, costs in, gated, train / held-out (2024-05-21), base -0.107R / -0.079R:

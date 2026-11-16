@@ -151,6 +151,10 @@ def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
         if final is None:
             final = _labeled_price(summary or "", label)
         if final is None:
+            # #436: profile.py's level line often stands on its own line after the summary, unbolded
+            # ("Entry Price: 8.94 / Stop Loss: 10 / Price Target: 6.64") - the PM's, over the trader's draft
+            final = _labeled_price(decision, label)
+        if final is None:
             refs = [v for v in (drafted, target, *drafts.values()) if v]
             final = _prose_price(summary, key, refs)
         if final is not None:
@@ -163,7 +167,9 @@ def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
             levels[key] = None
     if target is not None:
         origin["price_target"] = "pm"
-    entry, stop = levels["entry_price"], levels["stop_loss"]
+    entry, stop, target, rejected = drop_contradiction(levels["entry_price"], levels["stop_loss"], target)
+    for key in rejected:
+        origin.pop(key, None)
     plan = {
         "rating": rating or "REVIEW",
         "bias": BIAS.get(rating, "review"),
@@ -177,6 +183,9 @@ def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
         "executive_summary": _field(original, "Executive Summary"),   # as the PM wrote it
         "levels_origin": origin,
     }
+    if rejected:
+        plan["levels_rejected"] = rejected
+        plan["levels_contradiction"] = _contradiction_note(rejected, entry, stop, target)
     if trader_levels:
         plan["trader_levels"] = trader_levels
     if underlying:
@@ -199,6 +208,37 @@ def levels_side(entry: float | None, stop: float | None, target: float | None) -
     if target is not None and (target <= entry if side == "long" else target >= entry):
         return None
     return side
+
+
+def drop_contradiction(entry: float | None, stop: float | None, target: float | None
+                       ) -> tuple[float | None, float | None, float | None, dict[str, float]]:
+    """#436: levels that cannot be one plan, the field that breaks them set to None.
+
+    The same rule as the page's ``levelsContradict`` (frontend/src/listLevels.ts): a stop equal to the
+    target, or an entry and a stop that point no way (equal) or a target on the wrong side of the entry
+    (``levels_side``). The entry and stop are kept when they make a side, so the target goes; an entry
+    equal to its stop loses the stop. Missing levels alone are no contradiction. Returns the levels
+    and ``{field: dropped value}``; a long / short plan gets the dropped ones back from the ATR
+    (desk.levels.fill_levels, marked computed)."""
+    rejected: dict[str, float] = {}
+    if stop is not None and target is not None and stop == target:
+        rejected["price_target"], target = target, None
+    if entry is not None and stop is not None and levels_side(entry, stop, target) is None:
+        if levels_side(entry, stop, None) is not None:
+            rejected["price_target"], target = target, None
+        else:
+            rejected["stop_loss"], stop = stop, None
+    return entry, stop, target, rejected
+
+
+_FIELD_KO = {"entry_price": "진입", "stop_loss": "손절", "price_target": "목표"}
+
+
+def _contradiction_note(rejected: dict[str, float], entry, stop, target) -> str:
+    dropped = ", ".join(f"{_FIELD_KO[k]} {v:g}" for k, v in rejected.items())
+    kept = " · ".join(f"{_FIELD_KO[k]} {v:g}" for k, v in (("entry_price", entry), ("stop_loss", stop),
+                                                             ("price_target", target)) if v is not None)
+    return f"모델의 진입 · 손절 · 목표가 서로 맞지 않아 {dropped} 을(를) 버렸습니다" + (f" — 남은 값: {kept}" if kept else "")
 
 
 def sides(plan: dict | None) -> dict:

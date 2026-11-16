@@ -787,6 +787,23 @@ export interface RegimeSnapshot {
   error?: string;
   regimes?: { ts: string; market: string; label: string; score: number; flags: string[] }[];
   triggers?: { ts: string; symbol: string; kind: string; direction: string; level: string }[];
+  /** #409 semibot 이 연결됐으면 "semibot", 아니면 "desk"(서버) — 옛 응답엔 없다 */
+  source?: "desk" | "semibot";
+  /** #409 데스크 자체 국면: 시장 투매 · 위험 점수(#146)와 금리 · 달러 국면(#330) */
+  desk?: DeskRegime;
+}
+
+export interface DeskRegime {
+  markets: { market: "us" | "kr"; score: number | null; peak: number | null; phase: "selling" | "exhausting" | "calm" | "unknown" | null; label: string | null; as_of: string | null }[];
+  rates: {
+    rates: "hiking" | "cutting" | "hold" | null;
+    yield10: "rising" | "falling" | "flat" | null;
+    yield_spike: boolean | null;
+    dollar: "strong" | "weak" | "flat" | null;
+    sideways: boolean | null;
+    as_of: string | null;
+  } | null;
+  error: string | null;
 }
 
 export interface DeskConfig {

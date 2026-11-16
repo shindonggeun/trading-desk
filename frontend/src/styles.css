@@ -190,6 +190,11 @@ table.runs { width: 100%; border-collapse: collapse; }
 .regimes { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin-bottom: 10px; }
 .regime { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
 .regime-label { font-weight: 700; font-size: 16px; }
+/* #410 데스크 자체 국면: 투매 진행 = 하락색 · 끝물 = 경고색 · 평상 = 기본 */
+.regime-selling .regime-label { color: var(--down); }
+.regime-exhausting .regime-label { color: var(--warn); }
+.regime-rates { margin: 0 0 6px; }
+.regime-rates a { white-space: nowrap; }
 .triggers li { display: flex; gap: 6px; align-items: baseline; padding: 4px 0; }
 
 /* run page */

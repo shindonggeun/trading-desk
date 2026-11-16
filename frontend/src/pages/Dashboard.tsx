@@ -15,7 +15,43 @@ import WeeklyMapBrief from "../components/WeeklyMapBrief";
 import BottomZoneBrief from "../components/BottomZoneBrief";
 import TodayStrip from "../components/TodayStrip";
 import { time } from "../format";
-import type { RegimeSnapshot } from "../types";
+import type { DeskRegime, RegimeSnapshot } from "../types";
+
+// #410 데스크 자체 국면(#409) — semibot 이 없는 서버에서도 카드가 빈 문구가 아니게
+const RATES_KO = { hiking: "금리 인상기", cutting: "금리 인하기", hold: "금리 동결" } as const;
+const YIELD_KO = { rising: "10년물 상승", falling: "10년물 하락", flat: "10년물 보합" } as const;
+const DOLLAR_KO = { strong: "달러 강세", weak: "달러 약세", flat: "달러 보합" } as const;
+const day = (iso: string | null) => (iso ? `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}` : "");
+
+function DeskRegimeView({ d }: { d: DeskRegime }) {
+  const r = d.rates;
+  const rateParts = r ? [
+    r.rates && RATES_KO[r.rates], r.yield10 && YIELD_KO[r.yield10], r.yield_spike ? "10년물 급등" : null,
+    r.dollar && DOLLAR_KO[r.dollar], r.sideways == null ? null : r.sideways ? "나스닥 횡보" : "나스닥 추세",
+  ].filter(Boolean) : [];
+  return (
+    <>
+      {d.markets.length > 0 && (
+        <div className="regimes">
+          {d.markets.map((m) => (
+            <div key={m.market} className={`regime regime-${m.phase ?? "unknown"}`}>
+              <div className="muted small">{m.market === "us" ? "미장" : "국장"} 시장 위험</div>
+              <div className="regime-label">{m.label ?? "판단 불가"}</div>
+              <div className="small">{m.score == null ? "—" : `${Math.round(m.score)}점`}{m.as_of ? ` · ${day(m.as_of)} 기준` : ""}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {rateParts.length > 0 && (
+        <p className="regime-rates small">
+          {rateParts.join(" · ")}{r?.as_of ? <span className="muted"> · {day(r.as_of)} 기준</span> : null}{" "}
+          <a href="#/tips">국면별 매매 팁 →</a>
+        </p>
+      )}
+      {d.error && <p className="muted small">{d.error}</p>}
+    </>
+  );
+}
 
 function RegimePanel() {
   const [data, setData] = useState<RegimeSnapshot | "error" | undefined>(undefined);
@@ -24,9 +60,16 @@ function RegimePanel() {
   }, []);
   if (data === undefined) return <p className="empty-state">불러오는 중…</p>;
   if (data === "error") return <p className="empty-state">레짐을 불러오지 못했습니다. 잠시 뒤 새로 고쳐 주세요.</p>;
-  if (!data.enabled) return <p className="empty-state">semibot 레짐 데이터가 연결되지 않았습니다.</p>;
+  const desk = data.desk && (data.desk.markets.length > 0 || data.desk.rates) ? data.desk : null;
+  if (!data.enabled) {
+    // 서버(semibot 없음): 데스크 자체 국면만. 옛 응답(desk 없음)이면 받을 자료가 없다고만
+    return desk
+      ? <section className="card"><DeskRegimeView d={desk} /></section>
+      : <p className="empty-state">국면 자료를 아직 받지 못했습니다.{data.desk?.error ? ` ${data.desk.error}` : ""}</p>;
+  }
   return (
     <section className="card">
+      {desk && <DeskRegimeView d={desk} />}
       <h3>semibot 레짐 <span className="muted small">실시간 층</span></h3>
       {data.error && <p className="error small">{data.error}</p>}
       <div className="regimes">

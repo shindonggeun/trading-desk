@@ -129,7 +129,20 @@ DailyCloses = Callable[[str], list[tuple[date, float]]]
 
 
 CLOSES_TTL_SEC = 300.0
+CLOSES_RETRY_SEC = 30.0            # #391: after an empty answer ask Yahoo again this soon, not in 5 minutes
+CLOSES_STALE_MAX_SEC = 3 * 86400.0  # #391: the last good rows stand in for an empty answer this long
 _CLOSES: dict[str, tuple[float, list[tuple[date, float]], datetime]] = {}
+_CLOSES_FAILED: dict[str, float] = {}   # ticker -> when Yahoo last gave nothing
+_clock = time.monotonic
+
+
+def _wall() -> datetime:
+    return datetime.now(UTC)
+
+
+class YahooEmpty(ValueError):
+    """#391: Yahoo gave no daily bars (it says "possibly delisted" when it throttles) - not a ticker
+    without a finished bar."""
 
 
 def yahoo_daily_closes(ticker: str) -> list[tuple[date, float]]:
@@ -138,19 +151,57 @@ def yahoo_daily_closes(ticker: str) -> list[tuple[date, float]]:
     Yahoo's daily bars have two gaps the anchor cannot live with: the newest US bar often
     carries a NaN close for hours after the bell, and a futures contract's newest bar keeps
     moving with the next session. Both come from the hourly bars instead: the close of the
-    last hourly bar that started before that day's close moment."""
-    import yfinance as yf
+    last hourly bar that started before that day's close moment.
 
+    #391: an empty answer (Yahoo throttling) is never cached. The last good rows stand in for it
+    (up to CLOSES_STALE_MAX_SEC old) and Yahoo is asked again after CLOSES_RETRY_SEC; without good
+    rows it is retried once at once, then YahooEmpty."""
     session = session_of(ticker)
     hit = _CLOSES.get(ticker)
-    now = datetime.now(UTC)
-    if hit and time.monotonic() - hit[0] < CLOSES_TTL_SEC:
+    now = _wall()
+    mono = _clock()
+    if hit and mono - hit[0] < CLOSES_TTL_SEC:
         # rows read before today's close still hold an intraday price for today: read again
         today_close = session.close_moment(now.astimezone(session.zone).date())
         if not (hit[2] < today_close <= now):
             return hit[1]
+    # only bars that had closed when they were read: a bar still trading then holds an intraday
+    # price, and standing in after its close it would pass for that day's close
+    usable = ([(d, c) for d, c in hit[1] if session.close_moment(d) <= hit[2]] or None
+              if hit and mono - hit[0] <= CLOSES_STALE_MAX_SEC else None)
+    failed = _CLOSES_FAILED.get(ticker)
+    if failed is not None and mono - failed < CLOSES_RETRY_SEC:
+        if usable is not None:
+            return usable
+        raise YahooEmpty(f"Yahoo gave no daily bars for {ticker} (asking again in {CLOSES_RETRY_SEC:.0f}s)")
+    rows = _yahoo_rows(ticker, session)
+    if not rows and usable is None:
+        rows = _yahoo_rows(ticker, session)        # one quick retry: nothing to fall back on
+    if not rows:
+        if len(_CLOSES_FAILED) > 256:
+            _CLOSES_FAILED.clear()
+        _CLOSES_FAILED[ticker] = mono
+        if usable is not None:
+            log.warning("Yahoo gave no daily bars for %s; keeping the rows read %.0fs ago", ticker, mono - hit[0])
+            return usable
+        raise YahooEmpty(f"Yahoo gave no daily bars for {ticker}")
+    _CLOSES_FAILED.pop(ticker, None)
+    if len(_CLOSES) > 256:
+        _CLOSES.clear()
+    _CLOSES[ticker] = (mono, rows, now)
+    return rows
+
+
+def _yahoo_rows(ticker: str, session: Session) -> list[tuple[date, float]]:
+    """One read of Yahoo's daily bars (gaps filled from the hourly bars); [] when Yahoo gives none."""
+    import yfinance as yf
+
     t = yf.Ticker(ticker)
-    frame = t.history(period="15d", interval="1d", auto_adjust=False)
+    try:
+        frame = t.history(period="15d", interval="1d", auto_adjust=False)
+    except Exception as exc:  # noqa: BLE001 - a failed read is an empty one (#391)
+        log.info("Yahoo daily bars for %s failed: %s", ticker, exc)
+        return []
     rows = [(index.date(), float(row["Close"])) for index, row in frame.iterrows()]
     if rows and (session.futures or not math.isfinite(rows[-1][1])):
         try:
@@ -168,9 +219,6 @@ def yahoo_daily_closes(ticker: str) -> list[tuple[date, float]]:
                     close = before[-1]
             fixed.append((day, close))
         rows = fixed
-    if len(_CLOSES) > 256:
-        _CLOSES.clear()
-    _CLOSES[ticker] = (time.monotonic(), rows, now)
     return rows
 
 

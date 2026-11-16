@@ -395,3 +395,86 @@ def test_gdelt_headlines_are_titled_on_the_theme_too():
 
     row = asyncio.run(m.fetch_theme(Fake(), FED, NOW))
     assert [h["url"] for h in row["headlines"]] == ["https://g.com/2"] and row["off_topic"] == 1
+
+
+# --- #428: an empty cache says why; the last pass survives a restart --------------------------------
+
+
+def _chat_macro(db_url, monkeypatch, cache: m.Cache) -> dict:
+    from desk.api import create_app
+    from desk.settings import Settings
+
+    monkeypatch.setattr(m, "CACHE", cache)
+    app = create_app(Settings(database_url=db_url))
+    return asyncio.run(app.state.chat_tools["macro_brief"].run({}))
+
+
+def test_the_chat_lookup_says_warming_before_the_first_pass_and_error_after_a_failed_one(db_url, monkeypatch):
+    got = _chat_macro(db_url, monkeypatch, m.Cache())
+    assert got["status"] == "warming" and "수집 중" in got["note"] and got["themes"] == [] and got["as_of"]
+
+    async def rss(theme, now):
+        raise ConnectionError("down")
+    failed = m.Cache()
+    assert asyncio.run(failed.refresh(gdelt=LimitedGdelt(), now=NOW, rss=rss)) == 0
+    got = _chat_macro(db_url, monkeypatch, failed)
+    assert got["status"] == "error" and got["note"].startswith("수집 실패: ") and "ConnectionError" in got["error"]
+    assert not m.CACHE_FILE.exists()                          # nothing good to keep
+
+
+def test_the_chat_lookup_keeps_quiet_stale_and_the_times(db_url, monkeypatch):
+    cache = _filled()
+    old = (datetime.now(UTC) - timedelta(hours=9)).isoformat()
+    cache.themes["fed"] = {**cache.themes["fed"], "fetched_at": old, "headlines": []}
+    got = _chat_macro(db_url, monkeypatch, cache)
+    assert got["status"] == "ok" and got["note"] is None and got["refreshed_at"] == NOW.isoformat()
+    fed = next(t for t in got["themes"] if t["label"] == cache.themes["fed"]["label"])
+    assert fed["stale"] and fed["quiet"] and fed["fetched_at"] == old
+    assert next(iter(got)) == "status"                        # first in the one-line summary
+
+
+def test_a_good_pass_is_saved_and_loaded_after_a_restart_with_its_own_times(db_url, monkeypatch, tmp_path):
+    async def rss(theme, now):
+        return {"id": theme.id, "label": theme.label, "articles_24h": 3, "spike": 1.0, "tone": -1.0,
+                "headlines": [], "why": theme.why, "source": "google-news", "fetched_at": now.isoformat()}
+    before = m.Cache()
+    asyncio.run(before.refresh(gdelt=LimitedGdelt(), now=NOW, rss=rss))
+    assert m.CACHE_FILE.exists()
+
+    after = m.Cache()                                         # the restart
+    assert after.load() and after.restored and after.refreshed_at == NOW.isoformat()
+    assert after.themes.keys() == before.themes.keys()
+    got = _chat_macro(db_url, monkeypatch, after)
+    assert got["status"] == "ok" and "저장된 스냅샷" in got["note"] and NOW.isoformat() in got["note"]
+    assert all(t["stale"] for t in got["themes"])             # NOW is days ago: marked as old, not hidden
+    assert not after.load()                                   # never over themes already there
+
+    async def down(theme, now):
+        raise ConnectionError("down")
+    asyncio.run(after.refresh(gdelt=LimitedGdelt(), now=NOW, rss=down))
+    got = _chat_macro(db_url, monkeypatch, after)             # a failing pass must not read as "in progress"
+    assert after.restored and got["status"] == "ok" and "이후 수집 실패: " in got["note"]
+
+    asyncio.run(after.refresh(gdelt=LimitedGdelt(), now=datetime.now(UTC), rss=rss))
+    assert not after.restored                                 # the first good pass here replaces it
+
+
+def test_the_chat_lookup_fits_the_tool_result_limit(db_url, monkeypatch):
+    import json
+
+    from desk import chat
+
+    cache = _filled()
+    for row in cache.themes.values():
+        row["headlines"] = [{**row["headlines"][0], "title": f"{row['id']} " + "long headline words " * 8}] * 3
+    got = _chat_macro(db_url, monkeypatch, cache)
+    assert len(json.dumps(got, ensure_ascii=False, default=str)) < chat.TOOL_RESULT_CHARS
+
+
+def test_a_broken_snapshot_leaves_the_cache_empty(tmp_path):
+    path = tmp_path / "broken.json"
+    path.write_text("{not json", encoding="utf-8")
+    assert not m.Cache(cache_file=path).load()
+    path.write_text('{"themes": {"nope": {"id": "nope"}}, "refreshed_at": "x"}', encoding="utf-8")
+    cache = m.Cache(cache_file=path)
+    assert not cache.load() and cache.status() == "warming"   # unknown themes are dropped

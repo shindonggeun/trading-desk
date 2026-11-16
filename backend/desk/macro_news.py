@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import re
 import xml.etree.ElementTree as ET
@@ -28,6 +29,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from itertools import pairwise
+from pathlib import Path
 from statistics import fmean
 from typing import Any
 
@@ -47,6 +49,9 @@ WINDOW_H = 72                  # #273: headlines, tone and the one-line read com
 DUPLICATE = 0.6                # two titles sharing this much of their word pairs are the same story
 CLOCK_SKEW_SEC = 15 * 60       # a feed time this far ahead of ours is still "now" (clock lag, mislabelled zones)
 SPIKE_BASIS = {"week": "24h_vs_prior_6d_avg", "themes": "vs_other_themes"}
+# #428: the last good pass survives a restart (the backend's volume, as earnings.CACHE_FILE) - the first
+# pass takes minutes and the chat would otherwise find no themes at all in the meantime
+CACHE_FILE = Path.home() / ".tradingagents" / "desk-cache" / "macro_news.json"
 SPIKE_ALERT = 1.5              # last 24h at least this many times the prior days' average
 STALE_SEC = 6 * 3600           # an older theme is left out of the agents' note (and marked stale)
 _CONTROL = dict.fromkeys(range(32), " ")
@@ -461,6 +466,8 @@ class Cache:
     refreshed_at: str | None = None
     error: str | None = None
     gdelt_resume_at: datetime | None = None   # set by a 429: passes until then go straight to Google News
+    restored: bool = False                    # #428: the themes are the snapshot saved before a restart
+    cache_file: Path | None = None            # tests; CACHE_FILE otherwise
 
     async def refresh(self, gdelt: Gdelt | None = None, now: datetime | None = None,
                       rss=fetch_theme_rss) -> int:
@@ -496,8 +503,58 @@ class Cache:
         self.themes = fresh
         if ok:
             self.refreshed_at = (now or datetime.now(UTC)).isoformat()
+            self.restored = False
         self.error = "; ".join(failures) or None
+        if ok:
+            self.save()
         return ok
+
+    def status(self) -> str:
+        """#428: ``ok`` with themes to show, else ``error`` (a pass failed) or ``warming`` (none ran yet)."""
+        if self.themes:
+            return "ok"
+        return "error" if self.error else "warming"
+
+    # --- persistence (#428) ------------------------------------------------------------------
+
+    def _path(self) -> Path:
+        return self.cache_file or CACHE_FILE
+
+    def save(self) -> None:
+        path = self._path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"themes": self.themes, "refreshed_at": self.refreshed_at},
+                                      ensure_ascii=False, default=str), encoding="utf-8")
+            tmp.replace(path)          # a stop mid-write leaves the last whole file
+        except OSError as exc:
+            log.warning("macro news snapshot not saved (%s): %s", path, exc)
+
+    def load(self) -> bool:
+        """The last saved pass, before the first one after a restart answers. Each theme keeps its own
+        ``fetched_at``, so brief() marks the old ones stale exactly as it would have before the restart.
+        A missing or broken file, or a pass that already ran, leaves the cache as it is."""
+        if self.themes:
+            return False
+        path = self._path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError) as exc:
+            log.warning("macro news snapshot unreadable (%s): %s", path, exc)
+            return False
+        themes = data.get("themes") if isinstance(data, dict) else None
+        if not isinstance(themes, dict) or not themes:
+            return False
+        known = {t.id for t in THEMES}
+        # a row missing what prompt_note and brief() index (an older format) is dropped, not trusted
+        self.themes = {k: v for k, v in themes.items()
+                       if k in known and isinstance(v, dict) and _SAVED_KEYS <= v.keys()}
+        self.refreshed_at = data.get("refreshed_at")
+        self.restored = bool(self.themes)
+        return self.restored
 
     def brief(self, ticker: str | None = None, now: datetime | None = None) -> dict:
         """GET /api/macro/brief: every theme, the ones that matter to ``ticker`` first."""
@@ -527,6 +584,7 @@ class Cache:
                 "as_of": now.isoformat(timespec="seconds"), "themes": rows}
 
 
+_SAVED_KEYS = frozenset({"id", "label", "fetched_at", "articles_24h", "spike", "tone", "why"})
 CACHE = Cache()
 
 

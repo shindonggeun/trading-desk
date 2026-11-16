@@ -422,6 +422,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         async def refresh_macro():
             # GDELT allows one request every five seconds: a full pass takes a couple of minutes,
             # so it runs here in the background and runs read the snapshot (desk.macro_news).
+            # #428: the pass saved before a restart answers until the first one here finishes
+            if await asyncio.to_thread(macro_news.CACHE.load):
+                log.info("macro news: last saved snapshot loaded")
             while True:
                 try:
                     ok = await macro_news.CACHE.refresh()
@@ -1541,11 +1544,20 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             return {k: (d or {}).get(k) for k in keys}
 
         async def macro_brief(_a: dict):
-            b = macro_news.CACHE.brief()
-            return {"refreshed_at": b.get("refreshed_at"), "themes": [
-                {**keep(t, "label", "tone", "spike", "articles_24h", "stale"),
-                 "headlines": [h.get("title") for h in (t.get("headlines") or [])[:2]]}
-                for t in (b.get("themes") or [])[:8]]}
+            # #428: status first (it leads the one-line summary), so an empty answer says why it is empty
+            cache = macro_news.CACHE
+            b = cache.brief()
+            status = cache.status()
+            note = {"warming": "재기동 직후 첫 수집 중(몇 분 걸림) - 아직 테마 없음",
+                    "error": f"수집 실패: {b.get('error')}"}.get(status)
+            if status == "ok" and cache.restored:
+                note = (f"재기동 전 저장된 스냅샷(갱신 {b.get('refreshed_at')}), "
+                        + (f"이후 수집 실패: {b.get('error')}" if b.get("error") else "새 수집 진행 중"))
+            return {"status": status, "note": note, "error": b.get("error"),
+                    "refreshed_at": b.get("refreshed_at"), "as_of": b.get("as_of"), "themes": [
+                        {**keep(t, "label", "tone", "spike", "articles_24h", "quiet", "stale", "fetched_at"),
+                         "headlines": [h.get("title") for h in (t.get("headlines") or [])[:2]]}
+                        for t in (b.get("themes") or [])[:8]]}
 
         async def market_risk(a: dict):
             if risk is None:

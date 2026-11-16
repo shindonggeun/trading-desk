@@ -158,7 +158,7 @@ export default function Charts({ query }: { query: URLSearchParams }) {
         <div className="charts-search">
           <label className="sr-only" htmlFor="charts-search">종목 검색</label>
           <InstrumentSearch inputId="charts-search" value={search} onChange={setSearch} onPick={open}
-            placeholder="종목 검색 — 이름 · 티커(예: SOXL, 삼성전자)" />
+            placeholder="종목 검색 (예: SOXL, 삼성전자)" />
           <button type="button" onClick={() => open(search)} disabled={!search.ticker.trim()}>열기</button>
         </div>
         {(recent.length > 0 || favorites.length > 0) && (

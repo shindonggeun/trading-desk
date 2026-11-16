@@ -103,7 +103,7 @@ export default function InstrumentSearch({ value, onChange, onPick, inputId, pla
         onFocus={() => setOpen(true)}
         onBlur={() => window.setTimeout(() => setOpen(false), 120)}
         onKeyDown={onKey}
-        placeholder={placeholder ?? "엔비디아 · 삼성전자 · NVDA · 005930"}
+        placeholder={placeholder ?? "종목 이름 · 티커 (예: NVDA)"}
         autoComplete="off"
         spellCheck={false}
         required

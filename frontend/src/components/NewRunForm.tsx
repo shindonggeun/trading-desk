@@ -27,6 +27,11 @@ function saveOpen(options: boolean) {
   }
 }
 
+/** #387 키보드가 있는 화면에서만 "/" 단축키를 안내한다(터치 화면은 짧게) */
+const SEARCH_HINT = typeof window !== "undefined" && window.matchMedia?.("(pointer: fine)").matches
+  ? "분석할 종목 (예: 엔비디아, NVDA) — / 키로 바로 입력"
+  : "종목 이름 · 티커";
+
 /** 입력 중인 칸이면 "/" 단축키를 가로채지 않는다. */
 function typing(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -137,7 +142,7 @@ export default function NewRunForm() {
           onChange={setInstrument}
           onPick={() => { justPicked.current = true; }}
           inputId={SEARCH_ID}
-          placeholder="분석할 종목 — 엔비디아 · 삼성전자 · NVDA · 005930   ( / )"
+          placeholder={SEARCH_HINT}
         />
         <button ref={startRef} type="submit" disabled={busy || !ready}>
           {busy ? "등록 중…" : "분석 시작"}

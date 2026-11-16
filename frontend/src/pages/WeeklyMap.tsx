@@ -173,7 +173,7 @@ export default function WeeklyMap({ query }: { query: URLSearchParams }) {
         <div className="wm-search">
           <label className="sr-only" htmlFor="wm-search">종목 지도 보기</label>
           <InstrumentSearch inputId="wm-search" value={search} onChange={setSearch} onPick={open}
-            placeholder="다른 종목의 주간 지도 — 이름 · 티커(예: NVDA, 삼성전자)" />
+            placeholder="다른 종목 보기 (예: NVDA)" />
           <button type="button" onClick={() => open(search)} disabled={!search.ticker.trim()}>보기</button>
         </div>
         <label className="wm-fav small">

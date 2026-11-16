@@ -105,6 +105,24 @@ Runner = Callable[[RunRequest, Emit, Any], RunResult]
 
 # --- the real pipeline ---------------------------------------------------------------
 
+def models_in_use() -> dict | None:
+    """#416: the provider, each tier's model and reasoning effort the runs use - names only, from the
+    same TRADINGAGENTS_* config the graph reads (no key, no endpoint). None when it cannot be read."""
+    try:
+        from tradingagents.default_config import build_default_config
+
+        c = build_default_config()
+    except Exception as exc:  # noqa: BLE001 - a label on the chat, never a reason to fail the run
+        log.info("run models unreadable: %s", exc)
+        return None
+    effort = c.get("openai_reasoning_effort")
+    return {"provider": c.get("quick_think_provider") or c.get("llm_provider"),
+            "quick": c.get("quick_think_llm"), "deep": c.get("deep_think_llm"),
+            # per tier on the pinned fork (#171), else the shared setting
+            "quick_effort": c.get("quick_think_reasoning_effort") or effort,
+            "deep_effort": c.get("deep_think_reasoning_effort") or effort}
+
+
 def run_tradingagents(request: RunRequest, emit: Emit, portfolio: Any) -> RunResult:
     """One TradingAgents run, the same steps the CLI takes, streamed through StateDiffer.
 
@@ -229,6 +247,7 @@ def make_fake_runner(delay: float) -> Runner:
                 final_state.update(chunk)
         return RunResult(final_state=final_state)
 
+    run_fake.fake = True          # #416: no model answers a scripted run
     return run_fake
 
 
@@ -798,8 +817,10 @@ class RunManager:
             lever = under.leverage_of(request.ticker)
             base = lever[0] if lever else None
             subject = replace(request, ticker=base) if base else request
+            # #416: which models this run used, so runs before and after a model change can be compared
+            models = {"fake": True} if getattr(self.runner, "fake", False) else models_in_use()
             self._publish(run_id, {"type": "status", "agent": "system", "content": "running",
-                                   "data": {"analysts": subject.selected_analysts()}})
+                                   "data": {"analysts": subject.selected_analysts(), "models": models}})
             # #171: the reused reports go into the chat now, marked, and into the graph's first state
             reused = self._reusable(request, subject.selected_analysts())
             for row in reused:

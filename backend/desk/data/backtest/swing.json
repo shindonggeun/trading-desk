@@ -1071,7 +1071,7 @@
   "사다리 비중(SHARES) 스윕은 하따(dip_catch)에만 영향 — 박스 하단 · 눌림목은 50/50 고정"
  ],
  "sweep": [],
- "generated_at": "2026-11-16T13:15:58+00:00",
+ "generated_at": "2026-11-16T13:53:56+00:00",
  "by_risk": {
   "long:dip_catch:calm": {
    "plans": 1512,
@@ -4173,8 +4173,8 @@
    "long:value_swing": 180
   }
  },
- "commit": "4c32e7906e47",
- "rules": "759e6179c41c",
+ "commit": "623a0964dbbb",
+ "rules": "ba3069e864f2",
  "value_swing": {
   "all": {
    "plans": 199,

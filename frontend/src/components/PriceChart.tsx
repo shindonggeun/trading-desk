@@ -301,7 +301,7 @@ export interface ExtraLine {
  * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
  * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
  */
-export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, onIntervalChange }: {
+export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, onIntervalChange, highlight = null }: {
   ticker: string;
   tradeDate: string;
   plan: Plan | null;
@@ -320,6 +320,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   notice?: string;
   /** #220 봉 주기를 바꿀 때마다 — 차트 탭이 주소(iv=)를 맞춘다 */
   onIntervalChange?: (interval: Interval) => void;
+  /** #440 가격 사다리에서 고른 가격 — 같은 가격에 굵은 강조선을 잠깐 긋는다 */
+  highlight?: number | null;
 }) {
   const [prefs] = useState(loadPrefs);
   const [interval, setBarInterval] = useState<Interval>(initialInterval ?? prefs.interval);
@@ -841,6 +843,16 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (drawn.alive.current) for (const line of made) series.removePriceLine(line);
     };
   }, [drawn, plan, fills, pickedFill, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines, show.opt, optionData, show.osc, osc, show.bz, bottom]);
+
+  // #440 가격 사다리에서 고른 가격 — 겹친 라벨과 상관없이 그 가격 하나만 굵게
+  useEffect(() => {
+    if (!drawn || highlight == null) return;
+    const line = drawn.series.createPriceLine({ price: highlight, title: "▶", color: css("--warn", "#e5a23a"), lineWidth: 3,
+      lineStyle: LineStyle.Solid, axisLabelVisible: true });
+    return () => {
+      if (drawn.alive.current) drawn.series.removePriceLine(line);
+    };
+  }, [drawn, highlight]);
 
   // 지지 · 저항 구역 띠 · 타점의 손실 · 이익 영역 · 피보나치(#98) — 캔들 아래에 칠하고 축 라벨은 달지 않는다.
   useEffect(() => {

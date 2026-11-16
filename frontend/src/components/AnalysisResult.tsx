@@ -2,6 +2,7 @@ import { lazy, Suspense, useMemo, useState } from "react";
 import { price, time } from "../format";
 import type { Plan } from "../types";
 import type { ExtraLine, Interval } from "./PriceChart";
+import LevelLadder from "./LevelLadder";
 import SectionBoundary from "./SectionBoundary";
 
 const PriceChart = lazy(() => import("./PriceChart"));
@@ -49,13 +50,17 @@ const HORIZON_INTERVAL: Record<string, Interval> = { scalp: "5m", intraday: "5m"
 
 function Chart({ ticker, tradeDate, plan, title }: { ticker: string; tradeDate: string; plan: Plan | null; title: string }) {
   const extra = useMemo(() => triggerLines(plan), [plan]);
+  const [picked, setPicked] = useState<number | null>(null);   // #440 사다리에서 고른 가격
   return (
-    <SectionBoundary fallback={<section className="card price-chart"><p className="muted small">{title} 차트를 불러오지 못했습니다.</p></section>}>
-      <Suspense fallback={<section className="card price-chart"><p className="muted small">{title} 차트 불러오는 중…</p></section>}>
-        <PriceChart ticker={ticker} tradeDate={tradeDate} plan={plan} title={title} extraLines={extra} lists={false}
-          initialInterval={plan ? HORIZON_INTERVAL[plan.horizon ?? "swing"] ?? "1d" : undefined} />
-      </Suspense>
-    </SectionBoundary>
+    <div className="chart-with-ladder">
+      <SectionBoundary fallback={<section className="card price-chart"><p className="muted small">{title} 차트를 불러오지 못했습니다.</p></section>}>
+        <Suspense fallback={<section className="card price-chart"><p className="muted small">{title} 차트 불러오는 중…</p></section>}>
+          <PriceChart ticker={ticker} tradeDate={tradeDate} plan={plan} title={title} extraLines={extra} lists={false}
+            initialInterval={plan ? HORIZON_INTERVAL[plan.horizon ?? "swing"] ?? "1d" : undefined} highlight={picked} />
+        </Suspense>
+      </SectionBoundary>
+      {plan && <LevelLadder ticker={ticker} plan={plan} onPick={setPicked} />}
+    </div>
   );
 }
 

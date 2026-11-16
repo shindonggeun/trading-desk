@@ -39,6 +39,8 @@ PAGE_ROWS = 102
 MAX_PAGES = 9                     # 720 night minutes / ~100 a page, and one spare
 CACHE_OPEN_SEC = 15.0
 CACHE_CLOSED_SEC = 600.0
+CACHE_FAIL_SEC = 20.0             # a stale answer after a failed refresh, before KIS is asked again
+PAGE_PAUSE_SEC = 0.25
 LOOKBACK_DAYS = 10                # to find the last session past a long holiday
 
 
@@ -164,7 +166,10 @@ class FuturesQuote:
             except Exception as exc:   # KIS down, refused or slow: the last answer, marked
                 log.warning("futures quote %s failed: %s", key[0], _short(exc))
                 if hit:
-                    return {**hit[2], "stale": True, "error": f"새 값을 받지 못해 마지막 값을 보입니다 — {_short(exc)}"}
+                    stale = {**hit[2], "stale": True, "error": f"새 값을 받지 못해 마지막 값을 보입니다 — {_short(exc)}"}
+                    # kept a little while too: a KIS outage is not asked again on every request
+                    self._cache[key] = (self._clock(), CACHE_FAIL_SEC, stale)
+                    return stale
                 raise
             self._cache[key] = (self._clock(), CACHE_OPEN_SEC if live else CACHE_CLOSED_SEC, value)
             return value
@@ -205,7 +210,9 @@ class FuturesQuote:
         async def fetch() -> dict:
             end = min(_kst(self._now()), s["end"])
             rows: list[dict] = []
-            for _ in range(MAX_PAGES):
+            for page_no in range(MAX_PAGES):
+                if page_no:
+                    await asyncio.sleep(PAGE_PAUSE_SEC)   # KIS counts calls a second, on the key the snapshots share
                 res = await self.rest.get(CANDLE_PATH, CANDLE_TR, {
                     "FID_COND_MRKT_DIV_CODE": DIVISION[s["shown"]], "FID_INPUT_ISCD": front["code"],
                     "FID_HOUR_CLS_CODE": "60", "FID_PW_DATA_INCU_YN": "Y", "FID_FAKE_TICK_INCU_YN": "N",
@@ -216,7 +223,8 @@ class FuturesQuote:
                 if len(page) < PAGE_ROWS or not times or min(times) <= s["start"]:
                     break
                 end = min(times) - timedelta(minutes=1)
-            bars = resample(normalize_bars(rows, s), INTERVALS[interval], s["start"])
-            return {**self._base(s, front), "interval": interval, "bars": bars}
+            return {**self._base(s, front), "bars": normalize_bars(rows, s)}
 
-        return await self._cached(("candles", s["shown"], s["date"], interval), s["now"] == s["shown"], fetch)
+        # the one-minute bars are fetched once a session; each interval is cut from them
+        one = await self._cached(("candles", s["shown"], s["date"]), s["now"] == s["shown"], fetch)
+        return {**one, "interval": interval, "bars": resample(one["bars"], INTERVALS[interval], s["start"])}

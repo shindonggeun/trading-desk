@@ -3,6 +3,7 @@ import {
   ColorType, createChart, createSeriesMarkers, HistogramSeries, LineSeries,
   type IChartApi, type ISeriesApi, type SeriesMarker, type Time, type UTCTimestamp,
 } from "lightweight-charts";
+import { crosshairTime, ticksClearOfLabels } from "./chartFormat";
 import { api, ApiError } from "../api";
 import type { IntradayBucket, IntradayFlow, IntradayFuturesBar, IntradaySpotBar, IntradayTurn } from "../types";
 
@@ -117,7 +118,7 @@ function drawPane(el: HTMLElement, date: string, bucketMin: number, pane: Pane):
     rightPriceScale: { visible: true, borderColor: grid, scaleMargins: { top: 0.08, bottom: 0.3 } },
     leftPriceScale: { visible: false },
     timeScale: { borderColor: grid, timeVisible: true, secondsVisible: false, fixLeftEdge: true, fixRightEdge: true },
-    localization: { locale: "ko-KR", priceFormatter: (v: number) => Math.round(v).toLocaleString("ko-KR") },
+    localization: { locale: "ko-KR", timeFormatter: crosshairTime }, // #434 금액 표기는 선 시리즈 priceFormat 에서
     handleScroll: false, handleScale: false,
   });
 
@@ -140,9 +141,14 @@ function drawPane(el: HTMLElement, date: string, bucketMin: number, pane: Pane):
   bars.setData(slots);
 
   let foreignLine: ISeriesApi<"Line"> | null = null;
+  // #434 주체별 마지막 값 라벨 가까운 축 눈금은 비운다 — "개인 16,666" 뒤로 눈금 "13,141" 이 비쳐 겹쳐 보였다
+  const labelled: ISeriesApi<"Line">[] = [];
+  const amount = (v: number) => Math.round(v).toLocaleString("ko-KR");
+  const priceFormat = { type: "custom" as const, minMove: 1, formatter: amount, tickmarksFormatter: ticksClearOfLabels(() => labelled, amount) };
   for (const l of pane.lines) {
     const label = WHO.find((w) => w.key === l.who)!.label;
-    const line = chart.addSeries(LineSeries, { color: l.color, lineWidth: 2, priceScaleId: "right", priceLineVisible: false, title: label });
+    const line = chart.addSeries(LineSeries, { color: l.color, lineWidth: 2, priceScaleId: "right", priceLineVisible: false, title: label, priceFormat });
+    labelled.push(line);
     line.setData(l.points.filter((p) => p.v != null).map((p) => ({ time: kstTime(p.t), value: p.v as number })));
     if (l.who === "foreign") foreignLine = line;
   }

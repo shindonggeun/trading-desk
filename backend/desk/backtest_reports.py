@@ -10,7 +10,8 @@ This module lists those snapshots and hands one out. A file that is missing, unr
 report for its own horizon is left out of the list (logged) and reads as missing.
 
 #388: a snapshot records the commit it was made from and a fingerprint of the rule code - the
-desk modules desk.backtest imports, followed through their own relative imports. The list and the
+desk modules desk.backtest imports, followed through their own relative imports, less the modules
+that only fetch or file the inputs (``DATA_MODULES``, #424: prices, flow and news history). The list and the
 report say ``stale`` when the code shipped now has another fingerprint: the plan rules changed
 after the snapshot was made, so its numbers may not be the current rules' (rebuild it with the
 command above). A snapshot older than the fingerprint reads ``stale: None`` (unknown).
@@ -33,17 +34,21 @@ log = logging.getLogger(__name__)
 PKG = Path(__file__).parent
 DIR = PKG / "data" / "backtest"
 RULES_ROOT = "backtest"          # the module whose import closure is the rule code
+# #424: modules that fetch or file the inputs (bars, investor flow, news), not rules: the walk stops
+# at them and they are left out, so a change in how data is fetched does not mark the snapshots stale
+DATA_MODULES = frozenset({"prices", "flow_history", "news_history", "macro_news", "news_digest", "sector_news"})
 
 
-def rule_modules(root: str = RULES_ROOT, pkg: Path = PKG) -> list[str]:
+def rule_modules(root: str = RULES_ROOT, pkg: Path = PKG, data: frozenset[str] = DATA_MODULES) -> list[str]:
     """``root`` and every desk module it reaches through relative imports (``from . import x``,
-    ``from .x import y``), sorted. Imports inside functions count too."""
+    ``from .x import y``), sorted. Imports inside functions count too; ``data`` modules are neither
+    counted nor followed (#424)."""
     seen: set[str] = set()
     todo = [root]
     while todo:
         name = todo.pop()
         path = pkg / f"{name}.py"
-        if name in seen or not path.is_file():
+        if name in seen or name in data or not path.is_file():
             continue
         seen.add(name)
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):

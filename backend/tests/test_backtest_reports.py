@@ -73,5 +73,26 @@ def test_the_rule_code_is_the_import_closure_of_the_backtest():
     mods = backtest_reports.rule_modules()
     assert {"backtest", "playbook", "setup_filter", "direction", "horizons"} <= set(mods)
     assert "api" not in mods and "store" not in mods
+    assert not set(mods) & backtest_reports.DATA_MODULES                # #424: fetching data is not a rule
     assert backtest_reports.rules_fingerprint() == backtest_reports.rules_fingerprint()
     assert len(backtest_reports.rules_fingerprint()) == 12
+
+
+def test_a_data_module_change_keeps_the_fingerprint_and_a_rule_change_moves_it(tmp_path):
+    """#424: a toy package - backtest imports a rule module and prices (lazily, as vix_closes does)."""
+    (tmp_path / "backtest.py").write_text("from . import playbook\n\ndef f():\n    from .prices import x\n")
+    (tmp_path / "playbook.py").write_text("from . import prices\nRULE = 1\n")
+    (tmp_path / "prices.py").write_text("from . import secret_helper\nx = 1\n")
+    (tmp_path / "secret_helper.py").write_text("y = 1\n")
+    assert backtest_reports.rule_modules(pkg=tmp_path) == ["backtest", "playbook"]   # prices is not followed
+
+    def fp():
+        backtest_reports.rules_fingerprint.cache_clear()
+        return backtest_reports.rules_fingerprint(pkg=tmp_path)
+
+    before = fp()
+    (tmp_path / "prices.py").write_text("x = 2  # a new source\n")
+    assert fp() == before
+    (tmp_path / "playbook.py").write_text("from . import prices\nRULE = 2\n")
+    assert fp() != before
+    backtest_reports.rules_fingerprint.cache_clear()

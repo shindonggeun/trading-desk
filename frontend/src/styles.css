@@ -891,6 +891,36 @@ span.cs-hold-text { color: var(--warn); }
 .run-more > summary { cursor: pointer; padding: 10px 0; font-weight: 600; }
 @media (max-width: 760px) { .sum-verdict { font-size: 1.3rem; } .sum-big { font-size: 1.5rem; } }
 .result-chart-switch { margin-bottom: 2px; }
+/* #440 차트 옆 가격 사다리 — 넓은 화면은 오른쪽 세로 패널(접으면 차트가 넓어진다), 좁은 화면은 차트 아래 접힌 카드 */
+.chart-with-ladder { display: grid; gap: 14px; min-width: 0; }
+@media (min-width: 1100px) {
+  .chart-with-ladder:has(> .level-ladder[open]) { grid-template-columns: minmax(0, 1fr) 300px; align-items: start; }
+  .level-ladder[open] { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow-y: auto; }
+}
+.level-ladder { display: grid; gap: 8px; min-width: 0; }
+.level-ladder > summary { cursor: pointer; }   /* 기본 display(list-item) 그대로 — 펼침 삼각형이 남게 */
+.ladder-title { font-weight: 700; }
+.ladder-summary { display: block; margin-top: 4px; color: var(--text); line-height: 1.45; }
+.ladder-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.ladder-row { width: 100%; display: grid; grid-template-columns: 4.6em 4.2em minmax(0, 1fr); gap: 6px; align-items: center;
+  padding: 6px 8px; min-height: 36px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit;
+  text-align: left; cursor: pointer; }
+.ladder-row:hover, .ladder-on .ladder-row { background: var(--surface-2, rgba(127, 127, 127, 0.12)); }
+.ladder-on .ladder-row { box-shadow: inset 3px 0 0 var(--warn); }
+.ladder-row:hover:not(:disabled) { opacity: 1; }
+.ladder-price { font-weight: 700; }
+.ladder-pct { font-size: 0.85rem; }
+.ladder-tags { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.ladder-tag { font-size: 0.75rem; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border); white-space: nowrap; }
+.ladder-tag.lt-minor { opacity: 0.65; }
+.ladder-note { color: var(--muted); }
+.lt-support { border-color: var(--sr-support, #2bb3a3); } .lt-resistance { border-color: var(--sr-resistance, #b58cf0); }
+.lt-entry { border-color: var(--accent); } .lt-stop { border-color: var(--danger); color: var(--danger); }
+.lt-target { border-color: var(--ok); color: var(--ok); }
+.lt-long { border-color: var(--long); } .lt-short { border-color: var(--short); }
+.ladder-now { display: grid; grid-template-columns: 4.6em minmax(0, 1fr); gap: 6px; padding: 4px 8px; margin: 2px 0;
+  border-top: 1px dashed var(--warn); border-bottom: 1px dashed var(--warn); color: var(--warn); font-weight: 700; }
+.ladder-now-label { font-size: 0.85rem; }
 .run-empty p { margin: 0; }
 /* #431 실패한 분석: 같은 설정으로 다시 분석 */
 .run-retry { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; }

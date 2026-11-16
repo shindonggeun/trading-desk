@@ -263,7 +263,13 @@ export default function ChatCore({ ticker = null, run = null, prompt = null, com
         </div>
         <div className="ch-log" aria-live="polite">
           {!current && messages.length === 0 && !busy && (
-            <p className="muted small ch-hello">데스크 데이터(브리핑 · 일정 · 플레이북 · 시세 …)를 조회해 답합니다. 📊 칩은 데스크 숫자, 말풍선은 AI 의견입니다.</p>
+            // #435 빈 대화창에 할 일을 먼저 보인다
+            <div className="ch-hello">
+              <p className="ch-hello-title">무엇이든 물어보세요</p>
+              <p className="muted small">아래 빠른 질문을 누르거나 입력창에 적으면 새 대화가 시작됩니다.
+                {!compact && " 지난 대화는 대화 목록에서 고릅니다."}</p>
+              <p className="muted small">데스크 데이터(브리핑 · 일정 · 플레이북 · 시세 …)를 조회해 답합니다. 📊 칩은 데스크 숫자, 말풍선은 AI 의견입니다.</p>
+            </div>
           )}
           {messages.map((m) => <Bubble key={m.id} m={m} ctxTicker={ticker} />)}
           {live && (

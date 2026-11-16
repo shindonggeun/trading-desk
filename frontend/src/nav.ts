@@ -1,5 +1,5 @@
 /** 이 탭에서 앱 안 이동(hashchange)이 있었나 — 큰 차트의 "닫기"가 앱 밖으로 뒤로 가지 않게(#97). */
-export const navigation = { moved: false };
+export const navigation: { moved: boolean; prev: string | null } = { moved: false, prev: null };  // prev: 직전 앱 안 주소(#435)
 
 /**
  * #341 상단 메뉴 — 대메뉴(대시보드 · 시장 · 분석 · 캘린더) 아래 하위 메뉴. 주소는 예전 그대로(#/live, #/review …)라

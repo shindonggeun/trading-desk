@@ -17,6 +17,7 @@ import PositioningCard from "../components/PositioningCard";
 import BottomZoneCard from "../components/BottomZoneCard";
 import { WEEKLY_NAMES, WEEKLY_UNDERLYING, weeklyLink } from "../weekly";
 import { duration, STATUS_LABEL } from "../format";
+import { navigation } from "../nav";
 import type { DeskEvent, Plan, Run } from "../types";
 import TipBadges from "../components/TipBadges";
 
@@ -91,6 +92,7 @@ function tabInHash(runId: string): Tab | null {
 }
 
 export default function RunView({ runId }: { runId: string }) {
+  const [cameFrom] = useState(() => navigation.prev);   // #435 들어온 곳(분석 기록이면 뒤로 링크가 그 목록)
   const [run, setRun] = useState<Run | null>(null);
   const [events, setEvents] = useState<DeskEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -201,9 +203,12 @@ export default function RunView({ runId }: { runId: string }) {
   return (
     <main className="run run-wide run-tabbed">
       <div className="run-head">
-        <a href="#/" className="link">← 대시보드</a>
+        {/* #435 분석 기록에서 왔으면 그 목록(쪽 · 거름 그대로)으로 */}
+        {cameFrom?.startsWith("#/history")
+          ? <a href={cameFrom} className="link">← 분석 기록</a>
+          : <a href="#/" className="link">← 대시보드</a>}
         <FavoriteStar ticker={run.ticker} name={run.options.name} />
-        <h1>{run.options.name ?? run.ticker} <span className="muted">{run.options.name ? `${run.ticker} · ` : ""}{run.trade_date}</span></h1>
+        <h1>{run.options.name ?? run.ticker} <span className="muted">{run.options.name && run.options.name !== run.ticker ? `${run.ticker} · ` : ""}{run.trade_date}</span></h1>
         <span className={`status status-${status}`}>{STATUS_LABEL[status]}</span>
         <span className="muted small">{duration(run.started_at, run.finished_at)}</span>
         {/* #315 이 분석을 문맥으로 AI 채팅 옆 패널 */}

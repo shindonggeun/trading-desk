@@ -26,9 +26,11 @@ class RateLimitError(Exception):        # what openai raises, by name
 def quote_then_answer(fail: Exception | None = None):
     """A model that looks one quote up, then answers in two pieces (or fails)."""
     seen: list[list[dict]] = []
+    models: list[str | None] = []
 
-    async def chatter(messages, tools, emit):
+    async def chatter(messages, tools, emit, model=None):
         seen.append(messages)
+        models.append(model)
         if fail is not None:
             raise fail
         used: list[dict] = []
@@ -37,7 +39,7 @@ def quote_then_answer(fail: Exception | None = None):
             emit({"type": "token", "text": piece})
         return "데스크 숫자: KORU 8.01. 예측이 아니며 투자 권유가 아닙니다.", used
 
-    chatter.seen = seen
+    chatter.seen, chatter.models = seen, models
     return chatter
 
 
@@ -76,6 +78,7 @@ def test_every_chat_route_needs_a_session(db_url, monkeypatch):
         assert client.get("/api/chat/threads/x/messages").status_code == 401
         assert client.post("/api/chat/threads/x/messages", json={"text": "hi"}).status_code == 401
         assert client.delete("/api/chat/threads/x").status_code == 401
+        assert client.get("/api/chat/models").status_code == 401
 
 
 def test_an_answer_streams_its_lookups_and_tokens_and_both_messages_are_kept(db_url, monkeypatch):
@@ -215,6 +218,7 @@ def test_the_store_checks_the_owner_itself_and_caps_a_thread(db_url, monkeypatch
     assert [m["content"] for m in store.messages(owner_id, thread["id"], last=1)] == ["b"]
 
 
+<<<<<<< HEAD
 def test_the_answer_keeps_the_model_it_was_written_with(db_url, monkeypatch):
     """#404: the done event and the stored answer name the chat's model; a chatter that cannot say gives None."""
     named = quote_then_answer()
@@ -227,3 +231,31 @@ def test_the_answer_keeps_the_model_it_was_written_with(db_url, monkeypatch):
         kept = client.get(f"/api/chat/threads/{thread['id']}/messages").json()["items"]
         assert [m["model"] for m in kept] == [None, "gpt-6-sol"]
     assert chat.model_of(quote_then_answer()) is None and chat.model_of(chat.FakeChatter()) == "fake"
+=======
+def test_the_chat_offers_its_models_and_answers_with_the_one_picked(db_url, monkeypatch):
+    """#414: the allowed list with labels, the default when none is picked, 422 off the list."""
+    model = quote_then_answer()
+    with TestClient(_app(db_url, model, monkeypatch), base_url="https://testserver") as client:
+        _login(client)
+        offered = client.get("/api/chat/models").json()
+        assert offered == {"default": "gpt-6-luna", "items": [{"id": "gpt-6-luna", "label": "Luna · 빠름"},
+                                                              {"id": "gpt-6-sol", "label": "Sol · 고급 추론"}]}
+        thread = client.post("/api/chat/threads", json={}).json()
+        url = f"/api/chat/threads/{thread['id']}/messages"
+        assert _events(client.post(url, json={"text": "hi"}).text)[-1]["model"] == "gpt-6-luna"
+        done = _events(client.post(url, json={"text": "깊게", "model": "gpt-6-sol"}).text)[-1]
+        assert done["type"] == "done" and done["model"] == "gpt-6-sol"
+        assert model.models == ["gpt-6-luna", "gpt-6-sol"]
+        for bad in ("gpt-6-astra", "", "x" * 65):
+            assert client.post(url, json={"text": "hi", "model": bad}).status_code == 422, bad
+        assert len(model.models) == 2                     # nothing off the list reached the model
+
+
+def test_the_chat_models_come_from_the_settings():
+    from desk import chat
+
+    assert chat.model_options(["gpt-6-sol", "my-model", "gpt-6-sol"], "my-model") == {
+        "default": "my-model", "items": [{"id": "gpt-6-sol", "label": "Sol · 고급 추론"},
+                                         {"id": "my-model", "label": "my-model"}]}
+    assert chat.model_options(["gpt-6-sol"], "not-offered")["default"] == "gpt-6-sol"
+>>>>>>> 138a0e4 ([BE] feat: AI 채팅이 허용 목록의 모델을 골라 답하고 채팅 기본 모델을 분석 모델과 따로 둔다 (#414))

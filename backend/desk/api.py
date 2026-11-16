@@ -202,6 +202,7 @@ class ChatThreadIn(BaseModel):
 class ChatMessageIn(BaseModel):
     text: str = Field(min_length=1, max_length=chat.MAX_TEXT)
     ticker: str | None = Field(default=None, max_length=20)
+    model: str | None = Field(default=None, max_length=64)   # #414: one of GET /api/chat/models
 
     @field_validator("ticker")
     @classmethod
@@ -1522,8 +1523,16 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # --- the desk chat (#314): per account, the model looks the desk up --------------------
 
     chats = chat.ChatStore(engine)
+<<<<<<< HEAD
     chatter = chatter or (chat.FakeChatter() if settings.fake_runs else chat.LangChainChatter(
         tier=settings.chat_model_tier, model=settings.chat_llm or None, effort=settings.chat_reasoning_effort or None))
+=======
+    chatter = chatter or (chat.FakeChatter() if settings.fake_runs else chat.LangChainChatter())
+    chat_models = chat.model_options(settings.chat_models, settings.chat_model)   # #414: only these reach the provider
+    if settings.chat_model and settings.chat_model != chat_models["default"]:
+        log.warning("DESK_CHAT_MODEL %r is not in DESK_CHAT_MODELS; the chat defaults to %r",
+                    settings.chat_model, chat_models["default"])
+>>>>>>> 138a0e4 ([BE] feat: AI 채팅이 허용 목록의 모델을 골라 답하고 채팅 기본 모델을 분석 모델과 따로 둔다 (#414))
     # one answer at a time per account: user id -> when it started. Stale after the answer's time
     # limit, so a stream that never started (the client left first) cannot hold the account.
     chatting: dict[int, float] = {}
@@ -1616,6 +1625,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     chat_tools = _chat_tools()
     app.state.chat_tools = chat_tools     # what the model may look up (tests check it stays read-only)
 
+    @app.get("/api/chat/models")
+    def chat_models_of():
+        return chat_models
+
     @app.get("/api/chat/threads")
     def chat_threads_of(request: Request):
         return {"items": chats.threads(request.state.user.id)}
@@ -1644,6 +1657,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         """The answer as SSE: token · tool_call · tool_result · done · error. One answer at a time per
         account; during the runs' rate-limit cooldown (the same model plan) a 429 says when."""
         user_id = request.state.user.id
+        model = body.model or chat_models["default"]
+        if body.model is not None and body.model not in {m["id"] for m in chat_models["items"]}:
+            raise HTTPException(422, "model not offered")
         thread = chats.get(user_id, thread_id)
         if thread is None:
             raise HTTPException(404, "thread not found")
@@ -1678,12 +1694,18 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         async def work() -> None:
             try:
-                text, used = await asyncio.wait_for(chatter(messages, chat_tools, queue.put_nowait),
+                text, used = await asyncio.wait_for(chatter(messages, chat_tools, queue.put_nowait, model=model),
                                                     chat.ANSWER_TIMEOUT_SEC)
+<<<<<<< HEAD
                 model = chat.model_of(chatter)
                 saved = chats.add(user_id, thread_id, "assistant", text or "(빈 답)", used, model=model)
                 queue.put_nowait({"type": "done", "message_id": saved["id"], "user_message_id": mine["id"],
                                   "model": saved["model"]})
+=======
+                saved = chats.add(user_id, thread_id, "assistant", text or "(빈 답)", used)
+                queue.put_nowait({"type": "done", "message_id": saved["id"], "user_message_id": mine["id"],
+                                  "model": model})
+>>>>>>> 138a0e4 ([BE] feat: AI 채팅이 허용 목록의 모델을 골라 답하고 채팅 기본 모델을 분석 모델과 따로 둔다 (#414))
             except Exception as exc:  # noqa: BLE001 - the page gets a fixed word, the log the detail
                 log.warning("chat answer in %s failed: %s", thread_id, exc)
                 limited = manager is not None and manager.note_rate_limit(f"chat:{thread_id}", exc)

@@ -43,6 +43,10 @@ class Settings:
     # One run at a time by default: every run draws on the same ChatGPT plan. With 2 (#171), two
     # different instruments run side by side; the same one always waits for the run before it.
     max_concurrent_runs: int = field(default_factory=lambda: int(os.getenv("DESK_MAX_CONCURRENT_RUNS", "1")))
+    # #414: the models the desk chat may use (ids the provider takes) and its default - apart from
+    # the runs' tiers, so a run model raised to a slower one does not slow the chat.
+    chat_models: list[str] = field(default_factory=lambda: _list("DESK_CHAT_MODELS") or ["gpt-6-luna", "gpt-6-sol"])
+    chat_model: str = field(default_factory=lambda: os.getenv("DESK_CHAT_MODEL", "").strip())
     # After the provider's rate limit (HTTP 429), one run at a time for this many minutes.
     rate_limit_cooldown_min: float = field(
         default_factory=lambda: float(os.getenv("DESK_RATE_LIMIT_COOLDOWN_MIN") or "30"))

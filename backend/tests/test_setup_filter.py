@@ -107,3 +107,29 @@ def test_a_tracked_analysis_keeps_the_edges_it_was_scored_on(chart):
     assert [c["id"] for c in out["long"]["conditions"] if c["how"] == "edge"] == \
         ["edge_rel_strength", "edge_trend", "edge_volume"]
     assert out["long"]["score"] >= 80
+
+
+# --- #432: a session still trading is not a whole day's volume ---------------------------------------
+
+
+def test_before_the_open_todays_volume_is_not_judged(chart):
+    chart.update(vol_ratio=0.06, rel20=0.20, ret20=0.05, slope20=0.06)
+    out = setup_filter.apply(_pb("dip_catch", "none"), [{}], None, None, "swing", calibrate=False, elapsed=0.0)
+    long = out["long"]
+    assert long["setup"] == "dip_catch" and "filtered" not in long and "0.06" not in (long["reason"] or "")
+    vol = next(c for c in long["conditions"] if c["id"] == "edge_volume")
+    assert vol["met"] is None and vol["pending"] and "판정 안 함" in vol["label"]
+    assert "집계 중" in out["volume_note"]
+    # an edge not judged is an edge not met: two of three, the 60 band - never the "all three" one
+    assert calibration.band(long["score"]) == 60
+
+
+def test_during_the_session_volume_is_scaled_by_the_time_passed(chart):
+    chart.update(vol_ratio=0.3)
+    half = setup_filter.apply(_pb("dip_catch", "none"), [{}], None, None, "swing", calibrate=False, elapsed=0.5)
+    assert half["long"]["filtered"]["values"] == {"vol_ratio": 0.6} and "환산 0.60배" in half["volume_note"]
+    chart.update(vol_ratio=0.5)
+    kept = setup_filter.apply(_pb("dip_catch", "none"), [{}], None, None, "swing", calibrate=False, elapsed=0.5)
+    assert kept["long"]["setup"] == "dip_catch"                     # 1.00x a day: not dry
+    done = setup_filter.apply(_pb("dip_catch", "none"), [{}], None, None, "swing", calibrate=False)
+    assert "volume_note" not in done                                # finished bars (the backtest): as before

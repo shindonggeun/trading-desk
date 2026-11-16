@@ -1836,8 +1836,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         _sector_call(sectors.remove, request.state.user.id, sector_id)
 
     @app.get("/api/regime")
-    def regime_view():
-        return regime.snapshot(settings.semibot_db_path)
+    async def regime_view():
+        """semibot's live regime when it is connected (the PC), and #409 the desk's own regime always -
+        on the server semibot does not run, so ``desk`` is what the card shows. Fields are only added."""
+        out = regime.snapshot(settings.semibot_db_path)
+        out["source"] = "semibot" if out.get("enabled") else "desk"
+        out["desk"] = await asyncio.to_thread(regime.desk_view, risk, tip_cache.regime)
+        return out
 
     _push_routes(app, engine, settings)
     return app

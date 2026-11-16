@@ -166,3 +166,20 @@ def test_a_run_records_the_models_it_used_and_no_secret(db_url, monkeypatch):
     assert running["data"]["models"] == {"provider": "chatgpt", "quick": "gpt-6-sol", "deep": "gpt-6-sol",
                                          "quick_effort": "low", "deep_effort": "medium"}
     assert "sk-secret" not in str(events) and "https://x" not in str(events)
+
+
+def test_restart_fails_unfinished_runs_with_a_korean_reason(db_url):
+    """#431 a deploy restarts the backend; the run it cut off says so in Korean on its failed screen."""
+    from desk.api import RESTART_REASON
+    from desk.db import migrate
+    from desk.store import Store
+
+    migrate(db_url)
+    engine = make_engine(db_url)
+    store = Store(engine)
+    run_id = store.create_run("KORU", "2026-11-16", {"analysts": ["market"]})
+    store.mark_running(run_id)
+    engine.dispose()
+    with _client(db_url) as client:
+        run = client.get(f"/api/runs/{run_id}").json()
+    assert run["status"] == "failed" and run["error"] == RESTART_REASON == "서버가 다시 시작돼 분석이 중단됐습니다."

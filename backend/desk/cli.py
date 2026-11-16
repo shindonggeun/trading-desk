@@ -257,6 +257,21 @@ def _weekly_lines(args) -> int:
     return 0
 
 
+def _unfinished(url: str) -> int:
+    """#431 no migration here: it runs inside the live container, and only reads."""
+    from .store import Store
+
+    engine = make_engine(url)
+    try:
+        rows = Store(engine).unfinished()
+    finally:
+        engine.dispose()
+    print(len(rows))
+    for r in rows:
+        print(f"{r['ticker']}	{r['status']}	{r['started_at'] or r['created_at']}	{r['id']}")
+    return 0
+
+
 def _utf8_out() -> None:
     """Reports carry Korean and '—': a Windows console or a redirect to a file defaults to cp949,
     where one such character used to stop ``backtest`` before it wrote ``--out``."""
@@ -334,6 +349,9 @@ def main(argv: list[str] | None = None) -> int:
         "stops at the first refusal - run again later to carry on)"))
     nh.add_argument("--out-dir", default="data/gdelt", help="directory of the files (default data/gdelt)")
     nh.add_argument("--first-year", type=int, default=2017, help="oldest year (default 2017)")
+    sub.add_parser("unfinished", help=(
+        "queued / running runs: the count on the first line, then one line each (#431; scripts/deploy.sh "
+        "asks this inside the backend container before it restarts it)"))
     tm = sub.add_parser("timing", help="average time per stage and per agent over the latest finished runs")
     tm.add_argument("--last", type=int, default=20, help="how many recent finished runs (default 20)")
     args = parser.parse_args(argv)
@@ -362,6 +380,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     settings = load()
+    if args.command == "unfinished":
+        return _unfinished(settings.database_url)
     migrate(settings.database_url)
     if args.command == "migrate":
         print("schema at head")

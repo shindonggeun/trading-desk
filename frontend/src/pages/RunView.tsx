@@ -20,6 +20,7 @@ import { duration, STATUS_LABEL } from "../format";
 import { navigation } from "../nav";
 import type { DeskEvent, Plan, Run } from "../types";
 import TipBadges from "../components/TipBadges";
+import RetryRunButton from "../components/RetryRunButton";
 
 // 백엔드 desk/profile.py 의 label 과 같다. 옛 분석(성향 없음)은 표시하지 않는다
 const PROFILE_LABEL: Record<string, string> = { aggressive_leverage: "공격형 · 레버리지", balanced: "균형형" };
@@ -274,7 +275,10 @@ export default function RunView({ runId }: { runId: string }) {
             ) : (
               <section className="card run-empty">
                 {status === "failed" ? (
-                  <p className="error">{run.error ?? "분석이 실패했습니다."}</p>
+                  <>
+                    <p className="error">{run.error ?? "분석이 실패했습니다."}</p>
+                    <RetryRunButton run={run} />
+                  </>
                 ) : (
                   <p className="muted">분석이 끝나면 결론과 타점이 여기에 나옵니다. 지금 진행 상황은 <button type="button" className="link" onClick={() => pick("debate")}>토론 탭</button>에서 볼 수 있습니다.</p>
                 )}

@@ -49,6 +49,16 @@ class Store:
     def mark_failed(self, run_id: str, error: str) -> None:
         self._update(run_id, status="failed", error=error, finished_at=now())
 
+    def unfinished(self) -> list[dict]:
+        """#431 queued / running runs, oldest first - what a backend restart would cut off."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(runs.c.id, runs.c.ticker, runs.c.status, runs.c.created_at, runs.c.started_at)
+                .where(runs.c.status.in_(("queued", "running"))).order_by(runs.c.created_at)
+            ).mappings().all()
+        return [{"id": r["id"], "ticker": r["ticker"], "status": r["status"],
+                 "created_at": iso(r["created_at"]), "started_at": iso(r["started_at"])} for r in rows]
+
     def fail_unfinished(self, reason: str) -> int:
         """Runs a previous process left mid-way cannot continue; say so instead of spinning forever."""
         with self.engine.begin() as conn:

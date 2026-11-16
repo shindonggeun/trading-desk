@@ -370,6 +370,11 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .pager button { min-width: 36px; padding: 6px 10px; }
 .runs .run-delete { color: var(--muted); font-size: 12px; }
 .runs .run-delete:not(:disabled):hover { color: var(--danger); }
+/* #433 휴대폰: 삭제 탭 영역을 넓히고 목록 줄과 띄운다 */
+@media (max-width: 760px) {
+  table.stack-table td.stack-action { padding-top: 6px; }
+  .runs .run-delete { min-width: 44px; min-height: 36px; padding: 0 8px; }
+}
 .table-wrap.stale { opacity: .5; transition: opacity .15s; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
@@ -714,6 +719,11 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .market-list { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
 .market-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .market-list-actions { display: flex; gap: 10px; flex-shrink: 0; }
+/* #433 휴대폰: ↑ ↓ · 빼기 탭 영역 */
+@media (max-width: 760px) {
+  .market-list-actions { gap: 4px; }
+  .market-list-actions button { min-width: 36px; min-height: 36px; padding: 0 6px; }
+}
 .market-add { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; }
 @media (max-width: 480px) { .mb-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .market-add { grid-template-columns: 1fr; } }
 
@@ -800,6 +810,7 @@ span.cs-hold-text { color: var(--warn); }
 .dash-move { min-width: 28px; min-height: 28px; padding: 0; background: none; color: var(--muted); border: 1px solid var(--border); border-radius: var(--radius-s, 6px); }
 .dash-move:hover:not(:disabled) { color: var(--text); background: var(--surface-2); }
 .dash-move:disabled { opacity: .35; }
+@media (max-width: 760px) { .dash-move { min-width: 34px; min-height: 34px; } } /* #433 휴대폰 탭 영역 */
 .dash-body > .card { margin: 0; }
 
 .empty-state { margin: 0; padding: 16px; border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface); color: var(--muted); font-size: 13px; }
@@ -826,9 +837,8 @@ span.cs-hold-text { color: var(--warn); }
 .history > * { min-width: 0; }
 @media (max-width: 760px) {
   .history { padding: 12px max(16px, env(safe-area-inset-right)) 12px max(16px, env(safe-area-inset-left)); }
-  /* 검색 줄은 위 메뉴 바로 밑에 고정 — 옵션을 편 동안은 길어지므로 풀어 둔다 */
-  .dash-search:not(:has(.quick-run-options)) { position: sticky; top: var(--topbar-h, 0px); z-index: 4; }
-  .dash-search .quick-run { padding: 10px 12px; box-shadow: 0 6px 12px -8px rgba(0, 0, 0, .5); }
+  /* #433 검색 카드(약 110px)를 위에 붙이지 않는다 — 스크롤하면 섹션 제목 · 첫 줄을 가렸다 */
+  .dash-search .quick-run { padding: 10px 12px; }
   .quick-run-summary { font-size: 11px; }
   .recent-runs { grid-template-columns: minmax(0, 1fr); }
 }
@@ -1107,6 +1117,11 @@ span.cs-hold-text { color: var(--warn); }
 .qb-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qb-x { position: absolute; top: -6px; right: -6px; width: 22px; height: 22px; padding: 0; border-radius: 50%; line-height: 1;
   background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+/* #433 휴대폰: 보이는 원은 그대로 두고 탭 영역만 36px 로 */
+@media (max-width: 760px) {
+  .qb-x { z-index: 1; }
+  .qb-x::after { content: ""; position: absolute; inset: -8px; }
+}
 .qb-note { margin: 0; }
 .live-view { margin: 8px 0; align-items: center; }
 .board-chart { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
@@ -1480,6 +1495,10 @@ a.wmb-row:hover { border-color: var(--accent); }
 .wa-top .wa-text { font-weight: 650; }
 .wa-text { overflow-wrap: anywhere; }
 .wa-foot { margin: 6px 0 0; }
+/* #433 휴대폰: "… 전체 보기 →" 링크 탭 높이 */
+@media (max-width: 760px) {
+  .wa-foot a, .wmb-foot a { display: inline-flex; align-items: center; min-height: 36px; }
+}
 
 /* #245 브리핑 열 머리 · 도움말 · 헤드라인 판정(#242) · 섹터 이슈(#244) */
 .mx-cols { display: grid; grid-template-columns: 150px 56px 64px 110px minmax(0, 1fr); gap: 10px; padding: 0 12px; }
@@ -1666,6 +1685,12 @@ a.wmb-row:hover { border-color: var(--accent); }
 .shell:has(main canvas, main .bt-curve) .cw-launcher:not(.cw-on) svg { width: 20px; height: 20px; }
 .shell:has(main canvas, main .bt-curve) .cw-launcher:not(.cw-on):hover,
 .shell:has(main canvas, main .bt-curve) .cw-launcher:not(.cw-on):focus-visible { opacity: 1; }
+/* #433 큰 차트(#/chart/…)는 고정 전체 화면이라 .shell 여백이 닿지 않는다 — 맨 아래 범례 줄을 작은 버튼(44px) 위로 올린다.
+   브라우저 전체 화면에선 버튼이 안 보이므로 빼고,
+   가로로 눕힌 휴대폰은 범례를 숨기므로(위 #97 규칙) 그대로 둔다 */
+@media (orientation: portrait), (min-height: 521px) {
+  .shell:has(.cw-launcher:not([hidden])) .price-chart-expanded:not(:fullscreen) { padding-bottom: calc(72px + env(safe-area-inset-bottom)); }
+}
 @media (max-width: 760px) {
   .shell { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
 }
@@ -1693,7 +1718,9 @@ a.wmb-row:hover { border-color: var(--accent); }
   .cw-on { display: none; }
 }
 /* #296 종목 정보 카드 */
-.fav-info { align-self: flex-start; margin-top: 2px; }
+.fav-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 4px; }
+.fav-foot .fav-earn { margin-top: 0; }
+@media (max-width: 760px) { .fav-info { min-height: 32px; } }
 .sp-card { margin-top: 12px; }
 .sp-head { display: flex; align-items: baseline; gap: 6px; }
 .sp-close { margin-left: auto; }

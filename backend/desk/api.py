@@ -33,6 +33,7 @@ from . import (
     events_calendar,
     filings,
     flow_intraday,
+    futures_quote,
     horizons,
     live,
     macro_news,
@@ -309,6 +310,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # KOSPI200 futures from KIS REST (#160); without the KIS keys it answers supported: false
     futures = futures or FuturesFlow(make_kis_rest(settings) if not settings.fake_runs else None, flow,
                                      off=futures_off(settings))
+    # #443 day / night session price and minute bars on the same KIS client (one token)
+    futures_quotes = futures_quote.FuturesQuote(getattr(futures, "rest", None), off=futures_off(settings))
 
     async def _futures_note() -> str | None:
         return futures_note(await futures.get())
@@ -922,6 +925,32 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         class, and the foreign spot/futures split (desk.futures_flow). A KIS failure or missing
         keys come back as ``error`` / ``supported: false``, not as a 5xx."""
         return await futures.get()
+
+    @app.get("/api/market/futures/quote")
+    async def market_futures_quote(session: str | None = None):
+        """#443 KOSPI200 front month in the day (08:45~15:45) or night (18:00~06:00) session - the one
+        trading now, or the last one, unless ``session`` asks for one. Change and rate are KIS'
+        against the previous settlement (day) or the day's close (night)."""
+        if session is not None and session not in futures_quote.SESSIONS:
+            raise HTTPException(422, "session must be day or night")
+        try:
+            return await futures_quotes.quote(session)
+        except Exception as exc:  # noqa: BLE001 - KIS down with nothing cached: said, not a 5xx
+            return {"supported": True, "error": f"선물 시세를 받지 못했습니다 — {futures_quote._short(exc)}",
+                    "stale": False, "session": session}
+
+    @app.get("/api/market/futures/candles")
+    async def market_futures_candles(session: str | None = None, interval: str = "1m"):
+        """#443 the session's minute bars (1m / 5m / 15m from the session's start), oldest first."""
+        if session is not None and session not in futures_quote.SESSIONS:
+            raise HTTPException(422, "session must be day or night")
+        if interval not in futures_quote.INTERVALS:
+            raise HTTPException(422, f"interval must be one of {', '.join(futures_quote.INTERVALS)}")
+        try:
+            return await futures_quotes.candles(session, interval)
+        except Exception as exc:  # noqa: BLE001
+            return {"supported": True, "error": f"선물 분봉을 받지 못했습니다 — {futures_quote._short(exc)}",
+                    "stale": False, "session": session, "bars": []}
 
     @app.get("/api/market/futures/daily")
     async def market_futures_daily(days: int = 20):

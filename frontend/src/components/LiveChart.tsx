@@ -12,6 +12,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { api, followLive, type Candles, type LiveFrame, type StreamState } from "../api";
 import { price } from "../format";
+import { crosshairTime, ticksClearOfLabels } from "./chartFormat";
 import { keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands } from "./chartBands";
 import { levelsContradict } from "../listLevels";
 import type { Plan } from "../types";
@@ -71,10 +72,12 @@ export default function LiveChart({ ticker, plan, onPrice }: {
       grid: { vertLines: { color: grid }, horzLines: { color: grid } },
       rightPriceScale: { borderColor: grid },
       timeScale: { borderColor: grid, timeVisible: true, secondsVisible: false },
-      localization: { locale: "ko-KR", priceFormatter: (v: number) => price(v) },
+      localization: { locale: "ko-KR", timeFormatter: crosshairTime }, // #434 가격 표기는 시리즈 priceFormat 에서
     });
-    const series = chart.addSeries(CandlestickSeries, {
+    // #434 지금가 · 타점 라벨 가까운 눈금은 비운다
+    const series: ISeriesApi<"Candlestick"> = chart.addSeries(CandlestickSeries, {
       upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down,
+      priceFormat: { type: "custom", minMove: 0.01, formatter: (v: number) => price(v), tickmarksFormatter: ticksClearOfLabels(() => [series], price) },
     });
     series.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.22 } });
     const volume = chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "", lastValueVisible: false, priceLineVisible: false });

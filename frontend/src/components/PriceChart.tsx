@@ -26,6 +26,7 @@ import {
   buyZoneDrawing, keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands, stopInsideZone,
   volumeProfileDrawing, withAlpha, zoneEdges,
 } from "./chartBands";
+import { crosshairTime, ticksClearOfLabels } from "./chartFormat";
 import { levelsContradict } from "../listLevels";
 import type { BottomZone, ChartPattern, FibLevel, Fibonacci, Plan, Positioning, Projection, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
@@ -627,12 +628,15 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         rightPriceScale: { borderColor: grid },
         // 분봉은 시 · 분까지(시각은 한국 시각), 창 크기를 바꿔도 보던 기간 유지
         timeScale: { borderColor: grid, lockVisibleTimeRangeOnResize: true, timeVisible: intraday, secondsVisible: false },
-        localization: { locale: "ko-KR", priceFormatter: (v: number) => price(v) },
+        // #434 가격 표기는 시리즈 priceFormat 에서 — 차트 전체 priceFormatter 는 시리즈의 눈금 포맷(tickmarksFormatter)을 덮는다
+        localization: { locale: "ko-KR", timeFormatter: crosshairTime },
       });
       const rows = toRows(candles.bars, intraday, candles.ticker);
       const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
-      const series = chart.addSeries(CandlestickSeries, {
+      // #434 지금가 · 타점 라벨 가까운 눈금은 비운다(뒤로 비쳐 겹쳐 보였다)
+      const series: ISeriesApi<"Candlestick"> = chart.addSeries(CandlestickSeries, {
         upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down,
+        priceFormat: { type: "custom", minMove: 0.01, formatter: (v: number) => price(v), tickmarksFormatter: ticksClearOfLabels(() => [series], price) },
       });
       series.priceScale().applyOptions({
         // 거래량은 트레이딩뷰처럼 아래쪽에 반투명하게 겹친다 — 큰 여백은 넓은 가격 범위에서 음수 눈금을 만들었다(#206)
@@ -646,13 +650,17 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
 
       // RSI(14) — 아래 패널(시간축 공유라 확대 · 이동이 같이 움직인다), 30 · 70 점선.
       let rsi: ISeriesApi<"Line"> | null = null;
+      const osc = (v: number) => v.toFixed(0);
       if (candles.indicators?.includes("rsi14")) {
+        const own: ISeriesApi<"Line">[] = [];
         rsi = chart.addSeries(LineSeries, {
           color: css("--warn", "#e5a23a"), lineWidth: 2, priceLineVisible: false, lastValueVisible: true,
-          priceFormat: { type: "custom", formatter: (v: number) => v.toFixed(0), minMove: 0.01 },
+          // #434 작은 패널에서 70 · 30 라벨과 눈금 80 · 0 이 겹쳐 "70/80" 으로 보였다 — 라벨 가까운 눈금은 비운다
+          priceFormat: { type: "custom", formatter: osc, tickmarksFormatter: ticksClearOfLabels(() => own, osc), minMove: 0.01 },
           autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
         }, 1);
         // RSI 축은 늘 0~100 일반 눈금 — 주 · 월 · 년봉의 로그 눈금이 번지지 않게.
+        own.push(rsi);
         rsi.priceScale().applyOptions({ mode: PriceScaleMode.Normal, scaleMargins: { top: 0.08, bottom: 0.08 } });
         rsi.setData(rows.flatMap(({ key, bar }) => (bar.rsi == null ? [] : [{ time: time(key), value: bar.rsi }])));
         const muted = css("--muted", "#8c939d");
@@ -674,10 +682,12 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       let stoch: ISeriesApi<"Line"> | null = null;
       if (candles.indicators?.includes("stoch")) {
         const pane = rsi ? 2 : 1;
+        const own: ISeriesApi<"Line">[] = [];
         const scale = { autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
-          priceFormat: { type: "custom" as const, formatter: (v: number) => v.toFixed(0), minMove: 0.01 } };
+          priceFormat: { type: "custom" as const, formatter: osc, tickmarksFormatter: ticksClearOfLabels(() => own, osc), minMove: 0.01 } };
         stoch = chart.addSeries(LineSeries, { color: css("--accent", "#3a86f8"), lineWidth: 2, priceLineVisible: false,
           lastValueVisible: true, ...scale }, pane);
+        own.push(stoch);
         stoch.priceScale().applyOptions({ mode: PriceScaleMode.Normal, scaleMargins: { top: 0.08, bottom: 0.08 } });
         stoch.setData(rows.flatMap(({ key, bar }) => (bar.stoch_k == null ? [] : [{ time: time(key), value: bar.stoch_k }])));
         const d = chart.addSeries(LineSeries, { color: css("--warn", "#e5a23a"), lineWidth: 1, lineStyle: LineStyle.Dashed,

@@ -2,6 +2,7 @@ import { CandlestickSeries, ColorType, createChart, LineStyle, type IChartApi, t
 import { useEffect, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles } from "../api";
 import { price } from "../format";
+import { crosshairTime } from "./chartFormat";
 import type { EstimatedCandles } from "../types";
 
 // 분봉 시각은 한국 시각으로(LiveChart · PriceChart 와 같은 방식)
@@ -97,7 +98,7 @@ export default function BoardChart({ ticker, name, mark }: { ticker: string; nam
       grid: { vertLines: { color: grid }, horzLines: { color: grid } },
       rightPriceScale: { borderColor: grid },
       timeScale: { borderColor: grid, timeVisible: true, secondsVisible: false },
-      localization: { locale: "ko-KR", priceFormatter: (v: number) => price(v) },
+      localization: { locale: "ko-KR", priceFormatter: (v: number) => price(v), timeFormatter: crosshairTime },
     });
     const real = chart.addSeries(CandlestickSeries, {
       upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down,

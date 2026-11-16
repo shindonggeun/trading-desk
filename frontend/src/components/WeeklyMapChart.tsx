@@ -12,6 +12,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { price } from "../format";
+import { crosshairTime } from "./chartFormat";
 import type { WeeklyMap } from "../types";
 
 /**
@@ -72,7 +73,7 @@ export default function WeeklyMapChart({ map }: { map: WeeklyMap }) {
           grid: { vertLines: { color: grid }, horzLines: { color: grid } },
           rightPriceScale: { borderColor: grid },
           timeScale: { borderColor: grid },
-          localization: { locale: "ko-KR", priceFormatter: (v: number) => price(v) },
+          localization: { locale: "ko-KR", priceFormatter: (v: number) => price(v), timeFormatter: crosshairTime },
           handleScroll: { vertTouchDrag: false },        // 휴대폰: 세로로 밀면 페이지가 내려가게
         });
         const rows = c.bars.map((b) => ({ ...b, day: dayOf(b.at), utc: b.at.slice(0, 10) }));

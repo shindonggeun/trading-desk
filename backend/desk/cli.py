@@ -15,6 +15,8 @@
     python -m desk.cli calibrate [--horizon swing]   # rebuild desk/data/playbook_calibration.json (#147)
     python -m desk.cli entry-backtest [--horizon swing]  # the entry-now pick vs the score pick; desk/data/entry_reach.json (#312)
     python -m desk.cli weekly-lines [--out lines.json]  # compare the weekly map's trend-line pairs (#216)
+    python -m desk.cli news-history [--out-dir data/gdelt]  # GDELT's past per news theme, resumable (#390)
+    python -m desk.cli backtest --basket --news-dir data/gdelt [--macro-weight 0.5]  # replay the macro part (#390)
 
 In Docker: ``docker compose exec backend python -m desk.cli create-user <name>``.
 For scripts, DESK_NEW_PASSWORD supplies the password instead of the prompt.
@@ -182,6 +184,19 @@ def _flow_history(args) -> int:
     return 0
 
 
+def _news_history(args) -> int:
+    """#390: GDELT's past per news theme into ``--out-dir``; stops at GDELT's first refusal."""
+    from . import news_history
+
+    got = news_history.collect(args.out_dir, first_year=args.first_year,
+                               progress=lambda msg: print(msg, file=sys.stderr))
+    print(f"받음 {got['fetched']} · 있던 것 {got['kept']} · 남은 것 {len(got['missing'])} -> {args.out_dir}")
+    if got["refused"]:
+        print(f"GDELT 가 거절해 멈춤({got['refused'][:80]}) — 15분쯤 뒤 같은 명령으로 이어 받기")
+        return 2
+    return 0
+
+
 def _backtest(args) -> int:
     """No settings or database: bars come from Yahoo, the report goes to stdout and ``--out``."""
     import json
@@ -219,7 +234,8 @@ def _backtest(args) -> int:
         return 0
     report = backtest.run(tickers, args.horizon, args.start, args.end, args.step, costs, args.sweep,
                           progress=lambda msg: print(msg, file=sys.stderr), risk=not args.no_risk or None,
-                          features=args.features, flow_dir=args.flow_dir, flow_weight=args.flow_weight)
+                          features=args.features, flow_dir=args.flow_dir, flow_weight=args.flow_weight,
+                          news_dir=args.news_dir, macro_weight=args.macro_weight)
     backtest.print_summary(report)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
@@ -285,6 +301,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="flow-history files (#389): Korean plans get the market's foreign net buying as a direction part")
     bt.add_argument("--flow-weight", type=float, default=None,
                     help="count the flow part in the direction score at this weight for the run (live weight stays 0)")
+    bt.add_argument("--news-dir", default=None,
+                    help="news-history files (#390): every plan gets the news themes of the days before it as the macro part")
+    bt.add_argument("--macro-weight", type=float, default=None,
+                    help="count the macro part in the direction score at this weight for the run (live weight stays 0)")
     cb = sub.add_parser("calibrate", help=(
         "rebuild desk/data/playbook_calibration.json from the basket backtest (#147): T1 rate and "
         "expected R per setup, regime and score band, with the held-out reliability check"))
@@ -309,6 +329,11 @@ def main(argv: list[str] | None = None) -> int:
     fh.add_argument("--market", default="all", help="kospi | kosdaq | all (default all)")
     fh.add_argument("--from", dest="start", default="2019-01-01", help="oldest day kept, YYYY-MM-DD")
     fh.add_argument("--out-dir", default="data/flow", help="directory of the files (default data/flow)")
+    nh = sub.add_parser("news-history", help=(
+        "GDELT's daily tone and article counts per news theme into <out-dir> (#390; one request per 20 s, "
+        "stops at the first refusal - run again later to carry on)"))
+    nh.add_argument("--out-dir", default="data/gdelt", help="directory of the files (default data/gdelt)")
+    nh.add_argument("--first-year", type=int, default=2017, help="oldest year (default 2017)")
     tm = sub.add_parser("timing", help="average time per stage and per agent over the latest finished runs")
     tm.add_argument("--last", type=int, default=20, help="how many recent finished runs (default 20)")
     args = parser.parse_args(argv)
@@ -325,6 +350,8 @@ def main(argv: list[str] | None = None) -> int:
         return _weekly_lines(args)
     if args.command == "flow-history":
         return _flow_history(args)
+    if args.command == "news-history":
+        return _news_history(args)
     if args.command == "bottom-backtest":
         from . import bottom_zone
 

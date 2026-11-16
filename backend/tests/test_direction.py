@@ -288,7 +288,7 @@ def test_the_index_rule_runs_through_build_and_the_backtest_keeps_it_with_the_ga
     above = playbook.build(sr, daily, daily, SWING, live=live, market=_index(above20=True, slope20=0.01))
     assert above["long"]["setup"] == plain["long"]["setup"]
     # the backtest's gate-off run still hands the market to the direction (the #146 gate is what is off)
-    snap = SimpleNamespace(sr=sr, daily=daily, window=daily, plan_at=None, today=None, vix=None, risk=under, flow=None,
+    snap = SimpleNamespace(sr=sr, daily=daily, window=daily, plan_at=None, today=None, vix=None, risk=under, flow=None, macro=None,
                            weekly=None)
     assert backtest.playbooks_at(snap, SWING, gate=False)["long"]["setup"] == "none"
 

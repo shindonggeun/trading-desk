@@ -36,6 +36,7 @@ from . import (
     exits,
     flow_history,
     horizons,
+    news_history,
     outcome,
     playbook,
     playbook_live,
@@ -106,6 +107,7 @@ class Snapshot:
     risk: dict | None = None          # desk.risk_regime.score on that day (#146)
     weekly: list[dict] | None = None  # the finished weekly bars on a swing frame (#167, desk.value_swing)
     flow: dict | None = None          # #389: the market's foreign net buying before ``day`` (desk.flow_history)
+    macro: dict | None = None         # #390: the news themes as a live run saw them that day (desk.news_history)
 
 
 @dataclass
@@ -345,7 +347,8 @@ def playbooks_at(snap: Snapshot, h: horizons.Horizon, gate: bool = True) -> dict
     pb = playbook.build(snap.sr, snap.daily, snap.window, h, now=snap.plan_at, today=snap.today, vix=snap.vix,
                         calibrate=False,                # #147: not graded by its own results
                         market=snap.risk,   # #166: the direction's index rules stay on; the gate is #146 below
-                        flow=snap.flow)     # #389: weight 0 unless the run sets one (``flow_weight``)
+                        flow=snap.flow,     # #389: weight 0 unless the run sets one (``flow_weight``)
+                        macro=snap.macro)   # #390: the same - ``macro_weight``
     if gate:
         pb = risk_regime.apply(pb, snap.risk)
     # #167: the oversold swing buy takes the long slot when its evidence is there (no record: no conviction)
@@ -900,7 +903,8 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
         progress: Callable[[str], None] | None = None,
         vix: dict[str, float] | None | bool = True, risk: MarketRisk | None | bool = None,
         on_trades: Callable[[list[Trade], str | None], None] | None = None, features: bool = False,
-        flow_dir: str | None = None, flow_weight: float | None = None) -> Report:
+        flow_dir: str | None = None, flow_weight: float | None = None,
+        news_dir: str | None = None, macro_weight: float | None = None) -> Report:
     """``vix=True`` loads ^VIX daily closes (the regime's fear evidence); a dict supplies them; None skips.
     ``risk=True`` loads the market's indices for the selling score (#146, desk.risk_regime; the CLI
     does); a MarketRisk supplies them; None leaves the playbooks ungated. ``on_trades(trades, cut)``
@@ -908,15 +912,18 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
     adds the R by the chart at the plan (#284, ``feature_report``). ``flow_dir`` (#389) holds the
     desk.flow_history files: Korean plans get their market's foreign net buying of the sessions
     before the plan day as the direction's flow part; ``flow_weight`` counts it in the score for
-    this run (the live weight stays 0 until a run like this shows it helps)."""
-    if flow_weight is not None:
-        old = DIRECTION_WEIGHTS["flow"]
-        DIRECTION_WEIGHTS["flow"] = flow_weight
+    this run (the live weight stays 0 until a run like this shows it helps). ``news_dir`` (#390) holds
+    the desk.news_history files: every plan gets the news themes' brief of the days before it as the
+    direction's macro part, ``macro_weight`` the same way. Without them the run is as before."""
+    weights = {k: w for k, w in (("flow", flow_weight), ("macro", macro_weight)) if w is not None}
+    if weights:
+        old = {k: DIRECTION_WEIGHTS[k] for k in weights}
+        DIRECTION_WEIGHTS.update(weights)
         try:
             return run(tickers, horizon, start, end, step, costs, do_sweep, fetch, progress, vix, risk,
-                       on_trades, features, flow_dir)
+                       on_trades, features, flow_dir, None, news_dir, None)
         finally:
-            DIRECTION_WEIGHTS["flow"] = old
+            DIRECTION_WEIGHTS.update(old)
     h = horizons.get(horizon)
     costs = costs or Costs()
     fetch = fetch or history
@@ -950,6 +957,9 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
         snaps += got
     if flow_dir:
         notes += attach_flow([s for s, _ in snaps], flow_dir)
+    if news_dir:
+        notes += attach_news([s for s, _ in snaps], news_dir)
+    notes.append(replayed_note(bool(flow_dir), bool(news_dir)))
     trades = evaluate(snaps, h, costs, notes=notes)
     cut = split_cut(t.at for t in trades)
     if on_trades:
@@ -995,6 +1005,37 @@ def attach_flow(snaps: list[Snapshot], flow_dir: str) -> list[str]:
     weight = DIRECTION_WEIGHTS["flow"]
     notes.append(f"수급 항목(#389) 가중치 {weight:g}" + (" — 점수에 넣지 않고 보여만 줌" if not weight else ""))
     return notes
+
+
+def attach_news(snaps: list[Snapshot], news_dir: str) -> list[str]:
+    """#390: each snapshot's news themes brief from ``news_dir`` (the days before its own only);
+    returns the notes (themes with no past, plans no theme reached)."""
+    history = news_history.load(news_dir)
+    notes = []
+    gaps = news_history.thin(history)
+    if len(gaps) == len(history):
+        return [f"뉴스 테마 과거 파일 없음: {news_dir} (news-history 로 먼저 받기) — 거시 항목 없이 판정"]
+    if gaps:
+        notes.append(f"뉴스 테마 과거 일부 없음(거시 항목에서 빠짐): {', '.join(gaps)}")
+    empty = 0
+    for snap in snaps:
+        snap.macro = news_history.brief_at(history, snap.ticker, snap.day)
+        empty += snap.macro is None
+    if empty:
+        notes.append(f"뉴스 테마 기록이 없는 날의 계획 {empty}개(거시 항목 없이 판정)")
+    weight = DIRECTION_WEIGHTS["macro"]
+    notes.append(f"거시 항목(#390) 가중치 {weight:g}" + (" — 점수에 넣지 않고 보여만 줌" if not weight else ""))
+    return notes
+
+
+def replayed_note(flow: bool, news: bool) -> str:
+    """#390: which of desk.direction's parts this run replayed - the rest are live only."""
+    from .direction import VALIDATED
+
+    replayed = [*VALIDATED, *(["flow"] if flow else []), *(["macro"] if news else [])]
+    live_only = [k for k in DIRECTION_WEIGHTS if k not in replayed]
+    return (f"방향 판정 항목 중 이 백테스트가 재현한 것: {', '.join(replayed)}"
+            + (f" · 실시간에만 있는 것: {', '.join(live_only)}" if live_only else ""))
 
 
 def vix_closes(start: str | None) -> dict[str, float]:

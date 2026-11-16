@@ -1,4 +1,4 @@
-import type { EarningsPreview, TipsView } from "./types";
+import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, TipsView } from "./types";
 import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
@@ -186,6 +186,12 @@ export const api = {
   /** #360 오늘 장중 현물 · 선물 수급 분 단위 봉과 외국인 전향 지점(#359). */
   marketFlowIntraday: (bucket: IntradayBucket, date?: string) =>
     call<IntradayFlow>(`/api/market/flow/intraday?bucket=${bucket}${date ? `&date=${encodeURIComponent(date)}` : ""}`),
+  /** #444 코스피200 선물 근월물 주간 · 야간 시세(#443) — session 을 빼면 지금 열린 세션, 닫혔으면 마지막 세션 */
+  futuresQuote: (session?: FuturesSession) =>
+    call<FuturesQuote>(`/api/market/futures/quote${session ? `?session=${session}` : ""}`),
+  /** #444 그 세션의 분봉(오래된 것부터) */
+  futuresCandles: (session?: FuturesSession, interval: FuturesInterval = "1m") =>
+    call<FuturesCandles>(`/api/market/futures/candles?interval=${interval}${session ? `&session=${session}` : ""}`),
   /** 매매 복기(백엔드 desk/review.py): 최근 days 일 체결을 그때의 분석 계획과 묶는다. 읽기 전용. */
   review: (days: number) => call<ReviewResponse>(`/api/review?days=${days}`),
   quote: (ticker: string) =>

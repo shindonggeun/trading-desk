@@ -1564,3 +1564,59 @@ export interface IntradayFlow {
   futures: IntradayFuturesBar[];
   turns: IntradayTurn[];
 }
+
+/** #443 · #444 코스피200 선물 근월물 주간 · 야간 시세 — GET /api/market/futures/quote */
+export type FuturesSession = "day" | "night";
+export interface FuturesQuote {
+  /** false: KIS 키 없음 · 가짜 모드(아래 필드 대부분 없음) */
+  supported: boolean;
+  /** 한국어 한 줄. stale 일 때도 이유가 들어 있다 */
+  error: string | null;
+  /** true: 마지막으로 받은 값 */
+  stale?: boolean;
+  source?: "kis";
+  /** 이 값의 세션 */
+  session: FuturesSession;
+  /** 지금 열린 세션(닫혔으면 closed) */
+  market: FuturesSession | "closed";
+  /** 그 세션을 연 날 YYYY-MM-DD(야간은 저녁 날짜) */
+  session_date?: string;
+  start?: string;
+  end?: string;
+  contract?: { code: string; name: string | null; expiry: string; days_left: number };
+  price?: number;
+  /** 기준가 대비, 부호 포함 */
+  change?: number;
+  change_pct?: number;
+  /** 기준가 — 주간이면 전일 정산가, 야간이면 당일 주간 종가 */
+  prev_close?: number;
+  prev_close_basis?: "전일 정산가" | "주간 종가";
+  open?: number;
+  high?: number;
+  low?: number;
+  /** 그 세션 누적 거래량(계약) */
+  volume?: number;
+  /** 미결제약정(계약) */
+  open_interest?: number;
+  open_interest_change?: number;
+  as_of?: string;
+}
+
+export type FuturesInterval = "1m" | "5m" | "15m";
+
+/** GET /api/market/futures/candles — bars 는 오래된 것부터, t = 봉 시작 ISO(+09:00) */
+export interface FuturesCandles {
+  supported: boolean;
+  error: string | null;
+  stale?: boolean;
+  source?: "kis";
+  session: FuturesSession;
+  market: FuturesSession | "closed";
+  session_date?: string;
+  start?: string;
+  end?: string;
+  contract?: { code: string; expiry: string; days_left: number };
+  interval?: FuturesInterval;
+  bars: { t: string; o: number; h: number; l: number; c: number; v: number }[];
+  as_of?: string;
+}

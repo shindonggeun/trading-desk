@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { api } from "../api";
 import FavoritesPanel from "../components/FavoritesPanel";
+import FuturesQuoteCard from "../components/FuturesQuoteCard";
 import CreditPanel from "../components/CreditPanel";
 import MacroBrief from "../components/MacroBrief";
 import MarketBoard from "../components/MarketBoard";
@@ -95,7 +96,7 @@ function RegimePanel() {
   );
 }
 
-type SectionId = "macro" | "sectornews" | "favorites" | "market" | "agenda" | "weekly" | "bottom" | "portfolio" | "recent" | "stats" | "flow" | "credit" | "regime";
+type SectionId = "macro" | "sectornews" | "favorites" | "market" | "kfutures" | "agenda" | "weekly" | "bottom" | "portfolio" | "recent" | "stats" | "flow" | "credit" | "regime";
 /** 구역 — 순서는 이슈 #100 의 기본값. wide 는 넓은 화면에서 한 줄을 다 쓴다. */
 const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () => ReactNode }> = {
   macro: { title: "오늘의 거시 · 정책 브리핑", wide: true, render: () => <MacroBrief /> },
@@ -103,6 +104,8 @@ const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () =>
   sectornews: { title: "섹터 이슈", wide: true, render: () => <SectorNews /> },
   favorites: { title: "즐겨찾기 시세", wide: true, render: () => <FavoritesPanel /> },
   market: { title: "시장 · 지수 · 선물", wide: true, render: () => <MarketBoard embedded /> },
+  // #444 코스피200 선물 주간 · 야간 시세(#443) — 누르면 #/futures
+  kfutures: { title: "코스피200 선물", render: () => <FuturesQuoteCard /> },
   // #246 오늘부터 7일 안의 휴장 · 중요 발표 · 만기 · 관심 종목 실적 5개
   agenda: { title: "이번 주 일정", render: () => <WeekAgenda /> },
   // #227 주요 지수의 주간 지도(#202) 위치 · 다음 선 한 줄씩

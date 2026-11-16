@@ -384,6 +384,111 @@ def test_futures_closes_all_come_from_the_hourly_bar_before_17h(monkeypatch):
     estimate._CLOSES.clear()
 
 
+class _FlakyYahoo:
+    """#391: Yahoo's daily bars, or an empty frame (what yfinance gives when Yahoo throttles)."""
+
+    def __init__(self, closes):
+        import pandas as pd
+
+        self.pd, self.calls, self.empty = pd, 0, False
+        self.set(closes)
+
+    def set(self, closes):
+        days = [d.isoformat() for d, _ in closes]
+        self.frame = self.pd.DataFrame({"Close": [c for _, c in closes]},
+                                       index=self.pd.DatetimeIndex(days).tz_localize("America/New_York"))
+
+    def install(self, monkeypatch, clock, wall=SATURDAY_KST_10AM):
+        import sys
+        import types
+
+        from desk import estimate
+
+        yahoo = self
+
+        class Ticker:
+            def __init__(self, t):
+                pass
+
+            def history(self, period, interval, auto_adjust):
+                yahoo.calls += 1
+                if yahoo.empty == "raise":
+                    raise RuntimeError("Yahoo down")
+                return yahoo.pd.DataFrame({"Close": []}) if yahoo.empty else yahoo.frame
+
+        monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=Ticker))
+        monkeypatch.setattr(estimate, "_clock", clock)
+        self.wall = wall
+        monkeypatch.setattr(estimate, "_wall", lambda: yahoo.wall)
+        monkeypatch.setattr(estimate, "_CLOSES", {})
+        monkeypatch.setattr(estimate, "_CLOSES_FAILED", {})
+
+
+def test_an_empty_yahoo_answer_keeps_the_last_good_closes_and_the_board_keeps_its_estimate(monkeypatch):
+    from desk import estimate
+
+    yahoo, clock = _FlakyYahoo(CLOSES["NVDA"]), Clock()
+    yahoo.install(monkeypatch, clock)
+    est = BinanceEstimator(http=httpx.AsyncClient(base_url="https://fapi.test", transport=httpx.MockTransport(FakeBinance())),
+                           daily_closes=estimate.yahoo_daily_closes, now=lambda: SATURDAY_KST_10AM, clock=clock)
+    first = asyncio.run(est.estimate("NVDA"))
+    clock.t += estimate.CLOSES_TTL_SEC + 1          # the cache is old; Yahoo now answers empty
+    yahoo.empty = True
+    again = asyncio.run(est.estimate("NVDA"))
+    assert again is not None and again.estimate == first.estimate and again.last_close == 204.2
+    assert yahoo.calls == 2                           # with good rows to fall back on: no instant retry
+    clock.t += 10                                      # inside the retry window: Yahoo is not asked
+    assert estimate.yahoo_daily_closes("NVDA") == CLOSES["NVDA"] and yahoo.calls == 2
+    clock.t += estimate.CLOSES_RETRY_SEC                # Yahoo is back with a new bar
+    yahoo.empty = False
+    yahoo.set(CLOSES["NVDA"] + [(date(2026, 11, 9), 210.0)])
+    assert estimate.yahoo_daily_closes("NVDA")[-1] == (date(2026, 11, 9), 210.0) and yahoo.calls == 3
+
+
+def test_an_empty_yahoo_answer_without_good_closes_retries_once_then_backs_off_briefly(monkeypatch):
+    from desk import estimate
+
+    yahoo, clock = _FlakyYahoo(CLOSES["NVDA"]), Clock()
+    yahoo.install(monkeypatch, clock)
+    yahoo.empty = True
+    with pytest.raises(estimate.YahooEmpty):
+        estimate.yahoo_daily_closes("NVDA")
+    assert yahoo.calls == 2                           # one quick retry
+    clock.t += 10
+    with pytest.raises(estimate.YahooEmpty):
+        estimate.yahoo_daily_closes("NVDA")
+    assert yahoo.calls == 2                           # the 15 s board poll does not hammer Yahoo
+    clock.t += estimate.CLOSES_RETRY_SEC               # 30 s, not the 5-minute cache window
+    yahoo.empty = False
+    assert estimate.yahoo_daily_closes("NVDA") == CLOSES["NVDA"]
+
+
+def test_a_bar_still_trading_when_read_never_stands_in_as_its_close(monkeypatch):
+    from desk import estimate
+
+    friday_1557_ny = datetime(2026, 11, 6, 20, 57, tzinfo=UTC)
+    yahoo, clock = _FlakyYahoo(CLOSES["NVDA"][:1] + [(date(2026, 11, 6), 203.0)]), Clock()  # Friday's bar, intraday
+    yahoo.install(monkeypatch, clock, wall=friday_1557_ny)
+    assert estimate.yahoo_daily_closes("NVDA")[-1] == (date(2026, 11, 6), 203.0)
+    yahoo.wall, clock.t = friday_1557_ny + timedelta(minutes=3, seconds=30), 210.0   # just after the close
+    yahoo.empty = "raise"                               # a failed read counts as an empty one
+    assert estimate.yahoo_daily_closes("NVDA") == CLOSES["NVDA"][:1]   # Thursday only, not 203 as Friday's close
+    clock.t += estimate.CLOSES_TTL_SEC                   # and the same after the cache window
+    assert estimate.yahoo_daily_closes("NVDA") == CLOSES["NVDA"][:1]
+
+
+def test_closes_older_than_the_stale_limit_do_not_stand_in(monkeypatch):
+    from desk import estimate
+
+    yahoo, clock = _FlakyYahoo(CLOSES["NVDA"]), Clock()
+    yahoo.install(monkeypatch, clock)
+    assert estimate.yahoo_daily_closes("NVDA") == CLOSES["NVDA"]
+    clock.t += estimate.CLOSES_STALE_MAX_SEC + 1
+    yahoo.empty = True
+    with pytest.raises(estimate.YahooEmpty):
+        estimate.yahoo_daily_closes("NVDA")
+
+
 def test_long_closes_page_past_the_bar_limit_and_leverage_never_goes_negative(monkeypatch):
     from desk import estimate
 

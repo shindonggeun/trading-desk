@@ -86,4 +86,4 @@ def desk_view(risk: Callable[[str], dict | None] | None, rates: Callable[[], dic
         missing.append("금리 · 달러 국면")
     rate_view = {**{k: g.get(k) for k in RATE_KEYS}, "as_of": g.get("as_of")} if g else None
     return {"markets": markets, "rates": rate_view,
-            "error": f"{' · '.join(missing)}을(를) 아직 받지 못했습니다" if missing else None}
+            "error": f"아직 받지 못한 자료: {' · '.join(missing)}" if missing else None}

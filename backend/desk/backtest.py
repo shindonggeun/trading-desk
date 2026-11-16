@@ -34,6 +34,7 @@ from . import (
     entry_features,
     entry_now,
     exits,
+    flow_history,
     horizons,
     outcome,
     playbook,
@@ -44,6 +45,8 @@ from . import (
     summary,
     value_swing,
 )
+from .direction import FLOW_MIN
+from .direction import WEIGHTS as DIRECTION_WEIGHTS
 from .underlying import leverage_of
 
 VERSION = 1
@@ -102,6 +105,7 @@ class Snapshot:
     vix: float | None = None          # ^VIX close on that day
     risk: dict | None = None          # desk.risk_regime.score on that day (#146)
     weekly: list[dict] | None = None  # the finished weekly bars on a swing frame (#167, desk.value_swing)
+    flow: dict | None = None          # #389: the market's foreign net buying before ``day`` (desk.flow_history)
 
 
 @dataclass
@@ -340,7 +344,8 @@ def playbooks_at(snap: Snapshot, h: horizons.Horizon, gate: bool = True) -> dict
     """The snapshot's playbooks as a live run would build them (market gate, oversold swing buy)."""
     pb = playbook.build(snap.sr, snap.daily, snap.window, h, now=snap.plan_at, today=snap.today, vix=snap.vix,
                         calibrate=False,                # #147: not graded by its own results
-                        market=snap.risk)   # #166: the direction's index rules stay on; the gate is #146 below
+                        market=snap.risk,   # #166: the direction's index rules stay on; the gate is #146 below
+                        flow=snap.flow)     # #389: weight 0 unless the run sets one (``flow_weight``)
     if gate:
         pb = risk_regime.apply(pb, snap.risk)
     # #167: the oversold swing buy takes the long slot when its evidence is there (no record: no conviction)
@@ -894,12 +899,24 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
         fetch: Callable[[str, horizons.Horizon, str | None], tuple[list[dict], list[dict], list[str]]] | None = None,
         progress: Callable[[str], None] | None = None,
         vix: dict[str, float] | None | bool = True, risk: MarketRisk | None | bool = None,
-        on_trades: Callable[[list[Trade], str | None], None] | None = None, features: bool = False) -> Report:
+        on_trades: Callable[[list[Trade], str | None], None] | None = None, features: bool = False,
+        flow_dir: str | None = None, flow_weight: float | None = None) -> Report:
     """``vix=True`` loads ^VIX daily closes (the regime's fear evidence); a dict supplies them; None skips.
     ``risk=True`` loads the market's indices for the selling score (#146, desk.risk_regime; the CLI
     does); a MarketRisk supplies them; None leaves the playbooks ungated. ``on_trades(trades, cut)``
     receives the gated trades and the train/held-out cut (desk.cli calibrate, #147). ``features``
-    adds the R by the chart at the plan (#284, ``feature_report``)."""
+    adds the R by the chart at the plan (#284, ``feature_report``). ``flow_dir`` (#389) holds the
+    desk.flow_history files: Korean plans get their market's foreign net buying of the sessions
+    before the plan day as the direction's flow part; ``flow_weight`` counts it in the score for
+    this run (the live weight stays 0 until a run like this shows it helps)."""
+    if flow_weight is not None:
+        old = DIRECTION_WEIGHTS["flow"]
+        DIRECTION_WEIGHTS["flow"] = flow_weight
+        try:
+            return run(tickers, horizon, start, end, step, costs, do_sweep, fetch, progress, vix, risk,
+                       on_trades, features, flow_dir)
+        finally:
+            DIRECTION_WEIGHTS["flow"] = old
     h = horizons.get(horizon)
     costs = costs or Costs()
     fetch = fetch or history
@@ -931,6 +948,8 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
         if not got:
             notes.append(f"{ticker}: 계획을 하나도 만들지 못함(봉 {len(primary)}개)")
         snaps += got
+    if flow_dir:
+        notes += attach_flow([s for s, _ in snaps], flow_dir)
     trades = evaluate(snaps, h, costs, notes=notes)
     cut = split_cut(t.at for t in trades)
     if on_trades:
@@ -956,6 +975,26 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
     if do_sweep:
         report.sweep = sweep(snaps, h, costs)
     return report
+
+
+def attach_flow(snaps: list[Snapshot], flow_dir: str) -> list[str]:
+    """#389: each Korean snapshot's market flow window from ``flow_dir`` (only what was known the
+    morning of its day); returns the notes (a missing file, plans the file does not reach)."""
+    files = {m: flow_history.load(flow_history.path_for(flow_dir, m)) for m in flow_history.MARKETS}
+    notes, short = [], {}
+    for snap in snaps:
+        market = flow_history.market_of(snap.ticker)
+        if not market:
+            continue
+        nets = flow_history.window(files[market], snap.day)
+        snap.flow = {"market": market, "foreigner": nets}
+        if len(nets) < FLOW_MIN:
+            short[market] = short.get(market, 0) + 1
+    notes += [f"수급 파일 없음: {flow_history.path_for(flow_dir, m)}" for m, d in files.items() if d is None]
+    notes += [f"{m} 수급 기록이 모자란 계획 {n}개(수급 항목 없이 판정)" for m, n in short.items()]
+    weight = DIRECTION_WEIGHTS["flow"]
+    notes.append(f"수급 항목(#389) 가중치 {weight:g}" + (" — 점수에 넣지 않고 보여만 줌" if not weight else ""))
+    return notes
 
 
 def vix_closes(start: str | None) -> dict[str, float]:

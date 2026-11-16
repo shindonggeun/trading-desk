@@ -219,7 +219,7 @@ def _backtest(args) -> int:
         return 0
     report = backtest.run(tickers, args.horizon, args.start, args.end, args.step, costs, args.sweep,
                           progress=lambda msg: print(msg, file=sys.stderr), risk=not args.no_risk or None,
-                          features=args.features)
+                          features=args.features, flow_dir=args.flow_dir, flow_weight=args.flow_weight)
     backtest.print_summary(report)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
@@ -281,6 +281,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="compare the zone-touch entry with the lower-bar trigger entry (#149; ~2 years of 60m bars)")
     bt.add_argument("--no-risk", action="store_true",
                     help="leave out the market's selling-score rule (#146) and its on/off comparison")
+    bt.add_argument("--flow-dir", default=None,
+                    help="flow-history files (#389): Korean plans get the market's foreign net buying as a direction part")
+    bt.add_argument("--flow-weight", type=float, default=None,
+                    help="count the flow part in the direction score at this weight for the run (live weight stays 0)")
     cb = sub.add_parser("calibrate", help=(
         "rebuild desk/data/playbook_calibration.json from the basket backtest (#147): T1 rate and "
         "expected R per setup, regime and score band, with the held-out reliability check"))

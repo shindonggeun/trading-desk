@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date, timedelta
 
 import httpx
@@ -122,3 +123,42 @@ def test_the_flow_part_shows_at_weight_0_and_leaves_the_score_as_it_was():
     assert all(p["id"] != "flow" for p in plain["parts"])
     few = direction.score(daily, flow={"market": "KOSPI", "foreigner": [1e11] * (direction.FLOW_MIN - 1)})
     assert all(p["id"] != "flow" for p in few["parts"])               # too few sessions: no part
+
+
+def test_the_backtest_hands_korean_plans_the_flow_before_their_day(tmp_path, monkeypatch):
+    from desk import backtest, playbook
+    from tests.test_backtest import _bars, _fetch
+
+    daily = _bars(330)
+    first = date.fromisoformat(daily[0]["at"][:10]) - timedelta(days=40)
+    rows = {(first + timedelta(days=i)).isoformat(): {"foreigner": 10 ** 9} for i in range(420)}
+    path = flow_history.path_for(tmp_path, "KOSPI")
+    path.write_text(json.dumps({"version": 1, "market": "KOSPI", "rows": rows}), encoding="utf-8")
+    seen: list[tuple[str, dict | None]] = []
+    build = playbook.build
+
+    def spy(*a, **kw):
+        seen.append((kw.get("now"), kw.get("flow")))
+        return build(*a, **kw)
+
+    monkeypatch.setattr(playbook, "build", spy)
+    report = backtest.run(["005930.KS", "SOXL"], "swing", fetch=_fetch(daily), vix=None,
+                          flow_dir=str(tmp_path), flow_weight=0.5)
+    assert direction.WEIGHTS["flow"] == 0.0                                 # put back after the run
+    korean = [f for _, f in seen if f is not None]
+    assert korean and all(f["market"] == "KOSPI" and len(f["foreigner"]) == flow_history.WINDOW for f in korean)
+    assert len(korean) < len(seen)                                          # SOXL plans get none
+    assert any("가중치 0.5" in n for n in report.notes)
+    assert any("kosdaq.json" in n for n in report.notes)                    # the missing file is named
+
+
+def test_attach_flow_takes_only_the_sessions_before_the_day(tmp_path):
+    from desk import backtest
+
+    rows = {f"2026-11-{d:02d}": {"foreigner": d} for d in range(2, 14)}
+    flow_history.path_for(tmp_path, "KOSDAQ").write_text(json.dumps({"rows": rows}), encoding="utf-8")
+    snap = backtest.Snapshot("091990.KQ", 0, "", "2026-11-13", "", {}, [], [])
+    notes = backtest.attach_flow([snap], str(tmp_path))
+    assert snap.flow == {"market": "KOSDAQ", "foreigner": list(range(2, 13))}
+    assert not any("모자란" in n for n in notes)                       # 11 sessions are enough
+    assert any("kospi.json" in n for n in notes)                         # the other market's file is missing

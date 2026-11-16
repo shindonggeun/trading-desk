@@ -41,7 +41,7 @@ export default function PushSettings() {
   return (
     <section className="card settings-card push-settings">
       <h2>알림</h2>
-      <p className="muted">외국인 수급이 순매수 · 순매도로 돌아서면(전향) 알려 드립니다(#361).</p>
+      <p className="muted">외국인 수급이 순매수 · 순매도로 돌아서면(전향) 알려 드립니다.</p>
 
       <div className="settings-row">
         <span>이 기기 푸시</span>

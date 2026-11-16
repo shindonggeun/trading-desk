@@ -14,8 +14,8 @@ const VIEWS: { key: View; label: string; title: string }[] = [
   { key: "regime", label: "국면", title: "셋업 · 분석 당시 국면" },
   { key: "ticker", label: "종목", title: "종목" },
   { key: "crash", label: "폭락 구간", title: "폭락 구간(2020-03 · 2022 · 2025-04)" },
-  { key: "direction", label: "방향 판정", title: "셋업 · 방향 판정(#166)과 같은 쪽인가" },
-  { key: "risk", label: "투매 점수", title: "셋업 · 시장 투매 국면(#146)" },
+  { key: "direction", label: "방향 판정", title: "셋업 · 방향 판정과 같은 쪽인가" },
+  { key: "risk", label: "투매 점수", title: "셋업 · 시장 투매 국면" },
   { key: "steps", label: "사다리 차수", title: "셋업 · 체결된 사다리 차수(체결 순서)" },
 ];
 
@@ -45,7 +45,7 @@ function label(key: string): string {
 }
 
 const pct = (v: number | null | undefined) => (v == null ? "—" : `${Math.round(v * 100)}%`);
-const signedR = (v: number | null | undefined) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(3)}R`);
+const signedR = (v: number | null | undefined) => (v == null ? "—" : `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(3)}R`);
 const tone = (v: number | null | undefined) => (v == null ? "muted" : v > 0 ? "up" : v < 0 ? "down" : "");
 const day = (iso: string | null) => (iso ? iso.slice(0, 10) : "—");
 
@@ -159,7 +159,7 @@ function RiskGate({ gate }: { gate: NonNullable<BacktestReport["risk_gate"]> }) 
   const streak = (side: "on" | "off") => (typeof gate[side].losing_streak === "number" ? gate[side].losing_streak : null);
   return (
     <section className="card bt-gate">
-      <h3>투매 규칙 켬 / 끔 <span className="muted small">#146 — 같은 계획에 규칙만 달리 적용</span></h3>
+      <h3>투매 규칙 켬 / 끔 <span className="muted small">같은 계획에 규칙만 달리 적용</span></h3>
       <div className="table-wrap">
         <table className="stats-table bt-table">
           <thead>
@@ -235,7 +235,7 @@ export default function Backtest() {
             {list.map((s) => (
               <button key={s.horizon} type="button" className={`chip ${horizon === s.horizon ? "chip-on" : ""}`}
                 aria-pressed={horizon === s.horizon} onClick={() => { setFailed(null); setHorizon(s.horizon); }}>
-                {`${s.label} · `}<span className="muted">{signedR(s.expectancy_r)}</span>
+                {s.label}<span className="muted">{` ${signedR(s.expectancy_r)}`}</span>
               </button>
             ))}
           </div>

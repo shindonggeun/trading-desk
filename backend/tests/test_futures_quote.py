@@ -104,6 +104,9 @@ def test_the_night_candles_page_back_to_18_00_on_division_cm():
     assert out["bars"][0]["t"].startswith("2026-11-16T18:00") and out["bars"][-1]["t"].startswith("2026-11-16T22:23")
     assert len(out["bars"]) == 4 * 60 + 23 + 1
     assert {p["FID_COND_MRKT_DIV_CODE"] for _, p in rest.calls} == {"CM"} and len(rest.calls) == 3   # 102 x 3 >= 264
+    five = asyncio.run(quotes.candles(interval="15m"))
+    assert len(rest.calls) == 3 and five["interval"] == "15m" and five["bars"][0]["t"].startswith("2026-11-16T18:00")
+    assert len(five["bars"]) == 18                                      # cut from the same minutes, no new call
     q = asyncio.run(quotes.quote())
     assert (q["price"], q["prev_close_basis"], q["contract"]["code"]) == (782.75, "주간 종가", "A01612")
     day = asyncio.run(quotes.quote("day"))
@@ -118,6 +121,9 @@ def test_a_failed_refresh_hands_back_the_last_answer_marked_stale():
     rest.fail, clock[0] = True, 100.0
     again = asyncio.run(quotes.quote())
     assert again["stale"] is True and again["price"] == first["price"] and "EGW00201" in again["error"]
+    calls = len(rest.calls)
+    clock[0] = 105.0
+    assert asyncio.run(quotes.quote())["stale"] is True and len(rest.calls) == calls   # the outage is not asked again at once
     with pytest.raises(KisError):
         asyncio.run(fq.FuturesQuote(FakeRest(fail=True), now=lambda: at("2026-11-16", "22:23"), is_open=is_open).quote())
 

@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ColorType, createChart, createSeriesMarkers, HistogramSeries, LineSeries, LineStyle,
+  ColorType, createChart, createSeriesMarkers, HistogramSeries, LineSeries,
   type IChartApi, type ISeriesApi, type SeriesMarker, type Time, type UTCTimestamp,
 } from "lightweight-charts";
 import { api, ApiError } from "../api";
 import type { IntradayBucket, IntradayFlow, IntradayFuturesBar, IntradaySpotBar, IntradayTurn } from "../types";
 
-// #360 시장 수급 "오늘 장중": 현물(코스피/코스닥) · 코스피200 선물의 외국인(+ 기관 · 개인) 누적 수급과
+// #360 시장 수급 "오늘 장중": 현물(코스피/코스닥) · 코스피200 선물의 외국인 · 기관 · 개인 누적 수급과
 // 고른 봉의 구간 순매수 막대, 외국인 순매수/순매도 전향 마커. 데이터는 #359 GET /api/market/flow/intraday.
+// #401 현물 차트(억원)와 선물 차트(계약)를 위아래로 나눠 각 차트가 축 하나만 쓰고, 십자선 시각을 서로 맞춘다.
 // 선 색은 주체(--flow-*), 막대 색은 극성(순매수 빨강 · 순매도 파랑) — MarketFlowPanel 과 같은 규칙.
 
 const BUCKETS: IntradayBucket[] = [1, 3, 5, 10, 15, 30, 60];
@@ -23,22 +24,24 @@ const FUT_KEY: Record<Who, keyof IntradayFuturesBar> = {
 };
 const KST_MS = 9 * 3600_000;
 const PREFS = "desk.intradayFlow";
+// #401 주체 기본값이 "외국인만" → "셋 다"로 바뀌었다. 예전에 저장한 주체 선택(v 없음)은 버리고 새 기본을 보인다
+const PREFS_VERSION = 2;
 type Prefs = { bucket: IntradayBucket; spot: Spot; who: Record<Who, boolean> };
 
 function loadPrefs(): Prefs {
-  const base: Prefs = { bucket: 5, spot: "kospi", who: { foreign: true, institution: false, individual: false } };
+  const base: Prefs = { bucket: 5, spot: "kospi", who: { foreign: true, institution: true, individual: true } };
   try {
     const raw = JSON.parse(localStorage.getItem(PREFS) ?? "{}");
     if (BUCKETS.includes(raw.bucket)) base.bucket = raw.bucket;
     if (raw.spot === "kospi" || raw.spot === "kosdaq") base.spot = raw.spot;
-    for (const w of WHO) if (typeof raw.who?.[w.key] === "boolean") base.who[w.key] = raw.who[w.key];
+    if (raw.v === PREFS_VERSION) for (const w of WHO) if (typeof raw.who?.[w.key] === "boolean") base.who[w.key] = raw.who[w.key];
   } catch {
     /* 손상 · 막힌 저장소: 기본값 */
   }
   return base;
 }
 function savePrefs(p: Prefs) {
-  try { localStorage.setItem(PREFS, JSON.stringify(p)); } catch { /* 저장 못 해도 화면은 그대로 */ }
+  try { localStorage.setItem(PREFS, JSON.stringify({ ...p, v: PREFS_VERSION })); } catch { /* 저장 못 해도 화면은 그대로 */ }
 }
 
 function css(name: string, fallback: string): string {
@@ -91,6 +94,96 @@ export function summarize(d: IntradayFlow, spot: Spot): string | null {
   return parts.join(" · ");
 }
 
+type Point = { t: string; v: number | null };
+type Pane = {
+  /** 누적선 — 주체마다 하나 */
+  lines: { who: Who; color: string; points: Point[] }[];
+  /** 아래 막대 — 외국인 구간 순매수 */
+  deltas: Point[];
+  /** 전향 마커를 다는 시장(외국인 선이 켜져 있을 때만) */
+  turns: IntradayTurn[];
+  unit: string;
+};
+
+/** #401 차트 하나: 오른쪽 축 = 누적, 아래 1/4 = 외국인 구간 순매수 막대, 가로축은 08:45~15:45 bucket 격자.
+ *  막대 시리즈를 돌려준다 — 모든 격자 시각에 점(또는 빈 점)이 있어 십자선 맞추기의 기준이 된다. */
+function drawPane(el: HTMLElement, date: string, bucketMin: number, pane: Pane): { chart: IChartApi; anchor: ISeriesApi<"Histogram"> } {
+  const grid = css("--border", "#2a3038");
+  const up = css("--up", "#f2464b"), down = css("--down", "#3a86f8");
+  const chart = createChart(el, {
+    autoSize: true,
+    layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: css("--muted", "#8c939d"), attributionLogo: false },
+    grid: { vertLines: { color: grid }, horzLines: { color: grid } },
+    rightPriceScale: { visible: true, borderColor: grid, scaleMargins: { top: 0.08, bottom: 0.3 } },
+    leftPriceScale: { visible: false },
+    timeScale: { borderColor: grid, timeVisible: true, secondsVisible: false, fixLeftEdge: true, fixRightEdge: true },
+    localization: { locale: "ko-KR", priceFormatter: (v: number) => Math.round(v).toLocaleString("ko-KR") },
+    handleScroll: false, handleScale: false,
+  });
+
+  // 막대(외국인 구간 순매수) + 08:45~15:45 빈 시각으로 가로축 고정
+  const bars = chart.addSeries(HistogramSeries, { priceScaleId: "delta", priceLineVisible: false, lastValueVisible: false, base: 0 });
+  chart.priceScale("delta").applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
+  const barData = pane.deltas.filter((b) => b.v != null).map((b) => ({
+    time: kstTime(b.t), value: b.v as number, color: (b.v as number) >= 0 ? up : down,
+  }));
+  // 가로축은 시각 비례가 아니라 점 순서라, 08:45~15:45 의 bucket 격자 전체를 막대 시리즈에 깐다
+  // (봉이 없는 칸은 빈 시각). 봉 시각은 모두 격자 위이고, 격자를 넘는 봉(마감 스냅샷)만 뒤에 붙인다.
+  const open = sessionEdge(date, "08:45"), close = sessionEdge(date, "15:45");
+  const step = Math.max(1, bucketMin) * 60;
+  const byTime = new Map(barData.map((b) => [b.time as number, b]));
+  const slots: ({ time: UTCTimestamp } | (typeof barData)[number])[] = [];
+  for (let t = open; t <= close; t = (t + step) as UTCTimestamp) slots.push(byTime.get(t) ?? { time: t });
+  const onGrid = new Set(slots.map((x) => x.time as number));
+  for (const b of barData) if (!onGrid.has(b.time as number)) slots.push(b);
+  slots.sort((a, b) => (a.time as number) - (b.time as number));
+  bars.setData(slots);
+
+  let foreignLine: ISeriesApi<"Line"> | null = null;
+  for (const l of pane.lines) {
+    const label = WHO.find((w) => w.key === l.who)!.label;
+    const line = chart.addSeries(LineSeries, { color: l.color, lineWidth: 2, priceScaleId: "right", priceLineVisible: false, title: label });
+    line.setData(l.points.filter((p) => p.v != null).map((p) => ({ time: kstTime(p.t), value: p.v as number })));
+    if (l.who === "foreign") foreignLine = line;
+  }
+
+  // 전향 마커: 외국인 선이 켜져 있을 때 그 선 위에. 좁은 화면(휴대폰)은 글자가 오른쪽 끝에서 잘리지 않게 "10:41 매도" 로 줄인다
+  // — 값 · 전향 이름 전체는 위 요약 줄에 있다
+  const narrow = el.clientWidth < 560;
+  if (foreignLine) {
+    const ms: SeriesMarker<Time>[] = pane.turns.map((t): SeriesMarker<Time> => ({
+      time: kstTime(t.t),
+      position: t.kind === "buy_turn" ? "belowBar" : "aboveBar",
+      shape: t.kind === "buy_turn" ? "arrowUp" : "arrowDown",
+      color: t.kind === "buy_turn" ? up : down,
+      text: narrow
+        ? `${hhmm(t.t)} ${t.kind === "buy_turn" ? "매수" : "매도"}`
+        : `${hhmm(t.t)} ${TURN_LABEL[t.kind]}${t.value != null ? ` ${signed(t.value, pane.unit)}` : ""}`,
+    })).sort((a, b) => (a.time as number) - (b.time as number));
+    if (ms.length) createSeriesMarkers(foreignLine, ms);
+  }
+  chart.timeScale().fitContent();
+  return { chart, anchor: bars };
+}
+
+/** #401 차트 머리: 켜진 주체마다 "● 외국인 −16,952억" */
+function PaneHead({ title, values, unit }: { title: string; values: { who: Who; v: number | null }[]; unit: string }) {
+  return (
+    <p className="intraday-pane-head">
+      <strong>{title}</strong>
+      {values.map(({ who, v }) => {
+        const w = WHO.find((x) => x.key === who)!;
+        return (
+          <span key={who} className="intraday-pane-val">
+            <span className="chip-dot" aria-hidden="true" style={{ ["--chip-dot" as string]: `var(${w.color})` }} />
+            {w.label} <span className="num">{v == null ? "—" : signed(v, unit)}</span>
+          </span>
+        );
+      })}
+    </p>
+  );
+}
+
 // 개발 서버에서 #359 API 가 아직 없을 때(404)만 쓰는 가짜 데이터 — 운영 빌드에서는 쓰지 않는다.
 function fakeFlow(bucket: IntradayBucket): IntradayFlow {
   const date = new Date(Date.now() + KST_MS).toISOString().slice(0, 10);
@@ -122,8 +215,8 @@ export default function IntradayFlowView() {
   const [prefs, setPrefs] = useState(loadPrefs);
   const [data, setData] = useState<IntradayFlow | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
-  const box = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
+  const spotBox = useRef<HTMLDivElement>(null);
+  const futBox = useRef<HTMLDivElement>(null);
 
   const update = (p: Partial<Prefs>) => setPrefs((cur) => { const next = { ...cur, ...p }; savePrefs(next); return next; });
 
@@ -154,73 +247,29 @@ export default function IntradayFlowView() {
 
   const summary = useMemo(() => (data ? summarize(data, prefs.spot) : null), [data, prefs.spot]);
 
-  // 차트: 오른쪽 축 = 현물 누적(억원), 왼쪽 축 = 선물 누적(계약), 아래 1/4 = 현물 외국인 구간 순매수 막대.
+  // #401 차트 2개(현물 · 선물). 십자선은 한쪽에서 가리킨 시각을 다른 쪽에도 그린다.
   useEffect(() => {
-    const el = box.current;
-    if (!el || !data) return;
-    const grid = css("--border", "#2a3038");
-    const up = css("--up", "#f2464b"), down = css("--down", "#3a86f8");
-    const chart = createChart(el, {
-      autoSize: true,
-      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: css("--muted", "#8c939d"), attributionLogo: false },
-      grid: { vertLines: { color: grid }, horzLines: { color: grid } },
-      rightPriceScale: { visible: true, borderColor: grid, scaleMargins: { top: 0.08, bottom: 0.3 } },
-      leftPriceScale: { visible: true, borderColor: grid, scaleMargins: { top: 0.08, bottom: 0.3 } },
-      timeScale: { borderColor: grid, timeVisible: true, secondsVisible: false, fixLeftEdge: true, fixRightEdge: true },
-      localization: { locale: "ko-KR", priceFormatter: (v: number) => Math.round(v).toLocaleString("ko-KR") },
-      handleScroll: false, handleScale: false,
-    });
-    chartRef.current = chart;
-
-    // 막대(현물 외국인 구간 순매수) + 08:45~15:45 빈 시각으로 가로축 고정
-    const bars = chart.addSeries(HistogramSeries, { priceScaleId: "delta", priceLineVisible: false, lastValueVisible: false, base: 0 });
-    chart.priceScale("delta").applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
+    const se = spotBox.current, fe = futBox.current;
+    if (!se || !fe || !data) return;
+    const on = WHO.filter((w) => prefs.who[w.key]);
     const rows = data.spot[prefs.spot];
-    const barData = rows.filter((b) => b.foreign_delta != null).map((b) => ({
-      time: kstTime(b.t), value: b.foreign_delta as number, color: (b.foreign_delta as number) >= 0 ? up : down,
-    }));
-    // 가로축은 시각 비례가 아니라 점 순서라, 08:45~15:45 의 bucket 격자 전체를 막대 시리즈에 깐다
-    // (봉이 없는 칸은 빈 시각). 봉 시각은 모두 격자 위이고, 격자를 넘는 봉(마감 스냅샷)만 뒤에 붙인다.
-    const open = sessionEdge(data.date, "08:45"), close = sessionEdge(data.date, "15:45");
-    const step = Math.max(1, data.bucket_min) * 60;
-    const byTime = new Map(barData.map((b) => [b.time as number, b]));
-    const slots: ({ time: UTCTimestamp } | (typeof barData)[number])[] = [];
-    for (let t = open; t <= close; t = (t + step) as UTCTimestamp) slots.push(byTime.get(t) ?? { time: t });
-    const onGrid = new Set(slots.map((s) => s.time as number));
-    for (const b of barData) if (!onGrid.has(b.time as number)) slots.push(b);
-    slots.sort((a, b) => (a.time as number) - (b.time as number));
-    bars.setData(slots);
-
-    const markersFor: Record<string, ISeriesApi<"Line">> = {};
-    for (const w of WHO) {
-      if (!prefs.who[w.key]) continue;
-      const color = css(w.color, "#a371f7");
-      const spotLine = chart.addSeries(LineSeries, { color, lineWidth: 2, priceScaleId: "right", priceLineVisible: false, title: `현물 ${w.label}` });
-      spotLine.setData(rows.filter((b) => b[w.key] != null).map((b) => ({ time: kstTime(b.t), value: b[w.key] as number })));
-      const futLine = chart.addSeries(LineSeries, { color, lineWidth: 2, lineStyle: LineStyle.Dashed, priceScaleId: "left", priceLineVisible: false, title: `선물 ${w.label}` });
-      const fk = FUT_KEY[w.key];
-      futLine.setData(data.futures.filter((b) => b[fk] != null).map((b) => ({ time: kstTime(b.t), value: b[fk] as number })));
-      if (w.key === "foreign") { markersFor[prefs.spot] = spotLine; markersFor.futures = futLine; }
-    }
-
-    // 전향 마커: 외국인 선이 켜져 있을 때 해당 선 위에. 좁은 화면(휴대폰)은 글자가 오른쪽 끝에서 잘리지 않게 "10:41 매도" 로 줄인다
-    // — 값 · 전향 이름 전체는 위 요약 줄에 있다
-    const narrow = (box.current?.clientWidth ?? 1000) < 560;
-    for (const [market, series] of Object.entries(markersFor)) {
-      const unit = market === "futures" ? "계약" : "억";
-      const ms: SeriesMarker<Time>[] = data.turns.filter((t) => t.market === market).map((t): SeriesMarker<Time> => ({
-        time: kstTime(t.t),
-        position: t.kind === "buy_turn" ? "belowBar" : "aboveBar",
-        shape: t.kind === "buy_turn" ? "arrowUp" : "arrowDown",
-        color: t.kind === "buy_turn" ? up : down,
-        text: narrow
-          ? `${hhmm(t.t)} ${t.kind === "buy_turn" ? "매수" : "매도"}`
-          : `${hhmm(t.t)} ${TURN_LABEL[t.kind]}${t.value != null ? ` ${signed(t.value, unit)}` : ""}`,
-      })).sort((a, b) => (a.time as number) - (b.time as number));
-      if (ms.length) createSeriesMarkers(series, ms);
-    }
-    chart.timeScale().fitContent();
-    return () => { chart.remove(); chartRef.current = null; };
+    const spot = drawPane(se, data.date, data.bucket_min, {
+      lines: on.map((w) => ({ who: w.key, color: css(w.color, "#a371f7"), points: rows.map((b) => ({ t: b.t, v: b[w.key] })) })),
+      deltas: rows.map((b) => ({ t: b.t, v: b.foreign_delta })),
+      turns: data.turns.filter((t) => t.market === prefs.spot), unit: "억",
+    });
+    const fut = drawPane(fe, data.date, data.bucket_min, {
+      lines: on.map((w) => ({ who: w.key, color: css(w.color, "#a371f7"), points: data.futures.map((b) => ({ t: b.t, v: b[FUT_KEY[w.key]] as number | null })) })),
+      deltas: data.futures.map((b) => ({ t: b.t, v: b.foreign_delta })),
+      turns: data.turns.filter((t) => t.market === "futures"), unit: "계약",
+    });
+    const link = (from: typeof spot, to: typeof spot) => from.chart.subscribeCrosshairMove((p) => {
+      if (p.time === undefined) to.chart.clearCrosshairPosition();
+      else to.chart.setCrosshairPosition(0, p.time, to.anchor);
+    });
+    link(spot, fut);
+    link(fut, spot);
+    return () => { spot.chart.remove(); fut.chart.remove(); };
   }, [data, prefs.spot, prefs.who]);
 
   const supported = data?.supported !== false;
@@ -259,8 +308,13 @@ export default function IntradayFlowView() {
             {summary ?? <span className="muted">아직 장중 수급이 없습니다.</span>}
             {!data.market_open && <span className="badge muted"> {beforeClose() ? "장 시작 전" : "장 마감"}</span>}
           </p>
-          <div className="intraday-chart" ref={box} aria-label="오늘 장중 현물 · 선물 수급 차트" />
-          <p className="muted small">실선 = 현물 누적(억원, 오른쪽 축) · 점선 = 선물 누적(계약, 왼쪽 축) · 막대 = 현물 외국인 {data.bucket_min}분 순매수</p>
+          <PaneHead title={`현물 ${prefs.spot === "kospi" ? "코스피" : "코스닥"}`} unit="억"
+            values={WHO.filter((w) => prefs.who[w.key]).map((w) => ({ who: w.key, v: lastValue(data.spot[prefs.spot], (b) => b[w.key]) }))} />
+          <div className="intraday-chart intraday-chart-pane" ref={spotBox} aria-label="오늘 장중 현물 수급 차트(억원)" />
+          <PaneHead title="코스피200 선물" unit="계약"
+            values={WHO.filter((w) => prefs.who[w.key]).map((w) => ({ who: w.key, v: lastValue(data.futures, (b) => b[FUT_KEY[w.key]] as number | null) }))} />
+          <div className="intraday-chart intraday-chart-pane" ref={futBox} aria-label="오늘 장중 선물 수급 차트(계약)" />
+          <p className="muted small">선 = 주체별 오늘 누적 순매수(현물 억원 · 선물 계약) · 막대 = 외국인 {data.bucket_min}분 순매수 · 화살표 = 외국인 전향</p>
         </>
       )}
       {!data && !failed && <p className="muted small">불러오는 중…</p>}

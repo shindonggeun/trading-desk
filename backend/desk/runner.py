@@ -16,6 +16,7 @@ from typing import Any
 from . import (
     horizons,
     macro_news,
+    outlook,
     playbook,
     risk_regime,
     setup_filter,
@@ -304,6 +305,8 @@ IMPLAUSIBLE = 0.5
 QUOTE_TIMEOUT_SEC = 10.0
 # And for the related instruments (desk.related): one Yahoo download plus a few news lists.
 RELATED_TIMEOUT_SEC = 30.0
+# #437: the outlook's projection (daily levels and bars, mostly cache hits after the run's own)
+OUTLOOK_TIMEOUT_SEC = 30.0
 # #171: how long the graph waits, per horizon, for the slow notes (related instruments, filings,
 # positioning) once the levels are in. Past it the agents start without them; a late related set
 # still reaches the plan. A scalp is worth less a minute later than a swing is.
@@ -395,6 +398,7 @@ class RunManager:
                  oscillator: Callable[[str], Awaitable[str | None]] | None = None,
                  weekly: Callable[[str], Awaitable[str | None]] | None = None,
                  risk: Callable[[str, str | None], dict | None] | None = None,
+                 outlook: Callable[[str, str, float | None, dict | None], Awaitable[dict | None]] | None = None,
                  reuse_minutes: float = 0, rate_limit_cooldown_min: float = RATE_LIMIT_COOLDOWN_MIN) -> None:
         self.levels = levels
         # #171: news and fundamentals reports this fresh are taken over from an earlier run (0 = off)
@@ -423,6 +427,9 @@ class RunManager:
         # #330: rate / dollar regime tips on the run's own ticker (desk.tips.Cache.note, Yahoo in a thread)
         self.tips = tips
         self.summariser = summariser
+        # #437: the daily projection (desk.projection, #299) for (ticker, trade date, price, levels),
+        # frozen with the plan as the run's outlook - None leaves the run without one
+        self.outlook = outlook
         self.lever_analyst = lever_analyst
         self.related = related
         self.prices = prices
@@ -773,6 +780,26 @@ class RunManager:
                                "data": None})
         return {"consensus": summary}
 
+    async def _projection(self, request: RunRequest, price: float | None, sr: dict | None) -> dict | None:
+        """#437: the projection for the outlook, or None (no source, too few bars, a failure, too slow)."""
+        if self.outlook is None:
+            return None
+        try:
+            return await asyncio.wait_for(self.outlook(request.ticker, request.trade_date, price, sr), OUTLOOK_TIMEOUT_SEC)
+        except Exception as exc:  # noqa: BLE001 - incl. timeout: the run ends with its plan
+            log.warning("no outlook for %s: %s", request.ticker, type(exc).__name__)
+            return None
+
+    def _publish_outlook(self, run_id: str, request: RunRequest, plan: dict, proj: dict | None) -> None:
+        """#437: the ``outlook`` event when the projection drew a cone; nothing otherwise."""
+        if not proj or not proj.get("cone"):
+            return
+        try:
+            data = outlook.build(proj, plan, dt.datetime.now(dt.UTC).isoformat(timespec="seconds"), request.trade_date)
+            self._publish(run_id, {"type": "outlook", "agent": "outlook", "content": outlook.render(data), "data": data})
+        except Exception:   # the plan is already done
+            log.exception("outlook for %s failed", request.ticker)
+
     def _publish(self, run_id: str, event: dict) -> None:
         self.store.append_event(run_id, event)
         self.hub.notify(run_id)
@@ -942,6 +969,8 @@ class RunManager:
                     plan["support_resistance"] = sr
                 price = (live or {}).get("price") or (sr or {}).get("last_close")
                 watch.mark("desk_post")
+                # #437: the look ahead is the desk's projection - it runs beside the summary and playbooks
+                ahead = asyncio.ensure_future(self._projection(request, price or plan.get("entry_price"), sr))
                 # #171: the closing summary reads the levels, rating and zones above, nothing below it -
                 # it thinks while the product's playbooks and trade map are built
                 closing = asyncio.ensure_future(   # its own copy: the summariser's thread must not see it grow
@@ -983,6 +1012,8 @@ class RunManager:
                 for error in (plan.get("leverage_analyst_error"), plan.get("consensus_error")):
                     self._note_rate_limit(run_id, error)
                 plan = with_sides(plan)     # #311: long / short view of the levels, conflicts, trigger warnings
+                # #437 first: a run read as done already carries its outlook
+                self._publish_outlook(run_id, request, plan, await ahead)
                 self.store.mark_done(run_id, plan, result.report_path)
                 self._publish(run_id, {"type": "plan", "agent": "portfolio_manager", "data": plan})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "done"})

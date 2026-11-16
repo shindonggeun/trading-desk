@@ -41,6 +41,7 @@ from . import (
     oscillator,
     otp,
     outcome,
+    outlook,
     playbook_live,
     positioning,
     projection,
@@ -353,6 +354,18 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     if runner is None:
         runner = make_fake_runner(settings.fake_delay) if settings.fake_runs else run_tradingagents
 
+    async def run_outlook(ticker: str, trade_date: str, _price: float | None, _sr: dict | None) -> dict:
+        """#437: #299's projection on the daily (swing) frame up to the run's date, whatever the
+        run's horizon - the outlook reads one week and one month ahead."""
+        daily = horizons.get(None)
+        levels = await support_resistance(prices, ticker, trade_date, horizon=daily.id)
+        bars = (await frame_bars(prices, ticker, trade_date, daily))[0]
+        return await asyncio.to_thread(projection.project, levels, bars, outlook.TIMEFRAME, levels.get("reference_price"))
+
+    async def fake_outlook(_ticker: str, _trade_date: str, price: float | None, sr: dict | None) -> dict | None:
+        """DESK_FAKE_RUNS: the projection on a scripted walk around the plan's price (no prices source)."""
+        return outlook.fake_projection(price, sr) if price else None
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         stale = store.fail_unfinished("The server restarted while this run was in progress.")
@@ -365,6 +378,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        related=None if settings.fake_runs else collect_related,
                                        lever_analyst=fake_analyst if settings.fake_runs else llm_analyst,
                                        summariser=fake_summariser if settings.fake_runs else llm_summariser,
+                                       # #437: the run's frozen look ahead (#299's daily projection)
+                                       outlook=fake_outlook if settings.fake_runs else run_outlook,
                                        # world news flow: the background cache below, never fetched in a run
                                        macro=None if settings.fake_runs else macro_news.prompt_note,
                                        tips=None if settings.fake_runs else tip_cache.note,
@@ -788,7 +803,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         run = store.get_run(run_id)
         if not run:
             raise HTTPException(404, "run not found")
-        return run
+        # #437: the look ahead frozen when the run ended (an ``outlook`` event), None before / without one
+        return {**run, "outlook": store.last_event_data(run_id, "outlook")}
 
     @app.get("/api/runs/{run_id}/events")
     def get_events(run_id: str, after: int = 0):

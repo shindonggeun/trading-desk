@@ -15,7 +15,7 @@
   "bps_per_side": 10.0
  },
  "baseline": {
-  "plans": 5018,
+  "plans": 5019,
   "filled": 3507,
   "settled": 3507,
   "marked": 33,
@@ -26,7 +26,7 @@
   "flat": 0,
   "open": 33,
   "waiting": 0,
-  "unfilled": 1511,
+  "unfilled": 1512,
   "invalid": 0,
   "fill_rate": 0.699,
   "t1_first_rate": 0.552,
@@ -38,7 +38,7 @@
  },
  "by_setup": {
   "long:dip_catch": {
-   "plans": 1814,
+   "plans": 1815,
    "filled": 1274,
    "settled": 1274,
    "marked": 6,
@@ -49,7 +49,7 @@
    "flat": 0,
    "open": 6,
    "waiting": 0,
-   "unfilled": 540,
+   "unfilled": 541,
    "invalid": 0,
    "fill_rate": 0.702,
    "t1_first_rate": 0.582,
@@ -150,7 +150,7 @@
    "mfe_atr_median": 0.78
   },
   "long:dip_catch:downtrend": {
-   "plans": 1436,
+   "plans": 1437,
    "filled": 1015,
    "settled": 1015,
    "marked": 3,
@@ -161,9 +161,9 @@
    "flat": 0,
    "open": 3,
    "waiting": 0,
-   "unfilled": 421,
+   "unfilled": 422,
    "invalid": 0,
-   "fill_rate": 0.707,
+   "fill_rate": 0.706,
    "t1_first_rate": 0.599,
    "median_r": 0.056,
    "expectancy_r": -0.057,
@@ -616,7 +616,7 @@
    "mfe_atr_median": 0.7
   },
   "005930.KS": {
-   "plans": 682,
+   "plans": 683,
    "filled": 462,
    "settled": 462,
    "marked": 2,
@@ -627,9 +627,9 @@
    "flat": 0,
    "open": 2,
    "waiting": 0,
-   "unfilled": 220,
+   "unfilled": 221,
    "invalid": 0,
-   "fill_rate": 0.677,
+   "fill_rate": 0.676,
    "t1_first_rate": 0.478,
    "median_r": -0.078,
    "expectancy_r": -0.133,
@@ -820,7 +820,7 @@
    "mfe_atr_median": 0.78
   },
   "valid": {
-   "plans": 1495,
+   "plans": 1496,
    "filled": 1052,
    "settled": 1052,
    "marked": 12,
@@ -831,9 +831,9 @@
    "flat": 0,
    "open": 12,
    "waiting": 0,
-   "unfilled": 443,
+   "unfilled": 444,
    "invalid": 0,
-   "fill_rate": 0.704,
+   "fill_rate": 0.703,
    "t1_first_rate": 0.575,
    "median_r": 0.054,
    "expectancy_r": 0.027,
@@ -844,7 +844,7 @@
  },
  "by_direction": {
   "long:dip_catch:against": {
-   "plans": 1211,
+   "plans": 1212,
    "filled": 869,
    "settled": 869,
    "marked": 6,
@@ -855,13 +855,13 @@
    "flat": 0,
    "open": 6,
    "waiting": 0,
-   "unfilled": 342,
+   "unfilled": 343,
    "invalid": 0,
-   "fill_rate": 0.718,
+   "fill_rate": 0.717,
    "t1_first_rate": 0.548,
    "median_r": 0.027,
    "expectancy_r": -0.075,
-   "expectancy_per_plan_r": -0.054,
+   "expectancy_per_plan_r": -0.053,
    "mae_atr_median": 0.79,
    "mfe_atr_median": 0.75
   },
@@ -1070,10 +1070,10 @@
   "사다리 비중(SHARES) 스윕은 하따(dip_catch)에만 영향 — 박스 하단 · 눌림목은 50/50 고정"
  ],
  "sweep": [],
- "generated_at": "2026-11-15T04:12:37+00:00",
+ "generated_at": "2026-11-16T10:24:53+00:00",
  "by_risk": {
   "long:dip_catch:calm": {
-   "plans": 1511,
+   "plans": 1512,
    "filled": 1069,
    "settled": 1069,
    "marked": 6,
@@ -1084,7 +1084,7 @@
    "flat": 0,
    "open": 6,
    "waiting": 0,
-   "unfilled": 442,
+   "unfilled": 443,
    "invalid": 0,
    "fill_rate": 0.707,
    "t1_first_rate": 0.584,
@@ -1296,7 +1296,7 @@
  "risk_gate": {
   "on": {
    "all": {
-    "plans": 5018,
+    "plans": 5019,
     "filled": 3507,
     "settled": 3507,
     "marked": 33,
@@ -1307,7 +1307,7 @@
     "flat": 0,
     "open": 33,
     "waiting": 0,
-    "unfilled": 1511,
+    "unfilled": 1512,
     "invalid": 0,
     "fill_rate": 0.699,
     "t1_first_rate": 0.552,
@@ -1318,7 +1318,7 @@
     "mfe_atr_median": 0.79
    },
    "valid": {
-    "plans": 1495,
+    "plans": 1496,
     "filled": 1052,
     "settled": 1052,
     "marked": 12,
@@ -1329,9 +1329,9 @@
     "flat": 0,
     "open": 12,
     "waiting": 0,
-    "unfilled": 443,
+    "unfilled": 444,
     "invalid": 0,
-    "fill_rate": 0.704,
+    "fill_rate": 0.703,
     "t1_first_rate": 0.575,
     "median_r": 0.054,
     "expectancy_r": 0.027,
@@ -1340,7 +1340,7 @@
     "mfe_atr_median": 0.81
    },
    "long:dip_catch": {
-    "plans": 1814,
+    "plans": 1815,
     "filled": 1274,
     "settled": 1274,
     "marked": 6,
@@ -1351,7 +1351,7 @@
     "flat": 0,
     "open": 6,
     "waiting": 0,
-    "unfilled": 540,
+    "unfilled": 541,
     "invalid": 0,
     "fill_rate": 0.702,
     "t1_first_rate": 0.582,
@@ -1519,7 +1519,7 @@
   },
   "off": {
    "all": {
-    "plans": 5018,
+    "plans": 5019,
     "filled": 3507,
     "settled": 3507,
     "marked": 31,
@@ -1530,7 +1530,7 @@
     "flat": 0,
     "open": 31,
     "waiting": 0,
-    "unfilled": 1511,
+    "unfilled": 1512,
     "invalid": 0,
     "fill_rate": 0.699,
     "t1_first_rate": 0.556,
@@ -1541,7 +1541,7 @@
     "mfe_atr_median": 0.8
    },
    "valid": {
-    "plans": 1495,
+    "plans": 1496,
     "filled": 1052,
     "settled": 1052,
     "marked": 11,
@@ -1552,9 +1552,9 @@
     "flat": 0,
     "open": 11,
     "waiting": 0,
-    "unfilled": 443,
+    "unfilled": 444,
     "invalid": 0,
-    "fill_rate": 0.704,
+    "fill_rate": 0.703,
     "t1_first_rate": 0.58,
     "median_r": 0.058,
     "expectancy_r": 0.025,
@@ -1563,7 +1563,7 @@
     "mfe_atr_median": 0.81
    },
    "long:dip_catch": {
-    "plans": 1835,
+    "plans": 1836,
     "filled": 1293,
     "settled": 1293,
     "marked": 6,
@@ -1574,9 +1574,9 @@
     "flat": 0,
     "open": 6,
     "waiting": 0,
-    "unfilled": 542,
+    "unfilled": 543,
     "invalid": 0,
-    "fill_rate": 0.705,
+    "fill_rate": 0.704,
     "t1_first_rate": 0.585,
     "median_r": 0.049,
     "expectancy_r": -0.062,
@@ -4172,8 +4172,8 @@
    "long:value_swing": 180
   }
  },
- "commit": "39c64981caa8",
- "rules": "0da77dc71c9f",
+ "commit": "2f845b3d5635",
+ "rules": "631862e90b0c",
  "value_swing": {
   "all": {
    "plans": 199,
@@ -4754,8 +4754,8 @@
      "max_dd_r": 134.927
     },
     "valid": {
-     "plans": 1495,
-     "kept": 1495,
+     "plans": 1496,
+     "kept": 1496,
      "filled": 1052,
      "settled": 1052,
      "t1_first_rate": 0.575,
@@ -4766,7 +4766,7 @@
     },
     "by_direction": {
      "long:dip_catch:against": {
-      "plans": 1210,
+      "plans": 1211,
       "filled": 869,
       "settled": 869,
       "marked": 6,
@@ -4777,7 +4777,7 @@
       "flat": 0,
       "open": 6,
       "waiting": 0,
-      "unfilled": 341,
+      "unfilled": 342,
       "invalid": 0,
       "fill_rate": 0.718,
       "t1_first_rate": 0.548,
@@ -4988,7 +4988,7 @@
     },
     "by_setup": {
      "long:dip_catch": {
-      "plans": 1777,
+      "plans": 1778,
       "filled": 1242,
       "settled": 1242,
       "marked": 6,
@@ -4999,7 +4999,7 @@
       "flat": 0,
       "open": 6,
       "waiting": 0,
-      "unfilled": 535,
+      "unfilled": 536,
       "invalid": 0,
       "fill_rate": 0.699,
       "t1_first_rate": 0.582,
@@ -5125,7 +5125,7 @@
      "max_dd_r": 83.583
     },
     "valid": {
-     "plans": 1495,
+     "plans": 1496,
      "kept": 87,
      "filled": 59,
      "settled": 59,
@@ -5452,7 +5452,7 @@
      "max_dd_r": 91.509
     },
     "valid": {
-     "plans": 1495,
+     "plans": 1496,
      "kept": 87,
      "filled": 59,
      "settled": 59,

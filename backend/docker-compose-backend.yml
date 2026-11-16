@@ -18,6 +18,9 @@ x-backend-environment: &backend_environment
   DESK_FAKE_RUNS: ${DESK_FAKE_RUNS:-false}
   DESK_FAKE_DELAY: ${DESK_FAKE_DELAY:-0.6}
   DESK_MAX_CONCURRENT_RUNS: ${DESK_MAX_CONCURRENT_RUNS:-1}
+  # AI 채팅이 고를 수 있는 모델(쉼표 목록)과 기본값(#414). 비면 gpt-6-luna,gpt-6-sol · 목록 첫 항목
+  DESK_CHAT_MODELS: ${DESK_CHAT_MODELS:-}
+  DESK_CHAT_MODEL: ${DESK_CHAT_MODEL:-}
   # 모델 속도 제한(429) 뒤 이 시간(분) 동안은 1개씩만 돌린다(#171)
   DESK_RATE_LIMIT_COOLDOWN_MIN: ${DESK_RATE_LIMIT_COOLDOWN_MIN:-30}
   # 채팅 모델(#404) — run 과 따로. 등급 quick | deep(기본 deep), 비우면 그 등급의 TRADINGAGENTS_* 값

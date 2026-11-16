@@ -291,6 +291,7 @@ def build_messages(history: list[dict], text: str, ticker: str | None, dropped: 
     return out
 
 
+<<<<<<< HEAD
 def chat_config(base: dict, tier: str, model: str | None = None, effort: str | None = None) -> dict:
     """#404 the chat's TradingAgents config: a copy of ``base`` with the chat's own model id and
     reasoning effort on its tier. ``base`` (the runs') is left as it is."""
@@ -300,6 +301,27 @@ def chat_config(base: dict, tier: str, model: str | None = None, effort: str | N
     if effort:
         config[f"{tier}_think_reasoning_effort"] = effort
     return config
+=======
+# --- #414: which model answers ------------------------------------------------------------------------
+
+MODEL_LABELS = {
+    "gpt-6-luna": "Luna · 빠름", "gpt-5.6-luna": "Luna 5.6 · 빠름", "gpt-5.6-terra": "Terra · 균형",
+    "gpt-6-sol": "Sol · 고급 추론", "gpt-6-astra": "Astra · 최고 추론",
+}
+
+
+def model_options(allowed: list[str], default: str = "") -> dict:
+    """The chat window's choices: the allowed ids (in order, once each) with labels, and the default
+    (``default`` when it is allowed, else the first)."""
+    ids = list(dict.fromkeys(m for m in allowed if m))
+    return {"default": default if default in ids else (ids[0] if ids else None),
+            "items": [{"id": m, "label": MODEL_LABELS.get(m, m)} for m in ids]}
+
+
+class LangChainChatter:
+    """The configured quick model (or the one picked, #414) with the desk's tools bound; tokens are
+    emitted as they come."""
+>>>>>>> 138a0e4 ([BE] feat: AI 채팅이 허용 목록의 모델을 골라 답하고 채팅 기본 모델을 분석 모델과 따로 둔다 (#414))
 
 
 def model_of(chatter: Any) -> str | None:
@@ -329,11 +351,19 @@ class LangChainChatter:
     def model_name(self) -> str | None:
         return self.config().get(f"{self.tier}_think_llm")
 
-    async def __call__(self, messages: list[dict], tools: dict[str, Tool], emit: Emit) -> tuple[str, list[dict]]:
+    async def __call__(self, messages: list[dict], tools: dict[str, Tool], emit: Emit,
+                       model: str | None = None) -> tuple[str, list[dict]]:
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
         from tradingagents.llm_clients import create_tier_client
 
+<<<<<<< HEAD
         llm = create_tier_client(self.config(), self.tier, timeout=self.timeout, max_retries=0).get_llm()
+=======
+        config = build_default_config()
+        if model:
+            config["quick_think_llm"] = model      # the same provider, plan and endpoint; only the model
+        llm = create_tier_client(config, "quick", timeout=self.timeout, max_retries=0).get_llm()
+>>>>>>> 138a0e4 ([BE] feat: AI 채팅이 허용 목록의 모델을 골라 답하고 채팅 기본 모델을 분석 모델과 따로 둔다 (#414))
         # #339: one call at a time - parallel calls streamed interleaved can lose their arguments.
         # Once the lookups' budget (rounds, calls or time) is spent, the last round may not call any.
         specs = [t.spec() for t in tools.values()]
@@ -389,11 +419,16 @@ class LangChainChatter:
 class FakeChatter:
     """DESK_FAKE_RUNS: one real lookup through the same tools, then a scripted answer in pieces."""
 
+<<<<<<< HEAD
     @staticmethod
     def model_name() -> str:
         return "fake"
 
     async def __call__(self, messages: list[dict], tools: dict[str, Tool], emit: Emit) -> tuple[str, list[dict]]:
+=======
+    async def __call__(self, messages: list[dict], tools: dict[str, Tool], emit: Emit,
+                       model: str | None = None) -> tuple[str, list[dict]]:
+>>>>>>> 138a0e4 ([BE] feat: AI 채팅이 허용 목록의 모델을 골라 답하고 채팅 기본 모델을 분석 모델과 따로 둔다 (#414))
         question = messages[-1]["content"]
         found = re.search(r"\(관심 종목: ([^)]+)\)", question)
         name, args = ("playbooks", {"ticker": found.group(1)}) if found and "playbooks" in tools else ("macro_brief", {})
@@ -413,4 +448,4 @@ class FakeChatter:
         return text, used
 
 
-Chatter = Callable[[list[dict], dict[str, Tool], Emit], Awaitable[tuple[str, list[dict]]]]
+Chatter = Callable[..., Awaitable[tuple[str, list[dict]]]]   # (messages, tools, emit, model=None)

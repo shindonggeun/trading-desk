@@ -119,6 +119,16 @@ input[type=checkbox], input[type=radio] { width: auto; accent-color: var(--text)
 .topbar-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 .topbar-right .logout { background: none; color: var(--muted); padding: 3px 4px; font-size: var(--fs-s); font-weight: 500; }
 .topbar-right .logout:hover { color: var(--text); }
+/* #451 헤더 아래 안내: 연결 없음 · 앱으로 설치(닫으면 기억) */
+.app-notice {
+  margin: 8px max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
+  padding: 8px 12px; border-radius: 8px; font-size: 13px; line-height: 1.5;
+}
+.app-notice.notice-info { background: var(--surface-2); color: var(--text); }
+.app-notice.notice-warn { background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.install-hint-row { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; }
+.install-hint-actions { display: flex; align-items: center; gap: 12px; }
+.install-hint .install-steps { margin: 8px 0 2px; }
 /* #341 대메뉴(한 줄) + 지금 묶음의 하위 메뉴(헤더 둘째 줄) — 설정은 오른쪽 위 톱니 */
 .topbar { flex-wrap: wrap; row-gap: 0; }
 .topbar .nav-main a { font-weight: 600; }
@@ -310,6 +320,10 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .login-links { display: flex; justify-content: space-between; gap: 8px; }
 .topbar nav { display: flex; gap: 16px; }
 .settings-row .pill { white-space: nowrap; flex-shrink: 0; }
+/* #451 앱으로 설치: iOS 안내 순서 · 공유 버튼 그림 */
+.install-steps { margin: 0; padding-left: 22px; display: grid; gap: 6px; font-size: 14px; line-height: 1.6; }
+.install-share { vertical-align: -3px; color: var(--accent); }
+.install-app .settings-notice.notice-info { background: var(--surface-2); color: var(--muted); }
 
 /* trade review (#48) */
 .review, .backtest, .weekly-map, .charts-page, .tips-page, .cal-page, .chat-page { padding: 20px; display: grid; gap: 16px; }

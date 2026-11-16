@@ -19,6 +19,7 @@ import Charts from "./pages/Charts";
 import CalendarView from "./pages/CalendarView";
 import Chat from "./pages/Chat";
 import ChatWidget from "./components/ChatWidget";
+import AppNotices from "./components/AppNotices";
 import FlowAlertToast, { FLOW_ROUTE } from "./components/FlowAlertToast";
 import { resetFavorites } from "./favorites";
 
@@ -138,6 +139,8 @@ export default function App() {
           )}
         </div>
       </header>
+      {/* #451 연결 없음 · 앱으로 설치 안내 */}
+      <AppNotices />
 
       {user === undefined ? null : user === null ? (
         <LoginForm onLoggedIn={(name) => { setOffline(false); setUser(name); }} />

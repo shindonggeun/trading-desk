@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { chatApi, chatError, sendChat, toolLabel, toolSummary } from "../chat";
-import type { ChatMessageRow, ChatThread, ChatTool } from "../types";
+import { chatApi, chatError, pickedModel, savePickedModel, sendChat, toolLabel, toolSummary } from "../chat";
+import { ApiError } from "../api";
+import type { ChatMessageRow, ChatModels, ChatThread, ChatTool } from "../types";
 
 /**
  * #315 AI 채팅 본체 — 메뉴 "채팅" 화면과 옆 패널이 같이 쓴다. 왼쪽(패널은 위 선택 상자) 대화 목록, 오른쪽 말풍선.
@@ -116,8 +117,16 @@ export default function ChatCore({ ticker = null, run = null, prompt = null, com
   const abort = useRef<AbortController | null>(null);
   const end = useRef<HTMLDivElement>(null);
 
+  // #415 답할 모델 — 목록을 못 받으면(예전 서버 · 오류) 고르기를 숨기고 서버 기본으로 보낸다
+  const [models, setModels] = useState<ChatModels | null>(null);
+  const [model, setModel] = useState<string | null>(null);
+
   const loadThreads = useCallback(() => chatApi.threads().then((r) => { setThreads(r.items); return r.items; }, (e) => { setError(chatError(e)); setThreads([]); return []; }), []);
   useEffect(() => { loadThreads(); }, [loadThreads]);
+  useEffect(() => {
+    chatApi.models().then((m) => { setModels(m); setModel(pickedModel(m)); }, () => setModels(null));
+  }, []);
+  const pick = (id: string) => { setModel(id); savePickedModel(id); };
   useEffect(() => { setDraft(prompt ?? ""); }, [prompt]);
 
   const open = useCallback((id: string | null) => {
@@ -175,9 +184,11 @@ export default function ChatCore({ ticker = null, run = null, prompt = null, com
           onDone?.();
         }
         setLive(acc);
-      });
+      }, models ? model : null);
     } catch (e) {
       setError(chatError(e));
+      // 고른 모델이 목록에서 빠졌으면(422) 기본으로 되돌린다
+      if (e instanceof ApiError && e.status === 422 && /model/.test(e.message) && models?.default) pick(models.default);
       // 답이 하나도 오기 전에 거절됐으면(429 · 409 …) 내 말풍선을 거두고 입력창에 되돌린다
       if (!acc.text && !acc.tools.length && !(e instanceof DOMException && e.name === "AbortError")) {
         setMessages((old) => old.filter((m) => m.id !== mine.id));
@@ -240,6 +251,15 @@ export default function ChatCore({ ticker = null, run = null, prompt = null, com
             <button type="button" className="secondary ch-drawer-btn" aria-expanded={drawer} onClick={() => setDrawer((v) => !v)}>대화 목록</button>
           )}
           {ticker && !compact && <span className="pill" title="질문과 함께 보내는 종목 문맥">{ticker}{run ? " · 분석" : ""}</span>}
+          {models && models.items.length > 0 && (
+            <>
+              <label className="sr-only" htmlFor={compact ? "ch-model-panel" : "ch-model"}>답할 모델</label>
+              <select id={compact ? "ch-model-panel" : "ch-model"} className="ch-model" value={model ?? ""} disabled={busy}
+                title="답할 모델 — 무거운 모델일수록 느리고 플랜 사용량이 큽니다" onChange={(e) => pick(e.target.value)}>
+                {models.items.map((m) => <option key={m.id} value={m.id}>{m.label}{m.id === models.default ? " (기본)" : ""}</option>)}
+              </select>
+            </>
+          )}
         </div>
         <div className="ch-log" aria-live="polite">
           {!current && messages.length === 0 && !busy && (

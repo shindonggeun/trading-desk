@@ -1,5 +1,5 @@
 import { ApiError, Unauthorized, api } from "./api";
-import type { ChatEvent, ChatMessageRow, ChatThread } from "./types";
+import type { ChatEvent, ChatMessageRow, ChatModels, ChatThread } from "./types";
 
 /**
  * #315 AI 채팅(#314 /api/chat/*) — 대화 목록 · 메시지는 보통 JSON, 보내기는 POST 응답을 SSE 로 읽는다.
@@ -12,7 +12,28 @@ export const chatApi = {
   remove: (id: string) => api.raw<void>(`/api/chat/threads/${encodeURIComponent(id)}`, { method: "DELETE" }),
   messages: (id: string) =>
     api.raw<{ thread: ChatThread; items: ChatMessageRow[] }>(`/api/chat/threads/${encodeURIComponent(id)}/messages`),
+  /** #415 고를 수 있는 모델(#414) */
+  models: () => api.raw<ChatModels>("/api/chat/models"),
 };
+
+/** #415 마지막으로 고른 모델 — 이 브라우저에만. 목록에 없어졌으면 기본으로 */
+const MODEL_KEY = "desk.chat.model";
+export function pickedModel(models: ChatModels): string | null {
+  let saved: string | null = null;
+  try {
+    saved = localStorage.getItem(MODEL_KEY);
+  } catch {
+    /* 기억만 못 한다 */
+  }
+  return models.items.some((m) => m.id === saved) ? saved : models.default;
+}
+export function savePickedModel(id: string) {
+  try {
+    localStorage.setItem(MODEL_KEY, id);
+  } catch {
+    /* 기억만 못 한다 */
+  }
+}
 
 /** 서버 오류를 사람이 읽을 한국어로 — 원문 예외 문자열은 그대로 내지 않는다 */
 export function chatError(e: unknown): string {
@@ -22,7 +43,7 @@ export function chatError(e: unknown): string {
     if (e.status === 429) return e.message && /[가-힣]/.test(e.message) ? e.message : "모델 속도 제한 중입니다 — 잠시 뒤 다시 보내세요.";
     if (e.status === 409) return /[가-힣]/.test(e.message) ? e.message : "이미 답을 쓰는 중이거나 대화가 너무 깁니다. 새 대화를 여세요.";
     if (e.status === 404) return "대화를 찾을 수 없습니다(지워졌을 수 있음).";
-    if (e.status === 422) return "질문은 1~2000자로 보내세요.";
+    if (e.status === 422) return /model/.test(e.message) ? "고른 모델을 지금은 쓸 수 없습니다 — 기본 모델로 바꿨으니 다시 보내세요." : "질문은 1~2000자로 보내세요.";
     return `서버가 요청을 처리하지 못했습니다(${e.status}).`;
   }
   return "연결이 끊겼습니다. 대화를 다시 불러오면 저장된 데까지 보입니다.";
@@ -30,12 +51,12 @@ export function chatError(e: unknown): string {
 
 /** 질문을 보내고 프레임마다 onEvent — done · error 뒤 끝난다 */
 export async function sendChat(thread: string, text: string, ticker: string | null, signal: AbortSignal,
-  onEvent: (e: ChatEvent) => void): Promise<void> {
+  onEvent: (e: ChatEvent) => void, model: string | null = null): Promise<void> {
   const res = await fetch(`/api/chat/threads/${encodeURIComponent(thread)}/messages`, {
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify(ticker ? { text, ticker } : { text }),
+    body: JSON.stringify({ text, ...(ticker ? { ticker } : {}), ...(model ? { model } : {}) }),
     signal,
   });
   if (res.status === 401) throw new Unauthorized("login required");

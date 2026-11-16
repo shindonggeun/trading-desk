@@ -1399,6 +1399,8 @@ export interface ChatMessageRow {
   model?: string | null;
   created_at: string;
 }
+/** #415 GET /api/chat/models (#414) — 채팅창에서 고를 수 있는 모델과 기본값 */
+export interface ChatModels { default: string | null; items: { id: string; label: string }[] }
 export type ChatEvent =
   | { type: "tool_call"; name: string; args: Record<string, unknown> | null }
   | { type: "tool_result"; name: string; summary: string | null; links?: ChatLink[] }

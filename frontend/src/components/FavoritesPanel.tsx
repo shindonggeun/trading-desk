@@ -135,12 +135,15 @@ function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEar
         </span>
       </a>
       <LongShortBar it={ls} />
-      {earnIn != null && (
-        <button type="button" className="fav-earn small" onClick={onEarn} aria-label={`${name} 실적 프리뷰 열기`}>
-          실적 {earnIn === 0 ? "오늘" : `D-${earnIn}`}
-        </button>
-      )}
-      <button type="button" className="link small fav-info" aria-label={`${name} 종목 정보`} onClick={() => onInfo(ticker)}>정보</button>
+      {/* #433 실적 칩과 종목 정보 링크를 한 줄에 — "정보" 가 홀로 떠 무엇의 정보인지 모호했다 */}
+      <div className="fav-foot">
+        {earnIn != null && (
+          <button type="button" className="fav-earn small" onClick={onEarn} aria-label={`${name} 실적 프리뷰 열기`}>
+            실적 {earnIn === 0 ? "오늘" : `D-${earnIn}`}
+          </button>
+        )}
+        <button type="button" className="link small fav-info" aria-label={`${name} 종목 정보`} onClick={() => onInfo(ticker)}>종목 정보 ›</button>
+      </div>
       {editing && (
         <span className="fav-tools" role="group" aria-label={`${name} 편집`}>
           <button type="button" className="dash-move" disabled={first} aria-label={`${name} 앞으로`} onClick={() => moveFavorite(ticker, -1)}>←</button>

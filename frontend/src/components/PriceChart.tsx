@@ -26,6 +26,7 @@ import {
   buyZoneDrawing, keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands, stopInsideZone,
   volumeProfileDrawing, withAlpha, zoneEdges,
 } from "./chartBands";
+import { levelsContradict } from "../listLevels";
 import type { BottomZone, ChartPattern, FibLevel, Fibonacci, Plan, Positioning, Projection, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
 
@@ -735,12 +736,16 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         ? [[optionData.max_pain.strike, "맥스페인", css("--warn", "#e5a23a"), LineStyle.SparseDotted] as [number, string, string, LineStyle]]
         : []),
     ] : [];
+    // #436 진입을 사이에 두지 않는 등급상 타점(손절 = 목표 등)은 그리지 않는다 — 조건선 · 띠는 그대로
+    const ownLevels: [number | null | undefined, string, string, LineStyle][] = levelsContradict(plan) ? [] : [
+      [plan?.entry_price, "진입", css("--accent", "#c9d1db"), LineStyle.Solid],
+      // #311 손절 = 손실색 · 목표 = 이익색(롱 · 숏 어느 관점이든 같은 뜻)
+      [plan?.stop_loss, "손절", css("--danger", "#ff6a3d"), LineStyle.Solid],
+      [plan?.price_target, "목표", css("--ok", "#3fb68b"), LineStyle.Solid],
+    ];
     const planLines: [number | null | undefined, string, string, LineStyle][] = show.levels
       ? [
-          [plan?.entry_price, "진입", css("--accent", "#c9d1db"), LineStyle.Solid],
-          // #311 손절 = 손실색 · 목표 = 이익색(롱 · 숏 어느 관점이든 같은 뜻)
-          [plan?.stop_loss, "손절", css("--danger", "#ff6a3d"), LineStyle.Solid],
-          [plan?.price_target, "목표", css("--ok", "#3fb68b"), LineStyle.Solid],
+          ...ownLevels,
           ...(extraLines ?? []).map(
             (l): [number, string, string, LineStyle] => [l.price, l.label, l.color, l.dashed ? LineStyle.Dotted : LineStyle.Solid],
           ),
@@ -1180,10 +1185,11 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   }, [drawn, srShown, srSource, fib, vp, trendDrawn]);
 
   const currency = isKorean(ticker) ? "원" : "달러";
-  const levels = [...(plan ? [plan.entry_price, plan.stop_loss, plan.price_target] : []), ...(extraLines ?? []).map((l) => l.price)];
+  const planShown = !!plan && !levelsContradict(plan);   // #436 모순이라 그리지 않은 값은 경고 · 범위 안내에서도 뺀다
+  const levels = [...(plan && planShown ? [plan.entry_price, plan.stop_loss, plan.price_target] : []), ...(extraLines ?? []).map((l) => l.price)];
   const hasLevels = levels.some((v) => v != null);
   // #321 계획 손절이 지지 구역 안쪽이면 경고 — 그 분석이 본 레벨(없으면 지금 레벨)로
-  const stopWarn = show.levels && plan ? stopInsideZone(plan.stop_loss, plan.entry_price, sr) : null;
+  const stopWarn = show.levels && plan && planShown ? stopInsideZone(plan.stop_loss, plan.entry_price, sr) : null;
   const outOfRange = show.levels && !!drawn && levels.some((v) => v != null && Math.abs(v - drawn.lastClose) / drawn.lastClose > AUTOSCALE_MAX_GAP);
   // 보관 한도 안내는 분봉일 때만 — 년봉은 늘 요청보다 적게 오지만 한도 탓이 아니다.
   const limited = candles?.truncated && candles.history_limit_days != null ? candles.history_limit_days : null;

@@ -3,6 +3,7 @@
  * lightweight-charts 에는 가격 구간을 칠하는 시리즈가 없어서, 캔들 시리즈에 붙는 작은 플러그인으로 그린다.
  * 띠는 축 라벨을 달지 않고 왼쪽 안쪽에 작은 글자 — 오른쪽 축은 진입 · 손절 · 목표만 쓴다.
  */
+import { price } from "../format";
 import {
   type IChartApi,
   type IPriceLine,
@@ -326,7 +327,7 @@ export function planBands(plan: Plan | null, from: Time | null, colors: { loss: 
 }
 
 /**
- * 오른쪽 축의 가까운 라벨은 하나로 — 위 라벨에 이름을 합치고 아래 것은 축 라벨을 끈다. 좌표는 줌 · 이동 · 새 봉 ·
+ * 오른쪽 축의 가까운 라벨은 하나로 — 위 라벨에 이름(값이 다르면 "진입 8.03" 처럼 제 가격까지)을 합치고 아래 것은 축 라벨을 끈다. 좌표는 줌 · 이동 · 새 봉 ·
  * 늦게 온 데이터로 바뀌니, 원래 제목 · 표시를 기억해 두고 보는 범위 · 크기가 바뀔 때와 1초마다 다시 계산한다
  * (바뀐 것만 적용 — 같은 값이면 다시 그리지 않는다). 돌려준 함수로 멈춘다(차트가 살아 있을 때만 구독을 푼다).
  */
@@ -345,7 +346,10 @@ export function keepAxisLabelsApart(chart: IChartApi, series: ISeriesApi<SeriesT
     for (const p of placed) {
       if (keep && p.y - keep.y < minGapPx) {
         const k = want.get(keep.o.line)!;
-        k.title = [k.title, p.o.title].filter(Boolean).join(" · ");
+        // #436 축 라벨의 숫자는 위 선의 가격 — 값이 다른 선은 제 가격을 붙여 한 값처럼 읽히지 않게
+        const own = p.o.line.options().price;
+        const tag = p.o.title && price(own) !== price(keep.o.line.options().price) ? `${p.o.title} ${price(own)}` : p.o.title;
+        k.title = [k.title, tag].filter(Boolean).join(" · ");
         want.set(p.o.line, { title: "", visible: false });
       } else {
         keep = p;

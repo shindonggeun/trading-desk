@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { price, STATUS_LABEL, time } from "../format";
 import { BIAS, HORIZON, OPINION, OUTCOME, RATING, term } from "../korean";
+import { listLevels } from "../listLevels";
 import type { Plan, Run, RunPage } from "../types";
 import { BiasBadge, RatingText } from "./PlanCard";
 
@@ -138,6 +139,7 @@ export default function RunsCard() {
             <tbody role="rowgroup">
               {runs.map((r) => {
                 const label = r.options.name ? `${r.options.name}(${r.ticker})` : r.ticker;
+                const lv = listLevels(r.plan);
                 return (
                 <tr role="row" key={r.id} onClick={() => (window.location.hash = `#/runs/${r.id}`)}>
                   <td role="cell" className="ticker stack-wide" data-label="종목">
@@ -156,10 +158,21 @@ export default function RunsCard() {
                         {OUTCOME[r.outcome_status].ko}
                       </span>
                     )}</> : "—"}</td>
-                  <td role="cell" className="num" data-label="진입">{price(r.plan?.entry_price)}</td>
-                  <td role="cell" className="num" data-label="손절">{price(r.plan?.stop_loss)}</td>
-                  <td role="cell" className="num" data-label="목표">{price(r.plan?.price_target)}</td>
-                  <td role="cell" className="num" data-label="손익비">{r.plan?.reward_risk ?? "—"}</td>
+                  {/* #430 데스크 계획 값(상세와 같은 숫자), 없으면 참고 값 · 관망 조건가, 모순이면 숨김 */}
+                  <td role="cell" className="num" data-label="진입">
+                    {lv.kind === "watch" && lv.triggers ? (
+                      <span className="small" title="관망 — 이 가격을 넘거나 깨면 그때 진입">
+                        {[lv.triggers.long != null && `롱 ${price(lv.triggers.long)}↑`, lv.triggers.short != null && `숏 ${price(lv.triggers.short)}↓`].filter(Boolean).join(" · ")}
+                      </span>
+                    ) : lv.kind === "conflict" ? (
+                      <span className="muted small" title="등급상 타점이 방향과 맞지 않아(손절 = 목표 등) 숨겼습니다. 상세 화면의 데스크 계획을 보세요">값 모순</span>
+                    ) : (
+                      <>{price(lv.entry)}{lv.ref && <span className="muted small" title="지금 지시가 아닌 참고 값"> (참고)</span>}</>
+                    )}
+                  </td>
+                  <td role="cell" className="num" data-label="손절">{price(lv.stop)}</td>
+                  <td role="cell" className="num" data-label="목표">{price(lv.target)}</td>
+                  <td role="cell" className="num" data-label="손익비">{lv.rr ?? "—"}</td>
                   <td role="cell" data-label="상태"><span className={`status status-${r.status}`}>{STATUS_LABEL[r.status]}</span></td>
                   <td role="cell" className="muted" data-label="요청">{time(r.created_at)}</td>
                   <td role="cell" className="stack-action">

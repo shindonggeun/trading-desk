@@ -21,6 +21,18 @@ def _list(name: str) -> list[str]:
     return [part.strip() for part in os.getenv(name, "").split(",") if part.strip()]
 
 
+def _tier(raw: str | None) -> str:
+    tier = (raw or "").strip().lower()
+    return tier if tier in ("quick", "deep") else "deep"
+
+
+def _effort(raw: str | None) -> str:
+    """A reasoning effort the OpenAI/ChatGPT API takes, else empty (= the tier's own): a typo must
+    not fail every chat answer with a 400."""
+    effort = (raw or "").strip().lower()
+    return effort if effort in ("minimal", "low", "medium", "high", "xhigh") else ""
+
+
 @dataclass(frozen=True)
 class Settings:
     # sqlite:///data/desk.db locally; postgresql+psycopg://user:pw@host:5432/db?options=-csearch_path%3Ddesk
@@ -34,6 +46,12 @@ class Settings:
     # After the provider's rate limit (HTTP 429), one run at a time for this many minutes.
     rate_limit_cooldown_min: float = field(
         default_factory=lambda: float(os.getenv("DESK_RATE_LIMIT_COOLDOWN_MIN") or "30"))
+    # #404 the desk chat's model, apart from the runs': its TradingAgents tier (quick | deep, default
+    # deep - an answer weighs several lookups), and optionally its own model id and reasoning effort.
+    # Empty = the tier's TRADINGAGENTS_*_THINK_LLM / *_REASONING_EFFORT. The runs never read these.
+    chat_model_tier: str = field(default_factory=lambda: _tier(os.getenv("DESK_CHAT_MODEL_TIER")))
+    chat_llm: str = field(default_factory=lambda: os.getenv("DESK_CHAT_LLM", "").strip())
+    chat_reasoning_effort: str = field(default_factory=lambda: _effort(os.getenv("DESK_CHAT_REASONING_EFFORT")))
     # #171: a run of the same ticker, day, horizon and language within this many minutes reuses the
     # news and fundamentals reports of the earlier one (price and technical work is always fresh). 0 = off.
     reuse_reports_min: float = field(default_factory=lambda: float(os.getenv("DESK_REUSE_REPORTS_MIN") or "0"))

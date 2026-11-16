@@ -115,3 +115,62 @@ def test_a_spent_lookup_budget_ends_with_an_answer_not_another_call(monkeypatch)
 def test_the_rules_ask_for_the_tickers_numbers_before_a_lean():
     assert "quote · levels · playbooks" in chat.SYSTEM and "판단 보류" in chat.SYSTEM
     assert chat.MAX_TOOL_ROUNDS > chat.MAX_TOOL_CALLS
+
+
+def test_the_chat_takes_its_own_tier_model_and_effort_and_leaves_the_runs_config_alone(monkeypatch):
+    """#404: DESK_CHAT_* pick the chat's client; the runs' config (and so the runs) stay as they are."""
+    runs = {"llm_provider": "chatgpt", "quick_think_llm": "luna", "deep_think_llm": "sol",
+            "quick_think_reasoning_effort": None, "deep_think_reasoning_effort": "medium"}
+    made: list[tuple[dict, str]] = []
+    monkeypatch.setattr(default_config, "build_default_config", lambda: dict(runs))
+
+    def create_tier_client(config, tier, **_k):
+        made.append((config, tier))
+        return _Client()
+
+    monkeypatch.setattr(llm_clients, "create_tier_client", create_tier_client)
+
+    asyncio.run(chat.LangChainChatter()(chat.build_messages([], "거시?", None, False), {}, lambda _e: None))
+    assert made[-1][1] == "deep" and made[-1][0]["deep_think_llm"] == "sol"            # default: deep tier as set
+    assert chat.LangChainChatter().model_name() == "sol"
+
+    chatter = chat.LangChainChatter(tier="deep", model="sol-pro", effort="high")
+    asyncio.run(chatter(chat.build_messages([], "거시?", None, False), {}, lambda _e: None))
+    config, tier = made[-1]
+    assert tier == "deep" and config["deep_think_llm"] == "sol-pro" and config["deep_think_reasoning_effort"] == "high"
+    assert chatter.model_name() == "sol-pro"
+
+    quick = chat.LangChainChatter(tier="quick")
+    asyncio.run(quick(chat.build_messages([], "거시?", None, False), {}, lambda _e: None))
+    assert made[-1][1] == "quick" and quick.model_name() == "luna"
+    assert chat.LangChainChatter(tier="nonsense").tier == "deep"
+    # the runs' config was copied, never changed
+    assert runs == {"llm_provider": "chatgpt", "quick_think_llm": "luna", "deep_think_llm": "sol",
+                    "quick_think_reasoning_effort": None, "deep_think_reasoning_effort": "medium"}
+
+
+class _Client:
+    def get_llm(self):
+        class Llm:
+            def bind_tools(self, *_a, **_k):
+                return self
+
+            async def astream(self, _convo):
+                yield AIMessageChunk(content="답")
+
+        return Llm()
+
+
+def test_the_chat_settings_fall_back_instead_of_failing(monkeypatch):
+    """#404: a bad tier is deep, a misspelt effort is empty (the tier's own), an empty model is None."""
+    from desk.settings import Settings
+
+    monkeypatch.setenv("DESK_CHAT_MODEL_TIER", "Quick ")
+    monkeypatch.setenv("DESK_CHAT_REASONING_EFFORT", "HIGH")
+    monkeypatch.setenv("DESK_CHAT_LLM", "")
+    s = Settings()
+    assert (s.chat_model_tier, s.chat_reasoning_effort, s.chat_llm) == ("quick", "high", "")
+    monkeypatch.setenv("DESK_CHAT_MODEL_TIER", "fast")
+    monkeypatch.setenv("DESK_CHAT_REASONING_EFFORT", "hgih")
+    s = Settings()
+    assert (s.chat_model_tier, s.chat_reasoning_effort) == ("deep", "")

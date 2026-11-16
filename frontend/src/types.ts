@@ -1376,13 +1376,15 @@ export interface ChatMessageRow {
   role: "user" | "assistant";
   content: string;
   tools: ChatTool[];
+  /** #404 답을 쓴 모델 이름(예전 답 · 내 말은 null) */
+  model?: string | null;
   created_at: string;
 }
 export type ChatEvent =
   | { type: "tool_call"; name: string; args: Record<string, unknown> | null }
   | { type: "tool_result"; name: string; summary: string | null }
   | { type: "token"; text: string }
-  | { type: "done"; message_id: string; user_message_id: string }
+  | { type: "done"; message_id: string; user_message_id: string; model?: string | null }
   | { type: "error"; message: string };
 
 /** #332 GET /api/tips (#330) — 금리 · 달러 국면과 국면별 매매 팁 */

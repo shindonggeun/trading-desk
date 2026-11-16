@@ -22,7 +22,7 @@
 - [ ] `ruff check` · `pytest` · `npm run build` 를 돌렸나요?
 - [ ] 인증 · 세션 · 브로커 키를 건드렸다면 `security-reviewer` 검토를 받았나요?
 - [ ] DB 스키마를 바꿨다면 Alembic 리비전을 추가하고 아래 `DB 마이그레이션` 절을 채웠나요?
-- [ ] 계획 규칙(`desk/backtest.py` 가 import 하는 모듈)을 바꿨다면 백테스트 스냅샷(`desk/data/backtest/*.json`)을 다시 만들었나요? 안 만들면 백테스트 화면에 "오래된 스냅샷"이 뜹니다(`desk/backtest_reports.py` 머리말의 명령).
+- [ ] 계획 규칙(`desk/backtest.py` 가 import 하는 모듈, 가격 · 수급 · 뉴스 자료 모듈은 빼고 — `backtest_reports.DATA_MODULES`)을 바꿨다면 백테스트 스냅샷(`desk/data/backtest/*.json`)을 다시 만들었나요? 안 만들면 백테스트 화면에 "오래된 스냅샷"이 뜹니다(`desk/backtest_reports.py` 머리말의 명령).
 - [ ] 토스 키 · 계좌 정보 · 비밀번호 · 세션 토큰 · 서버 `.env` 값이 커밋에 섞이지 않았나요?
 - [ ] 새 환경 변수가 생겼다면 `.env.example` 에 이름만 추가하고 참고 사항에 `서버 .env 추가 필요: KEY` 를 적었나요?
 

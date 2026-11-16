@@ -14,6 +14,7 @@ import type { ChatMessageRow, ChatThread, ChatTool } from "../types";
  */
 
 const SAFE = /^(https?:\/\/|#\/)/i;
+const SAFE_WEB = /^https?:\/\//i;   // #403 기사 링크는 밖으로만(서버도 걸렀지만 한 번 더)
 const MD: Components = {
   a: ({ href, children }) => {
     if (!href || !SAFE.test(href)) return <span>{children}</span>;
@@ -49,13 +50,24 @@ function Tools({ tools }: { tools: (ChatTool & { pending?: boolean })[] }) {
     <div className="ch-tools" aria-label="데스크 숫자(도구 조회)">
       {tools.map((t, i) => {
         const s = toolSummary(t.summary);
+        const links = (t.links ?? []).filter((l) => SAFE_WEB.test(l.url));
+        const line = links.length ? `기사 ${links.length}건` : s.line;
         return (
           <details key={`${t.name}-${i}`} className={`ch-tool${t.pending ? " ch-tool-busy" : ""}${s.error ? " ch-tool-err" : ""}`}>
             <summary>
-              <span aria-hidden>{t.pending ? "⏳" : s.error ? "⚠" : "📊"}</span> {toolLabel(t.name, t.args)}
-              {t.pending ? " 조회 중…" : <span className="ch-tool-line"> — {s.line}</span>}
+              <span aria-hidden>{t.pending ? "⏳" : s.error ? "⚠" : links.length ? "📰" : "📊"}</span> {toolLabel(t.name, t.args)}
+              {t.pending ? " 조회 중…" : <span className="ch-tool-line"> — {line}</span>}
             </summary>
-            {s.raw && <pre className="ch-tool-raw">{s.raw}</pre>}
+            {links.length > 0 ? (
+              <ul className="ch-tool-links">
+                {links.map((l) => (
+                  <li key={l.url}>
+                    <a href={l.url} target="_blank" rel="noopener noreferrer">{l.title}</a>
+                    <span className="ch-tool-src">{[l.source, l.published ? time(l.published) : null].filter(Boolean).join(" · ")}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : s.raw && <pre className="ch-tool-raw">{s.raw}</pre>}
           </details>
         );
       })}
@@ -151,8 +163,8 @@ export default function ChatCore({ ticker = null, run = null, prompt = null, com
         else if (ev.type === "tool_result") {
           const i = acc.tools.findIndex((t) => t.pending && t.name === ev.name);
           const tools = [...acc.tools];
-          if (i >= 0) tools[i] = { ...tools[i], summary: ev.summary, pending: false };
-          else tools.push({ name: ev.name, args: null, summary: ev.summary });
+          if (i >= 0) tools[i] = { ...tools[i], summary: ev.summary, links: ev.links, pending: false };
+          else tools.push({ name: ev.name, args: null, summary: ev.summary, links: ev.links });
           acc = { ...acc, tools };
         } else if (ev.type === "token") acc = { ...acc, text: acc.text + ev.text };
         else if (ev.type === "error") setError(/[가-힣]/.test(ev.message) ? ev.message : "답을 쓰다가 문제가 생겼습니다. 다시 보내 보세요.");

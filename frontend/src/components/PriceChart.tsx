@@ -28,8 +28,9 @@ import {
 } from "./chartBands";
 import { crosshairTime, ticksClearOfLabels } from "./chartFormat";
 import { levelsContradict } from "../listLevels";
-import type { BottomZone, ChartPattern, FibLevel, Fibonacci, Plan, Positioning, Projection, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
+import type { BottomZone, ChartPattern, FibLevel, Fibonacci, OutlookPeriodId, Plan, Positioning, Projection, RunOutlook, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
+import { clipPath, ConeShade, directionLabel, OUTLOOK_PERIODS, outlookCone } from "./chartOutlook";
 
 export type Interval = Exclude<CandleInterval, "1m">;
 const INTERVALS: { iv: Interval; label: string; count: number }[] = [
@@ -197,6 +198,25 @@ function barFor(keys: Key[], at: Key): Key | null {
   return hit;
 }
 
+// #438 방향 전망 보기 · 기간 — 이 브라우저에 기억(기본 켜짐 · 1개월)
+const OUTLOOK_KEY = "desk.chart.outlook";
+type OutlookPrefs = { on: boolean; period: OutlookPeriodId };
+function loadOutlookPrefs(): OutlookPrefs {
+  try {
+    const raw = JSON.parse(localStorage.getItem(OUTLOOK_KEY) ?? "{}");
+    return { on: raw.on !== false, period: raw.period === "1w" ? "1w" : "1m" };
+  } catch {
+    return { on: true, period: "1m" };
+  }
+}
+function saveOutlookPrefs(p: OutlookPrefs) {
+  try {
+    localStorage.setItem(OUTLOOK_KEY, JSON.stringify(p));
+  } catch {
+    /* 저장 못 해도 이번 화면은 그대로 */
+  }
+}
+
 function css(name: string, fallback: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
@@ -302,7 +322,7 @@ export interface ExtraLine {
  * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
  * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
  */
-export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, onIntervalChange, highlight = null }: {
+export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, onIntervalChange, highlight = null, outlook = null }: {
   ticker: string;
   tradeDate: string;
   plan: Plan | null;
@@ -323,7 +343,15 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   onIntervalChange?: (interval: Interval) => void;
   /** #440 가격 사다리에서 고른 가격 — 같은 가격에 굵은 강조선을 잠깐 긋는다 */
   highlight?: number | null;
+  /** #438 run 의 1주 · 1개월 방향 전망 — 일봉에서 마지막 봉 오른쪽에 원뿔 · 경로를 그리고 아래에 한 줄 요약 */
+  outlook?: RunOutlook | null;
 }) {
+  const [outlookPrefs, setOutlookPrefs] = useState(loadOutlookPrefs);
+  const pickOutlook = (next: Partial<OutlookPrefs>) => {
+    const p = { ...outlookPrefs, ...next };
+    setOutlookPrefs(p);
+    saveOutlookPrefs(p);
+  };
   const [prefs] = useState(loadPrefs);
   const [interval, setBarInterval] = useState<Interval>(initialInterval ?? prefs.interval);
   const [show, setShow] = useState<Show>(prefs.show);
@@ -1160,6 +1188,103 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     };
   }, [drawn, proj]);
 
+  // #438 방향 전망 — 일봉에서만: 원뿔 음영(68% 진하게 · 95% 옅게) + 68% 경계 실선, 계획 방향의 시나리오 경로(굵은 점선)와
+  // 강세 · 약세 끝점 마커(확률). 원뿔은 분석한 날의 봉에서 시작한다 — 옛 분석이면 그 뒤 실제 봉과 견줘 볼 수 있다.
+  // 분석일이 받아 온 봉보다 앞이면(오래된 run) 그리지 않는다. 경로 · 95% 띠는 축 범위에 넣지 않는다.
+  const outlookPeriod: OutlookPeriodId = outlook?.periods[outlookPrefs.period] ? outlookPrefs.period
+    : (OUTLOOK_PERIODS.find((p) => outlook?.periods[p.id])?.id ?? outlookPrefs.period);
+  const outlookOutside = !!drawn && !!outlook && drawn.interval === "1d" && String(drawn.rows[0].key) > outlook.trade_date;
+  useEffect(() => {
+    if (!drawn || !outlook || !outlookPrefs.on || drawn.interval !== "1d") return;
+    const cone = outlookCone(outlook, outlookPeriod);
+    if (cone.length < 2) return;
+    const { chart, series, rows } = drawn;
+    const n = cone.length - 1;
+    const lastIdx = rows.length - 1;
+    let from = -1;
+    for (let i = lastIdx; i >= 0; i--) if (String(rows[i].key) <= outlook.trade_date) { from = i; break; }
+    if (from < 0) return;
+    const over = Math.max(0, from + n - lastIdx);   // 마지막 봉 뒤로 필요한 미래 칸
+    const future = futureKeys(rows[lastIdx].key, "1d", over);
+    const keyAt = (bar: number) => {
+      const i = from + Math.min(Math.max(bar, 0), n);
+      return (i <= lastIdx ? rows[i].key : future[i - lastIdx - 1]) as Time;
+    };
+    const times = cone.map((c) => keyAt(c.bar));
+    const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false };
+    const muted = css("--muted", "#8c939d");
+    const color = { bull: css("--long", "#f2464b"), bear: css("--short", "#3a86f8"), range: muted };
+    const added: ISeriesApi<"Line">[] = [];
+    const detach: (() => void)[] = [];
+    const shade = new ConeShade();
+    const ts = chart.timeScale();
+    let before: { from: number; to: number } | null = null;   // 넓히기 전 보이던 범위 — 끄면 되돌린다
+    try {
+      series.attachPrimitive(shade);
+      shade.set([
+        { times, lo: cone.map((c) => c.lo95), hi: cone.map((c) => c.hi95), fill: withAlpha(muted, 0.08) },
+        { times, lo: cone.map((c) => c.lo68), hi: cone.map((c) => c.hi68), fill: withAlpha(muted, 0.16) },
+      ]);
+      for (const k of ["lo68", "hi68"] as const) {
+        const s = chart.addSeries(LineSeries, { ...quiet, color: withAlpha(muted, 0.8), lineWidth: 1 });
+        added.push(s);   // setData 가 실패해도 정리되게 먼저 넣는다
+        s.setData(cone.map((c) => ({ time: keyAt(c.bar), value: c[k] })));
+      }
+      // 굵은 경로는 계획 방향의 경로만 — 그 방향 경로가 없으면(신고가 롱 등) 굵게 그리지 않는다
+      const main = outlook.decision.scenario;
+      const marks: { s: ISeriesApi<"Line">; m: SeriesMarker<Time> }[] = [];
+      for (const path of outlook.paths) {
+        const pts = clipPath(path.points.filter((p) => p.price > 0), n);
+        if (pts.length < 2) continue;
+        const isMain = path.name === main;
+        const s = chart.addSeries(LineSeries, { ...quiet, autoscaleInfoProvider: () => null, color: withAlpha(color[path.name], isMain ? 1 : 0.55),
+          lineWidth: isMain ? 2 : 1, lineStyle: isMain ? LineStyle.Dashed : LineStyle.Dotted });
+        added.push(s);
+        const data = new Map<string, number>();   // 같은 칸의 두 점은 뒤 점만
+        for (const p of pts) data.set(keyAt(p.bar) as string, p.price);
+        s.setData([...data].map(([k, v]) => ({ time: k as Time, value: v })).sort((a, b) => (a.time < b.time ? -1 : 1)));
+        if (path.name !== "range") {
+          const end = pts[pts.length - 1];
+          marks.push({ s, m: { time: keyAt(end.bar), position: path.name === "bear" ? "belowBar" : "aboveBar", shape: "circle",
+            color: color[path.name], text: `${path.label} ${Math.round(path.prob * 100)}%`, size: 0.6 } });
+        }
+      }
+      for (const { s, m } of marks) {
+        const made = createSeriesMarkers(s, [m]);
+        detach.push(() => made.detach());
+      }
+      // 최신 봉을 보고 있었으면 미래 칸까지 보이게 넓힌다(원뿔이 화면 오른쪽 밖에 그려지지 않게) — 끝점 마커 글자가 잘리지 않게 몇 칸 더
+      const r = ts.getVisibleLogicalRange();
+      if (over > 0 && r && r.to >= lastIdx - 1) {
+        before = { from: r.from, to: r.to };
+        ts.setVisibleLogicalRange({ from: r.from, to: lastIdx + over + 4 });
+      }
+    } catch {
+      /* 전망을 못 그려도 차트는 그대로 */
+    }
+    return () => {
+      if (!drawn.alive.current) return;
+      for (const d of detach) d();
+      for (const s of added) chart.removeSeries(s);
+      series.detachPrimitive(shade);
+      if (before) ts.setVisibleLogicalRange(before);
+    };
+  }, [drawn, outlook, outlookPrefs.on, outlookPeriod]);
+
+  // #438 전망 무효 가격 — 가는 선, 축 라벨 없이(#434 타점 라벨과 겹치지 않게). 계획 손절선이 같은 가격에 그려져 있으면 생략
+  // (#436 모순인 계획은 손절선을 그리지 않으므로 그때는 이 선을 긋는다).
+  useEffect(() => {
+    if (!drawn || !outlook || !outlookPrefs.on || drawn.interval !== "1d" || outlookOutside) return;
+    const inv = outlook.invalidation;
+    const stopDrawn = show.levels && !!plan && !levelsContradict(plan) && plan.stop_loss != null && inv != null && price(plan.stop_loss) === price(inv);
+    if (inv == null || !(inv > 0) || stopDrawn) return;
+    const line = drawn.series.createPriceLine({ price: inv, title: `전망 무효 ${price(inv)}`, color: withAlpha(css("--danger", "#ff6a3d"), 0.7),
+      lineWidth: 1, lineStyle: LineStyle.SparseDotted, axisLabelVisible: false });
+    return () => {
+      if (drawn.alive.current) drawn.series.removePriceLine(line);
+    };
+  }, [drawn, outlook, outlookPrefs.on, outlookOutside, plan, show.levels]);
+
   // 선 근처(5px)에 마우스를 올리면 근거 — 지지 · 저항 · 피보나치(가로선)와 추세선(그 봉에서의 선 높이).
   useEffect(() => {
     if (!drawn) return;
@@ -1399,6 +1524,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
                   )}
         </p>
       )}
+      {outlook && <OutlookSummary outlook={outlook} period={outlookPeriod} on={outlookPrefs.on} onPick={pickOutlook} daily={interval === "1d"} outside={outlookOutside} />}
       {((show.fills && fills.length > 0) || rsiOn || stochOn || (drawn && LOG_SCALE.has(interval))) && (
         <p className="muted small price-chart-legend">
           {[
@@ -1509,5 +1635,42 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         </details>
       )}
     </section>
+  );
+}
+
+/** #438 전망 한 줄 요약 · 보기 토글 · 1주/1개월 — "1개월 상승 · 강세 44% · 68% 범위 168~198 · 171 아래면 무효" */
+function OutlookSummary({ outlook, period, on, onPick, daily, outside }: {
+  outlook: RunOutlook; period: OutlookPeriodId; on: boolean; onPick: (p: { on?: boolean; period?: OutlookPeriodId }) => void; daily: boolean;
+  /** 분석일이 받아 온 일봉보다 앞 — 원뿔을 그리지 않았다 */
+  outside: boolean;
+}) {
+  const p = outlook.periods[period];
+  const d = outlook.decision;
+  const path = d.scenario ? outlook.paths.find((x) => x.name === d.scenario) : undefined;
+  const likeliest = outlook.paths.find((x) => x.name === d.likeliest);
+  return (
+    <div className="outlook-note">
+      <div className="outlook-tools" role="group" aria-label="방향 전망">
+        <button type="button" className={`chip ${on ? "chip-on" : ""}`} aria-pressed={on} onClick={() => onPick({ on: !on })}>전망 보기</button>
+        {OUTLOOK_PERIODS.filter((x) => outlook.periods[x.id]).map((x) => (
+          <button key={x.id} type="button" className={`chip ${period === x.id ? "chip-on" : ""}`} aria-pressed={period === x.id}
+            disabled={!on} onClick={() => onPick({ period: x.id })}>{x.label}</button>
+        ))}
+      </div>
+      {on && (
+        <p className="muted small">
+          <strong>{p?.label ?? period} {directionLabel(outlook)}</strong>
+          {path && <> · {path.label} {Math.round(path.prob * 100)}%</>}
+          {!path && <> · 이 방향의 경로 없음</>}
+          {d.agrees !== true && likeliest && <> (예상도에서 가장 큰 경로는 {likeliest.label} {Math.round(likeliest.prob * 100)}%)</>}
+          {p && <> · 68% 범위 {price(p.band68[0])}~{price(p.band68[1])}({p.due.slice(5).replace("-", ".")}까지)</>}
+          {outlook.invalidation != null && <> · {price(outlook.invalidation)} {d.bias === "short" ? "위" : "아래"}면 무효</>}
+          {d.reason && <> — {d.reason}</>}
+          {!daily && <> · 원뿔은 일봉 차트에서 그립니다</>}
+          {daily && outside && <> · 분석일이 차트 범위보다 앞이라 원뿔은 그리지 않았습니다</>}
+          {" · "}<strong>{outlook.disclaimer}</strong>
+        </p>
+      )}
+    </div>
   );
 }

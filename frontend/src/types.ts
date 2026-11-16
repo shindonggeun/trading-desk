@@ -667,13 +667,47 @@ export interface Run {
   outcome?: Outcome | null;
   outcome_status?: OutcomeStatus | null;
   scored_at?: string | null;
+  /** #437 run 이 끝날 때 고정한 1주 · 1개월 방향 전망 — 옛 run · 만들지 못한 run 은 null */
+  outlook?: RunOutlook | null;
+}
+
+/** #437 방향 전망(GET /api/runs/{id} 의 outlook · outlook 이벤트 data). 모양은 PR #445 본문 기준. */
+export type OutlookPeriodId = "1w" | "1m";
+export type OutlookScenario = "bull" | "bear" | "range";
+export interface OutlookLevel { price: number; why: string; strength: number | null }
+export interface RunOutlook {
+  version: 1;
+  as_of: string;
+  trade_date: string;
+  timeframe: "1d";
+  price: number | null;
+  sigma: number | null;
+  periods: Partial<Record<OutlookPeriodId, { bars: number; label: string; band68: [number, number]; band95: [number, number]; due: string }>>;
+  paths: ProjectionPath[];
+  first_touch: { up: number; down: number; none: number; bars_up: number | null; bars_down: number | null } | null;
+  levels: { above: OutlookLevel[]; below: OutlookLevel[] };
+  calibration: { coverage68_valid?: number; coverage95_valid?: number; n?: number } | null;
+  decision: {
+    rating: string | null;
+    bias: "long" | "short" | "flat" | null;
+    direction: "up" | "down" | "sideways";
+    scenario: OutlookScenario | null;
+    scenario_prob: number | null;
+    likeliest: OutlookScenario | null;
+    agrees: boolean | null;
+    desk_direction: string | null;
+    reason: string | null;
+  };
+  invalidation: number | null;
+  note_ko: string | null;
+  disclaimer: string;
 }
 
 export interface DeskEvent {
   run_id: string;
   seq: number;
   ts: string;
-  type: "status" | "message" | "tool" | "plan" | "error" | "done";
+  type: "status" | "message" | "tool" | "plan" | "outlook" | "error" | "done";
   agent: string | null;
   content: string | null;
   data: any;

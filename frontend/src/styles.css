@@ -1635,6 +1635,11 @@ a.wmb-row:hover { border-color: var(--accent); }
 /* #300 차트 예상도 설명 */
 .proj-note { margin: 6px 0 0; line-height: 1.5; }
 .proj-note strong { color: var(--text); }
+/* #438 분석 결과 차트의 방향 전망 — 보기 토글 · 1주/1개월 칩과 한 줄 요약 */
+.outlook-note { margin: 6px 0 0; display: grid; gap: 4px; }
+.outlook-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.outlook-note p { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
+.outlook-note strong { color: var(--text); }
 
 /* #294 실적 프리뷰 카드 */
 .ep-overlay { position: fixed; inset: 0; z-index: 60; background: rgb(0 0 0 / 0.45); display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px; overflow-y: auto; }

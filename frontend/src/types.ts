@@ -1370,7 +1370,9 @@ export interface StockProfile {
 
 /** #314 AI 채팅 — 대화 · 메시지 · 스트림 프레임 */
 export interface ChatThread { id: string; title: string; created_at: string; updated_at: string }
-export interface ChatTool { name: string; args: Record<string, unknown> | null; summary: string | null }
+/** #403 news_search 가 찾은 기사 — 제목 · 매체 · 게시 시각 · http(s) 링크(서버가 거른 것) */
+export interface ChatLink { title: string; source: string | null; published: string | null; url: string }
+export interface ChatTool { name: string; args: Record<string, unknown> | null; summary: string | null; links?: ChatLink[] }
 export interface ChatMessageRow {
   id: string;
   role: "user" | "assistant";
@@ -1380,7 +1382,7 @@ export interface ChatMessageRow {
 }
 export type ChatEvent =
   | { type: "tool_call"; name: string; args: Record<string, unknown> | null }
-  | { type: "tool_result"; name: string; summary: string | null }
+  | { type: "tool_result"; name: string; summary: string | null; links?: ChatLink[] }
   | { type: "token"; text: string }
   | { type: "done"; message_id: string; user_message_id: string }
   | { type: "error"; message: string };

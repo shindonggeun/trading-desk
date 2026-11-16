@@ -86,10 +86,12 @@ const TOOL_KO: Record<string, string> = {
   bottom_zone: "인생 타점", projection: "예상도", runs: "분석 기록", run: "분석", sector_news: "섹터 이슈", levels: "지지 · 저항",
   longshort: "롱/숏 비율", futures: "선물 수급", flow: "시장 수급", weekly_map: "주간 지도",
   market_risk: "시장 위험", calendar_week: "이번 주 일정", recent_runs: "최근 분석", entry_now: "지금 타점",
+  news_search: "뉴스 검색",
 };
 export function toolLabel(name: string, args?: Record<string, unknown> | null): string {
   const base = TOOL_KO[name] ?? name.replace(/^get_|^desk_/, "").replace(/_/g, " ");
   const t = typeof args?.ticker === "string" ? args.ticker : null;
+  if (name === "news_search" && typeof args?.query === "string") return `${base} "${args.query.slice(0, 40)}"`;
   return t ? `${t} ${base}` : base;
 }
 

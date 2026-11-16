@@ -178,7 +178,7 @@ export default function Charts({ query }: { query: URLSearchParams }) {
         )}
         {ticker && (
           <div className="charts-actions small">
-            <strong>{name ? `${name} · ${ticker}` : ticker}</strong>
+            <strong>{name && name !== ticker ? `${name} · ${ticker}` : ticker}</strong>
             {underlying && underlying !== ticker && (
               <button type="button" className="secondary" onClick={() => open({ ticker: underlying })}>
                 기초자산 {underlying} 차트로

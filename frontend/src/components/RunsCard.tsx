@@ -1,9 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { price, STATUS_LABEL, time } from "../format";
-import { HORIZON, OPINION, OUTCOME } from "../korean";
-import type { Run, RunPage } from "../types";
+import { BIAS, HORIZON, OPINION, OUTCOME, RATING, term } from "../korean";
+import type { Plan, Run, RunPage } from "../types";
 import { BiasBadge, RatingText } from "./PlanCard";
+
+/** #387 판단 칸에서 같은 말을 거듭 쓰지 않는다 — "보유 · 관망" 등급이면 "관망" 배지 · 의견 이름은 뺀다. */
+const ratingKo = (plan: Plan) => term(RATING, plan.rating)?.ko ?? "";
+const saysBias = (plan: Plan) => ratingKo(plan).includes(BIAS[plan.bias]?.ko ?? "\u0000");
+
+function opinionText(plan: Plan): string {
+  const name = plan.opinion ? OPINION[plan.opinion]?.ko ?? "" : "";
+  const shown = `${ratingKo(plan)} ${saysBias(plan) ? "" : BIAS[plan.bias]?.ko ?? ""}`;
+  const pct = plan.win_probability != null ? `${Math.round(plan.win_probability * 100)}%` : "";
+  return [name && !shown.includes(name) ? name : "", pct].filter(Boolean).join(" ");
+}
 
 const PAGE_SIZE = 20;
 
@@ -130,15 +141,14 @@ export default function RunsCard() {
                 return (
                 <tr role="row" key={r.id} onClick={() => (window.location.hash = `#/runs/${r.id}`)}>
                   <td role="cell" className="ticker stack-wide" data-label="종목">
-                    {r.options.name ? <>{r.options.name} <span className="muted small">{r.ticker}</span></> : r.ticker}
+                    {r.options.name && r.options.name !== r.ticker ? <>{r.options.name} <span className="muted small">{r.ticker}</span></> : r.ticker}
                   </td>
                   <td role="cell" data-label="기준일">{r.trade_date}</td>
                   <td role="cell" data-label="시간축">{HORIZON[horizonOf(r)]?.ko ?? horizonOf(r)}</td>
-                  <td role="cell" data-label="판단">{r.plan ? <><RatingText rating={r.plan.rating} /> <BiasBadge plan={r.plan} />
-                    {r.plan.opinion && (
+                  <td role="cell" data-label="판단">{r.plan ? <><RatingText rating={r.plan.rating} /> {!saysBias(r.plan) && <BiasBadge plan={r.plan} />}
+                    {r.plan.opinion && opinionText(r.plan) && (
                       <span className={`opinion-tag opinion-${r.plan.opinion}`} title={OPINION[r.plan.opinion]?.desc}>
-                        {OPINION[r.plan.opinion]?.ko}
-                        {r.plan.win_probability != null && ` ${Math.round(r.plan.win_probability * 100)}%`}
+                        {opinionText(r.plan)}
                       </span>
                     )}
                     {(r.plan.bias === "long" || r.plan.bias === "short") && r.outcome_status && OUTCOME[r.outcome_status] && (

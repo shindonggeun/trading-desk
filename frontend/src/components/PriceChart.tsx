@@ -1218,7 +1218,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       <div className="price-chart-head">
         <h3>
           {title ?? "가격 차트"}{" "}
-          <span className="muted small">{ticker} · {currency}{candles ? ` · ${candles.source}` : ""}</span>
+          <span className="muted small">{title !== ticker && `${ticker} · `}{currency}{candles ? ` · ${candles.source}` : ""}</span>
         </h3>
         <div className="chips chart-intervals" role="group" aria-label="봉 주기">
           {INTERVALS.map(({ iv, label }) => (

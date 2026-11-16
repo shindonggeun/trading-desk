@@ -20,6 +20,10 @@ x-backend-environment: &backend_environment
   DESK_MAX_CONCURRENT_RUNS: ${DESK_MAX_CONCURRENT_RUNS:-1}
   # 모델 속도 제한(429) 뒤 이 시간(분) 동안은 1개씩만 돌린다(#171)
   DESK_RATE_LIMIT_COOLDOWN_MIN: ${DESK_RATE_LIMIT_COOLDOWN_MIN:-30}
+  # 채팅 모델(#404) — run 과 따로. 등급 quick | deep(기본 deep), 비우면 그 등급의 TRADINGAGENTS_* 값
+  DESK_CHAT_MODEL_TIER: ${DESK_CHAT_MODEL_TIER:-deep}
+  DESK_CHAT_LLM: ${DESK_CHAT_LLM:-}
+  DESK_CHAT_REASONING_EFFORT: ${DESK_CHAT_REASONING_EFFORT:-}
   # 같은 종목 · 날짜 · 보기 · 언어로 N분 안에 다시 분석하면 뉴스 · 펀더멘털 보고서를 재사용(#171). 0 = 끔
   DESK_REUSE_REPORTS_MIN: ${DESK_REUSE_REPORTS_MIN:-0}
   # 끝난 분석 기록 보관 일수. 기동 시 · 하루 1회 지난 run 을 지운다. 0 = 지우지 않음

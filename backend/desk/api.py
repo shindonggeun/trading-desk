@@ -1521,7 +1521,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # --- the desk chat (#314): per account, the model looks the desk up --------------------
 
     chats = chat.ChatStore(engine)
-    chatter = chatter or (chat.FakeChatter() if settings.fake_runs else chat.LangChainChatter())
+    chatter = chatter or (chat.FakeChatter() if settings.fake_runs else chat.LangChainChatter(
+        tier=settings.chat_model_tier, model=settings.chat_llm or None, effort=settings.chat_reasoning_effort or None))
     # one answer at a time per account: user id -> when it started. Stale after the answer's time
     # limit, so a stream that never started (the client left first) cannot hold the account.
     chatting: dict[int, float] = {}
@@ -1670,8 +1671,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             try:
                 text, used = await asyncio.wait_for(chatter(messages, chat_tools, queue.put_nowait),
                                                     chat.ANSWER_TIMEOUT_SEC)
-                saved = chats.add(user_id, thread_id, "assistant", text or "(빈 답)", used)
-                queue.put_nowait({"type": "done", "message_id": saved["id"], "user_message_id": mine["id"]})
+                model = chat.model_of(chatter)
+                saved = chats.add(user_id, thread_id, "assistant", text or "(빈 답)", used, model=model)
+                queue.put_nowait({"type": "done", "message_id": saved["id"], "user_message_id": mine["id"],
+                                  "model": saved["model"]})
             except Exception as exc:  # noqa: BLE001 - the page gets a fixed word, the log the detail
                 log.warning("chat answer in %s failed: %s", thread_id, exc)
                 limited = manager is not None and manager.note_rate_limit(f"chat:{thread_id}", exc)

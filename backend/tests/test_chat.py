@@ -213,3 +213,17 @@ def test_the_store_checks_the_owner_itself_and_caps_a_thread(db_url, monkeypatch
     with pytest.raises(chat.TooMany):
         store.add(owner_id, thread["id"], "user", "c")
     assert [m["content"] for m in store.messages(owner_id, thread["id"], last=1)] == ["b"]
+
+
+def test_the_answer_keeps_the_model_it_was_written_with(db_url, monkeypatch):
+    """#404: the done event and the stored answer name the chat's model; a chatter that cannot say gives None."""
+    named = quote_then_answer()
+    named.model_name = lambda: "gpt-6-sol"
+    with TestClient(_app(db_url, named, monkeypatch), base_url="https://testserver") as client:
+        _login(client)
+        thread = client.post("/api/chat/threads", json={}).json()
+        events = _events(client.post(f"/api/chat/threads/{thread['id']}/messages", json={"text": "거시?"}).text)
+        assert events[-1]["type"] == "done" and events[-1]["model"] == "gpt-6-sol"
+        kept = client.get(f"/api/chat/threads/{thread['id']}/messages").json()["items"]
+        assert [m["model"] for m in kept] == [None, "gpt-6-sol"]
+    assert chat.model_of(quote_then_answer()) is None and chat.model_of(chat.FakeChatter()) == "fake"

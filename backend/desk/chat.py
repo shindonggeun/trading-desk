@@ -2,8 +2,10 @@
 
 - Threads and messages per account (``chat_threads`` / ``chat_messages``). Every lookup is scoped
   by the session's user id; another account's thread answers as missing (docs/security.md §3).
-- The model is TradingAgents' quick tier (``create_tier_client(config, "quick")``) - the same
-  provider, model and ChatGPT plan as the runs, no new key - with LangChain tool binding. Its
+- The model is a TradingAgents tier (``create_tier_client(config, tier)``) - the same provider and
+  ChatGPT plan as the runs, no new key - with LangChain tool binding. #404: the tier (deep by
+  default), model id and reasoning effort are the chat's own (``DESK_CHAT_*``, ``chat_config``) on a
+  copy of the config, so the runs keep theirs; each answer records its model id. Its
   tools are read-only desk lookups (the macro brief, the market's selling score, the week's
   calendar, a quote, levels, playbooks, the long-term bottom zone, recent analyses, and the entry
   now when that module is there). There is no order tool, and no tool reads the broker account.
@@ -47,8 +49,8 @@ MAX_TOOL_ROUNDS = 7          # #339: one lookup per round (no parallel calls) - 
 MAX_TOOL_CALLS = 6
 MAX_ANSWER_CHARS = 6000
 TOOL_RESULT_CHARS = 4000
-ANSWER_TIMEOUT_SEC = 180.0      # the whole answer, every round (#339: one lookup per round)
-TOOL_BUDGET_SEC = 90.0          # past this, the next round answers without another lookup
+ANSWER_TIMEOUT_SEC = 240.0      # the whole answer, every round (#339: one lookup per round; #404 deep tier is slower)
+TOOL_BUDGET_SEC = 120.0         # past this, the next round answers without another lookup
 SUMMARY_CHARS = 160
 # Dropped from every tool result: what could be a secret or an account figure.
 SECRET_KEYS = re.compile(r"(key|secret|token|password|passwd|cookie|session|account|credential|auth|"
@@ -82,7 +84,7 @@ class ChatStore:
     @staticmethod
     def _message(row) -> dict:
         return {"id": row["id"], "role": row["role"], "content": row["content"], "tools": row["tools"] or [],
-                "created_at": _iso(row["created_at"])}
+                "model": row["model"], "created_at": _iso(row["created_at"])}
 
     def threads(self, user_id: int) -> list[dict]:
         with self.engine.connect() as conn:
@@ -127,7 +129,7 @@ class ChatStore:
         return [self._message(r) for r in reversed(rows)]
 
     def add(self, user_id: int, thread_id: str, role: str, content: str, tools: list[dict] | None = None,
-            title: str | None = None) -> dict:
+            title: str | None = None, model: str | None = None) -> dict:
         """Append to the account's own thread - checked here too, not only by the caller. Raises
         LookupError for another account's (or a deleted) thread, TooMany past MAX_MESSAGES."""
         stamp = now()
@@ -140,13 +142,15 @@ class ChatStore:
             if count >= MAX_MESSAGES:
                 raise TooMany(f"at most {MAX_MESSAGES} messages in a thread - start a new one")
             new_id = conn.execute(chat_messages.insert().values(
-                thread_id=thread_id, role=role, content=content, tools=tools or None, created_at=stamp)).inserted_primary_key[0]
+                thread_id=thread_id, role=role, content=content, tools=tools or None,
+                model=(model or None) and model[:64], created_at=stamp)).inserted_primary_key[0]
             values: dict[str, Any] = {"updated_at": stamp}
             if title:
                 values["title"] = title[:MAX_TITLE]
             conn.execute(update(chat_threads).where(chat_threads.c.id == thread_id,
                                                     chat_threads.c.user_id == user_id).values(**values))
-        return {"id": new_id, "role": role, "content": content, "tools": tools or [], "created_at": _iso(stamp)}
+        return {"id": new_id, "role": role, "content": content, "tools": tools or [],
+                "model": (model or None) and model[:64], "created_at": _iso(stamp)}
 
 
 # --- tools -----------------------------------------------------------------------------------------
@@ -281,18 +285,49 @@ def build_messages(history: list[dict], text: str, ticker: str | None, dropped: 
     return out
 
 
-class LangChainChatter:
-    """The configured quick model with the desk's tools bound; tokens are emitted as they come."""
+def chat_config(base: dict, tier: str, model: str | None = None, effort: str | None = None) -> dict:
+    """#404 the chat's TradingAgents config: a copy of ``base`` with the chat's own model id and
+    reasoning effort on its tier. ``base`` (the runs') is left as it is."""
+    config = dict(base)
+    if model:
+        config[f"{tier}_think_llm"] = model
+    if effort:
+        config[f"{tier}_think_reasoning_effort"] = effort
+    return config
 
-    def __init__(self, timeout: float = ANSWER_TIMEOUT_SEC) -> None:
+
+def model_of(chatter: Any) -> str | None:
+    """The model id a chatter answers with, for the answer's record (None when it cannot say)."""
+    name = getattr(chatter, "model_name", None)
+    try:
+        return name() if callable(name) else None
+    except Exception:  # noqa: BLE001 - a label, never a reason to drop the answer
+        return None
+
+
+class LangChainChatter:
+    """The chat's model tier with the desk's tools bound; tokens are emitted as they come."""
+
+    def __init__(self, timeout: float = ANSWER_TIMEOUT_SEC, tier: str = "deep", model: str | None = None,
+                 effort: str | None = None) -> None:
         self.timeout = timeout
+        self.tier = tier if tier in ("quick", "deep") else "deep"
+        self.model = model
+        self.effort = effort
+
+    def config(self) -> dict:
+        from tradingagents.default_config import build_default_config
+
+        return chat_config(build_default_config(), self.tier, self.model, self.effort)
+
+    def model_name(self) -> str | None:
+        return self.config().get(f"{self.tier}_think_llm")
 
     async def __call__(self, messages: list[dict], tools: dict[str, Tool], emit: Emit) -> tuple[str, list[dict]]:
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-        from tradingagents.default_config import build_default_config
         from tradingagents.llm_clients import create_tier_client
 
-        llm = create_tier_client(build_default_config(), "quick", timeout=self.timeout, max_retries=0).get_llm()
+        llm = create_tier_client(self.config(), self.tier, timeout=self.timeout, max_retries=0).get_llm()
         # #339: one call at a time - parallel calls streamed interleaved can lose their arguments.
         # Once the lookups' budget (rounds, calls or time) is spent, the last round may not call any.
         specs = [t.spec() for t in tools.values()]
@@ -345,6 +380,10 @@ class LangChainChatter:
 
 class FakeChatter:
     """DESK_FAKE_RUNS: one real lookup through the same tools, then a scripted answer in pieces."""
+
+    @staticmethod
+    def model_name() -> str:
+        return "fake"
 
     async def __call__(self, messages: list[dict], tools: dict[str, Tool], emit: Emit) -> tuple[str, list[dict]]:
         question = messages[-1]["content"]

@@ -81,6 +81,7 @@ function Bubble({ m, ctxTicker }: { m: ChatMessageRow; ctxTicker: string | null 
         <div className="ch-foot">
           {links.map((t) => <a key={t} className="chip" href={`#/chart/${encodeURIComponent(t)}`}>{t} 차트</a>)}
           <time className="ch-time" title="답을 쓴 시각 — 데스크 숫자는 이때 조회한 값">{time(m.created_at)} 기준</time>
+          {m.model && <span className="ch-time" title="이 답을 쓴 모델">{m.model}</span>}
         </div>
       </div>
     </div>
@@ -158,7 +159,7 @@ export default function ChatCore({ ticker = null, run = null, prompt = null, com
         else if (ev.type === "done") {
           const at = new Date().toISOString();
           setMessages((old) => [...old.map((m) => (m.id === mine.id ? { ...m, id: ev.user_message_id } : m)),
-            { id: ev.message_id, role: "assistant", content: acc.text, tools: acc.tools.map(({ pending: _p, ...t }) => t), created_at: at }]);
+            { id: ev.message_id, role: "assistant", content: acc.text, tools: acc.tools.map(({ pending: _p, ...t }) => t), model: ev.model ?? null, created_at: at }]);
           onDone?.();
         }
         setLive(acc);

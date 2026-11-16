@@ -186,6 +186,7 @@ chat_messages = Table(
     Column("role", String(16), nullable=False),                  # user | assistant
     Column("content", Text, nullable=False),
     Column("tools", Json),
+    Column("model", String(64)),                                 # #404 the answer's model id
     Column("created_at", Timestamp, nullable=False),
     Index("ix_chat_messages_thread_id_id", "thread_id", "id"),
 )

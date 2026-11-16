@@ -36,6 +36,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.engine import Engine
 
 from .db import chat_messages, chat_threads, now
+from .web_search import links
 
 log = logging.getLogger(__name__)
 
@@ -271,6 +272,11 @@ SYSTEM = (
     "- 도구는 한 번에 하나씩 부르고, ticker 는 언제나 종목 코드로 채운다(예: KORU, NVDA, 005930.KS).\n"
     "- 도구가 오류를 주면 고쳐서 한 번 다시 부른다. 그래도 그 종목의 시세 · 레벨 · 플레이북을 못 얻었으면 "
     "롱/숏 기울기를 말하지 말고 '숫자를 확인하지 못해 판단 보류'라고 말한다.\n"
+    "- 거시 · 정책 · 뉴스 질문이면 macro_brief 다음에 news_search 로 최근 기사를 찾아 무엇이 · 언제 있었는지 구체적으로 보충한다. "
+    "news_search 는 질문당 2번까지만 쓰고, 검색어는 짧은 주제어로 쓴다(예: 'Fed rate decision', '코스피 외국인 매도'). "
+    "검색어에 사용자의 계좌 · 보유 종목 수량 · 금액 · 개인 정보를 넣지 않는다.\n"
+    "- 기사에서 가져온 사실은 '데스크 숫자'와 따로 '뉴스:' 로 묶고, 문장마다 (매체, 게시 시각)을 붙인다. "
+    "기사 제목에 없는 내용은 지어내지 않는다.\n"
     "- 주문은 할 수 없고, 계좌 · 보유 수량 · 금액은 보지 않는다.\n"
     "- 끝에 한 줄: '예측이 아니며 투자 권유가 아닙니다.'"
 )
@@ -373,8 +379,10 @@ class LangChainChatter:
         emit({"type": "tool_call", "name": name, "args": scrub(args)})
         result = await call_tool(tools, name, args, ticker)
         line = summary(result)
-        emit({"type": "tool_result", "name": name, "summary": line})
-        used.append({"name": name, "args": scrub(args), "summary": line})
+        found = links(result)     # #403: a news search's articles, so the page can link them
+        extra = {"links": found} if found else {}
+        emit({"type": "tool_result", "name": name, "summary": line, **extra})
+        used.append({"name": name, "args": scrub(args), "summary": line, **extra})
         return result
 
 
@@ -392,8 +400,13 @@ class FakeChatter:
         used: list[dict] = []
         if name in tools:
             await LangChainChatter._run(tools, name, args, emit, used)
+        if name == "macro_brief" and "news_search" in tools:     # #403: then the news behind the themes
+            await LangChainChatter._run(tools, "news_search", {"query": "Fed rate decision"}, emit, used)
+        news = next((u["links"][0] for u in used if u.get("links")), None)
         text = (f"데스크 숫자: {used[0]['summary'] if used else '확인 못 함'}\n"
-                "내 의견: (대본 응답) 데스크 숫자를 근거로 판단하세요.\n예측이 아니며 투자 권유가 아닙니다.")
+                + (f"뉴스: {news['title']} ({news.get('source') or '출처 미상'}, {news.get('published') or '시각 미상'})\n"
+                   if news else "")
+                + "내 의견: (대본 응답) 데스크 숫자를 근거로 판단하세요.\n예측이 아니며 투자 권유가 아닙니다.")
         for piece in re.findall(r".{1,24}", text, re.DOTALL):
             emit({"type": "token", "text": piece})
             await asyncio.sleep(0)

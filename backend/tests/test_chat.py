@@ -171,7 +171,7 @@ def test_the_desk_tools_are_read_only_and_the_fake_model_uses_one():
     tools = set(app.state.chat_tools)
     assert {"macro_brief", "market_risk", "calendar_week", "quote", "levels", "playbooks", "bottom_zone",
             "recent_runs"} <= tools <= {"macro_brief", "market_risk", "calendar_week", "quote", "levels", "playbooks",
-                                        "bottom_zone", "recent_runs", "entry_now"}
+                                        "bottom_zone", "recent_runs", "entry_now", "news_search"}
     assert not any(w in name for name in tools for w in ("order", "buy", "sell", "portfolio", "account"))
     events: list[dict] = []
 

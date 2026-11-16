@@ -51,6 +51,7 @@ from . import (
     sessions,
     tips,
     verdict,
+    web_search,
     weekly_map,
 )
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
@@ -1602,6 +1603,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         tools.append(chat.Tool("entry_now", "지금가 기준 최적 타점(롱 · 숏 중 계획당 기대 R 이 큰 쪽, 관망 이유)",
                                chat.TICKER_ARG, entry))
+
+        async def news(a: dict):                   # #403: out of the desk - the query alone, results cut
+            if settings.fake_runs:                 # no network in a scripted session
+                return web_search.scripted(a.get("query"))
+            return await web_search.search(a.get("query"), a.get("window"))
+
+        tools.append(chat.Tool("news_search", "최근 뉴스 기사 검색(제목 · 매체 · 게시 시각 · 링크, 본문 없음). "
+                               "검색어는 짧은 주제어로, 개인 · 계좌 정보는 넣지 않는다", web_search.ARGS, news))
         return {t.name: t for t in tools}
 
     chat_tools = _chat_tools()

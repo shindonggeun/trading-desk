@@ -207,6 +207,40 @@ def fill_recent(history: list[Bar], recent: list[Bar], minutes: int) -> list[Bar
     return [b for b in history if _at(b.at) < first] + folded
 
 
+def close_tail(history: list[Bar], daily: list[Bar], minutes: int, now: datetime) -> list[Bar]:
+    """Yahoo's KRX minute bars stop at 14:59 every day - 15:00 to the 15:30 closing print is not
+    late there, it is missing (only its 1m with prepost has the closing print). So for each day
+    whose session is over, the bucket from 15:00 is made from that day's daily bar: open = the
+    last minute close, close = the official close, volume = the day's volume less the minutes'
+    (0 when the window starts that day after 09:00) (#379, seen after the close in production). The broker's recent 1-minute bars still replace
+    it while they reach the session (fill_recent)."""
+    official = {_at(d.at).astimezone(KST).date(): d for d in daily}
+    now_kst = now.astimezone(KST)
+    days: dict = {}
+    for bar in history:
+        days.setdefault(_at(bar.at).astimezone(KST).date(), []).append(bar)
+    out: list[Bar] = []
+    for day, bars in days.items():
+        out.extend(bars)
+        d = official.get(day)
+        over = day < now_kst.date() or (day == now_kst.date() and now_kst.hour * 60 + now_kst.minute > KRX_CLOSE_MIN)
+        tail_at = datetime(day.year, day.month, day.day, 15, 0, tzinfo=KST)
+        last = bars[-1]
+        if d is None or not over or _at(last.at) >= tail_at.astimezone(UTC):
+            continue
+        start = krx_bucket(tail_at, minutes)
+        opened = datetime(day.year, day.month, day.day, 9, 0, tzinfo=KST).astimezone(UTC)
+        # the volume left over is only known when the day's minutes are all here (from 09:00)
+        rest = max(d.volume - sum(b.volume for b in bars), 0.0) if _at(bars[0].at) <= opened else 0.0
+        if _at(last.at) == start:       # the last bucket already started before 15:00 (240m: 13:00)
+            out[-1] = Bar(at=last.at, open=last.open, high=max(last.high, d.close), low=min(last.low, d.close),
+                          close=d.close, volume=last.volume + rest)
+        else:
+            out.append(Bar(at=start.isoformat(timespec="seconds"), open=last.close, high=max(last.close, d.close),
+                           low=min(last.close, d.close), close=d.close, volume=rest))
+    return out
+
+
 class PriceSource:
     def __init__(self, broker: Broker, yahoo_quote=None, yahoo_candles=None,
                  clock=time.monotonic, stream=None) -> None:
@@ -272,6 +306,8 @@ class PriceSource:
             bars = await asyncio.to_thread(self._yahoo_candles, ticker, interval, fetch)
             source = "yahoo"
             if interval in _MINUTES and is_krx(ticker):
+                if interval != "1m":
+                    bars = await self._close_krx(ticker, interval, bars)
                 bars, source = await self._fill_krx(ticker, interval, bars)
         rows = [asdict(bar) for bar in bars]
         annotate(rows, indicators)
@@ -281,6 +317,19 @@ class PriceSource:
                   "history_limit_days": HISTORY_LIMIT_DAYS.get(interval), "truncated": len(rows) < count}
         _remember(self._candles, key, (self._clock(), result, ttl), ttl, self._clock)
         return result
+
+    async def _close_krx(self, ticker: str, interval: str, bars: list[Bar]) -> list[Bar]:
+        """Each finished day's 15:00 - 15:30 bucket from Yahoo's daily bars (close_tail) - Yahoo,
+        not the broker, so the volume left over is counted the same way as the minutes'."""
+        if not bars:
+            return bars
+        span = len({_at(b.at).astimezone(KST).date() for b in bars})
+        try:
+            daily = await asyncio.to_thread(self._yahoo_candles, ticker, "1d", span + 5)
+        except Exception as exc:  # noqa: BLE001 - the minutes still stand
+            log.info("daily bars for %s failed, no closing bucket: %s", ticker, exc)
+            return bars
+        return close_tail(bars, daily, _MINUTES[interval], datetime.now(UTC))
 
     async def _fill_krx(self, ticker: str, interval: str, bars: list[Bar]) -> tuple[list[Bar], str]:
         """KRX minute bars from Yahoo, their late tail replaced by the broker's 1-minute bars

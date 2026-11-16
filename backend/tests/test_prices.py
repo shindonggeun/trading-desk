@@ -293,3 +293,57 @@ def test_yahoo_120m_bars_pair_up_hours_inside_one_day(monkeypatch):
     monkeypatch.setitem(sys.modules, "yfinance", fake)
     bars = real_yahoo_candles("005930.KS", "120m", 10)
     assert [(b.open, b.close, b.volume) for b in bars] == [(1, 2, 2), (3, 3, 1), (4, 5, 2), (6, 6, 1)]
+
+
+def _day(kst_date: str, close: float, volume: float) -> Bar:
+    """야후 일봉 하나 — 그날 0시(KST)."""
+    at = datetime.fromisoformat(kst_date).replace(tzinfo=timezone(timedelta(hours=9))).astimezone(UTC)
+    return Bar(at.isoformat(timespec="seconds"), close, close, close, close, volume)
+
+
+def test_a_finished_krx_day_gets_its_15h_bucket_from_the_daily_close():
+    """#379 운영: 야후 국장 분봉은 매일 14:59 에서 끝난다(15:00~15:30 이 없다). 장이 끝난 날은
+    일봉 종가 · 남은 거래량으로 15:00 봉을 만든다. 장중인 오늘은 만들지 않는다."""
+    from desk.prices import close_tail
+
+    history = [_min("2026-11-13 09:00", 214, 10), _min("2026-11-13 14:45", 207.5, 10),
+               _min("2026-11-16 09:00", 206.5, 5)]
+    daily = [_day("2026-11-13", 206, 50), _day("2026-11-16", 196.8, 99)]
+    at_noon = datetime(2026, 11, 16, 12, 0, tzinfo=timezone(timedelta(hours=9)))
+    out = close_tail(history, daily, 15, at_noon)
+    tail = out[2]
+    assert len(out) == 4 and tail.at == "2026-11-13T06:00:00+00:00"          # 15:00 KST
+    assert (tail.open, tail.high, tail.low, tail.close, tail.volume) == (207.5, 207.5, 206, 206, 30)  # 50 - (10 + 10)
+    assert out[3] == history[2]                                                 # 오늘은 장중 — 손대지 않는다
+    after_close = close_tail(history, daily, 15, datetime(2026, 11, 16, 15, 31, tzinfo=timezone(timedelta(hours=9))))
+    assert after_close[-1].at == "2026-11-16T06:00:00+00:00" and after_close[-1].close == 196.8
+    # 240m: 15:00 은 13:00 봉 안이다 — 새 봉이 아니라 그 봉을 닫는다
+    four = [Bar("2026-11-13T04:00:00+00:00", 210, 211, 207, 207.5, 40)]
+    closed = close_tail(four, daily, 240, at_noon)
+    assert len(closed) == 1 and (closed[0].open, closed[0].low, closed[0].close, closed[0].volume) == (210, 206, 206, 40)
+    # 그날 봉이 09:00 부터 다 있지 않으면 남은 거래량을 모른다 — 0
+    assert close_tail(history[1:2], daily, 15, at_noon)[-1].volume == 0
+    # 이미 15:00 뒤 봉이 있거나 일봉이 없으면 그대로
+    assert close_tail([_min("2026-11-13 15:00", 206)], daily, 5, at_noon) == [_min("2026-11-13 15:00", 206)]
+    assert close_tail(history[:2], [], 15, at_noon) == history[:2]
+
+
+def test_after_the_close_a_krx_minute_chart_ends_with_the_official_close():
+    """브로커 1분봉이 정규장에 닿지 않을 때(장 마감 뒤 NXT 애프터만) 마지막 봉은 일봉 종가다."""
+    class AfterHours(MockBroker):
+        name = "toss"
+
+        async def candles(self, symbol, interval, count):
+            assert interval == "1m"
+            return [_min(f"2026-11-13 19:{m:02d}", 205) for m in range(30)]     # NXT 애프터만
+
+    def yahoo(t, interval, c):
+        if interval == "1d":
+            return [_day("2026-11-13", 206, 50)]
+        return [_min("2026-11-13 14:30", 207, 10), _min("2026-11-13 14:45", 207.5, 10)]
+
+    out = asyncio.run(PriceSource(AfterHours(), yahoo_candles=yahoo).candles("005930.KS", "15m", 10))
+    assert [(b["at"], b["close"]) for b in out["bars"]][-1] == ("2026-11-13T06:00:00+00:00", 206)
+    failing = PriceSource(AfterHours(), yahoo_candles=lambda t, i, c: (_ for _ in ()).throw(OSError("down"))
+                          if i == "1d" else yahoo(t, i, c))
+    assert asyncio.run(failing.candles("005930.KS", "15m", 10))["bars"][-1]["close"] == 207.5   # 일봉이 없으면 분봉만

@@ -181,6 +181,14 @@ class Store:
             ).mappings().all()
         return [{**row, "ts": iso(row["ts"])} for row in rows]
 
+    def last_event_data(self, run_id: str, kind: str) -> dict | None:
+        """The ``data`` of the run's newest event of type ``kind`` (#437 the outlook), or None."""
+        with self.engine.connect() as conn:
+            return conn.execute(
+                select(events.c.data).where(events.c.run_id == run_id, events.c.type == kind)
+                .order_by(events.c.seq.desc()).limit(1)
+            ).scalar()
+
     def recent_reports(self, ticker: str, trade_date: str, agents: list[str], since: datetime) -> list[dict]:
         """#171: these agents' messages in finished runs of this ticker and day, filed since ``since``,
         newest first, each with its run's options (horizon, language) for the caller to match."""

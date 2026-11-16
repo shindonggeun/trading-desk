@@ -50,11 +50,10 @@ class Settings:
     # After the provider's rate limit (HTTP 429), one run at a time for this many minutes.
     rate_limit_cooldown_min: float = field(
         default_factory=lambda: float(os.getenv("DESK_RATE_LIMIT_COOLDOWN_MIN") or "30"))
-    # #404 the desk chat's model, apart from the runs': its TradingAgents tier (quick | deep, default
-    # deep - an answer weighs several lookups), and optionally its own model id and reasoning effort.
-    # Empty = the tier's TRADINGAGENTS_*_THINK_LLM / *_REASONING_EFFORT. The runs never read these.
+    # #404 the tier the chat's model runs on (quick | deep, default deep - its provider settings, and
+    # its model is the default when DESK_CHAT_MODEL is empty and it is offered), and the chat's own
+    # reasoning effort (empty = the tier's). The model itself is picked from DESK_CHAT_MODELS (#414).
     chat_model_tier: str = field(default_factory=lambda: _tier(os.getenv("DESK_CHAT_MODEL_TIER")))
-    chat_llm: str = field(default_factory=lambda: os.getenv("DESK_CHAT_LLM", "").strip())
     chat_reasoning_effort: str = field(default_factory=lambda: _effort(os.getenv("DESK_CHAT_REASONING_EFFORT")))
     # #171: a run of the same ticker, day, horizon and language within this many minutes reuses the
     # news and fundamentals reports of the earlier one (price and technical work is always fresh). 0 = off.

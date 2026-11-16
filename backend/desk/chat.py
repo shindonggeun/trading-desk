@@ -4,8 +4,9 @@
   by the session's user id; another account's thread answers as missing (docs/security.md §3).
 - The model is a TradingAgents tier (``create_tier_client(config, tier)``) - the same provider and
   ChatGPT plan as the runs, no new key - with LangChain tool binding. #404: the tier (deep by
-  default), model id and reasoning effort are the chat's own (``DESK_CHAT_*``, ``chat_config``) on a
-  copy of the config, so the runs keep theirs; each answer records its model id. Its
+  default) and reasoning effort are the chat's own (``DESK_CHAT_*``, ``chat_config``) on a copy of
+  the config, so the runs keep theirs; #414: the model is picked from DESK_CHAT_MODELS (only those
+  reach the provider); each answer records its model id. Its
   tools are read-only desk lookups (the macro brief, the market's selling score, the week's
   calendar, a quote, levels, playbooks, the long-term bottom zone, recent analyses, and the entry
   now when that module is there). There is no order tool, and no tool reads the broker account.
@@ -291,7 +292,6 @@ def build_messages(history: list[dict], text: str, ticker: str | None, dropped: 
     return out
 
 
-<<<<<<< HEAD
 def chat_config(base: dict, tier: str, model: str | None = None, effort: str | None = None) -> dict:
     """#404 the chat's TradingAgents config: a copy of ``base`` with the chat's own model id and
     reasoning effort on its tier. ``base`` (the runs') is left as it is."""
@@ -301,7 +301,8 @@ def chat_config(base: dict, tier: str, model: str | None = None, effort: str | N
     if effort:
         config[f"{tier}_think_reasoning_effort"] = effort
     return config
-=======
+
+
 # --- #414: which model answers ------------------------------------------------------------------------
 
 MODEL_LABELS = {
@@ -310,18 +311,16 @@ MODEL_LABELS = {
 }
 
 
-def model_options(allowed: list[str], default: str = "") -> dict:
+def model_options(allowed: list[str], default: str = "", fallback: str | None = None) -> dict:
     """The chat window's choices: the allowed ids (in order, once each) with labels, and the default
-    (``default`` when it is allowed, else the first)."""
+    (``default`` when it is allowed, else ``fallback`` - the chat tier's model, #404 - when it is,
+    else the first)."""
     ids = list(dict.fromkeys(m for m in allowed if m))
-    return {"default": default if default in ids else (ids[0] if ids else None),
+    pick = next((m for m in (default, fallback) if m and m in ids), ids[0] if ids else None)
+    return {"default": pick,
             "items": [{"id": m, "label": MODEL_LABELS.get(m, m)} for m in ids]}
 
 
-class LangChainChatter:
-    """The configured quick model (or the one picked, #414) with the desk's tools bound; tokens are
-    emitted as they come."""
->>>>>>> 138a0e4 ([BE] feat: AI 채팅이 허용 목록의 모델을 골라 답하고 채팅 기본 모델을 분석 모델과 따로 둔다 (#414))
 
 
 def model_of(chatter: Any) -> str | None:
@@ -334,21 +333,21 @@ def model_of(chatter: Any) -> str | None:
 
 
 class LangChainChatter:
-    """The chat's model tier with the desk's tools bound; tokens are emitted as they come."""
+    """The chat's tier (#404: its provider settings and reasoning effort) with the model picked from
+    the offered list (#414) and the desk's tools bound; tokens are emitted as they come."""
 
-    def __init__(self, timeout: float = ANSWER_TIMEOUT_SEC, tier: str = "deep", model: str | None = None,
-                 effort: str | None = None) -> None:
+    def __init__(self, timeout: float = ANSWER_TIMEOUT_SEC, tier: str = "deep", effort: str | None = None) -> None:
         self.timeout = timeout
         self.tier = tier if tier in ("quick", "deep") else "deep"
-        self.model = model
         self.effort = effort
 
-    def config(self) -> dict:
+    def config(self, model: str | None = None) -> dict:
         from tradingagents.default_config import build_default_config
 
-        return chat_config(build_default_config(), self.tier, self.model, self.effort)
+        return chat_config(build_default_config(), self.tier, model, self.effort)
 
     def model_name(self) -> str | None:
+        """The tier's own model (TRADINGAGENTS_<TIER>_THINK_LLM) - the default when it is offered."""
         return self.config().get(f"{self.tier}_think_llm")
 
     async def __call__(self, messages: list[dict], tools: dict[str, Tool], emit: Emit,
@@ -356,14 +355,7 @@ class LangChainChatter:
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
         from tradingagents.llm_clients import create_tier_client
 
-<<<<<<< HEAD
-        llm = create_tier_client(self.config(), self.tier, timeout=self.timeout, max_retries=0).get_llm()
-=======
-        config = build_default_config()
-        if model:
-            config["quick_think_llm"] = model      # the same provider, plan and endpoint; only the model
-        llm = create_tier_client(config, "quick", timeout=self.timeout, max_retries=0).get_llm()
->>>>>>> 138a0e4 ([BE] feat: AI 채팅이 허용 목록의 모델을 골라 답하고 채팅 기본 모델을 분석 모델과 따로 둔다 (#414))
+        llm = create_tier_client(self.config(model), self.tier, timeout=self.timeout, max_retries=0).get_llm()
         # #339: one call at a time - parallel calls streamed interleaved can lose their arguments.
         # Once the lookups' budget (rounds, calls or time) is spent, the last round may not call any.
         specs = [t.spec() for t in tools.values()]
@@ -419,16 +411,12 @@ class LangChainChatter:
 class FakeChatter:
     """DESK_FAKE_RUNS: one real lookup through the same tools, then a scripted answer in pieces."""
 
-<<<<<<< HEAD
     @staticmethod
     def model_name() -> str:
         return "fake"
 
-    async def __call__(self, messages: list[dict], tools: dict[str, Tool], emit: Emit) -> tuple[str, list[dict]]:
-=======
     async def __call__(self, messages: list[dict], tools: dict[str, Tool], emit: Emit,
                        model: str | None = None) -> tuple[str, list[dict]]:
->>>>>>> 138a0e4 ([BE] feat: AI 채팅이 허용 목록의 모델을 골라 답하고 채팅 기본 모델을 분석 모델과 따로 둔다 (#414))
         question = messages[-1]["content"]
         found = re.search(r"\(관심 종목: ([^)]+)\)", question)
         name, args = ("playbooks", {"ticker": found.group(1)}) if found and "playbooks" in tools else ("macro_brief", {})

@@ -1523,16 +1523,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # --- the desk chat (#314): per account, the model looks the desk up --------------------
 
     chats = chat.ChatStore(engine)
-<<<<<<< HEAD
     chatter = chatter or (chat.FakeChatter() if settings.fake_runs else chat.LangChainChatter(
-        tier=settings.chat_model_tier, model=settings.chat_llm or None, effort=settings.chat_reasoning_effort or None))
-=======
-    chatter = chatter or (chat.FakeChatter() if settings.fake_runs else chat.LangChainChatter())
-    chat_models = chat.model_options(settings.chat_models, settings.chat_model)   # #414: only these reach the provider
+        tier=settings.chat_model_tier, effort=settings.chat_reasoning_effort or None))
+    # #414: only these reach the provider. Default: DESK_CHAT_MODEL, else the chat tier's own model
+    # (#404) when offered, else the first offered.
+    chat_models = chat.model_options(settings.chat_models, settings.chat_model, chat.model_of(chatter))
     if settings.chat_model and settings.chat_model != chat_models["default"]:
         log.warning("DESK_CHAT_MODEL %r is not in DESK_CHAT_MODELS; the chat defaults to %r",
                     settings.chat_model, chat_models["default"])
->>>>>>> 138a0e4 ([BE] feat: AI 채팅이 허용 목록의 모델을 골라 답하고 채팅 기본 모델을 분석 모델과 따로 둔다 (#414))
     # one answer at a time per account: user id -> when it started. Stale after the answer's time
     # limit, so a stream that never started (the client left first) cannot hold the account.
     chatting: dict[int, float] = {}
@@ -1696,16 +1694,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             try:
                 text, used = await asyncio.wait_for(chatter(messages, chat_tools, queue.put_nowait, model=model),
                                                     chat.ANSWER_TIMEOUT_SEC)
-<<<<<<< HEAD
-                model = chat.model_of(chatter)
                 saved = chats.add(user_id, thread_id, "assistant", text or "(빈 답)", used, model=model)
                 queue.put_nowait({"type": "done", "message_id": saved["id"], "user_message_id": mine["id"],
                                   "model": saved["model"]})
-=======
-                saved = chats.add(user_id, thread_id, "assistant", text or "(빈 답)", used)
-                queue.put_nowait({"type": "done", "message_id": saved["id"], "user_message_id": mine["id"],
-                                  "model": model})
->>>>>>> 138a0e4 ([BE] feat: AI 채팅이 허용 목록의 모델을 골라 답하고 채팅 기본 모델을 분석 모델과 따로 둔다 (#414))
             except Exception as exc:  # noqa: BLE001 - the page gets a fixed word, the log the detail
                 log.warning("chat answer in %s failed: %s", thread_id, exc)
                 limited = manager is not None and manager.note_rate_limit(f"chat:{thread_id}", exc)

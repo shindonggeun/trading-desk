@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, followLive, type Candles, type LiveFrame, type StreamState } from "../api";
 import { price } from "../format";
 import { keepAxisLabelsApart, nearestLevels, planBands, playbookDrawing, PriceBands, srBands } from "./chartBands";
+import { levelsContradict } from "../listLevels";
 import type { Plan } from "../types";
 import { quoteSourceText } from "../korean";
 import { bucketStart, LIVE_INTERVALS, LiveBucket, loadLiveInterval, minutesOf, saveLiveInterval } from "../liveBuckets";
@@ -181,11 +182,15 @@ export default function LiveChart({ ticker, plan, onPrice }: {
   useEffect(() => {
     const c = chartRef.current;
     if (!c) return;
+    // #436 진입을 사이에 두지 않는 등급상 타점(손절 = 목표 등)은 그리지 않는다
+    const levels = !levelsContradict(plan);
     const lines: [number | null | undefined, string, string, LineStyle][] = [
-      [plan?.entry_price, "진입", css("--accent", "#c9d1db"), LineStyle.Solid],
-      // #311 손절 = 손실색 · 목표 = 이익색
-      [plan?.stop_loss, "손절", css("--danger", "#ff6a3d"), LineStyle.Solid],
-      [plan?.price_target, "목표", css("--ok", "#3fb68b"), LineStyle.Solid],
+      ...(levels ? [
+        [plan?.entry_price, "진입", css("--accent", "#c9d1db"), LineStyle.Solid],
+        // #311 손절 = 손실색 · 목표 = 이익색
+        [plan?.stop_loss, "손절", css("--danger", "#ff6a3d"), LineStyle.Solid],
+        [plan?.price_target, "목표", css("--ok", "#3fb68b"), LineStyle.Solid],
+      ] as [number | null | undefined, string, string, LineStyle][] : []),
       [plan?.long_trigger, "롱 조건", css("--long", "#f2464b"), LineStyle.Dotted],
       [plan?.short_trigger, "숏 조건", css("--short", "#3a86f8"), LineStyle.Dotted],
     ];

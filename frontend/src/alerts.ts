@@ -1,3 +1,4 @@
+import { levelsContradict } from "./listLevels";
 import { useEffect, useRef, useState } from "react";
 import { price as fmt } from "./format";
 import type { Plan } from "./types";
@@ -39,10 +40,14 @@ function playbookLevels(plan: Plan): { key: string; label: string; level: number
 
 function levelsOf(plan: Plan | null): { key: string; label: string; level: number }[] {
   if (!plan) return [];
-  return [
+  // #436 서로 모순인 등급상 타점은 차트에 없으니 알림도 걸지 않는다
+  const own = levelsContradict(plan) ? [] : [
     { key: "entry", label: "진입가", level: plan.entry_price },
     { key: "stop", label: "손절가", level: plan.stop_loss },
     { key: "target", label: "목표가", level: plan.price_target },
+  ];
+  return [
+    ...own,
     { key: "long", label: "롱 조건", level: plan.long_trigger ?? null },
     { key: "short", label: "숏 조건", level: plan.short_trigger ?? null },
     ...playbookLevels(plan),

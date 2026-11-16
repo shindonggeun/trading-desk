@@ -49,7 +49,11 @@ export default function PushSettings() {
           {state === null ? "확인 중…" : state === "on" ? "켜짐" : state === "off" ? "꺼짐" : "쓸 수 없음"}
         </span>
       </div>
-      {state && <p className="settings-notice" role="status">{STATE_TEXT[state]}</p>}
+      {state && (
+        // #435: 켜짐만 초록, 꺼짐 · 미지원은 중립 안내, 차단 · 서버 꺼짐은 주의
+        <p className={`settings-notice ${state === "on" ? "" : state === "denied" || state === "server-off" ? "notice-warn" : "notice-info"}`}
+          role="status">{STATE_TEXT[state]}</p>
+      )}
 
       <div className="settings-actions">
         {state === "off" && (
@@ -73,12 +77,13 @@ export default function PushSettings() {
       {notice && <p className="settings-notice" role="status">{notice}</p>}
 
       <h3>알림 받을 시장</h3>
-      <p className="muted small">이 기기의 푸시와 앱 안 토스트에 같이 적용됩니다. 앱을 열어 둔 장중에는 푸시가 꺼진 기기에도 화면 위에 알려 드립니다.</p>
+      <p className="muted small">✓ 표시가 받는 시장입니다. 눌러서 켜고 끕니다. 이 기기의 푸시와 앱 안 토스트에 같이 적용됩니다. 앱을 열어 둔 장중에는 푸시가 꺼진 기기에도 화면 위에 알려 드립니다.</p>
       <div className="push-markets">
         {TOAST_MARKETS.map(({ key, label }) => (
           <button key={key} type="button" className={`chip ${markets[key] ? "chip-on" : ""}`} aria-pressed={markets[key]}
             disabled={busy} onClick={() => toggleMarket(key)}>
-            {label}
+            <span aria-hidden="true" className="push-mark">{markets[key] ? "✓" : "＋"}</span>{label}
+            <span className="sr-only">{markets[key] ? " 받음" : " 안 받음"}</span>
           </button>
         ))}
       </div>

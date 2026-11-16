@@ -32,8 +32,9 @@ function safeDecode(v: string): string {
 function useHashRoute(): string {
   const [hash, setHash] = useState(() => window.location.hash || "#/");
   useEffect(() => {
-    const onChange = () => {
+    const onChange = (e: HashChangeEvent) => {
       navigation.moved = true;
+      navigation.prev = new URL(e.oldURL).hash || "#/";
       setHash(window.location.hash || "#/");
     };
     window.addEventListener("hashchange", onChange);
@@ -124,7 +125,6 @@ export default function App() {
         )}
         <div className="topbar-right">
           {config?.fake_runs && <span className="pill pill-warn">FAKE 모드</span>}
-          {config && <span className="pill pill-broker">broker: {config.broker}</span>}
           {offline && <span className="pill pill-bad">API 연결 안 됨</span>}
           {user && (
             <>

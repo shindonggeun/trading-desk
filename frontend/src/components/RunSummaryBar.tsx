@@ -26,7 +26,7 @@ function opinionOf(plan: Plan): string {
 const RunSummaryBar = forwardRef<HTMLDivElement, { run: Run; plan: Plan | null; status: RunStatus; events: DeskEvent[] }>(
   function RunSummaryBar({ run, plan, status, events }, ref) {
     const [open, setOpen] = useState(false);
-    const name = run.options.name ? `${run.options.name} ${run.ticker}` : run.ticker;
+    const name = run.options.name && run.options.name !== run.ticker ? `${run.options.name} ${run.ticker}` : run.ticker;  // #435 KORU KORU 안 되게
     const working = status === "running" || status === "queued";
     const who = working ? current(events) : null;
     const op = plan ? opinionOf(plan) : null;

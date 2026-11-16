@@ -56,6 +56,8 @@ def test_fake_run_streams_the_whole_desk_and_ends_with_a_plan(db_url):
         assert speakers[:4] == ["market_analyst", "sentiment_analyst", "news_analyst", "fundamentals_analyst"]
         assert speakers[-2:] == ["portfolio_manager", "consensus"]   # #94 closes the chat
         assert [e["type"] for e in events][-2:] == ["plan", "done"]
+        running = next(e for e in events if e["type"] == "status" and e["content"] == "running")
+        assert running["data"]["models"] == {"fake": True}          # #416: no model answered
 
         # The stream replays everything after the given id and closes once the run is over.
         body = client.get(f"/api/runs/{run['id']}/stream?after=3").text
@@ -136,3 +138,31 @@ def test_delete_run_removes_it_with_its_events_but_not_an_active_one(db_url):
         assert client.delete(f"/api/runs/{failed}").status_code == 204
         assert client.delete(f"/api/runs/{run_id}").status_code == 404
         assert client.get("/api/runs").json()["total"] == 1
+
+
+def test_a_run_records_the_models_it_used_and_no_secret(db_url, monkeypatch):
+    """#416: the running event names the provider, each tier's model and effort - names only."""
+    import tradingagents.default_config as tc
+
+    config = {"llm_provider": "chatgpt", "quick_think_provider": None, "quick_think_llm": "gpt-6-sol",
+              "deep_think_llm": "gpt-6-sol", "openai_reasoning_effort": "medium",
+              "quick_think_reasoning_effort": "low", "api_key": "sk-secret", "backend_url": "https://x"}
+    monkeypatch.setattr(tc, "build_default_config", lambda: dict(config))
+    fake = make_fake_runner(0)
+
+    def real(request, emit, portfolio):            # not marked fake: a real run as far as the desk knows
+        return fake(request, emit, portfolio)
+
+    settings = Settings(database_url=db_url, fake_runs=True, fake_delay=0)
+    with TestClient(create_app(settings, runner=real), base_url="https://testserver") as client:
+        engine = make_engine(db_url)
+        Auth(engine, timedelta(hours=1), timedelta(hours=1)).create_user(OWNER, PASSWORD)
+        engine.dispose()
+        assert client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD}).status_code == 204
+        run_id = client.post("/api/runs", json={"ticker": "NVDA"}).json()["id"]
+        _wait_done(client, run_id)
+        events = client.get(f"/api/runs/{run_id}/events").json()
+    running = next(e for e in events if e["type"] == "status" and e["content"] == "running")
+    assert running["data"]["models"] == {"provider": "chatgpt", "quick": "gpt-6-sol", "deep": "gpt-6-sol",
+                                         "quick_effort": "low", "deep_effort": "medium"}
+    assert "sk-secret" not in str(events) and "https://x" not in str(events)

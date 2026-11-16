@@ -36,7 +36,10 @@ DIR = PKG / "data" / "backtest"
 RULES_ROOT = "backtest"          # the module whose import closure is the rule code
 # #424: modules that fetch or file the inputs (bars, investor flow, news), not rules: the walk stops
 # at them and they are left out, so a change in how data is fetched does not mark the snapshots stale
-DATA_MODULES = frozenset({"prices", "flow_history", "news_history", "macro_news", "news_digest", "sector_news"})
+# #432: session_progress is the clock of a live plan (how much of today's session has run) - the
+# backtest never calls it
+DATA_MODULES = frozenset({"prices", "flow_history", "news_history", "macro_news", "news_digest", "sector_news",
+                          "session_progress"})
 
 
 def rule_modules(root: str = RULES_ROOT, pkg: Path = PKG, data: frozenset[str] = DATA_MODULES) -> list[str]:

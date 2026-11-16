@@ -173,3 +173,26 @@ def test_the_chat_settings_fall_back_instead_of_failing(monkeypatch):
     monkeypatch.setenv("DESK_CHAT_REASONING_EFFORT", "hgih")
     s = Settings()
     assert (s.chat_model_tier, s.chat_reasoning_effort) == ("deep", "")
+
+
+def test_the_playbook_and_calendar_lookups_say_when_they_read(db_url, monkeypatch):
+    """#432: the answer can name the time its numbers are from, and today's volume note goes through."""
+    from desk import market_calendar, playbook_live
+    from desk.api import create_app
+    from desk.settings import Settings
+
+    async def current(prices, ticker, horizon=None, risk=None):
+        return {"as_of": "2026-11-16T12:02:00+00:00", "volume_note": "오늘 거래량은 아직 집계 중",
+                "summary": {"verdict": "wait"}, "direction": None, "long": {"setup": "dip_catch"}, "short": {}}
+
+    def month_view(month):
+        return {"days": []}
+
+    monkeypatch.setattr(playbook_live, "current", current)
+    monkeypatch.setattr(market_calendar, "month_view", month_view)
+    tools = create_app(Settings(database_url=db_url)).state.chat_tools
+    pb = asyncio.run(tools["playbooks"].run({"ticker": "SOXL"}))
+    assert next(iter(pb)) == "as_of" and pb["as_of"] == "2026-11-16T21:02:00+09:00"   # KST, as the other lookups
+    assert "집계 중" in pb["volume_note"] and pb["long"]["setup"] == "dip_catch"
+    week = asyncio.run(tools["calendar_week"].run({}))
+    assert week["days"] == [] and week["as_of"].endswith("+09:00")

@@ -19,7 +19,7 @@ import time
 from collections import OrderedDict
 from datetime import UTC, datetime
 
-from . import horizons, playbook, risk_regime, setup_filter, summary, trigger, value_swing
+from . import horizons, playbook, risk_regime, session_progress, setup_filter, summary, trigger, value_swing
 from .sr import frame_bars, support_resistance
 
 log = logging.getLogger(__name__)
@@ -80,7 +80,8 @@ async def _compute(prices, ticker: str, h: horizons.Horizon, run_pb: dict | None
         # #167: the oversold swing buy on the bars now (an analysis keeps the long it was given)
         fresh = value_swing.apply(fresh, daily, secondary if frame.secondary == "1w" else None, frame.id, sr, market)
     # #285: the same setup filter and edge score as an analysis and the backtest
-    fresh = setup_filter.apply(fresh, daily, secondary if frame.secondary == "1w" else None, market, frame.id)
+    fresh = setup_filter.apply(fresh, daily, secondary if frame.secondary == "1w" else None, market, frame.id,
+                               elapsed=session_progress.elapsed(ticker, daily))   # #432: today's volume so far
     playbook.set_exits(fresh, ticker, frame)            # #239
     out = playbook.track(fresh, run_pb, primary, frame)
     await _triggers(prices, ticker, out, frame, live)

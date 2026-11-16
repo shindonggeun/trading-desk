@@ -1201,6 +1201,7 @@ def track(fresh: dict, run_pb: dict | None, primary: list[dict], h: horizons.Hor
     page never shows levels the plan did not have. Without, the fresh computation as it is."""
     out = dict(run_pb) if run_pb else dict(fresh)
     out["regime"] = fresh["regime"]
+    out["volume_note"] = fresh.get("volume_note")        # #432: today's session now, not the run's
     ref = fresh["frame"]["reference_price"]
     out["frame"] = {**(run_pb or fresh)["frame"], "reference_price": ref}
     atr = out["frame"]["atr"] or fresh["frame"]["atr"]

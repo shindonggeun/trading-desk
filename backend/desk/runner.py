@@ -19,6 +19,7 @@ from . import (
     outlook,
     playbook,
     risk_regime,
+    session_progress,
     setup_filter,
     summary,
     timing,
@@ -515,7 +516,8 @@ class RunManager:
             # #167: the oversold swing buy (the swing frame's secondary bars are the weekly ones)
             pb = value_swing.apply(pb, daily, secondary if h.secondary == "1w" else None, h.id, sr, market, vix)
             # #285: the setups kept where the chart showed an edge, scored on it
-            pb = setup_filter.apply(pb, daily, secondary if h.secondary == "1w" else None, market, h.id)
+            pb = setup_filter.apply(pb, daily, secondary if h.secondary == "1w" else None, market, h.id,
+                                    elapsed=session_progress.elapsed(ticker, daily))   # #432: today's volume so far
             return playbook.set_exits(pb, ticker, h)          # #239: the trail where the backtest chose it
         except Exception as exc:  # noqa: BLE001 - incl. timeout
             log.warning("playbooks for %s failed: %s", ticker, exc)

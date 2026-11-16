@@ -24,6 +24,14 @@ the deepest fall of the basket's running R -161.6R → -68.5R; pullback buy -0.0
 dip-catch -0.098R → -0.047R. The table rebuilt on it (`python -m desk.cli calibrate`, held-out from
 2024-06-19) reads R -0.029 / -0.101 / +0.022 / +0.193 by band 0 · 40 · 60 · 80. Only the swing frame
 was measured: the other horizons are left as they are. Pure functions; the features read the plan's own bars only.
+
+#432: a live plan's last daily bar can be the session still trading (or not open yet - a US pre-market
+bar). Its volume so far against a whole day's average read 0.06x before the open and dropped a
+dip-catch as "dry". ``elapsed`` (desk.session_progress) says how much of that session has passed:
+before the open (or too little of it) the volume is not judged - the dry-volume rule keeps the side and
+the volume edge is ``pending``, counted as not met (the bands stay "edges met") - and later the volume
+is scaled to a whole day by the time passed. The backtest's bars are finished sessions (``elapsed``
+None), so its numbers do not move.
 """
 
 from __future__ import annotations
@@ -41,6 +49,17 @@ EDGES = (                # (id, feature, at least, label) - the score's evidence
     ("edge_trend", "slope20", 0.046, "20일선 상승"),
     ("edge_volume", "vol_ratio", 1.08, "거래량 평균 이상"),
 )
+VOL_MIN_ELAPSED = 0.15   # #432: less of the session than this has passed - its volume is not judged yet
+
+
+def volume_note(raw: float | None, elapsed: float | None) -> str | None:
+    """#432: what a live plan did with a session still trading, for the card and the chat."""
+    if elapsed is None:
+        return None
+    if elapsed < VOL_MIN_ELAPSED or raw is None:
+        return "오늘 거래량은 아직 집계 중(장 전 · 장 초반) — 거래량 조건은 판정에서 뺌"
+    return (f"오늘 거래량은 진행 중 — 경과 시간({elapsed:.0%}) 비례로 하루치로 환산해 비교"
+            f"(지금까지 {raw:.2f}배 → 환산 {raw / elapsed:.2f}배)")
 
 
 def _pct(x: float | None) -> str:
@@ -68,24 +87,41 @@ def verdict(side: str, setup: str, f: dict) -> dict | None:
     return None
 
 
-def edge_conditions(f: dict) -> list[dict]:
+def edge_conditions(f: dict, pending: frozenset[str] = frozenset()) -> list[dict]:
+    """``pending``: features not judged yet (#432, today's volume before the open) - shown, met None,
+    and counted as not met by desk.playbook._score."""
     out = []
     for cid, name, at_least, label in EDGES:
         v = f.get(name)
+        if name in pending:
+            out.append({"id": cid, "met": None, "how": "edge", "value": None, "pending": True,
+                        "label": f"{label}(계획 시점 장 전 · 장 초반이라 판정 안 함)"})
+            continue
         out.append({"id": cid, "met": v is not None and v >= at_least, "how": "edge", "value": v, "label": label})
     return out
 
 
 def apply(pb: dict | None, daily: list[dict], weekly: list[dict] | None, risk: dict | None, horizon: str,
-          calibrate: bool = True) -> dict | None:
+          calibrate: bool = True, elapsed: float | None = None) -> dict | None:
     """The playbooks with the sides the rules drop set to none (``filtered``) and the kept longs
-    scored on ``EDGES``. ``calibrate`` looks the desk's record up again at the new score."""
+    scored on ``EDGES``. ``calibrate`` looks the desk's record up again at the new score.
+    ``elapsed``: desk.session_progress.elapsed of the last daily bar on a live plan (#432); None for
+    finished bars."""
     from . import playbook
 
     if not ENABLED or not pb or horizon not in HORIZONS:
         return pb
     f = entry_features.compute(daily, weekly, risk) if daily else {}
+    pending: frozenset[str] = frozenset()
     out = dict(pb)
+    if elapsed is not None:
+        raw = f.get("vol_ratio")
+        out["volume_note"] = volume_note(raw, elapsed)
+        if raw is None or elapsed < VOL_MIN_ELAPSED:
+            f = {**f, "vol_ratio": None}
+            pending = frozenset({"vol_ratio"})
+        else:
+            f = {**f, "vol_ratio": round(raw / elapsed, 2)}
     for name in ("long", "short"):
         s = out.get(name) or {}
         setup = s.get("setup")
@@ -98,7 +134,7 @@ def apply(pb: dict | None, daily: list[dict], weekly: list[dict] | None, risk: d
                          "direction": s.get("direction"), "filtered": cut}
             continue
         if name == "long":
-            conditions = [c for c in s.get("conditions") or [] if c.get("how") != "edge"] + edge_conditions(f)
+            conditions = [c for c in s.get("conditions") or [] if c.get("how") != "edge"] + edge_conditions(f, pending)
             out[name] = {**s, "conditions": conditions,
                          "score": playbook._score((s.get("zone") or {}).get("score") or 0, conditions)}
     if calibrate:

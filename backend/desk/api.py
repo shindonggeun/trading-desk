@@ -1584,6 +1584,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 return {"error": "시장 투매 점수를 쓸 수 없는 환경"}
             return await asyncio.to_thread(risk, clean_ticker(a.get("ticker") or "SPY"))
 
+        def as_of() -> str:                     # #432: when a lookup read its numbers (KST)
+            return datetime.now(market_calendar.KST).isoformat(timespec="seconds")
+
         async def calendar_week(_a: dict):
             today = datetime.now(market_calendar.KST).date()
             end = today + timedelta(days=7)
@@ -1595,7 +1598,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                           "events": [keep(e, "label", "at", "importance") for e in d["events"]],
                           "earnings": [keep(r, "ticker", "name", "when") for r in d["earnings"][:8]]}
                          for d in view["days"] if today.isoformat() <= d["date"] <= end.isoformat()]
-            return days
+            return {"as_of": as_of(), "days": days}
 
         async def quote(a: dict):
             ticker = clean_ticker(a["ticker"])
@@ -1609,7 +1612,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         async def playbooks(a: dict):
             pb = await playbook_live.current(prices, clean_ticker(a["ticker"]), a.get("horizon"), risk=risk)
             side_keys = ("setup", "reason", "zone", "entries", "stop", "targets", "score", "direction")
-            return {**keep(pb, "summary", "fetched_at", "direction"),
+            # #432: as_of is the playbooks' own computation time; volume_note says today's volume is
+            # still forming (not a whole day to hold against the 20-day average)
+            at = pb.get("as_of")
+            at = datetime.fromisoformat(at).astimezone(market_calendar.KST).isoformat(timespec="seconds") if at else None
+            return {"as_of": at, **keep(pb, "volume_note", "summary", "direction"),
                     "long": keep(pb.get("long"), *side_keys), "short": keep(pb.get("short"), *side_keys)}
 
         async def bottom(a: dict):

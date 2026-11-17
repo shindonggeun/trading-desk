@@ -280,3 +280,63 @@ def test_the_pictures_are_stored_on_the_report_and_served_with_a_session(db_url,
         assert client.get("/api/reports/rp_..%2F..%2Fx/images/1").status_code == 404
         client.cookies.clear()
         assert client.get(f"/api/reports/{saved['id']}/images/1").status_code == 401
+
+
+def test_the_request_uses_a_live_model_and_only_what_gpt_image_models_take(tmp_path, monkeypatch, caplog):
+    seen: list = []
+    report = _report()
+    ri.ReportImages(KEY, tmp_path, transport=_ok(seen)).draw(report)
+    body = json.loads(seen[0].content)
+    assert body == {"model": ri.DEFAULT_MODEL, "prompt": body["prompt"], "n": 1, "size": "1536x1024",
+                    "quality": "medium"}                    # no response_format: GPT image models refuse it
+    assert ri.DEFAULT_MODEL not in ri.RETIRED_MODELS and len(body["prompt"]) <= 32000
+    for retired in ("gpt-image-1", " dall-e-3 "):           # shut down: every call would be a 400
+        monkeypatch.setenv("OPENAI_API_KEY", KEY)
+        monkeypatch.setenv("TRADINGAGENTS_LLM_PROVIDER", "chatgpt")
+        monkeypatch.setenv("DESK_REPORT_IMAGE_MODEL", retired)
+        with caplog.at_level(logging.WARNING):
+            assert ri.from_env(tmp_path).model == ri.DEFAULT_MODEL
+        assert "is shut down" in caplog.text and KEY not in caplog.text
+    monkeypatch.setenv("DESK_REPORT_IMAGE_MODEL", "gpt-image-2.5-sunburst")
+    assert ri.from_env(tmp_path).model == "gpt-image-2.5-sunburst"
+
+
+def test_a_refused_picture_logs_only_the_error_code_type_and_param_and_ends_the_report(tmp_path, caplog):
+    seen: list = []
+
+    def refuse(request):
+        seen.append(request)
+        return httpx.Response(400, json={"error": {
+            "message": f"The model has been shut down. key {KEY}", "type": "invalid_request_error",
+            "param": "model", "code": "model_not_found"}})
+    caplog.set_level(logging.DEBUG)
+    report = _report()
+    assert len(ri.plan(report)) == 2
+    pics = ri.ReportImages(KEY, tmp_path, transport=httpx.MockTransport(refuse))
+    assert pics.draw(report) == {}
+    assert len(seen) == 1 and pics.ledger.counts(_now()) == (1, 1)        # the second would be refused too
+    assert "HTTP 400 (code=model_not_found type=invalid_request_error param=model" in caplog.text
+    assert KEY not in caplog.text and "shut down. key" not in caplog.text
+    assert ri.plan(report)[0]["prompt"][:40] not in caplog.text
+
+
+def test_a_blocked_prompt_tries_the_next_picture_and_odd_error_fields_are_not_logged(tmp_path, caplog):
+    answers = iter([
+        httpx.Response(400, json={"error": {"code": "moderation_blocked", "type": "image_generation_user_error",
+                                            "param": None, "message": "blocked"}}),
+        httpx.Response(429, json={"error": {"code": f"x {KEY}", "type": "a" * 65, "param": 7}}),
+    ])
+    seen: list = []
+
+    def handle(request):
+        seen.append(request)
+        return next(answers)
+    caplog.set_level(logging.WARNING)
+    assert ri.ReportImages(KEY, tmp_path, transport=httpx.MockTransport(handle)).draw(_report()) == {}
+    assert len(seen) == 2
+    assert "code=moderation_blocked type=image_generation_user_error param=-" in caplog.text
+    assert "HTTP 429 (code=? type=? param=?" in caplog.text and KEY not in caplog.text
+    caplog.clear()
+    plain = ri.ReportImages(KEY, tmp_path / "b", transport=httpx.MockTransport(lambda _r: httpx.Response(502, text="<html>")))
+    plain.draw(_report())
+    assert "HTTP 502 (code=- type=- param=-" in caplog.text

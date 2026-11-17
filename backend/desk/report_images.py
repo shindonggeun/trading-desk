@@ -12,8 +12,11 @@ A ChatGPT plan (the desk's sign-in) cannot call the image API, so this needs an 
   before each call (a timeout may still be billed); a ledger that cannot be read or written stops the
   pictures. A cap reached, a failure or a timeout: the report simply has fewer pictures.
 - The key is only ever sent in the request's Authorization header. It is never logged, never part of an
-  error, a response or this object's repr; a failed call logs the HTTP status (never the body - an
-  OpenAI error body can quote part of the key).
+  error, a response or this object's repr; a failed call logs the HTTP status and the error body's
+  ``code`` / ``type`` / ``param`` only, each cut to a short identifier (never the message - an OpenAI error
+  message can quote part of the key - and never the prompt).
+- A 4xx answer (other than ``moderation_blocked``, which is about that one prompt) ends the report's
+  drawing: the next picture would be refused the same way and still use the caps.
 
 Pictures are PNG files under ``CACHE_DIR/<report id>/<n>.png`` (n = 1, 2), served by
 ``GET /api/reports/{id}/images/{n}`` (desk.api).
@@ -46,7 +49,11 @@ MIN_CALL_SEC = 20          # less time left than this: no new picture
 MAX_BYTES = 8 * 1024 * 1024          # a picture larger than this is not kept
 REPORT_ID = re.compile(r"rp_[0-9a-f]{20}")          # always used with fullmatch
 PNG = b"\x89PNG\r\n\x1a\n"
-DEFAULT_MODEL = "gpt-image-1"
+# gpt-image-1 was shut down on 2026-10-23 (OpenAI API reference, images/create: "Use gpt-image-2.5-sunburst or
+# gpt-image-2.5-flare instead") and answered every picture with HTTP 400 (#497). The size and quality below
+# are ones every GPT image model takes.
+DEFAULT_MODEL = "gpt-image-2.5-flare"
+RETIRED_MODELS = frozenset({"gpt-image-1", "dall-e-2", "dall-e-3"})
 DEFAULT_SIZE = "1536x1024"
 DEFAULT_QUALITY = "medium"
 
@@ -54,6 +61,24 @@ DEFAULT_QUALITY = "medium"
 STYLE = ("Flat vector infographic for a beginner investor, clean and friendly. Palette: deep navy background, "
          "teal and amber accents, white text. A small round teal robot mascot with a desk-lamp head may point at "
          "the key part. Large shapes, generous spacing, no photo realism, no logos, no brand names.")
+ERROR_FIELD = re.compile(r"[A-Za-z0-9_.\-\[\]]{1,64}")     # always used with fullmatch
+
+
+def _error_fields(r: httpx.Response) -> dict[str, str]:
+    """``code`` / ``type`` / ``param`` of an OpenAI error body, each kept only when it is a short identifier
+    ("-" when missing, "?" when it is anything else) - never the message, which can quote the key."""
+    try:
+        err = r.json().get("error")
+    except (ValueError, AttributeError):
+        err = None
+    err = err if isinstance(err, dict) else {}
+    out = {}
+    for name in ("code", "type", "param"):
+        v = err.get(name)
+        out[name] = "-" if v is None else v if isinstance(v, str) and ERROR_FIELD.fullmatch(v) else "?"
+    return out
+
+
 NO_OTHER_TEXT = ("Write ONLY the labels and numbers listed here, exactly as given (Korean text as given); "
                  "write no other words, numbers, dates or prices. If a label does not fit, leave it out.")
 
@@ -171,6 +196,10 @@ class ReportImages:
             key = ""
         self.__key = key
         self.root, self.per_day, self.per_month = Path(root or CACHE_DIR), per_day, per_month
+        model = (model or "").strip() or DEFAULT_MODEL
+        if model in RETIRED_MODELS:             # shut down: every call would be a 400 that still uses the caps
+            log.warning("report images: model %r is shut down - using %s", model, DEFAULT_MODEL)
+            model = DEFAULT_MODEL
         self.model, self.size, self.quality = model, size, quality
         self.transport, self.deadline_sec = transport, deadline_sec
         self.ledger = Ledger(self.root / "usage.json")
@@ -194,7 +223,8 @@ class ReportImages:
         day, month = got
         return max(0, min(PER_REPORT, self.per_day - day, self.per_month - month))
 
-    def _draw(self, prompt: str, timeout: float) -> bytes | None:
+    def _draw(self, prompt: str, timeout: float) -> tuple[bytes | None, bool]:
+        """(the PNG or ``None``, whether another picture is worth asking for)."""
         body = {"model": self.model, "prompt": prompt, "n": 1, "size": self.size, "quality": self.quality}
         try:
             headers = {"Authorization": f"Bearer {self.__key}", "Content-Type": "application/json"}
@@ -203,19 +233,21 @@ class ReportImages:
                 r = client.post(URL, headers=headers, json=body)
         except (httpx.HTTPError, UnicodeError) as exc:
             log.warning("report image: request failed (%s)", type(exc).__name__)
-            return None
+            return None, True
         if r.status_code != 200:
-            log.warning("report image: HTTP %d", r.status_code)      # never the body: it can quote the key
-            return None
+            err = _error_fields(r)                  # never the message: it can quote the key
+            log.warning("report image: HTTP %d (code=%s type=%s param=%s, model %s)",
+                        r.status_code, err["code"], err["type"], err["param"], self.model)
+            return None, not (400 <= r.status_code < 500 and err["code"] != "moderation_blocked")
         try:
             data = base64.b64decode(r.json()["data"][0]["b64_json"], validate=True)
         except (ValueError, KeyError, IndexError, TypeError):
             log.warning("report image: unexpected response shape")
-            return None
+            return None, True
         if not data.startswith(PNG) or len(data) > MAX_BYTES:
             log.warning("report image: not a PNG or too large (%d bytes)", len(data))
-            return None
-        return data
+            return None, True
+        return data, True
 
     def draw(self, report: dict) -> dict[int, dict]:
         """The pictures of a stored report (it carries its ``id``): ``{section index: {"url", "alt"}}``.
@@ -235,9 +267,11 @@ class ReportImages:
                 log.warning("report images: the usage ledger cannot be written (%s) - no pictures",
                             type(exc).__name__)
                 break
-            data = self._draw(pic["prompt"], min(TIMEOUT_SEC, left))
+            data, go_on = self._draw(pic["prompt"], min(TIMEOUT_SEC, left))
             if data is None:
-                continue
+                if go_on:
+                    continue
+                break
             n = len(out) + 1
             path = image_path(rid, n, self.root)
             try:
@@ -266,4 +300,4 @@ def from_env(root: Path | None = None) -> ReportImages:
         log.warning("OPENAI_API_KEY is set and the LLM provider is %r: the analyses use this key as well", provider)
     return ReportImages(key, root,
                         per_day=num("DESK_REPORT_IMAGES_PER_DAY", 4), per_month=num("DESK_REPORT_IMAGES_PER_MONTH", 20),
-                        model=(os.getenv("DESK_REPORT_IMAGE_MODEL") or DEFAULT_MODEL).strip())
+                        model=os.getenv("DESK_REPORT_IMAGE_MODEL") or DEFAULT_MODEL)

@@ -6,7 +6,6 @@ import FuturesQuoteCard from "../components/FuturesQuoteCard";
 import CreditPanel from "../components/CreditPanel";
 import MacroBrief from "../components/MacroBrief";
 import MarketBoard from "../components/MarketBoard";
-import MarketFlowPanel from "../components/MarketFlowPanel";
 import WeekAgenda from "../components/WeekAgenda";
 import SectorNews from "../components/SectorNews";
 import NewRunForm from "../components/NewRunForm";
@@ -18,6 +17,9 @@ import WeeklyMapBrief from "../components/WeeklyMapBrief";
 import BottomZoneBrief from "../components/BottomZoneBrief";
 import HalvingBrief from "../components/HalvingBrief";
 import TodayStrip from "../components/TodayStrip";
+import WhenVisible from "../components/WhenVisible";
+import SectionBoundary from "../components/SectionBoundary";
+import ChunkFailed from "../components/ChunkFailed";
 import DashSummary from "../components/DashSummary";
 import { time } from "../format";
 import { DEFAULT_H, GRID_COLS, HEAD_ROWS, KEY_H_STEP, MIN_W, loadBand, measureLayout, resetBand, saveAutoHeights, saveBand, unhideSection, type Band, type BandLayout } from "../dashLayout";
@@ -25,6 +27,8 @@ import { useAutoHeights } from "../dashAutoHeight";
 
 // #487 격자(react-grid-layout)는 배치를 편집하거나 저장한 배치가 있을 때만 불러온다
 const DashGrid = lazy(() => import("../components/DashGrid"));
+// #537 차트 라이브러리를 쓰는 구역은 그 구역이 보일 때 받는다(첫 화면 JS 에서 뺀다)
+const MarketFlowPanel = lazy(() => import("../components/MarketFlowPanel"));
 import type { DeskRegime, RegimeSnapshot } from "../types";
 
 // #410 데스크 자체 국면(#409) — semibot 이 없는 서버에서도 카드가 빈 문구가 아니게
@@ -504,7 +508,15 @@ export default function Dashboard() {
         {shownOpen && (
           <div id={bodyId} className="dash-body" ref={(el) => { if (el) { if (draft) el.setAttribute("inert", ""); else el.removeAttribute("inert"); } }}>
             {/* #519 내용 높이를 재는 감싸개(격자에서만 잰다) */}
-            <div className="dash-body-inner" ref={inGrid ? auto.register(id) : undefined}>{s.render()}</div>
+            <div className="dash-body-inner" ref={inGrid ? auto.register(id) : undefined}>
+              {/* #537 화면 밖 구역은 보일 때 그리고(그 전엔 API 도 안 부른다), 코드가 따로인 구역은 받는 동안 안내 */}
+              {/* #362 알림(#/?flow=intraday)이 연 수급 구역은 화면 밖이어도 바로 그려 "오늘 장중" 탭 · 스크롤이 일어나게 */}
+              <WhenVisible eager={id === "flow" && /[?&]flow=intraday(?:&|$)/.test(window.location.hash)}>
+                <SectionBoundary fallback={<ChunkFailed />}>
+                  <Suspense fallback={<p className="muted small">불러오는 중…</p>}>{s.render()}</Suspense>
+                </SectionBoundary>
+              </WhenVisible>
+            </div>
           </div>
         )}
       </section>

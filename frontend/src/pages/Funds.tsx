@@ -4,6 +4,9 @@ import { usdKo } from "../format";
 import { FAKE_FUNDS, fakeFund } from "../fundsFake";
 import type { FundBrief, FundChange, FundDetail, FundHolding } from "../types";
 
+/** #537 보유 종목 표를 한 번에 그리는 줄 수 — 비중 큰 순이라 앞쪽이 중요한 줄이다 */
+const ROW_STEP = 100;
+
 // #484 기관 포트폴리오(#/funds): 유명 기관 13F 보유 공시(#483). 목록 → 기관 상세(요약 · 보유 표 · 분기 고르기).
 // 13F 는 분기 끝 뒤 45일 안에 내는 공시라 보이는 보유는 최대 4~5개월 늦은 값이다 — 화면 맨 위에 밝힌다.
 
@@ -37,6 +40,7 @@ function Detail({ id, quarter, onQuarter }: { id: string; quarter: string | null
   const [failed, setFailed] = useState<string | null>(null);
   const [fake, setFake] = useState(false);
   const [showSold, setShowSold] = useState(true);
+  const [limit, setLimit] = useState(ROW_STEP);   // #537 보유 종목이 수백 개인 기관도 있다 — 처음엔 앞 100줄만
   useEffect(() => {
     let alive = true;
     setFailed(null);
@@ -84,7 +88,7 @@ function Detail({ id, quarter, onQuarter }: { id: string; quarter: string | null
             <tr><th scope="col">종목</th><th scope="col" className="num">주식 수</th><th scope="col" className="num">평가액</th><th scope="col" className="num">비중</th><th scope="col">전 분기 대비{d.prev_quarter ? `(${qKo(d.prev_quarter)})` : ""}</th></tr>
           </thead>
           <tbody>
-            {rows.map((h, n) => (
+            {rows.slice(0, limit).map((h, n) => (
               <tr key={`${h.cusip}-${h.put_call ?? ""}-${n}`} className={h.change === "sold" ? "fund-row-sold" : undefined}>
                 <th scope="row">
                   {h.ticker ? <a href={`#/chart/${encodeURIComponent(h.ticker)}`}>{h.ticker}</a> : <span className="muted">티커 없음</span>}
@@ -100,6 +104,11 @@ function Detail({ id, quarter, onQuarter }: { id: string; quarter: string | null
           </tbody>
         </table>
       </div>
+      {rows.length > limit && (
+        <button type="button" className="link small" onClick={() => setLimit((v) => v + ROW_STEP * 4)}>   {/* 한 번에 400줄 더 */}
+          더 보기 ({limit.toLocaleString("ko-KR")} / {rows.length.toLocaleString("ko-KR")}줄)
+        </button>
+      )}
     </section>
   );
 }

@@ -1,27 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { api, setUnauthorizedHandler, Unauthorized } from "./api";
 import type { DeskConfig } from "./types";
 import LoginForm from "./components/LoginForm";
 import Dashboard from "./pages/Dashboard";
-import RunView from "./pages/RunView";
-import Review from "./pages/Review";
-import Live from "./pages/Live";
-import Sectors from "./pages/Sectors";
-import History from "./pages/History";
+import SectionBoundary from "./components/SectionBoundary";
+import ChunkFailed from "./components/ChunkFailed";
 import { activeNav, NAV, navigation } from "./nav";
-import ChartView from "./pages/ChartView";
-import Settings from "./pages/Settings";
-import Paper from "./pages/Paper";
-import Backtest from "./pages/Backtest";
-import WeeklyMap from "./pages/WeeklyMap";
-import FuturesView from "./pages/FuturesView";
-import Tips from "./pages/Tips";
-import Funds from "./pages/Funds";
-import Reports from "./pages/Reports";
-import Halving from "./pages/Halving";
-import Charts from "./pages/Charts";
-import CalendarView from "./pages/CalendarView";
-import Chat from "./pages/Chat";
+// #537 대시보드 밖 화면은 갈 때 받는다(메뉴에 올리면 미리)
+import {
+  Backtest, CalendarView, Charts, ChartView, Chat, FuturesView, Funds, Halving, History, Live, Paper, prefetchRoute,
+  Reports, Review, RunView, Sectors, Settings, Tips, WeeklyMap,
+} from "./lazyPages";
 import ChatWidget from "./components/ChatWidget";
 import AppNotices from "./components/AppNotices";
 import FlowAlertToast, { FLOW_ROUTE } from "./components/FlowAlertToast";
@@ -125,6 +114,7 @@ export default function App() {
           <nav aria-label="메뉴" className="nav-main">
             {NAV.map((g) => (
               <a key={g.id} href={g.items[0].href} className={here?.group.id === g.id ? "active" : ""}
+                onPointerEnter={() => prefetchRoute(g.items[0].href)} onFocus={() => prefetchRoute(g.items[0].href)}
                 aria-current={here?.group.id === g.id ? "page" : undefined}>{g.label}</a>
             ))}
           </nav>
@@ -133,6 +123,7 @@ export default function App() {
           <nav aria-label={`${here.group.label} 하위 메뉴`} className="nav-sub">
             {here.group.items.map((i) => (
               <a key={i.href} href={i.href} className={here.item === i ? "active" : ""}
+                onPointerEnter={() => prefetchRoute(i.href)} onFocus={() => prefetchRoute(i.href)}
                 aria-current={here.item === i ? "page" : undefined}>{i.label}</a>
             ))}
           </nav>
@@ -147,6 +138,7 @@ export default function App() {
               <button type="button" className="topbar-help" aria-label="이 화면 안내" title="이 화면 안내"
                 onClick={() => { void startTour(tourForRoute(route)).then((r) => { if (r === "empty") void goAndStart("dashboard"); }); }}>?</button>
               <a href="#/settings" className={`topbar-settings${onSettings ? " active" : ""}`} aria-label="설정"
+                onPointerEnter={() => prefetchRoute("#/settings")} onFocus={() => prefetchRoute("#/settings")}
                 aria-current={onSettings ? "page" : undefined} title="설정">⚙<span className="topbar-settings-label"> 설정</span></a>
               <button type="button" className="logout" onClick={logout}>로그아웃</button>
             </>
@@ -158,6 +150,10 @@ export default function App() {
       {/* #451 연결 없음 · 앱으로 설치 안내 */}
       <AppNotices />
 
+      {/* #537 화면 코드를 받는 동안은 짧은 안내 — 머리줄 · 메뉴는 그대로 */}
+      {/* 배포 뒤 오래 열어 둔 탭은 옛 화면 조각이 없어 받기에 실패한다 — 앱 전체가 내려가지 않게 이 자리만 안내(화면을 바꾸면 다시 시도) */}
+      <SectionBoundary key={route.split("?")[0]} fallback={<main className="page-loading"><ChunkFailed /></main>}>
+      <Suspense fallback={<main className="page-loading"><p className="empty-state">화면 불러오는 중…</p></main>}>
       {user === undefined ? null : user === null ? (
         <LoginForm onLoggedIn={(name) => { setOffline(false); setUser(name); }} />
       ) : chartMatch ? (
@@ -199,6 +195,8 @@ export default function App() {
       ) : (
         <Dashboard />
       )}
+      </Suspense>
+      </SectionBoundary>
       {/* #340 어디서든 오른쪽 아래에서 여는 AI 채팅(채팅 크게 보기 화면에선 숨김) */}
       {user && <ChatWidget />}
       {/* #362 장중 수급 전향을 앱 안 토스트로 */}

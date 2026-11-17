@@ -18,13 +18,78 @@ export function setUnauthorizedHandler(handler: () => void) {
   onUnauthorized = handler;
 }
 
+/**
+ * #537 같은 GET 은 한 번만 — 대시보드 구역 여럿이 같은 경로(설정 · 달력 · 시세판 …)를 동시에 부르면 요청 하나를 나눠 쓴다.
+ * 천천히 바뀌는 경로는 짧게 기억해, 다른 화면에 갔다 돌아오면 다시 받지 않고 바로 보인다. 기억 시간은 그 구역의
+ * 갱신 간격보다 짧게 잡아 주기 갱신이 늘 새 값을 받는다. 쓰기(POST · PUT · DELETE …)가 한 번이라도 있으면 전부 잊는다.
+ */
+const CACHE_TTL: [RegExp, number][] = [
+  [/^\/api\/config$/, 300_000],
+  [/^\/api\/market\/credit\b/, 300_000],       // 하루 한 번 올라온다(구역 갱신 30분)
+  [/^\/api\/calendar\b/, 60_000],
+  [/^\/api\/regime$/, 60_000],
+  [/^\/api\/stats\/plans\b/, 60_000],
+  [/^\/api\/market\/weekly\b/, 60_000],
+  [/^\/api\/bottom-zone\b/, 60_000],
+  [/^\/api\/sector-news\b/, 60_000],            // 구역 갱신 10분
+  [/^\/api\/macro\/brief$/, 30_000],
+  // 모의 투자 요약은 설정 저장 뒤 서버가 다시 계산하는 동안 3초마다 다시 읽는다 — 기억하지 않는다
+  [/^\/api\/market\/fear$/, 30_000],            // 구역 갱신 1분
+];
+const cached = new Map<string, { at: number; data: unknown }>();
+const inflight = new Map<string, Promise<unknown>>();
+/** 지울 때마다 늘린다 — 지우기 전에 떠난 GET 의 응답은 기억하지도, 뒤에 온 호출과 나누지도 않는다 */
+let generation = 0;
+
+function ttlFor(path: string): number {
+  return CACHE_TTL.find(([re]) => re.test(path))?.[1] ?? 0;
+}
+
+/** 기억한 응답을 모두 잊는다(로그아웃 · 계정 바뀜 · 쓰기 뒤) */
+export function clearApiCache() {
+  generation++;
+  cached.clear();
+  inflight.clear();
+}
+
+// 응답 객체를 화면 여럿이 나눠 쓰면 한쪽이 고친 값이 다른 쪽에 비친다 — 나눠 줄 때는 복사본
+const copy = <T,>(v: T): T => (v == null || typeof v !== "object" ? v : structuredClone(v));
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (method !== "GET" || init?.body != null) {
+    clearApiCache();
+    return request<T>(path, init);
+  }
+  const ttl = ttlFor(path);
+  const hit = ttl ? cached.get(path) : undefined;
+  if (hit && Date.now() - hit.at < ttl) return copy(hit.data as T);
+  // 나눠 쓰는 요청은 경로로만 묶는다 — 한 호출자의 signal 로 끊으면 나머지도 실패하니 GET 에 signal 을 넘기면 묶지 않는다
+  const share = !init?.signal;
+  const running = share ? inflight.get(path) : undefined;
+  if (running) return running.then((v) => copy(v as T));
+  const gen = generation;
+  const p = request<T>(path, init)
+    .then((data) => {
+      // 저장본은 따로 — 첫 호출자가 받은 객체를 고쳐도 기억한 값은 그대로
+      if (ttl && gen === generation) cached.set(path, { at: Date.now(), data: copy(data) });
+      return data;
+    })
+    .finally(() => {
+      if (inflight.get(path) === p) inflight.delete(path);
+    });
+  if (share) inflight.set(path, p);
+  return p;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
   if (res.status === 401 && path !== "/api/auth/login") {
+    clearApiCache();
     onUnauthorized();
     throw new Unauthorized("login required");
   }

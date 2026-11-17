@@ -7,7 +7,7 @@ import { useFavorites } from "../favorites";
 import { price } from "../format";
 import type { WeeklyHistoryRow, WeeklyMap as Map, WeeklyMapError } from "../types";
 import { sameTicker } from "../ticker";
-import { chartsLink, nextLines, weeklyEvidence, weeklyWords, weeklyZone } from "../weekly";
+import { chartsLink, nextLines, WEEKLY_WORDS, weeklyEvidence } from "../weekly";
 
 /**
  * #205 주간 시장 지도(#202) — 지수마다 "지금 어디쯤인지, 어디까지 빠질 수 있고 어디가 바닥 후보인지"를
@@ -46,8 +46,8 @@ function MapCard({ map, focused }: { map: Map; focused: boolean }) {
     if (focused) ref.current?.scrollIntoView({ block: "start" });
   }, [focused]);
   const weekChange = prev ? ((map.close / prev.close - 1) * 100) : null;
-  const zone = weeklyZone(map);
-  const w = weeklyWords(map);
+  const zone = map.position;
+  const w = WEEKLY_WORDS[zone];
   const lines = nextLines(map);
   const evidence = weeklyEvidence(map);
   return (
@@ -73,8 +73,8 @@ function MapCard({ map, focused }: { map: Map; focused: boolean }) {
       {prev && (
         <p className="muted small wm-prev">
           지난주 대비 <span className={tone(weekChange)}>{pct(weekChange)}</span>
-          {weeklyZone(prev) !== zone
-            ? ` · 위치가 바뀜: ${weeklyWords(prev).name} → ${w.name}`
+          {prev.position !== zone
+            ? ` · 위치가 바뀜: ${WEEKLY_WORDS[prev.position].name} → ${w.name}`
             : ` · 위치 그대로(${w.name})`}
         </p>
       )}

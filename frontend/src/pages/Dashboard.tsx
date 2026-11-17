@@ -172,12 +172,11 @@ export default function Dashboard() {
   useEffect(() => {
     const reveal = () => {
       if (!/[?&]flow=intraday(?:&|$)/.test(window.location.hash)) return;
-      setPrefs((p) => {
-        if (!p.closed.includes("flow")) return p;
-        const next = { ...p, closed: p.closed.filter((c) => c !== "flow") };
-        savePrefs(next);
-        return next;
-      });
+      const cur = loadPrefs();               // 저장은 updater 밖에서(StrictMode 이중 실행에도 한 번)
+      if (!cur.closed.includes("flow")) return;
+      const next = { ...cur, closed: cur.closed.filter((c) => c !== "flow") };
+      savePrefs(next);
+      setPrefs(next);
     };
     reveal();
     window.addEventListener("hashchange", reveal);

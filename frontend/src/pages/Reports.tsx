@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import ExplainArticle from "../components/ExplainArticle";
+import { clearLatestReport } from "../latestReport";
 import { FAKE_REPORTS, fakeList } from "../reportsFake";
 import type { ReportDetail, ReportList, ReportSummary } from "../types";
 
@@ -19,16 +20,29 @@ function Subject({ r }: { r: ReportSummary }) {
   return <span className="muted small">{r.subject.name} <span className="rp-sym">{r.subject.symbol}</span> · {KIND_KO[r.subject.kind] ?? r.subject.kind}</span>;
 }
 
+// 같은 글이 두 번 붙지 않게 id 로 합친다
+const union = (a: ReportSummary[], b: ReportSummary[]) => [...a, ...b.filter((x) => !a.some((y) => y.id === x.id))];
+
 function useReportList() {
   const [list, setList] = useState<ReportList | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [fake, setFake] = useState(false);
-  const load = (before?: string) => api.reports(before)
-    .then((v) => { setFake(false); setFailed(null); setList((cur) => (before && cur ? { ...v, items: [...cur.items, ...v.items] } : v)); return v; })
+  /** 성공이면 목록, 예시로 바꿨으면 null, 실패면 false */
+  const load = (before?: string): Promise<ReportList | null | false> => api.reports(before)
+    .then((v) => {
+      setFake(false); setFailed(null);
+      setList((cur) => {
+        if (!cur) return v;
+        if (before) return { ...v, items: union(cur.items, v.items) };
+        // 첫 페이지를 다시 읽음(만드는 중 폴링) — "더 보기"로 붙여 둔 지난 글은 그대로 두고 새 글만 앞에
+        return { ...v, items: union(v.items, cur.items), next_before: cur.items.length > v.items.length ? cur.next_before : v.next_before };
+      });
+      return v;
+    })
     .catch((e) => {
       if (fakeable(e)) { setFake(true); setList(fakeList()); return null; }
       setFailed(e instanceof Error ? e.message : "불러오지 못했습니다");
-      return null;
+      return false;
     });
   return { list, failed, fake, load, setList };
 }
@@ -36,13 +50,23 @@ function useReportList() {
 function ListView() {
   const { list, failed, fake, load, setList } = useReportList();
   const [note, setNote] = useState<string | null>(null);
+  const [more, setMore] = useState(false);
   const timer = useRef<number | undefined>(undefined);
+  const wasGenerating = useRef(false);
   useEffect(() => { void load(); return () => window.clearTimeout(timer.current); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  // 만드는 중이면 몇 초마다 다시 읽어 끝나면 맨 위에 새 글을 보인다
+  // 만드는 중이면 몇 초마다 다시 읽어 끝나면 맨 위에 새 글을 보인다. 한 번 읽기에 실패해도(순단 · 재배포) 계속 다시 읽는다
   useEffect(() => {
     window.clearTimeout(timer.current);
-    if (list?.generating) timer.current = window.setTimeout(() => void load(), 5000);
+    const generating = !!list?.generating;
+    if (wasGenerating.current && !generating) clearLatestReport();   // 새 글이 나왔으니 "오늘 볼 것" 한 줄도 다시 읽게
+    wasGenerating.current = generating;
+    if (!generating) return;
+    const poll = () => {
+      timer.current = window.setTimeout(() => void load().then((v) => { if (v === false) poll(); }), 5000);
+    };
+    poll();
   }, [list]); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadMore = (before: string) => { setMore(true); void load(before).finally(() => setMore(false)); };
   const make = () => {
     setNote(null);
     api.createReport()
@@ -79,7 +103,7 @@ function ListView() {
           </li>
         ))}
       </ul>
-      {list?.next_before && <button type="button" className="link" onClick={() => void load(list.next_before ?? undefined)}>지난 리포트 더 보기</button>}
+      {list?.next_before && <button type="button" className="link" disabled={more} onClick={() => loadMore(list.next_before as string)}>{more ? "불러오는 중…" : "지난 리포트 더 보기"}</button>}
     </>
   );
 }
@@ -88,7 +112,8 @@ function DetailView({ id }: { id: string }) {
   const [r, setR] = useState<ReportDetail | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [fake, setFake] = useState(false);
-  const { list, load } = useReportList();
+  const [older, setOlder] = useState<ReportSummary | null>(null);
+  const [newer, setNewer] = useState<ReportSummary | null>(null);
   useEffect(() => {
     let alive = true;
     setR(null); setFailed(null);
@@ -103,11 +128,19 @@ function DetailView({ id }: { id: string }) {
     window.scrollTo({ top: 0 });
     return () => { alive = false; };
   }, [id]);
-  useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const items = list?.items ?? [];
-  const at = items.findIndex((x) => x.id === id);
-  const newer = at > 0 ? items[at - 1] : null;
-  const older = at >= 0 ? items[at + 1] ?? null : null;
+  // 지난 글은 이 글 바로 앞 페이지(before=id)의 첫 글 — 첫 페이지(20편) 밖의 옛 글 · 알림 링크에서도 이어 간다.
+  // 다음(더 새) 글은 첫 페이지에 이 글이 있을 때만(대개 최근 글이라 충분하다)
+  useEffect(() => {
+    let alive = true;
+    const fakeAt = () => { const items = fakeList().items; return { items, at: items.findIndex((x) => x.id === id) }; };
+    api.reports(id)
+      .then((v) => alive && setOlder(v.items[0] ?? null))
+      .catch((e) => { if (alive && fakeable(e)) { const { items, at } = fakeAt(); setOlder(at >= 0 ? items[at + 1] ?? null : null); } });
+    api.reports()
+      .then((v) => { const at = v.items.findIndex((x) => x.id === id); if (alive) setNewer(at > 0 ? v.items[at - 1] : null); })
+      .catch((e) => { if (alive && fakeable(e)) { const { items, at } = fakeAt(); setNewer(at > 0 ? items[at - 1] : null); } });
+    return () => { alive = false; };
+  }, [id]);
   const nav = (
     <nav className="rp-nav" aria-label="다른 리포트">
       {older ? <a href={`#/reports/${encodeURIComponent(older.id)}`}>← 지난 리포트<span className="muted small"> {older.title}</span></a> : <span />}

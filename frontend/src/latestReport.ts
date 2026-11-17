@@ -16,6 +16,11 @@ function load(): Promise<ReportSummary | null> {
   return p;
 }
 
+/** 새 리포트가 나온 걸 본 화면(#/reports 만드는 중 → 끝)이 부른다 — 다음 대시보드 방문이 다시 읽는다 */
+export function clearLatestReport(): void {
+  cache = null;
+}
+
 export function useLatestReport(): ReportSummary | null {
   const [r, setR] = useState<ReportSummary | null>(null);
   useEffect(() => {

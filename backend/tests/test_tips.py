@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
-from desk import tips, tips_bt
+import pytest
+
+from desk import primary_trend, tips, tips_bt
 from tests.test_api import _client
+
+
+@pytest.fixture(autouse=True)
+def _no_index_fetch(monkeypatch):
+    """#460: /api/tips also reads the indices' trend - never from Yahoo in these tests."""
+    monkeypatch.setattr(primary_trend.Cache, "view", lambda self: [])
 
 
 def _rows(values: list[float], start: int = 0) -> list[dict]:

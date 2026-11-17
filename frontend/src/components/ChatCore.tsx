@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { chatApi, chatError, pickedModel, savePickedModel, sendChat, toolLabel, toolSummary } from "../chat";
@@ -76,7 +76,9 @@ function Tools({ tools }: { tools: (ChatTool & { pending?: boolean })[] }) {
   );
 }
 
-function Bubble({ m, ctxTicker }: { m: ChatMessageRow; ctxTicker: string | null }) {
+// #537 답을 받는 동안 바뀌는 건 마지막 말풍선뿐 — 나머지(마크다운)는 다시 그리지 않는다
+const Bubble = memo(BubbleView);
+function BubbleView({ m, ctxTicker }: { m: ChatMessageRow; ctxTicker: string | null }) {
   if (m.role === "user") {
     return (
       <div className="ch-row ch-user">

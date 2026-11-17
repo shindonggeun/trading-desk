@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { agentInfo } from "../agents";
@@ -17,7 +17,7 @@ const WITH_TERMS: Components = {
   td: ({ children }) => <td>{annotate(children, new Set())}</td>,
 };
 
-export function ChatMessage({ event }: { event: DeskEvent }) {
+function ChatMessageView({ event }: { event: DeskEvent }) {
   const info = agentInfo(event.agent);
   const text = koreanizeLabels(event.content ?? "");
   const long = text.length > COLLAPSE_AT;
@@ -53,7 +53,7 @@ export function ChatMessage({ event }: { event: DeskEvent }) {
 }
 
 /** Consecutive tool calls folded into one line of chips. */
-export function ToolRow({ events }: { events: DeskEvent[] }) {
+function ToolRowView({ events }: { events: DeskEvent[] }) {
   return (
     <div className="tool-row">
       <span className="muted small">데이터 조회</span>
@@ -66,7 +66,7 @@ export function ToolRow({ events }: { events: DeskEvent[] }) {
   );
 }
 
-export function SystemLine({ event }: { event: DeskEvent }) {
+function SystemLineView({ event }: { event: DeskEvent }) {
   const thinking = event.agent === "consensus" ? "결론 정리가 토론 전체를 한 장으로 요약하는 중" : "레버리지 분석가가 본주 판단을 상품 기준으로 옮기는 중";
   // #438 전망 이벤트는 본문(표)을 펼치지 않고 한 줄로 — 그림 · 요약은 차트 탭
   if (event.type === "explain") return null;   // #494 쉬운 해설(#493)은 "쉽게 보기" 탭에서만
@@ -78,3 +78,12 @@ export function SystemLine({ event }: { event: DeskEvent }) {
     </div>
   );
 }
+
+/*
+ * #537 토론 탭은 이벤트가 올 때마다 목록 전체를 다시 그린다 — 발언(마크다운)은 같은 이벤트 객체면 다시 그리지 않는다.
+ * 도구 묶음은 이벤트가 늘 때 새 배열로 오므로 길이 · 처음 · 끝 이벤트로 같은지 본다.
+ */
+export const ChatMessage = memo(ChatMessageView);
+export const SystemLine = memo(SystemLineView);
+export const ToolRow = memo(ToolRowView, (a, b) =>
+  a.events.length === b.events.length && a.events[0] === b.events[0] && a.events[a.events.length - 1] === b.events[b.events.length - 1]);

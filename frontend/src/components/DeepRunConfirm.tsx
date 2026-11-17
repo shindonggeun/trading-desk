@@ -27,11 +27,14 @@ export default function DeepRunConfirm({ ticker, name, extra, onCancel }: {
 
   useEffect(() => {
     box.current?.querySelector<HTMLButtonElement>("button.mb-cancel")?.focus();
+    // 캡처 단계에서 먼저 받아 막는다 — 차트 화면의 크게 보기 Esc(화면 닫기)까지 가지 않게, 이 칸만 닫힌다
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      onCancel();
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
   }, [ticker, onCancel]);
 
   const profileLabel = config?.profiles.find((p) => p.id === config.default_profile)?.label ?? config?.default_profile;

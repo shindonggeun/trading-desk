@@ -37,12 +37,13 @@ export function useFundChanges(tickers: string[]): Record<string, FundChangeItem
   return items;
 }
 
-const VERB: Record<FundChangeItem["change"], string | null> = {
+const VERB: Record<NonNullable<FundChangeItem["change"]>, string | null> = {
   new: "신규 매수", increase: "비중 확대", decrease: "비중 축소", sold: "전량 매도", unchanged: null,
 };
 
 /** "퍼싱스퀘어 신규 매수(3분기)" — 유지는 배지를 달지 않는다 */
 export function fundBadgeText(c: FundChangeItem): string | null {
+  if (!c.change) return null; // 전 분기를 못 읽어 비교할 수 없으면 배지 없음
   const verb = VERB[c.change];
   if (!verb) return null;
   const q = /Q([1-4])$/.exec(c.quarter)?.[1];

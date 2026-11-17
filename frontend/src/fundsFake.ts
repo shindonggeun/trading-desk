@@ -4,7 +4,7 @@ import type { FundBrief, FundChanges, FundDetail, FundHolding } from "./types";
 // 운영 빌드에서는 import.meta.env.DEV 분기로 쓰이지 않는다.
 
 const h = (ticker: string | null, name: string, shares: number, value: number, change: FundHolding["change"], change_shares: number, extra: Partial<FundHolding> = {}): FundHolding => ({
-  ticker, name, cusip: `EX${(ticker ?? name).replace(/[^A-Z0-9]/gi, "").slice(0, 6).toUpperCase().padEnd(6, "0")}0`, title: "COM", put_call: null,
+  ticker, name, share_type: "SH", cusip: `EX${(ticker ?? name).replace(/[^A-Z0-9]/gi, "").slice(0, 6).toUpperCase().padEnd(6, "0")}0`, title: "COM", put_call: null,
   shares, value, weight: 0, change, change_shares, prev_shares: change === "new" ? null : shares - change_shares,
   change_pct: change === "new" || shares - change_shares === 0 ? null : Math.round((change_shares / (shares - change_shares)) * 10000) / 100, ...extra,
 });
@@ -28,8 +28,9 @@ const pershingRows: FundHolding[] = [
   h(null, "Example Holdings Ltd", 1_000_000, 21_000_000, "new", 1_000_000),
   h("NFLX", "Netflix Inc", 0, 0, "sold", -1_900_000),
 ];
-const total = pershingRows.reduce((s, r) => s + r.value, 0);
-for (const r of pershingRows) r.weight = Math.round((r.value / total) * 10000) / 100;
+const total = pershingRows.reduce((s, r) => s + r.value, 0); // 옵션 줄을 넣기 전(주식 · 채권만)
+pershingRows.push(h("SPY", "SPDR S&P 500 ETF", 2_000_000, 1_100_000_000, "new", 2_000_000, { put_call: "PUT" }));
+for (const r of pershingRows) r.weight = r.put_call ? null : Math.round((r.value / total) * 10000) / 100; // 옵션은 명목가 — 비중 · 합계에서 뺀다
 
 export const FAKE_FUNDS: FundBrief[] = [
   { id: "pershing", name: "퍼싱스퀘어", manager: "빌 애크먼", cik: "0000000000",
@@ -48,7 +49,7 @@ export function fakeFund(id: string, quarter?: string): FundDetail | null {
   return {
     id, name: "퍼싱스퀘어", manager: "빌 애크먼", quarter: quarter ?? "2026Q3", period_of_report: "2026-09-30", filed_at: "2026-11-16",
     form: "13F-NT", prev_quarter: "2026Q2", quarters: ["2026Q3", "2026Q2", "2026Q1"], reported_by: { name: "예시 운용사 LP", cik: "0000000000" },
-    total_value: total, count: 16, holdings: pershingRows,
+    total_value: total, options_value: 1_100_000_000, count: 16, holdings: pershingRows,
     summary: "빌 애크먼 퍼싱스퀘어 3분기 포트폴리오 — 우버 23억 4,800만 달러 신규 매수",
     bullets: [
       "신규 최대: 우버(UBER) 23억 4,800만 달러 — 비중 13.4%",

@@ -57,19 +57,23 @@ def test_a_tracked_analysis_shows_todays_volume_note_not_the_runs():
     assert out["volume_note"] is None
 
 
-def test_cme_futures_run_from_six_the_evening_before_to_five():
-    """#559 NQ=F's daily bar dated Monday trades from Sunday 18:00 ET to Monday 17:00 ET."""
+def test_cme_futures_are_read_on_new_yorks_regular_hours_within_their_day():
+    """#559 NQ=F's bar dated Monday trades from Sunday 18:00 ET to Monday 17:00 ET, but most of its
+    volume trades 09:30-16:00: before the open it is not judged (0.0), then the regular session's clock."""
     mon = [{"at": "2026-11-16T05:00:00+00:00"}]                     # Yahoo: midnight New York (EST)
-    ten_am = datetime(2026, 11, 16, 15, tzinfo=UTC)                 # Monday 10:00 ET: 16 of 23 hours
-    assert session_progress.elapsed("NQ=F", mon, ten_am) == pytest.approx(16 / 23)
-    assert session_progress.elapsed("NQ=F", mon, datetime(2026, 11, 15, 23, 30, tzinfo=UTC)) == pytest.approx(0.5 / 23)
-    # after 17:00 ET Monday's bar is finished; Tuesday's session (if the bar is there) has begun
+    assert session_progress.elapsed("NQ=F", mon, datetime(2026, 11, 15, 23, 30, tzinfo=UTC)) == 0.0   # Sun 18:30
+    assert session_progress.elapsed("NQ=F", mon, datetime(2026, 11, 16, 13, 10, tzinfo=UTC)) == 0.0   # Mon 08:10
+    assert session_progress.elapsed("NQ=F", mon, datetime(2026, 11, 16, 17, 45, tzinfo=UTC)) == pytest.approx(0.5)
+    assert session_progress.elapsed("NQ=F", mon, datetime(2026, 11, 16, 21, 30, tzinfo=UTC)) == 1.0   # 16:30
+    # after 17:00 ET Monday's bar is finished; Tuesday's (if the bar is there) has not reached its open
     assert session_progress.elapsed("NQ=F", mon, datetime(2026, 11, 16, 22, 30, tzinfo=UTC)) is None
     tue = [{"at": "2026-11-17T05:00:00+00:00"}]
-    assert session_progress.elapsed("NQ=F", tue, datetime(2026, 11, 17, 0, 0, tzinfo=UTC)) == pytest.approx(1 / 23)
-    # Friday's bar after the 17:00 close and over the weekend: finished
+    assert session_progress.elapsed("NQ=F", tue, datetime(2026, 11, 17, 0, 0, tzinfo=UTC)) == 0.0
+    # Friday's bar after the 17:00 close and over the weekend: finished; the day after Thanksgiving closes at 13:00
     fri = [{"at": "2026-11-20T05:00:00+00:00"}]
     assert session_progress.elapsed("NQ=F", fri, datetime(2026, 11, 21, 15, tzinfo=UTC)) is None
+    early = [{"at": "2026-11-27T05:00:00+00:00"}]
+    assert session_progress.elapsed("NQ=F", early, datetime(2026, 11, 27, 16, 15, tzinfo=UTC)) == pytest.approx(0.5)
 
 
 def test_crypto_runs_on_the_utc_day_and_indices_on_their_market():

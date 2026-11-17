@@ -119,6 +119,81 @@ def test_the_api_writes_one_in_the_background_lists_and_reads_it(db_url):
         assert full["id"] == item["id"] and 3 <= len(full["sections"]) <= 5 and full["why"]["text"]
         assert all(s["image"] is None for s in full["sections"])
         assert client.get("/api/reports/nope").status_code == 404
+        assert client.post("/api/reports").status_code == 429                 # one just made: not again so soon
         client.cookies.clear()
         assert client.get("/api/reports").status_code == 401
         assert client.post("/api/reports").status_code in (401, 403)
+
+
+def test_only_the_owners_favorites_are_candidates(db_url):
+    from desk.auth import Auth
+    from desk.db import favorites, make_engine, migrate, now
+
+    migrate(db_url)
+    engine = make_engine(db_url)
+    auth = Auth(engine, timedelta(hours=1), timedelta(hours=1))
+    auth.create_user("owner@example.com", "pw-owner-1234")
+    auth.create_user("guest@example.com", "pw-guest-1234")
+    with engine.begin() as conn:
+        conn.execute(favorites.insert(), [
+            {"user_id": 1, "ticker": "NVDA", "name": "엔비디아", "position": 0, "created_at": now()},
+            {"user_id": 2, "ticker": "TSLA", "name": "테슬라", "position": 0, "created_at": now()}])
+    desk = rp.Reports(engine, rp.fake_fetch)
+    got = [c[0] for c in desk.candidates()]
+    engine.dispose()
+    assert got[:len(rp.INDEXES)] == [s for s, _ in rp.INDEXES] and "NVDA" in got and "TSLA" not in got
+
+
+def test_the_last_line_is_always_under_the_close_even_below_the_prior_low():
+    f = rp._facts(rp.measure("^KS11", "코스피", "index", _bars(_drop()), []))
+    f["supports"], f["prior_low"], f["atr"] = [], f["close"] * 1.05, 1.0     # broke the low, nothing under it
+    out = rp.rules(f)
+    assert out["title"].startswith("코스피, 전저점이 깨졌")
+    assert all(s["high"] < f["close"] for s in out["stages"])
+    assert out["stages"][-1]["label"] == "최대" and 3 <= len(out["sections"]) <= 5
+
+
+def test_an_ordinary_week_of_a_3x_fund_does_not_beat_an_unusual_index_week():
+    wild = [100 * (1 + 0.12 * (1 if (i // 5) % 2 else -1) / 5) ** (i % 5) for i in range(300)]
+    lever = rp.measure("SOXL", "SOXL", "favorite", _bars(wild), [])
+    index = rp.measure("^GSPC", "S&P500", "index", _bars(_drop()), [])
+    assert abs(lever["week_pct"]) > abs(index["week_pct"]) * 0.8
+    assert rp.pick([lever, index])[0]["symbol"] == "^GSPC"
+
+
+def test_korean_bars_are_dated_on_the_korean_day():
+    bars = _bars(_drop())
+    for b in bars:                        # a KRX daily bar opens at 15:00 UTC the day before
+        d = datetime.fromisoformat(b["at"]) - timedelta(hours=9)
+        b["at"] = d.isoformat()
+    m = rp.measure("^KS11", "코스피", "index", bars, [])
+    assert m["as_of"] == _bars(_drop())[-1]["at"][:10]
+
+
+def test_a_rate_limit_reaches_the_slot_and_an_odd_answer_falls_back():
+    subject, ranked = rp.pick([rp.measure("^KS11", "코스피", "index", *rp.fake_fetch("^KS11"))])
+
+    def limited(prompt):
+        raise RuntimeError("429 rate limit reached: usage_limit_reached")
+    if rp.runner.rate_limited(RuntimeError("429 rate limit reached: usage_limit_reached")):
+        try:
+            rp.write(subject, ranked, limited)
+            raise AssertionError("the rate limit was swallowed")
+        except RuntimeError:
+            pass
+    odd = rp.write(subject, ranked, lambda p: json.dumps({"sections": 7, "stages": "x", "checklist": [3]}))
+    assert odd["source"] in ("rules", "ai") and len(odd["sections"]) >= 3
+
+
+def test_an_unknown_page_cursor_is_an_empty_page(db_url):
+    from desk.db import make_engine, migrate
+
+    migrate(db_url)
+    engine = make_engine(db_url)
+    desk = rp.Reports(engine, rp.fake_fetch, every_days=0)
+    made = [desk.make() for _ in range(3)]
+    page = desk.list(limit=2)
+    assert [i["id"] for i in page["items"]] == [made[2]["id"], made[1]["id"]] and page["next_before"] == made[1]["id"]
+    assert [i["id"] for i in desk.list(limit=2, before=page["next_before"])["items"]] == [made[0]["id"]]
+    assert desk.list(before="rp_nope")["items"] == [] and page["next_due"] is None
+    engine.dispose()

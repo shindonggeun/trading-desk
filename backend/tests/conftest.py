@@ -8,6 +8,7 @@ import pytest
 # The world news-flow refresh (#115) would call GDELT / Google News from any app started with
 # fake_runs=False; tests never do.
 os.environ.setdefault("DESK_MACRO_INTERVAL_SEC", "0")
+os.environ.setdefault("DESK_REPORT_EVERY_DAYS", "0")      # #495: no automatic report in tests
 # a developer's .env must not open a KIS websocket from the tests
 os.environ["DESK_KIS_APP_KEY"] = ""
 os.environ["DESK_KIS_APP_SECRET"] = ""

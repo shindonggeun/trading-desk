@@ -15,16 +15,19 @@ import json
 import logging
 import math
 import secrets
+import statistics
 from collections.abc import Callable, Iterable
 from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.engine import Engine
 
-from desk import explain, indicators, market_calendar, primary_trend, sr
+from desk import explain, indicators, market_calendar, primary_trend, runner, sr
 from desk.db import favorites as favorites_t
 from desk.db import now as db_now
 from desk.db import reports as reports_t
+from desk.db import users as users_t
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +41,8 @@ MAX_FAVORITES = 8
 MAX_SIMILAR = 3
 KR_DONE = time(16, 30)       # the automatic report waits for the Korean close and the closing prices
 RETRY_SEC = 30 * 60          # no free ChatGPT slot (a run is going): try again later
+MANUAL_GAP_SEC = 10 * 60     # a manual report at most this often (each one costs a model call and a push)
+MIN_SECTIONS = 3
 INDEXES = tuple((sym, name) for sym, _market, name in primary_trend.MARKETS)
 
 Fetch = Callable[[str], tuple[list[dict], list[dict]]]   # symbol -> (daily bars, weekly bars), oldest first
@@ -62,6 +67,19 @@ def _mean(xs: Iterable[float]) -> float | None:
     return sum(xs) / len(xs) if xs else None
 
 
+def _zone_of(symbol: str) -> ZoneInfo:
+    s = symbol.upper()
+    return market_calendar.KST if s.startswith("^KS") or s.endswith((".KS", ".KQ")) else market_calendar.ET
+
+
+def _day(at: str, zone: ZoneInfo) -> str:
+    """A bar's trading day on its exchange (a KRX daily bar opens at 15:00 UTC the day before)."""
+    try:
+        return datetime.fromisoformat(at).astimezone(zone).date().isoformat()
+    except ValueError:
+        return at[:10]
+
+
 def _divergence(daily: list[dict], rsis: list[float | None]) -> str | None:
     """A simple RSI divergence over the last 40 days: a lower low with a higher RSI ("bull"), or a higher
     high with a lower RSI ("bear")."""
@@ -84,7 +102,7 @@ def _divergence(daily: list[dict], rsis: list[float | None]) -> str | None:
 
 def _trend(daily: list[dict]) -> tuple[str | None, bool]:
     """The primary trend now (Korean name) and whether it changed in the last two weeks."""
-    rows = [{"day": b["at"][:10], **{k: b[k] for k in ("open", "high", "low", "close")}} for b in daily]
+    rows = [{"day": b.get("day") or b["at"][:10], **{k: b[k] for k in ("open", "high", "low", "close")}} for b in daily]
     try:
         states = primary_trend.daily_states(rows)
     except Exception:  # noqa: BLE001 - too short a history: no trend
@@ -99,7 +117,8 @@ def _trend(daily: list[dict]) -> tuple[str | None, bool]:
 def _zones(daily: list[dict], weekly: list[dict], close: float) -> tuple[list[dict], float | None]:
     """The support zones under the close (nearest first), the resistance zones above it, and the ATR."""
     try:
-        out = sr.compute(daily[-200:], weekly[-WEEKLY_BARS:], None, weekly_complete=True, horizon="swing")
+        # the last weekly bar is the week still trading (reports come out on weekdays): finished weeks only
+        out = sr.compute(daily[-200:], weekly[-WEEKLY_BARS - 1:-1], None, weekly_complete=True, horizon="swing")
     except ValueError:
         return [], None
     levels = []
@@ -126,7 +145,7 @@ def similar(daily: list[dict], change: float) -> list[dict]:
             continue
         after = (closes[i + AFTER] / closes[i] - 1) * 100
         low = min(closes[i:i + AFTER + 1])
-        out.append({"date": daily[i]["at"][:10], "what": f"1주 {_pct(move)}",
+        out.append({"date": daily[i].get("day") or daily[i]["at"][:10], "what": f"1주 {_pct(move)}",
                     "after": f"{AFTER}거래일 뒤 {_pct(after)} (그사이 가장 낮을 때 {_pct((low / closes[i] - 1) * 100)})",
                     "move": _r(move), "after_pct": _r(after)})
         last = i
@@ -137,12 +156,18 @@ def similar(daily: list[dict], change: float) -> list[dict]:
 
 def measure(symbol: str, name: str, kind: str, daily: list[dict], weekly: list[dict]) -> dict | None:
     """The desk's numbers for one subject, and its score: how much there is to explain now."""
-    daily = [b for b in daily if b.get("close")]
+    zone = _zone_of(symbol)
+    daily = [{**b, "day": _day(b["at"], zone)} for b in daily if b.get("close")]
     if len(daily) < BASE + WEEK + 15:
         return None
     closes = [b["close"] for b in daily]
     close = closes[-1]
     week = (close / closes[-1 - WEEK] - 1) * 100
+    # how unusual the week is for this subject: a 3x ETF's ordinary week must not outscore an index's big one
+    past = [(closes[i] / closes[i - WEEK] - 1) * 100
+            for i in range(max(WEEK, len(closes) - 1 - WEEK - 250), len(closes) - 1 - WEEK, WEEK)]
+    usual_move = statistics.pstdev(past) if len(past) >= 8 else None
+    week_x = abs(week) / usual_move if usual_move else abs(week) / 2
     vols = [b.get("volume") or 0 for b in daily]
     recent, usual = _mean(vols[-WEEK:]), _mean(vols[-WEEK - 20:-WEEK])
     vol_x = recent / usual if recent and usual else None
@@ -155,7 +180,9 @@ def measure(symbol: str, name: str, kind: str, daily: list[dict], weekly: list[d
     trend, turned = _trend(daily)
     zones, atr = _zones(daily, weekly, close)
 
-    score, reasons = abs(week) / 2, [f"1주 {_pct(week)}"]
+    score, reasons = min(week_x, 5.0), [f"1주 {_pct(week)}"]
+    if usual_move and week_x >= 1.5:
+        reasons.append(f"평소 한 주 움직임의 {week_x:.1f}배")
     if vol_x and vol_x >= 1.3:
         score += (vol_x - 1) * 1.5
         reasons.append(f"거래량 평소의 {vol_x:.1f}배")
@@ -171,7 +198,7 @@ def measure(symbol: str, name: str, kind: str, daily: list[dict], weekly: list[d
     if turned and trend:
         score += 2
         reasons.append(f"대세 국면이 {trend}(으)로 바뀜")
-    return {"symbol": symbol, "name": name, "kind": kind, "as_of": daily[-1]["at"][:10],
+    return {"symbol": symbol, "name": name, "kind": kind, "as_of": daily[-1]["day"],
             "close": _r(close, 2), "week_pct": _r(week), "volume_x": _r(vol_x),
             "prior_low": _r(prior_low, 2), "prior_high": _r(prior_high, 2),
             "to_low_pct": _r(to_low), "to_high_pct": _r(to_high), "rsi": _r(rsi_now), "divergence": div,
@@ -262,16 +289,25 @@ def rules(f: dict) -> dict:
             "highlight": f"큰 흐름: {f['trend']}",
             "term": {"name": "대세 국면", "explain": "몇 달 단위로 본 시장의 큰 방향이에요. 하루 이틀 움직임보다 느리게 바뀌어요."},
             "chart": {"kind": "none", "levels": [], "labels": [], "marks": []}, "image": None})
+    sim = f.get("similar") or []
+    if len(sections) < MIN_SECTIONS and sim:
+        sections.append({
+            "title": "예전에 비슷했던 때는",
+            "body": " ".join(f"{x['date']}에 {x['what']}였고, {x['after']}였어요." for x in sim),
+            "highlight": f"비슷했던 때 {len(sim)}번",
+            "term": {"name": "과거 비슷한 장면", "explain": "이 종목의 가격 기록에서 한 주 움직임이 지금과 비슷했던 날이에요. 같은 결과가 나온다는 뜻은 아니에요."},
+            "chart": {"kind": "none", "levels": [], "labels": [], "marks": []}, "image": None})
     sections = sections[:explain.MAX_SECTIONS]
 
     # stages: where to watch on the way down - the nearest support, the next one (or the prior low), and
     # the line under which the view is wrong
     first = sup[0] if sup else None
     second = sup[1] if len(sup) > 1 else None
-    floor = min([x for x in (f["prior_low"], second["low"] if second else None, first["low"] if first else None)
-                 if x is not None])
-    atr = f.get("atr") or 0
-    stop = round(floor - atr, 2) if atr else floor
+    prior_low = f["prior_low"] if f["prior_low"] is not None and f["prior_low"] < close else None
+    below = [x for x in (prior_low, second["low"] if second else None, first["low"] if first else None)
+             if x is not None and x < close]
+    atr = f.get("atr") or close * 0.02
+    stop = round((min(below) if below else close) - atr, 2)     # always under the close
     stages = []
     if first:
         stages.append({"label": "1단계", "low": first["low"], "high": first["high"],
@@ -279,12 +315,19 @@ def rules(f: dict) -> dict:
     if second:
         stages.append({"label": "2단계", "low": second["low"], "high": second["high"],
                        "why": "첫 구역이 깨지면 다음으로 받쳐 줄 수 있는 구역이에요."})
-    elif f["prior_low"] is not None and (not first or f["prior_low"] < first["low"]):
-        stages.append({"label": "2단계", "low": f["prior_low"], "high": f["prior_low"],
+    elif prior_low is not None and (not first or prior_low < first["low"]):
+        stages.append({"label": "2단계", "low": prior_low, "high": prior_low,
                        "why": "앞선 전저점이에요. 여기까지 내려오면 많은 사람이 지켜봐요."})
     stages.append({"label": "최대", "low": stop, "high": stop,
                    "why": "이 아래로 종가가 내려가면 받쳐 준다는 생각이 틀린 거예요. 그때는 정리하는 쪽으로 봐요."})
 
+    if len(sections) < MIN_SECTIONS:
+        sections.append({
+            "title": "틀렸다고 볼 자리",
+            "body": f"종가가 {_p(stop)} 아래로 내려가면 지금 생각이 틀린 거예요. 미리 정해 두면 흔들릴 때 덜 망설여요.",
+            "highlight": f"{_p(stop)} 아래면 생각을 바꿔요",
+            "term": {"name": "손절 기준", "explain": "생각이 틀렸다고 인정하고 정리하는 가격이에요. 손실을 작게 묶어 두는 장치예요."},
+            "chart": {"kind": "levels", "levels": [stop], "labels": ["최대"], "marks": [close]}, "image": None})
     checklist = []
     if first:
         checklist.append({"q": "종가가 지지 구역 위인가요?", "a": f"{_zone(first)} 안이나 위에서 끝나는지 봐요."})
@@ -296,7 +339,6 @@ def rules(f: dict) -> dict:
         checklist.append({"q": "RSI 가 어디쯤인가요?", "a": f"지금 {f['rsi']:.1f}예요. 30 아래나 70 위에서는 반대로 움직이기 쉬워요."})
     checklist.append({"q": "틀렸을 때 나갈 가격을 정했나요?", "a": f"{_p(stop)} 아래로 종가가 내려가면 생각을 바꿔요."})
 
-    sim = f.get("similar") or []
     if sim:
         ups = sum(1 for s in sim if (s.get("after_pct") or 0) > 0)
         summary_sim = f" 비슷했던 지난 {len(sim)}번 가운데 {ups}번은 {AFTER}거래일 뒤 더 높았어요."
@@ -335,10 +377,6 @@ def write(subject: dict, candidates: list[dict], model: Callable[[str], str] | N
                           f"제목: {json.dumps(draft['title'], ensure_ascii=False)} "
                           f"요약: {json.dumps(draft['summary'], ensure_ascii=False)}\n초안: ", 1)
             answer = explain._json(model(p))
-        except Exception as exc:  # noqa: BLE001 - rate limit, timeout, no login: the desk's wording
-            log.warning("report on %s: model failed (%s)", subject["symbol"], type(exc).__name__)
-            out = {**draft, "fallback": type(exc).__name__}
-        else:
             allowed = explain.allowed_numbers(f, draft)
             out = explain.merge(draft, answer, allowed)
             if answer:
@@ -349,6 +387,11 @@ def write(subject: dict, candidates: list[dict], model: Callable[[str], str] | N
                         out["source"] = "ai"
                 if out["hook"] == draft["hook"] and out["title"] != draft["title"]:
                     out["hook"] = out["title"]
+        except Exception as exc:  # timeout, no login, an odd answer: the desk's wording
+            if runner.rate_limited(exc):
+                raise                    # the run slot's back-off must see the plan's rate limit
+            log.warning("report on %s: model failed (%s)", subject["symbol"], type(exc).__name__)
+            out = {**draft, "fallback": type(exc).__name__}
     for s in out["sections"]:
         s.setdefault("image", None)
     return {**out, "subject": {"symbol": subject["symbol"], "name": subject["name"], "kind": subject["kind"]},
@@ -415,12 +458,16 @@ class Reports:
         limit = max(1, min(limit, 50))
         q = select(reports_t.c.id, reports_t.c.created_at, reports_t.c.body).order_by(
             reports_t.c.created_at.desc(), reports_t.c.id.desc())
+        rows = []
         with self.engine.connect() as conn:
-            if before:
+            at = None
+            if before:                   # an unknown cursor: nothing older (never page 1 again)
                 at = conn.execute(select(reports_t.c.created_at).where(reports_t.c.id == before)).scalar()
-                if at is not None:
-                    q = q.where(reports_t.c.created_at < at)
-            rows = conn.execute(q.limit(limit + 1)).all()
+            if at is not None:
+                q = q.where(or_(reports_t.c.created_at < at,
+                                and_(reports_t.c.created_at == at, reports_t.c.id < before)))
+            if not before or at is not None:
+                rows = conn.execute(q.limit(limit + 1)).all()
         items = [_summary(r.id, r.created_at, r.body) for r in rows[:limit]]
         return {"items": items, "generating": self.generating,
                 "next_due": _iso(self.next_due()) if self.every_days > 0 else None,
@@ -444,18 +491,30 @@ class Reports:
         return due_after(self.last_at(), self.every_days, now or datetime.now(UTC))
 
     def save(self, report: dict) -> dict:
-        rid = "rp_" + secrets.token_hex(8)
         at = db_now()
+        # the time first: ids sort like the reports (the page cursor breaks a same-second tie on the id)
+        rid = f"rp_{int(datetime.now(UTC).timestamp() * 1000):012x}{secrets.token_hex(4)}"
         with self.engine.begin() as conn:
             conn.execute(reports_t.insert().values(id=rid, created_at=at, symbol=report["subject"]["symbol"],
                                                    title=report["title"][:200], source=report["source"], body=report))
         return {**report, **_summary(rid, at, report)}
 
     # writing -----------------------------------------------------------
+    def owner(self) -> int | None:
+        """The desk's owner (the first account): reports are shared by every account, so only the owner's
+        favorites become candidates and only the owner is notified - another account's favorites never
+        show up in a report or on someone else's device."""
+        with self.engine.connect() as conn:
+            return conn.execute(select(users_t.c.id).order_by(users_t.c.id).limit(1)).scalar()
+
     def candidates(self) -> list[tuple[str, str, str]]:
         out = [(sym, name, "index") for sym, name in INDEXES]
+        owner = self.owner()
+        if owner is None:
+            return out
         with self.engine.connect() as conn:
             rows = conn.execute(select(favorites_t.c.ticker, favorites_t.c.name)
+                                .where(favorites_t.c.user_id == owner)
                                 .order_by(favorites_t.c.position, favorites_t.c.ticker)).all()
         seen = {s for s, _, _ in out}
         for r in rows:
@@ -479,10 +538,18 @@ class Reports:
 
     def make(self, model: Callable[[str], str] | None = None) -> dict | None:
         """One report, written and stored (blocking): ``None`` when no subject had data."""
+        got = self.choose()
+        return None if got is None else self.finish(got, model)
+
+    def choose(self) -> tuple[dict, list[dict]] | None:
+        """The subject and the candidates (the price fetches; no model call)."""
         got = pick(self.measure_all())
         if got is None:
             log.warning("report: no subject had data")
-            return None
+        return got
+
+    def finish(self, got: tuple[dict, list[dict]], model: Callable[[str], str] | None = None) -> dict:
+        """The chosen subject's report written (one model call when ``model``) and stored."""
         report = write(*got, model=model)
         if report.get("fallback"):
             log.info("report on %s kept with the desk's wording", got[0]["symbol"])

@@ -16,7 +16,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles, type OscillatorView, type OscReading, type ReviewRow } from "../api";
 import { price } from "../format";
 import FillsTable from "./FillsTable";
@@ -329,7 +329,7 @@ export interface ExtraLine {
  * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
  * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
  */
-export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, onIntervalChange, highlight = null, outlook = null, planLabels, onLineClick, trendPick, onTrendPick }: {
+export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, banner, onIntervalChange, highlight = null, outlook = null, planLabels, onLineClick, trendPick, onTrendPick }: {
   ticker: string;
   tradeDate: string;
   plan: Plan | null;
@@ -346,6 +346,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   onClose?: () => void;
   /** 머리줄 아래 한 줄 안내(차트 주소 화면: 분석 기록을 못 찾았을 때 등). */
   notice?: string;
+  /** #539 머리줄 아래 자리(차트 주소 화면: 상세 분석 시작 · 최근 분석 보기) — 크게 보기 안에서도 보인다 */
+  banner?: ReactNode;
   /** #220 봉 주기를 바꿀 때마다 — 차트 탭이 주소(iv=)를 맞춘다 */
   onIntervalChange?: (interval: Interval) => void;
   /** #440 가격 사다리에서 고른 가격 — 같은 가격에 굵은 강조선을 잠깐 긋는다 */
@@ -1661,6 +1663,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         </button>
       </div>
       {notice && <p className="error small chart-limit">{notice}</p>}
+      {banner}
       {show.entry && <EntrySummary entry={entry} failed={entryFailed} fromRun={!!plan} />}
       {oscLines.length > 0 && (
         <div className={`small chart-limit ${hot ? "error" : "muted"}`} role="status">

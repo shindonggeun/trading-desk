@@ -1,12 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, type Candles } from "../api";
 import { price } from "../format";
-import { HORIZON } from "../korean";
 import {
   type BoardMode, loadMarkets, loadMode, loadOpen, MARKETS_CHANGED, type MarketSymbol, saveMode, saveOpen,
 } from "../markets";
-import type { DeskConfig, Estimate, SupportResistance } from "../types";
-import FavoriteStar from "./FavoriteStar";
+import type { Estimate, SupportResistance } from "../types";
+import DeepRunConfirm from "./DeepRunConfirm";
 import FearIndexStrip from "./FearIndexStrip";
 import { TrendStrip } from "./TrendChips";
 
@@ -152,15 +151,10 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
   const open = embedded || savedOpen;
   const [mode, setMode] = useState<BoardMode>(loadMode);
   const [markets, setMarkets] = useState<MarketSymbol[]>(loadMarkets);
-  const [config, setConfig] = useState<DeskConfig | null>(null);
   const [picked, setPicked] = useState<MarketSymbol | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const confirmRef = useRef<HTMLDivElement>(null);
   const tiles = useTiles(markets, mode, open);
 
   useEffect(() => {
-    api.config().then(setConfig, () => {});
     const reload = () => setMarkets(loadMarkets());
     window.addEventListener(MARKETS_CHANGED, reload);
     window.addEventListener("storage", reload); // 다른 탭에서 설정을 바꿨을 때
@@ -170,22 +164,7 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
     };
   }, []);
 
-  // 확인 칸이 열리면 포커스는 "취소"로 — Enter 를 한 번 더 눌러도 분석이 시작되지 않게
-  useEffect(() => {
-    if (!picked) return;
-    confirmRef.current?.querySelector<HTMLButtonElement>("button.mb-cancel")?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") cancel();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [picked]);
-
-  function cancel() {
-    setPicked(null);
-    setError(null);
-  }
+  const cancel = useCallback(() => setPicked(null), []);
 
   const toggle = () => {
     saveOpen(!open);
@@ -196,39 +175,17 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
     setMode(m);
   };
 
-  const profileLabel = config?.profiles.find((p) => p.id === config.default_profile)?.label ?? config?.default_profile;
-  const horizonId = config?.default_horizon ?? "swing";
-  const horizonLabel = config?.horizons?.find((h) => h.id === horizonId)?.label ?? HORIZON[horizonId]?.ko ?? horizonId;
-
-  async function start() {
-    if (!picked) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const run = await api.createRun({
-        ticker: picked.ticker,
-        name: picked.name,
-        profile: config?.default_profile,
-        horizon: horizonId,
-        analysts: config?.analysts ?? ["market", "social", "news", "fundamentals"], // 재무는 서버가 지수 · 선물 · 환율에서 뺀다
-        use_portfolio: false,
-        output_language: "Korean",
-      });
-      window.location.hash = `#/runs/${run.id}`;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setBusy(false);
-    }
-  }
+  // #539 칸을 누르면 차트 분석(쿼터 없음, 지금 고른 주기 그대로). 에이전트 토론 상세 분석은 칸 아래 버튼으로만
+  const chartHref = (ticker: string) => `#/chart/${encodeURIComponent(ticker)}?interval=${mode}`;
 
   return (
     <section className={`card market-board${open ? "" : " market-board-closed"}`}>
       <div className="mb-head">
         {embedded ? (
-          <span className="muted small">{markets.length}종목 · 누르면 분석</span>
+          <span className="muted small">{markets.length}종목 · 누르면 차트</span>
         ) : (
           <h2>
-            시장 <span className="muted small">{markets.length}종목 · 누르면 분석</span>
+            시장 <span className="muted small">{markets.length}종목 · 누르면 차트</span>
           </h2>
         )}
         {open && (
@@ -259,9 +216,9 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
             const t = tiles[m.ticker];
             const up = (t?.change ?? 0) >= 0;
             return (
-              <button key={m.ticker} type="button" className={`mb-tile${picked?.ticker === m.ticker ? " mb-tile-on" : ""}`}
-                onClick={() => setPicked(m)} aria-controls="mb-confirm" aria-expanded={picked?.ticker === m.ticker}
-                title="눌러서 지지 · 저항을 보고 이 종목 분석을 시작합니다(확인 한 번)">
+              <div key={m.ticker} className="mb-cell">
+              <a className={`mb-tile${picked?.ticker === m.ticker ? " mb-tile-on" : ""}`} href={chartHref(m.ticker)}
+                title={`${m.name} 차트 분석 열기(지지 · 저항 · 추세선 · 보조지표)`}>
                 <span className="mb-name">
                   <strong>{m.name}</strong> <span className="muted small">{m.ticker}</span>
                 </span>
@@ -286,31 +243,20 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
                 )}
                 {/* #464 타일은 이름 · 값 · 등락 · 미니 차트만 — 지지 · 저항은 눌렀을 때 아래 확인 칸에 */}
                 {t?.error && <span className="small error">시세를 못 읽었습니다</span>}
+              </a>
+              <button type="button" className="link small mb-deep" onClick={() => setPicked(m)}
+                aria-controls="mb-confirm" aria-expanded={picked?.ticker === m.ticker}
+                title="에이전트들이 토론해 타점을 내는 상세 분석(확인 한 번 · 구독 사용량 차감)">
+                <span aria-hidden="true">🤖 </span>상세 분석<span className="sr-only"> — {m.name}</span>
               </button>
+              </div>
             );
           })}
         </div>
       )}
       {open && picked && (
-        <div className="mb-confirm" id="mb-confirm" ref={confirmRef} role="group" aria-label="분석 시작 확인">
-          <p>
-            <FavoriteStar ticker={picked.ticker} name={picked.name} /> <strong>{picked.name}</strong> ({picked.ticker}) 분석을 시작할까요?
-          </p>
-          <SrLine sr={tiles[picked.ticker]?.sr ?? null} last={tiles[picked.ticker]?.last ?? null} />
-          <p className="muted small">
-            투자 성향 {profileLabel ?? "기본"} · 시간축 {horizonLabel} · 보고서 한국어 · 보유 종목 반영 안 함. 지수 · 선물 · 환율 ·
-            코인은 재무 분석가 없이 진행합니다. 한 번에 수 분이 걸리고 구독 플랜 사용량이 차감됩니다.
-          </p>
-          {error && <p className="error small">{error}</p>}
-          <div className="mb-confirm-actions">
-            <button type="button" disabled={busy} onClick={start}>
-              {busy ? "등록 중…" : "분석 시작"}
-            </button>
-            <button type="button" className="secondary mb-cancel" disabled={busy} onClick={cancel}>
-              취소
-            </button>
-          </div>
-        </div>
+        <DeepRunConfirm ticker={picked.ticker} name={picked.name} onCancel={cancel}
+          extra={<SrLine sr={tiles[picked.ticker]?.sr ?? null} last={tiles[picked.ticker]?.last ?? null} />} />
       )}
     </section>
   );

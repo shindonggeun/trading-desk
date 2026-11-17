@@ -190,7 +190,11 @@ class Fear:
             return await vkospi_kis(rest), TTL_SEC["vkospi"]
         except Exception as exc:  # noqa: BLE001 - KIS down leaves the other gauges; KisError carries codes only
             log.info("fear: vkospi failed: %s", type(exc).__name__)
-            return _item("vkospi", "VKOSPI", "한국투자증권", error=f"{type(exc).__name__}: {str(exc)[:80]}"), FAIL_TTL_SEC
+            from .futures_flow import KisError
+
+            # KisError carries tr_id · HTTP · KIS code only; anything else shows its class name only
+            why = f"KisError: {str(exc)[:80]}" if isinstance(exc, KisError) else type(exc).__name__
+            return _item("vkospi", "VKOSPI", "한국투자증권", error=why), FAIL_TTL_SEC
 
     async def get(self) -> dict:
         async with self._lock:

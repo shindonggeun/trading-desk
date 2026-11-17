@@ -38,6 +38,7 @@ from . import (
     flow_intraday,
     funds13f,
     futures_quote,
+    halving,
     horizons,
     line_basis,
     live,
@@ -333,6 +334,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     earnings.CACHE.name_of = listing_name      # #308: a Korean report shows its listed name
 
     favorites = Favorites(engine, listing_name)
+    # #514 the bitcoin halving cycles (a made-up history with scripted runs: no network)
+    halving_cache = halving.Cache(halving.fake_closes if settings.fake_runs else halving.yahoo_closes)
     # #495 the beginner reports (made-up prices with scripted runs: no network)
     # (scripted runs: no automatic reports, so no "next due" either)
     report_desk = reports.Reports(engine, reports.fake_fetch if settings.fake_runs else reports.yahoo_fetch,
@@ -1149,6 +1152,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if fear_gauges is None:
             return {"items": [], "error": "fake runs: no outside requests"}
         return await fear_gauges.get()
+
+    @app.get("/api/crypto/halving")
+    async def crypto_halving():
+        """#514: the bitcoin halving cycles side by side and where this one stands (desk.halving; a day's cache)."""
+        got = await asyncio.to_thread(halving_cache.get)
+        if got is None:
+            raise HTTPException(503, "비트코인 가격을 받지 못했습니다. 잠시 뒤 다시 시도해 주세요")
+        return got
 
     @app.get("/api/market/flow")
     async def market_flow(market: str = "KOSPI", interval: str = "1d", count: int = 20):

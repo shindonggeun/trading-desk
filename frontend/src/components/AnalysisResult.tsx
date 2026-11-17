@@ -70,13 +70,15 @@ function Chart({ ticker, tradeDate, plan, title, outlook = null, runId }: { tick
   // #466 이 분석의 계획선 근거 · 해설(#465 /api/levels?run=) — 계획이 있는 그 종목 차트에서만(본주 쪽은 다른 종목이라 422)
   const [sr, setSr] = useState<SupportResistance | null>(null);
   const [srFailed, setSrFailed] = useState(false);
+  // 분석이 끝나면 같은 계획이 새 객체로 다시 오므로(이벤트 → api.run) 계획 "있음"만 지켜본다 — 라벨 · 패널이 깜빡이지 않게
+  const hasPlan = !!plan;
   useEffect(() => {
-    if (!plan || !runId) return;
+    if (!hasPlan || !runId) return;
     let live = true;
-    setSr(null); setSrFailed(false);
+    setSrFailed(false);
     api.levels(ticker, runId).then((v) => live && setSr(v)).catch(() => live && setSrFailed(true));
     return () => { live = false; };
-  }, [plan, runId, ticker]);
+  }, [hasPlan, runId, ticker]);
   const basis = useMemo(() => sr?.basis ?? [], [sr]);
   const extra = useMemo(() => triggerLines(plan, basis), [plan, basis]);
   const labels = useMemo(() => ownLabels(basis), [basis]);

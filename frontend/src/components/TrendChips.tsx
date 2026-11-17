@@ -11,9 +11,9 @@ function title(r: TrendRow): string {
 
 function Chip({ r, note }: { r: TrendRow; note?: string }) {
   return (
-    <a href="#/tips" className={`trend-chip ${TREND_CLASS[r.state]}`} title={title(r)}>
+    <a href="#/tips" className={`trend-chip ${TREND_CLASS[r.state]}`} title={title(r)} aria-label={title(r)}>
       {r.name} <strong>{r.state_ko}</strong>{note ? <span className="muted"> {note}</span> : null}
-      {r.pending && <span className="trend-chip-pend" aria-label={`${r.pending.state_ko} 신호 ${r.pending.sessions}일째`}>·{r.pending.state_ko}?</span>}
+      {r.pending && <span className="trend-chip-pend" aria-hidden="true">·{r.pending.state_ko}?</span>}
     </a>
   );
 }
@@ -38,16 +38,16 @@ export function MarketTrendBadges({ ticker }: { ticker: string }) {
   if (!shown.length) return null;
   const kosdaq = /\.KQ$/i.test(ticker);
   return (
-    <span className="trend-badges" aria-label="이 종목 시장의 지금 추세">
+    <span className="trend-badges" role="group" aria-label="이 종목 시장의 지금 추세">
       <span className="muted small">시장 지금 추세</span>
       {shown.map((r) => <Chip key={r.market} r={r} note={kosdaq && r.market === "kospi" ? "(코스피 기준)" : undefined} />)}
     </span>
   );
 }
 
-/** 휴대폰 요약 줄용 짧은 칩(코스피 · 나스닥100) */
-export function TrendSummaryItems() {
-  const rows = useTrend().filter((r) => r.market === "kospi" || r.market === "nasdaq100");
+/** 휴대폰 요약 줄용 짧은 칩(코스피 · 나스닥100) — DashSummary 가 useTrend() 결과를 넘긴다(줄을 보일지도 그걸로 정한다) */
+export function TrendSummaryItems({ trend }: { trend: TrendRow[] }) {
+  const rows = trend.filter((r) => r.market === "kospi" || r.market === "nasdaq100");
   return (
     <>
       {rows.map((r) => (

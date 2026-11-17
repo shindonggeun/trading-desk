@@ -12,6 +12,14 @@ A window's oldest day is cut off by the window itself (7 days back from now star
 left out: a later pass would otherwise overwrite a whole day with a part of it. Today is written and
 rewritten by every pass, so the day's last pass leaves the most of it - and the next day's window
 covers it whole.
+
+#485 (2): this address's GDELT mostly refuses, and a refused pass reads Google News RSS instead. Those
+passes are kept too, by day, in the same layout under ``<dir>/google-news/``: the day's count of the
+feed's dated articles and the day's headline-word tone (desk.macro_news.headline_tone - cruder, and on
+its own scale). The source is the directory, so no point mixes the two: GDELT's files stay where
+``backtest --news-dir`` has always read them and ``--news-source google-news`` reads the others. The
+feed holds at most 100 of the week's articles, so its oldest day is a part one (dropped, as GDELT's
+window edge) and a busy week's counts are a floor.
 """
 
 from __future__ import annotations
@@ -21,6 +29,15 @@ import logging
 import shutil
 from collections import defaultdict
 from pathlib import Path
+
+SOURCES = ("gdelt", "google-news")
+
+
+def source_dir(root: Path | str, source: str = "gdelt") -> Path:
+    """Where a source's day files sit: GDELT at the root (desk.news_history's layout), the others below it."""
+    if source not in SOURCES:
+        raise ValueError(f"source must be one of {', '.join(SOURCES)}")
+    return Path(root) if source == "gdelt" else Path(root) / source
 
 
 def path_for(root: Path | str, theme_id: str, mode: str, year: int) -> Path:
@@ -81,8 +98,25 @@ def _upsert(path: Path, series: Series) -> None:
 
 
 def record(root: Path | str, theme_id: str, volume: list[dict], tones: list[dict]) -> int:
-    """Upsert one theme's pass into the year files; returns the days written (both modes)."""
-    vol, tone = daily(volume, tones)
+    """Upsert one theme's GDELT pass into the year files; returns the days written (both modes)."""
+    return record_daily(root, theme_id, *daily(volume, tones))
+
+
+def rss_daily(dated: list[tuple[str, str]], tone_of) -> tuple[Series, Series]:
+    """#485 a Google News pass -> per-day article count and tone. ``dated`` is (ISO time, title) of the
+    feed's dated articles; ``tone_of(titles)`` scores a day's on-topic titles (None when none score).
+    The oldest day is a part one (the feed's 7-day window and its 100-article cap) and is dropped."""
+    days: dict[str, list[str]] = defaultdict(list)
+    for at, title in dated:
+        days[str(at)[:10]].append(title)
+    first = min(days) if days else None
+    vol = {d: float(len(t)) for d, t in days.items() if d != first}
+    tone = {d: v for d, t in days.items() if d != first and (v := tone_of(t)) is not None}
+    return vol, tone
+
+
+def record_daily(root: Path | str, theme_id: str, vol: Series, tone: Series) -> int:
+    """Upsert one theme's day values into the year files under ``root``; returns the days written."""
     written = 0
     for mode, series in (("vol", vol), ("tone", tone)):
         by_year: dict[int, Series] = defaultdict(dict)
@@ -97,9 +131,10 @@ def record(root: Path | str, theme_id: str, volume: list[dict], tones: list[dict
 def export(src: Path | str, dst: Path | str) -> int:
     """Copy the kept files to ``dst`` (for the PC's backtest); returns how many."""
     src, dst = Path(src), Path(dst)
-    dst.mkdir(parents=True, exist_ok=True)
     n = 0
-    for f in sorted(src.glob("*.json")):
-        shutil.copy2(f, dst / f.name)
+    for f in sorted(src.rglob("*.json")):          # GDELT's files and the google-news/ ones, as laid out
+        out = dst / f.relative_to(src)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(f, out)
         n += 1
     return n

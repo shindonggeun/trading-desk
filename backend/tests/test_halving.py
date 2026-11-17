@@ -136,3 +136,23 @@ def test_the_api_gives_the_cycles(db_url):
         assert set(body["series"]) == {"by_halving", "by_peak"}
         client.cookies.clear()
         assert client.get("/api/crypto/halving").status_code == 401
+
+
+def test_null_only_when_the_prices_are_cut_short():
+    # nothing since the last halving: no current cycle (the past cycles still answer)
+    before = [(d, p) for d, p in _history() if d < date(2024, 4, 20)]
+    v = hv.view(before)
+    assert v["current"] is None and v["ranges"]["now"] == {"days_since_halving": None, "days_since_high": None,
+                                                         "from_high_pct": None}
+    assert v["ranges"]["bottom_days_from_halving"]["cycles"] == ["2012-11-28", "2016-07-09", "2020-05-11"]
+    # prices only from the current cycle: no past bottom to compare with - every range and its verdict null
+    recent = [(d, p) for d, p in _history() if d >= date(2024, 4, 20)]
+    v = hv.view(recent)
+    assert v["current"]["days_since_halving"] == 941
+    assert all(v["ranges"][k] is None for k in ("bottom_days_from_halving", "bottom_days_from_peak", "bottom_drawdown_pct"))
+    assert v["ranges"]["now"] == {"days_since_halving": None, "days_since_high": None, "from_high_pct": None}
+    assert all(c["bottom"] is None and c["peak"] is None for c in v["cycles"])
+    # a high on the last day: nothing after it yet
+    rising = _line(date(2024, 4, 20), [float(i + 1) for i in range(300)])
+    cur = hv.view(rising)["current"]
+    assert cur["low_after_high"] is None and cur["from_low_pct"] is None and cur["days_since_high"] == 0

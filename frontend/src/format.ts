@@ -73,7 +73,7 @@ export function usdKo(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "—";
   const sign = v < 0 ? "−" : "";
   const a = Math.abs(v);
-  if (a < 10_000) return `${sign}${Math.round(a).toLocaleString("ko-KR")} 달러`;
+  if (Math.round(a) < 10_000) return `${sign}${Math.round(a).toLocaleString("ko-KR")} 달러`;
   const man = Math.round(a / 10_000); // 만 달러 단위
   const units: [number, string][] = [[100_000_000, "조"], [10_000, "억"], [1, "만"]];
   const parts: string[] = [];

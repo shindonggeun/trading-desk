@@ -11,12 +11,16 @@ const TTL_MS = 30 * 60_000;
 const cache = new Map<string, { at: number; p: Promise<Record<string, FundChangeItem[]>> }>();
 
 function load(tickers: string[]): Promise<Record<string, FundChangeItem[]>> {
-  const key = [...tickers].sort().slice(0, 30).join(",");
+  const asked = [...tickers].sort().slice(0, 30); // 캐시 키와 실제 요청이 같은 30개
+  const key = asked.join(",");
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.p;
-  const p = api.fundChanges(tickers)
+  const p = api.fundChanges(asked)
     .then((v) => v.items ?? {})
-    .catch((e) => (import.meta.env.DEV && e instanceof ApiError && (e.status === 404 || e.status === 503) ? FAKE_CHANGES.items : {}));
+    .catch((e) => {
+      cache.delete(key); // 실패는 붙잡지 않는다 — 다음 화면에서 다시 받는다
+      return import.meta.env.DEV && e instanceof ApiError && (e.status === 404 || e.status === 503) ? FAKE_CHANGES.items : {};
+    });
   cache.set(key, { at: Date.now(), p });
   return p;
 }

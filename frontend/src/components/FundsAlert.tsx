@@ -39,29 +39,31 @@ export default function FundsAlert() {
         throw e;
       }).then(({ funds }) => {
         if (!alive) return;
-        const seen = readSeen();
-        if (!seen) {
-          // 처음: 지금 공시를 본 것으로 기억만 한다
-          writeSeen(Object.fromEntries(funds.map((f) => [f.id, stamp(f)]).filter(([, s]) => s)));
-          return;
-        }
-        // 본 값은 토스트를 닫거나 눌렀을 때만 적는다 — 다시 그려지거나 새로고침해도 확인할 때까지 남는다
+        const seen = readSeen() ?? {};
+        // 기관마다 처음 보는 공시(서버가 처음 받아 왔거나 기관이 새로 생김)는 기억만 한다 — 지난 공시를 한꺼번에 띄우지 않게
+        const firstSeen = funds.filter((f) => stamp(f) && seen[f.id] === undefined);
+        if (firstSeen.length) writeSeen({ ...seen, ...Object.fromEntries(firstSeen.map((f) => [f.id, stamp(f)])) });
+        // 그 밖의 본 값은 토스트를 닫거나 눌렀을 때만 적는다 — 다시 그려지거나 새로고침해도 확인할 때까지 남는다
         const fresh: Toast[] = [];
         for (const f of funds) {
           const s = stamp(f);
-          if (!s || !f.latest || seen[f.id] === s) continue;
+          if (!s || !f.latest || seen[f.id] === undefined || seen[f.id] === s) continue;
           fresh.push({
             id: `${f.id}-${s}`, fund: f.id, stamp: s,
             text: `${f.name}${f.manager ? `(${f.manager})` : ""} ${f.latest.quarter.replace(/^(\d{4})Q([1-4])$/, "$1년 $2분기")} 13F 공시${f.latest.count != null ? ` — 보유 ${f.latest.count}종목` : ""} 보기`,
             href: `#/funds?fund=${encodeURIComponent(f.id)}&q=${encodeURIComponent(f.latest.quarter)}`,
           });
         }
-        if (fresh.length) setShown((cur) => [...cur.filter((t) => !fresh.some((x) => x.id === t.id)), ...fresh]);
+        // 기관마다 토스트는 하나 — 새 분기가 오면 바꿔 끼운다(옛 분기를 닫아 본 값이 뒤로 가지 않게)
+        if (fresh.length) setShown((cur) => [...cur.filter((t) => !fresh.some((x) => x.fund === t.fund)), ...fresh]);
       }, () => { /* API 가 없거나 실패하면 조용히 넘어간다 */ });
     };
     check();
     const t = window.setInterval(check, POLL_MS);
-    return () => { alive = false; window.clearInterval(t); };
+    // 숨은 탭으로 열었으면 보이게 될 때 바로 확인한다
+    const onVisible = () => { if (!document.hidden) check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { alive = false; window.clearInterval(t); document.removeEventListener("visibilitychange", onVisible); };
   }, []);
   if (!shown.length) return null;
   const close = (id: string) => {

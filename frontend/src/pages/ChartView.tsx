@@ -54,7 +54,8 @@ export default function ChartView({ ticker, query }: { ticker: string; query: UR
 
   const plan: Plan | null = run?.plan ?? null;
   const shown = run?.ticker ?? ticker;
-  const name = run?.options.name ?? recent?.options.name ?? shown;
+  // 시장 칸에서 열면 이름이 주소(name=)로 온다 — 확인 칸이 "NQ=F (NQ=F)" 가 아니라 "나스닥100 선물 (NQ=F)"
+  const name = run?.options.name ?? query.get("name") ?? recent?.options.name ?? shown;
   const banner = (
     <div className="chart-view-deep">
       {!asking && (

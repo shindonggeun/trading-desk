@@ -176,7 +176,8 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
   };
 
   // #539 칸을 누르면 차트 분석(쿼터 없음, 지금 고른 주기 그대로). 에이전트 토론 상세 분석은 칸 아래 버튼으로만
-  const chartHref = (ticker: string) => `#/chart/${encodeURIComponent(ticker)}?interval=${mode}`;
+  const chartHref = (m: MarketSymbol) =>
+    `#/chart/${encodeURIComponent(m.ticker)}?interval=${mode}&name=${encodeURIComponent(m.name)}`;
 
   return (
     <section className={`card market-board${open ? "" : " market-board-closed"}`}>
@@ -217,7 +218,7 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
             const up = (t?.change ?? 0) >= 0;
             return (
               <div key={m.ticker} className="mb-cell">
-              <a className={`mb-tile${picked?.ticker === m.ticker ? " mb-tile-on" : ""}`} href={chartHref(m.ticker)}
+              <a className={`mb-tile${picked?.ticker === m.ticker ? " mb-tile-on" : ""}`} href={chartHref(m)}
                 title={`${m.name} 차트 분석 열기(지지 · 저항 · 추세선 · 보조지표)`}>
                 <span className="mb-name">
                   <strong>{m.name}</strong> <span className="muted small">{m.ticker}</span>

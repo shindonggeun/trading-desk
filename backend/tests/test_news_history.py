@@ -146,3 +146,33 @@ def test_without_files_the_results_are_as_before(tmp_path):
     empty = backtest.run(["SOXL"], "swing", fetch=_fetch(daily), vix=None, news_dir=str(tmp_path))
     assert any("뉴스 테마 과거 파일 없음" in n for n in empty.notes)
     assert (empty.baseline, empty.by_setup) == (plain.baseline, plain.by_setup)
+
+
+def test_the_cache_dir_comes_from_the_flag_else_desk_gdelt_cache(monkeypatch):
+    from desk import cli
+
+    monkeypatch.delenv("DESK_GDELT_CACHE", raising=False)
+    assert cli.gdelt_cache_dir(None) is None and cli.gdelt_cache_dir("x") == "x"
+    monkeypatch.setenv("DESK_GDELT_CACHE", "/cache/gdelt")
+    assert cli.gdelt_cache_dir(None) == "/cache/gdelt" and cli.gdelt_cache_dir("x") == "x"
+
+
+def test_the_command_waits_out_a_refusal_and_carries_on(tmp_path, monkeypatch, capsys):
+    import argparse
+
+    from desk import cli
+
+    results = [{"fetched": 3, "kept": 0, "missing": ["a", "b"], "refused": "429"},
+               {"fetched": 2, "kept": 3, "missing": [], "refused": None}]
+    dirs, waits = [], []
+    monkeypatch.setattr(news_history, "collect", lambda root, **kw: dirs.append(root) or results.pop(0))
+    monkeypatch.setenv("DESK_GDELT_CACHE", str(tmp_path))
+    args = argparse.Namespace(out_dir=None, first_year=2017, retry_after_min=16.0, max_rounds=3)
+    assert cli._news_history(args, sleep=waits.append) == 0
+    assert dirs == [str(tmp_path)] * 2 and waits == [960.0]
+    assert "전체 5" in capsys.readouterr().out
+
+    # without --retry-after-min the first refusal ends the run (exit 2), as before
+    results[:] = [{"fetched": 1, "kept": 0, "missing": ["a"], "refused": "429"}]
+    args.retry_after_min = 0.0
+    assert cli._news_history(args, sleep=waits.append) == 2 and waits == [960.0]

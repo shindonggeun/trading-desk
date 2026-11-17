@@ -1892,6 +1892,7 @@ export interface Halving {
   source: string;
   halvings: HalvingEvent[];
   cycles: HalvingCycle[];
+  /** 지금 사이클 — 자료가 모자라면 null(서버) */
   current: {
     halving: string;
     days_since_halving: number;
@@ -1901,14 +1902,15 @@ export interface Halving {
     from_high_pct: number;
     /** 고점 뒤 지금까지 최저 — 바닥 확정 아님 */
     low_after_high: { date: string; price: number; days_from_halving: number; drawdown_pct: number } | null;
-    from_low_pct: number;
-  };
+    from_low_pct: number | null;
+  } | null;
   ranges: {
-    bottom_days_from_halving: HalvingRange;
-    bottom_days_from_peak: HalvingRange;
-    bottom_drawdown_pct: HalvingRange;
+    /** 비교할 지난 사이클 값이 없으면 null(서버 _range([])) */
+    bottom_days_from_halving: HalvingRange | null;
+    bottom_days_from_peak: HalvingRange | null;
+    bottom_drawdown_pct: HalvingRange | null;
     now: {
-      days_since_halving: HalvingRangeNow;
+      days_since_halving: HalvingRangeNow | null;
       days_since_high: HalvingRangeNow | null;
       from_high_pct: "shallower" | "within" | "deeper" | null;
     };

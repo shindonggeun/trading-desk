@@ -62,7 +62,8 @@ export default function HalvingChart({ data, mode }: { data: Halving; mode: Halv
     return (h: string) => Math.min(4, all.indexOf(h) + 1);
   }, [data]);
   const ends = Object.fromEntries(data.cycles.map((c) => [c.halving, c.end]));
-  const name = (h: string) => cycleName(h, h === cur.halving ? null : ends[h]);
+  const curH = cur?.halving ?? null;   // 서버가 지금 사이클을 못 내면 null — 오늘 점 · 강조 없이 지난 사이클만
+  const name = (h: string) => cycleName(h, h === curH ? null : ends[h]);
 
   const height = width < 560 ? 260 : 340;
   const iw = Math.max(10, width - M.l - M.r);
@@ -82,8 +83,13 @@ export default function HalvingChart({ data, mode }: { data: Halving; mode: Halv
   const yTicks = niceLogTicks(10 ** ly0, 10 ** ly1);
 
   const band = mode === "halving" ? data.ranges.bottom_days_from_halving : data.ranges.bottom_days_from_peak;
-  const today = mode === "halving" ? cur.days_since_halving : cur.days_since_high;
-  const curSeries = list.find((s) => s.halving === cur.halving);
+  // 띠 이름표 — 오른쪽으로 넘치면 띠 오른쪽 끝에 맞추고, 좁으면 "(고점 뒤)" 를 뺀다
+  const bandLabel = !band ? "" : `과거 바닥 ${band.min === band.max ? band.min : `${band.min}~${band.max}`}일${mode === "peak" && iw >= 360 ? "(고점 뒤)" : ""}`;
+  const bandLabelW = bandLabel.length * 6.6;
+  const bandLabelAt = !band ? {} : X(band.min) + 4 + bandLabelW <= M.l + iw
+    ? { x: X(band.min) + 4 } : { x: Math.max(M.l + bandLabelW, Math.min(M.l + iw, X(band.max))), textAnchor: "end" as const };
+  const today = !cur ? null : mode === "halving" ? cur.days_since_halving : cur.days_since_high;
+  const curSeries = curH ? list.find((s) => s.halving === curH) : undefined;
   const lastCur = curSeries?.points[curSeries.points.length - 1] ?? null;
 
   // 선 끝 이름표 — 세로로 겹치지 않게 14px 씩 민다
@@ -93,6 +99,7 @@ export default function HalvingChart({ data, mode }: { data: Halving; mode: Halv
   }).sort((a, b) => a.y - b.y);
   for (let i = 1; i < labels.length; i++) if (labels[i].y - labels[i - 1].y < 14) labels[i].y = labels[i - 1].y + 14;
   labels.forEach((l) => { l.y = Math.min(M.t + ih, Math.max(M.t + 4, l.y)); });
+  for (let i = labels.length - 2; i >= 0; i--) if (labels[i + 1].y - labels[i].y < 14) labels[i].y = labels[i + 1].y - 14;   // 아래 끝에 몰린 이름표는 위로 다시 민다
 
   const onMove = (e: PointerEvent<SVGSVGElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -119,7 +126,7 @@ export default function HalvingChart({ data, mode }: { data: Halving; mode: Halv
           {band && band.cycles.length > 0 && (
             <g className="hv-band">
               <rect x={X(band.min)} y={M.t} width={Math.max(3, X(band.max) - X(band.min))} height={ih} />
-              <text x={X(band.min) + 4} y={M.t - 8}>과거 바닥 {band.min === band.max ? band.min : `${band.min}~${band.max}`}일{mode === "peak" ? "(고점 뒤)" : ""}</text>
+              <text {...bandLabelAt} y={M.t - 8}>{bandLabel}</text>
             </g>
           )}
           {/* 눈금 */}
@@ -131,20 +138,20 @@ export default function HalvingChart({ data, mode }: { data: Halving; mode: Halv
               </g>
             ))}
             {xTicks.map((d) => (
-              <text key={d} x={X(d)} y={M.t + ih + 18} textAnchor="middle">{d === 0 ? (mode === "peak" ? "고점" : "반감기") : `${d}일`}</text>
+              <text key={d} x={X(d)} y={M.t + ih + 18} textAnchor="middle">{d === 0 ? (mode === "peak" ? "고점" : "반감기") : d < 0 ? `−${-d}일` : `${d}일`}</text>
             ))}
             {mode === "peak" && <line x1={X(0)} x2={X(0)} y1={M.t} y2={M.t + ih} className="hv-zero" />}
           </g>
           {/* 사이클 선(지금 사이클을 맨 위에) */}
           {[...list].sort((a, b) => slot(b.halving) - slot(a.halving)).map((s) => (
-            <path key={s.halving} className={`hv-line hv-c${slot(s.halving)}${s.halving === cur.halving ? " hv-now" : ""}`}
+            <path key={s.halving} className={`hv-line hv-c${slot(s.halving)}${s.halving === curH ? " hv-now" : ""}`}
               d={s.points.map((p, i) => `${i ? "L" : "M"}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join("")} />
           ))}
           {/* 오늘 */}
-          {lastCur && (
+          {lastCur && today != null && curH && (
             <g className="hv-today">
               <line x1={X(today)} x2={X(today)} y1={M.t} y2={M.t + ih} />
-              <circle cx={X(lastCur[0])} cy={Y(lastCur[1])} r={5} className={`hv-c${slot(cur.halving)}`} />
+              <circle cx={X(lastCur[0])} cy={Y(lastCur[1])} r={5} className={`hv-c${slot(curH)}`} />
             </g>
           )}
           {/* 선 끝 이름표 */}
@@ -157,16 +164,16 @@ export default function HalvingChart({ data, mode }: { data: Halving; mode: Halv
         </svg>
       )}
       {hover != null && hoverRows.length > 0 && (
-        <div className="hv-tip" role="status" style={{ left: tipLeft }}>
+        <div className="hv-tip" aria-hidden="true" style={{ left: tipLeft }}>
           <strong>{mode === "halving" ? `반감기 뒤 ${hover}일` : hover === 0 ? "고점" : hover < 0 ? `고점 전 ${-hover}일` : `고점 뒤 ${hover}일`}</strong>
           {hoverRows.map(({ s, p }) => (
-            <span key={s.halving}><i className={`hv-sw hv-c${slot(s.halving)}`} aria-hidden="true" />{name(s.halving)} <b>{fmtRatio(p[1])}</b> <span className="muted">({pct((p[1] - 1) * 100)})</span></span>
+            <span key={s.halving}><i className={`hv-sw hv-c${slot(s.halving)}`} aria-hidden="true" />{name(s.halving)} <b>{fmtRatio(p[1])}</b> <span className="muted">({pct((p[1] - 1) * 100)}{mode === "halving" && s.base_date && s.base_date !== s.halving ? " · 자료 첫날 기준" : ""})</span></span>
           ))}
         </div>
       )}
       <ul className="hv-legend" aria-label="사이클">
         {[...list].sort((a, b) => slot(a.halving) - slot(b.halving)).map((s) => (
-          <li key={s.halving}><i className={`hv-sw hv-c${slot(s.halving)}${s.halving === cur.halving ? " hv-sw-now" : ""}`} aria-hidden="true" />
+          <li key={s.halving}><i className={`hv-sw hv-c${slot(s.halving)}${s.halving === curH ? " hv-sw-now" : ""}`} aria-hidden="true" />
             {name(s.halving)}{mode === "halving" && s.base_date && s.base_date !== s.halving ? <span className="muted small"> · {s.base_date} 부터 자료</span> : null}
           </li>
         ))}

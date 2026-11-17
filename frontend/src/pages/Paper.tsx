@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { krwShort, money, percent, price, tone } from "../format";
 import { sampleEquity, sampleSettings, sampleSummary, sampleTrades } from "../paperSample";
@@ -61,11 +61,32 @@ function easy(s: PaperSummary): string[] {
   return lines;
 }
 
+const VIEW_W = 720;
+const LABEL_PX = 12;   // #561 화면에 실제로 보이는 축 · 시작 자금 글자 크기
+
+/** 화면에서 LABEL_PX 로 보이는 viewBox 단위 글자 크기 — SVG 가 휴대폰에서 줄든 넓은 화면에서 늘든 글자는 12px */
+function useLabelSize(): [React.RefObject<SVGSVGElement>, number] {
+  const ref = useRef<SVGSVGElement>(null);
+  const [size, setSize] = useState(LABEL_PX);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      const w = el.getBoundingClientRect().width;
+      if (w > 0) setSize(Math.round((LABEL_PX * VIEW_W) / w));   // 좁으면 크게, 넓으면 작게: 보이는 크기는 늘 12px
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, size];
+}
+
 /** 잔고 곡선 — 시작 자금 기준선, 마지막 점에 지금 잔고. 차트 라이브러리 없이 SVG */
 function EquityChart({ eq }: { eq: PaperEquity }) {
   const pts = eq.points;
+  const [ref, fs] = useLabelSize();
   if (pts.length < 2) return <p className="muted small">잔고 곡선은 거래가 쌓이면 그려져요.</p>;
-  const W = 720, H = 220, L = 8, R = 8, T = 14, B = 22;
+  const W = VIEW_W, H = 220, L = 8, R = 8, T = 14, B = Math.max(22, fs + 10);
   const vals = pts.map((p) => p.balance).concat(eq.start_capital);
   const lo = Math.min(...vals), hi = Math.max(...vals);
   const pad = (hi - lo) * 0.08 || hi * 0.01;
@@ -76,7 +97,7 @@ function EquityChart({ eq }: { eq: PaperEquity }) {
   const last = pts[pts.length - 1];
   const up = last.balance >= eq.start_capital;
   return (
-    <svg className={`paper-equity ${up ? "is-up" : "is-down"}`} viewBox={`0 0 ${W} ${H}`} role="img"
+    <svg ref={ref} style={{ fontSize: fs }} className={`paper-equity ${up ? "is-up" : "is-down"}`} viewBox={`0 0 ${W} ${H}`} role="img"
       aria-label={`모의 잔고 곡선: ${dateKo(pts[0].date)} ${won(pts[0].balance)}에서 ${dateKo(last.date)} ${won(last.balance)}, 시작 자금 ${won(eq.start_capital)}`}>
       <path d={area} className="pe-area" />
       <line x1={L} x2={W - R} y1={y(eq.start_capital)} y2={y(eq.start_capital)} className="pe-base" />
@@ -91,16 +112,17 @@ function EquityChart({ eq }: { eq: PaperEquity }) {
 
 /** 주 · 월 손익 막대(실현). 빨강 이익 · 파랑 손실(국내 관례) */
 function PnlBars({ rows, unit }: { rows: { start: string; pnl: number }[]; unit: "week" | "month" }) {
+  const [ref, fs] = useLabelSize();
   if (!rows.length) return <p className="muted small">끝난 거래가 생기면 {unit === "week" ? "주" : "월"}별 손익이 보여요.</p>;
   const show = rows.slice(-(unit === "week" ? 16 : 12));
-  const W = 720, H = 160, T = 10, B = 22, gap = 4;
+  const W = VIEW_W, H = 160, T = 10, B = Math.max(22, fs + 10), gap = 4;
   const max = Math.max(...show.map((r) => Math.abs(r.pnl)), 1);
   const bw = (W - gap * (show.length - 1)) / show.length;
   const mid = T + (H - T - B) / 2;
   const h = (v: number) => (Math.abs(v) / max) * ((H - T - B) / 2);
   const label = (s: string) => unit === "month" ? `${Number(s.slice(5, 7))}월` : `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}`;
   return (
-    <svg className="paper-bars" viewBox={`0 0 ${W} ${H}`} role="img"
+    <svg ref={ref} style={{ fontSize: fs }} className="paper-bars" viewBox={`0 0 ${W} ${H}`} role="img"
       aria-label={`${unit === "week" ? "주" : "월"}별 실현 손익: ${show.map((r) => `${label(r.start)} ${won(r.pnl, true)}`).join(", ")}`}>
       <line x1={0} x2={W} y1={mid} y2={mid} className="pe-base" />
       {show.map((r, i) => (

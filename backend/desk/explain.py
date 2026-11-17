@@ -44,6 +44,19 @@ def _f(v) -> float | None:
     return x if x > 0 else None
 
 
+def _lo_hi(z) -> tuple[float | None, float | None]:
+    """A zone as sr.py gives it (``[lo, hi]``) or as the summary does (``{"low", "high"}``); anything else none."""
+    if isinstance(z, dict):
+        lo, hi = _f(z.get("low")), _f(z.get("high"))
+    elif isinstance(z, (list, tuple)) and len(z) == 2:
+        lo, hi = _f(z[0]), _f(z[1])
+    else:
+        return None, None
+    if lo is not None and hi is not None and lo > hi:
+        lo, hi = hi, lo
+    return lo, hi
+
+
 def facts(run: dict, fear: list[dict] | None = None) -> dict:
     """The desk's numbers for one finished run (nothing computed here that the desk did not)."""
     plan = run.get("plan") or {}
@@ -53,8 +66,8 @@ def facts(run: dict, fear: list[dict] | None = None) -> dict:
     ref = price or _f(sr.get("reference_price"))
 
     def zone(lv: dict) -> dict:
-        z = lv.get("zone") or {}
-        return {"price": _f(lv.get("price")), "low": _f(z.get("low")), "high": _f(z.get("high")),
+        lo, hi = _lo_hi(lv.get("zone"))
+        return {"price": _f(lv.get("price")), "low": lo, "high": hi,
                 "touches": lv.get("touches"), "held": lv.get("held"), "flipped": bool(lv.get("flipped"))}
 
     levels = [lv for lv in sr.get("levels") or [] if _f(lv.get("price"))]
@@ -66,14 +79,14 @@ def facts(run: dict, fear: list[dict] | None = None) -> dict:
               for st in s.get("ladder") or [] if _f(st.get("price"))][:3]
     targets = [_f(t.get("price")) for t in s.get("targets") or [] if _f(t.get("price"))] or (
         [_f(plan.get("price_target"))] if _f(plan.get("price_target")) else [])
-    zone_s = s.get("zone") or {}
+    zone_lo, zone_hi = _lo_hi(s.get("zone"))
     return {
         "ticker": run.get("ticker"), "trade_date": run.get("trade_date"), "price": price,
         "rating": plan.get("rating"), "rating_ko": RATING_KO.get(plan.get("rating") or "", plan.get("rating")),
         "bias": plan.get("bias"), "side": s.get("side"), "act": s.get("verdict"), "verdict": s.get("text"), "why": s.get("why"),
         "entry": _f(plan.get("entry_price")), "stop": _f(s.get("stop")) or _f(plan.get("stop_loss")),
         "stop_pct": s.get("stop_pct"), "targets": targets[:2],
-        "zone": {"low": _f(zone_s.get("low")), "high": _f(zone_s.get("high"))} if zone_s else None,
+        "zone": {"low": zone_lo, "high": zone_hi} if zone_lo is not None or zone_hi is not None else None,
         "ladder": ladder, "valid_until": s.get("valid_until") or plan.get("valid_until"),
         "invalidation": plan.get("invalidation"),
         "supports": [zone(lv) for lv in supports], "resistances": [zone(lv) for lv in resistances],
@@ -252,16 +265,32 @@ def merge(draft: dict, answer: dict | None, allowed: set[str]) -> dict:
     return out
 
 
+def _bare(run: dict) -> dict:
+    """The explanation when the plan cannot be read at all: the question and the closing only."""
+    name = run.get("ticker") or "이 종목"
+    return {"version": VERSION, "hook": f"{name}, 지금 어떻게 봐야 할까요?", "sections": [], "stages": [], "checklist": [],
+            "closing": "이 분석은 쉽게 풀어 쓰지 못했어요. 요약 탭에서 데스크 숫자를 봐 주세요. 예측이 아니라 조건과 대응이에요.",
+            "source": "rules"}
+
+
 def build(run: dict, fear: list[dict] | None = None, write: Callable[[str], str] | None = None) -> dict:
     """The explanation for a finished run: the desk's draft, reworded by ``write`` (blocking, one model
     call) when given. Any failure of the model leaves the draft."""
-    f = facts(run, fear)
-    draft = rules(f)
+    try:
+        f = facts(run, fear)
+        draft = rules(f)
+    except Exception as exc:  # noqa: BLE001 - an odd plan never costs the page: the plan without its levels
+        log.warning("explain for %s: draft failed (%s); without the levels", run.get("id"), type(exc).__name__)
+        try:
+            plan = {k: v for k, v in (run.get("plan") or {}).items() if k not in ("support_resistance", "summary")}
+            return {**rules(facts({**run, "plan": plan}, fear)), "fallback": type(exc).__name__}
+        except Exception:  # noqa: BLE001 - the last resort: a short note, never a 500
+            return {**_bare(run), "fallback": type(exc).__name__}   # not kept: the next call tries again
     if write is None:
         return draft
     try:
         answer = _json(write(prompt(f, draft)))
-    except Exception as exc:  # noqa: BLE001 - rate limit, timeout, no login: the desk's own wording
+        return merge(draft, answer, allowed_numbers(f, draft))
+    except Exception as exc:  # noqa: BLE001 - rate limit, timeout, no login, an odd answer: the desk's own wording
         log.warning("explain for %s: model failed (%s)", run.get("id"), type(exc).__name__)
         return {**draft, "fallback": type(exc).__name__}
-    return merge(draft, answer, allowed_numbers(f, draft))

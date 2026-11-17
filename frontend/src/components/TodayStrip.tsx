@@ -4,6 +4,7 @@ import { byAsked } from "../ticker";
 import { useFavorites } from "../favorites";
 import type { BoardItem, LivePlaybooks, LongShortItem, MarketMonth, Projection } from "../types";
 import { fundBadgeText, useFundChanges } from "../fundBadges";
+import { useLatestReport } from "../latestReport";
 
 /**
  * #317 대시보드 맨 위 "오늘 볼 것" — 즐겨찾기 가운데 지금 손댈 종목만 이유와 함께 칩으로 모은다.
@@ -66,6 +67,7 @@ export default function TodayStrip() {
   const key = list.map((f) => f.ticker).join(",");
   const [found, setFound] = useState<Record<string, Reason[]> | null>(null);
   const fundCh = useFundChanges(list.map((x) => x.ticker));   // #484 기관 13F 배지
+  const report = useLatestReport();   // #496 최신 리포트 한 줄
 
   useEffect(() => {
     if (!key) {
@@ -131,6 +133,11 @@ export default function TodayStrip() {
   return (
     <section className="today-strip" aria-label="오늘 볼 것" data-tour="today">
       <span className="today-title">오늘 볼 것</span>
+      {report && (
+        <a className="today-chip today-report" href={`#/reports/${encodeURIComponent(report.id)}`} title={report.summary}>
+          <span aria-hidden="true">📝</span> <strong>리포트</strong> <span className="today-why">{report.title}</span>
+        </a>
+      )}
       {!list.length ? (
         <span className="muted small">즐겨찾기를 더하면 구역 근처 · 실적 임박 · 범위 이탈 종목을 여기 모읍니다.</span>
       ) : found === null ? (

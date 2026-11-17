@@ -76,7 +76,11 @@ self.addEventListener("notificationclick", (event) => {
     // 이미 열린 데스크 탭이 있으면 그 탭을 그 주소로 옮기고 앞으로
     for (const tab of tabs) {
       if (new URL(tab.url).origin === self.location.origin) {
-        await tab.focus();
+        try {
+          await tab.focus();
+        } catch (_e) {
+          continue; // 이 탭을 앞으로 못 꺼내면 다음 탭 · 새 창으로
+        }
         if ("navigate" in tab) {
           try {
             await tab.navigate(target);

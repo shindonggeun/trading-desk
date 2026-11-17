@@ -363,7 +363,7 @@ export interface PlaybookSide {
     setup: PlaybookSetup;
     rule: string;
     reason: string;
-    values?: { rel20?: number | null; ret20?: number | null; vol_ratio?: number | null };
+    values?: { rel20?: number | null; ret20?: number | null; vol_ratio?: number | null; slope20?: number | null };
   } | null;
   score: number;
   source?: Record<string, "desk" | "model" | "converted">;

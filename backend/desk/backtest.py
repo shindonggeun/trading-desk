@@ -23,6 +23,7 @@ from __future__ import annotations
 import bisect
 import statistics
 import sys
+import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -52,6 +53,16 @@ from .underlying import leverage_of
 
 VERSION = 1
 BASKET = ("SOXL", "TQQQ", "NVDA", "QQQ", "005930.KS", "000660.KS")
+FETCH_RETRY_SEC = 10.0   # #555: one more try after this long when Yahoo returns no bars or fails
+
+
+class MissingTickers(RuntimeError):
+    """#555: tickers whose bars could not be fetched. A report without them would read as the basket's
+    (a 2.0-weight run once lost QQQ to a passing Yahoo failure and looked like a rule effect)."""
+
+    def __init__(self, missing: dict[str, str]):
+        self.missing = missing
+        super().__init__("시세를 받지 못한 종목: " + ", ".join(f"{t}({why})" for t, why in missing.items()))
 # Separate tallies for the crashes the dip-catch is meant for (plan dates, inclusive).
 CRASH_WINDOWS = {"2020-03": ("2020-02-19", "2020-04-30"), "2022": ("2022-01-01", "2022-12-31"),
                  "2025-04": ("2025-03-24", "2025-05-16")}
@@ -171,6 +182,7 @@ class Report:
     exits: dict = field(default_factory=dict)        # the exit rules side by side (#239, ``exit_report``)
     features: dict = field(default_factory=dict)     # R by the chart at the plan (#284, ``feature_report``)
     ev_gate: dict = field(default_factory=dict)      # the #312 expected-R gate on / off (#166 stage 5, ``ev_gate_report``)
+    missing: list[str] = field(default_factory=list)  # #555: asked-for tickers left out (no bars), with allow_missing
 
 
 # ---------------------------------------------------------------- data
@@ -904,7 +916,8 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
         vix: dict[str, float] | None | bool = True, risk: MarketRisk | None | bool = None,
         on_trades: Callable[[list[Trade], str | None], None] | None = None, features: bool = False,
         flow_dir: str | None = None, flow_weight: float | None = None,
-        news_dir: str | None = None, macro_weight: float | None = None, news_source: str = "gdelt") -> Report:
+        news_dir: str | None = None, macro_weight: float | None = None, news_source: str = "gdelt",
+        allow_missing: bool = False, sleep: Callable[[float], None] = time.sleep) -> Report:
     """``vix=True`` loads ^VIX daily closes (the regime's fear evidence); a dict supplies them; None skips.
     ``risk=True`` loads the market's indices for the selling score (#146, desk.risk_regime; the CLI
     does); a MarketRisk supplies them; None leaves the playbooks ungated. ``on_trades(trades, cut)``
@@ -915,14 +928,18 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
     this run (the live weight stays 0 until a run like this shows it helps). ``news_dir`` (#390) holds
     the desk.news_history files: every plan gets the news themes' brief of the days before it as the
     direction's macro part, ``macro_weight`` the same way; ``news_source`` (#485) picks GDELT's days or the
-    kept Google News ones (never mixed). Without them the run is as before."""
+    kept Google News ones (never mixed). Without them the run is as before.
+
+    #555: a ticker whose fetch fails or returns no bars is tried once more after FETCH_RETRY_SEC; if it
+    still has none the run raises MissingTickers, unless ``allow_missing`` - then the report goes on
+    without it and lists it in ``missing`` (and the notes)."""
     weights = {k: w for k, w in (("flow", flow_weight), ("macro", macro_weight)) if w is not None}
     if weights:
         old = {k: DIRECTION_WEIGHTS[k] for k in weights}
         DIRECTION_WEIGHTS.update(weights)
         try:
             return run(tickers, horizon, start, end, step, costs, do_sweep, fetch, progress, vix, risk,
-                       on_trades, features, flow_dir, None, news_dir, None, news_source)
+                       on_trades, features, flow_dir, None, news_dir, None, news_source, allow_missing, sleep)
         finally:
             DIRECTION_WEIGHTS.update(old)
     h = horizons.get(horizon)
@@ -944,10 +961,15 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
         elif missing:
             notes.append(f"시장 투매 지표 일부 없음(남은 지표로 계산): {', '.join(missing)}")
     snaps: list[tuple[Snapshot, list[dict]]] = []
+    missing: dict[str, str] = {}
     for ticker in tickers:
+        bars = _fetch_bars(fetch, ticker, h, start, sleep)
+        if isinstance(bars, str):
+            missing[ticker] = bars
+            continue
+        primary, secondary, more = bars
+        notes += [f"{ticker}: {n}" for n in more]
         try:
-            primary, secondary, more = fetch(ticker, h, start)
-            notes += [f"{ticker}: {n}" for n in more]
             got = [(s, primary) for s in snapshots(ticker, h, primary, secondary, start, end, step, progress, vix or None,
                                                     risk or None)]
         except Exception as exc:  # noqa: BLE001 - one ticker failing leaves the others
@@ -956,6 +978,9 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
         if not got:
             notes.append(f"{ticker}: 계획을 하나도 만들지 못함(봉 {len(primary)}개)")
         snaps += got
+    if missing and not allow_missing:
+        raise MissingTickers(missing)
+    notes += [f"{t}: 시세를 받지 못해 뺌 — {why}" for t, why in missing.items()]
     if flow_dir:
         notes += attach_flow([s for s, _ in snaps], flow_dir)
     if news_dir:
@@ -981,11 +1006,31 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
     if risk:
         report.risk_gate = {"on": gate_view(trades, cut, h),
                             "off": gate_view(evaluate(snaps, h, costs, gate=False), cut, h)}
+    report.missing = list(missing)
     report.equity = equity(trades)
     report.ev_gate = ev_gate_report(trades, cut, h)
     if do_sweep:
         report.sweep = sweep(snaps, h, costs)
     return report
+
+
+def _fetch_bars(fetch, ticker: str, h: horizons.Horizon, start: str | None,
+                sleep: Callable[[float], None]) -> tuple[list[dict], list[dict], list[str]] | str:
+    """#555: the ticker's bars, tried twice (FETCH_RETRY_SEC apart) when the fetch fails or has no
+    primary bars; the reason as a string when neither try had any."""
+    why = ""
+    for attempt in range(2):
+        if attempt:
+            sleep(FETCH_RETRY_SEC)
+        try:
+            primary, secondary, more = fetch(ticker, h, start)
+        except Exception as exc:  # noqa: BLE001 - Yahoo fails in many ways; the reason is kept
+            why = f"{type(exc).__name__}: {exc}"
+            continue
+        if primary:
+            return primary, secondary, more
+        why = "봉 0개"
+    return why
 
 
 def attach_flow(snaps: list[Snapshot], flow_dir: str) -> list[str]:
@@ -1060,6 +1105,8 @@ def print_summary(report: Report, out=None) -> None:
     cols = ("plans", "filled", "settled", "fill_rate", "t1_first_rate", "expectancy_r", "median_r", "mae_atr_median")
     print(f"backtest {report.horizon} {','.join(report.tickers)} {report.start or ''}~{report.end or ''} "
           f"(cost {report.costs['bps_per_side']}bp/side)", file=out)
+    if report.missing:
+        print(f"!! 시세를 받지 못해 뺀 종목: {', '.join(report.missing)} — 바스켓 전체 성적이 아닙니다", file=out)
     print("group".ljust(34) + "".join(c[:12].rjust(13) for c in cols), file=out)
     rows = [("ALL", report.baseline), *report.by_setup.items(), *report.by_regime.items(), *report.by_direction.items(),
             *((f"split:{k}", v) for k, v in report.split.items() if isinstance(v, dict)),

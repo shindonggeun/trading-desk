@@ -3,17 +3,30 @@ import type { Layout, LayoutItem } from "react-grid-layout";
 /**
  * #487 대시보드 배치 편집: 화면 폭 구간별(≥1280 · 1000~1279) 12칸 격자 배치를 이 브라우저에 기억한다.
  * 저장한 배치가 없으면 대시보드는 예전(#464) 3열 · 2열 흐름 그대로 그린다 — "기본 배치로" 는 저장값을 지운다.
+ *
+ * #519 높이는 구역마다 자동(기본, 내용 높이를 재서 맞춤) 또는 고정(사용자가 모서리 · Shift+↑↓ 로 바꾼 구역).
+ * 세로 간격은 격자 여백이 아니라 칸 아래 패딩(GAP_PX)이라 한 줄(ROW_PX)이 4px — 내용에 4px 단위로 붙는다.
+ * (격자 여백으로 두면 한 줄이 줄 높이 + 간격 = 22px 단위라 구역마다 최대 21px 이 비었다)
  */
 export type Band = "wide" | "mid";
 export const GRID_COLS = 12;
-export const ROW_PX = 8; // 격자 한 줄 높이(px) — 높이를 촘촘히 조절하도록 작게
-export const GAP_PX = 14;
-export const HEAD_ROWS = 2; // 접힌 구역(머리글만)의 높이 — 2줄 = 30px
+export const ROW_PX = 4; // 격자 한 줄 높이(px) — 세로 여백이 없어 이것이 높이 단위
+export const GAP_PX = 14; // 가로 여백 · 칸 아래 패딩(세로 간격)
 export const MIN_W = 3; // 최소 폭 = 12칸의 1/4
-export const DEFAULT_H = 14; // 새 구역 · 다시 보이기 · 접힌 채 잰 구역의 높이(14줄 ≈ 300px)
+/** 내용 높이(px) → 격자 줄 수(아래 간격 포함) */
+export const rowsFor = (px: number) => Math.max(1, Math.ceil((px + GAP_PX) / ROW_PX));
+export const HEAD_ROWS = rowsFor(30); // 접힌 구역(머리글만) — 30px
+export const DEFAULT_H = rowsFor(300); // 새 구역 · 다시 보이기 · 접힌 채 잰 구역의 높이(≈ 300px)
+/** 키보드 Shift+↑↓ 한 번에 바꾸는 높이(≈ 44px) */
+export const KEY_H_STEP = 11;
 
-export interface BandLayout { items: Layout; hidden: string[] }
-type Store = Partial<Record<Band, BandLayout>>;
+/** fixed: 사용자가 높이를 정한 구역(나머지는 내용에 맞춘다) */
+export interface BandLayout { items: Layout; hidden: string[]; fixed: string[] }
+type Stored = { items: Layout; hidden?: string[]; fixed?: string[]; v?: number };
+type Store = Partial<Record<Band, Stored>>;
+const VERSION = 2;
+// v1(#487): 한 줄 8px + 세로 여백 14px = 22px 단위, 높이는 모두 고정 → v2 단위로 바꾸고 모두 자동으로(한 번만)
+const V1_UNIT = 22;
 const KEY = "desk.dashboard.layout.v1";
 
 function read(): Store {
@@ -37,19 +50,42 @@ const isItem = (v: unknown): v is LayoutItem => {
 export function loadBand(band: Band, known: string[]): BandLayout | null {
   const b = read()[band];
   if (!b || !Array.isArray(b.items)) return null;
+  const v1 = b.v !== VERSION;
   const items = b.items.filter(isItem).filter((it) => known.includes(it.i))
-    .map((it) => ({ i: it.i, x: clamp(it.x, 0, GRID_COLS - MIN_W), y: Math.max(0, it.y), w: clamp(it.w, MIN_W, GRID_COLS), h: Math.max(HEAD_ROWS, it.h) }));
+    .map((it) => ({
+      i: it.i, x: clamp(it.x, 0, GRID_COLS - MIN_W), w: clamp(it.w, MIN_W, GRID_COLS),
+      y: Math.max(0, v1 ? Math.round((it.y * V1_UNIT) / ROW_PX) : it.y),
+      // v1 의 높이는 내용을 잴 때까지만 쓰는 첫 짐작(자동)이다
+      h: Math.max(HEAD_ROWS, v1 ? Math.ceil((it.h * V1_UNIT) / ROW_PX) : it.h),
+    }));
   const hidden = Array.isArray(b.hidden) ? b.hidden.filter((h) => known.includes(h)) : [];
+  const fixed = !v1 && Array.isArray(b.fixed) ? b.fixed.filter((f) => typeof f === "string" && items.some((it) => it.i === f)) : [];
   const bottom = items.reduce((m, it) => Math.max(m, it.y + it.h), 0);
   const missing = known.filter((k) => !items.some((it) => it.i === k) && !hidden.includes(k));
   missing.forEach((k, n) => items.push({ i: k, x: (n % 3) * 4, y: bottom + Math.floor(n / 3) * DEFAULT_H, w: 4, h: DEFAULT_H }));
-  return items.length ? { items, hidden } : null;
+  return items.length ? { items, hidden, fixed } : null;
 }
 
 export function saveBand(band: Band, layout: BandLayout) {
   const s = read();
-  s[band] = { items: layout.items.map(({ i, x, y, w, h }) => ({ i, x, y, w, h })), hidden: layout.hidden };
+  s[band] = { v: VERSION, items: layout.items.map(({ i, x, y, w, h }) => ({ i, x, y, w, h })), hidden: layout.hidden, fixed: layout.fixed };
   write(s);
+}
+
+/** 보기 화면에서 잰 자동 높이를 저장 배치에 적어 둔다 — 다음에 열 때 첫 그림이 덜 흔들리게(고정 구역 · 다른 값은 그대로) */
+export function saveAutoHeights(band: Band, heights: Record<string, number>) {
+  const s = read();
+  const b = s[band];
+  if (!b || b.v !== VERSION || !Array.isArray(b.items)) return;
+  const fixed = b.fixed ?? [];
+  let changed = false;
+  const items = b.items.map((it) => {
+    const h = heights[it.i];
+    if (h == null || fixed.includes(it.i) || it.h === h) return it;
+    changed = true;
+    return { ...it, h };
+  });
+  if (changed) { s[band] = { ...b, items }; write(s); }
 }
 
 export function resetBand(band: Band) {
@@ -73,7 +109,7 @@ export function measureLayout(container: HTMLElement, ids: string[]): Layout {
     const r = el.getBoundingClientRect();
     const x = clamp((r.left - box.left) / colPx, 0, GRID_COLS - MIN_W);
     const w = clamp((r.width + GAP_PX) / colPx, MIN_W, GRID_COLS - x);
-    out.push({ i: id, x, y: Math.max(0, Math.round((r.top - box.top) / (ROW_PX + GAP_PX))), w, h: Math.max(HEAD_ROWS, Math.ceil((r.height + GAP_PX) / (ROW_PX + GAP_PX))) });
+    out.push({ i: id, x, y: Math.max(0, Math.round((r.top - box.top) / ROW_PX)), w, h: Math.max(HEAD_ROWS, rowsFor(r.height)) });
   }
   return out;
 }

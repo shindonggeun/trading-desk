@@ -19,9 +19,9 @@ def _run(bias="long", rating="Overweight"):
                                {"step": 2, "price": 149.0, "share": 0.5, "when": "구역 아래쪽"}],
                     "targets": [{"role": "T1", "price": 160.0, "rr": 1.6}, {"role": "T2", "price": 165.0, "rr": 2.5}]},
         "support_resistance": {"reference_price": 152.4, "levels": [
-            {"kind": "support", "price": 150.0, "zone": {"low": 148.6, "high": 153.1}, "touches": 4, "held": 3, "flipped": True},
-            {"kind": "support", "price": 140.0, "zone": {"low": 138.0, "high": 141.0}, "touches": 2, "held": 2},
-            {"kind": "resistance", "price": 160.0, "zone": {"low": 158.5, "high": 161.0}, "touches": 3, "held": 2}]}}}
+            {"kind": "support", "price": 150.0, "zone": [148.6, 153.1], "touches": 4, "held": 3, "flipped": True},
+            {"kind": "support", "price": 140.0, "zone": [138.0, 141.0], "touches": 2, "held": 2},
+            {"kind": "resistance", "price": 160.0, "zone": [158.5, 161.0], "touches": 3, "held": 2}]}}}
 
 
 FEAR = [{"key": "vix", "name": "VIX", "value": 22.9, "band_ko": "공포"}, {"key": "vkospi", "name": "VKOSPI", "value": None}]
@@ -109,3 +109,20 @@ def test_the_question_follows_what_to_do_now_and_the_verdict_is_said_once():
     body = ex.build(run)["sections"][0]["body"]
     assert body.count("분석 결론은") == 1
     assert ex.build(_run())["sections"][0]["chart"]["labels"][:2] == ["진입", "손절"]
+
+
+def test_a_real_runs_list_zones_and_an_unreadable_plan_never_fail():
+    # sr.py gives a level's zone as [lo, hi] (the GDXU 500 on production); the summary's as {low, high}
+    f = ex.facts(_run())
+    assert f["supports"][0]["low"] == 148.6 and f["supports"][0]["high"] == 153.1 and f["zone"]["low"] == 148.6
+    assert ex._lo_hi([153.1, 148.6]) == (148.6, 153.1) and ex._lo_hi("x") == (None, None)
+    odd = _run()
+    odd["plan"]["summary"]["ladder"] = 5                                   # not a list: the draft cannot be built
+    out = ex.build(odd, None, lambda p: (_ for _ in ()).throw(AssertionError("no model call for a fallback")))
+    assert out["fallback"] == "TypeError" and out["source"] == "rules" and out["hook"].endswith("?")
+    worse = _run()
+    worse["plan"]["summary"] = 2                                           # the summary itself unreadable: no levels
+    assert ex.build(worse)["fallback"] == "AttributeError"
+    worse["plan"] = "broken"                                               # nothing readable: the bare note
+    bare = ex.build(worse)
+    assert bare["fallback"] and bare["sections"] == [] and bare["closing"]

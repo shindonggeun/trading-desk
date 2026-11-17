@@ -169,8 +169,34 @@ def test_a_ticker_that_fails_is_noted_and_the_rest_run():
             raise RuntimeError("no data")
         return daily, _weekly(daily), []
 
-    report = backtest.run(["BAD", "SOXL"], "swing", fetch=fetch, vix=None)
+    slept = []
+    report = backtest.run(["BAD", "SOXL"], "swing", fetch=fetch, vix=None, allow_missing=True, sleep=slept.append)
     assert any(n.startswith("BAD:") for n in report.notes) and report.baseline["plans"] > 0
+    assert report.missing == ["BAD"] and report.tickers == ["BAD", "SOXL"] and slept == [backtest.FETCH_RETRY_SEC]
+
+
+def test_a_ticker_without_bars_stops_the_run_by_default():
+    """#555: a passing Yahoo failure once dropped QQQ from one run of a weight sweep and read as a rule effect."""
+    daily = _bars(330)
+
+    def fetch(ticker, h, start):
+        return ([], [], []) if ticker == "QQQ" else (daily, _weekly(daily), [])
+
+    with pytest.raises(backtest.MissingTickers) as err:
+        backtest.run(["QQQ", "SOXL"], "swing", fetch=fetch, vix=None, sleep=lambda s: None)
+    assert err.value.missing == {"QQQ": "봉 0개"} and "QQQ" in str(err.value)
+
+
+def test_a_ticker_that_comes_back_on_the_retry_is_kept():
+    daily = _bars(330)
+    calls = []
+
+    def fetch(ticker, h, start):
+        calls.append(ticker)
+        return ([], [], []) if calls.count(ticker) == 1 else (daily, _weekly(daily), [])
+
+    report = backtest.run(["SOXL"], "swing", fetch=fetch, vix=None, sleep=lambda s: None)
+    assert calls == ["SOXL", "SOXL"] and report.missing == [] and report.baseline["plans"] > 0
 
 
 def test_an_open_trade_is_marked_not_dropped():
@@ -194,6 +220,20 @@ def test_cli_backtest_writes_a_report(tmp_path, monkeypatch, capsys):
         cli.main(["backtest", "SOXL", "--horizon", "weekly"])
     with pytest.raises(SystemExit, match="tickers"):
         cli.main(["backtest"])
+
+
+def test_cli_backtest_stops_on_a_missing_ticker_unless_allowed(tmp_path, monkeypatch, capsys):
+    daily = _bars(300)
+    monkeypatch.setattr(backtest, "history", lambda t, h, s: ([], [], []) if t == "QQQ" else (daily, _weekly(daily), []))
+    monkeypatch.setattr(backtest, "vix_closes", lambda start: {"2023-06-01": 31.0})
+    monkeypatch.setattr(backtest, "market_risk", lambda start, tickers: backtest.MarketRisk({}))
+    monkeypatch.setattr(backtest, "FETCH_RETRY_SEC", 0.0)
+    out = tmp_path / "r.json"
+    assert cli.main(["backtest", "SOXL", "QQQ", "--horizon", "swing", "--out", str(out)]) == 2
+    assert not out.exists() and "QQQ" in capsys.readouterr().err
+    assert cli.main(["backtest", "SOXL", "QQQ", "--horizon", "swing", "--allow-missing", "--out", str(out)]) == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["missing"] == ["QQQ"]
+    assert "뺀 종목: QQQ" in capsys.readouterr().out
 
 
 def _t(at: str, r: float | None, side: str = "long", setup: str = "dip_catch", status: str = "stop", filled: float = 1.0):

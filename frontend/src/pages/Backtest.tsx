@@ -246,6 +246,11 @@ export default function Backtest() {
               {report.start ? `${day(report.start)} ~ ${report.end ? day(report.end) : "최근"}` : "받을 수 있는 전체 기간"} · 만든 날 {day(report.generated_at)}{report.commit ? ` (커밋 ${report.commit.slice(0, 7)})` : ""} · 비용 편도 {report.costs.bps_per_side}bp ·{" "}
               {report.tickers.join(" · ")}
             </p>
+            {report.missing && report.missing.length > 0 && (
+              <p className="bt-stale small" role="status">
+                시세를 받지 못해 {report.missing.join(" · ")} 를 빼고 만든 스냅샷입니다 — 바스켓 전체 성적이 아닙니다.
+              </p>
+            )}
             {report.stale !== false && (
               <p className="bt-stale small" role="status">
                 {report.stale

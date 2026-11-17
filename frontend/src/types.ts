@@ -1092,6 +1092,8 @@ export interface BacktestReport {
   version: number;
   horizon: HorizonId;
   tickers: string[];
+  /** #555 시세를 받지 못해 빼고 돌린 종목(--allow-missing). 없으면 바스켓 전체 */
+  missing?: string[];
   start: string | null;
   end: string | null;
   generated_at: string | null;

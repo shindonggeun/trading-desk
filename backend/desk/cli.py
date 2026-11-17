@@ -18,6 +18,7 @@
     python -m desk.cli news-history [--out-dir data/gdelt]  # GDELT's past per news theme, resumable (#390)
     python -m desk.cli news-history export --dir data/gdelt  # the days the live macro_news pass keeps (#485)
     python -m desk.cli backtest --basket --news-dir data/gdelt [--macro-weight 0.5]  # replay the macro part (#390)
+    python -m desk.cli backtest --basket --allow-missing  # go on without a ticker Yahoo had no bars for (#555)
 
 In Docker: ``docker compose exec backend python -m desk.cli create-user <name>``.
 For scripts, DESK_NEW_PASSWORD supplies the password instead of the prompt.
@@ -287,7 +288,7 @@ def _backtest(args) -> int:
                           progress=lambda msg: print(msg, file=sys.stderr), risk=not args.no_risk or None,
                           features=args.features, flow_dir=args.flow_dir, flow_weight=args.flow_weight,
                           news_dir=gdelt_cache_dir(args.news_dir), macro_weight=args.macro_weight,
-                          news_source=args.news_source)
+                          news_source=args.news_source, allow_missing=args.allow_missing)
     backtest.print_summary(report)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
@@ -364,6 +365,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="compare the zone-touch entry with the lower-bar trigger entry (#149; ~2 years of 60m bars)")
     bt.add_argument("--no-risk", action="store_true",
                     help="leave out the market's selling-score rule (#146) and its on/off comparison")
+    bt.add_argument("--allow-missing", action="store_true",
+                    help="go on without a ticker Yahoo has no bars for (listed in the report's missing); "
+                         "by default the run stops (#555)")
     bt.add_argument("--flow-dir", default=None,
                     help="flow-history files (#389): Korean plans get the market's foreign net buying as a direction part")
     bt.add_argument("--flow-weight", type=float, default=None,
@@ -425,10 +429,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "otp-key":
         print(otp.new_key())
         return 0
-    if args.command == "backtest":
-        return _backtest(args)
-    if args.command == "calibrate":
-        return _calibrate(args)
+    if args.command in ("backtest", "calibrate"):
+        from .backtest import MissingTickers
+
+        try:
+            return _backtest(args) if args.command == "backtest" else _calibrate(args)
+        except MissingTickers as exc:   # #555: no report that silently lacks a basket ticker
+            print(f"{exc} — 잠시 뒤 다시 돌리거나, 빼고 볼 거면 backtest --allow-missing", file=sys.stderr)
+            return 2
     if args.command == "entry-backtest":
         return _entry_backtest(args)
     if args.command == "weekly-lines":

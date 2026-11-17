@@ -120,7 +120,8 @@ export function weeklyEvidence(m: WeeklyLike): string | null {
       + "하단에 닿았을 때의 기록이고 예측이 아니다." : null;
   }
   const b = rec.black_break;
-  if (!b.n) return null;
+  // #508 역배열(검정선이 빨간선 아래)이면 검정선을 깰 때 이미 빨간선 아래 — 이 기록은 근거가 못 된다
+  if (!b.n || m.lines.black.price < m.lines.red.price) return null;
   const fact = `과거 검정선을 깬 ${b.n}번 중 ${b.reached_red}번은 ${b.within_weeks}주 안에 빨간선에 닿았다`;
   return zone === "between" ? `${fact} — 지난 기록이지 예측이 아니다.`
     : `검정선이 깨지면 참고 — ${fact}. 지난 기록이지 예측이 아니다.`;

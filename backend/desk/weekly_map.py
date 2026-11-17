@@ -299,7 +299,9 @@ def explain(m: dict) -> dict:
              + (f" ({m['candle']['change_pct']:+.1f}%)" if m["candle"]["change_pct"] is not None else "") + "."]
     bk = rec["black_break"]
     if bk["n"]:
-        txt = (f"과거 검정선 이탈 {bk['n']}번 중 {bk['reached_red']}번이 {bk['within_weeks']}주 안에 빨간선까지 내려갔다"
+        # #508 inverted lines (black under red): the record is of breaks with the red line below - say so
+        txt = ("(검정선이 빨간선 위에 있던 때의 기록) " if black["price"] < red["price"] else "") + (
+               f"과거 검정선 이탈 {bk['n']}번 중 {bk['reached_red']}번이 {bk['within_weeks']}주 안에 빨간선까지 내려갔다"
                + (f"(보통 {bk['median_weeks']:.0f}주)" if bk["median_weeks"] else "") + ".")
         if bk["v_exceptions"]:
             txt += f" 예외 — 바로 검정선을 되찾은 V자: {', '.join(bk['v_exceptions'])}."

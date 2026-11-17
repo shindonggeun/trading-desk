@@ -340,3 +340,20 @@ def test_under_both_inverted_lines_the_next_line_up_is_the_nearer_one():
     black, red = m["lines"]["black"]["price"], m["lines"]["red"]["price"]
     assert m["close"] < black < red and m["position"] == "below_red"
     assert m["scenario"]["up"]["price"] == black
+
+
+def test_over_both_inverted_lines_the_red_line_is_the_first_floor():
+    closes = _rise(70, 300, -2.5) + [130] * 8 + [128, 140, 150, 210]
+    weeks = _weeks(closes)
+    m = wm.build("SOXX", weeks, today=date(2100, 1, 1))
+    black, red = m["lines"]["black"]["price"], m["lines"]["red"]["price"]
+    assert black < red <= m["close"] and m["position"] == "above_black"
+    assert "역배열" in m["text"]["headline"] and m["scenario"]["down"]["price"] == red
+    assert "above its 20-week and 60-week lines" in wm.note(m, "SOXL")
+    if m["record"]["black_break"]["n"]:
+        assert any(line.startswith("(검정선이 빨간선 위에 있던 때의 기록)") for line in m["text"]["lines"])
+    rows = wm.history("SOXX", weeks, weeks=4)
+    seen = [r["position"] for r in rows]                # newest first: over both, after a rebound
+    assert seen[0] == "above_black" and "rebound" in seen and seen.index("rebound") > 0
+    reclaim = next(r for r in rows if r["cross"] == "reclaimed_black")
+    assert reclaim["position"] == "rebound" and reclaim["headline"].endswith("검정선을 되찾고 마감했다.")

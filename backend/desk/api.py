@@ -35,6 +35,7 @@ from . import (
     fear,
     filings,
     flow_intraday,
+    funds13f,
     futures_quote,
     horizons,
     line_basis,
@@ -96,6 +97,7 @@ POSITIONING_QUOTE_SEC = 5.0
 CREDIT_INTERVAL_SEC = 6 * 3600   # KOFIA posts the day's numbers the next business day (#155)
 CREDIT_RETRY_SEC = 15 * 60
 BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
+FUNDS_TICKERS_MAX = 30   # #483 tickers per /api/funds/changes call (the favorites' badges)
 # #240: the bottom-zone line of the weekly note waits this long (the scalp budget is 5 s; the line is
 # skipped, not the weekly map, when a cold cache is slower)
 BOTTOM_NOTE_SEC = 4.0
@@ -341,6 +343,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # #330: rate / dollar regime and its tips (^IRX ^TNX DX-Y.NYB QQQ, cached 3 h)
     tip_cache = tips.Cache(fetcher=lambda symbols: risk_regime.fetch(symbols, candles=prices._yahoo_candles,
                                                                      count=tips.HISTORY_BARS))
+    funds = funds13f.Funds()   # #483 the well-known funds' 13F holdings (SEC EDGAR), refreshed by refresh_funds
     # #460: the indices' primary trend (^KS11 ^NDX ^GSPC ^SOX, about ten years of dailies, cached 3 h)
     trend_cache = primary_trend.Cache(fetcher=lambda symbols: risk_regime.fetch(
         symbols, candles=prices._yahoo_candles, count=primary_trend.HISTORY_BARS))
@@ -595,6 +598,19 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         # the same switch as the news flow: off in tests and scripted runs
         calendar_task = (asyncio.create_task(refresh_calendar())
                          if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
+
+        async def refresh_funds():
+            # #483: the funds' filings every few hours around the 45-day deadline, else daily
+            while True:
+                try:
+                    ok = await asyncio.to_thread(funds.refresh)
+                    log.info("13F: %d/%d fund(s) refreshed", ok, len(funds13f.FUNDS))
+                except Exception:  # a failed pass must not stop the next one
+                    log.exception("13F refresh failed")
+                await asyncio.sleep(funds.next_delay())
+
+        funds_task = (asyncio.create_task(refresh_funds())
+                      if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
         # Scripted runs have made-up levels; scoring them against real bars means nothing.
         scorer = (asyncio.create_task(score_plans())
                   if settings.score_interval_sec > 0 and not settings.fake_runs else None)
@@ -616,6 +632,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             macro.cancel()
         if calendar_task:
             calendar_task.cancel()
+        if funds_task:
+            funds_task.cancel()
         if credit_task:
             credit_task.cancel()
         if scorer:
@@ -1389,6 +1407,45 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     # #299 차트 예상도: 확률 원뿔 · 레벨 경로 · 설명(모델 문장은 슬롯이 빌 때만, 숫자는 데스크 것만)
     projections = projection.Projections(projection.fake_note if settings.fake_runs else projection.llm_note)
+
+    @app.get("/api/funds")
+    async def funds_list():
+        """#483 the well-known funds: each one's latest 13F (quarter, period of report, filed date,
+        count, total value, the largest new buys) and the next deadline."""
+        return funds.list()
+
+    @app.get("/api/funds/changes")
+    async def funds_changes(tickers: str):
+        """#483 the badges: what each fund did with these tickers in its latest quarter (read ones only)."""
+        try:
+            names = list(dict.fromkeys(clean_ticker(t) for t in tickers.split(",") if t.strip()))
+            if not names or len(names) > FUNDS_TICKERS_MAX:
+                raise ValueError(f"between 1 and {FUNDS_TICKERS_MAX} tickers")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return funds.changes(names)
+
+    @app.get("/api/funds/{fund_id}")
+    async def fund_view(fund_id: str, quarter: str | None = None):
+        """#483 one fund's holdings in ``quarter`` (2026Q3; the latest when absent) against the quarter
+        before: shares, value, weight, new / increase / decrease / sold, and a summary. 404: no such
+        fund or nothing filed for the quarter · 503: SEC (or another fetch running - come back)."""
+        if fund_id not in funds13f.BY_ID:
+            raise HTTPException(404, "no such fund")
+        try:
+            if quarter is not None:
+                funds13f.period_of(quarter)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        try:
+            return await asyncio.to_thread(funds.view, fund_id, quarter)
+        except funds13f.NotFiled as exc:
+            raise HTTPException(404, str(exc)) from None
+        except funds13f.FundsUnavailable as exc:      # the desk's own words (no remote text in them)
+            raise HTTPException(503, str(exc)) from None
+        except Exception as exc:  # noqa: BLE001 - SEC down or a filing we cannot read
+            log.warning("13F %s %s failed: %s", fund_id, quarter, type(exc).__name__)
+            raise HTTPException(503, "13F 공시를 받지 못했습니다") from None
 
     @app.get("/api/tips")
     async def tips_view(ticker: str | None = None):

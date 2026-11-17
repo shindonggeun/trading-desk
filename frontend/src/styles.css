@@ -2354,6 +2354,8 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .rp-nav { display: flex; justify-content: space-between; gap: 12px; margin: 24px 0 0; padding-top: 12px; border-top: 1px solid var(--border); }
 .rp-nav a { display: flex; flex-direction: column; text-decoration: none; max-width: 48%; }
 .rp-newer { text-align: right; margin-left: auto; }
+/* 좁은 화면은 오른쪽 아래 채팅 버튼(56px)이 글 끝 · "다음 리포트" 를 덮지 않게 비운다 */
+@media (max-width: 760px) { .reports-page { padding-bottom: calc(96px + env(safe-area-inset-bottom)); } }
 .ev-img { display: block; width: 100%; height: auto; border-radius: var(--radius-s); margin: 4px 0 8px; }
 .today-report .today-why { color: var(--text); }
 @media (max-width: 480px) {

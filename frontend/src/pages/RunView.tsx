@@ -291,7 +291,7 @@ export default function RunView({ runId }: { runId: string }) {
               </section>
             )
           )}
-          {tab === "chart" && <ResultChart plan={plan} ticker={run.ticker} tradeDate={run.trade_date} outlook={outlook} />}
+          {tab === "chart" && <ResultChart plan={plan} ticker={run.ticker} tradeDate={run.trade_date} outlook={outlook} runId={run.id} />}
           {tab === "debate" && (
             <div className="run-body has-glossary">
               <AgentRail events={events} status={status} analysts={run.options.analysts} />

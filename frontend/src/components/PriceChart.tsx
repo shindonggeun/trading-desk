@@ -55,12 +55,13 @@ const MAX_BARS = 2000;
 // 보이는 범위의 왼쪽 끝이 첫 봉에서 이만큼 안쪽이면 더 받는다
 const OLDER_EDGE = 5;
 
-type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; pattern: boolean; proj: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean; bz: boolean; entry: boolean };
+type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; pattern: boolean; proj: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean; bz: boolean; entry: boolean; gaps: boolean };
 const SHOW_LABEL: Record<keyof Show, string> = {
   levels: "타점선", pb: "플레이북", sr: "지지 · 저항", all: "모든 지지 · 저항", vp: "매물대", trend: "추세선", pattern: "삼각수렴 · 쐐기", proj: "예상도", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
   opt: "옵션 벽 · 맥스 페인",
   bz: "인생 타점 줍줍",
   entry: "지금 타점(최적)",
+  gaps: "안 메운 갭",
   stoch: "스토캐스틱", bb: "볼린저밴드(20)", osc: "과열 · 침체 표시",
 };
 // #158 옵션 벽: 미국 상장 종목만(Cboe), 현재가에서 이 범위 안의 벽만 그린다(멀리 있는 벽이 가격 축을 늘이지 않게)
@@ -68,15 +69,15 @@ const US_TICKER = /^[A-Z]{1,6}(?:[.-][A-Z])?$/;
 const WALL_RANGE = 0.15;
 const WALLS_SHOWN = 2;
 // #98: 지지 · 저항은 가까운 3개씩만, 피보나치는 켤 때만 — 차트가 선으로 덮이지 않게
-const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, pattern: false, proj: false, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true, bz: true, entry: true };
+const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, pattern: false, proj: false, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true, bz: true, entry: true, gaps: true };
 // #298 표시 묶음: 가격 칸 위의 선 · 표시만 한 번에 바꾼다(RSI · 스토캐스틱 칸은 그대로). 체크를 손으로 바꾸면 "직접".
 // #313 "타점 보기" = 지금가 기준 최적 타점 + 분석 타점선 · 체결 · 분석일만(처음 여는 사람의 기본)
 type Preset = "entry" | "sr" | "trend" | "all" | "custom";
 const PRESET_LABEL: Record<Preset, string> = { entry: "타점 보기", sr: "지지·저항만", trend: "추세·패턴", all: "전부", custom: "직접" };
-const OVERLAYS: (keyof Show)[] = ["levels", "pb", "sr", "all", "vp", "trend", "pattern", "proj", "fib", "fills", "analysis", "opt", "bb", "osc", "bz", "entry"];
+const OVERLAYS: (keyof Show)[] = ["levels", "pb", "sr", "all", "vp", "trend", "pattern", "proj", "fib", "fills", "analysis", "opt", "bb", "osc", "bz", "entry", "gaps"];
 const PRESET_ON: Record<Exclude<Preset, "custom">, (keyof Show)[]> = {
-  entry: ["entry", "levels", "fills", "analysis"],
-  sr: ["sr", "vp"],
+  entry: ["entry", "levels", "fills", "analysis", "gaps"],
+  sr: ["sr", "vp", "gaps"],
   trend: ["sr", "trend", "pattern", "fib"],
   all: OVERLAYS,
 };
@@ -106,6 +107,8 @@ function loadPrefs(): { interval: Interval; show: Show; preset: Preset; custom: 
     const preset: Preset = raw.preset in PRESET_LABEL ? raw.preset : "custom";
     // #313 저장된 설정에 entry 가 없으면(이 기능 전) 고른 묶음을 따른다 — 버튼과 화면이 어긋나지 않게
     if (typeof raw.show?.entry !== "boolean") show.entry = preset !== "custom" && PRESET_ON[preset].includes("entry");
+    // #466 갭 표시가 생기기 전 설정: 고른 묶음을 따르고, "직접" 이면 켠다
+    if (typeof raw.show?.gaps !== "boolean") show.gaps = preset === "custom" || PRESET_ON[preset].includes("gaps");
     const custom = { ...show };
     for (const k of Object.keys(DEFAULT_SHOW) as (keyof Show)[]) if (typeof raw.custom?.[k] === "boolean") custom[k] = raw.custom[k];
     if (typeof raw.custom?.entry !== "boolean") custom.entry = false;
@@ -322,7 +325,7 @@ export interface ExtraLine {
  * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
  * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
  */
-export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, onIntervalChange, highlight = null, outlook = null }: {
+export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, onIntervalChange, highlight = null, outlook = null, planLabels, onLineClick }: {
   ticker: string;
   tradeDate: string;
   plan: Plan | null;
@@ -345,6 +348,10 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   highlight?: number | null;
   /** #438 run 의 1주 · 1개월 방향 전망 — 일봉에서 마지막 봉 오른쪽에 원뿔 · 경로를 그리고 아래에 한 줄 요약 */
   outlook?: RunOutlook | null;
+  /** #466 진입 · 손절 · 목표 선 제목 · 색(시나리오 · 근거 한 단어) — 없으면 "진입" · "손절" · "목표" */
+  planLabels?: Partial<Record<"entry_price" | "stop_loss" | "price_target", { title: string; color?: string }>>;
+  /** #466 계획선(진입 · 손절 · 목표 · extraLines) 가까이를 누르면 그 선의 가격 — 해설 패널이 근거를 펼친다 */
+  onLineClick?: (price: number) => void;
 }) {
   const [outlookPrefs, setOutlookPrefs] = useState(loadOutlookPrefs);
   const pickOutlook = (next: Partial<OutlookPrefs>) => {
@@ -593,14 +600,15 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   }, [drawn]);
 
   useEffect(() => {
-    if (!wantSr || mode !== "now" || nowSr) return;
+    // #466 갭 상자는 분석 당시 레벨(plan 모드)이 아니라 지금 레벨 응답의 gaps 를 쓴다
+    if (!((wantSr && mode === "now") || show.gaps) || nowSr) return;
     let live = true;
     setSrFailed(false);
     api.levels(ticker).then((v) => live && setNowSr(v)).catch(() => live && setSrFailed(true));
     return () => {
       live = false;
     };
-  }, [wantSr, mode, nowSr, ticker]);
+  }, [wantSr, mode, nowSr, ticker, show.gaps]);
 
   // RSI 를 켜고 끄면 다시 받는다(서버가 30초 캐시) — RSI 는 봉과 같은 응답에 실린다.
   useEffect(() => {
@@ -778,10 +786,11 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     ] : [];
     // #436 진입을 사이에 두지 않는 등급상 타점(손절 = 목표 등)은 그리지 않는다 — 조건선 · 띠는 그대로
     const ownLevels: [number | null | undefined, string, string, LineStyle][] = levelsContradict(plan) ? [] : [
-      [plan?.entry_price, "진입", css("--accent", "#c9d1db"), LineStyle.Solid],
+      // #466 근거가 있으면 "롱 진입 · 갭 메움" 처럼 시나리오 · 근거 한 단어, 관망 계획은 시나리오 색
+      [plan?.entry_price, planLabels?.entry_price?.title ?? "진입", planLabels?.entry_price?.color ?? css("--accent", "#c9d1db"), LineStyle.Solid],
       // #311 손절 = 손실색 · 목표 = 이익색(롱 · 숏 어느 관점이든 같은 뜻)
-      [plan?.stop_loss, "손절", css("--danger", "#ff6a3d"), LineStyle.Solid],
-      [plan?.price_target, "목표", css("--ok", "#3fb68b"), LineStyle.Solid],
+      [plan?.stop_loss, planLabels?.stop_loss?.title ?? "손절", planLabels?.stop_loss?.color ?? css("--danger", "#ff6a3d"), LineStyle.Solid],
+      [plan?.price_target, planLabels?.price_target?.title ?? "목표", planLabels?.price_target?.color ?? css("--ok", "#3fb68b"), LineStyle.Solid],
     ];
     const planLines: [number | null | undefined, string, string, LineStyle][] = show.levels
       ? [
@@ -880,7 +889,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       stopLabels(drawn.alive.current);
       if (drawn.alive.current) for (const line of made) series.removePriceLine(line);
     };
-  }, [drawn, plan, fills, pickedFill, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines, show.opt, optionData, show.osc, osc, show.bz, bottom]);
+  }, [drawn, plan, fills, pickedFill, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines, show.opt, optionData, show.osc, osc, show.bz, bottom, planLabels]);
 
   // #440 가격 사다리에서 고른 가격 — 겹친 라벨과 상관없이 그 가격 하나만 굵게
   useEffect(() => {
@@ -912,6 +921,23 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       : { bands: [], marks: [] };
     // #321 저가매수 구간 — 지지 · 저항을 켰을 때만(가까운 지지 몇 개)
     const buyZones = buyZoneDrawing(srShown.filter((lv) => lv.kind === "support"), css("--ok", "#3fb68b"), price);
+    // #466 안 메운 갭 — 생긴 봉부터 오른쪽으로 옅은 상자(아직 안 메운 부분), 가까운 것 몇 개만
+    const gapColor = css("--warn", "#e5a23a");
+    const gapFrom = (date: string): Time | null => {
+      if (!intraday) {
+        const k = barFor(rows.map((r) => r.key), date as Key);
+        return k == null ? null : time(k);
+      }
+      const d = barFor(rows.map((r) => r.day), date as Key);
+      const k = d == null ? null : rows.find((r) => r.day === d)?.key ?? null;
+      return k == null ? null : time(k);
+    };
+    const gapBands = show.gaps
+      ? (nowSr?.gaps ?? []).filter((g) => Math.abs(g.distance_pct) <= 30).slice(0, 4).map((g) => ({
+          top: g.top, bottom: g.bottom, fill: withAlpha(gapColor, 0.12), edge: withAlpha(gapColor, 0.5),
+          label: `${g.timeframe === "1w" ? "주봉" : "일봉"} 갭 · 메움 ${price(g.fill_price)}`, labelColor: gapColor, from: gapFrom(g.formed_at),
+        }))
+      : [];
     bands.set(
       [
         ...profile.bands,
@@ -919,6 +945,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         ...(show.levels ? planBands(plan, at == null ? null : time(at), { loss: css("--danger", css("--up", "#f2464b")), profit: css("--ok", "#3fb68b") }) : []),
         ...srBands(srShown, srSource?.atr, { support: css("--sr-support", "#2bb3a3"), resistance: css("--sr-resistance", "#b58cf0") }, price),
         ...buyZones.bands,
+        ...gapBands,
       ],
       [
         ...buyZones.marks,
@@ -931,7 +958,32 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     return () => {
       if (drawn.alive.current) series.detachPrimitive(bands);
     };
-  }, [drawn, srShown, srSource, plan, fib, vp, show.levels, show.pb, tradeDate]);
+  }, [drawn, srShown, srSource, plan, fib, vp, show.levels, show.pb, tradeDate, show.gaps, nowSr]);
+
+  // #466 계획선 가까이(12px)를 누르면 그 선의 가격을 알린다 — 해설 패널이 근거를 펼친다
+  useEffect(() => {
+    if (!drawn || !onLineClick) return;
+    const { chart, series } = drawn;
+    const prices = [
+      plan?.entry_price, plan?.stop_loss, plan?.price_target, ...(extraLines ?? []).map((l) => l.price),
+    ].filter((p): p is number => p != null && Number.isFinite(p));
+    const onClick = (param: { point?: { x: number; y: number } }) => {
+      const y = param.point?.y;
+      if (y == null) return;
+      let best: { p: number; d: number } | null = null;
+      for (const p of prices) {
+        const c = series.priceToCoordinate(p);
+        if (c == null) continue;
+        const d = Math.abs(c - y);
+        if (d <= 12 && (!best || d < best.d)) best = { p, d };
+      }
+      if (best) onLineClick(best.p);
+    };
+    chart.subscribeClick(onClick);
+    return () => {
+      if (drawn.alive.current) chart.unsubscribeClick(onClick);
+    };
+  }, [drawn, plan, extraLines, onLineClick]);
 
   // #313 타점 보기 — 자기 띠 · 선을 붙이고 뗀다(다른 그리기와 섞지 않는다)
   useEffect(() => {

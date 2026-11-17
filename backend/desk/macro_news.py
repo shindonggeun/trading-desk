@@ -363,7 +363,8 @@ async def fetch_theme(gdelt: Gdelt, theme: Theme, now: datetime, *, headlines_to
     count, ratio = spike(volume, now)
     if articles is None:
         prev = previous if previous and previous.get("source") == "gdelt" else {}
-        shown, off = list(prev.get("headlines") or []), int(prev.get("off_topic") or 0)
+        # re-windowed: a weekend of passes must not show Friday's headlines as fresh (age_h recomputed)
+        shown, off = recent(list(prev.get("headlines") or []), now), int(prev.get("off_topic") or 0)
     else:
         # #291: the volume and tone timelines are GDELT's (whole articles); the headlines are the ones titled on the theme
         found = [h for h in headlines(articles, HEADLINES * 4) if (at := _seen(h)) and in_window(at, now)]

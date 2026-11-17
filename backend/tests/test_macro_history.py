@@ -89,11 +89,14 @@ def test_a_pass_keeps_every_themes_days_and_skips_headlines_outside_market_hours
     assert not m.market_hours(night) and m.market_hours(NOW)
     assert m.market_hours(datetime(2026, 11, 17, 15, 0, tzinfo=UTC))    # 10:00 New York
     assert not m.market_hours(datetime(2026, 11, 21, 15, 0, tzinfo=UTC))  # Saturday
-    cache.themes["fed"]["headlines"] = [{"title": "kept from the last pass"}]
+    cache.themes["fed"]["headlines"] = [
+        {"title": "Fed holds rates steady", "seen": (night - timedelta(hours=10)).isoformat(), "age_h": 0.5},
+        {"title": "Powell speaks on inflation", "seen": (night - timedelta(days=4)).isoformat(), "age_h": 1.0}]
     g2 = Gdelt()
     asyncio.run(cache.refresh(gdelt=g2, now=night, rss=_rss))
     assert "ArtList" not in g2.modes and g2.sent == 2 * len(m.THEMES)    # 16 requests, not 24
-    assert cache.themes["fed"]["headlines"] == [{"title": "kept from the last pass"}]
+    # the kept headlines are re-windowed: the 4-day-old one goes, the age is recomputed
+    assert [(h["title"], h["age_h"]) for h in cache.themes["fed"]["headlines"]] == [("Fed holds rates steady", 10.0)]
 
 
 def test_a_429_keeps_the_last_gdelt_values_for_the_rest_of_the_pass(tmp_path):

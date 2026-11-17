@@ -326,7 +326,7 @@ export default function Dashboard() {
   };
   const hide = (id: string) => {
     if (!draft || draft.items.length <= 1) return; // 마지막 구역은 숨기지 않는다(빈 배치는 저장되지 않아 초기화처럼 된다)
-    setDraft({ ...draft, items: draft.items.filter((it) => it.i !== id), hidden: [...draft.hidden, id] });
+    setDraft({ ...draft, items: draft.items.filter((it) => it.i !== id), hidden: [...draft.hidden, id], fixed: draft.fixed.filter((f) => f !== id) });
     window.setTimeout(() => document.querySelector<HTMLElement>(".dash-edit-bar button")?.focus(), 0); // 초점이 사라지지 않게
   };
   const unhide = (id: string) => draft && setDraft({
@@ -334,13 +334,15 @@ export default function Dashboard() {
     items: [...draft.items, { i: id, x: 0, y: draft.items.reduce((m, it) => Math.max(m, it.y + it.h), 0), w: 4, h: DEFAULT_H }],
     hidden: draft.hidden.filter((h) => h !== id),
   });
-  // #519 높이: 고정 구역은 저장값, 나머지는 잰 내용 높이(아직 못 쟀으면 저장값). 보기 모드에서 접힌 구역은 머리글 높이.
-  // 높이가 바뀐 배치를 넘기면 격자가 verticalCompactor 로 다시 위로 붙인다 — 편집 중이 아니어도 빈칸이 남지 않는다
+  // #519 높이: 자동 구역은 잰 내용 높이(아직 못 쟀으면 저장값), 고정 구역은 저장값 — 단 내용보다 작게는 안 된다
+  // (내용이 길어지면 고정 높이도 내용까지 늘고, 모서리 · Shift+↑ 로도 내용보다 작게 못 줄인다 → 어떤 배치에서도 안쪽 스크롤이 없다).
+  // 보기 모드에서 접힌 구역은 머리글 높이. 높이가 바뀐 배치를 넘기면 격자가 verticalCompactor 로 다시 위로 붙인다
   const auto = useAutoHeights();
   const gridItems: GridLayoutItems = !grid ? [] : grid.items.map((it) => {
     if (!draft && !isOpen(it.i as SectionId)) return { ...it, h: HEAD_ROWS };
-    const h = grid.fixed.includes(it.i) ? it.h : auto.rows[it.i] ?? it.h;
-    return h === it.h ? it : { ...it, h };
+    const need = auto.rows[it.i];
+    const h = grid.fixed.includes(it.i) ? Math.max(it.h, need ?? 0) : need ?? it.h;
+    return { ...it, h, ...(need ? { minH: need } : {}) };
   });
   // 잰 높이를 저장 배치에도 적어 둔다(다음 첫 그림용, 보기 모드에서만 · 1초 모아서)
   useEffect(() => {
@@ -348,9 +350,11 @@ export default function Dashboard() {
     const t = window.setTimeout(() => saveAutoHeights(band, auto.rows), 1000);
     return () => window.clearTimeout(t);
   }, [auto.rows, band, draft, saved]);
-  const setFixed = (id: string, on: boolean) => setDraft((d) => {
-    if (!d || d.fixed.includes(id) === on) return d;
-    if (on) return { ...d, fixed: [...d.fixed, id] };
+  const setFixed = (id: string, on: boolean, h?: number) => setDraft((d) => {
+    if (!d) return d;
+    // 모서리로 정한 높이는 그 값 그대로 저장한다(화면에는 내용보다 작지 않게만 보인다)
+    if (on) return { ...d, fixed: d.fixed.includes(id) ? d.fixed : [...d.fixed, id], items: h == null ? d.items : d.items.map((it) => (it.i === id ? { ...it, h } : it)) };
+    if (!d.fixed.includes(id)) return d;
     // 자동으로 되돌리면 잰 내용 높이로 바로 맞춘다
     return { ...d, fixed: d.fixed.filter((f) => f !== id), items: d.items.map((it) => (it.i === id && auto.rows[id] ? { ...it, h: auto.rows[id] } : it)) };
   });
@@ -371,7 +375,7 @@ export default function Dashboard() {
       if (e.key === "ArrowLeft") it.w = Math.max(MIN_W, it.w - 1);
       if (e.key === "ArrowRight") it.w = Math.min(GRID_COLS - it.x, it.w + 1);
       const cur = draft.fixed.includes(id) ? it.h : auto.rows[id] ?? it.h;   // 자동이던 구역은 보이는 높이에서 시작
-      if (e.key === "ArrowUp") it.h = Math.max(HEAD_ROWS, cur - KEY_H_STEP);
+      if (e.key === "ArrowUp") it.h = Math.max(auto.rows[id] ?? HEAD_ROWS, cur - KEY_H_STEP);   // 내용보다 작게는 못 줄인다
       if (e.key === "ArrowDown") it.h = cur + KEY_H_STEP;
     } else if (e.key === "ArrowLeft") it.x = Math.max(0, it.x - 1);
     else if (e.key === "ArrowRight") it.x = Math.min(GRID_COLS - it.w, it.x + 1);
@@ -431,8 +435,9 @@ export default function Dashboard() {
           {areaWidth > 0 && (
             <Suspense fallback={<p className="muted small">배치 불러오는 중…</p>}>
               <DashGrid width={areaWidth} items={gridItems} fixed={grid.fixed} editing={!!draft}
-                onLayoutChange={(l) => setDraft((d) => (d ? { ...d, items: l } : d))}
-                onHeightSet={(id) => setFixed(id, true)}
+                // 고정 구역의 h 는 사용자가 정한 값으로 둔다 — 화면용 max(정한 값, 내용) 이 저장되어 높이가 쌓이지 않게
+                onLayoutChange={(l) => setDraft((d) => (d ? { ...d, items: l.map((it) => (d.fixed.includes(it.i) ? { ...it, h: d.items.find((o) => o.i === it.i)?.h ?? it.h } : it)) } : d))}
+                onHeightSet={(id, h) => setFixed(id, true, h)}
                 renderItem={(id) => renderSection(id as SectionId)} onKey={onGridKey}
                 label={(id) => `${SECTIONS[id as SectionId].title} — 화살표로 옮기기, Shift+화살표로 크기`} />
             </Suspense>

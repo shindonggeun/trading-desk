@@ -25,20 +25,23 @@ export interface BandLayout { items: Layout; hidden: string[]; fixed: string[] }
 type Stored = { items: Layout; hidden?: string[]; fixed?: string[]; v?: number };
 type Store = Partial<Record<Band, Stored>>;
 const VERSION = 2;
-// v1(#487): 한 줄 8px + 세로 여백 14px = 22px 단위, 높이는 모두 고정 → v2 단위로 바꾸고 모두 자동으로(한 번만)
+// v1(#487, 키 …layout.v1): 한 줄 8px + 세로 여백 14px = 22px 단위, 높이는 모두 고정.
+// v2 는 새 키에 쓴다 — 배포 전 번들이 열린 탭은 v1 키만 읽고 써서 서로의 단위를 잘못 읽지 않는다(이중 이전 없음).
+// v2 키에 그 폭 구간이 없을 때 한 번만 v1 을 읽어 새 단위 · 모두 자동으로 바꿔 v2 키에 적는다.
 const V1_UNIT = 22;
-const KEY = "desk.dashboard.layout.v1";
+const KEY_V1 = "desk.dashboard.layout.v1";
+const KEY = "desk.dashboard.layout.v2";
 
-function read(): Store {
+function read(key = KEY): Store {
   try {
-    const raw = JSON.parse(localStorage.getItem(KEY) ?? "{}");
+    const raw = JSON.parse(localStorage.getItem(key) ?? "{}");
     return raw && typeof raw === "object" ? (raw as Store) : {};
   } catch {
     return {};
   }
 }
-function write(s: Store) {
-  try { localStorage.setItem(KEY, JSON.stringify(s)); } catch { /* 기억만 못 한다 — 이번 화면에서는 그대로 */ }
+function write(s: Store, key = KEY) {
+  try { localStorage.setItem(key, JSON.stringify(s)); } catch { /* 기억만 못 한다 — 이번 화면에서는 그대로 */ }
 }
 
 const isItem = (v: unknown): v is LayoutItem => {
@@ -48,9 +51,12 @@ const isItem = (v: unknown): v is LayoutItem => {
 
 /** 저장한 배치(손상값은 버림). 없는 구역은 빼고, 새로 생긴 구역은 맨 아래에 4칸 폭으로 붙인다. */
 export function loadBand(band: Band, known: string[]): BandLayout | null {
-  const b = read()[band];
+  const cur = read()[band];
+  const b = cur ?? read(KEY_V1)[band];
   if (!b || !Array.isArray(b.items)) return null;
-  const v1 = b.v !== VERSION;
+  const moved = !cur;   // v1 키에서 옮겨 온다
+  // #524 가 먼저 배포됐다면 v1 키에 이미 새 단위(v:2)로 적혀 있다 — 그건 단위를 바꾸지 않고 그대로 옮긴다
+  const v1 = moved && b.v !== VERSION;
   const items = b.items.filter(isItem).filter((it) => known.includes(it.i))
     .map((it) => ({
       i: it.i, x: clamp(it.x, 0, GRID_COLS - MIN_W), w: clamp(it.w, MIN_W, GRID_COLS),
@@ -63,7 +69,9 @@ export function loadBand(band: Band, known: string[]): BandLayout | null {
   const bottom = items.reduce((m, it) => Math.max(m, it.y + it.h), 0);
   const missing = known.filter((k) => !items.some((it) => it.i === k) && !hidden.includes(k));
   missing.forEach((k, n) => items.push({ i: k, x: (n % 3) * 4, y: bottom + Math.floor(n / 3) * DEFAULT_H, w: 4, h: DEFAULT_H }));
-  return items.length ? { items, hidden, fixed } : null;
+  const out = items.length ? { items, hidden, fixed } : null;
+  if (moved && out) saveBand(band, out);   // 이전은 한 번만 — 다음부터는 v2 키에서 읽는다
+  return out;
 }
 
 export function saveBand(band: Band, layout: BandLayout) {
@@ -89,9 +97,11 @@ export function saveAutoHeights(band: Band, heights: Record<string, number>) {
 }
 
 export function resetBand(band: Band) {
-  const s = read();
-  delete s[band];
-  write(s);
+  // v1 키도 지운다 — 남겨 두면 다음에 다시 이전되어 "기본 배치로" 가 듣지 않는다
+  for (const key of [KEY, KEY_V1]) {
+    const s = read(key);
+    if (s[band]) { delete s[band]; write(s, key); }
+  }
 }
 
 function clamp(n: number, lo: number, hi: number) {
@@ -116,10 +126,12 @@ export function measureLayout(container: HTMLElement, ids: string[]): Layout {
 
 /** 저장 배치에서 숨긴 구역을 다시 보이게(loadBand 가 맨 아래에 붙인다). 바꿨으면 true — #362 알림 클릭용 */
 export function unhideSection(band: Band, id: string): boolean {
-  const s = read();
+  // 아직 이전 전이면(v2 키에 그 구간이 없으면) v1 키에서 — 이전할 때 그대로 따라온다
+  const key = read()[band] ? KEY : KEY_V1;
+  const s = read(key);
   const b = s[band];
   if (!b || !Array.isArray(b.hidden) || !b.hidden.includes(id)) return false;
   s[band] = { ...b, hidden: b.hidden.filter((h) => h !== id) };
-  write(s);
+  write(s, key);
   return true;
 }

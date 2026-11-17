@@ -102,9 +102,10 @@ def load(root: Path | str, themes: tuple[Theme, ...] = THEMES, first_year: int =
 def collect(root: Path | str, themes: tuple[Theme, ...] = THEMES, first_year: int = FIRST_YEAR,
             get: Callable[..., httpx.Response] = httpx.get, sleep: Callable[[float], None] = time.sleep,
             clock: Callable[[], float] = time.monotonic, today: date | None = None,
-            progress: Callable[[str], None] | None = None) -> dict:
+            progress: Callable[[str], None] | None = None, max_files: int | None = None) -> dict:
     """Fetch what is missing (or the current year's file older than a day), politely, until GDELT
-    refuses. Returns {"fetched", "kept", "missing", "refused"} - counts of files, and the refusal."""
+    refuses or ``max_files`` came in (a small batch shares GDELT's limit with the live macro_news
+    refresh). Returns {"fetched", "kept", "missing", "refused"} - counts of files, and the refusal."""
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     today = today or date.today()
@@ -120,7 +121,7 @@ def collect(root: Path | str, themes: tuple[Theme, ...] = THEMES, first_year: in
                 if fresh:
                     kept += 1
                     continue
-                if refused:
+                if refused or (max_files is not None and fetched >= max_files):
                     missing.append(path.name)
                     continue
                 if last_call is not None:

@@ -1002,12 +1002,16 @@ span.cs-hold-text { color: var(--warn); }
 .ma-chip.on.ma-5 .ma-sw { background: var(--ma5); opacity: 1; } .ma-chip.on.ma-20 .ma-sw { background: var(--ma20); opacity: 1; }
 .ma-chip.on.ma-60 .ma-sw { background: var(--ma60); opacity: 1; } .ma-chip.on.ma-120 .ma-sw { background: var(--ma120); opacity: 1; }
 /* #550 보조 칸(거래량 · RSI · 스토캐스틱) 왼쪽 위 이름표 — 차트 위에 떠 있되 ⓘ 만 누를 수 있다 */
-.pane-tag { position: absolute; left: 8px; z-index: 3; max-width: calc(100% - 90px); pointer-events: none; font-size: 11px; line-height: 1.35; }
+.pane-tag { position: absolute; left: 8px; z-index: 3; max-width: calc(100% - 8px - 120px); pointer-events: none; font-size: 11px; line-height: 1.35; }
 .pane-tag-line { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 2px; padding: 1px 4px; border-radius: 4px;
   background: color-mix(in srgb, var(--surface) 78%, transparent); color: var(--muted); }
 .pane-tag-line b { color: var(--text); font-weight: 600; }
 .pane-tag-v { color: var(--text); font-variant-numeric: tabular-nums; }
 .pane-tag-short { display: none; }
+/* #560 이름표 글은 한 줄 — 오른쪽 기준선 이름표(과열 · 침체)까지 넘어가지 않게 말줄임, 맨 아래 칸은 TradingView 로고를 비킨다 */
+.pane-tag-line { flex-wrap: nowrap; max-width: 100%; }
+.pane-tag-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pane-tag-last { left: 46px; max-width: calc(100% - 46px - 120px); }
 .pane-tag-i { pointer-events: auto; margin-left: 2px; padding: 0 4px; min-width: 24px; min-height: 22px; border: 0; background: transparent;
   color: var(--muted); font-size: 12px; cursor: pointer; }
 .pane-tag-i:hover, .pane-tag-i[aria-expanded="true"] { color: var(--text); }

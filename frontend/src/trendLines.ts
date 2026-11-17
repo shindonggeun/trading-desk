@@ -17,9 +17,16 @@ export const trendWidth = (t: Trendline): 1 | 2 | 3 => (t.scale === "short" ? 1 
 
 export const pctText = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v) >= 10 ? Math.round(Math.abs(v)) : Math.abs(v).toFixed(1)}%`;
 
-/** 선 끝 이름표 — "중기 저항 · +18%" (옛 선: "저항선") */
+/** 깨져서 지금 역할이 바뀐 선인가 — 깨진 지지선은 위에서 막고, 깨진 저항선은 아래에서 받친다(시나리오로 판단, #530 보완) */
+export function roleFlipped(t: Trendline): boolean {
+  if (t.state !== "broken" || !t.scenarios?.length) return false;
+  const nowRes = t.scenarios.some((s) => s.kind === "breakout" || s.kind === "reject");
+  return nowRes !== (t.kind === "resistance");
+}
+
+/** 선 끝 이름표 — "중기 저항 · +18%" (옛 선: "저항선"), 역할이 바뀐 선은 "중기 깨진 지지 · +5.3%"(#560 카드와 같은 말) */
 export function trendLabel(t: Trendline): string {
-  const head = `${t.scale ? `${SCALE_KO[t.scale]} ` : ""}${KIND_KO[t.kind]}${t.scale ? "" : "선"}`;
+  const head = `${t.scale ? `${SCALE_KO[t.scale]} ` : ""}${roleFlipped(t) ? "깨진 " : ""}${KIND_KO[t.kind]}${t.scale ? "" : "선"}`;
   return t.distance_pct != null ? `${head} · ${pctText(t.distance_pct)}` : head;
 }
 

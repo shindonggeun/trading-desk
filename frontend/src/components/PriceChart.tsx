@@ -131,6 +131,8 @@ function savePrefs(interval: Interval, show: Show, preset: Preset, custom: Show)
 
 // 마지막 종가에서 이만큼 넘게 떨어진 계획선(분할 전 옛 분석 등)은 축 범위 계산에서 뺀다 — 봉이 납작해지지 않게.
 const AUTOSCALE_MAX_GAP = 0.5;
+// #560 전망 기준가와 분석일 종가가 이만큼 넘게 다르면 원뿔을 그리지 않는다
+const OUTLOOK_FAR = 0.2;
 // 체결 마커는 복기 API(브로커 체결 + 종목별 일봉)를 쓴다. 분석 화면을 오갈 때마다 다시 부르지 않게 잠깐 기억한다.
 const FILLS_TTL_MS = 60_000;
 let fillsMemo: { at: number; rows: Promise<ReviewRow[]> } | null = null;
@@ -1440,8 +1442,19 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const outlookPeriod: OutlookPeriodId = outlook?.periods[outlookPrefs.period] ? outlookPrefs.period
     : (OUTLOOK_PERIODS.find((p) => outlook?.periods[p.id])?.id ?? outlookPrefs.period);
   const outlookOutside = !!drawn && !!outlook && drawn.interval === "1d" && String(drawn.rows[0].key) > outlook.trade_date;
+  // #560 전망 기준가가 분석일 봉 종가와 20% 넘게 다르면(분할 · 상품/본주 · 가짜 run) 원뿔이 봉과 떨어져 축만 늘린다 — 그리지 않고 요약에 적는다
+  const outlookFar = (() => {
+    if (!drawn || !outlook?.price || drawn.interval !== "1d" || outlookOutside) return false;
+    for (let i = drawn.rows.length - 1; i >= 0; i--) {
+      if (String(drawn.rows[i].key) <= outlook.trade_date) {
+        const c = drawn.rows[i].bar.close;
+        return c > 0 && Math.abs(outlook.price - c) / c > OUTLOOK_FAR;
+      }
+    }
+    return false;
+  })();
   useEffect(() => {
-    if (!drawn || !outlook || !outlookPrefs.on || drawn.interval !== "1d") return;
+    if (!drawn || !outlook || !outlookPrefs.on || drawn.interval !== "1d" || outlookFar) return;
     const cone = outlookCone(outlook, outlookPeriod);
     if (cone.length < 2) return;
     const { chart, series, rows } = drawn;
@@ -1515,12 +1528,12 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       series.detachPrimitive(shade);
       if (before) ts.setVisibleLogicalRange(before);
     };
-  }, [drawn, outlook, outlookPrefs.on, outlookPeriod]);
+  }, [drawn, outlook, outlookPrefs.on, outlookPeriod, outlookFar]);
 
   // #438 전망 무효 가격 — 가는 선, 축 라벨 없이(#434 타점 라벨과 겹치지 않게). 계획 손절선이 같은 가격에 그려져 있으면 생략
   // (#436 모순인 계획은 손절선을 그리지 않으므로 그때는 이 선을 긋는다).
   useEffect(() => {
-    if (!drawn || !outlook || !outlookPrefs.on || drawn.interval !== "1d" || outlookOutside) return;
+    if (!drawn || !outlook || !outlookPrefs.on || drawn.interval !== "1d" || outlookOutside || outlookFar) return;
     const inv = outlook.invalidation;
     const stopDrawn = show.levels && !!plan && !levelsContradict(plan) && plan.stop_loss != null && inv != null && price(plan.stop_loss) === price(inv);
     if (inv == null || !(inv > 0) || stopDrawn) return;
@@ -1529,7 +1542,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     return () => {
       if (drawn.alive.current) drawn.series.removePriceLine(line);
     };
-  }, [drawn, outlook, outlookPrefs.on, outlookOutside, plan, show.levels]);
+  }, [drawn, outlook, outlookPrefs.on, outlookOutside, outlookFar, plan, show.levels]);
 
   // 선 근처(5px)에 마우스를 올리면 근거 — 지지 · 저항 · 피보나치(가로선)와 추세선(그 봉에서의 선 높이).
   useEffect(() => {
@@ -1702,6 +1715,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           <div ref={ohlc} className="chart-ohlc small" aria-hidden />
           {drawn && (Object.keys(paneTops) as PaneId[]).map((id) => (
             <PaneTag key={id} id={id} top={paneTops[id] as number} rows={drawn.rows} open={paneHelp === id}
+              bottomPane={id === "stoch" || (id === "rsi" && paneTops.stoch == null)}
               onHelp={() => setPaneHelp((cur) => (cur === id ? null : id))} />
           ))}
           {hover && (
@@ -1790,7 +1804,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
                   )}
         </p>
       )}
-      {outlook && <OutlookSummary outlook={outlook} period={outlookPeriod} on={outlookPrefs.on} onPick={pickOutlook} daily={interval === "1d"} outside={outlookOutside} />}
+      {outlook && <OutlookSummary outlook={outlook} period={outlookPeriod} on={outlookPrefs.on} onPick={pickOutlook} daily={interval === "1d"} outside={outlookOutside} far={outlookFar} />}
       {/* #531 추세선 범례 — 짧은 · 중간 · 긴 · 지지 · 저항 켜고 끄기(이 브라우저에 기억), 선을 누르면 시나리오 */}
       {show.trend && allTrends.length > 0 && (
         <div className="trend-legend small" role="group" aria-label="추세선 켜고 끄기">
@@ -1943,10 +1957,12 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
 }
 
 /** #438 전망 한 줄 요약 · 보기 토글 · 1주/1개월 — "1개월 상승 · 강세 44% · 68% 범위 168~198 · 171 아래면 무효" */
-function OutlookSummary({ outlook, period, on, onPick, daily, outside }: {
+function OutlookSummary({ outlook, period, on, onPick, daily, outside, far }: {
   outlook: RunOutlook; period: OutlookPeriodId; on: boolean; onPick: (p: { on?: boolean; period?: OutlookPeriodId }) => void; daily: boolean;
   /** 분석일이 받아 온 일봉보다 앞 — 원뿔을 그리지 않았다 */
   outside: boolean;
+  /** #560 전망 기준가가 차트 가격과 많이 다르다 — 원뿔을 그리지 않았다 */
+  far: boolean;
 }) {
   const p = outlook.periods[period];
   const d = outlook.decision;
@@ -1972,6 +1988,7 @@ function OutlookSummary({ outlook, period, on, onPick, daily, outside }: {
           {d.reason && <> — {d.reason}</>}
           {!daily && <> · 원뿔은 일봉 차트에서 그립니다</>}
           {daily && outside && <> · 분석일이 차트 범위보다 앞이라 원뿔은 그리지 않았습니다</>}
+          {daily && far && <> · 전망 기준가({price(outlook.price)})가 차트 가격과 많이 달라(분할 · 다른 기준 가격) 원뿔은 그리지 않았습니다</>}
           {" · "}<strong>{outlook.disclaimer}</strong>
         </p>
       )}
@@ -1980,7 +1997,11 @@ function OutlookSummary({ outlook, period, on, onPick, daily, outside }: {
 }
 
 /** #550 보조 칸 왼쪽 위 이름표 — 이름 + 지금 값 + 한 줄 뜻(좁은 화면은 짧게), ⓘ 로 쉬운 설명 몇 줄 */
-function PaneTag({ id, top, rows, open, onHelp }: { id: PaneId; top: number; rows: Row[]; open: boolean; onHelp: () => void }) {
+function PaneTag({ id, top, rows, open, onHelp, bottomPane = false }: {
+  id: PaneId; top: number; rows: Row[]; open: boolean; onHelp: () => void;
+  /** #560 맨 아래 칸 — 왼쪽 아래 TradingView 로고(라이선스 표기)를 비켜 오른쪽으로 민다 */
+  bottomPane?: boolean;
+}) {
   const t = PANE_TEXT[id];
   const last = rows[rows.length - 1]?.bar;
   let value = "";
@@ -1994,11 +2015,14 @@ function PaneTag({ id, top, rows, open, onHelp }: { id: PaneId; top: number; row
     value = `${last.stoch_k.toFixed(0)}${last.stoch_d != null ? ` / ${last.stoch_d.toFixed(0)}` : ""}`;
   }
   return (
-    <div className={`pane-tag pane-tag-${id}`} style={{ top: top + 3 }}>
+    <div className={`pane-tag pane-tag-${id}${bottomPane ? " pane-tag-last" : ""}`} style={{ top: top + 3 }}>
       <span className="pane-tag-line">
-        <b>{t.name}</b>{value && <span className="pane-tag-v"> {value}</span>}
-        <span className="pane-tag-long"> — {t.long}</span>
-        <span className="pane-tag-short"> · {t.short}</span>
+        {/* #560 글은 한 줄로 — 넘치면 말줄임(ⓘ 는 늘 보이게 밖에) */}
+        <span className="pane-tag-txt">
+          <b>{t.name}</b>{value && <span className="pane-tag-v"> {value}</span>}
+          <span className="pane-tag-long"> — {t.long}</span>
+          <span className="pane-tag-short"> · {t.short}</span>
+        </span>
         <button type="button" className="pane-tag-i" aria-expanded={open} aria-label={`${t.name} 설명`} onClick={onHelp}>ⓘ</button>
       </span>
       {open && (

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { price } from "../format";
-import { KIND_KO, pctText, SCALE_KO, SCENARIO_KO, STATUS_KO } from "../trendLines";
+import { KIND_KO, pctText, roleFlipped, SCALE_KO, SCENARIO_KO, STATUS_KO } from "../trendLines";
 import type { Trendline, TrendScenario } from "../types";
 
 /**
@@ -13,6 +13,9 @@ const barWord = (tf: string) => (tf === "1d" ? "일" : tf === "1w" ? "주" : tf 
 const absPct = (v: number) => `${Math.abs(v) >= 10 ? Math.round(Math.abs(v)) : Math.abs(v).toFixed(1)}%`;
 /** 거래량을 짧게 — 683,204,020 → "6.8억" */
 const qtyKo = (n: number) => (n >= 1e8 ? `${(n / 1e8).toFixed(1)}억` : n >= 1e4 ? `${Math.round(n / 1e4).toLocaleString("ko-KR")}만` : Math.round(n).toLocaleString("ko-KR"));
+/** #560 서버 문장의 날 거래량 "20봉 평균(683,204,020)" 을 표와 같은 "20봉 평균(6.8억주)" 로 */
+const tidyVolume = (text: string) =>
+  text.replace(/20봉 평균\((\d{1,3}(?:,\d{3})+)\)/g, (_, n: string) => `20봉 평균(${qtyKo(Number(n.replace(/,/g, "")))}주)`);
 const tfWord = (tf: string) => (tf === "1d" ? "일봉" : tf === "1w" ? "주봉" : tf === "1mo" || tf === "1M" ? "월봉" : tf);
 
 function Scenario({ s }: { s: TrendScenario }) {
@@ -22,7 +25,7 @@ function Scenario({ s }: { s: TrendScenario }) {
   return (
     <section className={`tl-scn ${good ? "tl-scn-up" : "tl-scn-down"}`}>
       <h5>{SCENARIO_KO[s.kind]}</h5>
-      <p>{s.text}</p>
+      <p>{tidyVolume(s.text)}</p>
       <dl className="small">
         <div><dt>조건</dt><dd>{close}{s.volume_min != null ? ` · 거래량 ${qtyKo(s.volume_min)}주 이상(20봉 평균)` : ""}</dd></div>
         {s.target != null && <div><dt>{good ? "다음 목표" : "되돌림 받침"}</dt><dd>{price(s.target)}{s.target_basis ? <span className="muted"> · {s.target_basis}</span> : null}</dd></div>}
@@ -60,14 +63,14 @@ export default function TrendLineCard({ line, when = "", onClose }: { line: Tren
       <p className="tl-now">
         {when ? `${when} ` : ""}선 값 <b>{price(line.price_now)}</b>{d != null && <> · {where}</>}
       </p>
-      {line.state === "broken" && nowRes !== res && (
+      {roleFlipped(line) && (
         <p className="small tl-flip">{res ? "깨진 저항선 — 이제는 아래에서 받치는 자리로 봐요." : "깨진 지지선 — 이제는 위에서 막는 자리로 봐요."}</p>
       )}
       <p className="muted small">
         {tfWord(line.timeframe)} · {res ? "막힌" : "받친"} 자리 {line.touches.length}번 · 기울기 {line.slope_pct_per_bar > 0 ? "+" : ""}{line.slope_pct_per_bar}%/{barWord(line.timeframe)}
         {line.anchors[0] ? ` · ${line.anchors[0].at.slice(0, 10)}부터` : ""}{line.swing_k ? ` · 스윙 ${line.swing_k}${barWord(line.timeframe)}` : ""}
       </p>
-      {line.summary && line.summary.length > 0 && <ul className="tl-summary">{line.summary.map((t, i) => <li key={i}>{t}</li>)}</ul>}
+      {line.summary && line.summary.length > 0 && <ul className="tl-summary">{line.summary.map((t, i) => <li key={i}>{tidyVolume(t)}</li>)}</ul>}
       {line.scenarios && line.scenarios.length > 0 ? (
         <div className="tl-scns">{line.scenarios.map((s) => <Scenario key={s.kind} s={s} />)}</div>
       ) : (

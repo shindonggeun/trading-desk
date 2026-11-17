@@ -560,6 +560,13 @@ export interface SupportResistance {
   fibonacci?: Fibonacci | null;
   /** #106 매물대(desk/volume_profile.py) — 거래량 없는 지수 · 예전 run 은 없다 */
   volume_profile?: VolumeProfile | null;
+  /** #465 안 메운 갭(일봉 · 주봉, 가까운 순) — 예전 서버 · 저장된 run 레벨에는 없다 */
+  gaps?: PriceGap[];
+  gaps_error?: string | null;
+  /** #465 계획 가격선마다 시나리오 · 근거 — run= 으로 부를 때만 */
+  basis?: LineBasis[];
+  /** #465 초보자용 해설 문장: 위 구역 → 지금 구역 → 아래 구역 → (가까운 갭) → 계획선마다 */
+  explain?: string[];
   /** 매물대 계산이 실패한 이유(있으면 volume_profile 은 null) */
   volume_profile_error?: string;
   trend_error?: string;
@@ -1712,3 +1719,36 @@ export interface FearItem {
   error?: string;
 }
 export interface FearIndex { items: FearItem[]; error?: string }
+
+// #465 /api/levels 의 갭 · 계획선 근거(#466 해설 패널 · 선 라벨)
+export interface PriceGap {
+  timeframe: "1d" | "1w";
+  direction: "up" | "down"; // up = 아래 메움 목표, down = 위 메움 목표
+  bottom: number; // 아직 안 메운 부분
+  top: number;
+  fill_price: number; // 여기 오면 메움
+  formed_at: string; // 시장 자기 날짜 YYYY-MM-DD(주봉은 월요일)
+  side: "above" | "below";
+  distance_pct: number;
+  text: string;
+}
+export interface LineAnchor {
+  kind: "sr_zone" | "fib" | "trendline" | "gap";
+  price: number;
+  zone?: [number, number];
+  distance: number;
+  text: string;
+}
+export type PlanLineKey = "entry_price" | "stop_loss" | "price_target" | "long_trigger" | "short_trigger";
+export interface LineBasis {
+  line: PlanLineKey;
+  label: string; // 진입 · 손절 · 목표 · 롱 조건 · 숏 · 축소 조건
+  price: number;
+  source: "plan";
+  scenario: "long" | "short" | null;
+  scenario_ko: string | null;
+  hold_plan: boolean; // 관망 계획의 진입 · 손절 · 목표
+  from_now_pct: number;
+  anchors: LineAnchor[]; // [] = 어떤 레벨과도 안 맞음(모델이 고른 숫자)
+  text: string;
+}

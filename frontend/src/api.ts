@@ -257,7 +257,9 @@ export const api = {
   econCalendar: (days = 14) => call<EconCalendar>(`/api/events/calendar?days=${days}`),
   /** #243 한 달의 휴장 · 발표(KST) · 만기 · 실적 — month "YYYY-MM", 없으면 이번 달 */
   marketMonth: (month?: string) => call<MarketMonth>(`/api/calendar${month ? `?month=${encodeURIComponent(month)}` : ""}`),
-  levels: (ticker: string) => call<SupportResistance>(`/api/levels?ticker=${encodeURIComponent(ticker)}`),
+  /** run 을 주면(#465) 그 분석의 시간축으로 계획선 근거(basis) · 해설(explain)도 — horizon 은 넣지 않는다 */
+  levels: (ticker: string, run?: string) =>
+    call<SupportResistance>(`/api/levels?ticker=${encodeURIComponent(ticker)}${run ? `&run=${encodeURIComponent(run)}` : ""}`),
   /** #299 차트 예상도: 보정한 확률 원뿔 · 레벨 경로 · 설명 */
   projection: (ticker: string, horizon: string) =>
     call<Projection>(`/api/projection?ticker=${encodeURIComponent(ticker)}&horizon=${encodeURIComponent(horizon)}`),

@@ -155,7 +155,8 @@ type Prefs = { order: SectionId[]; closed: SectionId[]; mobileOpen: SectionId[];
 function flowFirstInColumn(order: SectionId[]): SectionId[] {
   const rest: SectionId[] = order.filter((s) => s !== "flow");
   const at = rest.findIndex((s) => COLUMN[s] === COLUMN.flow);
-  if (at < 0) return order;
+  // 이미 같은 열 첫 구역보다 앞(사용자가 위로 올려 둔 경우 포함)이면 그대로 — 위로만 옮기고 내리지 않는다
+  if (at < 0 || order.indexOf("flow") <= order.indexOf(rest[at])) return order;
   rest.splice(at, 0, "flow");
   return rest;
 }
@@ -237,10 +238,9 @@ export default function Dashboard() {
     const line = peers(id);
     const other = line[line.indexOf(id) + by];
     if (!other) return;
-    const order = [...prefs.order];
-    const i = order.indexOf(id);
-    const j = order.indexOf(other);
-    [order[i], order[j]] = [order[j], order[i]];
+    // 맞바꾸지 않고 옮길 구역만 이웃 앞(↑) · 뒤(↓)로 끼운다 — 다른 구역의 상대 순서는 그대로(다른 레이아웃에서 이웃이 튀지 않게)
+    const order = prefs.order.filter((s) => s !== id);
+    order.splice(order.indexOf(other) + (by === 1 ? 1 : 0), 0, id);
     update({ ...prefs, order });
     // 옮긴 구역의 같은 버튼에 초점을 남겨 연달아 옮길 수 있게
     window.setTimeout(() => {
@@ -273,30 +273,30 @@ export default function Dashboard() {
   );
 
   function renderSection(id: SectionId) {
-          const s = SECTIONS[id];
-          const open = isOpen(id);
-          const bodyId = `dash-${id}`;
-          const line = peers(id);
-          const i = line.indexOf(id);
-          return (
-            <section key={id} className={`dash-section${s.wide ? " dash-wide" : ""}${open ? "" : " dash-closed"}`} aria-labelledby={`${bodyId}-title`}>
-              <header className="dash-head">
-                <h2 id={`${bodyId}-title`} className="dash-title">
-                  <button type="button" className="dash-toggle" aria-expanded={open} aria-controls={open ? bodyId : undefined}
-                    onClick={() => flip(id)}>
-                    <span className="dash-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
-                    {s.title}
-                  </button>
-                </h2>
-                <span className="dash-order" role="group" aria-label={`${s.title} 순서`}>
-                  <button type="button" id={`dash-move-${id}--1`} className="dash-move" disabled={i === 0}
-                    aria-label={`${s.title} 위로`} onClick={() => move(id, -1)}>↑</button>
-                  <button type="button" id={`dash-move-${id}-1`} className="dash-move" disabled={i === line.length - 1}
-                    aria-label={`${s.title} 아래로`} onClick={() => move(id, 1)}>↓</button>
-                </span>
-              </header>
-              {open && <div id={bodyId} className="dash-body">{s.render()}</div>}
-            </section>
-          );
+    const s = SECTIONS[id];
+    const open = isOpen(id);
+    const bodyId = `dash-${id}`;
+    const line = peers(id);
+    const i = line.indexOf(id);
+    return (
+      <section key={id} className={`dash-section${s.wide ? " dash-wide" : ""}${open ? "" : " dash-closed"}`} aria-labelledby={`${bodyId}-title`}>
+        <header className="dash-head">
+          <h2 id={`${bodyId}-title`} className="dash-title">
+            <button type="button" className="dash-toggle" aria-expanded={open} aria-controls={open ? bodyId : undefined}
+              onClick={() => flip(id)}>
+              <span className="dash-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+              {s.title}
+            </button>
+          </h2>
+          <span className="dash-order" role="group" aria-label={`${s.title} 순서`}>
+            <button type="button" id={`dash-move-${id}--1`} className="dash-move" disabled={i === 0}
+              aria-label={`${s.title} 위로`} onClick={() => move(id, -1)}>↑</button>
+            <button type="button" id={`dash-move-${id}-1`} className="dash-move" disabled={i === line.length - 1}
+              aria-label={`${s.title} 아래로`} onClick={() => move(id, 1)}>↓</button>
+          </span>
+        </header>
+        {open && <div id={bodyId} className="dash-body">{s.render()}</div>}
+      </section>
+    );
   }
 }

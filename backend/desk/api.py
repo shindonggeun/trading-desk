@@ -53,6 +53,7 @@ from . import (
     primary_trend,
     projection,
     regime,
+    reports,
     review,
     risk_regime,
     sector_news,
@@ -330,6 +331,38 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     earnings.CACHE.name_of = listing_name      # #308: a Korean report shows its listed name
 
     favorites = Favorites(engine, listing_name)
+    # #495 the beginner reports (made-up prices with scripted runs: no network)
+    report_desk = reports.Reports(engine, reports.fake_fetch if settings.fake_runs else reports.yahoo_fetch,
+                                  settings.report_every_days)
+    report_tasks: set[asyncio.Task] = set()
+
+    async def make_report(auto: bool, taken: bool = False) -> str:
+        """One report (#495): ``made`` · ``none`` (no subject had data) · ``busy`` (one being written, or -
+        automatic only - no free ChatGPT slot: try later; a manual one is written in the desk's words)."""
+        if not taken:                    # ``taken``: the caller already holds the one-at-a-time flag
+            if report_desk.generating:
+                return "busy"
+            report_desk.generating = True
+        try:
+            if settings.fake_runs:
+                out = await asyncio.to_thread(report_desk.make, None)
+            else:
+                async with app.state.manager.spare_slot() as free:
+                    if not free and auto:
+                        return "busy"
+                    out = await asyncio.to_thread(report_desk.make, projection.llm_note if free else None)
+        finally:
+            report_desk.generating = False
+        if out is None:
+            return "none"
+        log.info("report %s on %s (%s)", out["id"], out["subject"]["symbol"], out["source"])
+        try:                             # a push problem never loses the report
+            await asyncio.to_thread(app.state.pusher.broadcast, "report", payload={
+                "title": out["title"], "body": out.get("summary") or "", "tag": "report",
+                "url": f"/#/reports/{out['id']}"})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("report push failed: %s", exc)
+        return "made"
     sectors = Sectors(engine)
     hub = Hub()
     broker = make_broker(settings)
@@ -611,6 +644,24 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.exception("13F refresh failed")
                 await asyncio.sleep(funds.next_delay())
 
+        async def write_reports():
+            # #495: one report every DESK_REPORT_EVERY_DAYS days after the Korean close; while a run holds
+            # the ChatGPT slot it waits and tries again
+            while True:
+                wait = (report_desk.next_due() - datetime.now(UTC)).total_seconds()
+                if wait > 0:
+                    await asyncio.sleep(min(wait, 3600))
+                    continue
+                try:
+                    got = await make_report(auto=True)
+                except Exception:  # a failed pass must not stop the next one
+                    log.exception("report failed")
+                    got = "none"
+                if got != "made":
+                    await asyncio.sleep(reports.RETRY_SEC)
+
+        report_task = (asyncio.create_task(write_reports())
+                       if settings.report_every_days > 0 and not settings.fake_runs else None)
         funds_task = (asyncio.create_task(refresh_funds())
                       if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
         # Scripted runs have made-up levels; scoring them against real bars means nothing.
@@ -636,6 +687,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             calendar_task.cancel()
         if funds_task:
             funds_task.cancel()
+        if report_task:
+            report_task.cancel()
         if credit_task:
             credit_task.cancel()
         if scorer:
@@ -920,6 +973,36 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             await asyncio.to_thread(store.append_event, run_id, {"type": "explain", "agent": "explain", "content": None,
                                                                   "data": out})
             return out
+
+    @app.get("/api/reports")
+    def list_reports(limit: int = 20, before: str | None = None):
+        """#495 the beginner reports, newest first (``next_before`` pages back); ``generating`` while one is written."""
+        return report_desk.list(limit, before)
+
+    @app.get("/api/reports/{report_id}")
+    def get_report(report_id: str):
+        got = report_desk.get(report_id)
+        if got is None:
+            raise HTTPException(404, "report not found")
+        return got
+
+    @app.post("/api/reports", status_code=202)
+    async def new_report():
+        """#495 write one now, in the background (one at a time): poll ``GET /api/reports`` for ``generating``."""
+        if report_desk.generating:
+            raise HTTPException(409, "이미 만드는 중이에요")
+
+        async def work():
+            try:
+                await make_report(auto=False, taken=True)
+            except Exception:  # logged; the page sees generating go false
+                log.exception("manual report failed")
+
+        report_desk.generating = True     # taken now: a second click right away gets 409
+        task = asyncio.create_task(work())
+        report_tasks.add(task)
+        task.add_done_callback(report_tasks.discard)
+        return {"generating": True}
 
     @app.get("/api/runs/{run_id}/events")
     def get_events(run_id: str, after: int = 0):

@@ -357,23 +357,25 @@ class Cache:
         self._fetching = {"KR": threading.Lock(), "US": threading.Lock()}
         self._rows: dict[str, tuple[float, Series]] = {}
 
-    def _hit(self, key: str) -> Series | None:
+    def _hit(self, key: str, ahead: float = 0.0) -> Series | None:
         with self._lock:
             hit = self._rows.get(key)
-        if hit and self._clock() - hit[0] < (self.ttl if hit[1] else self.fail_ttl):
+        if hit and self._clock() - hit[0] < (self.ttl if hit[1] else self.fail_ttl) - ahead:
             return hit[1]
         return None
 
-    def series(self, korean: bool) -> Series:
+    def series(self, korean: bool, ahead: float = 0.0) -> Series:
+        """``ahead`` (#536, the prewarm loop): refetch a value that expires within that many seconds -
+        readers keep the old one meanwhile (they never take the fetch lock while it is fresh)."""
         key = "KR" if korean else "US"
-        hit = self._hit(key)
+        hit = self._hit(key, ahead)
         if hit is not None:
             return hit
         # a hung fetch does not pile up its waiters: they give up and score nothing this time
         if not self._fetching[key].acquire(timeout=self.wait):
             return {}
         try:
-            hit = self._hit(key)                 # fetched while this one waited
+            hit = self._hit(key, ahead)          # fetched while this one waited
             if hit is not None:
                 return hit
             try:
@@ -382,6 +384,9 @@ class Cache:
                 log.warning("risk regime: %s fetch failed: %s", key, exc)
                 got = {}
             with self._lock:
+                old = self._rows.get(key)
+                if not got and old and old[1] and self._clock() - old[0] < self.ttl:
+                    return old[1]                # #536: a failed refetch-ahead keeps the score still in date
                 self._rows[key] = (self._clock(), got)
             return got
         finally:

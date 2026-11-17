@@ -204,9 +204,13 @@ class Cache:
         self._until = 0.0
         self.error: str | None = None
 
-    def get(self) -> dict | None:
+    def get(self, ahead: float = 0.0) -> dict | None:
+        """``ahead`` (#536, the prewarm loop): refetch an answer that expires within that many seconds.
+        A fresh answer is read without the lock, so a page never waits behind that refetch."""
+        if self.clock() < self._until - ahead:
+            return self._value
         with self._lock:
-            if self.clock() < self._until:
+            if self.clock() < self._until - ahead:
                 return self._value
             try:
                 self._value, self.error = view(self.fetch(), self.today()), None

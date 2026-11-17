@@ -53,24 +53,39 @@ def _trim(d: OrderedDict, limit: int) -> None:
 
 async def _compute(prices, ticker: str, h: horizons.Horizon, run_pb: dict | None,
                    risk=None) -> tuple[dict, dict | None]:
-    try:
-        quote = await prices.quote(ticker)
-        live = {"price": quote.price, "source": quote.source, "fetched_at": quote.fetched_at}
-    except Exception:  # noqa: BLE001 - the last close then, and the state is marked stale
-        live = None
-    sr = await support_resistance(prices, ticker, price=live["price"] if live else None, horizon=h.id)
-    frame = horizons.get(None) if sr.get("fallback") else h
-    primary, secondary, _c, _p, _s = await frame_bars(prices, ticker, None, frame)
-    daily = primary if frame.primary == "1d" else secondary
-    market = None
-    if risk is not None and not run_pb:
+    async def quote_now() -> dict | None:
+        try:
+            quote = await prices.quote(ticker)
+            return {"price": quote.price, "source": quote.source, "fetched_at": quote.fetched_at}
+        except Exception:  # noqa: BLE001 - the last close then, and the state is marked stale
+            return None
+
+    async def market_now() -> dict | None:
+        if risk is None or run_pb:
+            return None
         # #146: the market's selling score now (an analysis' playbooks were gated when it ran)
         # its own short limit: a slow Yahoo leaves the playbooks ungated, not the whole page a 503.
         # Fetched before the build: the direction score reads it too (#166)
         try:
-            market = await asyncio.wait_for(asyncio.to_thread(risk, ticker, None), RISK_TIMEOUT_SEC)
+            return await asyncio.wait_for(asyncio.to_thread(risk, ticker, None), RISK_TIMEOUT_SEC)
         except Exception as exc:  # noqa: BLE001 - incl. timeout; the playbooks ungated, not none
             log.warning("risk regime for %s failed: %s", ticker, exc)
+            return None
+
+    # #536: the quote, the horizon's bars and the market's score do not wait for each other. The bars land
+    # in desk.prices' cache, which the levels then read (the same requests, desk.sr.frame_bars); a failure
+    # there is left to the levels to raise, as before.
+    market_task = asyncio.ensure_future(market_now())
+    try:
+        live, _bars = await asyncio.gather(quote_now(), frame_bars(prices, ticker, None, h), return_exceptions=True)
+        live = live if isinstance(live, dict) else None
+        sr = await support_resistance(prices, ticker, price=live["price"] if live else None, horizon=h.id)
+        frame = horizons.get(None) if sr.get("fallback") else h
+        primary, secondary, _c, _p, _s = await frame_bars(prices, ticker, None, frame)
+        market = await market_task
+    finally:
+        market_task.cancel()                   # an error above: the score is not waited for
+    daily = primary if frame.primary == "1d" else secondary
     fresh = await asyncio.to_thread(playbook.build, sr, daily, primary, frame, live=live,
                                     today=today(primary, frame), market=market)
     if fresh is None:

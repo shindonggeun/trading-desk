@@ -52,6 +52,7 @@ from . import (
     paper,
     playbook_live,
     positioning,
+    prewarm,
     primary_trend,
     projection,
     regime,
@@ -414,8 +415,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                              kis=lambda: getattr(futures, "rest", None))         # #486 VKOSPI via the futures KIS client
                    if not settings.fake_runs else None)
     # #146: the market's selling score from the same Yahoo source as the prices (cached ~15 min)
-    risk = None if settings.fake_runs else risk_regime.Cache(
-        fetcher=lambda symbols: risk_regime.fetch(symbols, candles=prices._yahoo_candles)).current
+    risk_cache = None if settings.fake_runs else risk_regime.Cache(
+        fetcher=lambda symbols: risk_regime.fetch(symbols, candles=prices._yahoo_candles))
+    risk = risk_cache.current if risk_cache is not None else None
     # #330: rate / dollar regime and its tips (^IRX ^TNX DX-Y.NYB QQQ, cached 3 h)
     tip_cache = tips.Cache(fetcher=lambda symbols: risk_regime.fetch(symbols, candles=prices._yahoo_candles,
                                                                      count=tips.HISTORY_BARS))
@@ -708,6 +710,30 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     failures += 1
                     await asyncio.sleep(reports.RETRY_SEC * 2 ** min(failures - 1, 4))
 
+        def prewarm_jobs() -> dict[str, prewarm.Job]:
+            # #536: the dashboard's shared data, refetched before it expires (desk.prewarm)
+            ahead = prewarm.AHEAD_SEC
+            jobs: dict[str, prewarm.Job] = {
+                "tips": lambda: asyncio.to_thread(tip_cache.regime, ahead),
+                "trend": lambda: asyncio.to_thread(trend_cache.view, ahead),
+                "weekly": lambda: asyncio.to_thread(weekly.all, ahead),
+                "halving": lambda: asyncio.to_thread(halving_cache.get, ahead),
+            }
+            if risk_cache is not None:
+                jobs["risk_us"] = lambda: asyncio.to_thread(risk_cache.series, False, ahead)
+                jobs["risk_kr"] = lambda: asyncio.to_thread(risk_cache.series, True, ahead)
+            if fear_gauges is not None:
+                jobs["fear"] = lambda: fear_gauges.get(ahead)
+            return jobs
+
+        def prewarm_tickers() -> list[str]:
+            # the favorites' US tickers (positioning has nothing for the others; a few more are read for that)
+            return [t for t in favorites.tickers(prewarm.FAVORITES_MAX * 4) if positioning.is_us_ticker(t)]
+
+        app.state.prewarm_jobs, app.state.prewarm_tickers = prewarm_jobs, prewarm_tickers   # tests run them once
+        # the same switch as the news flow: off in tests and scripted runs
+        prewarm_task = (asyncio.create_task(prewarm.run(prewarm_jobs, prewarm_tickers, _positioning))
+                        if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
         report_task = (asyncio.create_task(write_reports())
                        if settings.report_every_days > 0 and not settings.fake_runs else None)
         funds_task = (asyncio.create_task(refresh_funds())
@@ -737,6 +763,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             funds_task.cancel()
         if report_task:
             report_task.cancel()
+        if prewarm_task:
+            prewarm_task.cancel()
         pictures.stop.set()              # a report being drawn takes no next picture
         for task in list(report_tasks):  # a manual report still being written
             task.cancel()

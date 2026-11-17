@@ -7,6 +7,7 @@ import InstrumentSearch, { type Picked } from "../components/InstrumentSearch";
 import SectorNews from "../components/SectorNews";
 import PositioningView, { CreditSummary, positioningBadges } from "../components/PositioningView";
 import { price, time } from "../format";
+import { byAsked, sameTicker } from "../ticker";
 import type { BoardItem, CreditView, DeskConfig, Positioning, Run, Sector } from "../types";
 
 const QUOTE_MS = 15_000;
@@ -42,7 +43,7 @@ function TickerSheet({ ticker, name, item, p, onClose }: {
   const [error, setError] = useState<string | null>(null);
   const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    api.runs(1, 100).then((page) => setRun(page.items.find((r) => r.ticker === ticker && r.status === "done" && r.plan) ?? null))
+    api.runs(1, 100).then((page) => setRun(page.items.find((r) => sameTicker(r.ticker, ticker) && r.status === "done" && r.plan) ?? null))
       .catch(() => setRun(null));
     api.config().then(setConfig, () => {});
   }, [ticker]);
@@ -151,7 +152,7 @@ function SectorEditor({ sector, index, count, onSaved, onMove, onDeleted }: {
   const add = () => {
     const t = pick.ticker.trim().toUpperCase();
     if (!t) return;
-    if (!sector.tickers.some((x) => x.ticker === t)) save({ tickers: [...sector.tickers, { ticker: t, name: pick.name ?? null }] });
+    if (!sector.tickers.some((x) => sameTicker(x.ticker, t))) save({ tickers: [...sector.tickers, { ticker: t, name: pick.name ?? null }] });
     setPick({ ticker: "" });
   };
   return (
@@ -243,7 +244,7 @@ export default function Sectors() {
       if (document.hidden) return;
       api.board(key.split(",")).then((r) => {
         if (!alive) return;
-        setItems((cur) => ({ ...cur, ...Object.fromEntries(r.items.map((it) => [it.ticker, it])) }));
+        setItems((cur) => ({ ...cur, ...byAsked(key.split(","), r.items) }));
         setUpdated(new Date().toISOString());
       }).catch(() => {});
     };
@@ -267,7 +268,7 @@ export default function Sectors() {
       }
       missed = false;
       api.positioningBatch(us).then((r) => {
-        if (alive) setPos((cur) => ({ ...cur, ...Object.fromEntries(r.items.map((p) => [p.ticker, p])) }));
+        if (alive) setPos((cur) => ({ ...cur, ...byAsked(us, r.items) }));
       }).catch(() => alive && setPos((cur) => ({ ...cur, ...Object.fromEntries(us.filter((t) => !(t in cur)).map((t) => [t, null])) })));
     };
     tick();

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { byAsked } from "../ticker";
 import { boardBadge, boardBadgeClass, boardReason, quoteSourceShort } from "../korean";
 import { clearFavoriteError, moveFavorite, removeFavorite, useFavorites } from "../favorites";
 import { price, time } from "../format";
@@ -180,7 +181,7 @@ export default function FavoritesPanel() {
       api.board(key.split(","))
         .then((r) => {
           if (!alive) return;
-          setItems((cur) => ({ ...cur, ...Object.fromEntries(r.items.map((it) => [it.ticker, it])) }));
+          setItems((cur) => ({ ...cur, ...byAsked(key.split(","), r.items) }));
           setFailedAt(null);
         })
         .catch(() => alive && setFailedAt(new Date().toISOString()));

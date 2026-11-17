@@ -6,6 +6,7 @@ import { openChat } from "../chat";
 import { useFavorites } from "../favorites";
 import { price } from "../format";
 import type { Run, WeeklyMap, WeeklyMapError } from "../types";
+import { sameTicker } from "../ticker";
 import { WEEKLY_POSITION, weeklyLink } from "../weekly";
 
 const PriceChart = lazy(() => import("../components/PriceChart"));
@@ -89,12 +90,12 @@ export default function Charts({ query }: { query: URLSearchParams }) {
   const [lastRun, setLastRun] = useState<Run | null>(null);
   const [weekly, setWeekly] = useState<WeeklyMap | WeeklyMapError | null>(null);
   const [weeklyOn, setWeeklyOn] = useState(loadWeeklyOn);
-  const name = recent.find((r) => r.ticker === ticker)?.name ?? favorites.find((f) => f.ticker === ticker)?.name ?? null;
+  const name = recent.find((r) => sameTicker(r.ticker, ticker))?.name ?? favorites.find((f) => sameTicker(f.ticker, ticker))?.name ?? null;
 
   const open = (p: Picked) => {
     const t = p.ticker.trim().toUpperCase();
     if (!t) return;
-    const next = [{ ticker: t, name: p.name }, ...recent.filter((r) => r.ticker !== t)];
+    const next = [{ ticker: t, name: p.name }, ...recent.filter((r) => !sameTicker(r.ticker, t))];
     setRecent(next);
     saveRecent(next);
     setSearch({ ticker: "" });
@@ -105,8 +106,8 @@ export default function Charts({ query }: { query: URLSearchParams }) {
   useEffect(() => {
     if (!ticker) return;
     setRecent((old) => {
-      if (old[0]?.ticker === ticker) return old;
-      const next = [{ ticker, name: old.find((r) => r.ticker === ticker)?.name }, ...old.filter((r) => r.ticker !== ticker)];
+      if (sameTicker(old[0]?.ticker, ticker)) return old;
+      const next = [{ ticker, name: old.find((r) => sameTicker(r.ticker, ticker))?.name }, ...old.filter((r) => !sameTicker(r.ticker, ticker))];
       saveRecent(next);
       return next;
     });
@@ -119,7 +120,7 @@ export default function Charts({ query }: { query: URLSearchParams }) {
     if (!ticker) return;
     let alive = true;
     api.oscillator(ticker, "1d").then((v) => alive && setUnderlying(v.underlying?.ticker ?? null), () => {});
-    api.runs(1, 50).then((p) => alive && setLastRun(p.items.find((r) => r.ticker === ticker) ?? null), () => {});
+    api.runs(1, 50).then((p) => alive && setLastRun(p.items.find((r) => sameTicker(r.ticker, ticker)) ?? null), () => {});
     return () => { alive = false; };
   }, [ticker]);
 
@@ -136,7 +137,7 @@ export default function Charts({ query }: { query: URLSearchParams }) {
   }, [ticker]);
 
   // 다른 심볼로 계산한 지도(코스피200 → 069500.KS 등)는 가격 단위가 달라 선을 겹치지 않는다
-  const map = weekly && isMap(weekly) && (!weekly.source_symbol || weekly.source_symbol === ticker) ? weekly : null;
+  const map = weekly && isMap(weekly) && (!weekly.source_symbol || sameTicker(weekly.source_symbol, ticker)) ? weekly : null;
   const weeklyLines = useMemo<ExtraLine[] | undefined>(() => {
     if (!map || !weeklyOn) return undefined;
     return [
@@ -165,13 +166,13 @@ export default function Charts({ query }: { query: URLSearchParams }) {
           <div className="charts-chips">
             {recent.length > 0 && <span className="muted small">최근</span>}
             {recent.map((r) => (
-              <button key={`r-${r.ticker}`} type="button" className={`chip ${r.ticker === ticker ? "chip-on" : ""}`}
-                aria-pressed={r.ticker === ticker} onClick={() => open(r)} title={r.name ?? r.ticker}>{r.ticker}</button>
+              <button key={`r-${r.ticker}`} type="button" className={`chip ${sameTicker(r.ticker, ticker) ? "chip-on" : ""}`}
+                aria-pressed={sameTicker(r.ticker, ticker)} onClick={() => open(r)} title={r.name ?? r.ticker}>{r.ticker}</button>
             ))}
             {favorites.length > 0 && <span className="muted small charts-chips-gap">즐겨찾기</span>}
             {favorites.map((f) => (
-              <button key={`f-${f.ticker}`} type="button" className={`chip ${f.ticker === ticker ? "chip-on" : ""}`}
-                aria-pressed={f.ticker === ticker} onClick={() => open({ ticker: f.ticker, name: f.name ?? undefined })}
+              <button key={`f-${f.ticker}`} type="button" className={`chip ${sameTicker(f.ticker, ticker) ? "chip-on" : ""}`}
+                aria-pressed={sameTicker(f.ticker, ticker)} onClick={() => open({ ticker: f.ticker, name: f.name ?? undefined })}
                 title={f.name ?? f.ticker}>{f.name ? `${f.name}` : f.ticker}</button>
             ))}
           </div>
@@ -179,7 +180,7 @@ export default function Charts({ query }: { query: URLSearchParams }) {
         {ticker && (
           <div className="charts-actions small">
             <strong>{name && name !== ticker ? `${name} · ${ticker}` : ticker}</strong>
-            {underlying && underlying !== ticker && (
+            {underlying && !sameTicker(underlying, ticker) && (
               <button type="button" className="secondary" onClick={() => open({ ticker: underlying })}>
                 기초자산 {underlying} 차트로
               </button>

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { askedOf, byAsked } from "../ticker";
 import { price, time } from "../format";
 import type { BoardItem } from "../types";
 import { LongShortBar, LongShortToggle, useLongShort, useLongShortShown } from "./LongShortBar";
@@ -135,8 +136,8 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
       return api.board(tickers)
         .then((r) => {
           if (!alive) return;
-          setItems((cur) => ({ ...cur, ...Object.fromEntries(r.items.map((it) => [it.ticker, it])) }));
-          for (const it of r.items) if (it.price != null) onPriceRef.current?.(it.ticker, it.price);
+          setItems((cur) => ({ ...cur, ...byAsked(tickers, r.items) }));
+          for (const it of r.items) if (it.price != null) onPriceRef.current?.(askedOf(tickers, it.ticker), it.price);
           setFailedAt(null);
         })
         .catch(() => alive && setFailedAt(new Date().toISOString()));

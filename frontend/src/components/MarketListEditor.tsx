@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { DEFAULT_MARKETS, loadMarkets, type MarketSymbol, saveMarkets, TICKER } from "../markets";
+import { sameTicker } from "../ticker";
 
 /** 설정 — 대시보드 "시장" 패널 종목(#75). 이 브라우저에만 저장한다. */
 export default function MarketListEditor() {
@@ -23,7 +24,7 @@ export default function MarketListEditor() {
     e.preventDefault();
     const t = ticker.trim().toUpperCase();
     if (!TICKER.test(t)) return setError("티커는 영문 · 숫자 · . - ^ = 로 20자 이내입니다 (예: NQ=F, ^KS11, BTC-USD).");
-    if (list.some((m) => m.ticker === t)) return setError("이미 목록에 있습니다.");
+    if (list.some((m) => sameTicker(m.ticker, t))) return setError("이미 목록에 있습니다.");
     commit([...list, { ticker: t, name: name.trim() || t }]);
     setTicker("");
     setName("");

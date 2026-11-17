@@ -54,7 +54,8 @@ function readSeen(): Set<string> {
   if (raw) {
     try {
       const list = JSON.parse(raw);
-      if (Array.isArray(list)) return new Set(list.filter((t): t is string => typeof t === "string"));
+      // 손으로 비우거나 망친 값이어도 예전 기본 종목은 본 것으로 둔다 — 지운 종목이 되살아나지 않게
+      if (Array.isArray(list)) return new Set([...LEGACY_DEFAULTS, ...list.filter((t): t is string => typeof t === "string")]);
     } catch {
       /* 깨진 값은 예전 기본 목록으로 */
     }
@@ -100,14 +101,19 @@ export function loadMarkets(): MarketSymbol[] {
   // 새 기본 종목이 생겼다: 한 번 합쳐 저장하고, 지금 기본 종목을 모두 본 것으로 기록한다
   const merged = mergeNewDefaults(list, seen);
   if (merged !== list) write(LIST_KEY, JSON.stringify(merged));
-  write(SEEN_KEY, JSON.stringify(DEFAULT_MARKETS.map((d) => d.ticker)));
+  write(SEEN_KEY, JSON.stringify(seenWithDefaults(seen)));
   return merged;
+}
+
+/** 지금까지 본 티커 + 지금 기본 종목(합집합) — 기본에서 뺐다가 다시 넣은 티커도 지운 사용자에게 되살리지 않게. */
+function seenWithDefaults(seen: Set<string>): string[] {
+  return [...new Set([...seen, ...DEFAULT_MARKETS.map((d) => d.ticker)])];
 }
 
 export function saveMarkets(list: MarketSymbol[] | null) {
   write(LIST_KEY, list === null ? null : JSON.stringify(list));
   // 사용자가 고른 목록은 지금 기본 종목을 모두 본 뒤의 결정이다 — 지운 기본 종목을 나중에 되살리지 않게
-  write(SEEN_KEY, list === null ? null : JSON.stringify(DEFAULT_MARKETS.map((d) => d.ticker)));
+  write(SEEN_KEY, list === null ? null : JSON.stringify(seenWithDefaults(readSeen())));
   window.dispatchEvent(new Event(MARKETS_CHANGED));
 }
 

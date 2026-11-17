@@ -19,6 +19,7 @@ export const NAV: NavGroup[] = [
       { label: "선물 시세", href: "#/futures", match: starts("#/futures") },
       { label: "섹터", href: "#/sectors", match: starts("#/sectors") },
       { label: "주간 지도", href: "#/weekly", match: starts("#/weekly") },
+      { label: "반감기 사이클", href: "#/halving", match: starts("#/halving") },
     ],
   },
   {

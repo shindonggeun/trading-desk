@@ -24,6 +24,8 @@ export function useAutoHeights() {
       const body = inner.parentElement;
       const section = body?.parentElement;
       if (!body || !section || !inner.isConnected) return;
+      // #537 아직 그리지 않은 구역(자리표시)은 재지 않는다 — 저장한 높이를 자리표시 높이로 덮지 않게
+      if (inner.querySelector(":scope > .when-visible-wait")) return;
       const cs = getComputedStyle(body);
       const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) + parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
       // 구역 = 머리글 등(구역 높이 − 몸통 높이) + 몸통의 위아래 여백 + 내용

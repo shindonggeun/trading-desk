@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { CHAT_OPEN_EVENT, type ChatOpen } from "../chat";
-import ChatCore from "./ChatCore";
+import ChunkFailed from "./ChunkFailed";
+import SectionBoundary from "./SectionBoundary";
+// #537 채팅 본문(마크다운 라이브러리 포함)은 처음 열 때 받는다 — 단추만 첫 화면에
+const ChatCore = lazy(() => import("./ChatCore"));
 
 /**
  * #340 채널톡형 AI 채팅 — 화면 오른쪽 아래 둥근 버튼을 누르면 채팅 창이 뜬다(휴대폰은 전체 화면).
@@ -148,8 +151,12 @@ export default function ChatWidget() {
               </button>
             </div>
           )}
-          <ChatCore compact ticker={ticker} run={run} prompt={given?.prompt ?? null}
-            initialThread={thread} onThread={onThread} onDone={onDone} />
+          <SectionBoundary fallback={<ChunkFailed />}>
+            <Suspense fallback={<p className="muted small cw-loading">채팅 불러오는 중…</p>}>
+              <ChatCore compact ticker={ticker} run={run} prompt={given?.prompt ?? null}
+                initialThread={thread} onThread={onThread} onDone={onDone} />
+            </Suspense>
+          </SectionBoundary>
         </section>
       )}
       <button ref={launcher} type="button" className={`cw-launcher${open ? " cw-on" : ""}`} hidden={onChatPage}

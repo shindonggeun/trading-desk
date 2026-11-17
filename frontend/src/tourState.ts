@@ -1,3 +1,4 @@
+import { REVEAL_ALL_EVENT } from "./components/WhenVisible";
 /** #491 투어를 봤는지 · 다시 보지 않기 — 첫 화면에 필요한 작은 부분만(투어 문구 · driver.js 는 tour.ts 에서 지연 로드) */
 export type TourId = "dashboard" | "analysis" | "tips" | "funds";
 
@@ -39,8 +40,11 @@ export type TourResult = "shown" | "empty" | "busy" | "failed";
 
 /** 투어 모듈을 그때 불러와 시작 — 불러오기에 실패해도(배포 뒤 예전 탭 등) 던지지 않고 "failed" */
 export async function startTour(id: TourId): Promise<TourResult> {
+  // #537 대시보드의 화면 밖 구역은 보일 때 그린다 — 투어가 가리킬 요소가 있게 먼저 모두 그린다
+  window.dispatchEvent(new Event(REVEAL_ALL_EVENT));
   try { return await (await import("./tour")).startTour(id); } catch { return "failed"; }
 }
 export async function goAndStart(id: TourId): Promise<TourResult> {
+  window.dispatchEvent(new Event(REVEAL_ALL_EVENT));
   try { return await (await import("./tour")).goAndStart(id); } catch { return "failed"; }
 }

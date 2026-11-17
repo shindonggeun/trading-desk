@@ -302,3 +302,41 @@ def test_the_api_takes_any_valid_ticker(db_url):
         assert client.get("/api/market/weekly", params={"symbol": "../x"}).status_code == 422
         assert client.get("/api/market/weekly/NVDA/history", params={"weeks": 2}).json()["symbol"] == "NVDA"
         assert client.get("/api/market/weekly/bad$/history").status_code == 422
+
+
+@pytest.mark.parametrize(("close", "black", "red", "want"), [
+    (120, 110, 100, "above_black"),    # lines in order (black over red): over both
+    (105, 110, 100, "between"),        # under the black, over the red one
+    (95, 110, 100, "below_red"),       # under both
+    (115, 100, 110, "above_black"),    # inverted (black under red, after a long fall): over both
+    (105, 100, 110, "rebound"),        # over the black but under the red one - not "above the black line"
+    (95, 100, 110, "below_red"),       # under both
+    (110, 110, 100, "above_black"),    # on a line counts as on top of it
+    (100, 110, 100, "between"),
+    (100, 100, 110, "rebound"),
+    (110, 100, 110, "above_black"),
+    (100, 100, 100, "above_black"),
+])
+def test_the_position_reads_the_line_order_too(close, black, red, want):
+    assert wm.place(close, black, red) == want
+
+
+def test_a_rebound_under_an_inverted_red_line_is_not_called_above_the_black_line():
+    # a long fall drags the 20-week line under the 60-week one, then a bounce closes between them
+    closes = _rise(70, 300, -2.5) + [130] * 8 + [128, 140, 150]
+    m = wm.build("SOXX", _weeks(closes), today=date(2100, 1, 1))
+    black, red = m["lines"]["black"]["price"], m["lines"]["red"]["price"]
+    assert black < m["close"] < red and m["position"] == "rebound"
+    assert m["scenario"]["down"]["price"] == black and m["scenario"]["up"]["price"] == red
+    assert m["scenario"]["down"]["pct"] < 0 < m["scenario"]["up"]["pct"]
+    assert "반등 시도" in m["text"]["headline"] and "역배열" in m["text"]["headline"]
+    assert "rebound attempt" in wm.note(m, "SOXL")
+    assert wm.history("SOXX", _weeks(closes), weeks=1)[0]["position"] == "rebound"
+
+
+def test_under_both_inverted_lines_the_next_line_up_is_the_nearer_one():
+    closes = _rise(70, 300, -2.5) + [130] * 8 + [125]
+    m = wm.build("SOXX", _weeks(closes), today=date(2100, 1, 1))
+    black, red = m["lines"]["black"]["price"], m["lines"]["red"]["price"]
+    assert m["close"] < black < red and m["position"] == "below_red"
+    assert m["scenario"]["up"]["price"] == black

@@ -7,7 +7,7 @@ import { useFavorites } from "../favorites";
 import { price } from "../format";
 import type { Run, WeeklyMap, WeeklyMapError } from "../types";
 import { sameTicker } from "../ticker";
-import { nextLines, weeklyLink, weeklyWords, weeklyZone } from "../weekly";
+import { nextLines, WEEKLY_WORDS, weeklyLink } from "../weekly";
 
 const PriceChart = lazy(() => import("../components/PriceChart"));
 
@@ -144,7 +144,7 @@ export default function Charts({ query }: { query: URLSearchParams }) {
       { price: map.lines.red.price, label: `빨간선 ${map.lines.red.weeks}주`, color: css("--up", "#e5484d") },
     ];
   }, [map, weeklyOn]);
-  const words = map ? weeklyWords(map) : null;
+  const words = map ? WEEKLY_WORDS[map.position] : null;
   const next = map ? nextLines(map) : null;
   const toggleWeekly = (on: boolean) => {
     setWeeklyOn(on);
@@ -196,7 +196,7 @@ export default function Charts({ query }: { query: URLSearchParams }) {
             {map && words && next ? (
               <>
                 <span className="muted">주간</span>
-                <span className={`wm-pos wm-pos-${weeklyZone(map)}`} title={`${words.where} — ${words.meaning}`}>
+                <span className={`wm-pos wm-pos-${map.position}`} title={`${words.where} — ${words.meaning}`}>
                   {words.name}
                 </span>
                 <span className="num">검정선(20주 평균) {price(map.lines.black.price)} · 빨간선(60주 평균) {price(map.lines.red.price)}</span>

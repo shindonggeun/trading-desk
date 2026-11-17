@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { price } from "../format";
 import type { WeeklyMap, WeeklyMapError } from "../types";
-import { nextLines, weeklyLink, weeklyWords, weeklyZone } from "../weekly";
+import { nextLines, WEEKLY_WORDS, weeklyLink } from "../weekly";
 import WeeklyPositionHelp from "./WeeklyPositionHelp";
 
 /**
@@ -40,14 +40,14 @@ export default function WeeklyMapBrief() {
               </li>
             );
           }
-          const w = weeklyWords(m);
+          const w = WEEKLY_WORDS[m.position];
           const lines = nextLines(m);
           return (
             <li key={m.symbol}>
               <a className={`wmb-row${m.cross ? " wmb-cross" : ""}`} href={weeklyLink(m.symbol)}
                 aria-label={`${m.name} — ${w.name}(${w.where}). ${w.todo} ${m.candle.label}, 아래 받침 ${lines.down.text}, 위 저항 ${lines.up.text}${m.cross === "broke_black" ? ", 이번 주 검정선 이탈" : m.cross === "reclaimed_black" ? ", 이번 주 검정선 되찾음" : ""}`}>
                 <span className="wmb-name">{m.name}</span>
-                <span className={`wm-pos wm-pos-${weeklyZone(m)}`} title={`${w.where} — ${w.meaning}`}>{w.name}</span>
+                <span className={`wm-pos wm-pos-${m.position}`} title={`${w.where} — ${w.meaning}`}>{w.name}</span>
                 <span className="wmb-candle muted small">
                   {m.candle.label}
                   {m.cross === "broke_black" && <strong className="down"> · 이번 주 검정선 이탈</strong>}

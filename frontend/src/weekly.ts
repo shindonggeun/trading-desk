@@ -1,3 +1,5 @@
+import type { WeeklyMap } from "./types";
+
 /**
  * #205 레버리지 · 섹터 종목 → 주간 지도(#202)의 기초 지수. backend desk/weekly_map.UNDERLYING 과 같은 표 —
  * 한쪽을 바꾸면 다른 쪽도 바꾼다(분석 노트와 화면 링크가 같은 지수를 가리키게).
@@ -14,9 +16,8 @@ export const WEEKLY_NAMES: Record<string, string> = {
   "NQ=F": "나스닥100 선물", QQQ: "나스닥100 ETF(QQQ)", SOXX: "반도체 ETF(SOXX)", "^GSPC": "S&P 500", "^KS200": "코스피200",
 };
 
-type Position = "above_black" | "between" | "below_red";
-/** 화면에서 쓰는 구간 — 서버 위치 셋 + "반등 시도"(검정선 위지만 빨간선 아래, weeklyZone) */
-export type WeeklyZone = Position | "rebound";
+/** 서버(desk/weekly_map.place)의 위치 — #508 부터 "반등 시도"(rebound)도 서버가 나눈다 */
+export type WeeklyZone = WeeklyMap["position"];
 
 /**
  * #490 구간마다 쉬운 이름 · 한 줄 뜻 · 지금 할 일 — 대시보드 요약(WeeklyMapBrief) · 주간 지도 화면 · 차트 탭이 같이 쓴다.
@@ -47,13 +48,10 @@ export const WEEKLY_WORDS: Record<WeeklyZone, { name: string; where: string; mea
 
 export const weeklyPct = (v: number | null | undefined) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`);
 
-interface ZoneLike {
-  position: Position;
+interface WeeklyLike {
+  position: WeeklyZone;
   close: number;
   lines: { black: { price: number }; red: { price: number } };
-}
-
-interface WeeklyLike extends ZoneLike {
   scenario: { down: { price: number; pct: number | null }; up: { price: number; pct: number | null } };
   range_52w: { high: number; low: number };
   record?: {
@@ -62,21 +60,10 @@ interface WeeklyLike extends ZoneLike {
   };
 }
 
-/**
- * 서버는 종가가 검정선 이상이면 언제나 "검정선 위" 다. 긴 하락 뒤 검정선이 빨간선 아래로 내려와 있으면
- * 검정선 위라도 빨간선 아래일 수 있다 — 그때 "상승 흐름 유지" 라고 하면 틀리므로 "반등 시도" 로 따로 부른다.
- */
-export function weeklyZone(m: ZoneLike): WeeklyZone {
-  return m.position === "above_black" && m.lines.red.price > m.close ? "rebound" : m.position;
-}
-
-export const weeklyWords = (m: ZoneLike) => WEEKLY_WORDS[weeklyZone(m)];
-
 /** ``text`` = 선 이름 + 거리(요약 줄), ``pctText`` = 거리만(이름을 따로 보이는 카드의 숫자 칸) */
 export interface NextLine { label: "아래 받침" | "위 저항"; what: string; price: number; pct: number | null; text: string; pctText: string }
 
 const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(Math.abs(b) * 0.001, 0.01);
-const from = (close: number, p: number) => (close ? (p / close - 1) * 100 : null);
 
 function line(label: NextLine["label"], what: string, short: string, price: number, pct: number | null): NextLine {
   return { label, what, price, pct, text: `${short}까지 ${weeklyPct(pct)}`, pctText: weeklyPct(pct) };
@@ -85,23 +72,25 @@ function line(label: NextLine["label"], what: string, short: string, price: numb
 /**
  * ↓ · ↑ 숫자가 무엇까지의 거리인지 — 서버(desk/weekly_map)가 고르는 규칙 그대로:
  * 검정선 위 · 선 사이의 아래 받침은 빨간선, 빨간선 아래면 52주 저점 · 50주 볼린저 하단 중 가까운 쪽.
- * 위 저항은 선 사이면 검정선, 빨간선 아래면 빨간선, 검정선 위면 52주 고점 · 50주 볼린저 상단 중 가까운 쪽.
- * "반등 시도" 는 서버의 아래 받침(빨간선)이 주가 위에 있으므로 받침 = 검정선, 저항 = 빨간선으로 바꿔 보인다.
+ * 위 저항은 선 사이면 검정선, 빨간선 아래면 두 선 중 가까운 쪽(보통 빨간선, 역배열이면 검정선),
+ * 검정선 위면 52주 고점 · 50주 볼린저 상단 중 가까운 쪽. 반등 시도는 받침 = 검정선, 저항 = 빨간선.
  * 화면은 ``text``(선 이름 + 거리)를 그대로 보여 준다 — 터치 기기에서도 무엇까지인지 보이게.
  */
 export function nextLines(m: WeeklyLike): { down: NextLine; up: NextLine } {
   const { down, up } = m.scenario;
-  switch (weeklyZone(m)) {
+  switch (m.position) {
     case "rebound":
       return {
-        down: line("아래 받침", "검정선(20주 평균)", "검정선", m.lines.black.price, from(m.close, m.lines.black.price)),
-        up: line("위 저항", "빨간선(60주 평균)", "빨간선", m.lines.red.price, from(m.close, m.lines.red.price)),
+        down: line("아래 받침", "검정선(20주 평균)", "검정선", down.price, down.pct),
+        up: line("위 저항", "빨간선(60주 평균)", "빨간선", up.price, up.pct),
       };
     case "below_red": {
       const low = near(down.price, m.range_52w.low);
+      const black = m.lines.black.price < m.lines.red.price && near(up.price, m.lines.black.price);
       return {
         down: line("아래 받침", low ? "52주 저점" : "50주 볼린저 하단", low ? "52주 저점" : "볼린저 하단", down.price, down.pct),
-        up: line("위 저항", "빨간선(60주 평균)", "빨간선", up.price, up.pct),
+        up: black ? line("위 저항", "검정선(20주 평균)", "검정선", up.price, up.pct)
+          : line("위 저항", "빨간선(60주 평균)", "빨간선", up.price, up.pct),
       };
     }
     case "between":
@@ -123,7 +112,7 @@ export function nextLines(m: WeeklyLike): { down: NextLine; up: NextLine } {
 export function weeklyEvidence(m: WeeklyLike): string | null {
   const rec = m.record;
   if (!rec) return null;
-  const zone = weeklyZone(m);
+  const zone = m.position;
   if (zone === "rebound") return null;
   if (zone === "below_red") {
     const t = rec.bb_lower_touch;

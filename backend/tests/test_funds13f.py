@@ -106,9 +106,10 @@ def _pershing_pages() -> dict:
 TICKERS = {"02079K107": "GOOG", "43300A203": "HLT", "90353T100": "UBER", "11271J107": "BN", "13646K108": "CP"}
 
 
-def _funds(pages=None, tmp_path=None, figi=None) -> f13.Funds:
+def _funds(pages=None, tmp_path=None, figi=None, search=None, **kw) -> f13.Funds:
     return f13.Funds(FakeEdgar(pages or _pershing_pages()), cache_dir=tmp_path,
-                     figi=figi or (lambda cusips: {c: TICKERS.get(c) for c in cusips}), today=lambda: date(2026, 11, 17))
+                     figi=figi or (lambda cusips: {c: TICKERS.get(c) for c in cusips}),
+                     search=search or (lambda name: None), today=lambda: date(2026, 11, 17), **kw)
 
 
 # ------------------------------------------------------------------ parsing
@@ -446,3 +447,53 @@ def test_an_answer_over_the_cap_is_refused(monkeypatch):
     big = httpx.MockTransport(lambda request: httpx.Response(200, content=b"x" * 5000))
     with pytest.raises(f13.FundsUnavailable, match="너무 커서"):
         f13._capped_get("https://www.sec.gov/x", {}, transport=big)
+
+
+# ------------------------------------------------------------------ #512 foreign issuers (CINS) by name
+
+ALCON_SEARCH = [
+    {"ticker": "ALC 11/15/24 C82.5", "name": "November 24 Calls on ALC", "securityType2": "Option"},
+    {"ticker": "ALC", "name": "ALCON INC", "securityType2": "Common Stock"},
+    {"ticker": "ACL", "name": "ALCON INC", "securityType2": "Option"},
+]
+
+
+def test_a_foreign_issuer_is_matched_to_its_one_us_listing_by_name():
+    assert f13.core_name("ALCON AG") == f13.core_name("Alcon Inc.") == "ALCON"
+    assert f13.pick_listing("ALCON AG", ALCON_SEARCH) == "ALC"
+    two = ALCON_SEARCH + [{"ticker": "ALCX", "name": "ALCON LTD", "securityType2": "Depositary Receipt"}]
+    assert f13.pick_listing("ALCON AG", two) is None                          # two listings: no guess
+    assert f13.pick_listing("ALCON VISION AG", ALCON_SEARCH) is None          # another name: no ticker
+    assert f13.pick_listing("AG", ALCON_SEARCH) is None
+
+
+def _alcon(value=1_000_000, shares=10):
+    return {"cusip": "H01301128", "name": "ALCON AG", "value": value, "shares": shares, "change_shares": shares}
+
+
+def test_the_search_runs_once_per_cins_only_in_the_refresh_pass(tmp_path):
+    asked = []
+
+    def search(name):
+        asked.append(name)
+        return "ALC"
+    funds = _funds(tmp_path=tmp_path, figi=lambda cusips: {c: None for c in cusips}, search=search, sleep=lambda s: None)
+    us = {"cusip": "90353T100", "name": "UBER TECHNOLOGIES INC", "value": 5, "shares": 1, "change_shares": 0}
+    funds._map([_alcon(), us], 20)                                            # a page request: no search
+    assert asked == [] and funds._tickers["H01301128"] is None
+    funds._map([_alcon(), us], 20, f13.SEARCH_PER_PASS)                      # the refresh pass
+    assert asked == ["ALCON AG"] and funds._tickers["H01301128"] == "ALC"
+    assert "90353T100" not in funds._searched                                # a US CUSIP is never searched
+    again = _funds(tmp_path=tmp_path, figi=lambda cusips: {}, search=search, sleep=lambda s: None)
+    again._map([_alcon()], 20, f13.SEARCH_PER_PASS)
+    assert asked == ["ALCON AG"] and again._tickers["H01301128"] == "ALC"    # kept on disk, not searched again
+
+
+def test_no_listing_keeps_no_ticker_and_searches_are_spaced(tmp_path):
+    slept = []
+    funds = _funds(tmp_path=tmp_path, figi=lambda cusips: {c: None for c in cusips}, search=lambda name: None,
+                   sleep=slept.append, clock=lambda: 100.0)
+    nestle = {"cusip": "H57312649", "name": "NESTLE SA", "value": 9, "shares": 1, "change_shares": 0}
+    funds._map([_alcon(), nestle], 20, f13.SEARCH_PER_PASS)
+    assert funds._tickers["H01301128"] is None and funds._searched == {"H01301128", "H57312649"}
+    assert slept == [f13.SEARCH_GAP_SEC]

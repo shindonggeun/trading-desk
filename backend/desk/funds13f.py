@@ -106,6 +106,17 @@ MAP_PER_PASS = 120           # CUSIPs sent to OpenFIGI per refresh pass (the cac
 MAP_PER_REQUEST = 20         # ... and per page request (a quarter nobody asked for in a pass)
 FIGI_BATCH = 10              # OpenFIGI without a key: ten jobs a request, 25 requests a minute
 FIGI_GAP_SEC = 2.5
+# #512 a foreign issuer's CINS (a letter first, e.g. Alcon H01301128) has no OpenFIGI CUSIP mapping at all: its
+# name is searched among US-listed common shares and depositary receipts instead - kept only when exactly one
+# listing has the same name (legal suffixes aside), else no ticker (never a guess). OpenFIGI's search without a
+# key allows 5 requests a minute: a few per pass, each CINS searched once
+FIGI_SEARCH_URL = "https://api.openfigi.com/v3/search"
+SEARCH_PER_PASS = 3
+SEARCH_GAP_SEC = 15.0
+SEARCH_TYPES = ("Common Stock", "Depositary Receipt")
+_SUFFIXES = {"AG", "SA", "NV", "PLC", "LTD", "LIMITED", "INC", "CORP", "CORPORATION", "CO", "SE", "AB", "ASA",
+             "OYJ", "SPA", "BV", "HOLDING", "HOLDINGS", "GROUP", "THE", "ADR", "ADS", "SPONSORED", "REG", "ORD",
+             "SHS", "NEW"}
 DOLLARS_FILED_FROM = date(2023, 1, 3)
 HR_FORMS = ("13F-HR", "13F-HR/A")
 NT_FORMS = ("13F-NT", "13F-NT/A")
@@ -431,11 +442,13 @@ class Funds:
 
     def __init__(self, edgar: Edgar | None = None, cache_dir: str | Path | None = CACHE_DIR,
                  figi: Callable[[list[str]], dict[str, str | None]] | None = None,
-                 today=lambda: datetime.now(UTC).date(), clock=time.monotonic) -> None:
+                 search: Callable[[str], str | None] | None = None,
+                 today=lambda: datetime.now(UTC).date(), clock=time.monotonic, sleep=time.sleep) -> None:
         self.edgar = edgar or Edgar()
         self.dir = Path(cache_dir) if cache_dir else None
         self.figi = figi or _openfigi
-        self._today, self._clock = today, clock
+        self.search = search or _openfigi_search
+        self._today, self._clock, self._sleep = today, clock, sleep
         self._net = threading.RLock()                        # one SEC / OpenFIGI fetch at a time
         self._save_lock = threading.Lock()
         self.periods: dict[str, dict[str, list[dict]]] = {}  # fund id → period → its filings
@@ -448,6 +461,8 @@ class Funds:
         self._fails: dict[str, tuple[float, str]] = {}
         self._kinds: dict[str, str | None] = self._load_json("amendments.json") or {}
         self._tickers: dict[str, str | None] = self._load_json("cusip_tickers.json") or {}
+        self._searched: set[str] = set(self._load_json("cusip_searched.json") or [])   # CINS names tried once
+        self._search_at = 0.0
         self._figi_until = 0.0
 
     # --- cache files
@@ -511,7 +526,7 @@ class Funds:
             if not got:              # no 13F in the recent list: nothing to read
                 continue
             try:
-                v = self.view(fund.id, wait=True, map_budget=MAP_PER_PASS)
+                v = self.view(fund.id, wait=True, map_budget=MAP_PER_PASS, search_budget=SEARCH_PER_PASS)
                 if v["prev_quarter"] is None and self._has_previous(fund.id, v["period_of_report"]):
                     # the quarter before is filed but could not be read: keep a compared view, retry soon
                     self.errors[fund.id] = "전 분기 공시를 읽지 못해 변화를 계산하지 못했습니다"
@@ -617,22 +632,48 @@ class Funds:
         return rows, {"name": other["name"], "cik": other["cik"]}
 
     # --- tickers
-    def _map(self, holdings: list[dict], budget: int) -> None:
+    def _map(self, holdings: list[dict], budget: int, search_budget: int = 0) -> None:
         """Map the largest and the most changed unmapped CUSIPs, ``budget`` at most."""
         if budget <= 0 or self._clock() < self._figi_until:
             return
         order = sorted(holdings, key=lambda h: -max(h["value"], abs(h["change_shares"] or 0) * (_price(h) or 1)))
         want = list(dict.fromkeys(h["cusip"] for h in order if h["cusip"] and h["cusip"] not in self._tickers))[:budget]
-        if not want:
-            return
-        try:
-            got = self.figi(want)
-        except Exception as exc:  # noqa: BLE001 - names stand without tickers; not asked again for a while
-            log.info("OpenFIGI mapping failed: %s", _short(exc))
-            self._figi_until = self._clock() + FAIL_TTL_SEC
-            return
-        self._tickers.update({c: (t.replace("/", "-").upper() if t else None) for c, t in got.items()})
-        self._save_json("cusip_tickers.json", dict(self._tickers))
+        if want:
+            try:
+                got = self.figi(want)
+            except Exception as exc:  # noqa: BLE001 - names stand without tickers; not asked again for a while
+                log.info("OpenFIGI mapping failed: %s", _short(exc))
+                self._figi_until = self._clock() + FAIL_TTL_SEC
+                return
+            self._tickers.update({c: (t.replace("/", "-").upper() if t else None) for c, t in got.items()})
+            self._save_json("cusip_tickers.json", dict(self._tickers))
+        if search_budget > 0:             # the refresh pass only: a page never waits on the search's pace
+            self._search_foreign(order, search_budget)
+
+    def _search_foreign(self, order: list[dict], budget: int) -> None:
+        """#512 the unmapped foreign CINS by name (the largest first), each once, ``budget`` at most, every
+        search ``SEARCH_GAP_SEC`` after the one before (across funds)."""
+        todo = [h for h in order if h["cusip"] and h["cusip"][0].isalpha() and h.get("name")
+                and h["cusip"] in self._tickers and self._tickers[h["cusip"]] is None
+                and h["cusip"] not in self._searched]
+        todo = list({h["cusip"]: h for h in todo}.values())[:budget]
+        for h in todo:
+            wait = self._search_at + SEARCH_GAP_SEC - self._clock()
+            if self._search_at and wait > 0:
+                self._sleep(wait)
+            self._search_at = self._clock()
+            try:
+                ticker = self.search(h["name"])
+            except Exception as exc:  # noqa: BLE001 - tried again on a later pass
+                log.info("OpenFIGI search failed: %s", _short(exc))
+                self._figi_until = self._clock() + FAIL_TTL_SEC
+                break
+            self._searched.add(h["cusip"])
+            if ticker:
+                self._tickers[h["cusip"]] = ticker.replace("/", "-").upper()
+        if todo:
+            self._save_json("cusip_tickers.json", dict(self._tickers))
+            self._save_json("cusip_searched.json", sorted(self._searched))
 
     # --- answers
     def list(self) -> dict:
@@ -656,7 +697,7 @@ class Funds:
         return {"funds": rows, "checked_at": self.checked_at}
 
     def view(self, fund_id: str, quarter: str | None = None, wait: bool = False,
-             map_budget: int = MAP_PER_REQUEST) -> dict:
+             map_budget: int = MAP_PER_REQUEST, search_budget: int = 0) -> dict:
         """The holdings of ``quarter`` (the latest when None) against the quarter before.
         KeyError: no such fund · ValueError: a bad quarter · NotFiled: nothing filed for it ·
         FundsBusy: another fetch is running (``wait`` False) · FundsUnavailable: SEC / the filing."""
@@ -685,7 +726,7 @@ class Funds:
                 except Exception as exc:  # noqa: BLE001 - the quarter stands without its comparison
                     log.info("13F %s %s (previous) failed: %s", fund.id, prev_q, _short(exc))
             holdings = compare(rows, prev_rows)
-            self._map(holdings, map_budget)
+            self._map(holdings, map_budget, search_budget)
         for h in holdings:
             h["ticker"] = self._tickers.get(h["cusip"])
         head, bullets = summary(fund, q, holdings)
@@ -742,6 +783,33 @@ def _openfigi(cusips: list[str]) -> dict[str, str | None]:
             data = (res or {}).get("data") or []
             out[c] = data[0].get("ticker") if data else None
     return out
+
+
+def core_name(name: str) -> str:
+    """An issuer's name without punctuation and legal suffixes: "ALCON AG" and "ALCON INC" are both "ALCON"."""
+    words = re.sub(r"[^A-Z0-9 ]", " ", name.upper().replace("&", " AND ")).split()
+    return " ".join(w for w in words if w not in _SUFFIXES)
+
+
+def pick_listing(name: str, data: list[dict]) -> str | None:
+    """The one US-listed common share or depositary receipt whose name is the issuer's; None when none or
+    more than one ticker matches (a guess is worse than no ticker)."""
+    want = core_name(name)
+    if not want:
+        return None
+    found = {d.get("ticker") for d in data
+             if d.get("ticker") and d.get("securityType2") in SEARCH_TYPES and core_name(d.get("name") or "") == want}
+    return found.pop() if len(found) == 1 else None
+
+
+def _openfigi_search(name: str) -> str | None:
+    query = core_name(name)
+    if not query:
+        return None
+    r = httpx.post(FIGI_SEARCH_URL, json={"query": query, "exchCode": "US", "marketSecDes": "Equity"},
+                   headers={"Content-Type": "application/json"}, timeout=TIMEOUT_SEC, follow_redirects=False)
+    r.raise_for_status()
+    return pick_listing(name, r.json().get("data") or [])
 
 
 def _short(exc: Exception) -> str:

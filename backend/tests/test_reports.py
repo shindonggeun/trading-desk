@@ -5,6 +5,7 @@ import json
 import time
 from datetime import UTC, date, datetime, timedelta
 
+from desk import prices
 from desk import reports as rp
 
 
@@ -197,3 +198,48 @@ def test_an_unknown_page_cursor_is_an_empty_page(db_url):
     assert [i["id"] for i in desk.list(limit=2, before=page["next_before"])["items"]] == [made[0]["id"]]
     assert desk.list(before="rp_nope")["items"] == [] and page["next_due"] is None
     engine.dispose()
+
+
+_REAL_YAHOO_CANDLES = prices.yahoo_candles          # taken at import, before conftest swaps in the offline one
+
+
+def test_the_real_yahoo_fetch_asks_prices_with_the_apps_interval_names(monkeypatch):
+    # production 6ea7a46: "1wk" went to prices.yahoo_candles (which takes "1w") -> KeyError for every subject
+    import pandas as pd
+
+    asked = []
+
+    class Ticker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        def history(self, period, interval, auto_adjust):
+            asked.append(interval)
+            n = 900 if interval == "1d" else 160
+            step = "D" if interval == "1d" else "W"
+            idx = pd.date_range("2023-01-02", periods=n, freq=step, tz="UTC")
+            closes = [100 + (i % 20) for i in range(n)]
+            return pd.DataFrame({"Open": closes, "High": [c + 1 for c in closes], "Low": [c - 1 for c in closes],
+                                 "Close": closes, "Volume": [1e6] * n}, index=idx)
+
+    monkeypatch.setattr(prices, "yahoo_candles", _REAL_YAHOO_CANDLES)       # the real one, not conftest's offline
+    monkeypatch.setitem(__import__("sys").modules, "yfinance", type("yf", (), {"Ticker": Ticker}))
+    daily, weekly = rp.yahoo_fetch("^KS11")
+    assert asked == ["1d", "1wk"] and len(daily) >= rp.BASE + rp.WEEK + 15 and weekly
+    assert rp.measure("^KS11", "코스피", "index", daily, weekly) is not None
+
+
+def test_when_every_subject_fails_the_first_reason_is_logged(db_url, caplog):
+    from desk.db import make_engine, migrate
+
+    migrate(db_url)
+    engine = make_engine(db_url)
+
+    def broken(symbol):
+        raise KeyError("1wk")
+    desk = rp.Reports(engine, broken, every_days=0)
+    with caplog.at_level("WARNING", logger="desk.reports"):
+        assert desk.measure_all() == []
+    engine.dispose()
+    assert any("every subject failed" in r.getMessage() and "KeyError" in r.getMessage() and "1wk" in r.getMessage()
+               for r in caplog.records)

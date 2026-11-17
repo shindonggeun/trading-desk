@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { api, setUnauthorizedHandler, Unauthorized } from "./api";
 import type { DeskConfig } from "./types";
 import LoginForm from "./components/LoginForm";
@@ -103,6 +103,28 @@ export default function App() {
   const chartMatch = route.match(/^#\/chart\/([^?]+)(?:\?(.*))?$/);
 
   const here = activeNav(route);
+  // #561 휴대폰 하위 메뉴: 고른 항목을 보이는 곳으로 옮기고, 줄 밖에 더 있으면 그 끝을 흐린다
+  const subNav = useRef<HTMLElement>(null);
+  const [subMore, setSubMore] = useState({ left: false, right: false });
+  const measureSub = useCallback(() => {
+    const el = subNav.current;
+    if (!el) return;
+    const left = el.scrollLeft > 1, right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    setSubMore((m) => (m.left === left && m.right === right ? m : { left, right }));
+  }, []);
+  useEffect(() => {
+    const el = subNav.current;
+    const active = el?.querySelector<HTMLElement>("a.active");
+    if (el && active && el.scrollWidth > el.clientWidth) {
+      const target = active.offsetLeft - (el.clientWidth - active.offsetWidth) / 2;
+      el.scrollLeft = Math.max(0, Math.min(target, el.scrollWidth - el.clientWidth));
+    }
+    measureSub();
+  }, [route, measureSub]);
+  useEffect(() => {
+    window.addEventListener("resize", measureSub);
+    return () => window.removeEventListener("resize", measureSub);
+  }, [measureSub]);
 
   return (
     <div className="shell">
@@ -120,7 +142,8 @@ export default function App() {
           </nav>
         )}
         {user && here && here.group.items.length > 1 && (
-          <nav aria-label={`${here.group.label} 하위 메뉴`} className="nav-sub">
+          <nav aria-label={`${here.group.label} 하위 메뉴`} className={`nav-sub${subMore.left ? " more-left" : ""}${subMore.right ? " more-right" : ""}`}
+            ref={subNav} onScroll={measureSub}>
             {here.group.items.map((i) => (
               <a key={i.href} href={i.href} className={here.item === i ? "active" : ""}
                 onPointerEnter={() => prefetchRoute(i.href)} onFocus={() => prefetchRoute(i.href)}

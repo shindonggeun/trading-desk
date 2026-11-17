@@ -136,6 +136,13 @@ input[type=checkbox], input[type=radio] { width: auto; accent-color: var(--text)
 .topbar .nav-sub a { color: var(--muted); padding: 3px 12px; border-radius: 999px; font-size: var(--fs-s); white-space: nowrap; }
 .topbar .nav-sub a:hover { color: var(--text); }
 .topbar .nav-sub a.active { color: var(--text); background: var(--surface-3, var(--surface)); box-shadow: inset 0 0 0 1px var(--border); }
+/* #561 줄 밖에 항목이 더 있으면 그쪽 끝을 흐리게(App.tsx 가 more-left · more-right 를 붙인다) */
+.topbar .nav-sub.more-right { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
+.topbar .nav-sub.more-left { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 36px), transparent);
+  mask-image: linear-gradient(to left, #000 calc(100% - 36px), transparent); }
+.topbar .nav-sub.more-left.more-right { -webkit-mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); }
 .topbar-settings { color: var(--muted); font-size: var(--fs-s); white-space: nowrap; }
 .topbar-settings.active, .topbar-settings:hover { color: var(--text); }
 @media (max-width: 760px) {
@@ -2508,7 +2515,7 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .paper-equity.is-down .pe-area { fill: color-mix(in srgb, var(--down) 14%, transparent); }
 .pe-base { stroke: var(--muted); stroke-dasharray: 4 4; stroke-width: 1; }
 .pe-dot { fill: var(--text); }
-.pe-label { font-size: 11px; fill: var(--muted); }
+.pe-label { fill: var(--muted); }   /* #561 크기는 svg 의 font-size(그린 폭에 맞춰 12px 로 보이게, Paper.tsx useLabelSize) */
 .pb-up { fill: var(--up); }
 .pb-down { fill: var(--down); }
 .paper-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }

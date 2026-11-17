@@ -374,9 +374,6 @@ export default function Sectors() {
             <div className="ss-item"><span className="muted small">풋/콜 평균</span><strong className="num">{avgPc == null ? "—" : avgPc.toFixed(2)}</strong></div>
             <div className="ss-item"><span className="muted small">공매도 비중</span><strong className="num">{avgShort == null ? "—" : `${avgShort.toFixed(1)}%`}</strong></div>
           </section>
-          {korean && (
-            <section className="card" aria-label="빚투 · 예탁금"><CreditSummary c={credit} /></section>
-          )}
           <div className="sector-sort chips" role="group" aria-label="정렬">
             {SORTS.map((s) => (
               <button key={s.id} type="button" className={`chip${sort === s.id ? " chip-on" : ""}`} aria-pressed={sort === s.id}
@@ -416,6 +413,13 @@ export default function Sectors() {
             </div>
           )}
           <p className="muted small qb-note">공매도 · 옵션은 미국 상장 종목만(FINRA · Cboe, 15분 지연), 추정가는 바이낸스 무기한 선물 기준이며 실제 체결이 아닙니다.</p>
+          {/* #561 시장 전체 자료라 섹터 요약 사이가 아니라 종목 아래, 제목을 달고 · 자료가 없으면 숨긴다 */}
+          {korean && credit?.summary && (
+            <section className="card sector-credit" aria-label="국내 시장 전체 빚투 · 예탁금">
+              <h3>국내 시장 전체 · 빚투 · 예탁금</h3>
+              <CreditSummary c={credit} />
+            </section>
+          )}
         </>
       )}
       {/* #245 고른 섹터와 겹치는 섹터 · 인물 이슈(#244) */}

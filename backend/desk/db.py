@@ -229,6 +229,15 @@ reports = Table(
     Index("ix_reports_created_at", "created_at"),
 )
 
+# #527 the paper account's settings: one row (id 1) for the desk; version + 1 on every save
+paper_settings = Table(
+    "paper_settings", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=False),
+    Column("body", Json, nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("updated_at", Timestamp, nullable=False),
+)
+
 
 def now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)

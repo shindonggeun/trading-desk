@@ -53,6 +53,7 @@ PNG = b"\x89PNG\r\n\x1a\n"
 # gpt-image-2.5-flare instead") and answered every picture with HTTP 400 (#497). The size and quality below
 # are ones every GPT image model takes.
 DEFAULT_MODEL = "gpt-image-2.5-flare"
+MODEL_NAME = re.compile(r"[A-Za-z0-9_.\-]{1,64}")     # always used with fullmatch
 RETIRED_MODELS = frozenset({"gpt-image-1", "dall-e-2", "dall-e-3"})
 DEFAULT_SIZE = "1536x1024"
 DEFAULT_QUALITY = "medium"
@@ -75,7 +76,8 @@ def _error_fields(r: httpx.Response) -> dict[str, str]:
     out = {}
     for name in ("code", "type", "param"):
         v = err.get(name)
-        out[name] = "-" if v is None else v if isinstance(v, str) and ERROR_FIELD.fullmatch(v) else "?"
+        ok = isinstance(v, str) and ERROR_FIELD.fullmatch(v) and not v.lower().startswith("sk-")
+        out[name] = "-" if v is None else v if ok else "?"
     return out
 
 
@@ -197,6 +199,9 @@ class ReportImages:
         self.__key = key
         self.root, self.per_day, self.per_month = Path(root or CACHE_DIR), per_day, per_month
         model = (model or "").strip() or DEFAULT_MODEL
+        if not MODEL_NAME.fullmatch(model):      # not a model name (a pasted key?): never logged as it is
+            log.warning("report images: DESK_REPORT_IMAGE_MODEL is not a model name - using %s", DEFAULT_MODEL)
+            model = DEFAULT_MODEL
         if model in RETIRED_MODELS:             # shut down: every call would be a 400 that still uses the caps
             log.warning("report images: model %r is shut down - using %s", model, DEFAULT_MODEL)
             model = DEFAULT_MODEL

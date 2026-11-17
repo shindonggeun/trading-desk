@@ -299,6 +299,11 @@ def test_the_request_uses_a_live_model_and_only_what_gpt_image_models_take(tmp_p
         assert "is shut down" in caplog.text and KEY not in caplog.text
     monkeypatch.setenv("DESK_REPORT_IMAGE_MODEL", "gpt-image-2.5-sunburst")
     assert ri.from_env(tmp_path).model == "gpt-image-2.5-sunburst"
+    caplog.clear()
+    monkeypatch.setenv("DESK_REPORT_IMAGE_MODEL", f"{KEY}\nforged line")    # a key pasted in the wrong place
+    with caplog.at_level(logging.WARNING):
+        assert ri.from_env(tmp_path).model == ri.DEFAULT_MODEL
+    assert "not a model name" in caplog.text and KEY not in caplog.text and "forged" not in caplog.text
 
 
 def test_a_refused_picture_logs_only_the_error_code_type_and_param_and_ends_the_report(tmp_path, caplog):
@@ -324,7 +329,7 @@ def test_a_blocked_prompt_tries_the_next_picture_and_odd_error_fields_are_not_lo
     answers = iter([
         httpx.Response(400, json={"error": {"code": "moderation_blocked", "type": "image_generation_user_error",
                                             "param": None, "message": "blocked"}}),
-        httpx.Response(429, json={"error": {"code": f"x {KEY}", "type": "a" * 65, "param": 7}}),
+        httpx.Response(429, json={"error": {"code": f"x {KEY}", "type": "a" * 65, "param": "sk-proj-abc123"}}),
     ])
     seen: list = []
 

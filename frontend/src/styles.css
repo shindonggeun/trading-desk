@@ -2479,3 +2479,34 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .paper-card:hover strong { text-decoration: underline; }
 .paper-card .paper-badge { justify-self: start; }
 .paper-card-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+
+/* #531 여러 추세선 — 범례 켜고 끄기 · 고른 선 카드(넓은 화면은 오른쪽 자리, 휴대폰은 아래 시트) */
+.trend-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 6px 0 0; }
+.tl-sw { display: inline-block; width: 16px; height: 0; margin-right: 5px; vertical-align: middle; border-top: 2px solid var(--muted); }
+.tl-sw-short { border-top-width: 1px; } .tl-sw-mid { border-top-width: 2px; } .tl-sw-long { border-top-width: 3px; }
+.tl-sw-support { border-top-color: var(--sr-support, #2bb3a3); } .tl-sw-resistance { border-top-color: var(--sr-resistance, #b58cf0); }
+.trend-list li.trend-picked { background: var(--surface-2); border-radius: var(--radius-s); }
+.tl-card { display: grid; gap: 8px; border-left: 3px solid var(--sr-resistance, #b58cf0); }
+.tl-card.tl-support { border-left-color: var(--sr-support, #2bb3a3); }
+.tl-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tl-close { margin-left: auto; }
+.tl-now { margin: 0; }
+.tl-card p { margin: 0; }
+.tl-summary { margin: 0; padding-left: 18px; display: grid; gap: 3px; line-height: 1.55; }
+.tl-scns { display: grid; gap: 8px; }
+.tl-scn { padding: 8px 10px; border-radius: var(--radius-s); background: var(--surface-2); }
+.tl-scn h5 { margin: 0 0 4px; font-size: 13px; }
+.tl-scn-up h5 { color: var(--up); } .tl-scn-down h5 { color: var(--down); }
+.tl-scn dl { margin: 6px 0 0; display: grid; gap: 2px; }
+.tl-scn dl div { display: flex; gap: 8px; } .tl-scn dt { color: var(--muted); min-width: 84px; } .tl-scn dd { margin: 0; }
+.tl-ahead { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.tl-ahead caption { text-align: left; padding-bottom: 2px; }
+.tl-ahead th, .tl-ahead td { padding: 2px 10px 2px 0; text-align: left; font-weight: 400; }
+.tl-status.tl-far { opacity: .8; }
+@media (max-width: 760px) {
+  /* 휴대폰: 차트를 가리지 않게 아래 시트로(채팅 버튼 위) */
+  .tl-card { position: fixed; left: 0; right: 0; bottom: 0; z-index: 80; max-height: 62vh; overflow-y: auto; margin: 0;
+    border-left: 0; border-top: 3px solid var(--sr-resistance, #b58cf0); border-radius: 14px 14px 0 0;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom)); box-shadow: 0 -8px 24px rgb(0 0 0 / .35); }
+  .tl-card.tl-support { border-top-color: var(--sr-support, #2bb3a3); }
+}

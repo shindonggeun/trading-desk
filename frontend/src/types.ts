@@ -594,6 +594,36 @@ export interface Trendline {
   /** 지금 가격 − 선, 주 시간축 ATR 단위 */
   distance_atr: number;
   state: "intact" | "testing" | "broken";
+  // ── #530 여러 스윙의 선 · 선마다 시나리오(옛 run · 옛 서버에는 없다 — 모두 선택) ──
+  /** 안정적인 키 `${timeframe}-${kind}-${anchor0 날짜}-${anchor1 날짜}` */
+  id?: string;
+  /** 스윙 크기: 짧은(k) · 중간(2k) · 긴(4k) */
+  scale?: "short" | "mid" | "long";
+  swing_k?: number;
+  /** testing · broken 은 state 와 같고, intact 를 그 시간축 ATR 8배 안 near / 밖 far 로 나눈 것 */
+  status?: "broken" | "testing" | "near" | "far";
+  /** 선 − 지금가, 지금가 대비 %. + 면 선이 위(저항선이면 닿는 데 필요한 상승률) */
+  distance_pct?: number;
+  /** 그 선의 봉으로 N봉 뒤 선 값 · 그때 지금가 대비 % */
+  ahead?: { bars: number; price: number; distance_pct: number }[];
+  /** 저항선: breakout · reject / 지지선: bounce · breakdown */
+  scenarios?: TrendScenario[];
+  /** 쉬운 한국어 2~3줄(숫자는 모두 계산값) */
+  summary?: string[];
+}
+
+/** #530 추세선 하나의 시나리오 — 숫자는 서버 계산값(LLM 0) */
+export interface TrendScenario {
+  kind: "breakout" | "reject" | "bounce" | "breakdown";
+  /** 조건 가격 = 지금 선 값 */
+  trigger: number;
+  /** 돌파 · 이탈 때 필요한 거래량(20봉 평균). 거래량 없는 지수 · 막힘/받침은 null */
+  volume_min: number | null;
+  target: number | null;
+  target_basis: string | null;
+  /** 시나리오가 틀렸다고 보는 종가 */
+  invalid: number | null;
+  text: string;
 }
 
 /** #297 수렴 패턴의 한 선: 첫 터치 → 마지막 봉 */

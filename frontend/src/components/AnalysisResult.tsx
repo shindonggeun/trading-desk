@@ -1,7 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { price, time } from "../format";
-import type { LineBasis, Plan, PlanLineKey, RunOutlook, SupportResistance } from "../types";
+import type { LineBasis, Plan, PlanLineKey, RunOutlook, SupportResistance, Trendline } from "../types";
+import { trendKey } from "../trendLines";
+import TrendLineCard from "./TrendLineCard";
 import ExplainPanel, { lineTitle } from "./ExplainPanel";
 import type { ExtraLine, Interval } from "./PriceChart";
 import LevelLadder from "./LevelLadder";
@@ -89,6 +91,8 @@ function Chart({ ticker, tradeDate, plan, title, outlook = null, runId }: { tick
     if (b) setFocus(b.line);
   }, [basis]);
   const focusDone = useCallback(() => setFocus(null), []);
+  // #531 차트에서 누른 추세선 — 오른쪽 해설 자리 맨 위에 그 선 카드(휴대폰은 아래 시트)
+  const [trend, setTrend] = useState<Trendline | null>(null);
   const explain = plan && runId;
   return (
     <div className={`chart-with-ladder${explain ? " chart-with-side" : ""}`}>
@@ -96,11 +100,13 @@ function Chart({ ticker, tradeDate, plan, title, outlook = null, runId }: { tick
         <Suspense fallback={<section className="card price-chart"><p className="muted small">{title} 차트 불러오는 중…</p></section>}>
           <PriceChart ticker={ticker} tradeDate={tradeDate} plan={plan} title={title} extraLines={extra} lists={false}
             initialInterval={plan ? HORIZON_INTERVAL[plan.horizon ?? "swing"] ?? "1d" : undefined} highlight={picked} outlook={outlook}
-            planLabels={labels} onLineClick={basis.length ? onLineClick : undefined} />
+            planLabels={labels} onLineClick={basis.length ? onLineClick : undefined}
+            {...(explain ? { trendPick: trend ? trendKey(trend) : null, onTrendPick: setTrend } : {})} />
         </Suspense>
       </SectionBoundary>
       {explain ? (
         <div className="chart-side">
+          {trend && <TrendLineCard line={trend} onClose={() => setTrend(null)} />}
           <ExplainPanel data={sr} failed={srFailed} plan={plan} focus={focus} onFocusDone={focusDone} />
           <LevelLadder ticker={ticker} plan={plan} onPick={setPicked} />
         </div>

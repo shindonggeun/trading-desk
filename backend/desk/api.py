@@ -31,6 +31,7 @@ from . import (
     earnings_preview,
     entry_now,
     events_calendar,
+    fear,
     filings,
     flow_intraday,
     futures_quote,
@@ -292,6 +293,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     broker = make_broker(settings)
     kis_feed = kis_stream.make(settings) if prices is None else None   # tests bring their own prices
     prices = prices or PriceSource(broker, stream=kis_feed)
+    # #462: VIX · CNN / crypto Fear & Greed · VKOSPI, cached per source (fakes stay offline in tests)
+    fear_gauges = fear.Fear(candles=prices._yahoo_candles) if not settings.fake_runs else None
     # #146: the market's selling score from the same Yahoo source as the prices (cached ~15 min)
     risk = None if settings.fake_runs else risk_regime.Cache(
         fetcher=lambda symbols: risk_regime.fetch(symbols, candles=prices._yahoo_candles)).current
@@ -909,6 +912,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         """#155: Korean margin loans (신용융자), investor deposits (투자자예탁금), their ratio (빚투 비율)
         with its 1-year percentile, and forced sales (KOFIA, refreshed in the background)."""
         return credit.CACHE.view(min(max(days, 7), 400))
+
+    @app.get("/api/market/fear")
+    async def market_fear():
+        """#462: the fear gauges (desk.fear); a failed source is that item's ``error``, never a 5xx."""
+        if fear_gauges is None:
+            return {"items": [], "error": "fake runs: no outside requests"}
+        return await fear_gauges.get()
 
     @app.get("/api/market/flow")
     async def market_flow(market: str = "KOSPI", interval: str = "1d", count: int = 20):

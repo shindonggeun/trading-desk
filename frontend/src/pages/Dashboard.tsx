@@ -18,7 +18,7 @@ import BottomZoneBrief from "../components/BottomZoneBrief";
 import TodayStrip from "../components/TodayStrip";
 import DashSummary from "../components/DashSummary";
 import { time } from "../format";
-import { GRID_COLS, HEAD_ROWS, MIN_W, loadBand, measureLayout, resetBand, saveBand, type Band, type BandLayout } from "../dashLayout";
+import { DEFAULT_H, GRID_COLS, HEAD_ROWS, MIN_W, loadBand, measureLayout, resetBand, saveBand, unhideSection, type Band, type BandLayout } from "../dashLayout";
 
 // #487 격자(react-grid-layout)는 배치를 편집하거나 저장한 배치가 있을 때만 불러온다
 const DashGrid = lazy(() => import("../components/DashGrid"));
@@ -242,9 +242,17 @@ export default function Dashboard() {
       savePrefs(next);
       setPrefs(next);
     };
+    // #487 저장 배치에서 시장 수급을 숨겨 두었으면 다시 보이게(맨 아래) — 알림 클릭이 아무 일도 안 하지 않게
+    const revealInGrid = () => {
+      if (!/[?&]flow=intraday(?:&|$)/.test(window.location.hash)) return;
+      for (const b of ["wide", "mid"] as const) if (unhideSection(b, "flow")) setSaved((cur) => (cur && bandSeen.current === b ? loadBand(b, DEFAULT_ORDER) : cur));
+    };
+    revealInGrid();
+    window.addEventListener("hashchange", revealInGrid);
     reveal();
     window.addEventListener("hashchange", reveal);
-    return () => window.removeEventListener("hashchange", reveal);
+    return () => { window.removeEventListener("hashchange", reveal); window.removeEventListener("hashchange", revealInGrid); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const layout = useLayout();
   const toggled = (list: SectionId[], id: SectionId) => (list.includes(id) ? list.filter((c) => c !== id) : [...list, id]);
@@ -270,7 +278,8 @@ export default function Dashboard() {
 
   // #487 배치 편집 — 저장한 격자 배치가 있으면 보기 모드도 격자로, 없으면 예전 흐름(#464) 그대로
   const band = useBand(layout);
-  const [saved, setSaved] = useState<BandLayout | null>(null);
+  // 저장 배치는 첫 렌더부터 읽는다 — 예전 흐름으로 한 번 그렸다가 격자로 바꾸면 구역이 두 번 마운트돼 요청이 두 번 나가고 깜빡인다
+  const [saved, setSaved] = useState<BandLayout | null>(() => (band ? loadBand(band, DEFAULT_ORDER) : null));
   const [draft, setDraft] = useState<BandLayout | null>(null);
   const [said, setSaid] = useState("");
   const flowRef = useRef<HTMLDivElement>(null);
@@ -280,12 +289,17 @@ export default function Dashboard() {
   useLayoutEffect(() => {
     const el = areaRef.current;
     if (!el) return;
+    setAreaWidth(Math.round(el.getBoundingClientRect().width)); // 그리기 전에 한 번 — 첫 화면에 빈칸이 남지 않게
     const ro = new ResizeObserver(([e]) => setAreaWidth(Math.round(e.contentRect.width)));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  // 폭 구간이 바뀔 때만 다시 읽는다(첫 렌더는 위에서 읽었다). 편집 중이었으면 그 편집은 버리고 알린다.
+  const bandSeen = useRef(band);
   useEffect(() => {
-    setDraft(null);
+    if (bandSeen.current === band) return;
+    bandSeen.current = band;
+    setDraft((d) => { if (d) setSaid("화면 폭이 바뀌어 배치 편집을 취소했습니다"); return null; });
     setSaved(band ? loadBand(band, DEFAULT_ORDER) : null);
   }, [band]);
   const grid = band ? draft ?? saved : null;
@@ -293,7 +307,9 @@ export default function Dashboard() {
     if (!band) return;
     if (saved) { setDraft({ items: saved.items.map((it) => ({ ...it })), hidden: [...saved.hidden] }); return; }
     // 처음: 지금 화면을 재서 격자로 — 넓은 화면은 지금 3열(4칸씩) 그대로, 중간 폭은 잰 위치 · 폭
-    const measured = flowRef.current ? measureLayout(flowRef.current, prefs.order) : [];
+    // 접힌 구역 · 아직 불러오는 중이라 낮게 잰 구역은 보통 높이(30)로, 나머지는 넓은 격자에서 조금 길어지는 만큼 여유(+3)
+    const measured = (flowRef.current ? measureLayout(flowRef.current, prefs.order) : [])
+      .map((it) => ({ ...it, h: prefs.closed.includes(it.i as SectionId) || it.h < 6 ? DEFAULT_H : it.h + 3 }));
     const items = band === "wide" ? measured.map((it) => ({ ...it, x: COLUMN[it.i as SectionId] * 4, w: 4 })) : measured;
     setDraft({ items, hidden: [] });
   };
@@ -307,9 +323,13 @@ export default function Dashboard() {
     setSaved(null);
     setDraft(null);
   };
-  const hide = (id: string) => draft && setDraft({ items: draft.items.filter((it) => it.i !== id), hidden: [...draft.hidden, id] });
+  const hide = (id: string) => {
+    if (!draft || draft.items.length <= 1) return; // 마지막 구역은 숨기지 않는다(빈 배치는 저장되지 않아 초기화처럼 된다)
+    setDraft({ items: draft.items.filter((it) => it.i !== id), hidden: [...draft.hidden, id] });
+    window.setTimeout(() => document.querySelector<HTMLElement>(".dash-edit-bar button")?.focus(), 0); // 초점이 사라지지 않게
+  };
   const unhide = (id: string) => draft && setDraft({
-    items: [...draft.items, { i: id, x: 0, y: draft.items.reduce((m, it) => Math.max(m, it.y + it.h), 0), w: 4, h: 30 }],
+    items: [...draft.items, { i: id, x: 0, y: draft.items.reduce((m, it) => Math.max(m, it.y + it.h), 0), w: 4, h: DEFAULT_H }],
     hidden: draft.hidden.filter((h) => h !== id),
   });
   // 보기 모드에서 접힌 구역은 머리글 높이로 — 아래 구역이 올라와 빈칸이 남지 않는다
@@ -331,11 +351,12 @@ export default function Dashboard() {
     } else if (e.key === "ArrowLeft") it.x = Math.max(0, it.x - 1);
     else if (e.key === "ArrowRight") it.x = Math.min(GRID_COLS - it.w, it.x + 1);
     else if (e.key === "ArrowUp") {
+      // 바로 위 구역과 자리를 맞바꾼다(같은 y 로 두면 정렬 순서 때문에 안 움직일 수 있다)
       const above = items.filter((o) => o !== it && overlapX(o) && o.y < it.y).sort((a, b) => b.y - a.y)[0];
-      it.y = above ? Math.max(0, above.y - 1) : 0;
+      if (above) { it.y = above.y; above.y = above.y + it.h; }
     } else {
       const below = items.filter((o) => o !== it && overlapX(o) && o.y > it.y).sort((a, b) => a.y - b.y)[0];
-      if (below) it.y = below.y + 1;
+      if (below) { below.y = it.y; it.y = it.y + below.h; }
     }
     setDraft({ ...draft, items });
     setSaid(`${SECTIONS[id as SectionId].title}: ${it.x + 1}번째 칸부터 폭 ${it.w}칸, 높이 ${it.h}`);
@@ -379,7 +400,7 @@ export default function Dashboard() {
       {/* 폭 재기용 감싸개는 늘 그려 둔다 — 격자로 바뀌는 순간에도 크기 감시가 붙어 있게 */}
       <div ref={areaRef} className="dash-area">
       {grid ? (
-        <div className={`dash-grid${draft ? " dash-grid-edit" : ""}`}>
+        <div className={`dash-grid${band === "wide" ? " dash-grid-wide" : ""}${draft ? " dash-grid-edit" : ""}`}>
           {areaWidth > 0 && (
             <Suspense fallback={<p className="muted small">배치 불러오는 중…</p>}>
               <DashGrid width={areaWidth} items={gridItems} editing={!!draft}

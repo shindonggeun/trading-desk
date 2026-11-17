@@ -8,8 +8,9 @@ export type Band = "wide" | "mid";
 export const GRID_COLS = 12;
 export const ROW_PX = 8; // 격자 한 줄 높이(px) — 높이를 촘촘히 조절하도록 작게
 export const GAP_PX = 14;
-export const HEAD_ROWS = 5; // 접힌 구역(머리글만)의 높이
+export const HEAD_ROWS = 2; // 접힌 구역(머리글만)의 높이 — 2줄 = 30px
 export const MIN_W = 3; // 최소 폭 = 12칸의 1/4
+export const DEFAULT_H = 14; // 새 구역 · 다시 보이기 · 접힌 채 잰 구역의 높이(14줄 ≈ 300px)
 
 export interface BandLayout { items: Layout; hidden: string[] }
 type Store = Partial<Record<Band, BandLayout>>;
@@ -41,7 +42,7 @@ export function loadBand(band: Band, known: string[]): BandLayout | null {
   const hidden = Array.isArray(b.hidden) ? b.hidden.filter((h) => known.includes(h)) : [];
   const bottom = items.reduce((m, it) => Math.max(m, it.y + it.h), 0);
   const missing = known.filter((k) => !items.some((it) => it.i === k) && !hidden.includes(k));
-  missing.forEach((k, n) => items.push({ i: k, x: (n % 3) * 4, y: bottom + Math.floor(n / 3) * 30, w: 4, h: 30 }));
+  missing.forEach((k, n) => items.push({ i: k, x: (n % 3) * 4, y: bottom + Math.floor(n / 3) * DEFAULT_H, w: 4, h: DEFAULT_H }));
   return items.length ? { items, hidden } : null;
 }
 
@@ -75,4 +76,14 @@ export function measureLayout(container: HTMLElement, ids: string[]): Layout {
     out.push({ i: id, x, y: Math.max(0, Math.round((r.top - box.top) / (ROW_PX + GAP_PX))), w, h: Math.max(HEAD_ROWS, Math.ceil((r.height + GAP_PX) / (ROW_PX + GAP_PX))) });
   }
   return out;
+}
+
+/** 저장 배치에서 숨긴 구역을 다시 보이게(loadBand 가 맨 아래에 붙인다). 바꿨으면 true — #362 알림 클릭용 */
+export function unhideSection(band: Band, id: string): boolean {
+  const s = read();
+  const b = s[band];
+  if (!b || !Array.isArray(b.hidden) || !b.hidden.includes(id)) return false;
+  s[band] = { ...b, hidden: b.hidden.filter((h) => h !== id) };
+  write(s);
+  return true;
 }

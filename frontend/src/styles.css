@@ -2069,7 +2069,7 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .fg-side { display: grid; gap: 4px; flex: 1 1 80px; min-width: 0; font-variant-numeric: tabular-nums; }
 .fg-past { display: flex; flex-direction: column; line-height: 1.25; }
 .fg-band { font-weight: 650; }
-.dash-columns .fear-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.dash-columns .fear-strip, .dash-grid-wide .fear-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @media (max-width: 640px) {
   .fear-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
   .fear-cell { padding: 6px 8px; }
@@ -2087,10 +2087,10 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .dash-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 @media (min-width: 1280px) {
   .dashboard.dashboard-v2 { max-width: 1680px; gap: 14px; }
-  .dash-columns .dash-head { margin-bottom: 6px; }
-  .dash-columns .dash-title { font-size: 14px; }
-  .dash-columns .dash-body > .card { padding: 12px; }
-  .dash-columns .market-board .mb-head { gap: 8px; }
+  .dash-columns .dash-head, .dash-grid-wide .dash-head { margin-bottom: 6px; }
+  .dash-columns .dash-title, .dash-grid-wide .dash-title { font-size: 14px; }
+  .dash-columns .dash-body > .card, .dash-grid-wide .dash-body > .card { padding: 12px; }
+  .dash-columns .market-board .mb-head, .dash-grid-wide .market-board .mb-head { gap: 8px; }
 }
 .dash-summary { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 10px; border-radius: var(--radius-s);
   background: var(--surface-2); font-size: var(--fs-s); font-variant-numeric: tabular-nums; }
@@ -2236,5 +2236,6 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .dash-drag { cursor: grab; padding: 0 6px; font-size: 18px; line-height: 1; color: var(--muted); user-select: none; }
 .dash-drag:active { cursor: grabbing; }
 .dash-hide { margin-left: auto; }
-.dash-grid .react-grid-placeholder { background: var(--accent); opacity: .18; border-radius: var(--radius-s); }
+.dash-grid .react-grid-item.react-grid-placeholder { background: var(--accent); opacity: .18; border-radius: var(--radius-s); }
+.dash-grid .react-grid-item > .react-resizable-handle::after { border-color: var(--muted); }
 .dash-area { min-width: 0; }

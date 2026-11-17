@@ -4,7 +4,7 @@
  * - driver.js 는 투어를 시작할 때만 불러온다(첫 화면 번들에 넣지 않는다).
  * - 본 투어 · "다시 보지 않기"는 이 브라우저에 기억(localStorage, try/catch).
  */
-import { markSeen, tourForRoute, type TourId } from "./tourState";
+import { markSeen, onRoute, type TourId, type TourResult } from "./tourState";
 
 interface Step {
   /** 앞에서부터 처음 보이는 요소를 쓴다 */
@@ -40,6 +40,7 @@ const TOURS: Record<TourId, Segment[]> = {
     {
       before: () => openRunTab("summary"),
       steps: [
+        { targets: ['[data-tour="easy-tab"]', "#run-tab-easy"], title: "쉽게 보기", what: "분석 결과를 질문 · 소제목 · 단계 카드 · 체크리스트로 풀어 쓴 초보자 해설 탭입니다.", how: "처음엔 이 탭부터 읽고, 숫자 근거는 차트 탭에서 확인하세요." },
         { targets: ['[data-tour="plan-action"]', ".pa-action"], title: "지금 할 일", what: "분석 계획을 한 문장으로 줄인 '지금 할 일'입니다.", how: "관망이면 조건 가격(롱 조건 · 숏 조건)이 올 때까지 기다리면 됩니다." },
       ],
     },
@@ -92,15 +93,20 @@ async function openRunTab(tab: "summary" | "chart"): Promise<boolean> {
 
 let running = false;
 
-/** 투어 시작. 대상이 하나도 없으면 false(화면이 아직 안 그려졌거나 다른 화면) */
-export async function startTour(id: TourId): Promise<boolean> {
-  if (running) return false;
+
+/** 투어 시작. "busy" = 이미 도는 중(아무것도 하지 않는다), "empty" = 이 화면에 대상이 하나도 없음 */
+export async function startTour(id: TourId): Promise<TourResult> {
+  if (running) return "busy";
   running = true;
-  const [{ driver }] = await Promise.all([import("driver.js"), import("driver.js/dist/driver.css")]);
   let shownAny = false;
   try {
+    // 불러오기 실패(배포 뒤 예전 탭의 청크 404 등)도 finally 로 running 을 푼다
+    const [{ driver }] = await Promise.all([import("driver.js"), import("driver.js/dist/driver.css")]);
     for (const seg of TOURS[id]) {
       if (seg.before && !(await seg.before())) continue;
+      // 데이터가 늦게 오는 대상(기관 카드 등)을 위해 마지막 단계 대상이 보일 때까지 잠깐(최대 3초) 기다린다
+      const last = seg.steps[seg.steps.length - 1];
+      for (let i = 0; i < 10 && last && !find(last.targets); i++) await wait(300);
       const steps = seg.steps.map((s) => ({ s, el: find(s.targets) })).filter((x) => x.el);
       if (!steps.length) continue;
       shownAny = true;
@@ -135,18 +141,19 @@ export async function startTour(id: TourId): Promise<boolean> {
     running = false;
   }
   if (shownAny) markSeen(id);
-  return shownAny;
+  return shownAny ? "shown" : "empty";
 }
 
 /** 다른 화면에서 고른 투어: 그 화면으로 옮긴 뒤 대상이 나타나면 시작 */
-export async function goAndStart(id: TourId) {
+export async function goAndStart(id: TourId): Promise<TourResult> {
   const route: Partial<Record<TourId, string>> = { dashboard: "#/", tips: "#/tips", funds: "#/funds" };
   const want = route[id];
-  if (want && tourForRoute(window.location.hash || "#/") !== id) window.location.hash = want;
+  // 실제로 그 화면에 있는지로 판단한다(tourForRoute 는 모르는 화면을 대시보드로 보므로 쓰지 않는다)
+  if (want && !onRoute(id, window.location.hash)) window.location.hash = want;
   for (let i = 0; i < 30; i++) {
     await wait(300);
     const first = TOURS[id][0]?.steps[0];
     if (!first || find(first.targets) || id === "analysis") break;
   }
-  await startTour(id);
+  return startTour(id);
 }

@@ -139,7 +139,7 @@ export default function App() {
               <span className="pill pill-user" title={user}>{user}</span>
               {/* #491 지금 화면의 안내 투어 */}
               <button type="button" className="topbar-help" aria-label="이 화면 안내" title="이 화면 안내"
-                onClick={() => { void startTour(tourForRoute(route)).then((ok) => { if (!ok) void goAndStart("dashboard"); }); }}>?</button>
+                onClick={() => { void startTour(tourForRoute(route)).then((r) => { if (r === "empty") void goAndStart("dashboard"); }); }}>?</button>
               <a href="#/settings" className={`topbar-settings${onSettings ? " active" : ""}`} aria-label="설정"
                 aria-current={onSettings ? "page" : undefined} title="설정">⚙<span className="topbar-settings-label"> 설정</span></a>
               <button type="button" className="logout" onClick={logout}>로그아웃</button>

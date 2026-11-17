@@ -1,4 +1,4 @@
-import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, TipsView } from "./types";
+import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, RunExplain, TipsView } from "./types";
 import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FundBrief, FundChanges, FundDetail, FearIndex, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
@@ -156,6 +156,9 @@ export const api = {
   runs: (page = 1, size = 50) => call<RunPage>(`/api/runs?page=${page}&size=${size}`),
   deleteRun: (id: string) => call<void>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
   run: (id: string) => call<Run>(`/api/runs/${encodeURIComponent(id)}`),
+  // #494 초보자 해설(#493) — 처음 한 번은 모델이 쓰는 동안 수십 초
+  runExplain: (id: string, refresh = false) =>
+    call<RunExplain>(`/api/runs/${encodeURIComponent(id)}/explain${refresh ? "?refresh=1" : ""}`),
   createRun: (body: NewRun) => call<Run>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
   portfolio: () => call<Portfolio>("/api/portfolio"),
   regime: () => call<RegimeSnapshot>("/api/regime"),

@@ -4,6 +4,7 @@ import AgentRail from "../components/AgentRail";
 import { RelatedTable, ResultChart, type Related } from "../components/AnalysisResult";
 import { ChatMessage, SystemLine, ToolRow } from "../components/ChatMessage";
 import ConsensusCard from "../components/ConsensusCard";
+import EasyView from "../components/EasyView";
 import PlaybookCard from "../components/PlaybookCard";
 import EvidenceLevels from "../components/Evidence";
 import { GlossaryPanel, GlossaryProvider } from "../components/Glossary";
@@ -85,7 +86,13 @@ const TABS = [
   { id: "chart", label: "차트" },
   { id: "debate", label: "토론" },
   { id: "evidence", label: "근거" },
+  { id: "easy", label: "쉽게 보기" },
 ] as const;
+// #494 "쉽게 보기" 를 마지막으로 봤으면 다음 분석도 그 탭으로(다른 탭은 기억하지 않는다 — 기본 탭은 그대로)
+const EASY_KEY = "run-tab-easy";
+function easyRemembered(): boolean {
+  try { return window.localStorage.getItem(EASY_KEY) === "1"; } catch { return false; }
+}
 type Tab = (typeof TABS)[number]["id"];
 
 function tabInHash(runId: string): Tab | null {
@@ -162,7 +169,7 @@ export default function RunView({ runId }: { runId: string }) {
   }, [run?.outlook, events]);
   const status = run ? ((events.some((e) => e.type === "done") && run.status === "running") ? "done" : run.status) : null;
   const working = status === "running" || status === "queued";
-  const tab: Tab = chosen ?? (working ? "debate" : "summary");
+  const tab: Tab = chosen ?? (working ? "debate" : easyRemembered() ? "easy" : "summary");
 
   // 분석이 끝나면 토론 탭에서 요약으로 넘어간다(차트 · 근거를 보던 중이면 그대로).
   const wasWorking = useRef(working);
@@ -188,6 +195,7 @@ export default function RunView({ runId }: { runId: string }) {
 
   const pick = (t: Tab) => {
     setChosen(t);
+    try { window.localStorage.setItem(EASY_KEY, t === "easy" ? "1" : "0"); } catch { /* 저장 못 해도 탭은 바뀐다 */ }
     // 탭마다 기록을 쌓지 않는다 — 공유 · 새로 고침용 주소만 바꾼다
     window.history.replaceState(null, "", `#/runs/${runId}/${t}`);
     window.scrollTo({ top: 0 });
@@ -316,6 +324,8 @@ export default function RunView({ runId }: { runId: string }) {
               </div>
             </div>
           )}
+          {tab === "easy" && (status === "done" ? <EasyView runId={run.id} />
+            : <p className="muted easy-view">분석이 끝나면 쉬운 해설을 볼 수 있어요.</p>)}
           {tab === "evidence" && (
             <div className="run-evidence">
               <EvidenceLevels plan={plan} ticker={run.ticker} />

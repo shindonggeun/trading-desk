@@ -69,6 +69,7 @@ export function ToolRow({ events }: { events: DeskEvent[] }) {
 export function SystemLine({ event }: { event: DeskEvent }) {
   const thinking = event.agent === "consensus" ? "결론 정리가 토론 전체를 한 장으로 요약하는 중" : "레버리지 분석가가 본주 판단을 상품 기준으로 옮기는 중";
   // #438 전망 이벤트는 본문(표)을 펼치지 않고 한 줄로 — 그림 · 요약은 차트 탭
+  if (event.type === "explain") return null;   // #494 쉬운 해설(#493)은 "쉽게 보기" 탭에서만
   if (event.type === "outlook") return <div className="sys-line">1주 · 1개월 방향 전망을 정리함 — 차트 탭에서 원뿔과 요약을 볼 수 있습니다</div>;
   const text: Record<string, string> = { queued: "대기열에 등록됨", running: "분석 시작", thinking, skipped: "결론 정리를 만들지 못해 건너뜀", done: "분석 완료", failed: "분석 실패" };
   return (

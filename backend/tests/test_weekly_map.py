@@ -308,13 +308,13 @@ def test_the_api_takes_any_valid_ticker(db_url):
     (120, 110, 100, "above_black"),    # lines in order (black over red): over both
     (105, 110, 100, "between"),        # under the black, over the red one
     (95, 110, 100, "below_red"),       # under both
-    (115, 100, 110, "above_black"),    # inverted (black under red, after a long fall): over both
+    (115, 100, 110, "reclaimed_red"),  # inverted (black under red, after a long fall): over both - early (#521)
     (105, 100, 110, "rebound"),        # over the black but under the red one - not "above the black line"
     (95, 100, 110, "below_red"),       # under both
     (110, 110, 100, "above_black"),    # on a line counts as on top of it
     (100, 110, 100, "between"),
     (100, 100, 110, "rebound"),
-    (110, 100, 110, "above_black"),
+    (110, 100, 110, "reclaimed_red"),
     (100, 100, 100, "above_black"),
 ])
 def test_the_position_reads_the_line_order_too(close, black, red, want):
@@ -347,13 +347,14 @@ def test_over_both_inverted_lines_the_red_line_is_the_first_floor():
     weeks = _weeks(closes)
     m = wm.build("SOXX", weeks, today=date(2100, 1, 1))
     black, red = m["lines"]["black"]["price"], m["lines"]["red"]["price"]
-    assert black < red <= m["close"] and m["position"] == "above_black"
-    assert "역배열" in m["text"]["headline"] and m["scenario"]["down"]["price"] == red
-    assert "above its 20-week and 60-week lines" in wm.note(m, "SOXL")
+    assert black < red <= m["close"] and m["position"] == "reclaimed_red"           # not "a long rise" (#521)
+    assert "초기 반등" in m["text"]["headline"] and "역배열" in m["text"]["headline"]
+    assert m["scenario"]["down"]["price"] == red and m["scenario"]["up"]["price"] > m["close"]
+    assert "an early rebound" in wm.note(m, "SOXL")
     if m["record"]["black_break"]["n"]:
         assert any(line.startswith("(검정선이 빨간선 위에 있던 때의 기록)") for line in m["text"]["lines"])
     rows = wm.history("SOXX", weeks, weeks=4)
     seen = [r["position"] for r in rows]                # newest first: over both, after a rebound
-    assert seen[0] == "above_black" and "rebound" in seen and seen.index("rebound") > 0
+    assert seen[0] == "reclaimed_red" and "rebound" in seen and seen.index("rebound") > 0
     reclaim = next(r for r in rows if r["cross"] == "reclaimed_black")
     assert reclaim["position"] == "rebound" and reclaim["headline"].endswith("검정선을 되찾고 마감했다.")

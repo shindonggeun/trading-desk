@@ -1137,8 +1137,9 @@ export interface WeeklyMap {
   week_complete: boolean;
   close: number;
   lines: { black: WeeklyLine; red: WeeklyLine };
-  /** #508 rebound = 검정선 위 · 빨간선 아래(긴 하락 뒤 검정선이 빨간선보다 낮은 역배열) */
-  position: "above_black" | "between" | "rebound" | "below_red";
+  /** #508 rebound = 검정선 위 · 빨간선 아래(긴 하락 뒤 검정선이 빨간선보다 낮은 역배열),
+   *  #521 reclaimed_red = 역배열인 채 두 선 모두 위(빨간선을 막 되찾은 초기 반등) */
+  position: "above_black" | "reclaimed_red" | "between" | "rebound" | "below_red";
   cross: "broke_black" | "reclaimed_black" | null;
   bollinger: { weeks: number; upper: number; middle: number; lower: number; lower_pct: number | null; upper_pct: number | null };
   range_52w: { high: number; low: number; from_high_pct: number | null };

@@ -352,15 +352,22 @@ def summary(fund: Fund, quarter: str, holdings: list[dict]) -> tuple[str, list[s
 
 # ------------------------------------------------------------------ EDGAR
 
-def _capped_get(url: str, headers: dict) -> httpx.Response:
-    """GET with no redirects and at most MAX_BYTES of body."""
-    with httpx.stream("GET", url, headers=headers, timeout=TIMEOUT_SEC, follow_redirects=False) as r:
+# Headers that describe the body as it came over the wire: the rebuilt response carries the decoded body,
+# so keeping them made httpx decode a gzip body a second time (DecodingError on every SEC answer).
+_WIRE_HEADERS = ("content-encoding", "content-length", "transfer-encoding")
+
+
+def _capped_get(url: str, headers: dict, transport: httpx.BaseTransport | None = None) -> httpx.Response:
+    """GET with no redirects and at most MAX_BYTES of (decoded) body."""
+    with httpx.Client(transport=transport, timeout=TIMEOUT_SEC, follow_redirects=False) as client, \
+            client.stream("GET", url, headers=headers) as r:
         body = bytearray()
-        for chunk in r.iter_bytes():
+        for chunk in r.iter_bytes():         # decoded (gzip / deflate) as it streams
             body += chunk
             if len(body) > MAX_BYTES:
                 raise FundsUnavailable("SEC 문서가 너무 커서 읽지 않았습니다")
-        return httpx.Response(r.status_code, headers=r.headers, content=bytes(body), request=r.request)
+        kept = [(k, v) for k, v in r.headers.multi_items() if k.lower() not in _WIRE_HEADERS]
+        return httpx.Response(r.status_code, headers=kept, content=bytes(body), request=r.request)
 
 
 class Edgar:

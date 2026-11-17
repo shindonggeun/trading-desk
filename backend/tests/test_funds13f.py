@@ -412,3 +412,37 @@ def test_the_funds_api_is_closed_without_a_session(db_url):
     with _client(db_url, login=False) as client:
         for path in ("/api/funds", "/api/funds/pershing", "/api/funds/changes?tickers=UBER"):
             assert client.get(path).status_code == 401
+
+
+def _gzip_transport(status: int, body: bytes) -> httpx.MockTransport:
+    import gzip
+
+    packed = gzip.compress(body)
+    return httpx.MockTransport(lambda request: httpx.Response(
+        status, content=packed, headers={"Content-Encoding": "gzip", "Content-Length": str(len(packed)),
+                                         "Content-Type": "application/json"}))
+
+
+def test_a_gzip_answer_is_decoded_once():
+    # #483 production: the rebuilt response kept Content-Encoding: gzip on the decoded body -> DecodingError
+    body = json.dumps(_subs([("13F-HR", Q2_ACC, "2026-08-14", "2026-06-30")])).encode()
+    r = f13._capped_get(SUBS(cik=PSQ), {"User-Agent": "app"}, transport=_gzip_transport(200, body))
+    assert r.content == body and "content-encoding" not in r.headers and r.json()["filings"]
+    edgar = f13.Edgar(get=lambda url, headers: f13._capped_get(url, headers, transport=_gzip_transport(200, body)),
+                      agent=lambda: "app")
+    assert f13.filings(edgar.json(SUBS(cik=PSQ)))["2026-06-30"][0]["accession"] == Q2_ACC
+
+
+def test_seconds_gzip_refusal_reads_as_the_missing_contact():
+    page = b"<html><title>SEC.gov | Your Request Originates from an Undeclared Automated Tool</title></html>"
+    edgar = f13.Edgar(get=lambda url, headers: f13._capped_get(url, headers, transport=_gzip_transport(403, page)),
+                      agent=lambda: "app")
+    with pytest.raises(f13.FundsUnavailable, match="SEC_EDGAR_USER_AGENT"):
+        edgar.fetch(SUBS(cik=PSQ))
+
+
+def test_an_answer_over_the_cap_is_refused(monkeypatch):
+    monkeypatch.setattr(f13, "MAX_BYTES", 1000)
+    big = httpx.MockTransport(lambda request: httpx.Response(200, content=b"x" * 5000))
+    with pytest.raises(f13.FundsUnavailable, match="너무 커서"):
+        f13._capped_get("https://www.sec.gov/x", {}, transport=big)

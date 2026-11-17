@@ -20,6 +20,7 @@ import { duration, STATUS_LABEL } from "../format";
 import { navigation } from "../nav";
 import type { DeskEvent, Plan, Run, RunOutlook } from "../types";
 import TipBadges from "../components/TipBadges";
+import { MarketTrendBadges } from "../components/TrendChips";
 import RetryRunButton from "../components/RetryRunButton";
 
 // 백엔드 desk/profile.py 의 label 과 같다. 옛 분석(성향 없음)은 표시하지 않는다
@@ -251,6 +252,8 @@ export default function RunView({ runId }: { runId: string }) {
                     horizon={plan.horizon ?? run.options.horizon ?? undefined} />
                 )}
                 {/* #332 이 종목에 지금 켜진 금리 · 달러 국면 팁 */}
+                {/* #461 이 종목 시장(지수)의 지금 추세 — 종목 예측이 아니라 지수 상태 설명 */}
+                <div className="trend-badge-row"><MarketTrendBadges ticker={run.ticker} /></div>
                 <TipBadges ticker={run.ticker} />
                 <MoreDetails collapsible={!!plan.summary}>
                 {status === "done" && <ConsensusCard plan={plan} ticker={run.ticker} />}

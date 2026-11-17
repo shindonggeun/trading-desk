@@ -39,6 +39,8 @@ function useEarningsSoon(key: string): Record<string, number> {
   return soon;
 }
 import StockProfileCard from "./StockProfileCard";
+import { fundBadgeText, fundHref, useFundChanges } from "../fundBadges";
+import type { FundChangeItem } from "../types";
 
 const POLL_MS = 15_000;      // 시세판과 같은 주기
 const SPARK_MS = 120_000;    // 작은 차트는 2분마다
@@ -108,9 +110,9 @@ export function Spark({ ticker, tone, order }: { ticker: string; tone: "up" | "d
   );
 }
 
-function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEarn, onInfo }: {
+function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEarn, onInfo, funds }: {
   ticker: string; name: string; it: BoardItem | undefined; ls: LongShortItem | undefined; first: boolean; last: boolean;
-  editing: boolean; order: number; earnIn?: number; onEarn: () => void; onInfo: (ticker: string) => void;
+  editing: boolean; order: number; earnIn?: number; onEarn: () => void; onInfo: (ticker: string) => void; funds?: FundChangeItem[];
 }) {
   const ch = it?.change_pct;
   const tone = ch == null ? "" : ch > 0 ? "up" : ch < 0 ? "down" : "";
@@ -143,6 +145,11 @@ function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEar
             실적 {earnIn === 0 ? "오늘" : `D-${earnIn}`}
           </button>
         )}
+        {/* #484 유명 기관 최신 13F 에서 이 종목을 사고팔았으면 */}
+        {(funds ?? []).map((c) => {
+          const text = fundBadgeText(c);
+          return text ? <a key={c.fund} className={`fund-badge small fund-chg-${c.change}`} href={fundHref(c)} title={`${text} — 13F 는 최대 4~5개월 늦은 보유`}>{text}</a> : null;
+        })}
         <button type="button" className="link small fav-info" aria-label={`${name} 종목 정보`} onClick={() => onInfo(ticker)}>종목 정보 ›</button>
       </div>
       {editing && (
@@ -171,6 +178,7 @@ export default function FavoritesPanel() {
   const [lsShown, flipLs] = useLongShortShown();
   const ls = useLongShort(tickers, lsShown);
   const earnSoon = useEarningsSoon(key);
+  const fundCh = useFundChanges(tickers);   // #484 기관 배지
   const [preview, setPreview] = useState<{ ticker: string; name: string } | null>(null);
 
   useEffect(() => {
@@ -228,7 +236,7 @@ export default function FavoritesPanel() {
               <Tile key={f.ticker} ticker={f.ticker} name={f.name ?? f.ticker} it={items[f.ticker]} ls={lsShown ? ls[f.ticker] : undefined}
                 first={i === 0} last={i === list.length - 1} editing={editing} order={i}
                 earnIn={earnSoon[f.ticker]} onEarn={() => setPreview({ ticker: f.ticker, name: f.name ?? f.ticker })}
-                onInfo={(t) => setInfo((cur) => (cur === t ? null : t))} />
+                onInfo={(t) => setInfo((cur) => (cur === t ? null : t))} funds={fundCh[f.ticker]} />
             ))}
           </div>
           {info && <StockProfileCard ticker={info} onClose={() => setInfo(null)} />}

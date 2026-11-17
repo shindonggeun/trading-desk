@@ -1,5 +1,5 @@
 import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, TipsView } from "./types";
-import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FearIndex, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
+import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FundBrief, FundChanges, FundDetail, FearIndex, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -268,6 +268,12 @@ export const api = {
     call<{ source: string; count: number; updated_at: string | null; error: string | null }>("/api/instruments/status"),
   /** #296 종목 정보 카드(#295) */
   stockProfile: (ticker: string) => call<StockProfile>(`/api/stock/profile?ticker=${encodeURIComponent(ticker)}`),
+  /** #484 유명 기관 13F(#483): 목록 · 한 기관의 분기 보유 */
+  funds: () => call<{ funds: FundBrief[]; checked_at: string | null }>("/api/funds"),
+  /** 즐겨찾기 배지: 종목별 각 기관 최신 분기 변화(최대 30개, 변화 없는 종목은 빠짐) */
+  fundChanges: (tickers: string[]) => call<FundChanges>(`/api/funds/changes?tickers=${encodeURIComponent(tickers.slice(0, 30).join(","))}`),
+  fund: (id: string, quarter?: string) =>
+    call<FundDetail>(`/api/funds/${encodeURIComponent(id)}${quarter ? `?quarter=${encodeURIComponent(quarter)}` : ""}`),
   /** #332 금리 · 달러 국면과 매매 팁(#330) */
   tips: (ticker?: string) => call<TipsView>(`/api/tips${ticker ? `?ticker=${encodeURIComponent(ticker)}` : ""}`),
   /** #362 웹 푸시(#361): 서버 공개키 · 이 기기 구독 · 시험 알림 */

@@ -1752,3 +1752,58 @@ export interface LineBasis {
   anchors: LineAnchor[]; // [] = 어떤 레벨과도 안 맞음(모델이 고른 숫자)
   text: string;
 }
+
+// #484 유명 기관 13F 보유 공시(#483 /api/funds) — 1c 초안 계약
+export type FundChange = "new" | "increase" | "decrease" | "sold" | "unchanged";
+export interface FundLatest {
+  quarter: string; // 2026Q3
+  period_of_report: string; // 기준일(분기 끝)
+  filed_at: string; // 공시일
+  form: string; // 그 기관 자신의 공시 양식 — 13F-NT 면 보유는 다른 운용사의 13F-HR(reported_by)
+  count: number | null; // 서버가 그 기관 최신 표를 아직 안 읽었으면 null
+  total_value: number | null; // 달러
+  summary: string | null; // 한 줄 요약(헤드라인)
+  top_new: { ticker: string | null; name: string; value: number }[]; // 신규 매수 상위(최대 3, 평가액 큰 순)
+}
+export interface FundBrief {
+  id: string;
+  name: string; // 퍼싱스퀘어
+  manager: string | null; // 빌 애크먼
+  cik: string;
+  latest: FundLatest | null;
+  next_due: string | null; // 다음 공시 기한(분기 끝 + 45일)
+  error: string | null;
+}
+export interface FundHolding {
+  ticker: string | null;
+  name: string;
+  cusip: string;
+  title: string | null; // COM · CL A …
+  put_call: "PUT" | "CALL" | null;
+  shares: number;
+  value: number; // 달러
+  weight: number; // %
+  change: FundChange;
+  change_shares: number; // 전 분기 대비(±)
+  prev_shares: number | null;
+  change_pct: number | null;
+}
+export interface FundDetail {
+  id: string;
+  name: string;
+  manager: string | null;
+  quarter: string;
+  period_of_report: string;
+  filed_at: string;
+  form: string;
+  prev_quarter: string | null;
+  quarters: string[]; // 최근 먼저
+  reported_by: { name: string; cik: string } | null; // 13F-NT: 다른 제출자가 보고
+  total_value: number;
+  count: number; // 전량 매도 제외 보유 수
+  holdings: FundHolding[]; // 평가액 큰 순, 전량 매도는 맨 뒤
+  summary: string;
+  bullets: string[];
+}
+export interface FundChangeItem { fund: string; name: string; quarter: string; change: FundChange; change_shares: number; shares: number; weight: number }
+export interface FundChanges { items: Record<string, FundChangeItem[]> }

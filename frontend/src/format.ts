@@ -64,3 +64,25 @@ function trimZeros(s: string): string {
 export function tone(v: number | null | undefined): string {
   return v === null || v === undefined || v === 0 ? "" : v > 0 ? "up" : "down";
 }
+
+/**
+ * #484 달러 금액을 한국어 단위로: 2_348_000_000 → "23억 4,800만 달러", 1.2e12 → "1조 2,000억 달러".
+ * 만 단위에서 반올림하고 큰 두 단위만 쓴다(1만 달러 미만은 그대로).
+ */
+export function usdKo(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const sign = v < 0 ? "−" : "";
+  const a = Math.abs(v);
+  if (a < 10_000) return `${sign}${Math.round(a).toLocaleString("ko-KR")} 달러`;
+  const man = Math.round(a / 10_000); // 만 달러 단위
+  const units: [number, string][] = [[100_000_000, "조"], [10_000, "억"], [1, "만"]];
+  const parts: string[] = [];
+  let rest = man;
+  for (const [size, name] of units) {
+    const n = Math.floor(rest / size);
+    rest -= n * size;
+    if (n > 0) parts.push(`${n.toLocaleString("ko-KR")}${name}`);
+    if (parts.length === 2) break;
+  }
+  return `${sign}${parts.join(" ")} 달러`;
+}

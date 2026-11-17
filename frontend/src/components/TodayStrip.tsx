@@ -3,6 +3,7 @@ import { api } from "../api";
 import { byAsked } from "../ticker";
 import { useFavorites } from "../favorites";
 import type { BoardItem, LivePlaybooks, LongShortItem, MarketMonth, Projection } from "../types";
+import { fundBadgeText, useFundChanges } from "../fundBadges";
 
 /**
  * #317 대시보드 맨 위 "오늘 볼 것" — 즐겨찾기 가운데 지금 손댈 종목만 이유와 함께 칩으로 모은다.
@@ -64,6 +65,7 @@ export default function TodayStrip() {
   const list = (favs ?? []).slice(0, MAX);
   const key = list.map((f) => f.ticker).join(",");
   const [found, setFound] = useState<Record<string, Reason[]> | null>(null);
+  const fundCh = useFundChanges(list.map((x) => x.ticker));   // #484 기관 13F 배지
 
   useEffect(() => {
     if (!key) {
@@ -121,7 +123,11 @@ export default function TodayStrip() {
 
   if (favs === null) return null;
   const names = Object.fromEntries(list.map((f) => [f.ticker, f.name ?? f.ticker]));
-  const hits = found ? Object.entries(found) : [];
+  // #484 기관 13F 변화(신규 · 확대 · 축소 · 전량 매도)도 "볼 이유"로 — 다른 이유가 없는 종목은 뒤에 붙인다
+  const fundWhy = (t: string) => (fundCh[t] ?? []).map((c) => ({ c, text: fundBadgeText(c) })).filter((x) => x.text);
+  const base = found ? Object.entries(found) : [];
+  const fundOnly = found ? list.map((f) => f.ticker).filter((t) => !found[t] && fundWhy(t).length) : [];
+  const hits: [string, typeof base[number][1]][] = [...base, ...fundOnly.map((t): [string, typeof base[number][1]] => [t, []])];
   return (
     <section className="today-strip" aria-label="오늘 볼 것">
       <span className="today-title">오늘 볼 것</span>
@@ -137,6 +143,7 @@ export default function TodayStrip() {
             <a key={t} className="today-chip" href={`#/charts?t=${encodeURIComponent(t)}`} title={`${t} 차트 열기`}>
               <strong>{names[t]}</strong>
               {rs.map((r) => <span key={r.kind} className={`today-why today-${r.kind}`}>{r.text}</span>)}
+              {fundWhy(t).map(({ c, text }) => <span key={`fund-${c.fund}`} className="today-why today-fund">{text}</span>)}
             </a>
           ))}
         </span>

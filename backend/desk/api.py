@@ -36,6 +36,7 @@ from . import (
     flow_intraday,
     futures_quote,
     horizons,
+    line_basis,
     live,
     macro_news,
     market_calendar,
@@ -99,6 +100,7 @@ BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
 BOTTOM_NOTE_SEC = 4.0
 BOTTOM_QUOTE_SEC = 2.0   # #310: the price the bottom-zone ladder is cut at, per lookup
 TREND_WAIT_SEC = 8.0     # #460: /api/tips waits this long for the indices' trend, then answers without it
+GAPS_TTL_SEC = 300.0     # #465: a ticker's unfilled gaps are kept as long as its swing levels (desk.horizons sr_ttl_sec)
 # #257: US pre / after / overnight trades on the board - a last trade this fresh still counts as live
 # (thin ETFs trade minutes apart off hours), and a newly watched ticker waits this long for its first
 OFF_HOURS_FRESH_SEC = 600.0
@@ -307,6 +309,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # #460: the indices' primary trend (^KS11 ^NDX ^GSPC ^SOX, about ten years of dailies, cached 3 h)
     trend_cache = primary_trend.Cache(fetcher=lambda symbols: risk_regime.fetch(
         symbols, candles=prices._yahoo_candles, count=primary_trend.HISTORY_BARS))
+    gap_cache: dict[str, tuple[float, list[dict]]] = {}   # #465: ticker -> (when, desk.line_basis.find_gaps)
     # #203: years of Yahoo bars for the RSI / Stochastic extremes and what followed them
     # (read when called: a test's price source may have no Yahoo at all)
     oscillator_fetch = oscillator.yahoo_fetch(lambda *args: prices._yahoo_candles(*args))
@@ -1267,20 +1270,53 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 **result}
 
     @app.get("/api/levels")
-    async def levels(ticker: str, horizon: str | None = None):
+    async def levels(ticker: str, horizon: str | None = None, run: str | None = None):
         """Support/resistance zones (desk.sr) from the horizon's bars - daily and weekly by
-        default - cached a minute or a few."""
+        default - cached a minute or a few. #465: ``gaps`` (the unfilled daily / weekly gaps, from
+        the swing frame's bars) and ``explain`` (plain sentences on the price now); with ``run``
+        (an analysis of this ticker) ``basis`` - each plan line's scenario and what it sits on -
+        and a sentence per line in ``explain``. The fields are added; the levels are as before."""
+        found = None
         try:
             ticker = clean_ticker(ticker)
             if horizon is not None and horizon not in horizons.HORIZONS:
                 raise ValueError(f"horizon must be one of {', '.join(horizons.HORIZONS)}")
+            if run is not None:
+                found = store.get_run(run)
+                if not found:
+                    raise HTTPException(404, "no such run")
+                if found["ticker"] != ticker:
+                    raise ValueError("the run is of another ticker")
+                # the plan's lines are matched against the levels of the run's own frame (as /api/playbooks)
+                run_horizon = (found.get("plan") or {}).get("horizon") or (found.get("options") or {}).get("horizon")
+                if horizon and run_horizon and horizon != run_horizon:
+                    raise ValueError("the run is of another horizon; leave horizon out")
+                horizon = horizon or run_horizon
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         try:
-            return await support_resistance(prices, ticker, horizon=horizon)
+            sr = await support_resistance(prices, ticker, horizon=horizon)
         except Exception as exc:  # noqa: BLE001 - no bars or too few
             log.warning("levels for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no levels for {ticker}") from None
+        found_gaps, gaps_error = gap_cache.get(ticker), None
+        if found_gaps is None or time.monotonic() - found_gaps[0] >= GAPS_TTL_SEC:
+            # the daily and weekly bars whatever the horizon; kept as long as the swing levels are, so
+            # a board that reads many tickers' levels asks the source no more often than before
+            try:
+                days, weeks, _c, _p, _s = await frame_bars(prices, ticker, None, horizons.get(None))
+                found_gaps = (time.monotonic(), line_basis.find_gaps(days, weeks, ticker))
+                if len(gap_cache) > 512:
+                    gap_cache.clear()
+                gap_cache[ticker] = found_gaps
+            except Exception as exc:  # noqa: BLE001 - the levels stand without the gaps
+                log.info("gaps for %s failed: %s", ticker, exc)
+                found_gaps, gaps_error = (0.0, []), f"{type(exc).__name__}"
+        gap_rows = line_basis.place(found_gaps[1], sr["reference_price"])
+        lines = line_basis.basis((found or {}).get("plan"), sr, gap_rows) if found else []
+        # a new dict: the levels are a cached object shared with other callers
+        return {**sr, "gaps": gap_rows, "gaps_error": gaps_error, "basis": lines,
+                "explain": line_basis.explain(sr, gap_rows, lines)}
 
     @app.get("/api/stock/profile")
     async def stock_profile(ticker: str | None = None, tickers: str | None = None):

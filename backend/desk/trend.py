@@ -119,15 +119,27 @@ def _pick(lines: list[_Line], n: int, unit: float) -> list[_Line]:
     return kept
 
 
-def _merge(found: list[tuple[int, int, _Line]], n: int, unit: float) -> list[tuple[int, int, _Line]]:
-    """``(scale index, k, line)`` over every scale: a line two scales both found is one, kept at the
-    scale where it has the most touches (then the latest touch, the shorter scale, the longest)."""
+def _merge(found: list[tuple[int, int, _Line]], n: int, unit: float) -> list[tuple[int, int, _Line, list[int]]]:
+    """``(scale index, k, line)`` over every scale: a line two scales both found is one. Its anchors,
+    touches and ``k`` are those of the copy with the most touches (then the latest touch, the
+    shorter scale, the longest), but its scale is the longest one that found it, and every scale
+    that did is listed: a shorter swing size sees more swings, so the most-touched copy is nearly
+    always the short one, and a line long swings also make would read as a short swing's (#530 -
+    NVDA's three falling lines all came out "short"). A copy near two kept lines joins the nearer
+    one (on the last bar), not whichever sorted first. Returns ``(scale index, k, line, scale
+    indexes)``."""
     found = sorted(found, key=lambda f: (-len(f[2].touches), -f[2].touches[-1], f[0], f[2].i))
-    kept: list[tuple[int, int, _Line]] = []
-    for f in found:
-        if not any(_same(f[2], o[2], n, unit) for o in kept):
-            kept.append(f)
-    return kept
+    kept: list[list] = []   # [label scale index, k, line, scale indexes]
+    for s, k, ln in found:
+        near = [o for o in kept if _same(ln, o[2], n, unit)]
+        if not near:
+            kept.append([s, k, ln, [s]])
+            continue
+        same = min(near, key=lambda o: abs(o[2].at(n - 1) - ln.at(n - 1)))
+        if s not in same[3]:
+            same[3].append(s)
+            same[0] = max(same[0], s)
+    return [(s, k, ln, sorted(scales)) for s, k, ln, scales in kept]
 
 
 def _state(line: _Line, bars: list[dict], reference: float, tol_atr: float, at: float) -> tuple[float, float, str]:
@@ -172,7 +184,7 @@ def trendlines(bars: list[dict], timeframe: str, k: int, reference: float, atr: 
             kk = k * mult
             if n >= 4 * kk + 2:
                 found += [(s, kk, ln) for ln in _pick(_lines(bars, kk, kind, tol_atr, touches, held), n, unit)]
-        for s, kk, ln in _merge(found, n, unit):
+        for s, kk, ln, found_at in _merge(found, n, unit):
             now, own, state = _state(ln, bars, reference, tol_atr, at)
             if abs(own) > MAX_FAR_ATR or (state == "broken" and abs(own) > MAX_DISTANCE_ATR):
                 continue
@@ -182,7 +194,9 @@ def trendlines(bars: list[dict], timeframe: str, k: int, reference: float, atr: 
             out.append({
                 # the anchors' full bar times: intraday lines share their anchors' dates
                 "id": f"{timeframe}-{kind}-{anchors[0]['at']}-{anchors[1]['at']}",
+                # swing_k is the swing size of the anchors and touches shown; scale the longest that found it
                 "kind": kind, "timeframe": timeframe, "scale": scales[s][0], "swing_k": kk,
+                "scales": [scales[x][0] for x in found_at],   # every swing size that found this line
                 "anchors": anchors,
                 "end": {"at": now_at or bars[-1]["at"], "price": _round(now)},
                 "touches": [bars[x]["at"] for x in ln.touches],

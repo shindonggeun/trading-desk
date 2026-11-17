@@ -113,7 +113,8 @@ def test_prompt_note_reads_lines_and_retracement_and_rides_on_the_levels_note():
     sr.add_trend(result, bars, [], horizons.get(None), None)
     assert result["trendlines"] and result["fibonacci"] and "trend_error" not in result
     note = trend.prompt_note(result)
-    assert "Rising support (1d, short swing)" in note and "testing it" in note and "Fibonacci retracement of the rise" in note
+    # lows 20 bars apart: every swing size finds it, so it reads "long"
+    assert "Rising support (1d, long swing)" in note and "testing it" in note and "Fibonacci retracement of the rise" in note
     assert "both scenarios" in note
     assert note in sr.prompt_note(result)
     assert trend.prompt_note(None) is None and trend.prompt_note({"trendlines": [], "fibonacci": None}) is None
@@ -246,7 +247,8 @@ def test_short_and_long_swings_give_different_lines_and_a_far_one_stays_with_its
     atr = sr._atr(bars)
     ref = bars[-1]["close"]
     lines = trend.trendlines(bars, "1d", 3, ref, atr, scales=trend.SCALES)
-    assert {t["scale"] for t in lines} == {"short", "long"} and all(t["kind"] == "resistance" for t in lines)
+    # the small tops every 15 bars are mid swings too, so that line reads "mid" (#530 longest scale that finds it)
+    assert {t["scale"] for t in lines} == {"mid", "long"} and all(t["kind"] == "resistance" for t in lines)
     long_ = next(t for t in lines if t["scale"] == "long")
     assert long_["swing_k"] == 12 and len(long_["touches"]) == 2
     assert long_["id"] == f"1d-resistance-{long_['anchors'][0]['at']}-{long_['anchors'][1]['at']}"
@@ -254,7 +256,7 @@ def test_short_and_long_swings_give_different_lines_and_a_far_one_stays_with_its
     assert long_["distance_pct"] == round((long_["price_now"] / ref - 1) * 100, 2) > 10   # the rise it needs
     # 7 ATR over the price: a big move away, marked far; the short line just above is near
     assert long_["status"] == "far" and long_["state"] == "intact" and long_["distance_atr"] < -trend.NEAR_ATR
-    assert next(t for t in lines if t["scale"] == "short")["status"] == "near"
+    assert next(t for t in lines if t["scale"] == "mid")["status"] == "near"
     # 12 ATR away, past where lines used to be dropped: still there
     low = ref - 5 * atr
     far = next(t for t in trend.trendlines(bars, "1d", 3, low, atr, scales=trend.SCALES) if t["scale"] == "long")
@@ -263,13 +265,29 @@ def test_short_and_long_swings_give_different_lines_and_a_far_one_stays_with_its
     assert {t["scale"] for t in trend.trendlines(bars, "1d", 3, ref, atr)} == {"short"}
 
 
-def test_a_line_every_scale_finds_is_one_line_at_its_shortest_scale():
+def test_a_line_every_scale_finds_is_one_line_at_its_longest_scale_with_the_short_touches():
+    """#530 the short copy has the most touches, so it used to win and every such line read "short"
+    (NVDA: three falling lines, all short). Now one line, the short copy's anchors and touches,
+    labelled with the longest scale that found it and listing them all."""
     bars = _falling()
     atr = sr._atr(bars)
     one = trend.trendlines(bars, "1d", 3, bars[-1]["close"], atr)
     assert trend.trendlines(bars, "1d", 3, bars[-1]["close"], atr, scales=(trend.SCALES[1],))   # mid finds it too
     every = trend.trendlines(bars, "1d", 3, bars[-1]["close"], atr, scales=trend.SCALES)
-    assert len(every) == 1 and every[0]["scale"] == "short" and every[0]["anchors"] == one[0]["anchors"]
+    assert len(every) == 1 and every[0]["anchors"] == one[0]["anchors"] and every[0]["touches"] == one[0]["touches"]
+    # swing_k stays the anchors' swing size (3), the label is the longest scale
+    assert every[0]["scale"] == "long" and every[0]["swing_k"] == 3 and every[0]["scales"] == ["short", "mid", "long"]
+    assert one[0]["scales"] == ["short"]
+
+
+def test_a_short_line_under_a_long_one_keeps_its_own_scale():
+    """#530 the NVDA shape: a long falling line over the big tops and, after the drop, a short one
+    over the small tops of the last weeks that the longer swings do not see - two scales, not one."""
+    bars = _two_scales()
+    atr = sr._atr(bars)
+    lines = trend.trendlines(bars, "1d", 3, bars[-1]["close"], atr, scales=trend.SCALES)
+    assert len({t["scale"] for t in lines}) == len(lines) == 2
+    assert {tuple(t["scales"]) for t in lines} == {("short", "mid"), ("long",)}
 
 
 def test_the_line_ahead_and_the_status_bands():
@@ -444,3 +462,17 @@ def test_the_volume_bar_is_the_finished_bars_before_the_last():
     bars = [{**b, "volume": 1000.0} for b in _falling()]
     bars[-1] = {**bars[-1], "volume": 10.0}          # today, still forming
     assert trend._frame(bars, 3)[0] == 1000.0
+
+
+def test_a_longer_copy_near_two_kept_lines_joins_the_nearer_one():
+    """#530 review: two parallel short lines apart from each other and one long copy near both -
+    the label goes to the line the long copy is closest to on the last bar, not to whichever sorted
+    first. Near-duplicate = within TOUCH_ATR (0.5) units on the last bar."""
+    n, unit = 100, 0.01                                  # near-duplicate within 0.005 in log
+    top = math.log(110)
+    a = trend._Line("resistance", 0, 50, top, -0.001, [0, 20, 40, 60])            # 4 touches: sorts first
+    b = trend._Line("resistance", 0, 50, top - 0.008, -0.001, [0, 30, 60])        # 0.008 below a: its own line
+    long_ = trend._Line("resistance", 0, 50, top - 0.0045, -0.001, [0, 60])       # near both, nearer b
+    assert not trend._same(a, b, n, unit) and trend._same(long_, a, n, unit) and trend._same(long_, b, n, unit)
+    merged = {id(ln): (s, k, scales) for s, k, ln, scales in trend._merge([(0, 3, a), (0, 3, b), (2, 12, long_)], n, unit)}
+    assert merged == {id(a): (0, 3, [0]), id(b): (2, 3, [0, 2])}

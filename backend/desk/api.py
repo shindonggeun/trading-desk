@@ -46,6 +46,7 @@ from . import (
     outlook,
     playbook_live,
     positioning,
+    primary_trend,
     projection,
     regime,
     review,
@@ -97,6 +98,7 @@ BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
 # skipped, not the weekly map, when a cold cache is slower)
 BOTTOM_NOTE_SEC = 4.0
 BOTTOM_QUOTE_SEC = 2.0   # #310: the price the bottom-zone ladder is cut at, per lookup
+TREND_WAIT_SEC = 8.0     # #460: /api/tips waits this long for the indices' trend, then answers without it
 # #257: US pre / after / overnight trades on the board - a last trade this fresh still counts as live
 # (thin ETFs trade minutes apart off hours), and a newly watched ticker waits this long for its first
 OFF_HOURS_FRESH_SEC = 600.0
@@ -302,6 +304,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # #330: rate / dollar regime and its tips (^IRX ^TNX DX-Y.NYB QQQ, cached 3 h)
     tip_cache = tips.Cache(fetcher=lambda symbols: risk_regime.fetch(symbols, candles=prices._yahoo_candles,
                                                                      count=tips.HISTORY_BARS))
+    # #460: the indices' primary trend (^KS11 ^NDX ^GSPC ^SOX, about ten years of dailies, cached 3 h)
+    trend_cache = primary_trend.Cache(fetcher=lambda symbols: risk_regime.fetch(
+        symbols, candles=prices._yahoo_candles, count=primary_trend.HISTORY_BARS))
     # #203: years of Yahoo bars for the RSI / Stochastic extremes and what followed them
     # (read when called: a test's price source may have no Yahoo at all)
     oscillator_fetch = oscillator.yahoo_fetch(lambda *args: prices._yahoo_candles(*args))
@@ -1299,15 +1304,33 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     @app.get("/api/tips")
     async def tips_view(ticker: str | None = None):
         """#330 the rate / dollar regime now and the tips with their backtest evidence; ``ticker``
-        keeps only the tips that instrument is in."""
+        keeps only the tips that instrument is in. #460, without ``ticker`` only (the per-ticker badges
+        answer as before): ``trend`` - each main index's primary trend (bull / bear / range / turning)
+        with its evidence and record - and ``guide``, the beginner's guide per state. The trend has its
+        own fetch and waits at most TREND_WAIT_SEC: slow, busy or failed, ``trend`` is empty and
+        ``trend_error`` says why; the tips answer as before."""
         try:
             ticker = clean_ticker(ticker) if ticker else None
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
-        out = await asyncio.to_thread(tip_cache.view, ticker)
+        if ticker:
+            out = await asyncio.to_thread(tip_cache.view, ticker)
+            if out is None:
+                raise HTTPException(503, "rate / dollar series unavailable")
+            return out
+
+        async def trend_rows():
+            try:   # a timed-out fetch keeps running in its thread and fills the cache for the next ask
+                return await asyncio.wait_for(asyncio.to_thread(trend_cache.view), TREND_WAIT_SEC)
+            except TimeoutError:
+                return None
+
+        out, trend = await asyncio.gather(asyncio.to_thread(tip_cache.view, None), trend_rows())
         if out is None:
             raise HTTPException(503, "rate / dollar series unavailable")
-        return out
+        error = (None if trend else "지수 일봉을 불러오는 중입니다 — 잠시 뒤 다시 확인하세요" if trend is None
+                 else "지수 일봉을 받지 못해 대세 국면을 판정하지 못했습니다")
+        return {**out, "trend": trend or [], "guide": primary_trend.guide(), "trend_error": error}
 
     @app.get("/api/projection")
     async def projection_view(ticker: str, horizon: str | None = None):

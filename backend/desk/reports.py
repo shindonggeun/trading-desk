@@ -408,7 +408,7 @@ def yahoo_fetch(symbol: str) -> tuple[list[dict], list[dict]]:
     from desk import prices
 
     return (_bars(prices.yahoo_candles(symbol, "1d", DAILY_BARS)),
-            _bars(prices.yahoo_candles(symbol, "1wk", WEEKLY_BARS)))
+            _bars(prices.yahoo_candles(symbol, "1w", WEEKLY_BARS)))     # the app's interval name (prices maps it)
 
 
 def fake_fetch(symbol: str) -> tuple[list[dict], list[dict]]:
@@ -539,16 +539,20 @@ class Reports:
         return out
 
     def measure_all(self) -> list[dict]:
-        measured = []
+        measured, first = [], None
         for sym, name, kind in self.candidates():
             try:
                 daily, weekly = self.fetch(sym)
                 m = measure(sym, name, kind, daily, weekly)
             except Exception as exc:  # noqa: BLE001 - one subject's data failing never stops the report
                 log.warning("report: %s skipped (%s)", sym, type(exc).__name__)
+                first = first or (sym, exc)
                 continue
             if m:
                 measured.append(m)
+        if not measured and first:           # every subject failed: say why, so the cause shows at once
+            log.warning("report: every subject failed; the first, %s: %s: %s", first[0], type(first[1]).__name__,
+                        str(first[1])[:200])
         return measured
 
     def make(self, model: Callable[[str], str] | None = None) -> dict | None:

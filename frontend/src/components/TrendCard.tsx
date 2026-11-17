@@ -117,7 +117,7 @@ export default function TrendCard({ trend, guide, error }: {
   const note = trend.find((r) => r.record_note)?.record_note;
   return (
     <>
-      <section className="card trend-card" aria-label="대세 국면">
+      <section className="card trend-card" aria-label="대세 국면" data-tour="trend-card">
         <h3><Term word="대세" /> 국면 <span className="muted small">— 지금 {headline}</span></h3>
         <ul className="trend-rows">{trend.map((r) => <Row key={r.market} r={r} />)}</ul>
         <p className="muted small">

@@ -23,7 +23,7 @@ export function TrendStrip() {
   const rows = useTrend();
   if (!rows.length) return null;
   return (
-    <div className="trend-strip" role="group" aria-label="지수별 지금 추세">
+    <div className="trend-strip" role="group" aria-label="지수별 지금 추세" data-tour="trend">
       <span className="muted small">지수 지금 추세</span>
       {rows.map((r) => <Chip key={r.market} r={r} />)}
     </div>

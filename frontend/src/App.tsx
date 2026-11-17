@@ -24,6 +24,8 @@ import AppNotices from "./components/AppNotices";
 import FlowAlertToast, { FLOW_ROUTE } from "./components/FlowAlertToast";
 import FundsAlert from "./components/FundsAlert";
 import { resetFavorites } from "./favorites";
+import TourPrompt from "./components/TourPrompt";
+import { goAndStart, startTour, tourForRoute } from "./tourState";
 
 function safeDecode(v: string): string {
   try {
@@ -135,6 +137,9 @@ export default function App() {
           {user && (
             <>
               <span className="pill pill-user" title={user}>{user}</span>
+              {/* #491 지금 화면의 안내 투어 */}
+              <button type="button" className="topbar-help" aria-label="이 화면 안내" title="이 화면 안내"
+                onClick={() => { void startTour(tourForRoute(route)).then((ok) => { if (!ok) void goAndStart("dashboard"); }); }}>?</button>
               <a href="#/settings" className={`topbar-settings${onSettings ? " active" : ""}`} aria-label="설정"
                 aria-current={onSettings ? "page" : undefined} title="설정">⚙<span className="topbar-settings-label"> 설정</span></a>
               <button type="button" className="logout" onClick={logout}>로그아웃</button>
@@ -142,6 +147,8 @@ export default function App() {
           )}
         </div>
       </header>
+      {/* #491 처음 로그인한 브라우저에 대시보드 둘러보기 제안 */}
+      {user && (route === "" || route === "#/" || route.startsWith("#/?")) && <TourPrompt />}
       {/* #451 연결 없음 · 앱으로 설치 안내 */}
       <AppNotices />
 

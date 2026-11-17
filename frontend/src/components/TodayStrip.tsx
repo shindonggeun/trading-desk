@@ -129,7 +129,7 @@ export default function TodayStrip() {
   const fundOnly = found ? list.map((f) => f.ticker).filter((t) => !found[t] && fundWhy(t).length) : [];
   const hits: [string, typeof base[number][1]][] = [...base, ...fundOnly.map((t): [string, typeof base[number][1]] => [t, []])];
   return (
-    <section className="today-strip" aria-label="오늘 볼 것">
+    <section className="today-strip" aria-label="오늘 볼 것" data-tour="today">
       <span className="today-title">오늘 볼 것</span>
       {!list.length ? (
         <span className="muted small">즐겨찾기를 더하면 구역 근처 · 실적 임박 · 범위 이탈 종목을 여기 모읍니다.</span>

@@ -44,7 +44,7 @@ export default function FearIndexStrip() {
   if (data.items.length === 0) return data.error ? <p className="muted small fear-failed">공포지수: {data.error}</p> : null;
   return (
     <>
-      <div className="fear-strip" role="group" aria-label="공포지수">
+      <div className="fear-strip" role="group" aria-label="공포지수" data-tour="fear">
         {data.items.map((item) => <FearGauge key={item.key} item={item} />)}
       </div>
       {failed && <p className="muted small fear-failed">최근 갱신 실패 — 앞서 받은 값입니다({failed})</p>}

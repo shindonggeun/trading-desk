@@ -156,7 +156,7 @@ export default function Funds({ query }: { query: URLSearchParams }) {
         <h1>기관 포트폴리오 <span className="muted small">13F 보유 공시</span></h1>
         {id && <button type="button" className="link" onClick={() => go(null)}>← 기관 목록</button>}
       </header>
-      <p className="muted small funds-lag">{LAG_NOTE}{checked ? ` 마지막 확인 ${day(checked)}.` : ""}</p>
+      <p className="muted small funds-lag" data-tour="funds-lag">{LAG_NOTE}{checked ? ` 마지막 확인 ${day(checked)}.` : ""}</p>
       {failed && !id && <p className="error">기관 목록을 불러오지 못했습니다: {failed}</p>}
       {id ? (
         <Detail key={id} id={id} quarter={quarter} onQuarter={(q) => go(id, q)} />
@@ -164,7 +164,7 @@ export default function Funds({ query }: { query: URLSearchParams }) {
         <>
           {fake && <p className="notice-warn app-notice">예시 데이터 — 개발 서버에서 #483 API 없이 화면을 보기 위한 값이며 실제 공시 숫자가 아닙니다.</p>}
           {!funds && !failed && <p className="muted">불러오는 중…</p>}
-          <div className="fund-cards">{(funds ?? []).map((f) => <FundCard key={f.id} f={f} onOpen={() => go(f.id)} />)}</div>
+          <div className="fund-cards" data-tour="fund-cards">{(funds ?? []).map((f) => <FundCard key={f.id} f={f} onOpen={() => go(f.id)} />)}</div>
         </>
       )}
     </main>

@@ -93,7 +93,7 @@ export default function Tips({ query }: { query: URLSearchParams }) {
     <main className="page tips-page">
       <h2>국면별 매매 팁</h2>
       <TrendCard trend={view.trend ?? []} guide={view.guide ?? {}} error={view.trend_error ?? null} />
-      <section className="card tip-regime" aria-label="지금 국면">
+      <section className="card tip-regime" aria-label="지금 국면" data-tour="tip-regime">
         <div><span className="muted small">기준금리 방향</span><strong>{g.rates ? RATES_KO[g.rates] : "—"}</strong>
           <span className="muted small">13주물 3개월 {signed(v.bill_3m_change_pp, "%p")}</span></div>
         <div><span className="muted small">10년물</span><strong>{g.yield10 ? YIELD_KO[g.yield10] : "—"}{g.yield_spike ? " · 급등" : ""}</strong>
@@ -104,7 +104,7 @@ export default function Tips({ query }: { query: URLSearchParams }) {
           <span className="muted small">3개월 {signed(v.nasdaq_3m_pct)}</span></div>
         <p className="muted small tip-asof">기준일 {view.as_of ?? "—"} · 근거 계산 {view.evidence_as_of ?? "—"}</p>
       </section>
-      <div className="tip-list">
+      <div className="tip-list" data-tour="tip-list">
         {tips.map((t) => <TipCard key={t.id} tip={t} focus={t.id === focus} />)}
       </div>
       <p className="muted small">

@@ -7,6 +7,7 @@ import {
 } from "../markets";
 import type { DeskConfig, Estimate, SupportResistance } from "../types";
 import FavoriteStar from "./FavoriteStar";
+import FearIndexStrip from "./FearIndexStrip";
 
 const REFRESH_MS = 60_000;
 const BARS: Record<BoardMode, number> = { "1d": 63, "5m": 78 }; // 일봉 약 3개월 · 5분봉 약 하루
@@ -245,6 +246,7 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
           </button>
         )}
       </div>
+      {open && <FearIndexStrip />}
       {open && markets.length === 0 && (
         <p className="muted small">표시할 종목이 없습니다. 설정에서 추가하세요.</p>
       )}

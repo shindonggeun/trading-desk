@@ -1654,3 +1654,20 @@ export interface FuturesCandles {
   bars: { t: string; o: number; h: number; l: number; c: number; v: number }[];
   as_of?: string;
 }
+
+// #463 공포지수 카드(#462 GET /api/market/fear). 항목은 늘 vix · cnn · vkospi · crypto 순서.
+// band 는 서버가 방향을 맞춰 준다(VIX 는 클수록 공포) — 화면은 band 만 쓴다.
+export type FearBand = "extreme_fear" | "fear" | "neutral" | "greed" | "extreme_greed";
+export interface FearItem {
+  key: "vix" | "cnn" | "vkospi" | "crypto";
+  name: string;
+  value: number | null;
+  band: FearBand | null;
+  band_ko: string | null;
+  prev_day: number | null;
+  prev_week: number | null; // vix 5거래일 전 · crypto 7일 전 · cnn previous_1_week
+  source: string;
+  as_of: string | null;
+  error?: string;
+}
+export interface FearIndex { items: FearItem[]; error?: string }

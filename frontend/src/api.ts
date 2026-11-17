@@ -1,5 +1,5 @@
 import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, TipsView } from "./types";
-import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
+import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, FearIndex, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -176,6 +176,8 @@ export const api = {
     call<{ symbol: string; weeks: WeeklyHistoryRow[] }>(`/api/market/weekly/${encodeURIComponent(symbol)}/history?weeks=${weeks}`),
   /** #160: 코스피200 근월물 선물 현황(한국투자증권) */
   marketFutures: () => call<FuturesFlow>("/api/market/futures"),
+  /** #463 공포지수 4종(VIX · CNN 공포탐욕 · VKOSPI · 암호화폐 공포탐욕), #462. */
+  marketFear: () => call<FearIndex>("/api/market/fear"),
   /** #254 선물 수급 기록: 날마다 마감 스냅샷 · 그날 장중 스냅샷 */
   marketFuturesDaily: (days = 20) => call<FuturesDaily>(`/api/market/futures/daily?days=${days}`),
   marketFuturesIntraday: (date?: string) =>

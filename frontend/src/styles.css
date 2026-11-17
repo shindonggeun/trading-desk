@@ -2166,3 +2166,13 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .explain-terms dt { font-weight: 650; }
 .explain-terms dd { margin: 0 0 6px; color: var(--muted); }
 .explain-failed { margin: 0; }
+
+/* #461 지수별 지금 추세 칩(대시보드 시장 구역 위 · 분석 화면 팁 배지 옆) */
+.trend-strip, .trend-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.trend-strip { margin: 8px 0 4px; }
+.trend-badge-row:empty { display: none; }
+.trend-badge-row { margin: 8px 0 0; }
+.trend-chip { display: inline-flex; align-items: baseline; gap: 4px; font-size: var(--fs-s); padding: 2px 10px; border-radius: 999px;
+  border: 1px solid currentColor; text-decoration: none; white-space: nowrap; }
+.trend-chip strong { font-weight: 650; }
+.trend-chip-pend { font-size: 11px; opacity: .8; }

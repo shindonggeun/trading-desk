@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { price } from "../format";
 import type { FearItem } from "../types";
+import { TrendSummaryItems } from "./TrendChips";
 
 // #464 휴대폰 대시보드 맨 위 요약 줄: 지수 등락 3개 + 공포지수 2개. 구역은 접힌 머리글로 시작하니
 // 펼치지 않아도 시장 분위기를 한 줄로 본다. 실패한 항목은 조용히 뺀다(아래 구역에서 자세히 본다).
@@ -65,6 +66,7 @@ export default function DashSummary() {
           )}
         </span>
       ))}
+      <TrendSummaryItems />
       {fear.map((f) => (
         <span key={f.key} className={`dash-sum-item${f.band ? ` fear-${f.band}` : ""}`}>
           <span className="muted">{f.key === "cnn" ? "공포탐욕" : f.name}</span> {Math.round((f.value ?? 0) * 10) / 10}

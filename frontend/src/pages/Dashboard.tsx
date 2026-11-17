@@ -1,6 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
-import GridLayout, { useContainerWidth, verticalCompactor, type Layout as GridLayoutItems } from "react-grid-layout";
-import "react-grid-layout/css/styles.css";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import type { Layout as GridLayoutItems } from "react-grid-layout";
 import { api } from "../api";
 import FavoritesPanel from "../components/FavoritesPanel";
 import FuturesQuoteCard from "../components/FuturesQuoteCard";
@@ -19,7 +18,10 @@ import BottomZoneBrief from "../components/BottomZoneBrief";
 import TodayStrip from "../components/TodayStrip";
 import DashSummary from "../components/DashSummary";
 import { time } from "../format";
-import { GAP_PX, GRID_COLS, HEAD_ROWS, MIN_W, ROW_PX, loadBand, measureLayout, resetBand, saveBand, type Band, type BandLayout } from "../dashLayout";
+import { GRID_COLS, HEAD_ROWS, MIN_W, loadBand, measureLayout, resetBand, saveBand, type Band, type BandLayout } from "../dashLayout";
+
+// #487 격자(react-grid-layout)는 배치를 편집하거나 저장한 배치가 있을 때만 불러온다
+const DashGrid = lazy(() => import("../components/DashGrid"));
 import type { DeskRegime, RegimeSnapshot } from "../types";
 
 // #410 데스크 자체 국면(#409) — semibot 이 없는 서버에서도 카드가 빈 문구가 아니게
@@ -272,7 +274,16 @@ export default function Dashboard() {
   const [draft, setDraft] = useState<BandLayout | null>(null);
   const [said, setSaid] = useState("");
   const flowRef = useRef<HTMLDivElement>(null);
-  const { width, containerRef, mounted } = useContainerWidth();
+  // 격자 폭 — 감싸개를 늘 그려 두고 직접 잰다(라이브러리 훅을 첫 화면 번들에 넣지 않으려고)
+  const areaRef = useRef<HTMLDivElement>(null);
+  const [areaWidth, setAreaWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = areaRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([e]) => setAreaWidth(Math.round(e.contentRect.width)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   useEffect(() => {
     setDraft(null);
     setSaved(band ? loadBand(band, DEFAULT_ORDER) : null);
@@ -366,23 +377,16 @@ export default function Dashboard() {
         </div>
       )}
       {/* 폭 재기용 감싸개는 늘 그려 둔다 — 격자로 바뀌는 순간에도 크기 감시가 붙어 있게 */}
-      <div ref={containerRef as RefObject<HTMLDivElement>} className="dash-area">
+      <div ref={areaRef} className="dash-area">
       {grid ? (
         <div className={`dash-grid${draft ? " dash-grid-edit" : ""}`}>
-          {mounted && (
-            <GridLayout width={width} layout={gridItems}
-              gridConfig={{ cols: GRID_COLS, rowHeight: ROW_PX, margin: [GAP_PX, GAP_PX], containerPadding: [0, 0] }}
-              dragConfig={{ enabled: !!draft, handle: ".dash-drag" }}
-              resizeConfig={{ enabled: !!draft, handles: ["se", "e", "s"] }}
-              compactor={verticalCompactor}
-              onLayoutChange={(l) => { if (draft) setDraft((d) => (d ? { ...d, items: l.map(({ i, x, y, w, h }) => ({ i, x, y, w: Math.max(MIN_W, w), h })) } : d)); }}>
-              {gridItems.map((it) => (
-                <div key={it.i} className="dash-grid-item" tabIndex={draft ? 0 : undefined} onKeyDown={draft ? onGridKey(it.i) : undefined}
-                  aria-label={draft ? `${SECTIONS[it.i as SectionId].title} — 화살표로 옮기기, Shift+화살표로 크기` : undefined}>
-                  {renderSection(it.i as SectionId)}
-                </div>
-              ))}
-            </GridLayout>
+          {areaWidth > 0 && (
+            <Suspense fallback={<p className="muted small">배치 불러오는 중…</p>}>
+              <DashGrid width={areaWidth} items={gridItems} editing={!!draft}
+                onLayoutChange={(l) => setDraft((d) => (d ? { ...d, items: l } : d))}
+                renderItem={(id) => renderSection(id as SectionId)} onKey={onGridKey}
+                label={(id) => `${SECTIONS[id as SectionId].title} — 화살표로 옮기기, Shift+화살표로 크기`} />
+            </Suspense>
           )}
         </div>
       ) : layout === "wide" ? (

@@ -1772,6 +1772,14 @@ a.wmb-row:hover { border-color: var(--accent); }
 @media (max-width: 760px) {
   .shell { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
 }
+/* #509 휴대폰 분석 화면은 아래 탭 막대(약 48px)가 고정이라 채팅 버튼을 그 위로 올린다 — 탭 오른쪽 끝("쉽게 보기")을 덮지 않게.
+   버튼 위에 띄우던 13F 토스트 · 화면 아래 용어 툴팁도 올린 버튼 위로 함께 올린다 */
+@media (max-width: 760px) {
+  .shell:has(.run-tabs) .cw-launcher { bottom: calc(60px + env(safe-area-inset-bottom)); }
+  .shell:has(.run-tabs) .fund-toasts { bottom: calc(128px + env(safe-area-inset-bottom)); }
+  .shell:has(.cw-launcher:not([hidden])) .run-tabbed .gl-tip,
+  .shell:has(.cw-launcher:not([hidden])) .run-tabbed .gl-flip .gl-tip { bottom: calc(128px + env(safe-area-inset-bottom)); }
+}
 .cw-panel { position: fixed; right: 20px; bottom: 88px; z-index: 74; width: min(400px, calc(100vw - 32px)); height: min(640px, calc(100dvh - 120px));
   display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 16px;
   background: var(--bg, var(--surface)); box-shadow: 0 12px 40px rgb(0 0 0 / .35); }

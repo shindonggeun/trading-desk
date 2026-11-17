@@ -11,6 +11,7 @@ import History from "./pages/History";
 import { activeNav, NAV, navigation } from "./nav";
 import ChartView from "./pages/ChartView";
 import Settings from "./pages/Settings";
+import Paper from "./pages/Paper";
 import Backtest from "./pages/Backtest";
 import WeeklyMap from "./pages/WeeklyMap";
 import FuturesView from "./pages/FuturesView";
@@ -107,6 +108,7 @@ export default function App() {
   const fundsMatch = route.match(/^#\/funds(?:\?(.*))?$/);   // #484 기관 포트폴리오(13F)
   const reportsMatch = route.match(/^#\/reports(?:\/([\w-]+))?(?:\?.*)?$/);   // #496 초보자 리포트(알림 url /#/reports/{id})
   const halvingMatch = route.match(/^#\/halving(?:\?.*)?$/);   // #515 비트코인 반감기 사이클
+  const onPaper = route === "#/paper" || route.startsWith("#/paper?");   // #528 모의 투자
   const futuresMatch = route.match(/^#\/futures(?:\?(.*))?$/);   // #444 코스피200 선물 시세
   // 큰 차트(#97): #/chart/<티커>?run=…&interval=…
   const chartMatch = route.match(/^#\/chart\/([^?]+)(?:\?(.*))?$/);
@@ -182,6 +184,8 @@ export default function App() {
         <Reports id={reportsMatch[1] ?? null} />
       ) : halvingMatch ? (
         <Halving />
+      ) : onPaper ? (
+        <Paper />
       ) : futuresMatch ? (
         <FuturesView query={new URLSearchParams(futuresMatch[1] ?? "")} />
       ) : weeklyMatch ? (

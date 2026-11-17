@@ -1916,3 +1916,85 @@ export interface Halving {
   series: { by_halving: HalvingSeries[]; by_peak: HalvingSeries[] };
   notes: string[];
 }
+
+/** #527 모의 투자(실제 주문 없음) — /api/paper/*. 금액은 원, 비율은 %(win_rate 만 0~1) */
+export type PaperSizing = "risk" | "weight";
+export interface PaperSettings {
+  start_capital: number;
+  start_date: string | null;
+  sizing: PaperSizing;
+  risk_pct: number;
+  weight_pct: number;
+  max_positions: number;
+  fee_kr_pct: number;
+  fee_us_pct: number;
+  tax_kr_pct: number;
+  slippage_pct: number;
+  allow_short: boolean;
+  version: number;
+  updated_at: string | null;
+}
+export type PaperSettingsPatch = Partial<Omit<PaperSettings, "version" | "updated_at">>;
+export interface PaperGroup { key: string; trades: number; wins: number; pnl: number; avg_r: number | null }
+export interface PaperSummary {
+  as_of: string;
+  scored_at: string | null;
+  settings_version: number;
+  start_capital: number;
+  balance: number;
+  cash: number;
+  invested: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+  total_pnl_pct: number;
+  trades: { closed: number; open: number; waiting: number; skipped: number };
+  wins: number;
+  losses: number;
+  win_rate: number | null;
+  avg_r: number | null;
+  payoff: number | null;
+  max_drawdown: { krw: number; pct: number; peak_at: string | null; trough_at: string | null } | null;
+  this_month: { start: string; pnl: number; pct: number | null };
+  by_ticker: PaperGroup[];
+  by_direction: PaperGroup[];
+  by_rating: PaperGroup[];
+}
+export interface PaperEquity {
+  settings_version: number;
+  start_capital: number;
+  points: { date: string; balance: number }[];
+  weekly: { start: string; pnl: number }[];
+  monthly: { start: string; pnl: number }[];
+}
+export type PaperStatus = "closed" | "open" | "waiting" | "skipped";
+export interface PaperTrade {
+  run_id: string;
+  ticker: string;
+  name: string | null;
+  market: "KR" | "US";
+  currency: "KRW" | "USD";
+  direction: "long" | "short";
+  rating: string | null;
+  horizon: string | null;
+  plan_at: string;
+  status: PaperStatus;
+  exit_reason: "target" | "stop" | "both" | "expired" | null;
+  skip: { code: string; text: string } | null;
+  plan: { entry: number | null; stop: number | null; target: number | null };
+  entry: { at: string; price: number; fill: number } | null;
+  exit: { at: string; price: number; fill: number } | null;
+  qty: number | null;
+  fx: { entry: number | null; exit: number | null } | null;
+  amount_krw: number | null;
+  costs_krw: number | null;
+  pnl_krw: number | null;
+  pnl_pct: number | null;
+  r: number | null;
+  marked: boolean;
+}
+export interface PaperTrades {
+  settings_version: number;
+  counts: { closed: number; open: number; waiting: number; skipped: number };
+  items: PaperTrade[];
+}

@@ -11,6 +11,7 @@ import WeekAgenda from "../components/WeekAgenda";
 import SectorNews from "../components/SectorNews";
 import NewRunForm from "../components/NewRunForm";
 import PlanStatsCard from "../components/PlanStatsCard";
+import PaperCard from "../components/PaperCard";
 import PortfolioPanel from "../components/PortfolioPanel";
 import RecentRuns from "../components/RecentRuns";
 import WeeklyMapBrief from "../components/WeeklyMapBrief";
@@ -104,7 +105,7 @@ function RegimePanel() {
   );
 }
 
-type SectionId = "macro" | "sectornews" | "favorites" | "market" | "kfutures" | "agenda" | "weekly" | "bottom" | "halving" | "portfolio" | "recent" | "stats" | "flow" | "credit" | "regime";
+type SectionId = "macro" | "sectornews" | "favorites" | "market" | "kfutures" | "agenda" | "weekly" | "bottom" | "halving" | "portfolio" | "recent" | "stats" | "paper" | "flow" | "credit" | "regime";
 /** 구역 — 순서는 이슈 #100 의 기본값. wide 는 넓은 화면에서 한 줄을 다 쓴다. */
 const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () => ReactNode }> = {
   macro: { title: "오늘의 거시 · 정책 브리핑", wide: true, render: () => <MacroBrief /> },
@@ -124,6 +125,8 @@ const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () =>
   portfolio: { title: "내 투자", render: () => <PortfolioPanel /> },
   recent: { title: "최근 분석", render: () => <RecentRuns /> },
   stats: { title: "적중률", render: () => <PlanStatsCard /> },
+  // #528 모의 투자(#527) — 분석 타점대로 샀다면
+  paper: { title: "모의 투자", render: () => <PaperCard /> },
   flow: { title: "시장 수급", render: () => <MarketFlowPanel /> },
   credit: { title: "빚투 · 예탁금", render: () => <CreditPanel /> },
   regime: { title: "레짐", render: () => <RegimePanel /> },
@@ -135,7 +138,7 @@ const BASE_ORDER = Object.keys(SECTIONS) as SectionId[];
 const COLUMN: Record<SectionId, 0 | 1 | 2> = {
   market: 0, kfutures: 0, weekly: 0, regime: 0, credit: 0,
   favorites: 1, macro: 1, sectornews: 1, agenda: 1, recent: 1, bottom: 1,
-  flow: 2, portfolio: 2, stats: 2, halving: 2,
+  flow: 2, portfolio: 2, stats: 2, halving: 2, paper: 2,
 };
 type Layout = "wide" | "normal" | "phone";
 const WIDE_Q = "(min-width: 1280px)";

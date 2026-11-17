@@ -15,6 +15,7 @@ import RecentRuns from "../components/RecentRuns";
 import WeeklyMapBrief from "../components/WeeklyMapBrief";
 import BottomZoneBrief from "../components/BottomZoneBrief";
 import TodayStrip from "../components/TodayStrip";
+import DashSummary from "../components/DashSummary";
 import { time } from "../format";
 import type { DeskRegime, RegimeSnapshot } from "../types";
 
@@ -118,11 +119,48 @@ const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () =>
   credit: { title: "빚투 · 예탁금", render: () => <CreditPanel /> },
   regime: { title: "레짐", render: () => <RegimePanel /> },
 };
-const DEFAULT_ORDER = Object.keys(SECTIONS) as SectionId[];
+const BASE_ORDER = Object.keys(SECTIONS) as SectionId[];
 
-// 구역 순서 · 접힘은 이 브라우저에 기억한다(손상값 · 새로 생긴 구역은 기본값으로)
+// #464 넓은 화면(≥1280px) 3열: 왼쪽 시장 · 지수 · 공포 · 선물, 가운데 즐겨찾기 · 오늘 볼 것, 오른쪽 수급 · 내 투자.
+// 열 안의 순서는 저장된 순서를 따르고, ↑↓ 는 같은 열 안의 이웃과 바꾼다.
+const COLUMN: Record<SectionId, 0 | 1 | 2> = {
+  market: 0, kfutures: 0, weekly: 0, regime: 0, credit: 0,
+  favorites: 1, macro: 1, sectornews: 1, agenda: 1, recent: 1, bottom: 1,
+  flow: 2, portfolio: 2, stats: 2,
+};
+type Layout = "wide" | "normal" | "phone";
+const WIDE_Q = "(min-width: 1280px)";
+const PHONE_Q = "(max-width: 480px)";
+function currentLayout(): Layout {
+  const mq = (q: string) => window.matchMedia?.(q).matches === true;
+  return mq(WIDE_Q) ? "wide" : mq(PHONE_Q) ? "phone" : "normal";
+}
+function useLayout(): Layout {
+  const [layout, setLayout] = useState<Layout>(currentLayout);
+  useEffect(() => {
+    const on = () => setLayout(currentLayout());
+    const lists = [WIDE_Q, PHONE_Q].map((q) => window.matchMedia?.(q)).filter((m): m is MediaQueryList => !!m);
+    lists.forEach((m) => m.addEventListener("change", on));
+    return () => lists.forEach((m) => m.removeEventListener("change", on));
+  }, []);
+  return layout;
+}
+
+// 구역 순서 · 접힘은 이 브라우저에 기억한다(손상값 · 새로 생긴 구역은 기본값으로).
+// #464 휴대폰은 접힌 머리글로 시작하고, 펼친 구역(mobileOpen)을 데스크톱 접힘(closed)과 따로 기억한다.
 const PREFS_KEY = "desk.dashboard.v1";
-type Prefs = { order: SectionId[]; closed: SectionId[] };
+// rev 464: 넓은 화면 오른쪽 열에서 시장 수급을 내 투자 · 적중률 위로(한 번만 — 그 뒤 사용자가 옮긴 순서는 그대로)
+const PREFS_REV = 464;
+type Prefs = { order: SectionId[]; closed: SectionId[]; mobileOpen: SectionId[]; rev?: number };
+function flowFirstInColumn(order: SectionId[]): SectionId[] {
+  const rest: SectionId[] = order.filter((s) => s !== "flow");
+  const at = rest.findIndex((s) => COLUMN[s] === COLUMN.flow);
+  if (at < 0) return order;
+  rest.splice(at, 0, "flow");
+  return rest;
+}
+// 기본 순서: 구역 정의 순서에서 시장 수급만 오른쪽 열 맨 위로(새로 생긴 구역도 이 자리 기준으로 끼운다)
+const DEFAULT_ORDER = flowFirstInColumn(BASE_ORDER);
 function loadPrefs(): Prefs {
   try {
     const raw = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}");
@@ -134,9 +172,11 @@ function loadPrefs(): Prefs {
       if (!order.includes(id)) order.splice(Math.min(i, order.length), 0, id);
     });
     const closed = Array.isArray(raw.closed) ? raw.closed.filter(known) : [];
-    return { order, closed };
+    const mobileOpen = Array.isArray(raw.mobileOpen) ? raw.mobileOpen.filter(known) : [];
+    const rev = typeof raw.rev === "number" ? raw.rev : 0;
+    return { order: rev >= PREFS_REV ? order : flowFirstInColumn(order), closed, mobileOpen, rev: PREFS_REV };
   } catch {
-    return { order: DEFAULT_ORDER, closed: [] };
+    return { order: DEFAULT_ORDER, closed: [], mobileOpen: [], rev: PREFS_REV };
   }
 }
 function savePrefs(prefs: Prefs) {
@@ -173,8 +213,12 @@ export default function Dashboard() {
     const reveal = () => {
       if (!/[?&]flow=intraday(?:&|$)/.test(window.location.hash)) return;
       const cur = loadPrefs();               // 저장은 updater 밖에서(StrictMode 이중 실행에도 한 번)
-      if (!cur.closed.includes("flow")) return;
-      const next = { ...cur, closed: cur.closed.filter((c) => c !== "flow") };
+      if (!cur.closed.includes("flow") && cur.mobileOpen.includes("flow")) return;
+      const next = {
+        ...cur,
+        closed: cur.closed.filter((c) => c !== "flow"),
+        mobileOpen: cur.mobileOpen.includes("flow") ? cur.mobileOpen : [...cur.mobileOpen, "flow" as const],
+      };
       savePrefs(next);
       setPrefs(next);
     };
@@ -182,13 +226,20 @@ export default function Dashboard() {
     window.addEventListener("hashchange", reveal);
     return () => window.removeEventListener("hashchange", reveal);
   }, []);
+  const layout = useLayout();
+  const toggled = (list: SectionId[], id: SectionId) => (list.includes(id) ? list.filter((c) => c !== id) : [...list, id]);
+  const isOpen = (id: SectionId) => (layout === "phone" ? prefs.mobileOpen.includes(id) : !prefs.closed.includes(id));
   const flip = (id: SectionId) =>
-    update({ ...prefs, closed: prefs.closed.includes(id) ? prefs.closed.filter((c) => c !== id) : [...prefs.closed, id] });
+    update(layout === "phone" ? { ...prefs, mobileOpen: toggled(prefs.mobileOpen, id) } : { ...prefs, closed: toggled(prefs.closed, id) });
+  // 옮길 수 있는 이웃: 넓은 화면은 같은 열 안에서, 그 밖에는 전체 순서에서
+  const peers = (id: SectionId) => (layout === "wide" ? prefs.order.filter((s) => COLUMN[s] === COLUMN[id]) : prefs.order);
   const move = (id: SectionId, by: -1 | 1) => {
+    const line = peers(id);
+    const other = line[line.indexOf(id) + by];
+    if (!other) return;
     const order = [...prefs.order];
     const i = order.indexOf(id);
-    const j = i + by;
-    if (j < 0 || j >= order.length) return;
+    const j = order.indexOf(other);
     [order[i], order[j]] = [order[j], order[i]];
     update({ ...prefs, order });
     // 옮긴 구역의 같은 버튼에 초점을 남겨 연달아 옮길 수 있게
@@ -203,13 +254,30 @@ export default function Dashboard() {
       <div className="dash-search">
         <NewRunForm />
       </div>
+      {/* #464 휴대폰: 구역을 펼치지 않아도 지수 등락 · 공포지수를 한 줄로 */}
+      {layout === "phone" && <DashSummary />}
       {/* #317 즐겨찾기 가운데 지금 손댈 종목 */}
       <TodayStrip />
-      <div className="dash-sections">
-        {prefs.order.map((id, i) => {
+      {layout === "wide" ? (
+        <div className="dash-columns">
+          {([0, 1, 2] as const).map((col) => (
+            <div key={col} className="dash-col">
+              {prefs.order.filter((id) => COLUMN[id] === col).map(renderSection)}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="dash-sections">{prefs.order.map(renderSection)}</div>
+      )}
+    </main>
+  );
+
+  function renderSection(id: SectionId) {
           const s = SECTIONS[id];
-          const open = !prefs.closed.includes(id);
+          const open = isOpen(id);
           const bodyId = `dash-${id}`;
+          const line = peers(id);
+          const i = line.indexOf(id);
           return (
             <section key={id} className={`dash-section${s.wide ? " dash-wide" : ""}${open ? "" : " dash-closed"}`} aria-labelledby={`${bodyId}-title`}>
               <header className="dash-head">
@@ -223,15 +291,12 @@ export default function Dashboard() {
                 <span className="dash-order" role="group" aria-label={`${s.title} 순서`}>
                   <button type="button" id={`dash-move-${id}--1`} className="dash-move" disabled={i === 0}
                     aria-label={`${s.title} 위로`} onClick={() => move(id, -1)}>↑</button>
-                  <button type="button" id={`dash-move-${id}-1`} className="dash-move" disabled={i === prefs.order.length - 1}
+                  <button type="button" id={`dash-move-${id}-1`} className="dash-move" disabled={i === line.length - 1}
                     aria-label={`${s.title} 아래로`} onClick={() => move(id, 1)}>↓</button>
                 </span>
               </header>
               {open && <div id={bodyId} className="dash-body">{s.render()}</div>}
             </section>
           );
-        })}
-      </div>
-    </main>
-  );
+  }
 }

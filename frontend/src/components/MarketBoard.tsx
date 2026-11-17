@@ -258,7 +258,7 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
             return (
               <button key={m.ticker} type="button" className={`mb-tile${picked?.ticker === m.ticker ? " mb-tile-on" : ""}`}
                 onClick={() => setPicked(m)} aria-controls="mb-confirm" aria-expanded={picked?.ticker === m.ticker}
-                title="눌러서 이 종목 분석을 시작합니다(확인 한 번)">
+                title="눌러서 지지 · 저항을 보고 이 종목 분석을 시작합니다(확인 한 번)">
                 <span className="mb-name">
                   <strong>{m.name}</strong> <span className="muted small">{m.ticker}</span>
                 </span>
@@ -281,7 +281,7 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
                     {t.est.change_pct.toFixed(2)}%)
                   </span>
                 )}
-                <SrLine sr={t?.sr ?? null} last={t?.last ?? null} />
+                {/* #464 타일은 이름 · 값 · 등락 · 미니 차트만 — 지지 · 저항은 눌렀을 때 아래 확인 칸에 */}
                 {t?.error && <span className="small error">시세를 못 읽었습니다</span>}
               </button>
             );
@@ -293,6 +293,7 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
           <p>
             <FavoriteStar ticker={picked.ticker} name={picked.name} /> <strong>{picked.name}</strong> ({picked.ticker}) 분석을 시작할까요?
           </p>
+          <SrLine sr={tiles[picked.ticker]?.sr ?? null} last={tiles[picked.ticker]?.last ?? null} />
           <p className="muted small">
             투자 성향 {profileLabel ?? "기본"} · 시간축 {horizonLabel} · 보고서 한국어 · 보유 종목 반영 안 함. 지수 · 선물 · 환율 ·
             코인은 재무 분석가 없이 진행합니다. 한 번에 수 분이 걸리고 구독 플랜 사용량이 차감됩니다.

@@ -2063,3 +2063,27 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 @media (max-width: 640px) {
   .fear-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* #464 대시보드 한눈에: 넓은 화면 3열 · 작은 시장 타일 · 휴대폰 요약 줄 */
+.mb-grid { grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 8px; margin-top: 8px; }
+.mb-tile { padding: 8px; gap: 2px; }
+.mb-price { font-size: 15px; }
+.mb-tile .spark, .mb-tile .spark-empty { height: 28px; }
+.mb-confirm .mb-sr { margin: 0 0 8px; }
+.dash-columns { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.dash-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+@media (min-width: 1280px) {
+  .dashboard.dashboard-v2 { max-width: 1680px; gap: 14px; }
+  .dash-columns .dash-head { margin-bottom: 6px; }
+  .dash-columns .dash-title { font-size: 14px; }
+  .dash-columns .dash-body > .card { padding: 12px; }
+  .dash-columns .market-board .mb-head { gap: 8px; }
+}
+.dash-summary { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 10px; border-radius: var(--radius-s);
+  background: var(--surface-2); font-size: var(--fs-s); font-variant-numeric: tabular-nums; }
+.dash-sum-item { white-space: nowrap; }
+@media (max-width: 480px) {
+  .dashboard.dashboard-v2 { gap: 12px; }
+  .dash-sections { gap: 8px; }
+  .dash-closed .dash-head { padding-bottom: 4px; }
+}

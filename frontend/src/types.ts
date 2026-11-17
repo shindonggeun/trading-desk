@@ -1849,7 +1849,7 @@ export interface ReportSection {
   highlight: string;
   term: { name: string; explain: string };
   chart: ExplainChart;
-  image: { url: string; alt: string } | null; // #497 — 지금은 늘 null
+  image: { url: string; alt: string } | null; // #497 설명 그림(차트 없는 섹션만, 서버에 그림 키가 있을 때) — url 은 세션 쿠키로 받는 /api 경로
 }
 export interface ReportDetail extends ReportSummary {
   /** 가격 기준 거래일(YYYY-MM-DD) — #495 계약 보충 */

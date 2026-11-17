@@ -16,6 +16,7 @@
     python -m desk.cli entry-backtest [--horizon swing]  # the entry-now pick vs the score pick; desk/data/entry_reach.json (#312)
     python -m desk.cli weekly-lines [--out lines.json]  # compare the weekly map's trend-line pairs (#216)
     python -m desk.cli news-history [--out-dir data/gdelt]  # GDELT's past per news theme, resumable (#390)
+    python -m desk.cli news-history export --dir data/gdelt  # the days the live macro_news pass keeps (#485)
     python -m desk.cli backtest --basket --news-dir data/gdelt [--macro-weight 0.5]  # replay the macro part (#390)
 
 In Docker: ``docker compose exec backend python -m desk.cli create-user <name>``.
@@ -196,6 +197,18 @@ def seconds_to_minute(now: datetime, minute: int) -> float:
     if target <= now:
         target += timedelta(hours=1)
     return (target - now).total_seconds()
+
+
+def _news_history_export(args) -> int:
+    """#485: copy the tone · article-count files the live macro_news refresh keeps (desk.macro_history)
+    to ``--dir`` - on the server: docker exec <backend> python -m desk.cli news-history export --dir /tmp/gdelt,
+    then docker cp, then ``backtest --news-dir`` on the PC."""
+    from . import macro_history, macro_news
+
+    src = args.src or str(macro_news.CACHE.history_dir())
+    n = macro_history.export(src, args.dir)
+    print(f"news-history: {n} file(s) {src} -> {args.dir}")
+    return 0 if n else 1
 
 
 def _news_history(args, sleep=time.sleep, clock=datetime.now) -> int:
@@ -386,6 +399,10 @@ def main(argv: list[str] | None = None) -> int:
     nh = sub.add_parser("news-history", help=(
         "GDELT's daily tone and article counts per news theme into <out-dir> (#390; one request per 20 s, "
         "stops at the first refusal - run again later to carry on)"))
+    nh.add_argument("action", nargs="?", choices=("collect", "export"), default="collect",
+                    help="collect (default): fetch the past from GDELT; export: copy the files the live refresh keeps (#485)")
+    nh.add_argument("--dir", default="data/gdelt", help="export: destination directory (default data/gdelt)")
+    nh.add_argument("--src", default=None, help="export: source directory (default the live refresh's news-history)")
     nh.add_argument("--out-dir", default=None,
                     help="directory of the files (default DESK_GDELT_CACHE, else data/gdelt)")
     nh.add_argument("--retry-after-min", type=float, default=0.0,
@@ -415,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "flow-history":
         return _flow_history(args)
     if args.command == "news-history":
-        return _news_history(args)
+        return _news_history_export(args) if args.action == "export" else _news_history(args)
     if args.command == "bottom-backtest":
         from . import bottom_zone
 

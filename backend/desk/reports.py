@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.engine import Engine
 
 from desk import explain, indicators, market_calendar, primary_trend, runner, sr
@@ -498,6 +498,21 @@ class Reports:
             conn.execute(reports_t.insert().values(id=rid, created_at=at, symbol=report["subject"]["symbol"],
                                                    title=report["title"][:200], source=report["source"], body=report))
         return {**report, **_summary(rid, at, report)}
+
+    def set_images(self, report_id: str, images: dict[int, dict]) -> bool:
+        """#497 the explainer pictures of a stored report: ``sections[i].image = {"url", "alt"}``."""
+        if not images:
+            return False
+        with self.engine.begin() as conn:
+            body = conn.execute(select(reports_t.c.body).where(reports_t.c.id == report_id)).scalar()
+            if body is None:
+                return False
+            sections = [dict(s) for s in body.get("sections") or []]
+            for i, img in images.items():
+                if 0 <= i < len(sections):
+                    sections[i]["image"] = img
+            conn.execute(update(reports_t).where(reports_t.c.id == report_id).values(body={**body, "sections": sections}))
+        return True
 
     # writing -----------------------------------------------------------
     def owner(self) -> int | None:

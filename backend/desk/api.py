@@ -53,6 +53,7 @@ from . import (
     primary_trend,
     projection,
     regime,
+    report_images,
     reports,
     review,
     risk_regime,
@@ -336,6 +337,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     report_desk = reports.Reports(engine, reports.fake_fetch if settings.fake_runs else reports.yahoo_fetch,
                                   0 if settings.fake_runs else settings.report_every_days)
     report_tasks: set[asyncio.Task] = set()
+    # #497 explainer pictures (OpenAI image API): off without OPENAI_API_KEY, and always with scripted runs
+    pictures = report_images.ReportImages(None) if settings.fake_runs else report_images.from_env()
 
     async def make_report(auto: bool, taken: bool = False) -> str:
         """One report (#495): ``made`` · ``none`` (no subject had data) · ``busy`` (one being written, or -
@@ -359,6 +362,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     if not free and auto:
                         return "busy"
                     out = await asyncio.to_thread(report_desk.finish, got, projection.llm_note if free else None)
+            if out is not None and pictures.enabled:   # out of the ChatGPT slot; before the push, so it opens whole
+                try:
+                    drawn = await asyncio.to_thread(pictures.draw, out)
+                    await asyncio.to_thread(report_desk.set_images, out["id"], drawn)
+                except Exception as exc:  # noqa: BLE001 - a picture never costs the report
+                    log.warning("report images failed: %s", type(exc).__name__)
         finally:
             report_desk.generating = False
         if out is None:
@@ -1004,6 +1013,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if got is None:
             raise HTTPException(404, "report not found")
         return got
+
+    @app.get("/api/reports/{report_id}/images/{n}")
+    def report_image(report_id: str, n: int):
+        """#497 an explainer picture of a report (``sections[].image.url``)."""
+        path = report_images.image_path(report_id, n, pictures.root)
+        if path is None or not path.is_file():
+            raise HTTPException(404, "image not found")
+        return Response(path.read_bytes(), media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
 
     @app.post("/api/reports", status_code=202)
     async def new_report():

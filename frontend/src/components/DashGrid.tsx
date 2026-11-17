@@ -14,7 +14,7 @@ export default function DashGrid({ width, items, editing, onLayoutChange, render
   label: (id: string) => string;
 }) {
   return (
-    <GridLayout width={width} layout={items}
+    <GridLayout width={width} layout={items.map((it) => ({ ...it, minW: MIN_W }))}
       gridConfig={{ cols: GRID_COLS, rowHeight: ROW_PX, margin: [GAP_PX, GAP_PX], containerPadding: [0, 0] }}
       dragConfig={{ enabled: editing, handle: ".dash-drag" }}
       resizeConfig={{ enabled: editing, handles: ["se", "e", "s"] }}
@@ -22,6 +22,7 @@ export default function DashGrid({ width, items, editing, onLayoutChange, render
       onLayoutChange={(l) => { if (editing) onLayoutChange(l.map(({ i, x, y, w, h }) => ({ i, x, y, w: Math.max(MIN_W, w), h }))); }}>
       {items.map((it) => (
         <div key={it.i} className="dash-grid-item" tabIndex={editing ? 0 : undefined} onKeyDown={editing ? onKey(it.i) : undefined}
+          role={editing ? "group" : undefined} aria-roledescription={editing ? "옮길 수 있는 구역" : undefined}
           aria-label={editing ? label(it.i) : undefined}>
           {renderItem(it.i)}
         </div>

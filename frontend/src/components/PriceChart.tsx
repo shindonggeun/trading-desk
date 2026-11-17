@@ -549,7 +549,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (native.current && !document.fullscreenElement) close();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || e.defaultPrevented) return;   // #539 위 층(상세 분석 확인 칸)이 먼저 닫았다
       if (menu.current?.open) {
         menu.current.open = false; // 열린 표시 메뉴만 닫는다
         return;

@@ -92,7 +92,8 @@ function Chart({ ticker, tradeDate, plan, title, outlook = null, runId }: { tick
   }, [basis]);
   const focusDone = useCallback(() => setFocus(null), []);
   // #531 차트에서 누른 추세선 — 오른쪽 해설 자리 맨 위에 그 선 카드(휴대폰은 아래 시트)
-  const [trend, setTrend] = useState<Trendline | null>(null);
+  const [trend, setTrend] = useState<{ line: Trendline; when?: string } | null>(null);
+  const onTrendPick = useCallback((line: Trendline | null, when?: string) => setTrend(line ? { line, when } : null), []);
   const explain = plan && runId;
   return (
     <div className={`chart-with-ladder${explain ? " chart-with-side" : ""}`}>
@@ -101,12 +102,12 @@ function Chart({ ticker, tradeDate, plan, title, outlook = null, runId }: { tick
           <PriceChart ticker={ticker} tradeDate={tradeDate} plan={plan} title={title} extraLines={extra} lists={false}
             initialInterval={plan ? HORIZON_INTERVAL[plan.horizon ?? "swing"] ?? "1d" : undefined} highlight={picked} outlook={outlook}
             planLabels={labels} onLineClick={basis.length ? onLineClick : undefined}
-            {...(explain ? { trendPick: trend ? trendKey(trend) : null, onTrendPick: setTrend } : {})} />
+            {...(explain ? { trendPick: trend ? trendKey(trend.line) : null, onTrendPick } : {})} />
         </Suspense>
       </SectionBoundary>
       {explain ? (
         <div className="chart-side">
-          {trend && <TrendLineCard line={trend} onClose={() => setTrend(null)} />}
+          {trend && <TrendLineCard line={trend.line} when={trend.when} onClose={() => setTrend(null)} />}
           <ExplainPanel data={sr} failed={srFailed} plan={plan} focus={focus} onFocusDone={focusDone} />
           <LevelLadder ticker={ticker} plan={plan} onPick={setPicked} />
         </div>

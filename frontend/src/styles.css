@@ -2504,10 +2504,23 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .tl-ahead caption { text-align: left; padding-bottom: 2px; }
 .tl-ahead th, .tl-ahead td { padding: 2px 10px 2px 0; text-align: left; font-weight: 400; }
 .tl-status.tl-far { opacity: .8; }
+.tl-close { min-height: 40px; padding: 8px 4px; }
+.tl-card:focus { outline: none; } .tl-card:focus-visible { outline: 2px solid var(--focus); }
+.trend-pick-row { display: inline-flex; flex-wrap: wrap; gap: 4px 6px; }
+.trend-pick-row .chip { font-size: 12px; padding: 2px 8px; }
+.trend-pick-resistance { border-color: var(--sr-resistance, #b58cf0); } .trend-pick-support { border-color: var(--sr-support, #2bb3a3); }
+/* 크게 보기(고정 전체 화면, 높이가 정해짐): 카드는 차트 위 오른쪽에 떠서 제 안에서 스크롤 — 낮은 화면에서 차트를 누르거나 잘리지 않게 */
+@media (min-width: 761px) {
+  .price-chart-expanded .tl-card { position: absolute; top: 64px; right: 16px; z-index: 6; width: min(360px, calc(100% - 32px));
+    max-height: calc(100% - 96px); overflow-y: auto; box-shadow: 0 8px 24px rgb(0 0 0 / .35); }
+}
 @media (max-width: 760px) {
-  /* 휴대폰: 차트를 가리지 않게 아래 시트로(채팅 버튼 위) */
+  /* 휴대폰: 차트를 가리지 않게 아래 시트로 */
   .tl-card { position: fixed; left: 0; right: 0; bottom: 0; z-index: 80; max-height: 62vh; overflow-y: auto; margin: 0;
     border-left: 0; border-top: 3px solid var(--sr-resistance, #b58cf0); border-radius: 14px 14px 0 0;
     padding-bottom: calc(14px + env(safe-area-inset-bottom)); box-shadow: 0 -8px 24px rgb(0 0 0 / .35); }
   .tl-card.tl-support { border-top-color: var(--sr-support, #2bb3a3); }
+  /* 분석 화면은 아래 탭 막대(#509, 49px) 위에 띄워 탭을 덮지 않는다. 시트가 떠 있는 동안 채팅 버튼은 숨긴다(시트를 덮지 않게) */
+  .shell:has(.run-tabs) .tl-card { bottom: calc(49px + env(safe-area-inset-bottom)); max-height: calc(62vh - 49px); }
+  .shell:has(.tl-card) .cw-launcher:not(.cw-on) { display: none; }
 }

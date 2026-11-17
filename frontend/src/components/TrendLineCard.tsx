@@ -9,6 +9,10 @@ import type { Trendline, TrendScenario } from "../types";
  */
 const NAME: Record<Trendline["kind"], string> = { support: "상승 지지선", resistance: "하락 저항선" };
 const barWord = (tf: string) => (tf === "1d" ? "일" : tf === "1w" ? "주" : tf === "1mo" || tf === "1M" ? "달" : "봉");
+/** 부호 없는 % — "5.0% 아래" 처럼 위 · 아래를 말로 할 때 */
+const absPct = (v: number) => `${Math.abs(v) >= 10 ? Math.round(Math.abs(v)) : Math.abs(v).toFixed(1)}%`;
+/** 거래량을 짧게 — 683,204,020 → "6.8억" */
+const qtyKo = (n: number) => (n >= 1e8 ? `${(n / 1e8).toFixed(1)}억` : n >= 1e4 ? `${Math.round(n / 1e4).toLocaleString("ko-KR")}만` : Math.round(n).toLocaleString("ko-KR"));
 const tfWord = (tf: string) => (tf === "1d" ? "일봉" : tf === "1w" ? "주봉" : tf === "1mo" || tf === "1M" ? "월봉" : tf);
 
 function Scenario({ s }: { s: TrendScenario }) {
@@ -20,7 +24,7 @@ function Scenario({ s }: { s: TrendScenario }) {
       <h5>{SCENARIO_KO[s.kind]}</h5>
       <p>{s.text}</p>
       <dl className="small">
-        <div><dt>조건</dt><dd>{close}{s.volume_min != null ? ` · 거래량 ${Math.round(s.volume_min).toLocaleString("ko-KR")} 이상` : ""}</dd></div>
+        <div><dt>조건</dt><dd>{close}{s.volume_min != null ? ` · 거래량 ${qtyKo(s.volume_min)}주 이상(20봉 평균)` : ""}</dd></div>
         {s.target != null && <div><dt>{good ? "다음 목표" : "되돌림 받침"}</dt><dd>{price(s.target)}{s.target_basis ? <span className="muted"> · {s.target_basis}</span> : null}</dd></div>}
         {s.invalid != null && <div><dt>틀렸다고 볼 때</dt><dd>종가 {price(s.invalid)} {s.kind === "breakout" || s.kind === "bounce" ? "아래" : "위"}</dd></div>}
       </dl>
@@ -31,17 +35,22 @@ function Scenario({ s }: { s: TrendScenario }) {
 /** when: "지금" · "분석 당시"(차트의 기준) — 모르면 비운다 */
 export default function TrendLineCard({ line, when = "", onClose }: { line: Trendline; when?: string; onClose: () => void }) {
   const box = useRef<HTMLElement>(null);
-  useEffect(() => { box.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, [line]);
+  const key = line.id ?? `${line.timeframe}-${line.kind}-${line.anchors[0]?.at}`;
+  // 새 선을 고를 때만 카드로 초점 · 스크롤(값만 새로 와서 다시 그릴 때는 그대로)
+  useEffect(() => {
+    box.current?.focus({ preventScroll: true });
+    box.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [key]);
   // 선의 과거 역할(막힌 · 받친 기록)은 kind, 지금 역할은 시나리오로 — 깨진 지지선은 이제 위에서 막는 저항 역할(#530 보완)
   const res = line.kind === "resistance";
   const nowRes = line.scenarios?.length ? line.scenarios.some((s) => s.kind === "breakout" || s.kind === "reject") : res;
   const example = line.scenarios?.some((s) => s.target_basis?.includes("(예시)"));
   const d = line.distance_pct;
   const where = d == null ? null
-    : nowRes ? (d > 0 ? `닿으려면 ${pctText(d)} 올라야 해요` : `지금가가 선보다 ${pctText(-d)} 위예요`)
-      : (d < 0 ? `지금가에서 ${pctText(-d)} 아래에 받침이 있어요` : `지금가가 선보다 ${pctText(d)} 아래예요`);
+    : nowRes ? (d > 0 ? `닿으려면 ${absPct(d)} 올라야 해요` : `가격이 선보다 ${absPct(d)} 위예요`)
+      : (d < 0 ? `가격에서 ${absPct(d)} 아래에 받침이 있어요` : `가격이 선보다 ${absPct(d)} 아래예요`);
   return (
-    <section ref={box} className={`card tl-card tl-${line.kind}`} aria-label={`${NAME[line.kind]} 시나리오`}>
+    <section ref={box} tabIndex={-1} className={`card tl-card tl-${line.kind}`} aria-label={`${NAME[line.kind]} 시나리오`} aria-live="polite">
       <header className="tl-head">
         <strong>{line.scale ? `${SCALE_KO[line.scale]} ` : ""}{NAME[line.kind]}</strong>
         {line.status && <span className={`pill tl-status tl-${line.status}`}>{STATUS_KO[line.status]}</span>}
@@ -67,6 +76,7 @@ export default function TrendLineCard({ line, when = "", onClose }: { line: Tren
       {line.ahead && line.ahead.length > 0 && (
         <table className="tl-ahead small">
           <caption className="muted">앞으로 선 값({KIND_KO[line.kind]}선은 기울어 있어 날마다 바뀌어요)</caption>
+          <thead><tr><th scope="col">언제</th><th scope="col">선 값</th><th scope="col">{when === "분석 당시" ? "그때 가격" : "지금가"} 대비</th></tr></thead>
           <tbody>
             {line.ahead.map((a) => (
               <tr key={a.bars}><th scope="row">{a.bars}{barWord(line.timeframe)} 뒤</th><td>{price(a.price)}</td><td className="muted">{pctText(a.distance_pct)}</td></tr>

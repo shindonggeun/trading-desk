@@ -359,7 +359,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
    * 없으면 차트가 제 아래에 카드를 그린다(큰 차트 화면).
    */
   trendPick?: string | null;
-  onTrendPick?: (line: Trendline | null) => void;
+  /** when: 그 선 값의 기준("지금" · "분석 당시") — 카드가 같은 기준으로 말하게 */
+  onTrendPick?: (line: Trendline | null, when?: string) => void;
 }) {
   const [outlookPrefs, setOutlookPrefs] = useState(loadOutlookPrefs);
   const pickOutlook = (next: Partial<OutlookPrefs>) => {
@@ -433,6 +434,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const pickTrend = useCallback((t: Trendline | null) => {
     if (onTrendPick) onTrendPick(t); else setOwnPick(t ? trendKey(t) : null);
   }, [onTrendPick]);
+  const pickedRef = useRef(pickedId);
+  pickedRef.current = pickedId;
   // 고른 선이 거르기 · 기준 바꾸기로 사라지면 고름도 푼다
   useEffect(() => { if (pickedId && !pickedLine) pickTrend(null); }, [pickedId, pickedLine, pickTrend]);
   const patterns: ChartPattern[] = useMemo(() => (show.pattern ? srSource?.patterns ?? [] : []), [show.pattern, srSource]);
@@ -538,6 +541,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         menu.current.open = false; // 열린 표시 메뉴만 닫는다
         return;
       }
+      if (pickedRef.current) { pickTrend(null); return; }   // #531 고른 추세선이 있으면 그것만 푼다
       close();
     };
     document.addEventListener("fullscreenchange", onFs);
@@ -981,6 +985,27 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     };
   }, [drawn, srShown, srSource, plan, fib, vp, show.levels, show.pb, tradeDate, show.gaps, nowSr]);
 
+  // #531 누른 자리에서 가장 가까운(10px 안) 추세선 — 계획선 클릭(#466)과 추세선 클릭이 같은 자리면 가까운 쪽만 반응하게 둘이 같이 쓴다
+  const nearestTrend = useCallback((param: MouseEventParams<Time>): { line: Trendline; d: number } | null => {
+    const pt = param.point;
+    if (!drawn || !pt || (param.paneIndex ?? 0) !== 0) return null;
+    let best: { line: Trendline; d: number } | null = null;
+    for (const { line, series: s } of trendDrawn) {
+      const v = param.seriesData.get(s) as { value?: number } | undefined;
+      if (v?.value == null) continue;
+      const y = drawn.series.priceToCoordinate(v.value);
+      if (y == null) continue;
+      const d = Math.abs(y - pt.y);
+      if (d <= 10 && (!best || d < best.d)) best = { line, d };
+    }
+    return best;
+  }, [drawn, trendDrawn]);
+  // 누를 수 있는 계획선 가격(#466 과 같은 규칙) — 추세선 클릭이 더 가까운 계획선에 양보할 때 쓴다
+  const planLinePrices = useMemo(() => (!onLineClick || !show.levels ? [] : [
+    ...(levelsContradict(plan) ? [] : [plan?.entry_price, plan?.stop_loss, plan?.price_target]),
+    ...(extraLines ?? []).map((l) => l.price),
+  ].filter((p): p is number => p != null && Number.isFinite(p))), [onLineClick, show.levels, plan, extraLines]);
+
   // #466 계획선 가까이(12px)를 누르면 그 선의 가격을 알린다 — 해설 패널이 근거를 펼친다
   useEffect(() => {
     // 실제로 그린 선만 — 타점선을 끄면 없고, 진입을 사이에 두지 않는 계획(#436)은 진입 · 손절 · 목표를 그리지 않는다
@@ -989,7 +1014,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const own = levelsContradict(plan) ? [] : [plan?.entry_price, plan?.stop_loss, plan?.price_target];
     const prices = [...own, ...(extraLines ?? []).map((l) => l.price)]
       .filter((p): p is number => p != null && Number.isFinite(p));
-    const onClick = (param: { point?: { x: number; y: number } }) => {
+    const onClick = (param: MouseEventParams<Time>) => {
       const y = param.point?.y;
       if (y == null) return;
       let best: { p: number; d: number } | null = null;
@@ -999,13 +1024,15 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         const d = Math.abs(c - y);
         if (d <= 12 && (!best || d < best.d)) best = { p, d };
       }
-      if (best) onLineClick(best.p);
+      // #531 같은 자리에 더 가까운 추세선이 있으면 그쪽(추세선 클릭)만 반응한다
+      const t = nearestTrend(param);
+      if (best && !(t && t.d < (best as { d: number }).d)) onLineClick((best as { p: number }).p);
     };
     chart.subscribeClick(onClick);
     return () => {
       if (drawn.alive.current) chart.unsubscribeClick(onClick);
     };
-  }, [drawn, plan, extraLines, onLineClick, show.levels]);
+  }, [drawn, plan, extraLines, onLineClick, show.levels, nearestTrend]);
 
   // #313 타점 보기 — 자기 띠 · 선을 붙이고 뗀다(다른 그리기와 섞지 않는다)
   useEffect(() => {
@@ -1143,44 +1170,48 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   }, [trendDrawn, pickedId]);
 
   // #531 추세선 가까이(10px)를 누르면 그 선을 고른다. 선이 아닌 곳을 누르면 고름을 푼다
-  const pickedRef = useRef(pickedId);
-  pickedRef.current = pickedId;
   useEffect(() => {
     if (!drawn || trendDrawn.length === 0) return;
     const { chart, series } = drawn;
     const onClick = (param: MouseEventParams<Time>) => {
       const pt = param.point;
       if (!pt || (param.paneIndex ?? 0) !== 0) return;
-      let best: { line: Trendline; d: number } | null = null;
-      for (const { line, series: s } of trendDrawn) {
-        const v = param.seriesData.get(s) as { value?: number } | undefined;
-        if (v?.value == null) continue;
-        const y = series.priceToCoordinate(v.value);
-        if (y == null) continue;
-        const d = Math.abs(y - pt.y);
-        if (d <= 10 && (!best || d < best.d)) best = { line, d };
-      }
-      const hit = best as { line: Trendline } | null;
-      if (hit) pickTrend(hit.line);
+      const hit = nearestTrend(param);
+      // 같은 자리에 더 가까운 계획선(#466)이 있으면 그쪽만 반응한다
+      const planD = planLinePrices.reduce<number | null>((m, p) => {
+        const c = series.priceToCoordinate(p);
+        if (c == null) return m;
+        const d = Math.abs(c - pt.y);
+        return d <= 12 && (m == null || d < m) ? d : m;
+      }, null);
+      if (hit && (planD == null || hit.d <= planD)) pickTrend(hit.line);
       else if (pickedRef.current) pickTrend(null);
     };
     chart.subscribeClick(onClick);
     return () => {
       if (drawn.alive.current) chart.unsubscribeClick(onClick);
     };
-  }, [drawn, trendDrawn, pickTrend]);
+  }, [drawn, trendDrawn, pickTrend, nearestTrend, planLinePrices]);
 
-  // #531 Esc 로 고름을 푼다 — 크게 보기의 Esc(닫기)보다 먼저(window 캡처) 받아 한 번은 고름만 푼다
+  // #531 Esc 로 고름을 푼다. 다른 것의 Esc 를 가로채지 않는다 — 맨 위 층(채팅 · 입력 칸 · 대화 상자)이 먼저.
+  // 크게 보기는 그 Esc 처리 안에서 "메뉴 → 고름 → 닫기" 순서로 따로 푼다
   useEffect(() => {
-    if (!pickedId) return;
+    if (!pickedId || expanded) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.stopPropagation();
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.("input, textarea, select, [contenteditable], [role=dialog]")) return;
+      if (document.querySelector(".cw-panel:not([hidden])")) return;   // 열린 채팅은 채팅이 닫는다
       pickTrend(null);
     };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [pickedId, pickTrend]);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [pickedId, pickTrend, expanded]);
+
+  // #531 제어 모드: 기준(분석 당시 ↔ 지금)이 바뀌어 같은 선의 값이 새로 오면 바깥 카드도 새 값 · 기준으로
+  useEffect(() => {
+    if (onTrendPick && pickedLine) onTrendPick(pickedLine, when);
+  }, [pickedLine, when]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // #321 휩소 — 직전 저점(고점)을 깨고 구역에 들어왔다가 되돌아 마감한 봉에 "스윕 후 회복". 지지 · 저항을 켰을 때만.
   const sweeps = show.sr ? srSource?.events ?? null : null;
@@ -1677,6 +1708,17 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
             </button>
           ))}
           {Object.values(trendFilter).some((v) => !v) && <button type="button" className="link small" onClick={() => setTrendFilter(ALL_ON)}>모두 켜기</button>}
+          {/* 선 바로 고르기 — 축 밖에 있는 먼 선 · 키보드로도 카드를 열게 */}
+          {trendLines.some((t) => t.scenarios) && (
+            <span className="trend-pick-row" role="group" aria-label="선 고르기">
+              {trendLines.filter((t) => t.scenarios).map((t) => (
+                <button key={trendKey(t)} type="button" className={`chip chip-small trend-pick-${t.kind}${trendKey(t) === pickedId ? " chip-on" : ""}`}
+                  aria-pressed={trendKey(t) === pickedId} onClick={() => pickTrend(trendKey(t) === pickedId ? null : t)}>
+                  {trendLabel(t)}{t.status === "far" ? " (멀리)" : ""}
+                </button>
+              ))}
+            </span>
+          )}
           <span className="muted">
             {trendLines.length}개{allTrends.length > trendLines.length ? ` (꺼 둔 ${allTrends.length - trendLines.length}개)` : ""}
             {trendLines.some((t) => t.scenarios) ? " · 선을 누르면 돌파 · 거절 시나리오, Esc 로 닫기" : ""}
@@ -1747,7 +1789,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
                 <span className="small">
                   {TREND_NAME[t.kind]} · {kstDay(t.anchors[0].at)}부터 · {when} 가격 {signed(t.distance_atr)} ATR ·{" "}
                   <strong className="trend-state">{t.status ? STATUS_KO[t.status] : TREND_STATE[t.state]}</strong>
-                  {t.distance_pct != null && <> · 지금가 대비 {t.distance_pct > 0 ? "+" : ""}{t.distance_pct}%</>}
+                  {t.distance_pct != null && <> · {mode === "plan" ? "그때 가격" : "지금가"} 대비 {t.distance_pct > 0 ? "+" : ""}{t.distance_pct}%</>}
                 </span>
                 {t.scenarios && <button type="button" className="link small" onClick={() => pickTrend(trendKey(t) === pickedId ? null : t)}>{trendKey(t) === pickedId ? "닫기" : "시나리오"}</button>}
               </li>

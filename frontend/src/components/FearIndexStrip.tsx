@@ -33,7 +33,7 @@ function Cell({ item }: { item: FearItem }) {
     return (
       <div className="fear-cell fear-empty" title={item.error ?? undefined}>
         <span className="fear-name">{item.name}</span>
-        <span className="muted small">{why}</span>
+        <span className="muted small">{why}{item.error && <span className="sr-only"> — {item.error}</span>}</span>
       </div>
     );
   }
@@ -77,12 +77,15 @@ export default function FearIndexStrip() {
     return () => { alive = false; window.clearInterval(t); };
   }, []);
 
-  if (failed) return <p className="muted small fear-failed">공포지수를 불러오지 못했습니다: {failed}</p>;
-  if (!data) return null;
+  // 이미 받은 값이 있으면 갱신 한 번 실패해도 그 값을 두고 아래에 작게만 알린다(배포 중 502 등)
+  if (!data) return failed ? <p className="muted small fear-failed">공포지수를 불러오지 못했습니다: {failed}</p> : null;
   if (data.items.length === 0) return data.error ? <p className="muted small fear-failed">공포지수: {data.error}</p> : null;
   return (
-    <div className="fear-strip" role="group" aria-label="공포지수">
-      {data.items.map((item) => <Cell key={item.key} item={item} />)}
-    </div>
+    <>
+      <div className="fear-strip" role="group" aria-label="공포지수">
+        {data.items.map((item) => <Cell key={item.key} item={item} />)}
+      </div>
+      {failed && <p className="muted small fear-failed">최근 갱신 실패 — 앞서 받은 값입니다({failed})</p>}
+    </>
   );
 }

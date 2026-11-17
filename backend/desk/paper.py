@@ -6,16 +6,22 @@ and a run is counted once. On top of it this module only adds money:
 
 - size: ``risk`` - the shares that lose ``risk_pct`` of the realized balance at the stop; or ``weight`` -
   ``weight_pct`` of it. Whole shares; capped by the cash left (skipped only when not even one share fits).
-- costs: a commission each side (Korean / US rates), the Korean sell tax, and slippage against us on both
-  fills (in the fill price).
-- US prices in won at the fill day's ``KRW=X`` daily close (the last one within ``FX_LOOKBACK`` days).
-- order: events in time; at the same moment exits first (they free cash), then entries by plan time and
-  run id. Skipped with a reason: short off, the open-position limit, no cash, under one share, no rate.
+- costs: a commission each side (Korean / US rates), the Korean sell tax (a long pays it at the exit, a short
+  at the entry), and slippage against us on both fills (in the fill price).
+- US prices in won: a long converts won to dollars at the fill day's ``KRW=X`` close and back at the exit
+  day's; a short's proceeds and buy-back are both in dollars, so only its profit is converted (at the exit
+  day's rate) - its margin is held in won at the entry rate. Rates are London-dated daily closes (the last
+  one within ``FX_LOOKBACK`` days).
+- order: events in time; at the same moment other trades' exits first (they free cash), then entries by plan
+  time and run id. A trade whose exit is its fill bar (a stop touched in that bar, an intraday plan filled in
+  the session's last bar) closes right after its own entry. Skipped with a reason: short off, the
+  open-position limit, no cash, under one share, no rate, another currency.
 - open trades are marked at the scorer's last close (``outcome.r`` of an ``open`` plan); ``both`` (a bar
   touching stop and target) is taken at the stop, as the hit rate counts it as a miss.
 
 Everything is recomputed from the start whenever the settings or the scores change: deterministic for the
-same runs, settings and rates.
+same runs, settings and rates - and so retroactive (a plan scored late, or a run purged by the retention,
+changes the trades after it).
 """
 
 from __future__ import annotations
@@ -28,7 +34,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 
 from desk.db import now as db_now
@@ -39,9 +45,11 @@ log = logging.getLogger(__name__)
 
 KST = ZoneInfo("Asia/Seoul")
 FX_TICKER = "KRW=X"
-FX_BARS = 1500                # about six years of daily rates
+FX_PERIOD = "10y"
 FX_TTL_SEC = 6 * 3600
+FX_RETRY_SEC = 5 * 60         # after a failed fetch: try again this soon, not after the full TTL
 FX_LOOKBACK = 5               # days back for a rate when the fill day has none (a holiday)
+EARLIEST = date(2015, 1, 1)   # the earliest start date (a far one would make a huge daily curve)
 FILLED = ("target", "stop", "both", "expired", "open")
 CLOSED = ("target", "stop", "both", "expired")
 
@@ -69,7 +77,7 @@ SKIP_TEXT = {
 
 # ---------------------------------------------------------------- settings
 
-def validate(patch: dict, base: dict) -> dict:
+def validate(patch: dict, base: dict, today: date | None = None) -> dict:
     """``base`` with ``patch`` applied, checked: ValueError names the first bad field."""
     out = {k: base.get(k, v) for k, v in DEFAULTS.items()}
     for key, value in patch.items():
@@ -78,9 +86,13 @@ def validate(patch: dict, base: dict) -> dict:
         if key == "start_date":
             if value not in (None, ""):
                 try:
-                    value = date.fromisoformat(str(value)).isoformat()
+                    day = date.fromisoformat(str(value))
                 except ValueError:
                     raise ValueError("start_date: YYYY-MM-DD or null") from None
+                last = today or datetime.now(KST).date()
+                if not EARLIEST <= day <= last:
+                    raise ValueError(f"start_date: between {EARLIEST} and today")
+                value = day.isoformat()
             else:
                 value = None
         elif key == "sizing":
@@ -140,15 +152,14 @@ def _plan_at(run: dict) -> str | None:
 
 def candidates(runs: list[dict], start_date: str | None) -> list[dict]:
     """The runs a paper trade can come from: a directional plan with entry, stop and target, scored or not
-    (``invalid`` and plans before ``start_date`` are left out), newest plan last."""
+    (``invalid`` and plans before ``start_date`` are left out), oldest plan first."""
     out = []
     for run in runs:
         plan = run.get("plan") or {}
         if plan.get("bias") not in ("long", "short") or None in (plan.get("entry_price"), plan.get("stop_loss"),
                                                                    plan.get("price_target")):
             continue
-        status = (run.get("outcome") or {}).get("status")
-        if status == "invalid":
+        if (run.get("outcome") or {}).get("status") == "invalid":
             continue
         at = _plan_at(run) or (run["created_at"].isoformat() if isinstance(run.get("created_at"), datetime)
                                else run.get("created_at"))
@@ -161,7 +172,9 @@ def candidates(runs: list[dict], start_date: str | None) -> list[dict]:
 
 
 def _exit_price(plan: dict, outcome: dict, direction: int) -> float | None:
-    entry, stop, target = plan["entry_price"], plan["stop_loss"], plan["price_target"]
+    """target: the target; both: the stop; else the price ``outcome.r`` stands for (a gap through the stop,
+    the expiry close, the last close of an open plan)."""
+    entry, stop, target = plan["entry"], plan["stop"], plan["target"]
     status, r = outcome.get("status"), outcome.get("r")
     if status == "target":
         return target
@@ -178,6 +191,7 @@ def simulate(runs: list[dict], settings: dict, rates: dict[str, float], now: dat
     ``KRW=X`` closes ``rates`` (ISO date -> won per dollar). Pure: the same input gives the same output."""
     s = settings
     slip = s["slippage_pct"] / 100
+    names: dict[str, str | None] = {}
     trades: list[dict] = []
     events: list[tuple] = []           # (time, 0 exit | 1 entry, plan time, run id, trade)
     for run in candidates(runs, s.get("start_date")):
@@ -186,9 +200,13 @@ def simulate(runs: list[dict], settings: dict, rates: dict[str, float], now: dat
         ticker = run["ticker"]
         market = market_of(ticker)
         status = outcome.get("status")
-        name = (run.get("options") or {}).get("name") or (name_of(ticker) if name_of else None)
-        t = {"run_id": run["id"], "ticker": ticker, "name": name, "market": market or "US",
-             "currency": "KRW" if market == "KR" else "USD", "direction": plan["bias"],
+        name = (run.get("options") or {}).get("name")
+        if not name and name_of:
+            if ticker not in names:
+                names[ticker] = name_of(ticker)
+            name = names[ticker]
+        t = {"run_id": run["id"], "ticker": ticker, "name": name, "market": market,
+             "currency": {"KR": "KRW", "US": "USD"}.get(market), "direction": plan["bias"],
              "rating": plan.get("rating"), "horizon": plan.get("horizon") or (run.get("options") or {}).get("horizon"),
              "plan_at": _iso(run["_plan_at"]), "status": "waiting", "exit_reason": None, "skip": None,
              "plan": {"entry": plan["entry_price"], "stop": plan["stop_loss"], "target": plan["price_target"]},
@@ -207,22 +225,34 @@ def simulate(runs: list[dict], settings: dict, rates: dict[str, float], now: dat
         if market is None:
             _skip(t, "unsupported")
             continue
-        events.append((_at(outcome["filled_at"]), 1, run["_plan_at"], run["id"], t))
+        filled_at = _at(outcome["filled_at"])
+        events.append((filled_at, 1, run["_plan_at"], run["id"], t))
         if status in CLOSED and outcome.get("exited_at"):
-            events.append((_at(outcome["exited_at"]), 0, run["_plan_at"], run["id"], t))
+            exited_at = _at(outcome["exited_at"])
+            if exited_at <= filled_at:
+                t["_exit_now"] = exited_at                     # closed in its own fill bar: right after the entry
+            else:
+                events.append((exited_at, 0, run["_plan_at"], run["id"], t))
     events.sort(key=lambda e: (e[0], e[1], e[2], e[3]))
 
     realized = float(s["start_capital"])
     held: dict[str, dict] = {}
     closes: list[tuple[datetime, float]] = []      # (exit time, pnl) of the closed trades, in order
+
+    def close(t: dict, at: datetime) -> None:
+        nonlocal realized
+        pnl = _close(t, at, s, rates, slip, mark=False)
+        realized += pnl
+        del held[t["run_id"]]
+        closes.append((at, pnl))
+
     for at, kind, _plan_time, run_id, t in events:
         if kind == 1:
             _enter(t, at, s, rates, realized, held, slip)
+            if run_id in held and "_exit_now" in t:
+                close(t, t["_exit_now"])
         elif run_id in held:
-            pnl = _close(t, at, s, rates, slip, mark=False)
-            realized += pnl
-            del held[run_id]
-            closes.append((at, pnl))
+            close(t, at)
     last_fx = rates[max(rates)] if rates else None
     unrealized = 0.0
     for t in held.values():                         # still open: marked at the scorer's last close
@@ -230,10 +260,11 @@ def simulate(runs: list[dict], settings: dict, rates: dict[str, float], now: dat
             unrealized += _close(t, now, s, rates, slip, mark=True, fx_now=last_fx)
         else:                                       # closed in the plan record but its exit time is missing
             t["status"], t["marked"] = "open", True
+    open_costs = sum(t["_entry_costs"] for t in held.values())
     for t in trades:
-        for k in ("_dir", "_outcome", "_entry_costs"):
+        for k in ("_dir", "_outcome", "_entry_costs", "_exit_now", "_fill_in"):
             t.pop(k, None)
-    return _report(trades, closes, realized, unrealized, held, s, now)
+    return _report(trades, closes, realized, unrealized, open_costs, held, s, now)
 
 
 def _skip(t: dict, code: str) -> None:
@@ -242,6 +273,10 @@ def _skip(t: dict, code: str) -> None:
 
 def _fee(t: dict, s: dict) -> float:
     return (s["fee_kr_pct"] if t["market"] == "KR" else s["fee_us_pct"]) / 100
+
+
+def _tax(t: dict, s: dict) -> float:
+    return s["tax_kr_pct"] / 100 if t["market"] == "KR" else 0.0
 
 
 def _enter(t: dict, at: datetime, s: dict, rates: dict, realized: float, held: dict, slip: float) -> None:
@@ -256,7 +291,7 @@ def _enter(t: dict, at: datetime, s: dict, rates: dict, realized: float, held: d
         if fx is None:
             return _skip(t, "no_fx")
     fill = t["plan"]["entry"] * (1 + direction * slip)
-    fee = _fee(t, s)
+    cost_rate = _fee(t, s) + (_tax(t, s) if direction < 0 else 0.0)     # a short sells (and pays the tax) first
     if s["sizing"] == "risk":
         per_share = abs(fill - t["plan"]["stop"]) * fx
         qty = math.floor(realized * s["risk_pct"] / 100 / per_share) if per_share > 0 else 0
@@ -265,15 +300,14 @@ def _enter(t: dict, at: datetime, s: dict, rates: dict, realized: float, held: d
     if qty < 1:
         return _skip(t, "too_small")
     cash = realized - sum(h["amount_krw"] + h["_entry_costs"] for h in held.values())
-    afford = math.floor(cash / (fill * fx * (1 + fee))) if fill > 0 else 0
+    afford = math.floor(cash / (fill * fx * (1 + cost_rate))) if fill > 0 and cash > 0 else 0
     qty = min(qty, afford)
     if qty < 1:
         return _skip(t, "no_cash")
     amount = qty * fill * fx
-    entry_costs = amount * fee + (amount * s["tax_kr_pct"] / 100 if t["market"] == "KR" and direction < 0 else 0)
     t.update({"status": "open", "entry": {"at": _iso(at), "price": t["plan"]["entry"], "fill": round(fill, 6)},
               "qty": qty, "fx": {"entry": fx, "exit": None} if t["market"] == "US" else None,
-              "amount_krw": round(amount), "_entry_costs": entry_costs})
+              "amount_krw": round(amount), "_entry_costs": amount * cost_rate, "_fill_in": fill})
     held[t["run_id"]] = t
     return None
 
@@ -281,19 +315,21 @@ def _enter(t: dict, at: datetime, s: dict, rates: dict, realized: float, held: d
 def _close(t: dict, at: datetime, s: dict, rates: dict, slip: float, mark: bool, fx_now: float | None = None) -> float:
     """The trade's won result at its exit (or marked now): fills, both fees, the Korean sell tax."""
     direction = t["_dir"]
-    price = _exit_price({"entry_price": t["plan"]["entry"], "stop_loss": t["plan"]["stop"],
-                         "price_target": t["plan"]["target"]}, t["_outcome"], direction)
+    price = _exit_price(t["plan"], t["_outcome"], direction)
     fx_in = t["fx"]["entry"] if t["fx"] else 1.0
     fx_out = 1.0
     if t["market"] == "US":
         fx_out = (fx_now if mark else fx_on(rates, at.astimezone(UTC).date())) or fx_in
+    fill_in = t["_fill_in"]
     fill = price * (1 - direction * slip)
     qty = t["qty"]
     out_amount = qty * fill * fx_out
-    exit_costs = out_amount * _fee(t, s) + (out_amount * s["tax_kr_pct"] / 100
-                                           if t["market"] == "KR" and direction > 0 else 0)
-    costs = t.pop("_entry_costs", 0.0) + exit_costs
-    gross = out_amount - t["amount_krw"] if direction > 0 else t["amount_krw"] - out_amount
+    exit_costs = out_amount * (_fee(t, s) + (_tax(t, s) if direction > 0 else 0.0))
+    costs = t["_entry_costs"] + exit_costs
+    if direction > 0:
+        gross = out_amount - qty * fill_in * fx_in
+    else:                       # sold and bought back in dollars: only the profit changes currency
+        gross = qty * (fill_in - fill) * fx_out
     pnl = gross - costs
     t.update({"exit": {"at": _iso(at), "price": round(price, 6), "fill": round(fill, 6)},
               "costs_krw": round(costs), "pnl_krw": round(pnl),
@@ -320,7 +356,7 @@ def _by(rows: list[dict], key: str) -> list[dict]:
 
 
 def _report(trades: list[dict], closes: list[tuple[datetime, float]], realized: float, unrealized: float,
-            held: dict, s: dict, now: datetime) -> dict:
+            open_costs: float, held: dict, s: dict, now: datetime) -> dict:
     start = float(s["start_capital"])
     closed = [t for t in trades if t["status"] == "closed"]
     counts = {k: sum(1 for t in trades if t["status"] == k) for k in ("closed", "open", "waiting", "skipped")}
@@ -341,8 +377,8 @@ def _report(trades: list[dict], closes: list[tuple[datetime, float]], realized: 
         balance += by_day.get(d, 0.0)
         points.append({"date": d.isoformat(), "balance": round(balance + (unrealized if d == today else 0))})
         d += timedelta(days=1)
-    peak, peak_at, worst = start, points[0]["date"] if points else None, {"krw": 0, "pct": 0.0, "peak_at": None,
-                                                                          "trough_at": None}
+    peak, peak_at = start, points[0]["date"] if points else None
+    worst = {"krw": 0, "pct": 0.0, "peak_at": None, "trough_at": None}
     for p in points:
         if p["balance"] > peak:
             peak, peak_at = p["balance"], p["date"]
@@ -363,8 +399,9 @@ def _report(trades: list[dict], closes: list[tuple[datetime, float]], realized: 
     balance_now = realized + unrealized
     return {
         "summary": {
-            "start_capital": int(start), "balance": round(balance_now), "cash": round(realized - invested),
-            "invested": round(invested), "realized_pnl": round(realized - start), "unrealized_pnl": round(unrealized),
+            "start_capital": int(start), "balance": round(balance_now),
+            "cash": round(realized - invested - open_costs), "invested": round(invested),
+            "realized_pnl": round(realized - start), "unrealized_pnl": round(unrealized),
             "total_pnl": round(balance_now - start), "total_pnl_pct": round((balance_now - start) / start * 100, 2),
             "trades": counts, "wins": len(wins), "losses": len(losses),
             "win_rate": round(len(wins) / len(closed), 3) if closed else None,
@@ -387,23 +424,30 @@ def _report(trades: list[dict], closes: list[tuple[datetime, float]], realized: 
 
 # ---------------------------------------------------------------- storage, rates and the cached result
 
-def yahoo_rates() -> dict[str, float]:
-    """Daily ``KRW=X`` closes by ISO date (UTC day of the bar)."""
-    from desk import prices
+def rates_from_frame(frame) -> dict[str, float]:
+    """Daily ``KRW=X`` closes by the bar's own (London) date: the index is London midnight, so in summer
+    (+01:00) a UTC date would name the day before."""
+    return {ts.date().isoformat(): float(close) for ts, close in frame["Close"].dropna().items() if close > 0}
 
-    return {b.at[:10]: float(b.close) for b in prices.yahoo_candles(FX_TICKER, "1d", FX_BARS) if b.close}
+
+def yahoo_rates() -> dict[str, float]:
+    import yfinance as yf
+
+    return rates_from_frame(yf.Ticker(FX_TICKER).history(period=FX_PERIOD, interval="1d", auto_adjust=False))
 
 
 class Paper:
     """The one paper account of the desk: its settings row and the result, recomputed when the settings or
-    the plan scores change."""
+    the plan scores change (one computation at a time; the others wait for it)."""
 
     def __init__(self, engine: Engine, rates: Callable[[], dict[str, float]] = yahoo_rates,
                  name_of: Callable[[str], str | None] | None = None) -> None:
         self.engine, self.fetch_rates, self.name_of = engine, rates, name_of
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()           # the settings row
+        self.fx_lock = threading.Lock()        # one rate fetch at a time
+        self.compute_lock = threading.Lock()   # one computation at a time
         self._rates: dict[str, float] | None = None
-        self._rates_at = 0.0
+        self._rates_next = 0.0
         self._cache: tuple[tuple, dict] | None = None
 
     # settings ----------------------------------------------------------
@@ -412,7 +456,7 @@ class Paper:
             row = conn.execute(select(settings_t).where(settings_t.c.id == 1)).first()
         if row is None:
             return {**DEFAULTS, "version": 0, "updated_at": None}
-        body = validate(row.body or {}, DEFAULTS)
+        body = {k: (row.body or {}).get(k, v) for k, v in DEFAULTS.items()}
         at = row.updated_at if row.updated_at.tzinfo else row.updated_at.replace(tzinfo=UTC)
         return {**body, "version": row.version, "updated_at": _iso(at)}
 
@@ -420,7 +464,8 @@ class Paper:
         """``patch`` applied to the stored settings (ValueError when a field is out of range)."""
         with self.lock, self.engine.begin() as conn:
             row = conn.execute(select(settings_t).where(settings_t.c.id == 1)).first()
-            body = validate(patch, validate(row.body or {}, DEFAULTS) if row else DEFAULTS)
+            stored = {k: (row.body or {}).get(k, v) for k, v in DEFAULTS.items()} if row else DEFAULTS
+            body = validate(patch, stored)
             at = db_now()
             if row is None:
                 conn.execute(settings_t.insert().values(id=1, body=body, version=1, updated_at=at))
@@ -431,21 +476,30 @@ class Paper:
         return self.settings()
 
     # rates ---------------------------------------------------------------
-    def rates(self, need: bool) -> dict[str, float]:
-        """The cached ``KRW=X`` closes; fetched only when a US trade needs them (a failure: empty, and
-        those trades are skipped as ``no_fx`` until the next try)."""
-        if not need:
+    def rates(self) -> dict[str, float]:
+        """The cached ``KRW=X`` closes, fetched again after ``FX_TTL_SEC`` (``FX_RETRY_SEC`` after a failure:
+        meanwhile the last good ones, or none - the US trades are then skipped as ``no_fx``)."""
+        with self.fx_lock:
+            if time.monotonic() >= self._rates_next:
+                try:
+                    self._rates = self.fetch_rates()
+                    self._rates_next = time.monotonic() + FX_TTL_SEC
+                except Exception as exc:  # noqa: BLE001 - a rate failure skips the US trades, nothing else
+                    log.warning("paper: KRW=X rates not fetched (%s)", type(exc).__name__)
+                    self._rates = self._rates or {}
+                    self._rates_next = time.monotonic() + FX_RETRY_SEC
             return self._rates or {}
-        if self._rates is None or time.monotonic() - self._rates_at > FX_TTL_SEC:
-            try:
-                self._rates = self.fetch_rates()
-            except Exception as exc:  # noqa: BLE001 - a rate failure skips the US trades, nothing else
-                log.warning("paper: KRW=X rates not fetched (%s)", type(exc).__name__)
-                self._rates = self._rates or {}
-            self._rates_at = time.monotonic()
-        return self._rates
 
     # the result ------------------------------------------------------------
+    def _stamp(self) -> tuple:
+        """What the result depends on in the runs table, read without the plans: a scored, added, finished
+        or deleted run changes it."""
+        q = select(func.count(), func.max(runs_t.c.scored_at), func.max(runs_t.c.finished_at),
+                   func.min(runs_t.c.created_at), func.max(runs_t.c.created_at),
+                   func.sum(func.length(runs_t.c.id))).where(runs_t.c.status == "done")
+        with self.engine.connect() as conn:
+            return tuple(conn.execute(q).one())
+
     def _runs(self) -> list[dict]:
         cols = (runs_t.c.id, runs_t.c.ticker, runs_t.c.options, runs_t.c.plan, runs_t.c.outcome,
                 runs_t.c.created_at, runs_t.c.scored_at)
@@ -454,25 +508,22 @@ class Paper:
         return [dict(r) for r in rows]
 
     def result(self, now: datetime | None = None) -> dict:
-        settings = self.settings()
-        runs = self._runs()
-        scored = max((r["scored_at"] for r in runs if r["scored_at"]), default=None)
-        if scored is not None and scored.tzinfo is None:
-            scored = scored.replace(tzinfo=UTC)
-        need_fx = any(market_of(r["ticker"]) == "US" for r in runs)
-        rates = self.rates(need_fx)
         now = now or datetime.now(UTC)
-        key = (settings["version"], len(runs), scored, len(rates), _kst_day(now))
-        with self.lock:
+        with self.compute_lock:
+            settings = self.settings()
+            stamp = self._stamp()
+            rates = self.rates()
+            key = (settings["version"], stamp, len(rates), max(rates) if rates else None, _kst_day(now))
             if self._cache and self._cache[0] == key:
                 return self._cache[1]
-        got = simulate(runs, settings, rates, now, self.name_of)
-        meta = {"as_of": _iso(now), "scored_at": _iso(scored) if scored else None,
-                "settings_version": settings["version"]}
-        out = {"meta": meta, **got}
-        with self.lock:
+            got = simulate(self._runs(), settings, rates, now, self.name_of)
+            scored = stamp[1]
+            if scored is not None and scored.tzinfo is None:
+                scored = scored.replace(tzinfo=UTC)
+            out = {"meta": {"as_of": _iso(now), "scored_at": _iso(scored) if scored else None,
+                            "settings_version": settings["version"]}, **got}
             self._cache = (key, out)
-        return out
+            return out
 
     def summary(self) -> dict:
         r = self.result()

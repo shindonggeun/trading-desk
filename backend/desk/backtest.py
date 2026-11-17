@@ -904,7 +904,7 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
         vix: dict[str, float] | None | bool = True, risk: MarketRisk | None | bool = None,
         on_trades: Callable[[list[Trade], str | None], None] | None = None, features: bool = False,
         flow_dir: str | None = None, flow_weight: float | None = None,
-        news_dir: str | None = None, macro_weight: float | None = None) -> Report:
+        news_dir: str | None = None, macro_weight: float | None = None, news_source: str = "gdelt") -> Report:
     """``vix=True`` loads ^VIX daily closes (the regime's fear evidence); a dict supplies them; None skips.
     ``risk=True`` loads the market's indices for the selling score (#146, desk.risk_regime; the CLI
     does); a MarketRisk supplies them; None leaves the playbooks ungated. ``on_trades(trades, cut)``
@@ -914,14 +914,15 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
     before the plan day as the direction's flow part; ``flow_weight`` counts it in the score for
     this run (the live weight stays 0 until a run like this shows it helps). ``news_dir`` (#390) holds
     the desk.news_history files: every plan gets the news themes' brief of the days before it as the
-    direction's macro part, ``macro_weight`` the same way. Without them the run is as before."""
+    direction's macro part, ``macro_weight`` the same way; ``news_source`` (#485) picks GDELT's days or the
+    kept Google News ones (never mixed). Without them the run is as before."""
     weights = {k: w for k, w in (("flow", flow_weight), ("macro", macro_weight)) if w is not None}
     if weights:
         old = {k: DIRECTION_WEIGHTS[k] for k in weights}
         DIRECTION_WEIGHTS.update(weights)
         try:
             return run(tickers, horizon, start, end, step, costs, do_sweep, fetch, progress, vix, risk,
-                       on_trades, features, flow_dir, None, news_dir, None)
+                       on_trades, features, flow_dir, None, news_dir, None, news_source)
         finally:
             DIRECTION_WEIGHTS.update(old)
     h = horizons.get(horizon)
@@ -958,7 +959,7 @@ def run(tickers: list[str], horizon: str | None = None, start: str | None = None
     if flow_dir:
         notes += attach_flow([s for s, _ in snaps], flow_dir)
     if news_dir:
-        notes += attach_news([s for s, _ in snaps], news_dir)
+        notes += attach_news([s for s, _ in snaps], news_dir, news_source)
     notes.append(replayed_note(bool(flow_dir), bool(news_dir)))
     trades = evaluate(snaps, h, costs, notes=notes)
     cut = split_cut(t.at for t in trades)
@@ -1007,11 +1008,13 @@ def attach_flow(snaps: list[Snapshot], flow_dir: str) -> list[str]:
     return notes
 
 
-def attach_news(snaps: list[Snapshot], news_dir: str) -> list[str]:
+def attach_news(snaps: list[Snapshot], news_dir: str, source: str = "gdelt") -> list[str]:
     """#390: each snapshot's news themes brief from ``news_dir`` (the days before its own only);
-    returns the notes (themes with no past, plans no theme reached)."""
-    history = news_history.load(news_dir)
-    notes = []
+    returns the notes (themes with no past, plans no theme reached). ``source`` (#485): GDELT's files
+    or the Google News days kept below them - one source a run."""
+    history = news_history.load(news_dir, source=source)
+    notes = [f"거시 항목 출처: {source}"
+             + (" (헤드라인 단어 톤 · 피드 100건 상한의 기사 수 — GDELT 와 척도가 다름)" if source != "gdelt" else "")]
     gaps = news_history.thin(history)
     if len(gaps) == len(history):
         return [f"뉴스 테마 과거 파일 없음: {news_dir} (news-history 로 먼저 받기) — 거시 항목 없이 판정"]

@@ -461,7 +461,12 @@ async def fetch_theme_rss(theme: Theme, now: datetime, client: httpx.AsyncClient
     # #291: and only the ones titled on the theme - the search also matches inside an article's text
     mine = [i for i in window if on_topic(theme, i["title"])]
     mine_last = [i for i in last if on_topic(theme, i["title"])]
-    return {"id": theme.id, "label": theme.label, "articles_24h": len(last), "spike": ratio, "spike_kind": "raw-share",
+    words = query_words(theme.query)
+    # #485 the pass's per-day values for desk.macro_history (popped by Cache.refresh, never shown or saved)
+    day_values = macro_history.rss_daily(
+        [(i["seen"].isoformat(), i["title"]) for i in dated],
+        lambda titles: headline_tone([t for t in titles if on_topic(theme, t)], words))
+    return {"_daily": day_values,"id": theme.id, "label": theme.label, "articles_24h": len(last), "spike": ratio, "spike_kind": "raw-share",
             "saturated": saturated,
             "tone": headline_tone([i["title"] for i in mine_last or mine[:20]], query_words(theme.query)),
             "tone_kind": "headline-words",
@@ -540,7 +545,14 @@ class Cache:
                 if limited and (self.themes.get(theme.id) or {}).get("source") == "gdelt":
                     ok += 1                    # keep the last GDELT value rather than mixing sources (#485)
                     continue
-                fresh[theme.id] = await rss(theme, at)
+                got = await rss(theme, at)
+                day_values = got.pop("_daily", None)
+                if day_values:              # #485 a refused pass is kept too, under its own source
+                    try:
+                        macro_history.record_daily(macro_history.source_dir(history, "google-news"), theme.id, *day_values)
+                    except Exception as exc:  # noqa: BLE001 - a full disk must not cost the brief
+                        log.warning("macro news history (google-news) not kept for %s: %s", theme.id, exc)
+                fresh[theme.id] = got
                 ok += 1
             except Exception as exc:  # noqa: BLE001 - one theme down must not stop the others
                 failures.append(f"{theme.id}: {type(exc).__name__}")

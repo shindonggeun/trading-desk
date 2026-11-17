@@ -126,3 +126,66 @@ def test_the_export_command_copies_from_the_live_history_dir(tmp_path, monkeypat
     assert cli.main(["news-history", "export", "--dir", str(tmp_path / "out")]) == 0
     assert (tmp_path / "out" / "fed.vol.2026.json").exists() and "1 file(s)" in capsys.readouterr().out
     assert cli.main(["news-history", "export", "--dir", str(tmp_path / "o2"), "--src", str(tmp_path / "none")]) == 1
+
+
+# --- #485 (2): a refused pass keeps the Google News days under their own source ------------------
+
+
+def test_rss_days_count_the_feed_and_drop_its_cut_oldest_day():
+    dated = [("2026-11-14T23:00:00+00:00", "old cut"), ("2026-11-15T01:00:00+00:00", "Fed holds as markets rally"),
+             ("2026-11-15T09:00:00+00:00", "unrelated"), ("2026-11-16T03:00:00+00:00", "Fed fears hit markets")]
+    vol, tone = mh.rss_daily(dated, lambda titles: m.headline_tone([t for t in titles if "Fed" in t]))
+    assert vol == {"2026-11-15": 2.0, "2026-11-16": 1.0}               # the 14th is the window's cut edge
+    assert tone == {"2026-11-15": 10.0, "2026-11-16": -10.0}
+    assert mh.rss_daily([], lambda t: None) == ({}, {})
+
+
+def _feed(now: datetime) -> str:
+    fmt = "%a, %d %b %Y %H:%M:%S GMT"
+    items = "".join(
+        f"<item><title>Fed {word} as markets {move} - Reuters</title><link>https://n/{i}</link><source>Reuters</source>"
+        f"<pubDate>{(now - timedelta(hours=h)).strftime(fmt)}</pubDate></item>"
+        for i, (h, word, move) in enumerate([(2, "holds", "rally"), (30, "warns", "fall"), (50, "speaks", "rally"),
+                                             (100, "minutes", "drift")]))
+    return f'<?xml version="1.0"?><rss><channel>{items}</channel></rss>'
+
+
+def test_a_refused_pass_keeps_the_google_news_days_apart_from_gdelts(tmp_path):
+    import httpx
+
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, text=_feed(NOW)))
+
+    async def rss(theme, now):
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await m.fetch_theme_rss(theme, now, client)
+
+    cache = m.Cache(cache_file=tmp_path / "macro_news.json")
+    asyncio.run(cache.refresh(gdelt=Gdelt(refuse_at=1), now=NOW, rss=rss))   # refused at once: every theme on RSS
+    assert all(t["source"] == "google-news" and "_daily" not in t for t in cache.themes.values())
+    root = cache.history_dir()
+    assert list(root.glob("*.json")) == []                                   # nothing passes for GDELT's
+    kept = sorted(p.name for p in (root / "google-news").glob("*.json"))
+    # every theme's article count; a tone only where the day's on-topic titles scored (here: the Fed ones)
+    assert {f"{t.id}.vol.2026.json" for t in m.THEMES} <= set(kept) and "fed.tone.2026.json" in kept
+    rss_hist = news_history.load(root, source="google-news")
+    # 4 dated articles: 11-17 00:30, 11-15 20:30 and 00:30, 11-12 22:30 (UTC) - the oldest day is the cut edge
+    assert rss_hist["fed"]["vol"] == {"2026-11-15": 2.0, "2026-11-17": 1.0}
+    assert rss_hist["fed"]["tone"] == {"2026-11-15": 0.0, "2026-11-17": 10.0}     # (-10 + 10) / 2, then +10
+    assert news_history.load(root)["fed"] == {"tone": {}, "vol": {}}         # the GDELT reader sees none of it
+    out = tmp_path / "export"
+    assert mh.export(root, out) == len(kept) and (out / "google-news" / "fed.tone.2026.json").exists()
+
+
+def test_the_backtest_reads_one_source_a_run_and_says_which(tmp_path):
+    from desk import backtest
+
+    mh.record_daily(mh.source_dir(tmp_path, "google-news"), "fed", {"2026-11-10": 5.0}, {"2026-11-10": -2.0})
+    notes = backtest.attach_news([], str(tmp_path), "google-news")
+    assert notes[0].startswith("거시 항목 출처: google-news")
+    assert backtest.attach_news([], str(tmp_path))[0].startswith("뉴스 테마 과거 파일 없음")   # GDELT's: none kept
+    try:
+        mh.source_dir(tmp_path, "yahoo")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an unknown source must be refused")

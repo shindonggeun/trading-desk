@@ -30,6 +30,7 @@ from statistics import fmean
 
 import httpx
 
+from . import macro_history
 from .macro_news import GDELT_DOC, THEMES, Theme, groups_of, relevance
 
 log = logging.getLogger(__name__)
@@ -87,8 +88,11 @@ def _read(path: Path) -> Series | None:
     return {k: float(v) for k, v in data.items() if isinstance(v, (int, float))} if isinstance(data, dict) else None
 
 
-def load(root: Path | str, themes: tuple[Theme, ...] = THEMES, first_year: int = FIRST_YEAR) -> History:
-    """Every theme's series from the files under ``root`` - no request. Missing files are empty."""
+def load(root: Path | str, themes: tuple[Theme, ...] = THEMES, first_year: int = FIRST_YEAR,
+         source: str = "gdelt") -> History:
+    """Every theme's series from the files under ``root`` - no request. Missing files are empty.
+    ``source`` (#485): "gdelt" reads ``root`` itself, "google-news" the kept RSS days below it."""
+    root = macro_history.source_dir(root, source)
     out: History = {t.id: {m: {} for m in MODES} for t in themes}
     for theme in themes:
         for mode in MODES:

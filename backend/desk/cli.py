@@ -286,7 +286,8 @@ def _backtest(args) -> int:
     report = backtest.run(tickers, args.horizon, args.start, args.end, args.step, costs, args.sweep,
                           progress=lambda msg: print(msg, file=sys.stderr), risk=not args.no_risk or None,
                           features=args.features, flow_dir=args.flow_dir, flow_weight=args.flow_weight,
-                          news_dir=gdelt_cache_dir(args.news_dir), macro_weight=args.macro_weight)
+                          news_dir=gdelt_cache_dir(args.news_dir), macro_weight=args.macro_weight,
+                          news_source=args.news_source)
     backtest.print_summary(report)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
@@ -370,6 +371,9 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--news-dir", default=None,
                     help="news-history files (#390; default DESK_GDELT_CACHE): every plan gets the news themes "
                          "of the days before it as the macro part")
+    bt.add_argument("--news-source", default="gdelt", choices=("gdelt", "google-news"),
+                    help="#485: which kept days --news-dir gives the macro part - GDELT's or the Google News "
+                         "ones the live refresh keeps when GDELT refuses (google-news/ below it)")
     bt.add_argument("--macro-weight", type=float, default=None,
                     help="count the macro part in the direction score at this weight for the run (live weight stays 0)")
     cb = sub.add_parser("calibrate", help=(

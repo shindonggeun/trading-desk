@@ -308,7 +308,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                estimator: BinanceEstimator | None = None, book: Portfolio | None = None,
                flow: MarketFlow | None = None, futures: FuturesFlow | None = None,
                weekly: weekly_map.Maps | None = None, bottoms: bottom_zone.Zones | None = None,
-               longshort: LongShort | None = None, chatter: chat.Chatter | None = None) -> FastAPI:
+               longshort: LongShort | None = None, chatter: chat.Chatter | None = None,
+               pictures: report_images.ReportImages | None = None) -> FastAPI:
     settings = settings or load()
     migrate(settings.database_url)
     engine = make_engine(settings.database_url)
@@ -338,7 +339,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                   0 if settings.fake_runs else settings.report_every_days)
     report_tasks: set[asyncio.Task] = set()
     # #497 explainer pictures (OpenAI image API): off without OPENAI_API_KEY, and always with scripted runs
-    pictures = report_images.ReportImages(None) if settings.fake_runs else report_images.from_env()
+    if pictures is None:
+        pictures = report_images.ReportImages(None) if settings.fake_runs else report_images.from_env()
 
     async def make_report(auto: bool, taken: bool = False) -> str:
         """One report (#495): ``made`` · ``none`` (no subject had data) · ``busy`` (one being written, or -
@@ -715,6 +717,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             funds_task.cancel()
         if report_task:
             report_task.cancel()
+        pictures.stop.set()              # a report being drawn takes no next picture
         for task in list(report_tasks):  # a manual report still being written
             task.cancel()
         if credit_task:
@@ -1020,7 +1023,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         path = report_images.image_path(report_id, n, pictures.root)
         if path is None or not path.is_file():
             raise HTTPException(404, "image not found")
-        return Response(path.read_bytes(), media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
+        return Response(path.read_bytes(), media_type="image/png", headers={"Cache-Control": "private, max-age=600"})
 
     @app.post("/api/reports", status_code=202)
     async def new_report():

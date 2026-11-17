@@ -1,13 +1,16 @@
-"""#497: the optional explainer pictures of a report - off without a key, within the caps, a failure leaves
-the report without them, and the key never shows up in a log, an error or a repr."""
+"""#497: the optional explainer pictures of a report - off without a key, only where they hide no chart, within
+the caps (counted before each call, closed when the ledger fails), a failure leaves the report without them,
+and the key never shows up in a log, an error or a repr."""
 
 import base64
 import json
 import logging
-from datetime import UTC, datetime
+import time
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from desk import report_images as ri
 from desk import reports as rp
@@ -17,8 +20,9 @@ PNG_BYTES = ri.PNG + b"\x00" * 64
 RID = "rp_0123456789ab01234567"
 
 
-def _report(rid: str = RID) -> dict:
-    subject, ranked = rp.pick([rp.measure(s, n, "index", *rp.fake_fetch(s)) for s, n in rp.INDEXES])
+def _report(rid: str = RID, symbol: str | None = None) -> dict:
+    measured = [rp.measure(s, n, "index", *rp.fake_fetch(s)) for s, n in rp.INDEXES if symbol in (None, s)]
+    subject, ranked = rp.pick(measured)
     return {**rp.write(subject, ranked), "id": rid}
 
 
@@ -28,6 +32,10 @@ def _ok(seen: list | None = None, png: bytes = PNG_BYTES):
             seen.append(request)
         return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(png).decode()}]})
     return httpx.MockTransport(handle)
+
+
+def _now():
+    return datetime.now(UTC)
 
 
 def test_without_a_key_nothing_is_drawn(monkeypatch, tmp_path):
@@ -40,33 +48,61 @@ def test_without_a_key_nothing_is_drawn(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", KEY)
     monkeypatch.setenv("DESK_REPORT_IMAGES_PER_MONTH", "0")             # a cap of 0 is off too
     assert ri.from_env(tmp_path).enabled is False
+    assert ri.ReportImages("sk-키가-잘못", tmp_path).enabled is False      # a pasted key with a stray character
 
 
-def test_the_pictures_use_only_the_reports_labels_and_numbers():
-    report = _report()
+def test_a_key_with_another_llm_provider_is_warned_about(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("OPENAI_API_KEY", KEY)
+    monkeypatch.delenv("TRADINGAGENTS_LLM_PROVIDER", raising=False)      # the library's default: openai
+    with caplog.at_level(logging.WARNING):
+        assert ri.from_env(tmp_path).enabled is True
+    assert "analyses use this key" in caplog.text and KEY not in caplog.text
+    caplog.clear()
+    monkeypatch.setenv("TRADINGAGENTS_LLM_PROVIDER", "chatgpt")
+    with caplog.at_level(logging.WARNING):
+        ri.from_env(tmp_path)
+    assert "analyses use this key" not in caplog.text
+
+
+@pytest.mark.parametrize("symbol", [s for s, _ in rp.INDEXES])
+def test_pictures_go_only_where_they_hide_no_chart_and_use_the_reports_words(symbol):
+    report = _report(symbol=symbol)
     plan = ri.plan(report)
     assert 1 <= len(plan) <= ri.PER_REPORT
-    stairs = plan[0]
-    for s in report["stages"][:3]:
-        assert s["label"] in stairs["prompt"]
-    assert ri.NO_OTHER_TEXT in stairs["prompt"] and report["subject"]["name"] in stairs["alt"]
     assert len({p["section"] for p in plan}) == len(plan)                   # one picture a section
-    assert all(0 <= p["section"] < len(report["sections"]) for p in plan)
+    for p in plan:
+        section = report["sections"][p["section"]]
+        assert section["chart"]["kind"] == "none"                          # the page shows it in the chart's place
+        assert ri.NO_OTHER_TEXT in p["prompt"]
+        if "staircase" not in p["prompt"]:
+            assert section["term"]["name"] in p["prompt"] and section["term"]["name"] in p["alt"]
+
+
+def test_the_staircase_needs_two_stages_and_a_free_section():
+    def sec(kind, term=None):
+        return {"title": "t", "body": "b", "term": term or {}, "chart": {"kind": kind, "levels": [], "labels": [], "marks": []}}
+    stages = [{"label": "1단계", "low": 2410.0, "high": 2450.0}, {"label": "2단계", "low": 2300.0, "high": 2350.0}]
+    report = {"subject": {"name": "코스피"}, "stages": stages,
+              "sections": [sec("levels"), sec("zone"), sec("none")]}
+    [stairs] = ri.plan(report)
+    assert stairs["section"] == 2 and '"1단계": 2,410 ~ 2,450' in stairs["prompt"] and "코스피" in stairs["alt"]
+    assert ri.plan({**report, "stages": stages[:1]}) == []                  # one stage is no staircase
+    assert ri.plan({**report, "sections": [sec("levels"), sec("zone")]}) == []   # no free section: no picture
     assert ri.plan({"sections": [], "stages": []}) == []
 
 
 def test_pictures_are_saved_linked_and_counted(tmp_path):
     seen: list[httpx.Request] = []
+    report = _report()
     pics = ri.ReportImages(KEY, tmp_path, transport=_ok(seen))
-    got = pics.draw(_report())
-    assert len(got) == len(ri.plan(_report())) and len(seen) == len(got)
+    got = pics.draw(report)
+    assert len(got) == len(ri.plan(report)) and len(seen) == len(got)
     for n, (_i, img) in enumerate(sorted(got.items(), key=lambda kv: kv[1]["url"]), 1):
         assert img["url"] == f"/api/reports/{RID}/images/{n}" and img["alt"]
         assert ri.image_path(RID, n, tmp_path).read_bytes() == PNG_BYTES
     body = json.loads(seen[0].content)
     assert body["model"] == ri.DEFAULT_MODEL and body["n"] == 1 and seen[0].headers["authorization"] == f"Bearer {KEY}"
-    now = datetime.now(UTC)
-    assert pics.ledger.counts(now) == (len(got), len(got))
+    assert pics.ledger.counts(_now()) == (len(got), len(got))
 
 
 def test_the_day_and_month_caps_stop_the_pictures(tmp_path):
@@ -75,8 +111,19 @@ def test_the_day_and_month_caps_stop_the_pictures(tmp_path):
     assert len(pics.draw(_report())) == 1 and len(calls) == 1               # the day's one picture
     assert pics.draw(_report("rp_0123456789ab89abcdef")) == {} and len(calls) == 1
     monthly = ri.ReportImages(KEY, tmp_path / "m", per_day=10, per_month=3, transport=_ok())
-    monthly.ledger.add(datetime.now(UTC), 2)
+    monthly.ledger.add(_now(), 2)
     assert monthly.room() == 1 and len(monthly.draw(_report())) == 1 and monthly.room() == 0
+
+
+def test_the_ledger_keeps_this_month_and_a_year_of_months(tmp_path):
+    ledger = ri.Ledger(tmp_path / "usage.json")
+    old = datetime(2026, 9, 30, tzinfo=UTC)
+    for m in range(1, 13):
+        ledger.add(datetime(2025, m, 1, tzinfo=UTC))
+    ledger.add(old)
+    ledger.add(old + timedelta(days=1))                                       # October: September's days go
+    raw = json.loads((tmp_path / "usage.json").read_text(encoding="utf-8"))
+    assert list(raw["days"]) == ["2026-10-01"] and len(raw["months"]) == 13 and "2025-01" not in raw["months"]
 
 
 @pytest.mark.parametrize("response", [
@@ -86,25 +133,125 @@ def test_the_day_and_month_caps_stop_the_pictures(tmp_path):
 ])
 def test_a_failed_picture_leaves_the_report_without_it_and_never_logs_the_key(tmp_path, caplog, response):
     caplog.set_level(logging.DEBUG)
+    report = _report()
     pics = ri.ReportImages(KEY, tmp_path, transport=httpx.MockTransport(lambda _r: response))
-    assert pics.draw(_report()) == {}
-    assert pics.ledger.counts(datetime.now(UTC)) == (0, 0)                   # nothing drawn, nothing counted
+    assert pics.draw(report) == {}
+    tried = len(ri.plan(report))
+    assert pics.ledger.counts(_now()) == (tried, tried)                     # asked for, so counted (may be billed)
     assert KEY not in caplog.text and "report image" in caplog.text
     assert KEY not in repr(pics) and KEY not in str(vars(pics).get("transport"))
 
 
-def test_a_network_error_is_a_missing_picture(tmp_path, caplog):
+def test_a_timeout_is_counted_and_a_network_error_is_a_missing_picture(tmp_path, caplog):
+    def slow(_r):
+        raise httpx.ReadTimeout("slow")
+    pics = ri.ReportImages(KEY, tmp_path, per_day=1, transport=httpx.MockTransport(slow))
+    assert pics.draw(_report()) == {} and pics.ledger.counts(_now()) == (1, 1) and pics.room() == 0
     def boom(_r):
         raise httpx.ConnectError("refused")
-    pics = ri.ReportImages(KEY, tmp_path, transport=httpx.MockTransport(boom))
-    assert pics.draw(_report()) == {} and KEY not in caplog.text
+    assert ri.ReportImages(KEY, tmp_path / "b", transport=httpx.MockTransport(boom)).draw(_report()) == {}
+    assert KEY not in caplog.text
+
+
+def test_after_a_failed_picture_the_next_one_is_number_1(tmp_path):
+    answers = iter([httpx.Response(500), None])
+
+    def handle(_r):
+        got = next(answers)
+        return got or httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode()}]})
+    report = _report()
+    assert len(ri.plan(report)) == 2
+    got = ri.ReportImages(KEY, tmp_path, transport=httpx.MockTransport(handle)).draw(report)
+    [img] = got.values()
+    assert img["url"].endswith("/images/1") and ri.image_path(RID, 1, tmp_path).is_file()
+
+
+def test_a_ledger_that_cannot_be_read_or_written_stops_the_pictures(tmp_path, monkeypatch, caplog):
+    calls: list = []
+    pics = ri.ReportImages(KEY, tmp_path, transport=_ok(calls))
+    (tmp_path / "usage.json").write_text('{"days": [], "months": {}}', encoding="utf-8")    # damaged: closed
+    assert pics.room() == 0 and pics.draw(_report()) == {} and calls == []
+    (tmp_path / "usage.json").write_text("not json", encoding="utf-8")
+    assert pics.room() == 0 and pics.draw(_report()) == {} and calls == []
+    (tmp_path / "usage.json").unlink()                                      # missing: starts from zero
+    assert pics.room() == 2
+
+    def cannot(*_a, **_k):
+        raise OSError("read-only volume")
+    monkeypatch.setattr(pics.ledger, "add", cannot)
+    assert pics.draw(_report()) == {} and calls == []                       # not counted: not asked for
+    assert "cannot be written" in caplog.text
+
+
+def test_stop_and_the_deadline_end_a_reports_drawing(tmp_path):
+    calls: list = []
+    pics = ri.ReportImages(KEY, tmp_path, transport=_ok(calls))
+    pics.stop.set()
+    assert pics.draw(_report()) == {} and calls == []
+    late = ri.ReportImages(KEY, tmp_path / "late", transport=_ok(calls), deadline_sec=ri.MIN_CALL_SEC - 1)
+    assert late.draw(_report()) == {} and calls == []
 
 
 def test_an_image_path_never_leaves_the_folder(tmp_path):
     assert ri.image_path(RID, 1, tmp_path) == tmp_path / RID / "1.png"
-    for rid, n in (("../etc", 1), ("rp_../../x", 1), (RID + "/..", 1), ("rp_0123", 1), (RID, 0), (RID, 3), ("", 1)):
+    for rid, n in (("../etc", 1), ("rp_../../x", 1), (RID + "/..", 1), (RID + "\n", 1), ("rp_0123", 1),
+                   (RID, 0), (RID, 3), ("", 1)):
         assert ri.image_path(rid, n, tmp_path) is None
     assert ri.ReportImages(KEY, tmp_path).draw({**_report(), "id": "../x"}) == {}
+
+
+def _client_with(db_url, pictures):
+    from desk.api import create_app
+    from desk.auth import Auth
+    from desk.db import make_engine
+    from desk.runner import make_fake_runner
+    from desk.settings import Settings
+    from tests.test_api import OWNER, PASSWORD
+
+    client = TestClient(create_app(Settings(database_url=db_url, fake_runs=True, fake_delay=0),
+                                   runner=make_fake_runner(0), pictures=pictures), base_url="https://testserver")
+    engine = make_engine(db_url)
+    Auth(engine, timedelta(hours=1), timedelta(hours=1)).create_user(OWNER, PASSWORD)
+    engine.dispose()
+    assert client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD}).status_code == 204
+    return client
+
+
+def _made(client) -> dict:
+    assert client.post("/api/reports").status_code == 202
+    deadline = time.monotonic() + 30
+    while (listed := client.get("/api/reports").json())["generating"] or not listed["items"]:
+        assert time.monotonic() < deadline, "the report was not written"
+        time.sleep(0.1)
+    return client.get(f"/api/reports/{listed['items'][0]['id']}").json()
+
+
+@pytest.mark.parametrize("ok", [True, False])
+def test_a_new_report_gets_its_pictures_before_the_push_and_keeps_going_without(db_url, tmp_path, ok):
+    from desk.db import make_engine
+
+    transport = _ok() if ok else httpx.MockTransport(lambda _r: httpx.Response(500))
+    pics = ri.ReportImages(KEY, tmp_path, transport=transport)
+    pushed: list = []
+    with _client_with(db_url, pics) as client:
+        class Pusher:                    # what the report held when the push went out
+            def to_user(self, _owner, payload):
+                engine = make_engine(db_url)
+                rid = payload["url"].rsplit("/", 1)[-1]
+                pushed.append([s["image"] for s in rp.Reports(engine, rp.fake_fetch).get(rid)["sections"]])
+                engine.dispose()
+        client.app.state.pusher = Pusher()
+        full = _made(client)
+        images = [s["image"] for s in full["sections"] if s["image"]]
+        if ok:
+            assert 1 <= len(images) <= 2 and pushed and [i for i in pushed[0] if i] == images
+            for img in images:
+                r = client.get(img["url"])
+                assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+            assert all(full["sections"][i]["chart"]["kind"] == "none"
+                       for i, s in enumerate(full["sections"]) if s["image"])
+        else:
+            assert images == [] and pushed and not any(pushed[0])           # the report and its push still go out
 
 
 def test_the_pictures_are_stored_on_the_report_and_served_with_a_session(db_url, monkeypatch, tmp_path):
@@ -127,6 +274,7 @@ def test_the_pictures_are_stored_on_the_report_and_served_with_a_session(db_url,
     with _client(db_url) as client:
         r = client.get(f"/api/reports/{saved['id']}/images/1")
         assert r.status_code == 200 and r.headers["content-type"] == "image/png" and r.content == PNG_BYTES
+        assert "max-age=600" in r.headers["cache-control"]
         assert client.get(f"/api/reports/{saved['id']}/images/2").status_code == 404
         assert client.get(f"/api/reports/{saved['id']}/images/3").status_code == 404
         assert client.get("/api/reports/rp_..%2F..%2Fx/images/1").status_code == 404

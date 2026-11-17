@@ -1495,6 +1495,47 @@ export interface TipsView {
   as_of: string | null;
   evidence_as_of?: string | null;
   basis?: { horizons: number[]; worse_pp: number; decay_pp: number; min_days: number; rule: string } | null;
+  /** #460 대세 국면 — ticker 없이 부를 때만 */
+  trend?: TrendRow[];
+  guide?: Partial<Record<TrendState, TrendGuide>>;
+  trend_error?: string | null;
+}
+
+/** #460 지수 대세 국면 · 초보용 지침 */
+export type TrendState = "bull" | "bear" | "range" | "turning";
+export interface TrendStat { median: number | null; win: number | null; p10: number | null; n: number; all_median: number | null; all_p10: number | null }
+export interface TrendRow {
+  market: "kospi" | "nasdaq100" | "sp500" | "sox";
+  name: string;
+  symbol: string;
+  state: TrendState;
+  state_ko: string;
+  raw: TrendState;
+  pending: { state: TrendState; state_ko: string; sessions: number; needs: number } | null;
+  since: string;
+  /** false 면 기록 시작 전부터 이어진 국면 — "기록 시작 이후 계속" */
+  since_known: boolean;
+  as_of: string;
+  close: number;
+  score: number;
+  evidence: { id: string; value: number | null; vote: 1 | 0 | -1 | null; text: string }[];
+  record?: { since: string; states: Partial<Record<TrendState, { "20": TrendStat | null; "60": TrendStat | null }>> } | null;
+  record_note: string | null;
+}
+export interface TrendGuide {
+  state: TrendState;
+  state_ko: string;
+  title: string;
+  summary: string;
+  size: string;
+  stops: string;
+  do: string[];
+  dont: string[];
+  prefer: string[];
+  prefer_ko: string[];
+  avoid: string[];
+  avoid_ko: string[];
+  basis: string;
 }
 
 /** #333 plan.summary 의 지금 할 일(#331) — 예전 run 에는 없다 */

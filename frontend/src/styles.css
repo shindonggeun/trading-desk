@@ -2087,3 +2087,39 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   .dash-sections { gap: 8px; }
   .dash-closed .dash-head { padding-bottom: 4px; }
 }
+
+/* #461 대세 국면 카드 · 지침 */
+.trend-card h3, .trend-guide h3 { margin: 0 0 8px; font-size: 1.05rem; }
+.trend-rows { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; }
+.trend-row { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.trend-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; }
+.trend-badge { font-size: var(--fs-s); font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; }
+.trend-bull { color: var(--up); }
+.trend-bear { color: var(--down); }
+.trend-range { color: var(--muted); }
+.trend-turning { color: var(--warn); }
+.trend-pending { margin: 0; color: var(--warn); }
+.trend-ev { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+.trend-ev li { overflow-wrap: anywhere; }
+.trend-row p { margin: 0; }
+.trend-more > summary { cursor: pointer; }
+.trend-more[open] > summary { display: none; }
+.trend-more { display: grid; gap: 2px; }
+.trend-guide { border-left: 3px solid currentColor; }
+.trend-guide > * { color: var(--text); }
+.trend-guide p { margin: 4px 0; }
+.trend-guide > summary { cursor: pointer; list-style-position: outside; }
+.trend-guide > summary h3 { display: inline; }
+.trend-guide h4 { margin: 0 0 4px; font-size: var(--fs-s); color: var(--muted); }
+.trend-guide ul { margin: 0; padding-left: 1.1em; }
+.trend-guide-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 6px 0; }
+.trend-bull-edge { color: var(--up); }
+.trend-bear-edge { color: var(--down); }
+.trend-range-edge { color: var(--muted); }
+.trend-turning-edge { color: var(--warn); }
+.term { white-space: nowrap; }
+.term-q { margin-left: 2px; width: 16px; height: 16px; padding: 0; border-radius: 50%; border: 1px solid var(--border); background: none;
+  color: var(--muted); font-size: 11px; line-height: 14px; cursor: help; vertical-align: 1px; }
+@media (max-width: 720px) {
+  .trend-rows, .trend-guide-cols { grid-template-columns: 1fr; }
+}

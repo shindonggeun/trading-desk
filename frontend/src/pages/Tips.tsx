@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import TrendCard from "../components/TrendCard";
 import type { Tip, TipStats, TipsView } from "../types";
 
 const RATES_KO = { hiking: "인상기", cutting: "인하기", hold: "동결" } as const;
@@ -72,6 +73,13 @@ export default function Tips({ query }: { query: URLSearchParams }) {
   useEffect(() => {
     api.tips().then(setView, (e: unknown) => setFailed(e instanceof Error ? e.message : "불러오지 못했습니다"));
   }, []);
+  // #461 지수 일봉이 아직 오는 중이면(trend_error, 빈 trend) 한 번 더 부른다
+  const loadingTrend = !!view && !(view.trend?.length) && !!view.trend_error?.includes("불러오는 중");
+  useEffect(() => {
+    if (!loadingTrend) return;
+    const t = window.setTimeout(() => { api.tips().then(setView, () => undefined); }, 10_000);
+    return () => window.clearTimeout(t);
+  }, [loadingTrend]);
   useEffect(() => {
     if (view && focus) document.getElementById(`tip-${focus}`)?.scrollIntoView({ block: "start" });
   }, [view, focus]);
@@ -84,6 +92,7 @@ export default function Tips({ query }: { query: URLSearchParams }) {
   return (
     <main className="page tips-page">
       <h2>국면별 매매 팁</h2>
+      <TrendCard trend={view.trend ?? []} guide={view.guide ?? {}} error={view.trend_error ?? null} />
       <section className="card tip-regime" aria-label="지금 국면">
         <div><span className="muted small">기준금리 방향</span><strong>{g.rates ? RATES_KO[g.rates] : "—"}</strong>
           <span className="muted small">13주물 3개월 {signed(v.bill_3m_change_pp, "%p")}</span></div>

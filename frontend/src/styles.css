@@ -2065,7 +2065,8 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 }
 
 /* #464 대시보드 한눈에: 넓은 화면 3열 · 작은 시장 타일 · 휴대폰 요약 줄 */
-.mb-grid { grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 8px; margin-top: 8px; }
+.mb-grid { gap: 8px; margin-top: 8px; }
+@media (min-width: 481px) { .mb-grid { grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); } } /* 휴대폰은 위 2열 규칙 그대로 */
 .mb-tile { padding: 8px; gap: 2px; }
 .mb-price { font-size: 15px; }
 .mb-tile .spark, .mb-tile .spark-empty { height: 28px; }

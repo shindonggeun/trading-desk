@@ -22,7 +22,9 @@ export default function DashSummary() {
 
   useEffect(() => {
     let alive = true;
+    // 한 번 실패해도 앞서 받은 값을 둔다(종목별로 새 값만 덮어쓴다). 뒤에 숨은 탭에서는 받지 않는다.
     const load = () => {
+      if (document.hidden) return;
       Promise.all(INDICES.map((m) => api.candles(m.ticker, "1d", 5)
         .then((c): Quote | null => {
           const bars = c.bars;
@@ -32,10 +34,20 @@ export default function DashSummary() {
           return { ...m, last, change: prev ? ((last - prev) / prev) * 100 : null };
         })
         .catch(() => null)))
-        .then((qs) => alive && setQuotes(qs.filter((q): q is Quote => q !== null)));
+        .then((qs) => {
+          if (!alive) return;
+          setQuotes((prev) => INDICES.flatMap((m) => {
+            const q = qs.find((x) => x?.ticker === m.ticker) ?? prev.find((x) => x.ticker === m.ticker);
+            return q ? [q] : [];
+          }));
+        });
       api.marketFear()
-        .then((d) => alive && setFear(FEAR_KEYS.flatMap((k) => d.items.filter((i) => i.key === k && i.value != null))))
-        .catch(() => alive && setFear([]));
+        .then((d) => {
+          if (!alive) return;
+          const items = FEAR_KEYS.flatMap((k) => d.items.filter((i) => i.key === k && i.value != null));
+          if (items.length) setFear(items);
+        })
+        .catch(() => { /* 앞서 받은 공포지수를 둔다 */ });
     };
     load();
     const t = window.setInterval(load, REFRESH_MS);

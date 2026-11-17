@@ -80,7 +80,8 @@ export default function ExplainArticle({ data, className = "easy-view", busy, af
       {data.sections.map((s, i) => (
         <section key={i} className="ev-section">
           <h3><span className="ev-num">{i + 1}</span>{s.title}</h3>
-          {s.image ? <img className="ev-img" src={s.image.url} alt={s.image.alt} loading="lazy" /> : <MiniLevels chart={s.chart} />}
+          {s.image ? <img className="ev-img" src={s.image.url} alt={s.image.alt} loading="lazy"
+            onError={(e) => { e.currentTarget.hidden = true; }} /> : <MiniLevels chart={s.chart} />}
           {s.body.split(/\n{2,}/).map((p, n) => <p key={n}>{p}</p>)}
           {s.highlight && <p className="ev-highlight"><mark>{s.highlight}</mark></p>}
           {s.term?.explain && (

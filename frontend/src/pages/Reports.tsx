@@ -87,7 +87,7 @@ function ListView() {
           {list?.next_due && !list.generating && <span className="muted small">다음 자동 작성 {fmtDay(list.next_due)}</span>}
         </div>
       </header>
-      {list?.generating && <p className="rp-generating" role="status">새 리포트를 쓰는 중입니다 — 보통 수십 초 걸려요. 다 되면 알림이 갑니다.</p>}
+      {list?.generating && <p className="rp-generating" role="status">새 리포트를 쓰는 중입니다 — 보통 수십 초, 설명 그림까지 그리면 몇 분(최대 3분쯤) 걸려요. 다 되면 알림이 갑니다.</p>}
       {note && <p className="muted small" role="status">{note}</p>}
       {fake && <p className="app-notice notice-warn">예시 데이터 — 개발 서버에서 #495 API 없이 화면을 보기 위한 글이며 실제 리포트가 아닙니다.</p>}
       {failed && <p className="error">리포트를 불러오지 못했습니다: {failed}</p>}

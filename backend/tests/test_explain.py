@@ -34,7 +34,7 @@ def test_the_draft_has_the_fixed_shape_for_long_short_and_hold(bias, rating):
     assert out["hook"].endswith("?") and 3 <= len(out["sections"]) <= 5
     for s in out["sections"]:
         assert s["title"] and s["body"] and s["highlight"] and s["term"]["name"] and s["term"]["explain"]
-        assert set(s["chart"]) == {"kind", "levels", "marks"}
+        assert set(s["chart"]) == {"kind", "levels", "labels", "marks"} and len(s["chart"]["labels"]) == len(s["chart"]["levels"])
     assert [s["label"] for s in out["stages"]] == ["1단계", "2단계", "최대"]
     assert out["stages"][-1]["low"] == 146.1 and all({"q", "a"} <= set(c) for c in out["checklist"])
     assert "예측이 아니라" in out["closing"]
@@ -98,3 +98,14 @@ def test_the_api_writes_once_keeps_it_and_refreshes_on_ask(db_url):
         assert kinds.count("explain") == 2
         client.cookies.clear()
         assert client.get(f"/api/runs/{rid}/explain").status_code == 401
+
+
+def test_the_question_follows_what_to_do_now_and_the_verdict_is_said_once():
+    run = _run("long", "Overweight")
+    run["plan"]["summary"]["verdict"] = "watch"
+    out = ex.build(run)
+    assert "기다리" in out["hook"]                                         # watch: the waiting question, not "buy?"
+    run["plan"]["summary"]["text"] = None
+    body = ex.build(run)["sections"][0]["body"]
+    assert body.count("분석 결론은") == 1
+    assert ex.build(_run())["sections"][0]["chart"]["labels"][:2] == ["진입", "손절"]

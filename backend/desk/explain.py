@@ -70,7 +70,7 @@ def facts(run: dict, fear: list[dict] | None = None) -> dict:
     return {
         "ticker": run.get("ticker"), "trade_date": run.get("trade_date"), "price": price,
         "rating": plan.get("rating"), "rating_ko": RATING_KO.get(plan.get("rating") or "", plan.get("rating")),
-        "bias": plan.get("bias"), "side": s.get("side"), "verdict": s.get("text"), "why": s.get("why"),
+        "bias": plan.get("bias"), "side": s.get("side"), "act": s.get("verdict"), "verdict": s.get("text"), "why": s.get("why"),
         "entry": _f(plan.get("entry_price")), "stop": _f(s.get("stop")) or _f(plan.get("stop_loss")),
         "stop_pct": s.get("stop_pct"), "targets": targets[:2],
         "zone": {"low": _f(zone_s.get("low")), "high": _f(zone_s.get("high"))} if zone_s else None,
@@ -98,19 +98,33 @@ def _record(z: dict) -> str:
     return ""
 
 
+def _zone_chart(z: dict, price: float | None) -> dict:
+    edges = [(z.get("low"), "구역 아래"), (z.get("high"), "구역 위")]
+    edges = [(x, n) for x, n in edges if x]
+    return {"kind": "zone", "levels": [x for x, _ in edges], "labels": [n for _, n in edges],
+            "marks": [price] if price else []}
+
+
 def rules(f: dict) -> dict:
     """The whole explanation from the desk's numbers alone (the fallback, and the model's draft)."""
     t = f.get("ticker") or "이 종목"
-    side = f.get("side") or ("long" if f.get("bias") == "long" else "short" if f.get("bias") == "short" else None)
+    # what to do now (#331 summary verdict) decides the question; the plan's side and bias only without one
+    act = f.get("act")
+    side = ("long" if act in ("buy_now", "wait_for_zone") else "short" if act in ("short_now", "wait_short")
+            else None if act in ("watch", "stand_aside")
+            else f.get("side") or ("long" if f.get("bias") == "long" else "short" if f.get("bias") == "short" else None))
     hook = {"long": f"{t}, 지금 사도 될까요? 어디서 사고 어디서 멈춰야 할까요?",
             "short": f"{t}, 더 내려갈까요? 지금 붙잡으면 안 되는 이유가 있을까요?"}.get(
         side, f"{t}, 지금은 왜 기다리라는 걸까요? 언제 움직이면 될까요?")
     sections = []
-    verdict = f.get("verdict") or f"분석 결론은 '{f.get('rating_ko') or '—'}' 이에요."
+    rating_line = f"분석 결론은 '{f.get('rating_ko') or '—'}' 이에요."
+    verdict = f.get("verdict")
+    named = [(f.get("entry"), "진입"), (f.get("stop"), "손절")] + [(x, f"목표 {i}") for i, x in enumerate(f.get("targets") or [], 1)]
+    named = [(x, n) for x, n in named if x]
     sections.append({
-        "title": "한 줄 결론", "body": f"분석 결론은 '{f.get('rating_ko') or '—'}' 이에요. {verdict}",
-        "highlight": verdict, "term": {"name": "결론(등급)", "explain": TERMS["rating"]},
-        "chart": {"kind": "levels", "levels": [x for x in [f.get("entry"), f.get("stop"), *f.get("targets", [])] if x],
+        "title": "한 줄 결론", "body": f"{rating_line} {verdict}" if verdict else rating_line,
+        "highlight": verdict or rating_line, "term": {"name": "결론(등급)", "explain": TERMS["rating"]},
+        "chart": {"kind": "levels", "levels": [x for x, _ in named], "labels": [n for _, n in named],
                   "marks": [f["price"]] if f.get("price") else []}})
     if f.get("supports"):
         z = f["supports"][0]
@@ -118,26 +132,27 @@ def rules(f: dict) -> dict:
         sections.append({
             "title": "받쳐 주는 자리", "body": f"가장 가까운 지지 구역은 {_zone_text(z)} 이에요.{_record(z)}{flip}",
             "highlight": f"{_zone_text(z)} 를 지키는지가 먼저예요.", "term": {"name": "지지", "explain": TERMS["support"]},
-            "chart": {"kind": "zone", "levels": [x for x in (z.get("low"), z.get("high")) if x], "marks": []}})
+            "chart": _zone_chart(z, f.get("price"))})
     if f.get("resistances"):
         z = f["resistances"][0]
         sections.append({
             "title": "막히는 자리", "body": f"위로는 {_zone_text(z)} 에서 막힐 수 있어요.{_record(z)}",
             "highlight": f"{_zone_text(z)} 를 넘으면 흐름이 바뀌었다고 볼 수 있어요.",
             "term": {"name": "저항", "explain": TERMS["resistance"]},
-            "chart": {"kind": "zone", "levels": [x for x in (z.get("low"), z.get("high")) if x], "marks": []}})
+            "chart": _zone_chart(z, f.get("price"))})
     if f.get("stop"):
         sections.append({
             "title": "틀렸다고 볼 자리", "body": f"{_p(f['stop'])} 아래로 내려가면 이 분석이 틀렸다고 보고 정리하는 자리예요."
                                          + (f" {f['invalidation']}" if f.get("invalidation") else ""),
             "highlight": f"손절 가격 {_p(f['stop'])} 은 사기 전에 정해 두세요.", "term": {"name": "손절", "explain": TERMS["stop"]},
-            "chart": {"kind": "levels", "levels": [f["stop"]], "marks": []}})
+            "chart": {"kind": "levels", "levels": [f["stop"]], "labels": ["손절"],
+                      "marks": [f["price"]] if f.get("price") else []}})
     if f.get("fear"):
         line = " · ".join(f"{x['name']} {x['value']}({x['band_ko']})" for x in f["fear"][:3])
         sections.append({
             "title": "시장 분위기", "body": f"지금 시장의 공포지수는 {line} 이에요. 분위기가 나쁠 때는 더 작게, 더 천천히 들어가요.",
             "highlight": "분위기가 나쁘면 비중을 줄여요.", "term": {"name": "공포지수", "explain": TERMS["fear"]},
-            "chart": {"kind": "none", "levels": [], "marks": []}})
+            "chart": {"kind": "none", "levels": [], "labels": [], "marks": []}})
     stages = []
     for i, st in enumerate(f.get("ladder") or [], 1):
         stages.append({"label": f"{i}단계", "low": st["price"], "high": st["price"], "why": st.get("when") or "이 가격에 닿으면 나눠서 담아요."})

@@ -167,6 +167,22 @@ export default function Dashboard() {
     savePrefs(next);
     setPrefs(next);
   };
+  // #362 알림 클릭(#/?flow=intraday): 시장 수급 구역을 접어 두었으면 펴서 패널이 "오늘 장중" 탭을 열게 한다.
+  // 해시는 패널이 읽고 지운다 — 여기서는 구역만 편다.
+  useEffect(() => {
+    const reveal = () => {
+      if (!/[?&]flow=intraday(?:&|$)/.test(window.location.hash)) return;
+      setPrefs((p) => {
+        if (!p.closed.includes("flow")) return p;
+        const next = { ...p, closed: p.closed.filter((c) => c !== "flow") };
+        savePrefs(next);
+        return next;
+      });
+    };
+    reveal();
+    window.addEventListener("hashchange", reveal);
+    return () => window.removeEventListener("hashchange", reveal);
+  }, []);
   const flip = (id: SectionId) =>
     update({ ...prefs, closed: prefs.closed.includes(id) ? prefs.closed.filter((c) => c !== id) : [...prefs.closed, id] });
   const move = (id: SectionId, by: -1 | 1) => {

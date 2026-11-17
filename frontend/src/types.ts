@@ -1972,8 +1972,8 @@ export interface PaperTrade {
   run_id: string;
   ticker: string;
   name: string | null;
-  market: "KR" | "US";
-  currency: "KRW" | "USD";
+  market: "KR" | "US" | null;          // null: 채점은 됐지만 모의로 따라가지 못한 종목(unsupported)
+  currency: "KRW" | "USD" | null;
   direction: "long" | "short";
   rating: string | null;
   horizon: string | null;

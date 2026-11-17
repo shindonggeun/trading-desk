@@ -54,7 +54,7 @@ function easy(s: PaperSummary): string[] {
   if (closed === 0) {
     lines.push("아직 끝난 모의 거래가 없어요. 분석이 채점되면 여기에 쌓여요.");
   } else {
-    lines.push(`끝난 ${closed}번 가운데 ${s.wins}번 수익을 냈어요${s.win_rate != null ? `(승률 ${Math.round(s.win_rate * 100)}%)` : ""}.`);
+    lines.push(`끝난 ${closed}번 가운데 ${s.wins}번 수익을 냈어요${s.win_rate != null ? `(${Math.round(s.win_rate * 100)}%)` : ""}.`);
   }
   lines.push(`${won(s.start_capital)}으로 시작해 지금 ${won(s.balance)}이에요(${won(s.total_pnl, true)}, ${percent(s.total_pnl_pct)}).`);
   lines.push("지난 분석 계획대로 샀다고 가정한 과거 성적이에요. 앞으로의 수익을 보장하지 않아요.");
@@ -181,7 +181,8 @@ export default function Paper() {
           <span className="paper-badge" title="실제 주문은 나가지 않아요">모의 · 실제 주문 없음</span>
           <a className="paper-settings-link small" href="#/settings?paper">자금 · 규칙 설정</a>
         </div>
-        <p className="muted small">지난 분석의 진입 · 손절 · 목표대로 원화 모의 계좌로 샀다면 어땠을지, 데스크가 채점한 결과로 계산했어요.</p>
+        <p className="muted small">지난 분석의 진입 · 손절 · 목표대로 원화 모의 계좌로 샀다면 어땠을지, 데스크가 채점한 결과로 계산했어요.
+          기록은 지금 설정으로 처음부터 다시 계산해서, 늦게 채점된 분석이 들어오면 지난 결과도 바뀔 수 있어요.</p>
         {data?.sample && <p className="paper-note small">개발용 예시 데이터예요(모의 투자 API 준비 중).</p>}
         {stale && <p className="paper-note small" role="status">새 설정으로 다시 계산하는 중이에요…</p>}
         {error && <p className="down small" role="alert">모의 투자 결과를 불러오지 못했습니다: {error} <button type="button" onClick={load}>다시 시도</button></p>}
@@ -192,11 +193,12 @@ export default function Paper() {
         <>
           <section className="paper-stats" aria-label="모의 계좌 요약">
             <Stat label="모의 잔고" value={won(s.balance)} sub={`${won(s.total_pnl, true)} · ${percent(s.total_pnl_pct)}`} cls={tone(s.total_pnl)} />
-            <Stat label="승률" value={s.win_rate != null ? `${Math.round(s.win_rate * 100)}%` : "—"} sub={`${s.wins}승 ${s.losses}패 · 끝난 ${s.trades.closed}건`} />
+            {/* 원화 손익 > 0 비율 — 계획 적중률(/api/stats/plans hit_rate)과 정의가 달라 이름을 다르게 */}
+            <Stat label="수익 낸 비율" value={s.win_rate != null ? `${Math.round(s.win_rate * 100)}%` : "—"} sub={`${s.wins}번 수익 · ${s.losses}번 손실 · 끝난 ${s.trades.closed}건`} />
             <Stat label="평균 R" value={s.avg_r != null ? `${s.avg_r > 0 ? "+" : ""}${s.avg_r.toFixed(2)}R` : "—"}
               sub={s.payoff != null ? `손익비 ${s.payoff.toFixed(2)}` : undefined} cls={tone(s.avg_r)} />
             <Stat label="최대 낙폭" value={s.max_drawdown ? won(s.max_drawdown.krw, true) : "—"}
-              sub={s.max_drawdown ? `${percent(s.max_drawdown.pct)} · ${dateKo(s.max_drawdown.peak_at)}→${dateKo(s.max_drawdown.trough_at)}` : undefined}
+              sub={s.max_drawdown ? (s.max_drawdown.peak_at ? `${percent(s.max_drawdown.pct)} · ${dateKo(s.max_drawdown.peak_at)}→${dateKo(s.max_drawdown.trough_at)}` : "낙폭 없음") : undefined}
               cls={s.max_drawdown && s.max_drawdown.krw < 0 ? "down" : undefined} />
             <Stat label="이번 달" value={won(s.this_month.pnl, true)} sub={s.this_month.pct != null ? percent(s.this_month.pct) : undefined} cls={tone(s.this_month.pnl)} />
             <Stat label="보유 · 현금" value={`${s.trades.open}건 보유`} sub={`현금 ${krwShort(s.cash, false)} · 평가 ${won(s.unrealized_pnl, true)}`} />

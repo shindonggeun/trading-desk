@@ -29,6 +29,8 @@ function num(v: string): number {
 }
 
 function toPatch(f: Form): PaperSettingsPatch | string {
+  const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" });
+  if (f.start_date && (f.start_date < "2015-01-01" || f.start_date > today)) return "시작일은 2015-01-01 부터 오늘까지만 고를 수 있어요.";
   const capital = num(f.start_capital);
   if (!Number.isFinite(capital) || capital < 100_000 || capital > 100_000_000_000) return "시작 자금은 10만 원 ~ 1,000억 원 사이로 적어 주세요.";
   const fields = ["risk_pct", "weight_pct", "max_positions", "fee_kr_pct", "fee_us_pct", "tax_kr_pct", "slippage_pct"] as const;
@@ -97,7 +99,8 @@ export default function PaperSettings() {
               onChange={(e) => set("start_capital", commas(e.target.value.replace(/[^\d]/g, "")))} />
           </label>
           <label>시작일 <span className="muted small">(비우면 채점된 분석 전부)</span>
-            <input type="date" value={form.start_date} onChange={(e) => set("start_date", e.target.value)} />
+            <input type="date" min="2015-01-01" max={new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" })}
+              value={form.start_date} onChange={(e) => set("start_date", e.target.value)} />
           </label>
           <fieldset className="paper-sizing">
             <legend>한 번에 살 크기</legend>

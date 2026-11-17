@@ -726,6 +726,11 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .mb-confirm { margin-top: 12px; padding: 12px; border: 1px solid var(--accent); border-radius: 8px; }
 .mb-confirm p { margin: 0 0 6px; }
 .mb-confirm-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+/* #539 시장 칸: 누르면 차트(링크), 상세 분석은 칸 아래 작은 버튼 */
+.mb-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+a.mb-tile { color: var(--text); text-decoration: none; }
+a.mb-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mb-deep { align-self: flex-start; padding: 2px 4px; }
 .settings { gap: 16px; }
 .market-list { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
 .market-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
@@ -1024,6 +1029,9 @@ span.cs-hold-text { color: var(--warn); }
 .price-chart-expanded .price-chart-box, .price-chart-expanded .price-chart-box.with-rsi { flex: 1 1 auto; height: auto; min-height: 0; }
 .price-chart-expanded .price-chart-legend { flex: none; }
 .chart-view { min-height: 100dvh; }
+/* #539 차트 주소 화면 위쪽: 상세 분석 시작 · 최근 분석 보기 */
+.chart-view-deep { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 0 0 6px; }
+.chart-view-deep .mb-confirm { margin-top: 0; flex-basis: 100%; }
 /* 가로로 눕힌 휴대폰: 차트에 높이를 다 준다 */
 @media (orientation: landscape) and (max-height: 520px) {
   .price-chart-expanded { padding-top: 6px; padding-bottom: 6px; }
@@ -2560,11 +2568,3 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   .shell:has(.run-tabs) .tl-card { bottom: calc(49px + env(safe-area-inset-bottom)); max-height: calc(62vh - 49px); }
   .shell:has(.tl-card) .cw-launcher:not(.cw-on) { display: none; }
 }
-
-/* #539 시장 칸: 누르면 차트(링크), 상세 분석은 칸 아래 작은 버튼 · 차트 화면 위쪽 */
-.mb-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-a.mb-tile { color: var(--text); text-decoration: none; }
-a.mb-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.mb-deep { align-self: flex-start; padding: 2px 4px; }
-.chart-view-deep { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 0 0 6px; }
-.chart-view-deep .mb-confirm { margin-top: 0; flex-basis: 100%; }

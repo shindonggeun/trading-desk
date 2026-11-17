@@ -2039,3 +2039,27 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   .ios-guide-steps { gap: 6px; }
   .ios-guide-steps li { font-size: 12px; }
 }
+
+/* #463 공포지수 4칸(시장 · 지수 · 선물 위) — 데스크톱 한 줄, 휴대폰 2×2 */
+.fear-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 8px 0 10px; }
+.fear-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px 10px; border-radius: var(--radius-s);
+  background: var(--surface-2); border-left: 3px solid var(--border); }
+.fear-name { font-size: var(--fs-s); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fear-value { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; font-variant-numeric: tabular-nums; }
+.fear-value strong { font-size: 1.15rem; }
+.fear-band { font-size: var(--fs-s); font-weight: 650; }
+.fear-cell .small { font-variant-numeric: tabular-nums; }
+.fear-extreme_fear { border-left-color: var(--down); }
+.fear-extreme_fear .fear-band { color: var(--down); }
+.fear-fear { border-left-color: color-mix(in srgb, var(--down) 55%, var(--border)); }
+.fear-fear .fear-band { color: var(--down); }
+.fear-neutral .fear-band { color: var(--muted); }
+.fear-greed { border-left-color: color-mix(in srgb, var(--up) 55%, var(--border)); }
+.fear-greed .fear-band { color: var(--up); }
+.fear-extreme_greed { border-left-color: var(--up); }
+.fear-extreme_greed .fear-band { color: var(--up); }
+.fear-empty { opacity: .75; }
+.fear-failed { margin: 6px 0; }
+@media (max-width: 640px) {
+  .fear-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

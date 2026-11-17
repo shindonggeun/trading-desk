@@ -1,4 +1,6 @@
-import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import GridLayout, { useContainerWidth, verticalCompactor, type Layout as GridLayoutItems } from "react-grid-layout";
+import "react-grid-layout/css/styles.css";
 import { api } from "../api";
 import FavoritesPanel from "../components/FavoritesPanel";
 import FuturesQuoteCard from "../components/FuturesQuoteCard";
@@ -17,6 +19,7 @@ import BottomZoneBrief from "../components/BottomZoneBrief";
 import TodayStrip from "../components/TodayStrip";
 import DashSummary from "../components/DashSummary";
 import { time } from "../format";
+import { GAP_PX, GRID_COLS, HEAD_ROWS, MIN_W, ROW_PX, loadBand, measureLayout, resetBand, saveBand, type Band, type BandLayout } from "../dashLayout";
 import type { DeskRegime, RegimeSnapshot } from "../types";
 
 // #410 데스크 자체 국면(#409) — semibot 이 없는 서버에서도 카드가 빈 문구가 아니게
@@ -146,6 +149,20 @@ function useLayout(): Layout {
   return layout;
 }
 
+// #487 배치 편집을 쓰는 폭 구간: ≥1280 넓은 화면, 1000~1279 중간. 그보다 좁으면(휴대폰 포함) 예전 흐름 그대로.
+const MID_Q = "(min-width: 1000px)";
+function useBand(layout: Layout): Band | null {
+  const [mid, setMid] = useState(() => window.matchMedia?.(MID_Q).matches === true);
+  useEffect(() => {
+    const m = window.matchMedia?.(MID_Q);
+    if (!m) return;
+    const on = () => setMid(m.matches);
+    m.addEventListener("change", on);
+    return () => m.removeEventListener("change", on);
+  }, []);
+  return layout === "wide" ? "wide" : mid && layout !== "phone" ? "mid" : null;
+}
+
 // 구역 순서 · 접힘은 이 브라우저에 기억한다(손상값 · 새로 생긴 구역은 기본값으로).
 // #464 휴대폰은 접힌 머리글로 시작하고, 펼친 구역(mobileOpen)을 데스크톱 접힘(closed)과 따로 기억한다.
 const PREFS_KEY = "desk.dashboard.v1";
@@ -249,17 +266,127 @@ export default function Dashboard() {
     }, 0);
   };
 
+  // #487 배치 편집 — 저장한 격자 배치가 있으면 보기 모드도 격자로, 없으면 예전 흐름(#464) 그대로
+  const band = useBand(layout);
+  const [saved, setSaved] = useState<BandLayout | null>(null);
+  const [draft, setDraft] = useState<BandLayout | null>(null);
+  const [said, setSaid] = useState("");
+  const flowRef = useRef<HTMLDivElement>(null);
+  const { width, containerRef, mounted } = useContainerWidth();
+  useEffect(() => {
+    setDraft(null);
+    setSaved(band ? loadBand(band, DEFAULT_ORDER) : null);
+  }, [band]);
+  const grid = band ? draft ?? saved : null;
+  const startEdit = () => {
+    if (!band) return;
+    if (saved) { setDraft({ items: saved.items.map((it) => ({ ...it })), hidden: [...saved.hidden] }); return; }
+    // 처음: 지금 화면을 재서 격자로 — 넓은 화면은 지금 3열(4칸씩) 그대로, 중간 폭은 잰 위치 · 폭
+    const measured = flowRef.current ? measureLayout(flowRef.current, prefs.order) : [];
+    const items = band === "wide" ? measured.map((it) => ({ ...it, x: COLUMN[it.i as SectionId] * 4, w: 4 })) : measured;
+    setDraft({ items, hidden: [] });
+  };
+  const finishEdit = () => {
+    if (band && draft) { saveBand(band, draft); setSaved(draft); }
+    setDraft(null);
+  };
+  const resetLayout = () => {
+    if (!band) return;
+    resetBand(band);
+    setSaved(null);
+    setDraft(null);
+  };
+  const hide = (id: string) => draft && setDraft({ items: draft.items.filter((it) => it.i !== id), hidden: [...draft.hidden, id] });
+  const unhide = (id: string) => draft && setDraft({
+    items: [...draft.items, { i: id, x: 0, y: draft.items.reduce((m, it) => Math.max(m, it.y + it.h), 0), w: 4, h: 30 }],
+    hidden: draft.hidden.filter((h) => h !== id),
+  });
+  // 보기 모드에서 접힌 구역은 머리글 높이로 — 아래 구역이 올라와 빈칸이 남지 않는다
+  const gridItems: GridLayoutItems = !grid ? [] : draft ? grid.items
+    : grid.items.map((it) => (isOpen(it.i as SectionId) ? it : { ...it, h: HEAD_ROWS }));
+  // 키보드: 화살표 = 옮기기(↑↓ 는 위 · 아래 구역을 건너), Shift+화살표 = 폭 · 높이
+  const onGridKey = (id: string) => (e: KeyboardEvent<HTMLDivElement>) => {
+    if (!draft || e.target !== e.currentTarget || !e.key.startsWith("Arrow")) return;
+    e.preventDefault();
+    const items = draft.items.map((it) => ({ ...it }));
+    const it = items.find((x) => x.i === id);
+    if (!it) return;
+    const overlapX = (o: { x: number; w: number }) => o.x < it.x + it.w && it.x < o.x + o.w;
+    if (e.shiftKey) {
+      if (e.key === "ArrowLeft") it.w = Math.max(MIN_W, it.w - 1);
+      if (e.key === "ArrowRight") it.w = Math.min(GRID_COLS - it.x, it.w + 1);
+      if (e.key === "ArrowUp") it.h = Math.max(HEAD_ROWS, it.h - 4);
+      if (e.key === "ArrowDown") it.h += 4;
+    } else if (e.key === "ArrowLeft") it.x = Math.max(0, it.x - 1);
+    else if (e.key === "ArrowRight") it.x = Math.min(GRID_COLS - it.w, it.x + 1);
+    else if (e.key === "ArrowUp") {
+      const above = items.filter((o) => o !== it && overlapX(o) && o.y < it.y).sort((a, b) => b.y - a.y)[0];
+      it.y = above ? Math.max(0, above.y - 1) : 0;
+    } else {
+      const below = items.filter((o) => o !== it && overlapX(o) && o.y > it.y).sort((a, b) => a.y - b.y)[0];
+      if (below) it.y = below.y + 1;
+    }
+    setDraft({ ...draft, items });
+    setSaid(`${SECTIONS[id as SectionId].title}: ${it.x + 1}번째 칸부터 폭 ${it.w}칸, 높이 ${it.h}`);
+  };
+
   return (
     <main className="dashboard dashboard-v2">
-      <div className="dash-search">
+      <div className="dash-search" data-tour="dash-search">
         <NewRunForm />
       </div>
       {/* #464 휴대폰: 구역을 펼치지 않아도 지수 등락 · 공포지수를 한 줄로 */}
       {layout === "phone" && <DashSummary />}
       {/* #317 즐겨찾기 가운데 지금 손댈 종목 */}
       <TodayStrip />
-      {layout === "wide" ? (
-        <div className="dash-columns">
+      {band && (
+        <div className="dash-edit-bar" role="toolbar" aria-label="대시보드 배치" data-tour="dash-layout">
+          {!draft ? (
+            <>
+              <button type="button" className="link small" onClick={startEdit}>배치 편집</button>
+              {saved && <button type="button" className="link small" onClick={resetLayout}>기본 배치로</button>}
+            </>
+          ) : (
+            <>
+              <strong className="small">배치 편집 중</strong>
+              <span className="muted small">손잡이(⠿)로 끌기 · 모서리로 크기 · 구역을 고른 뒤 화살표로 옮기기, Shift+화살표로 크기</span>
+              <button type="button" onClick={finishEdit}>완료</button>
+              <button type="button" className="secondary" onClick={() => setDraft(null)}>취소</button>
+              <button type="button" className="link small" onClick={resetLayout}>기본 배치로</button>
+              {draft.hidden.length > 0 && (
+                <span className="small dash-hidden">숨긴 구역:
+                  {draft.hidden.map((h) => (
+                    <button key={h} type="button" className="link small" onClick={() => unhide(h)}>{SECTIONS[h as SectionId].title} 보이기</button>
+                  ))}
+                </span>
+              )}
+            </>
+          )}
+          <span className="sr-only" aria-live="polite">{said}</span>
+        </div>
+      )}
+      {/* 폭 재기용 감싸개는 늘 그려 둔다 — 격자로 바뀌는 순간에도 크기 감시가 붙어 있게 */}
+      <div ref={containerRef as RefObject<HTMLDivElement>} className="dash-area">
+      {grid ? (
+        <div className={`dash-grid${draft ? " dash-grid-edit" : ""}`}>
+          {mounted && (
+            <GridLayout width={width} layout={gridItems}
+              gridConfig={{ cols: GRID_COLS, rowHeight: ROW_PX, margin: [GAP_PX, GAP_PX], containerPadding: [0, 0] }}
+              dragConfig={{ enabled: !!draft, handle: ".dash-drag" }}
+              resizeConfig={{ enabled: !!draft, handles: ["se", "e", "s"] }}
+              compactor={verticalCompactor}
+              onLayoutChange={(l) => { if (draft) setDraft((d) => (d ? { ...d, items: l.map(({ i, x, y, w, h }) => ({ i, x, y, w: Math.max(MIN_W, w), h })) } : d)); }}>
+              {gridItems.map((it) => (
+                <div key={it.i} className="dash-grid-item" tabIndex={draft ? 0 : undefined} onKeyDown={draft ? onGridKey(it.i) : undefined}
+                  aria-label={draft ? `${SECTIONS[it.i as SectionId].title} — 화살표로 옮기기, Shift+화살표로 크기` : undefined}>
+                  {renderSection(it.i as SectionId)}
+                </div>
+              ))}
+            </GridLayout>
+          )}
+        </div>
+      ) : layout === "wide" ? (
+        <div className="dash-columns" ref={flowRef}>
           {([0, 1, 2] as const).map((col) => (
             <div key={col} className="dash-col">
               {prefs.order.filter((id) => COLUMN[id] === col).map(renderSection)}
@@ -267,8 +394,9 @@ export default function Dashboard() {
           ))}
         </div>
       ) : (
-        <div className="dash-sections">{prefs.order.map(renderSection)}</div>
+        <div className="dash-sections" ref={flowRef}>{prefs.order.map(renderSection)}</div>
       )}
+      </div>
     </main>
   );
 
@@ -278,24 +406,33 @@ export default function Dashboard() {
     const bodyId = `dash-${id}`;
     const line = peers(id);
     const i = line.indexOf(id);
+    // 격자(#487)에서는 자리를 격자가 정하므로 ↑↓ 대신 편집 중 끌기 손잡이 · 숨기기, 내용은 편집 중에도 펼쳐 둔다
+    const inGrid = !!grid;
+    const shownOpen = draft ? true : open;
     return (
-      <section key={id} className={`dash-section${s.wide ? " dash-wide" : ""}${open ? "" : " dash-closed"}`} aria-labelledby={`${bodyId}-title`}>
+      <section key={id} data-section={id} data-tour={`dash-${id}`} className={`dash-section${s.wide ? " dash-wide" : ""}${shownOpen ? "" : " dash-closed"}`} aria-labelledby={`${bodyId}-title`}>
         <header className="dash-head">
+          {draft && <span className="dash-drag" aria-hidden="true" title="끌어서 옮기기">⠿</span>}
           <h2 id={`${bodyId}-title`} className="dash-title">
-            <button type="button" className="dash-toggle" aria-expanded={open} aria-controls={open ? bodyId : undefined}
-              onClick={() => flip(id)}>
-              <span className="dash-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+            <button type="button" className="dash-toggle" aria-expanded={shownOpen} aria-controls={shownOpen ? bodyId : undefined}
+              onClick={() => flip(id)} disabled={!!draft}>
+              <span className="dash-caret" aria-hidden="true">{shownOpen ? "▾" : "▸"}</span>
               {s.title}
             </button>
           </h2>
-          <span className="dash-order" role="group" aria-label={`${s.title} 순서`}>
-            <button type="button" id={`dash-move-${id}--1`} className="dash-move" disabled={i === 0}
-              aria-label={`${s.title} 위로`} onClick={() => move(id, -1)}>↑</button>
-            <button type="button" id={`dash-move-${id}-1`} className="dash-move" disabled={i === line.length - 1}
-              aria-label={`${s.title} 아래로`} onClick={() => move(id, 1)}>↓</button>
-          </span>
+          {draft ? (
+            <button type="button" className="link small dash-hide" onClick={() => hide(id)}>숨기기</button>
+          ) : !inGrid && (
+            <span className="dash-order" role="group" aria-label={`${s.title} 순서`}>
+              <button type="button" id={`dash-move-${id}--1`} className="dash-move" disabled={i === 0}
+                aria-label={`${s.title} 위로`} onClick={() => move(id, -1)}>↑</button>
+              <button type="button" id={`dash-move-${id}-1`} className="dash-move" disabled={i === line.length - 1}
+                aria-label={`${s.title} 아래로`} onClick={() => move(id, 1)}>↓</button>
+            </span>
+          )}
         </header>
-        {open && <div id={bodyId} className="dash-body">{s.render()}</div>}
+        {/* 편집 중엔 내용 클릭 · 초점을 막는다(inert — React 18 타입에 없어 속성으로) */}
+        {shownOpen && <div id={bodyId} className="dash-body" ref={(el) => { if (el) { if (draft) el.setAttribute("inert", ""); else el.removeAttribute("inert"); } }}>{s.render()}</div>}
       </section>
     );
   }

@@ -2221,3 +2221,20 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 @media (max-width: 760px) {
   .fund-toasts { bottom: calc(88px + env(safe-area-inset-bottom)); } /* 오른쪽 아래 채팅 버튼 위로 */
 }
+
+/* #487 대시보드 배치 편집(12칸 격자) */
+.dash-edit-bar { display: flex; align-items: center; gap: 6px 12px; flex-wrap: wrap; justify-content: flex-end; min-height: 28px; }
+.dash-edit-bar > strong { margin-right: auto; }
+.dash-hidden { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.dash-grid { position: relative; min-width: 0; }
+.dash-grid-item { min-width: 0; }
+.dash-grid-item > .dash-section { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.dash-grid-item > .dash-section > .dash-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.dash-grid-edit .dash-grid-item { outline: 1px dashed var(--muted); outline-offset: 4px; border-radius: var(--radius-s); background: var(--bg); }
+.dash-grid-edit .dash-grid-item:focus-visible { outline: 2px solid var(--focus); }
+.dash-grid-edit .dash-body { pointer-events: none; user-select: none; opacity: .85; }
+.dash-drag { cursor: grab; padding: 0 6px; font-size: 18px; line-height: 1; color: var(--muted); user-select: none; }
+.dash-drag:active { cursor: grabbing; }
+.dash-hide { margin-left: auto; }
+.dash-grid .react-grid-placeholder { background: var(--accent); opacity: .18; border-radius: var(--radius-s); }
+.dash-area { min-width: 0; }

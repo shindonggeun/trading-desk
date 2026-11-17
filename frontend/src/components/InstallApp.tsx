@@ -35,7 +35,8 @@ export default function InstallApp() {
 
       {state === "ios-other" && (
         <p className="settings-notice notice-info" role="status">
-          iOS 는 <b>Safari</b> 에서만 홈 화면에 추가할 수 있습니다. 이 주소를 Safari 로 열어 공유 → ‘홈 화면에 추가’ 를 쓰세요.
+          카카오톡 · 네이버 같은 앱 안 브라우저에서는 홈 화면에 추가할 수 없습니다. 이 주소를 <b>Safari</b>(iOS 16.4 이상은 Chrome 도)로 열어
+          공유 → ‘홈 화면에 추가’ 를 쓰세요.
         </p>
       )}
 

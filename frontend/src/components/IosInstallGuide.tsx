@@ -58,7 +58,7 @@ export function IosStepsPictured({ id }: { id?: string }) {
     <ol className="ios-guide-steps" id={id}>
       <li>
         <StepShare />
-        <span><b>1</b> Safari 아래(아이패드는 위) <b>공유</b> 버튼을 누릅니다.</span>
+        <span><b>1</b> Safari 아래(아이패드는 위) <b>공유</b> 버튼을 누릅니다. 안 보이면 ⋯ → 공유.</span>
       </li>
       <li>
         <StepAdd />

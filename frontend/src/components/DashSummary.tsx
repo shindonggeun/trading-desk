@@ -4,6 +4,7 @@ import { price } from "../format";
 import type { FearItem } from "../types";
 import { useTrend } from "../marketTrend";
 import { TrendSummaryItems } from "./TrendChips";
+import { useHalving, WHERE_DAYS_SHORT } from "../halving";
 
 // #464 휴대폰 대시보드 맨 위 요약 줄: 지수 등락 3개 + 공포지수 2개. 구역은 접힌 머리글로 시작하니
 // 펼치지 않아도 시장 분위기를 한 줄로 본다. 실패한 항목은 조용히 뺀다(아래 구역에서 자세히 본다).
@@ -22,6 +23,10 @@ export default function DashSummary() {
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [fear, setFear] = useState<FearItem[]>([]);
   const trend = useTrend(); // #461 지수 지금 추세 — 시세 · 공포지수가 없어도 추세만으로 줄을 보인다
+  // #540 비트코인 반감기 뒤 일수 — 반감기 구역 카드와 같은 요청(10분 캐시)을 나눠 쓴다. 지금 사이클 값이 없으면 숨긴다
+  const hv = useHalving().data;
+  const hvNow = hv?.current ?? null;
+  const hvWhere = hv?.ranges.now.days_since_halving ?? null;
 
   useEffect(() => {
     let alive = true;
@@ -57,7 +62,7 @@ export default function DashSummary() {
     return () => { alive = false; window.clearInterval(t); };
   }, []);
 
-  if (!quotes.length && !fear.length && !trend.length) return null;
+  if (!quotes.length && !fear.length && !trend.length && !hvNow) return null;
   return (
     <div className="dash-summary" role="group" aria-label="시장 요약">
       {quotes.map((q) => (
@@ -75,6 +80,13 @@ export default function DashSummary() {
           {f.band_ko && <span className="fear-band"> {f.band_ko}</span>}
         </span>
       ))}
+      {hvNow && (
+        <a className="dash-sum-item dash-sum-link" href="#/halving"
+          title="비트코인 반감기 뒤 일수 — 누르면 사이클 비교 화면">
+          <span className="muted">반감기</span> {hvNow.days_since_halving}일째
+          {hvWhere && <span className="muted"> · 과거 바닥 {WHERE_DAYS_SHORT[hvWhere]}</span>}
+        </a>
+      )}
     </div>
   );
 }

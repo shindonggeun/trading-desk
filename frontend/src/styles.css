@@ -2105,6 +2105,7 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 }
 .dash-summary { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 10px; border-radius: var(--radius-s);
   background: var(--surface-2); font-size: var(--fs-s); font-variant-numeric: tabular-nums; }
+.dash-sum-link { color: var(--text); text-decoration: none; border-bottom: 1px dotted var(--muted); } /* #540 반감기 칩 → #/halving */
 .dash-sum-item { white-space: nowrap; }
 @media (max-width: 480px) {
   .dashboard.dashboard-v2 { gap: 12px; }

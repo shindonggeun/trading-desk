@@ -1,4 +1,4 @@
-import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, RunExplain, TipsView } from "./types";
+import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, PaperEquity, PaperSettings, PaperSettingsPatch, PaperSummary, PaperTrades, RunExplain, TipsView } from "./types";
 import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, ReportDetail, ReportList, Halving, FundBrief, FundChanges, FundDetail, FearIndex, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
@@ -156,6 +156,18 @@ export const api = {
   runs: (page = 1, size = 50) => call<RunPage>(`/api/runs?page=${page}&size=${size}`),
   deleteRun: (id: string) => call<void>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
   run: (id: string) => call<Run>(`/api/runs/${encodeURIComponent(id)}`),
+  // #528 모의 투자(#527) — 실제 주문 없음. 설정을 바꾸면 다음 읽기에서 settings_version 이 따라온다
+  paperSettings: () => call<PaperSettings>("/api/paper/settings"),
+  savePaperSettings: (patch: PaperSettingsPatch) =>
+    call<PaperSettings>("/api/paper/settings", { method: "PUT", body: JSON.stringify(patch) }),
+  paperSummary: () => call<PaperSummary>("/api/paper/summary"),
+  paperEquity: () => call<PaperEquity>("/api/paper/equity"),
+  paperTrades: (q: { status?: string; direction?: string; ticker?: string; limit?: number } = {}) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== "") p.set(k, String(v));
+    const qs = p.toString();
+    return call<PaperTrades>(`/api/paper/trades${qs ? `?${qs}` : ""}`);
+  },
   // #494 초보자 해설(#493) — 처음 한 번은 모델이 쓰는 동안 수십 초
   runExplain: (id: string, refresh = false) =>
     call<RunExplain>(`/api/runs/${encodeURIComponent(id)}/explain${refresh ? "?refresh=1" : ""}`),

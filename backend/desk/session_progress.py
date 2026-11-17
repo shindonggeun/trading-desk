@@ -9,7 +9,8 @@ bars are finished sessions), so desk.backtest_reports.DATA_MODULES leaves it out
   midnight (15:00 UTC the day before), a US bar carries its own date in UTC (Yahoo's 04:00/05:00 UTC,
   a broker's date-only bar as UTC midnight).
 - Korean (.KS/.KQ) and US stocks and ETFs, and (#559) the Korean and US indices on their market's
-  session, CME futures (=F) on their own day (18:00 ET the evening before to 17:00 ET) and crypto
+  session, CME futures (=F) on New York's regular hours within their own day (18:00 ET the evening
+  before to 17:00 ET; most of their volume trades in those hours) and crypto
   (-USD) on the UTC day. FX (=X) has no volume worth judging, and other indices (another market's
   session): None, the volume read as it is.
 - A US early close (13:00 ET, desk.market_calendar.us_early_close) ends the session there.
@@ -79,7 +80,11 @@ def elapsed(ticker: str, daily: list[dict], now: datetime | None = None) -> floa
 
 def _futures(t: str, daily: list[dict], now: datetime | None) -> float | None:
     """#559 a CME futures day: the bar dated D trades from 18:00 ET on D-1 to 17:00 ET on D (after
-    17:00 the next day's session is the one trading; none is dated a Saturday or a Sunday)."""
+    17:00 the next day's session is the one trading; none is dated a Saturday or a Sunday). Index
+    futures trade most of their volume in New York's regular hours, so the clock is that session's,
+    not the 23 hours': before 09:30 ET the volume is not judged yet (0.0, like a stock's pre-market),
+    from the open it runs to 16:00 (an early close at 13:00), then the day is whole (1.0). The night's
+    volume already in the bar makes an early reading high, never falsely dry (#432's concern)."""
     zone = US.zone
     local = (now or datetime.now(UTC)).astimezone(zone)
     day = local.date() if local.time() < FUTURES_CLOSES else local.date() + timedelta(days=1)
@@ -90,8 +95,11 @@ def _futures(t: str, daily: list[dict], now: datetime | None) -> float | None:
             return None
     except (TypeError, ValueError):
         return None
-    start = datetime.combine(day - timedelta(days=1), FUTURES_OPENS, zone)
-    end = datetime.combine(day, FUTURES_CLOSES, zone)
+    opens, closes = US.hours(day)
+    if market_calendar.us_early_close(day):
+        closes = min(closes, US_EARLY_CLOSE)
+    start = datetime.combine(day, opens, zone)
+    end = datetime.combine(day, closes, zone)
     return min(1.0, max(0.0, (local - start) / (end - start)))
 
 

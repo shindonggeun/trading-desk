@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from itertools import pairwise
 from statistics import median
 
-from . import calibration, direction, events_calendar, exits, horizons, value_swing
+from . import calibration, direction, events_calendar, exits, horizons, trend, value_swing
 from .indicators import rsi
 from .related import LEVERAGED
 
@@ -255,7 +255,11 @@ def candidates(sr: dict, primary: list[dict], intraday: bool) -> list[dict]:
                 out.append({"price": lv["price"], "source": "fib", "weight": wanted[lv["ratio"]],
                             "basis": f"피보나치 {lv['ratio']}", "fib": fib.get("direction")})
     for t in sr.get("trendlines") or []:
-        if t.get("state") in ("intact", "testing") and t.get("price_now") is not None:
+        # #530: lines now stay far past where they used to be dropped (MAX_DISTANCE_ATR of their
+        # own bars' ATR); zones are built from the ones within it, as before
+        reach = t.get("distance_bar_atr")
+        if (t.get("state") in ("intact", "testing") and t.get("price_now") is not None
+                and (reach is None or abs(reach) <= trend.MAX_DISTANCE_ATR)):
             out.append({"price": t["price_now"], "source": "trend", "weight": 1.0,
                         "basis": "상승 추세선" if t.get("kind") == "support" else "하락 추세선"})
     closes = [b["close"] for b in primary]

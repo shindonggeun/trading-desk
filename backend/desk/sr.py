@@ -360,17 +360,25 @@ def _bars_behind(last: str, now: str, bar_days: int) -> float:
 
 
 def add_trend(result: dict, days: list[dict], weeks: list[dict], h: horizons.Horizon,
-              price: float | None) -> None:
+              price: float | None, *, annotate: bool = True) -> None:
     """Trendlines on both timeframes and the primary bars' retracement (desk.trend) onto a
-    ``compute`` result. A failure leaves the horizontal levels as they are and says why."""
+    ``compute`` result. A failure leaves the horizontal levels as they are and says why.
+    ``annotate`` False leaves out the lines' scenarios and sentences (the backtest reads only
+    where the lines are)."""
     try:
         atr = result["atr"] or (_atr(days) or 0.0)
         reference = price or days[-1]["close"]
-        lines = trend.trendlines(days, h.primary, h.primary_k, reference, atr)
+        lines = trend.trendlines(days, h.primary, h.primary_k, reference, atr, scales=trend.SCALES)
+        frames = {h.primary: {"bars": days, "k": h.primary_k, "atr": atr}}
         if weeks:
-            lines += trend.trendlines(weeks, h.secondary, h.secondary_k, reference, atr, _atr(weeks),
+            weekly_atr = _atr(weeks)
+            lines += trend.trendlines(weeks, h.secondary, h.secondary_k, reference, atr, weekly_atr,
                                       extend=_bars_behind(weeks[-1]["at"], days[-1]["at"], h.secondary_days),
-                                      now_at=days[-1]["at"])
+                                      now_at=days[-1]["at"], scales=trend.SCALES)
+            frames[h.secondary] = {"bars": weeks, "k": h.secondary_k, "atr": weekly_atr or atr}
+        lines = trend.select(lines)
+        if annotate:
+            trend.annotate(lines, result["levels"], reference, frames)
         result["trendlines"] = lines
         result["fibonacci"] = trend.fibonacci(days, result["levels"], max(0.5 * atr, h.tolerance_pct * reference))
     except Exception as exc:  # noqa: BLE001 - the levels stand without the lines

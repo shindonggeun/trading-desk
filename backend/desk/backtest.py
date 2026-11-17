@@ -227,7 +227,7 @@ def snapshot(ticker: str, h: horizons.Horizon, primary: list[dict], secondary: l
         levels = sr.compute(window, sec, None, weekly_complete=True, horizon=h.id)
     except ValueError:
         return None
-    sr.add_trend(levels, window, sec, h, None)
+    sr.add_trend(levels, window, sec, h, None, annotate=False)
     sr.add_volume_profile(levels, window, h)
     daily = window if h.primary == "1d" else sec
     day = cut.isoformat()

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { byAsked } from "../ticker";
 import { useFavorites } from "../favorites";
 import type { BoardItem, LivePlaybooks, LongShortItem, MarketMonth, Projection } from "../types";
 
@@ -84,9 +85,9 @@ export default function TodayStrip() {
       ]);
       if (!alive) return;
       const quotes: Record<string, BoardItem> = {};
-      if (board.status === "fulfilled") for (const it of board.value.items as BoardItem[]) quotes[it.ticker] = it;
+      if (board.status === "fulfilled") Object.assign(quotes, byAsked(tickers, board.value.items as BoardItem[]));
       const lsBy: Record<string, LongShortItem> = {};
-      if (ls.status === "fulfilled") for (const it of ls.value.items) lsBy[it.ticker] = it;
+      if (ls.status === "fulfilled") Object.assign(lsBy, byAsked(tickers, ls.value.items));
       const earn: Record<string, string> = {};
       if (cal.status === "fulfilled") {
         for (const d of (cal.value as MarketMonth[]).flatMap((m) => m.days)) {

@@ -1,6 +1,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { api } from "./api";
 import type { Favorite } from "./types";
+import { findTicker, sameTicker } from "./ticker";
 
 /**
  * 즐겨찾기(#135 · 서버 #134) — 화면 어디서 별을 눌러도 같은 목록을 본다.
@@ -132,11 +133,11 @@ function renumber(list: Favorite[]): Favorite[] {
   return list.map((f, i) => (f.position === i ? f : { ...f, position: i }));
 }
 function sameTickers(a: Favorite[], b: Favorite[]): boolean {
-  return a.length === b.length && a.every((f, i) => f.ticker === b[i].ticker);
+  return a.length === b.length && a.every((f, i) => sameTicker(f.ticker, b[i].ticker));
 }
 
 export function isFavorite(ticker: string): boolean {
-  return !!state.list?.some((f) => f.ticker === ticker.toUpperCase());
+  return !!state.list?.some((f) => sameTicker(f.ticker, ticker));
 }
 
 export function addFavorite(ticker: string, name?: string | null) {
@@ -147,7 +148,12 @@ export function addFavorite(ticker: string, name?: string | null) {
 
 export function removeFavorite(ticker: string) {
   const t = ticker.toUpperCase();
-  write((l) => l.filter((f) => f.ticker !== t), () => api.removeFavorite(t));
+  // every stored row of this instrument: a bare code saved before #477 and its suffixed row are both removed
+  const stored = (state.list ?? []).filter((f) => sameTicker(f.ticker, t)).map((f) => f.ticker);
+  const send = stored.length ? stored : [t];
+  write((l) => l.filter((f) => !sameTicker(f.ticker, t)), async () => {
+    for (const s of send) await api.removeFavorite(s);
+  });
 }
 
 export function toggleFavorite(ticker: string, name?: string | null) {
@@ -158,12 +164,13 @@ export function toggleFavorite(ticker: string, name?: string | null) {
 /** 한 칸 앞(-1) · 뒤(+1)로. 보낼 때의 화면 목록 전체를 보낸다(그사이 더하고 뺀 것까지). */
 export function moveFavorite(ticker: string, by: -1 | 1) {
   const list = state.list ?? [];
-  const i = list.findIndex((f) => f.ticker === ticker);
+  const own = findTicker(list, ticker)?.ticker;     // exactly this row when a bare and a suffixed one are both there
+  const i = list.findIndex((f) => f.ticker === own);
   const j = i + by;
   if (i < 0 || j < 0 || j >= list.length) return;
   write((l) => {
     const next = [...l];
-    const a = next.findIndex((f) => f.ticker === ticker);
+    const a = next.findIndex((f) => f.ticker === own);
     const b = a + by;
     if (a >= 0 && b >= 0 && b < next.length) [next[a], next[b]] = [next[b], next[a]];
     return next;

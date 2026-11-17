@@ -10,6 +10,7 @@ import { addFavorite, removeFavorite, useFavorites } from "../favorites";
 import { price, time } from "../format";
 import type { Run } from "../types";
 import StockProfileCard from "../components/StockProfileCard";
+import { findTicker, sameTicker } from "../ticker";
 
 /** #/live?t=NVDA — 대시보드 즐겨찾기 타일에서 넘어온 종목 */
 function linkedTicker(): string | null {
@@ -47,7 +48,7 @@ export default function Live() {
   // the price with the ticker it belongs to: a tab switch must not hand one ticker's price to another's alerts
   const [tick, setTick] = useState<{ ticker: string; price: number } | null>(null);
   const [permission, setPermission] = useState(notificationsAllowed());
-  const tab = tabs.find((t) => t.ticker === active) ?? tabs[0];
+  const tab = findTicker(tabs, active) ?? tabs[0];
   // 주말 묶음에서 고른 종목(관심 종목 탭이 아닌 것) — 차트만 보여 준다
   const [focus, setFocus] = useState<BoardTicker | null>(null);
   const [view, setView] = useState<"live" | "bars">(() => {
@@ -69,7 +70,7 @@ export default function Live() {
     }
   };
   const pickTile = (t: BoardTicker) => {
-    if (tabs.some((x) => x.ticker === t.ticker)) {
+    if (tabs.some((x) => sameTicker(x.ticker, t.ticker))) {
       setActive(t.ticker);
       setFocus(null);
     } else setFocus(t);
@@ -91,7 +92,7 @@ export default function Live() {
   }, []);
   useEffect(() => {
     if (!linked || list === null) return;
-    if (tabs.some((x) => x.ticker === linked)) {
+    if (tabs.some((x) => sameTicker(x.ticker, linked))) {
       setActive(linked);
       setFocus(null);
     } else setFocus({ ticker: linked });
@@ -102,11 +103,11 @@ export default function Live() {
   useEffect(() => {
     api.runs(1, 100).then((p) => setRuns(p.items)).catch(() => setRuns([]));
   }, [tab?.ticker]);
-  const livePrice = tick && tick.ticker === tab?.ticker ? tick.price : null;
+  const livePrice = tick && sameTicker(tick.ticker, tab?.ticker) ? tick.price : null;
 
   // 이 종목의 가장 최근 완료 분석
   const run = useMemo(
-    () => runs.find((r) => r.ticker === tab?.ticker && r.status === "done" && r.plan) ?? null,
+    () => runs.find((r) => sameTicker(r.ticker, tab?.ticker) && r.status === "done" && r.plan) ?? null,
     [runs, tab?.ticker],
   );
   const plan = run?.plan ?? null;
@@ -118,13 +119,13 @@ export default function Live() {
     const t = pick.ticker.trim().toUpperCase();
     if (!t) return;
     setFocus(null);
-    if (!tabs.some((x) => x.ticker === t)) addFavorite(t, pick.name);
+    if (!tabs.some((x) => sameTicker(x.ticker, t))) addFavorite(t, pick.name);
     setActive(t);
     setPick({ ticker: "" });
   };
   const remove = (ticker: string) => {
     removeFavorite(ticker);
-    if (ticker === tab?.ticker) setActive(null);   // 보던 탭을 빼면 첫 탭으로, 다른 탭이면 그대로
+    if (sameTicker(ticker, tab?.ticker)) setActive(null);   // 보던 탭을 빼면 첫 탭으로, 다른 탭이면 그대로
   };
   const askPermission = () => {
     if (typeof Notification === "undefined") return;
@@ -142,7 +143,7 @@ export default function Live() {
       </div>
       <QuoteBoard watch={tabs} selected={shown?.ticker} onPick={pickTile}
         // 봉 · 추정 보기에선 1분 흐름이 없으니 시세판 값(장외면 추정가)으로 도달 알림을 이어 간다
-        onPrice={(t, p) => { if (view === "bars" && t === tab?.ticker) setTick({ ticker: t, price: p }); }} />
+        onPrice={(t, p) => { if (view === "bars" && tab && sameTicker(t, tab.ticker)) setTick({ ticker: tab.ticker, price: p }); }} />
       {favError && <p className="error small">{favError}</p>}
       {list !== null && tabs.length === 0 && !focus && (
         <p className="empty-state">즐겨찾기가 없습니다. 위에서 종목을 찾아 추가하거나, 타일을 고른 뒤 ☆ 를 누르세요.</p>
@@ -171,7 +172,7 @@ export default function Live() {
       )}
       {shown && view === "bars" && (
         <BoardChart key={shown.ticker} ticker={shown.ticker} name={shown.name}
-          mark={mark && mark.ticker === shown.ticker ? mark : null} />
+          mark={mark && sameTicker(mark.ticker, shown.ticker) ? mark : null} />
       )}
       {focus && view === "live" && <LiveChart ticker={focus.ticker} plan={null} />}
       {shown && infoOn && <StockProfileCard key={shown.ticker} ticker={shown.ticker} onClose={() => setInfoOn(false)} />}

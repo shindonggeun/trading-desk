@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { sameTicker } from "../ticker";
 import { time } from "../format";
 import type { SectorNewsView } from "../types";
 import { Impact, Lean, NewsHeadline } from "./NewsRead";
@@ -52,7 +53,7 @@ export default function SectorNews({ tickers, name }: { tickers?: string[]; name
   // 섹터 탭: 고른 섹터의 종목과 이슈 종목이 겹치거나 이름이 같은 이슈 섹터만
   const sectors = linked
     ? data.sectors.filter((s) => (name && (name.includes(s.label) || s.label.split(" · ").some((w) => name.includes(w))))
-        || s.issues.some((i) => i.tickers.some((t) => tickers!.includes(t))))
+        || s.issues.some((i) => i.tickers.some((t) => tickers!.some((x) => sameTicker(x, t)))))
     : data.sectors;
   if (linked && sectors.length === 0) return null;
   const current = linked ? null : sectors.find((s) => s.id === pick) ?? sectors[0];

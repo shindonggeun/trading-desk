@@ -5,6 +5,7 @@ import WeeklyMapChart from "../components/WeeklyMapChart";
 import { useFavorites } from "../favorites";
 import { price } from "../format";
 import type { WeeklyHistoryRow, WeeklyMap as Map, WeeklyMapError } from "../types";
+import { sameTicker } from "../ticker";
 import { chartsLink, WEEKLY_POSITION } from "../weekly";
 
 /**
@@ -152,8 +153,8 @@ export default function WeeklyMap({ query }: { query: URLSearchParams }) {
   const first = maps?.find(isMap);
   const indexes = new Set((maps ?? []).map((m) => m.symbol));
   // 주소의 종목이 지수가 아니면(검색한 종목) 그 카드를 맨 위에
-  const searched = focus && maps && !indexes.has(focus) ? focus : null;
-  const favs = favOn ? favorites.map((f) => f.ticker).filter((t) => !indexes.has(t) && t !== searched) : [];
+  const searched = focus && maps && ![...indexes].some((s) => sameTicker(s, focus)) ? focus : null;
+  const favs = favOn ? favorites.map((f) => f.ticker).filter((t) => !indexes.has(t) && !sameTicker(t, searched)) : [];
   const open = (p: Picked) => {
     const t = p.ticker.trim().toUpperCase();
     if (!t) return;
@@ -183,10 +184,10 @@ export default function WeeklyMap({ query }: { query: URLSearchParams }) {
       </section>
       {failed && <p className="error small">주간 지도를 불러오지 못했습니다.</p>}
       {!maps && !failed && <p className="muted small">주봉을 받는 중…</p>}
-      {searched && <OneCard key={`s-${searched}`} symbol={searched} focused label={favorites.find((f) => f.ticker === searched)?.name} />}
-      {maps?.map((m) => (isMap(m) ? <MapCard key={m.symbol} map={m} focused={m.symbol === focus} /> : <ErrorCard key={m.symbol} m={m} />))}
+      {searched && <OneCard key={`s-${searched}`} symbol={searched} focused label={favorites.find((f) => sameTicker(f.ticker, searched))?.name} />}
+      {maps?.map((m) => (isMap(m) ? <MapCard key={m.symbol} map={m} focused={sameTicker(m.symbol, focus)} /> : <ErrorCard key={m.symbol} m={m} />))}
       {favs.length > 0 && <h3 className="wm-fav-title">즐겨찾기 종목</h3>}
-      {favs.map((t) => <OneCard key={`f-${t}`} symbol={t} focused={false} label={favorites.find((f) => f.ticker === t)?.name} />)}
+      {favs.map((t) => <OneCard key={`f-${t}`} symbol={t} focused={false} label={favorites.find((f) => sameTicker(f.ticker, t))?.name} />)}
       {first && (
         <div className="wm-help">
           <section className="card">

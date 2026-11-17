@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { byAsked } from "../ticker";
 import { time } from "../format";
 import type { LongShortItem, LongShortSplit } from "../types";
 
@@ -57,7 +58,7 @@ export function useLongShort(tickers: string[], enabled: boolean): Record<string
     const load = () => {
       if (document.hidden) return;
       api.longShort(key.split(","))
-        .then((r) => alive && setItems((cur) => ({ ...cur, ...Object.fromEntries(r.items.map((i) => [i.ticker, i])) })))
+        .then((r) => alive && setItems((cur) => ({ ...cur, ...byAsked(key.split(","), r.items) })))
         .catch(() => { /* 실패하면 마지막 값을 그대로 둔다 */ });
     };
     load();

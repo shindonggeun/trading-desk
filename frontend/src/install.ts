@@ -3,6 +3,7 @@
  * 한 번 보낸다 — 앱 시작 때 잡아 두었다가 설정 · 배너의 "앱으로 설치" 버튼이 띄운다.
  * iOS 는 이 이벤트가 없어 공유 → "홈 화면에 추가" 를 안내한다. 이미 설치한 앱(독립 실행)이면 숨긴다.
  */
+import { useEffect, useState } from "react";
 import { isIOS, isStandalone } from "./push";
 
 type InstallPrompt = Event & {
@@ -13,8 +14,16 @@ type InstallPrompt = Event & {
 export type InstallState =
   | "installed"   // 독립 실행 중이거나 방금 설치했다
   | "available"   // 브라우저가 설치 창을 띄울 수 있다
-  | "ios"         // iOS — 공유 → 홈 화면에 추가
+  | "ios"         // iOS Safari — 공유 → 홈 화면에 추가
+  | "ios-other"   // iOS 의 다른 브라우저 · 앱 안 브라우저 — Safari 로 열어야 한다
   | "manual";     // 설치 이벤트가 없다(아직 조건 미충족 · Firefox 등) — 브라우저 메뉴로
+
+/** iOS 의 Safari 인가. iOS 의 Chrome · Firefox · Edge 와 카카오톡 · 네이버 같은 앱 안 브라우저는 UA 에 Safari 가 있어도 뺀다. */
+export function isIOSSafari(): boolean {
+  if (!isIOS()) return false;
+  const ua = navigator.userAgent;
+  return /Safari\//.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|GSA\/|KAKAOTALK|NAVER|DaumApps|Instagram|FBAN|FBAV|Line\//.test(ua);
+}
 
 let deferred: InstallPrompt | null = null;
 let installed = false;
@@ -38,7 +47,8 @@ export function captureInstallPrompt(): void {
 export function installState(): InstallState {
   if (installed || isStandalone()) return "installed";
   if (deferred) return "available";
-  return isIOS() ? "ios" : "manual";
+  if (isIOS()) return isIOSSafari() ? "ios" : "ios-other";
+  return "manual";
 }
 
 export function onInstallChange(listener: () => void): () => void {
@@ -46,6 +56,17 @@ export function onInstallChange(listener: () => void): () => void {
   return () => {
     listeners.delete(listener);
   };
+}
+
+/** 지금 설치 상태 — 설치 이벤트 · 설치 완료가 오면 다시 그린다. */
+export function useInstallState(): InstallState {
+  const [state, setState] = useState<InstallState>(installState);
+  useEffect(() => {
+    const off = onInstallChange(() => setState(installState()));
+    setState(installState());        // 첫 그림과 구독 사이에 온 설치 이벤트도 반영
+    return off;
+  }, []);
+  return state;
 }
 
 /** 설치 창을 띄운다. 설치했으면 true. 한 번 쓴 이벤트는 다시 못 쓴다. */
@@ -76,6 +97,25 @@ export function installHintDismissed(): boolean {
 export function dismissInstallHint(): void {
   try {
     window.localStorage.setItem(HINT_KEY, "1");
+  } catch {
+    /* 저장 못 하면 이번 화면에서만 닫힌다 */
+  }
+}
+
+const IOS_GUIDE_KEY = "desk.iosInstallGuide.dismissed";
+
+/** iOS Safari 그림 안내 카드를 닫았는지(이 브라우저에 기억). 저장소를 못 쓰면 닫지 않은 것으로 본다. */
+export function iosGuideDismissed(): boolean {
+  try {
+    return window.localStorage.getItem(IOS_GUIDE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function dismissIosGuide(): void {
+  try {
+    window.localStorage.setItem(IOS_GUIDE_KEY, "1");
   } catch {
     /* 저장 못 하면 이번 화면에서만 닫힌다 */
   }

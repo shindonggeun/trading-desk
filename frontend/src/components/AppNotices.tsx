@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { dismissInstallHint, installHintDismissed, promptInstall } from "../install";
-import { IosSteps, useInstallState } from "./InstallApp";
+import { dismissInstallHint, installHintDismissed, promptInstall, useInstallState } from "../install";
+import IosInstallGuide from "./IosInstallGuide";
 
 function useOnline(): boolean {
   const [online, setOnline] = useState(() => navigator.onLine !== false);
@@ -24,18 +24,18 @@ const touch = () => window.matchMedia?.("(pointer: coarse)").matches === true;
  * #451 상단 안내 두 가지.
  * - 연결 없음: 기기가 오프라인이면(navigator.onLine) 화면 위에 알린다. 다시 연결되면 사라진다.
  * - 앱으로 설치: 휴대폰에서 아직 설치하지 않았으면 한 번 권한다. 닫으면 이 브라우저에서 다시 안 띄운다.
+ *   설치 창이 있는 브라우저(안드로이드 Chrome 등)는 배너의 "설치" 버튼, iOS Safari 는 그림 안내 카드(IosInstallGuide).
  */
 export default function AppNotices() {
   const online = useOnline();
   const install = useInstallState();
   const [hidden, setHidden] = useState(installHintDismissed);
-  const [steps, setSteps] = useState(false);
 
   const close = () => {
     dismissInstallHint();
     setHidden(true);
   };
-  const offerInstall = !hidden && touch() && (install === "available" || install === "ios");
+  const offerInstall = !hidden && touch() && install === "available";
 
   return (
     <>
@@ -52,16 +52,13 @@ export default function AppNotices() {
           <div className="install-hint-row">
             <span>홈 화면에 데스크를 앱으로 설치할 수 있습니다.</span>
             <span className="install-hint-actions">
-              {install === "available"
-                ? <button type="button" onClick={() => promptInstall().then((ok) => ok && close()).catch(() => {})}>설치</button>
-                : <button type="button" aria-expanded={steps} aria-controls="install-hint-steps"
-                    onClick={() => setSteps((v) => !v)}>방법 보기</button>}
+              <button type="button" onClick={() => promptInstall().then((ok) => ok && close()).catch(() => {})}>설치</button>
               <button type="button" className="link" onClick={close}>닫기</button>
             </span>
           </div>
-          {steps && <IosSteps id="install-hint-steps" />}
         </div>
       )}
+      <IosInstallGuide />
     </>
   );
 }

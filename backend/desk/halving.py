@@ -76,7 +76,9 @@ def cycle(closes: Closes, start: date, end: date | None) -> dict:
     peak_i = max(window, key=lambda i: days[i][1])
     peak_d, peak_p = days[peak_i]
     out["peak"] = _point(peak_d, peak_p, start)
-    after = days[peak_i:]
+    after = days[peak_i + 1:]           # the lowest close after the peak day (none when the peak is the last)
+    if not after:
+        return out
     low_d, low_p = min(after, key=lambda x: x[1])
     out["bottom"] = {**_point(low_d, low_p, start), "days_from_peak": (low_d - peak_d).days,
                      "drawdown_pct": _pct(low_p, peak_p)}
@@ -113,7 +115,7 @@ def _series(closes: Closes, start: date, end: date | None, base: date | None, st
 
 def view(closes: Closes, today: date | None = None) -> dict:
     """The whole answer (the #514 contract) from daily closes, oldest first."""
-    closes = sorted((d, p) for d, p in closes if p and p > 0)
+    closes = sorted({d: p for d, p in closes if p and p > 0}.items())   # one close a day: the last row given
     if not closes:
         raise ValueError("no prices")
     last_d, last_p = closes[-1]
@@ -131,7 +133,7 @@ def view(closes: Closes, today: date | None = None) -> dict:
         current = {
             "halving": now_start.isoformat(), "days_since_halving": ((today or last_d) - now_start).days,
             "price": round(last_p, 2), "high": _point(hi_d, hi_p, now_start),
-            "days_since_high": (last_d - hi_d).days, "from_high_pct": _pct(last_p, hi_p),
+            "days_since_high": ((today or last_d) - hi_d).days, "from_high_pct": _pct(last_p, hi_p),
             "low_after_high": ({**_point(low[0], low[1], now_start), "drawdown_pct": _pct(low[1], hi_p)}
                                if low else None),
             "from_low_pct": _pct(last_p, low[1]) if low else None,
@@ -155,10 +157,9 @@ def view(closes: Closes, today: date | None = None) -> dict:
         peak = past[i]["peak"] if i < len(past) else (current and current["high"])
         if peak:
             pd = date.fromisoformat(peak["date"])
+            # from the halving: the days before the peak come out negative (the overlay is centred on it)
             pts, base = _series(closes, s, end, pd)
-            # before the peak too: every step back from it (the overlay is centred on the peak)
-            by_peak.append({"halving": s.isoformat(), "base_date": base.isoformat(),
-                            "points": sorted(_back(closes, s, pd) + pts)})
+            by_peak.append({"halving": s.isoformat(), "base_date": base.isoformat(), "points": pts})
     notes = list(NOTES)
     if any(c["partial"] for c in past):
         notes.append(NOTE_2012)
@@ -167,13 +168,6 @@ def view(closes: Closes, today: date | None = None) -> dict:
                          for n, b, d, r in HALVINGS] + [next_halving()],
             "cycles": past, "current": current, "ranges": ranges,
             "series": {"by_halving": by_halving, "by_peak": by_peak}, "notes": notes}
-
-
-def _back(closes: Closes, start: date, peak: date) -> list:
-    by_day = dict(closes)
-    ref = by_day[peak]
-    return [[(d - peak).days, round(p / ref, 4)] for d, p in closes
-            if start <= d < peak and (peak - d).days % STEP_DAYS == 0]
 
 
 def fake_closes() -> Closes:

@@ -86,6 +86,20 @@ def test_today_against_the_past_cycles_with_the_limits_said():
     assert all(b[0] - a[0] == hv.STEP_DAYS for a, b in pairwise(now[:-1])) and now[-1][0] == 941
     peak = v["series"]["by_peak"][0]
     assert peak["halving"] == "2016-07-09" and [0, 1.0] in peak["points"] and peak["points"][0][0] < 0
+    for series in v["series"]["by_peak"] + v["series"]["by_halving"]:
+        xs = [x for x, _ in series["points"]]
+        assert xs == sorted(set(xs))                                      # one point a day, in order
+
+
+def test_one_close_a_day_and_a_peak_on_the_last_day_has_no_bottom_yet():
+    start, end = date(2016, 7, 9), date(2020, 5, 11)
+    closes = _line(start, [float(i + 1) for i in range(400)])            # still rising: the peak is the last day
+    c = hv.cycle(closes, start, end)
+    assert c["peak"]["days_from_halving"] == 399 and c["bottom"] is None
+    twice = _history() + [(_history()[-1][0], 1.0)]                       # a second row for the last day
+    v = hv.view(twice, today=_history()[-1][0] + timedelta(days=1))
+    assert v["current"]["price"] == 1.0 and v["current"]["days_since_halving"] == 942
+    assert v["current"]["days_since_high"] == 942 - 534
 
 
 def test_the_cache_keeps_a_day_and_retries_a_failure_soon():

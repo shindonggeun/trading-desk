@@ -822,7 +822,9 @@ span.cs-hold-text { color: var(--warn); }
 .dash-move:hover:not(:disabled) { color: var(--text); background: var(--surface-2); }
 .dash-move:disabled { opacity: .35; }
 @media (max-width: 760px) { .dash-move { min-width: 34px; min-height: 34px; } } /* #433 휴대폰 탭 영역 */
-.dash-body > .card { margin: 0; }
+.dash-body > .card, .dash-body-inner > .card { margin: 0; }
+/* #519 내용 높이를 재는 감싸개 — 안의 여백이 밖으로 새지 않게 */
+.dash-body-inner { display: flow-root; }
 
 .empty-state { margin: 0; padding: 16px; border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface); color: var(--muted); font-size: 13px; }
 
@@ -2098,7 +2100,7 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   .dashboard.dashboard-v2 { max-width: 1680px; gap: 14px; }
   .dash-columns .dash-head, .dash-grid-wide .dash-head { margin-bottom: 6px; }
   .dash-columns .dash-title, .dash-grid-wide .dash-title { font-size: 14px; }
-  .dash-columns .dash-body > .card, .dash-grid-wide .dash-body > .card { padding: 12px; }
+  .dash-columns .dash-body-inner > .card, .dash-grid-wide .dash-body-inner > .card { padding: 12px; }
   .dash-columns .market-board .mb-head, .dash-grid-wide .market-board .mb-head { gap: 8px; }
 }
 .dash-summary { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 10px; border-radius: var(--radius-s);
@@ -2236,17 +2238,27 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .dash-edit-bar > strong { margin-right: auto; }
 .dash-hidden { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
 .dash-grid { position: relative; min-width: 0; }
-.dash-grid-item { min-width: 0; }
+/* #519 세로 간격은 격자 여백이 아니라 칸 아래 패딩 — 칸 높이 = 구역 + 간격 */
+.dash-grid-item { min-width: 0; box-sizing: border-box; padding-bottom: 14px; }
 .dash-grid-item > .dash-section { height: 100%; display: flex; flex-direction: column; min-height: 0; }
-.dash-grid-item > .dash-section > .dash-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
-.dash-grid-edit .dash-grid-item { outline: 1px dashed var(--muted); outline-offset: 4px; border-radius: var(--radius-s); background: var(--bg); }
-.dash-grid-edit .dash-grid-item:focus-visible { outline: 2px solid var(--focus); }
+/* 자동 구역은 내용에 맞춰 커지므로 스크롤바를 두지 않는다(스크롤바가 생겼다 사라지며 폭 · 높이가 흔들리지 않게).
+   높이를 직접 정한 구역만 안쪽 스크롤 */
+.dash-grid-item > .dash-section > .dash-body { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.dash-grid-item.dash-fixed > .dash-section > .dash-body { overflow: auto; }
+.dash-grid-edit .dash-grid-item > .dash-section { outline: 1px dashed var(--muted); outline-offset: 4px; border-radius: var(--radius-s); background: var(--bg); }
+.dash-grid-edit .dash-grid-item.dash-fixed > .dash-section { outline-style: solid; }
+.dash-grid-edit .dash-grid-item:focus-visible { outline: none; }
+.dash-grid-edit .dash-grid-item:focus-visible > .dash-section { outline: 2px solid var(--focus); }
+.dash-item-actions { display: inline-flex; gap: 10px; margin-left: auto; }
 .dash-grid-edit .dash-body { pointer-events: none; user-select: none; opacity: .85; }
 .dash-drag { cursor: grab; padding: 0 6px; font-size: 18px; line-height: 1; color: var(--muted); user-select: none; }
 .dash-drag:active { cursor: grabbing; }
 .dash-hide { margin-left: auto; }
 .dash-grid .react-grid-item.react-grid-placeholder { background: var(--accent); opacity: .18; border-radius: var(--radius-s); }
 .dash-grid .react-grid-item > .react-resizable-handle::after { border-color: var(--muted); }
+/* 손잡이는 칸 아래 간격(14px) 위, 구역 모서리에 */
+.dash-grid .react-grid-item > .react-resizable-handle-se, .dash-grid .react-grid-item > .react-resizable-handle-s { bottom: 14px; }
+.dash-grid .react-grid-item > .react-resizable-handle-e { margin-top: -7px; }
 .dash-area { min-width: 0; }
 
 /* #494 쉽게 보기 — 초보자 해설(#493) */

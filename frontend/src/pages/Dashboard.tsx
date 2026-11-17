@@ -18,7 +18,8 @@ import BottomZoneBrief from "../components/BottomZoneBrief";
 import TodayStrip from "../components/TodayStrip";
 import DashSummary from "../components/DashSummary";
 import { time } from "../format";
-import { DEFAULT_H, GRID_COLS, HEAD_ROWS, MIN_W, loadBand, measureLayout, resetBand, saveBand, unhideSection, type Band, type BandLayout } from "../dashLayout";
+import { DEFAULT_H, GRID_COLS, HEAD_ROWS, KEY_H_STEP, MIN_W, loadBand, measureLayout, resetBand, saveAutoHeights, saveBand, unhideSection, type Band, type BandLayout } from "../dashLayout";
+import { useAutoHeights } from "../dashAutoHeight";
 
 // #487 격자(react-grid-layout)는 배치를 편집하거나 저장한 배치가 있을 때만 불러온다
 const DashGrid = lazy(() => import("../components/DashGrid"));
@@ -305,13 +306,13 @@ export default function Dashboard() {
   const grid = band ? draft ?? saved : null;
   const startEdit = () => {
     if (!band) return;
-    if (saved) { setDraft({ items: saved.items.map((it) => ({ ...it })), hidden: [...saved.hidden] }); return; }
-    // 처음: 지금 화면을 재서 격자로 — 넓은 화면은 지금 3열(4칸씩) 그대로, 중간 폭은 잰 위치 · 폭
-    // 접힌 구역 · 아직 불러오는 중이라 낮게 잰 구역은 보통 높이(30)로, 나머지는 넓은 격자에서 조금 길어지는 만큼 여유(+3)
+    if (saved) { setDraft({ items: saved.items.map((it) => ({ ...it })), hidden: [...saved.hidden], fixed: [...saved.fixed] }); return; }
+    // 처음: 지금 화면을 재서 격자로 — 넓은 화면은 지금 3열(4칸씩) 그대로, 중간 폭은 잰 위치 · 폭.
+    // 높이는 모두 자동(#519)이라 잰 높이는 내용을 다시 잴 때까지의 첫 짐작 — 접힌 구역 · 아직 불러오는 중인 구역은 보통 높이로
     const measured = (flowRef.current ? measureLayout(flowRef.current, prefs.order) : [])
-      .map((it) => ({ ...it, h: prefs.closed.includes(it.i as SectionId) || it.h < 6 ? DEFAULT_H : it.h + 3 }));
+      .map((it) => ({ ...it, h: prefs.closed.includes(it.i as SectionId) || it.h <= HEAD_ROWS ? DEFAULT_H : it.h }));
     const items = band === "wide" ? measured.map((it) => ({ ...it, x: COLUMN[it.i as SectionId] * 4, w: 4 })) : measured;
-    setDraft({ items, hidden: [] });
+    setDraft({ items, hidden: [], fixed: [] });
   };
   const finishEdit = () => {
     if (band && draft) { saveBand(band, draft); setSaved(draft); }
@@ -325,16 +326,39 @@ export default function Dashboard() {
   };
   const hide = (id: string) => {
     if (!draft || draft.items.length <= 1) return; // 마지막 구역은 숨기지 않는다(빈 배치는 저장되지 않아 초기화처럼 된다)
-    setDraft({ items: draft.items.filter((it) => it.i !== id), hidden: [...draft.hidden, id] });
+    setDraft({ ...draft, items: draft.items.filter((it) => it.i !== id), hidden: [...draft.hidden, id] });
     window.setTimeout(() => document.querySelector<HTMLElement>(".dash-edit-bar button")?.focus(), 0); // 초점이 사라지지 않게
   };
   const unhide = (id: string) => draft && setDraft({
+    ...draft,
     items: [...draft.items, { i: id, x: 0, y: draft.items.reduce((m, it) => Math.max(m, it.y + it.h), 0), w: 4, h: DEFAULT_H }],
     hidden: draft.hidden.filter((h) => h !== id),
   });
-  // 보기 모드에서 접힌 구역은 머리글 높이로 — 아래 구역이 올라와 빈칸이 남지 않는다
-  const gridItems: GridLayoutItems = !grid ? [] : draft ? grid.items
-    : grid.items.map((it) => (isOpen(it.i as SectionId) ? it : { ...it, h: HEAD_ROWS }));
+  // #519 높이: 고정 구역은 저장값, 나머지는 잰 내용 높이(아직 못 쟀으면 저장값). 보기 모드에서 접힌 구역은 머리글 높이.
+  // 높이가 바뀐 배치를 넘기면 격자가 verticalCompactor 로 다시 위로 붙인다 — 편집 중이 아니어도 빈칸이 남지 않는다
+  const auto = useAutoHeights();
+  const gridItems: GridLayoutItems = !grid ? [] : grid.items.map((it) => {
+    if (!draft && !isOpen(it.i as SectionId)) return { ...it, h: HEAD_ROWS };
+    const h = grid.fixed.includes(it.i) ? it.h : auto.rows[it.i] ?? it.h;
+    return h === it.h ? it : { ...it, h };
+  });
+  // 잰 높이를 저장 배치에도 적어 둔다(다음 첫 그림용, 보기 모드에서만 · 1초 모아서)
+  useEffect(() => {
+    if (!band || draft || !saved) return;
+    const t = window.setTimeout(() => saveAutoHeights(band, auto.rows), 1000);
+    return () => window.clearTimeout(t);
+  }, [auto.rows, band, draft, saved]);
+  const setFixed = (id: string, on: boolean) => setDraft((d) => {
+    if (!d || d.fixed.includes(id) === on) return d;
+    if (on) return { ...d, fixed: [...d.fixed, id] };
+    // 자동으로 되돌리면 잰 내용 높이로 바로 맞춘다
+    return { ...d, fixed: d.fixed.filter((f) => f !== id), items: d.items.map((it) => (it.i === id && auto.rows[id] ? { ...it, h: auto.rows[id] } : it)) };
+  });
+  // "빈칸 없애기": 모든 구역을 자동 높이로 되돌린다(열 · 순서 · 폭은 그대로, 위로 붙이기는 격자가)
+  const fitAll = () => setDraft((d) => d && {
+    ...d, fixed: [],
+    items: d.items.map((it) => (auto.rows[it.i] ? { ...it, h: auto.rows[it.i] } : it)),
+  });
   // 키보드: 화살표 = 옮기기(↑↓ 는 위 · 아래 구역을 건너), Shift+화살표 = 폭 · 높이
   const onGridKey = (id: string) => (e: KeyboardEvent<HTMLDivElement>) => {
     if (!draft || e.target !== e.currentTarget || !e.key.startsWith("Arrow")) return;
@@ -346,8 +370,9 @@ export default function Dashboard() {
     if (e.shiftKey) {
       if (e.key === "ArrowLeft") it.w = Math.max(MIN_W, it.w - 1);
       if (e.key === "ArrowRight") it.w = Math.min(GRID_COLS - it.x, it.w + 1);
-      if (e.key === "ArrowUp") it.h = Math.max(HEAD_ROWS, it.h - 4);
-      if (e.key === "ArrowDown") it.h += 4;
+      const cur = draft.fixed.includes(id) ? it.h : auto.rows[id] ?? it.h;   // 자동이던 구역은 보이는 높이에서 시작
+      if (e.key === "ArrowUp") it.h = Math.max(HEAD_ROWS, cur - KEY_H_STEP);
+      if (e.key === "ArrowDown") it.h = cur + KEY_H_STEP;
     } else if (e.key === "ArrowLeft") it.x = Math.max(0, it.x - 1);
     else if (e.key === "ArrowRight") it.x = Math.min(GRID_COLS - it.w, it.x + 1);
     else if (e.key === "ArrowUp") {
@@ -358,7 +383,8 @@ export default function Dashboard() {
       const below = items.filter((o) => o !== it && overlapX(o) && o.y > it.y).sort((a, b) => a.y - b.y)[0];
       if (below) { below.y = it.y; it.y = it.y + below.h; }
     }
-    setDraft({ ...draft, items });
+    const fixed = e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown") && !draft.fixed.includes(id) ? [...draft.fixed, id] : draft.fixed;
+    setDraft({ ...draft, items, fixed });
     setSaid(`${SECTIONS[id as SectionId].title}: ${it.x + 1}번째 칸부터 폭 ${it.w}칸, 높이 ${it.h}`);
   };
 
@@ -384,6 +410,7 @@ export default function Dashboard() {
               <span className="muted small">손잡이(⠿)로 끌기 · 모서리로 크기 · 구역을 고른 뒤 화살표로 옮기기, Shift+화살표로 크기</span>
               <button type="button" onClick={finishEdit}>완료</button>
               <button type="button" className="secondary" onClick={() => setDraft(null)}>취소</button>
+              <button type="button" className="link small" onClick={fitAll} title="모든 구역 높이를 내용에 맞추고 위로 붙입니다(자리 · 폭은 그대로)">빈칸 없애기</button>
               <button type="button" className="link small" onClick={resetLayout}>기본 배치로</button>
               {draft.hidden.length > 0 && (
                 <span className="small dash-hidden">숨긴 구역:
@@ -403,8 +430,9 @@ export default function Dashboard() {
         <div className={`dash-grid${band === "wide" ? " dash-grid-wide" : ""}${draft ? " dash-grid-edit" : ""}`}>
           {areaWidth > 0 && (
             <Suspense fallback={<p className="muted small">배치 불러오는 중…</p>}>
-              <DashGrid width={areaWidth} items={gridItems} editing={!!draft}
+              <DashGrid width={areaWidth} items={gridItems} fixed={grid.fixed} editing={!!draft}
                 onLayoutChange={(l) => setDraft((d) => (d ? { ...d, items: l } : d))}
+                onHeightSet={(id) => setFixed(id, true)}
                 renderItem={(id) => renderSection(id as SectionId)} onKey={onGridKey}
                 label={(id) => `${SECTIONS[id as SectionId].title} — 화살표로 옮기기, Shift+화살표로 크기`} />
             </Suspense>
@@ -446,7 +474,12 @@ export default function Dashboard() {
             </button>
           </h2>
           {draft ? (
-            <button type="button" className="link small dash-hide" onClick={() => hide(id)}>숨기기</button>
+            <span className="dash-item-actions">
+              {draft.fixed.includes(id) && (
+                <button type="button" className="link small" onClick={() => setFixed(id, false)} title="높이를 직접 정한 구역 — 내용 높이로 되돌립니다">내용에 맞추기</button>
+              )}
+              <button type="button" className="link small dash-hide" onClick={() => hide(id)}>숨기기</button>
+            </span>
           ) : !inGrid && (
             <span className="dash-order" role="group" aria-label={`${s.title} 순서`}>
               <button type="button" id={`dash-move-${id}--1`} className="dash-move" disabled={i === 0}
@@ -457,7 +490,12 @@ export default function Dashboard() {
           )}
         </header>
         {/* 편집 중엔 내용 클릭 · 초점을 막는다(inert — React 18 타입에 없어 속성으로) */}
-        {shownOpen && <div id={bodyId} className="dash-body" ref={(el) => { if (el) { if (draft) el.setAttribute("inert", ""); else el.removeAttribute("inert"); } }}>{s.render()}</div>}
+        {shownOpen && (
+          <div id={bodyId} className="dash-body" ref={(el) => { if (el) { if (draft) el.setAttribute("inert", ""); else el.removeAttribute("inert"); } }}>
+            {/* #519 내용 높이를 재는 감싸개(격자에서만 잰다) */}
+            <div className="dash-body-inner" ref={inGrid ? auto.register(id) : undefined}>{s.render()}</div>
+          </div>
+        )}
       </section>
     );
   }

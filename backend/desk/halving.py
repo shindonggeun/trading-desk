@@ -99,18 +99,21 @@ def _where(value: float | None, rng: dict | None, low_word: str = "before", high
 
 
 def _series(closes: Closes, start: date, end: date | None, base: date | None, step: int = STEP_DAYS) -> list:
-    """[days from ``base``, close / close on ``base``] every ``step`` days (the first close of the window
-    when ``base`` has none)."""
+    """[days from ``base`` (the halving or the peak), close / the reference close] every ``step`` days. The
+    reference is the close on ``base``, or the window's first close when ``base`` has none (the 2012 cycle:
+    prices from 2014-09-17) - returned as the second value; x still counts from ``base`` (658 on, not 0)."""
     days = [(d, p) for d, p in closes if d >= start and (end is None or d < end)]
     if not days:
         return [], None
     by_day = dict(days)
-    base = base if base in by_day else days[0][0]
-    ref = by_day[base]
-    pts = [[(d - base).days, round(p / ref, 4)] for d, p in days if (d - base).days % step == 0]
-    if pts and pts[-1][0] != (days[-1][0] - base).days:          # always the latest day too
-        pts.append([(days[-1][0] - base).days, round(days[-1][1] / ref, 4)])
-    return pts, base
+    anchor = base or days[0][0]
+    ref_day = anchor if anchor in by_day else days[0][0]
+    ref = by_day[ref_day]
+    first = days[0][0]                   # the first day with a price is always a point (658 for 2012, not 665)
+    pts = [[(d - anchor).days, round(p / ref, 4)] for d, p in days if d == first or (d - anchor).days % step == 0]
+    if pts and pts[-1][0] != (days[-1][0] - anchor).days:          # always the latest day too
+        pts.append([(days[-1][0] - anchor).days, round(days[-1][1] / ref, 4)])
+    return pts, ref_day
 
 
 def view(closes: Closes, today: date | None = None) -> dict:

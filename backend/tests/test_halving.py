@@ -81,7 +81,12 @@ def test_today_against_the_past_cycles_with_the_limits_said():
                                  "estimated": True}
     assert any("3개뿐" in n for n in v["notes"]) and any("2014-09-17" in n for n in v["notes"])
     first = v["series"]["by_halving"][0]
-    assert first["halving"] == "2012-11-28" and first["base_date"] == "2014-09-17" and first["points"][0] == [0, 1.0]
+    # x counts from the halving even when prices start later (#514 contract): 2014-09-17 is day 658
+    assert first["halving"] == "2012-11-28" and first["base_date"] == "2014-09-17" and first["points"][0][1] == 1.0
+    assert first["points"][0][0] == (date(2014, 9, 17) - date(2012, 11, 28)).days
+    assert all(x % hv.STEP_DAYS == 0 for x, _ in first["points"][1:-1])
+    late = hv._series(_line(date(2014, 9, 20), [1.0, 2.0, 3.0] * 10), date(2012, 11, 28), None, date(2012, 11, 28))[0]
+    assert late[0] == [661, 1.0] and all(x % hv.STEP_DAYS == 0 for x, _ in late[1:-1])   # 661 is not a multiple of 7
     now = v["series"]["by_halving"][-1]["points"]
     assert all(b[0] - a[0] == hv.STEP_DAYS for a, b in pairwise(now[:-1])) and now[-1][0] == 941
     peak = v["series"]["by_peak"][0]

@@ -145,8 +145,9 @@ export default function ExplainPanel({ data, failed, plan, focus, onFocusDone }:
           {basis.map((b) => (
             <details key={b.line} className="explain-line" ref={(el) => { rows.current[b.line] = el; }}>
               <summary>
-                <span className={`ex-chip ${SCEN_CLASS(b)}`}>{b.scenario_ko ?? "방향 미정"}</span>
-                {lineTitle(b)} <span className="muted small">{price(b.price)} ({b.from_now_pct > 0 ? "+" : ""}{b.from_now_pct.toFixed(1)}%)</span>
+                {/* 조건선은 이름에 롱 · 숏이 들어 있어 칩을 생략 */}
+                {b.line !== "long_trigger" && b.line !== "short_trigger" && <span className={`ex-chip ${SCEN_CLASS(b)}`}>{b.scenario_ko ?? "방향 미정"}</span>}
+                {b.label}{anchorWord(b.anchors[0]) ? ` · ${anchorWord(b.anchors[0])}` : ""} <span className="muted small">{price(b.price)} ({b.from_now_pct > 0 ? "+" : ""}{b.from_now_pct.toFixed(1)}%)</span>
                 {b.hold_plan && <span className="ex-hold small">관망 계획의 {b.scenario_ko ?? ""} 시나리오 값</span>}
               </summary>
               <p className="small">{b.text}</p>

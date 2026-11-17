@@ -2136,3 +2136,33 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 @media (max-width: 720px) {
   .trend-rows, .trend-guide-cols { grid-template-columns: 1fr; }
 }
+
+/* #466 차트 옆 해설 패널(데스크톱은 오른쪽 칸, 좁은 화면은 차트 아래 접기) */
+.chart-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+@media (min-width: 1100px) {
+  .chart-with-ladder.chart-with-side { grid-template-columns: minmax(0, 1fr) 340px; align-items: start; }
+  .chart-with-side .chart-side { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow-y: auto; }
+  .chart-with-side .level-ladder[open] { position: static; max-height: none; overflow: visible; }
+}
+.explain-panel { padding: 12px 14px; font-size: 14px; line-height: 1.6; }
+.explain-panel > summary { cursor: pointer; }
+.explain-panel section { margin-top: 10px; }
+.explain-panel h4 { margin: 0 0 4px; font-size: 13px; color: var(--muted); font-weight: 650; }
+.explain-panel p { margin: 0 0 6px; }
+.explain-todo { padding: 8px 10px; margin-top: 8px !important; border-radius: var(--radius-s); background: var(--surface-2); font-weight: 600; }
+.explain-gaps { margin: 0; padding-left: 18px; }
+.explain-line { border-top: 1px solid var(--border); padding: 6px 0; }
+.explain-line > summary { cursor: pointer; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; }
+.explain-line ul { margin: 4px 0 0; padding-left: 18px; }
+.ex-chip { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor; }
+.ex-long { color: var(--long); }
+.ex-short { color: var(--short); }
+.ex-none { color: var(--muted); }
+.ex-long-text { color: var(--text); border-left: 3px solid var(--long); padding-left: 8px; }
+.ex-short-text { color: var(--text); border-left: 3px solid var(--short); padding-left: 8px; }
+.ex-hold { color: var(--warn); }
+.explain-terms { margin-top: 10px; }
+.explain-terms dl { margin: 6px 0 0; }
+.explain-terms dt { font-weight: 650; }
+.explain-terms dd { margin: 0 0 6px; color: var(--muted); }
+.explain-failed { margin: 0; }

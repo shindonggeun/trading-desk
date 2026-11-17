@@ -27,6 +27,7 @@ import {
   volumeProfileDrawing, withAlpha, zoneEdges,
 } from "./chartBands";
 import { crosshairTime, ticksClearOfLabels } from "./chartFormat";
+import { loadMaOn, MA_PERIODS, type MaOn, type MaPeriod, PANE_TEXT, type PaneId, saveMaOn, shortVolume, sma } from "./chartIndicators";
 import { levelsContradict } from "../listLevels";
 import { ALL_ON, devExample, KIND_KO, loadTrendFilter, passes, saveTrendFilter, SCALE_KO, STATUS_KO, trendKey, trendLabel, trendWidth, type TrendFilter } from "../trendLines";
 import TrendLineCard from "./TrendLineCard";
@@ -57,7 +58,7 @@ const MAX_BARS = 2000;
 // 보이는 범위의 왼쪽 끝이 첫 봉에서 이만큼 안쪽이면 더 받는다
 const OLDER_EDGE = 5;
 
-type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; pattern: boolean; proj: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean; bz: boolean; entry: boolean; gaps: boolean };
+type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; pattern: boolean; proj: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean; bz: boolean; entry: boolean; gaps: boolean; ma: boolean };
 const SHOW_LABEL: Record<keyof Show, string> = {
   levels: "타점선", pb: "플레이북", sr: "지지 · 저항", all: "모든 지지 · 저항", vp: "매물대", trend: "추세선", pattern: "삼각수렴 · 쐐기", proj: "예상도", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
   opt: "옵션 벽 · 맥스 페인",
@@ -65,14 +66,15 @@ const SHOW_LABEL: Record<keyof Show, string> = {
   entry: "지금 타점(최적)",
   gaps: "안 메운 갭",
   stoch: "스토캐스틱", bb: "볼린저밴드(20)", osc: "과열 · 침체 표시",
+  ma: "이동평균(5 · 20 · 60 · 120)",
 };
 // #158 옵션 벽: 미국 상장 종목만(Cboe), 현재가에서 이 범위 안의 벽만 그린다(멀리 있는 벽이 가격 축을 늘이지 않게)
 const US_TICKER = /^[A-Z]{1,6}(?:[.-][A-Z])?$/;
 const WALL_RANGE = 0.15;
 const WALLS_SHOWN = 2;
 // #98: 지지 · 저항은 가까운 3개씩만, 피보나치는 켤 때만 — 차트가 선으로 덮이지 않게
-const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, pattern: false, proj: false, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true, bz: true, entry: true, gaps: true };
-// #298 표시 묶음: 가격 칸 위의 선 · 표시만 한 번에 바꾼다(RSI · 스토캐스틱 칸은 그대로). 체크를 손으로 바꾸면 "직접".
+const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, pattern: false, proj: false, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true, bz: true, entry: true, gaps: true, ma: true };
+// #298 표시 묶음: 가격 칸 위의 선 · 표시만 한 번에 바꾼다(RSI · 스토캐스틱 칸 · #550 이동평균은 그대로). 체크를 손으로 바꾸면 "직접".
 // #313 "타점 보기" = 지금가 기준 최적 타점 + 분석 타점선 · 체결 · 분석일만(처음 여는 사람의 기본)
 type Preset = "entry" | "sr" | "trend" | "all" | "custom";
 const PRESET_LABEL: Record<Preset, string> = { entry: "타점 보기", sr: "지지·저항만", trend: "추세·패턴", all: "전부", custom: "직접" };
@@ -401,6 +403,15 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   }, [ticker, oscInterval, show.osc]);
   const [drawn, setDrawn] = useState<Drawn | null>(null);
   const box = useRef<HTMLDivElement>(null);
+  // #550 이동평균 선마다 켜고 끄기(브라우저에 기억) · 보조 칸 이름표 위치 · 펼친 설명
+  const [maOn, setMaOn] = useState<MaOn>(loadMaOn);
+  const flipMa = (n: MaPeriod) => {
+    const next = { ...maOn, [n]: !maOn[n] };
+    setMaOn(next);
+    saveMaOn(next);
+  };
+  const [paneTops, setPaneTops] = useState<Partial<Record<PaneId, number>>>({});
+  const [paneHelp, setPaneHelp] = useState<PaneId | null>(null);
   // 한 화면에 차트가 여럿(본주 · 레버리지)이어도 범례 id 가 겹치지 않게
   const legendId = useId();
   // 지지 · 저항 — 기본은 그 분석이 에이전트에게 준 레벨(계획에 저장됨), 없으면(옛 분석) 지금 봉 기준.
@@ -567,6 +578,66 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     return () => document.removeEventListener("pointerdown", onDown);
   }, []);
 
+  // #550 이동평균(SMA) — 봉 종가로 계산, 앞쪽 n-1 봉은 비운다
+  const maValues = useMemo(() => {
+    if (!drawn) return null;
+    const closes = drawn.rows.map((r) => r.bar.close);
+    return Object.fromEntries(MA_PERIODS.map((n) => [n, sma(closes, n)])) as Record<MaPeriod, (number | null)[]>;
+  }, [drawn]);
+  const maShown = show.ma && !!maValues;
+  // #550 이동평균선 — 가는 선, 축 범위 · 마지막 값 라벨 없이(가격 축을 늘이거나 타점 라벨과 겹치지 않게). 켜고 끌 때 차트는 그대로
+  useEffect(() => {
+    if (!drawn || !maValues || !show.ma) return;
+    const { chart, rows, intraday } = drawn;
+    const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
+    const added: ISeriesApi<"Line">[] = [];
+    try {
+      for (const n of MA_PERIODS) {
+        if (!maOn[n]) continue;
+        const s = chart.addSeries(LineSeries, { color: css(`--ma${n}`, "#8c939d"), lineWidth: 1, priceLineVisible: false,
+          lastValueVisible: false, crosshairMarkerVisible: false, autoscaleInfoProvider: () => null });
+        added.push(s);
+        s.setData(rows.flatMap(({ key }, i) => (maValues[n][i] == null ? [] : [{ time: time(key), value: maValues[n][i] as number }])));
+      }
+    } catch {
+      /* 이동평균을 못 그려도 차트는 그대로 */
+    }
+    return () => {
+      if (!drawn.alive.current) return;
+      for (const s of added) chart.removeSeries(s);
+    };
+  }, [drawn, maValues, show.ma, maOn]);
+
+  // #550 보조 칸 이름표 자리 — 칸 높이는 창 크기 · 크게 보기에 따라 바뀌므로 그릴 때와 크기가 바뀔 때 다시 잰다.
+  // 거래량은 가격 칸 아래쪽(축 여백 0.82)에 겹쳐 있다.
+  useEffect(() => {
+    const el = box.current;
+    if (!drawn || !el) {
+      setPaneTops({});
+      return;
+    }
+    const measure = () => {
+      if (!drawn.alive.current) return;
+      const panes = drawn.chart.panes();
+      const h = panes.map((p) => p.getHeight());
+      const tops: Partial<Record<PaneId, number>> = { vol: Math.round(h[0] * 0.82) };
+      let y = h[0] + 1;
+      for (let i = 1; i < panes.length; i++) {
+        if (i === 1 && drawn.rsi) tops.rsi = y;
+        else if (drawn.stoch && (i === 2 || !drawn.rsi)) tops.stoch = y;
+        y += h[i] + 1;
+      }
+      setPaneTops((prev) => (JSON.stringify(prev) === JSON.stringify(tops) ? prev : tops));
+    };
+    const frame = requestAnimationFrame(measure);
+    const ro = new ResizeObserver(() => requestAnimationFrame(measure));
+    ro.observe(el);
+    return () => {
+      cancelAnimationFrame(frame);
+      ro.disconnect();
+    };
+  }, [drawn]);
+
   // 십자선 범례: 커서(모바일은 누른 채로) 아래 봉의 시가 · 고가 · 저가 · 종가 · 거래량 · RSI.
   // 마우스가 움직일 때마다 렌더하지 않게 DOM 을 직접 고친다.
   const ohlc = useRef<HTMLDivElement>(null);
@@ -575,7 +646,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const { chart, series, volume, rsi, stoch, rows } = drawn;
     const last = rows[rows.length - 1];
     const write = (o: number, h: number, l: number, c: number, v: number | null, r: number | null, prev: number | null,
-      k: number | null = null, d: number | null = null) => {
+      k: number | null = null, d: number | null = null, idx = -1) => {
       const el = ohlc.current;
       if (!el) return;
       const chg = prev ? ((c - prev) / prev) * 100 : null;
@@ -599,11 +670,18 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (v != null) add("거래량", v.toLocaleString("ko-KR"));
       if (r != null) add("RSI", r.toFixed(1));
       if (stoch && k != null) add("스토캐스틱", `${k.toFixed(0)}${d != null ? ` / ${d.toFixed(0)}` : ""}`);
+      // #550 커서 봉의 이동평균 값 — 켠 선만, 선 색으로
+      if (maShown && maValues && idx >= 0) {
+        for (const n of MA_PERIODS) {
+          const m = maOn[n] ? maValues[n][idx] : null;
+          if (m != null) add(`MA${n}`, price(m), `ma-v ma-${n}`);
+        }
+      }
     };
     const showLast = () => {
       const prev = rows.length > 1 ? rows[rows.length - 2].bar.close : null;
       write(last.bar.open, last.bar.high, last.bar.low, last.bar.close, last.bar.volume, last.bar.rsi ?? null, prev,
-        last.bar.stoch_k ?? null, last.bar.stoch_d ?? null);
+        last.bar.stoch_k ?? null, last.bar.stoch_d ?? null, rows.length - 1);
     };
     showLast();
     const onMove = (param: MouseEventParams<Time>) => {
@@ -615,14 +693,14 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       const prev = i > 0 && rows[i - 1] ? rows[i - 1].bar.close : null;
       const here = i >= 0 ? rows[i]?.bar : undefined;
       write(bar.open ?? bar.close, bar.high ?? bar.close, bar.low ?? bar.close, bar.close, v?.value ?? null, r?.value ?? null, prev,
-        here?.stoch_k ?? null, here?.stoch_d ?? null);
+        here?.stoch_k ?? null, here?.stoch_d ?? null, here ? i : -1);
     };
     chart.subscribeCrosshairMove(onMove);
     return () => {
       ohlc.current?.replaceChildren(); // 다른 주기를 불러오는 동안 이전 봉 값을 남기지 않게
       if (drawn.alive.current) chart.unsubscribeCrosshairMove(onMove);
     };
-  }, [drawn]);
+  }, [drawn, maShown, maValues, maOn]);
 
   useEffect(() => {
     // #466 갭 상자는 분석 당시 레벨(plan 모드)이 아니라 지금 레벨 응답의 gaps 를 쓴다
@@ -727,7 +805,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         rsi.priceScale().applyOptions({ mode: PriceScaleMode.Normal, scaleMargins: { top: 0.08, bottom: 0.08 } });
         rsi.setData(rows.flatMap(({ key, bar }) => (bar.rsi == null ? [] : [{ time: time(key), value: bar.rsi }])));
         const muted = css("--muted", "#8c939d");
-        for (const lv of [70, 30]) rsi.createPriceLine({ price: lv, color: muted, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "" });
+        // #550 기준선 옆 짧은 이름표
+        for (const [lv, name] of [[70, "과열"], [30, "과매도"]] as const) rsi.createPriceLine({ price: lv, color: muted, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: name });
         chart.panes()[1]?.setHeight(rsiHeight(el.clientHeight));
       }
 
@@ -757,7 +836,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, ...scale }, pane);
         d.setData(rows.flatMap(({ key, bar }) => (bar.stoch_d == null ? [] : [{ time: time(key), value: bar.stoch_d }])));
         const muted = css("--muted", "#8c939d");
-        for (const lv of [80, 20]) stoch.createPriceLine({ price: lv, color: muted, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "" });
+        for (const [lv, name] of [[80, "과열"], [20, "침체"]] as const) stoch.createPriceLine({ price: lv, color: muted, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: name });
         chart.panes()[pane]?.setHeight(rsiHeight(el.clientHeight));
       }
 
@@ -1589,6 +1668,20 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         </div>
       )}
       {limited != null && <p className="muted small chart-limit">야후 보관 한도로 {LABEL[interval]}봉은 최근 {limited}일만 제공됩니다.</p>}
+      {maShown && maValues && drawn && (
+        <div className="ma-legend" role="group" aria-label="이동평균선 켜고 끄기">
+          {MA_PERIODS.map((n) => {
+            const v = maValues[n][drawn.rows.length - 1];
+            return (
+              <button key={n} type="button" className={`ma-chip ma-${n}${maOn[n] ? " on" : ""}`} aria-pressed={maOn[n]} onClick={() => flipMa(n)}
+                title={`${n}봉 단순 이동평균${drawn.intraday ? "(분봉은 같은 개수의 봉)" : ""} — 눌러 켜고 끄기`}>
+                <span className="ma-sw" aria-hidden />MA{n} <b>{v != null ? price(v) : "—"}</b>
+              </button>
+            );
+          })}
+          {drawn.intraday && <span className="muted small">분봉은 같은 개수의 봉 기준</span>}
+        </div>
+      )}
       <div className={`chart-and-fills${tableFills.length > 0 ? " has-fills" : ""}`}>
       {failed ? (
         <p className="muted small">시세를 불러오지 못했습니다.</p>
@@ -1604,6 +1697,10 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         >
           {!candles && <p className="muted small">불러오는 중…</p>}
           <div ref={ohlc} className="chart-ohlc small" aria-hidden />
+          {drawn && (Object.keys(paneTops) as PaneId[]).map((id) => (
+            <PaneTag key={id} id={id} top={paneTops[id] as number} rows={drawn.rows} open={paneHelp === id}
+              onHelp={() => setPaneHelp((cur) => (cur === id ? null : id))} />
+          ))}
           {hover && (
             <div className="sr-tip" style={tipPosition(hover, box.current)}>
               {hover.type === "sr" ? (
@@ -1874,6 +1971,37 @@ function OutlookSummary({ outlook, period, on, onPick, daily, outside }: {
           {daily && outside && <> · 분석일이 차트 범위보다 앞이라 원뿔은 그리지 않았습니다</>}
           {" · "}<strong>{outlook.disclaimer}</strong>
         </p>
+      )}
+    </div>
+  );
+}
+
+/** #550 보조 칸 왼쪽 위 이름표 — 이름 + 지금 값 + 한 줄 뜻(좁은 화면은 짧게), ⓘ 로 쉬운 설명 몇 줄 */
+function PaneTag({ id, top, rows, open, onHelp }: { id: PaneId; top: number; rows: Row[]; open: boolean; onHelp: () => void }) {
+  const t = PANE_TEXT[id];
+  const last = rows[rows.length - 1]?.bar;
+  let value = "";
+  if (id === "vol" && last) {
+    const recent = rows.slice(-21, -1).map((r) => r.bar.volume).filter((v) => v > 0);
+    const avg = recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : 0;
+    value = `${shortVolume(last.volume)}${avg > 0 ? ` (평소의 ${(last.volume / avg).toFixed(1)}배)` : ""}`;
+  } else if (id === "rsi" && last?.rsi != null) {
+    value = last.rsi.toFixed(1);
+  } else if (id === "stoch" && last?.stoch_k != null) {
+    value = `${last.stoch_k.toFixed(0)}${last.stoch_d != null ? ` / ${last.stoch_d.toFixed(0)}` : ""}`;
+  }
+  return (
+    <div className={`pane-tag pane-tag-${id}`} style={{ top: top + 3 }}>
+      <span className="pane-tag-line">
+        <b>{t.name}</b>{value && <span className="pane-tag-v"> {value}</span>}
+        <span className="pane-tag-long"> — {t.long}</span>
+        <span className="pane-tag-short"> · {t.short}</span>
+        <button type="button" className="pane-tag-i" aria-expanded={open} aria-label={`${t.name} 설명`} onClick={onHelp}>ⓘ</button>
+      </span>
+      {open && (
+        <div className="pane-help small" role="note">
+          {t.help.map((line) => <p key={line}>{line}</p>)}
+        </div>
       )}
     </div>
   );

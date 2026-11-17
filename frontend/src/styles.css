@@ -980,6 +980,42 @@ span.cs-hold-text { color: var(--warn); }
 .chart-ohlc b { font-weight: 600; }
 .chart-ohlc b.up { color: var(--up); }
 .chart-ohlc b.down { color: var(--down); }
+/* #550 이동평균선 색 — 봉(빨강 · 파랑) · 지지/저항(청록 · 보라) · 경고(주황)와 겹치지 않게, 테마마다 대비 맞춤 */
+:root { --ma5: #ec4899; --ma20: #eab308; --ma60: #22c55e; --ma120: #a8a29e; }
+@media (prefers-color-scheme: light) { :root { --ma5: #db2777; --ma20: #a16207; --ma60: #15803d; --ma120: #57534e; } }
+:root[data-theme="light"] { --ma5: #db2777; --ma20: #a16207; --ma60: #15803d; --ma120: #57534e; }
+:root[data-theme="dark"] { --ma5: #ec4899; --ma20: #eab308; --ma60: #22c55e; --ma120: #a8a29e; }
+.chart-ohlc b.ma-5 { color: var(--ma5); } .chart-ohlc b.ma-20 { color: var(--ma20); }
+.chart-ohlc b.ma-60 { color: var(--ma60); } .chart-ohlc b.ma-120 { color: var(--ma120); }
+.ma-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 4px 0; }
+.ma-chip { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 2px 10px; border: 1px solid var(--border);
+  border-radius: 999px; background: transparent; color: var(--muted); font-size: var(--fs-s); font-variant-numeric: tabular-nums; cursor: pointer; }
+.ma-chip b { font-weight: 600; color: var(--muted); }
+.ma-chip.on { color: var(--text); }
+.ma-chip.on b { color: var(--text); }
+.ma-sw { width: 14px; height: 3px; border-radius: 2px; background: var(--muted); opacity: .4; }
+.ma-chip.on.ma-5 .ma-sw { background: var(--ma5); opacity: 1; } .ma-chip.on.ma-20 .ma-sw { background: var(--ma20); opacity: 1; }
+.ma-chip.on.ma-60 .ma-sw { background: var(--ma60); opacity: 1; } .ma-chip.on.ma-120 .ma-sw { background: var(--ma120); opacity: 1; }
+/* #550 보조 칸(거래량 · RSI · 스토캐스틱) 왼쪽 위 이름표 — 차트 위에 떠 있되 ⓘ 만 누를 수 있다 */
+.pane-tag { position: absolute; left: 8px; z-index: 3; max-width: calc(100% - 90px); pointer-events: none; font-size: 11px; line-height: 1.35; }
+.pane-tag-line { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 2px; padding: 1px 4px; border-radius: 4px;
+  background: color-mix(in srgb, var(--surface) 78%, transparent); color: var(--muted); }
+.pane-tag-line b { color: var(--text); font-weight: 600; }
+.pane-tag-v { color: var(--text); font-variant-numeric: tabular-nums; }
+.pane-tag-short { display: none; }
+.pane-tag-i { pointer-events: auto; margin-left: 2px; padding: 0 4px; min-width: 24px; min-height: 22px; border: 0; background: transparent;
+  color: var(--muted); font-size: 12px; cursor: pointer; }
+.pane-tag-i:hover, .pane-tag-i[aria-expanded="true"] { color: var(--text); }
+.pane-help { pointer-events: auto; margin-top: 2px; max-width: 420px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); box-shadow: 0 6px 16px rgb(0 0 0 / .25); color: var(--text); }
+.pane-help p { margin: 0 0 4px; } .pane-help p:last-child { margin: 0; }
+.pane-tag:has(.pane-help) { z-index: 5; }   /* 펼친 설명이 아래 칸 이름표에 가리지 않게 */
+@media (max-width: 560px) {
+  .pane-tag-long { display: none; }
+  .pane-tag-short { display: inline; }
+  .pane-tag-vol .pane-tag-short { display: none; }   /* 거래량은 값 · 평소 대비만(한 줄로) */
+  .chart-ohlc .ma-v, .chart-ohlc span:has(> .ma-v) { display: none; }   /* 좁은 화면: 이동평균 값은 위 칩에 — 범례가 봉을 덮지 않게 */
+}
 
 /* 크게 보기: 화면 전체(브라우저 전체 화면이면 그 안에서도 같은 배치) */
 .price-chart-expanded { position: fixed; inset: 0; z-index: 50; margin: 0; border: 0; border-radius: 0; display: flex; flex-direction: column;

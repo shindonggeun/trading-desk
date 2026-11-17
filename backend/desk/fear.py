@@ -7,8 +7,11 @@ back as that item's ``error`` (the others are still served).
 - VIX: Yahoo ``^VIX`` daily closes (as desk.risk_regime reads it). High is fear, so its band runs the
   other way from the 0-100 indexes.
 - CNN Fear & Greed: the public graph data behind cnn.com/markets/fear-and-greed (0-100).
-- VKOSPI: no free source found - Yahoo has no ^VKOSPI. It is listed with ``value: null`` and the
-  reason, so the card can say so instead of hiding the market.
+- VKOSPI (#486): the KIS Open API domestic index daily price (the KIS keys desk.futures_flow already
+  uses) for KRX index code 0503 "VKOSPI" (KIS' index master idxcode.mst: ``0`` + ``0503`` + name;
+  KOSPI200 is 2001 there, matching KIS' own samples). Yahoo has no ^VKOSPI. Without KIS keys it stays
+  ``value: null`` with the reason. The bands are the VIX ones: VKOSPI runs on the same scale (annualised
+  30-day implied volatility of the index options, long-run median near the VIX's).
 - Crypto Fear & Greed: alternative.me (0-100, daily).
 """
 
@@ -19,10 +22,12 @@ import logging
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 
 log = logging.getLogger(__name__)
+KST = ZoneInfo("Asia/Seoul")
 
 CNN_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
 CRYPTO_URL = "https://api.alternative.me/fng/"
@@ -30,7 +35,12 @@ CRYPTO_URL = "https://api.alternative.me/fng/"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                          "Chrome/120.0 Safari/537.36", "Accept": "application/json"}
 TIMEOUT_SEC = 15.0
-TTL_SEC = {"vix": 15 * 60, "cnn": 30 * 60, "vkospi": 6 * 3600, "crypto": 60 * 60}
+TTL_SEC = {"vix": 15 * 60, "cnn": 30 * 60, "vkospi": 15 * 60, "crypto": 60 * 60}
+# #486 KIS domestic index daily price (FHPUP02120000): output1 = the index now, output2 = daily closes, newest first
+KIS_INDEX_DAILY_PATH = "/uapi/domestic-stock/v1/quotations/inquire-index-daily-price"
+KIS_INDEX_DAILY_TR = "FHPUP02120000"
+VKOSPI_CODE = "0503"
+NO_SOURCE = "한국투자증권 키가 없어 VKOSPI 를 받지 않음(야후에는 ^VKOSPI 가 없음)"
 FAIL_TTL_SEC = 120.0
 
 BANDS = ("extreme_fear", "fear", "neutral", "greed", "extreme_greed")
@@ -94,7 +104,45 @@ def parse_crypto(payload: dict) -> dict:
 
 
 def vkospi() -> dict:
-    return _item("vkospi", "VKOSPI", "없음", error="무료 출처 없음 — 야후에 ^VKOSPI 가 없고 다른 출처는 아직 붙이지 않음")
+    """No KIS: the item with the reason (the card shows "출처 없음")."""
+    return _item("vkospi", "VKOSPI", "없음", error=NO_SOURCE)
+
+
+def _num(v) -> float | None:
+    try:
+        x = float(str(v).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    return x if x > 0 else None
+
+
+def parse_vkospi(body: dict) -> dict:
+    """KIS FHPUP02120000 for code 0503: the index now (output1, the last close after the bell or on a
+    holiday) and the daily closes (output2) - the day before and five sessions before."""
+    now = _num(((body or {}).get("output1") or {}).get("bstp_nmix_prpr"))
+    days = []
+    for row in (body or {}).get("output2") or []:
+        d, close = str(row.get("stck_bsop_date") or ""), _num(row.get("bstp_nmix_prpr"))
+        if len(d) == 8 and d.isdigit() and close is not None:
+            days.append((d, close))
+    days.sort(reverse=True)
+    if now is None and days:
+        now = days[0][1]
+    if now is None:
+        raise ValueError("no VKOSPI value")
+    as_of = f"{days[0][0][:4]}-{days[0][0][4:6]}-{days[0][0][6:]}" if days else None
+    prev_day = days[1][1] if len(days) > 1 else None
+    prev_week = days[5][1] if len(days) > 5 else None
+    return _item("vkospi", "VKOSPI", "한국투자증권 지수 일별 시세(0503)", now, prev_day, prev_week, as_of)
+
+
+async def vkospi_kis(rest, today: str | None = None) -> dict:
+    """``rest`` is desk.futures_flow.KisRest (keys never leave it; its errors carry codes only)."""
+    today = today or datetime.now(UTC).astimezone(KST).strftime("%Y%m%d")
+    body = await rest.get(KIS_INDEX_DAILY_PATH, KIS_INDEX_DAILY_TR, {
+        "FID_PERIOD_DIV_CODE": "D", "FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": VKOSPI_CODE,
+        "FID_INPUT_DATE_1": today})
+    return parse_vkospi(body)
 
 
 def _get_json(url: str, get: Callable[..., httpx.Response], **params) -> dict:
@@ -112,7 +160,7 @@ class Fear:
     """Cached per source; ``get()`` answers every item, a failed one with its ``error``."""
 
     def __init__(self, candles: Callable | None = None, get: Callable[..., httpx.Response] = httpx.get,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic, kis: Callable[[], object | None] | None = None) -> None:
         if candles is None:
             from .prices import yahoo_candles as candles
         self._fetch: dict[str, Callable[[], dict]] = {
@@ -122,6 +170,7 @@ class Fear:
             "crypto": lambda: parse_crypto(_get_json(CRYPTO_URL, get, limit=8)),
         }
         self._clock = clock
+        self._kis = kis or (lambda: None)        # #486 desk.futures_flow.KisRest, read when asked
         self._cache: dict[str, tuple[float, dict]] = {}
         self._lock = asyncio.Lock()
 
@@ -133,12 +182,23 @@ class Fear:
             name, source = NAMES[key]
             return _item(key, name, source, error=f"{type(exc).__name__}: {str(exc)[:80]}"), FAIL_TTL_SEC
 
+    async def _vkospi(self) -> tuple[dict, float]:
+        rest = self._kis()
+        if rest is None:
+            return vkospi(), TTL_SEC["vkospi"]
+        try:
+            return await vkospi_kis(rest), TTL_SEC["vkospi"]
+        except Exception as exc:  # noqa: BLE001 - KIS down leaves the other gauges; KisError carries codes only
+            log.info("fear: vkospi failed: %s", type(exc).__name__)
+            return _item("vkospi", "VKOSPI", "한국투자증권", error=f"{type(exc).__name__}: {str(exc)[:80]}"), FAIL_TTL_SEC
+
     async def get(self) -> dict:
         async with self._lock:
             now = self._clock()
             stale = [k for k in ORDER if k not in self._cache or self._cache[k][0] <= now]
             if stale:
-                got = await asyncio.gather(*(asyncio.to_thread(self._one, k) for k in stale))
+                got = await asyncio.gather(*(self._vkospi() if k == "vkospi" else asyncio.to_thread(self._one, k)
+                                             for k in stale))
                 for k, (item, ttl) in zip(stale, got, strict=True):
                     self._cache[k] = (now + ttl, item)
             return {"items": [self._cache[k][1] for k in ORDER]}

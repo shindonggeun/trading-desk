@@ -81,3 +81,53 @@ def test_api_needs_a_session(db_url):
         client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
         body = client.get("/api/market/fear").json()
         assert body["items"] == []                   # fake runs ask no outside source
+
+
+# #486 KIS FHPUP02120000 for 0503 (VKOSPI): the shape KIS documents - output1 now, output2 daily closes
+KIS_BODY = {"rt_cd": "0", "msg_cd": "MCA00000", "output1": {"bstp_nmix_prpr": "24.51"},
+            "output2": [{"stck_bsop_date": d, "bstp_nmix_prpr": v} for d, v in [
+                ("20261117", "24.51"), ("20261116", "22.10"), ("20261113", "21.00"), ("20261112", "20.50"),
+                ("20261111", "19.80"), ("20261110", "18.20"), ("20261107", "17.90")]]}
+
+
+def test_vkospi_reads_kis_index_daily_price():
+    v = fear.parse_vkospi(KIS_BODY)
+    assert (v["value"], v["prev_day"], v["prev_week"], v["as_of"], v["band"]) == (24.51, 22.1, 18.2, "2026-11-17", "fear")
+    # after the bell or on a holiday output1 may be empty: the last close stands in
+    holiday = {"output1": {}, "output2": list(reversed(KIS_BODY["output2"]))}
+    assert fear.parse_vkospi(holiday)["value"] == 24.51
+    with pytest.raises(ValueError):
+        fear.parse_vkospi({"output1": {"bstp_nmix_prpr": "0"}, "output2": []})
+
+
+class FakeKis:
+    def __init__(self, body=None, error=None):
+        self.calls, self.body, self.error = [], body, error
+
+    async def get(self, path, tr_id, params):
+        self.calls.append((path, tr_id, params))
+        if self.error:
+            raise self.error
+        return self.body
+
+
+def test_vkospi_comes_from_kis_when_its_keys_are_there_and_stays_apart_when_it_fails():
+    from desk.futures_flow import KisError
+
+    kis = FakeKis(KIS_BODY)
+    f = fear.Fear(candles=lambda s, i, n: _bars([20]), get=_get({fear.CNN_URL: CNN, fear.CRYPTO_URL: CRYPTO}),
+                  kis=lambda: kis)
+    items = {x["key"]: x for x in asyncio.run(f.get())["items"]}
+    assert items["vkospi"]["value"] == 24.51 and "error" not in items["vkospi"]
+    _path, tr, params = kis.calls[0]
+    assert tr == "FHPUP02120000" and params["FID_INPUT_ISCD"] == "0503" and params["FID_COND_MRKT_DIV_CODE"] == "U"
+
+    down = fear.Fear(candles=lambda s, i, n: _bars([20]), get=_get({fear.CNN_URL: CNN, fear.CRYPTO_URL: CRYPTO}),
+                     kis=lambda: FakeKis(error=KisError("FHPUP02120000: HTTP 500 EGW00201")))
+    items = {x["key"]: x for x in asyncio.run(down.get())["items"]}
+    assert items["vkospi"]["value"] is None and items["vkospi"]["error"].startswith("KisError")
+    assert items["cnn"]["value"] == 31.02                                 # the others are served
+
+    none = fear.Fear(candles=lambda s, i, n: _bars([20]), get=_get({fear.CNN_URL: CNN, fear.CRYPTO_URL: CRYPTO}))
+    vk = {x["key"]: x for x in asyncio.run(none.get())["items"]}["vkospi"]
+    assert vk["value"] is None and "키가 없어" in vk["error"]

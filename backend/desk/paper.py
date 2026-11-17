@@ -4,7 +4,8 @@ The price side is not judged again here: every plan's fill, exit and R come from
 (desk.outcome.judge, #64) as the plan scorer wrote them, so a trade's ``r`` is that run's ``outcome.r``
 and a run is counted once. On top of it this module only adds money:
 
-- size: ``risk`` - the shares that lose ``risk_pct`` of the realized balance at the stop; or ``weight`` -
+- size: ``risk`` - the shares that lose ``risk_pct`` of the realized balance at the stop, both fills' slippage
+  and costs included (#527 follow-up: the stop costs what was set, not a little more); or ``weight`` -
   ``weight_pct`` of it. Whole shares; capped by the cash left (skipped only when not even one share fits).
 - costs: a commission each side (Korean / US rates), the Korean sell tax (a long pays it at the exit, a short
   at the entry), and slippage against us on both fills (in the fill price).
@@ -268,7 +269,8 @@ def simulate(runs: list[dict], settings: dict, rates: dict[str, float], now: dat
 
 
 def _skip(t: dict, code: str) -> None:
-    t["status"], t["skip"] = "skipped", {"code": code, "text": SKIP_TEXT[code]}
+    # a skipped plan made no trade: no R (the plan's own score stays in /api/stats/plans)
+    t["status"], t["skip"], t["r"] = "skipped", {"code": code, "text": SKIP_TEXT[code]}, None
 
 
 def _fee(t: dict, s: dict) -> float:
@@ -293,7 +295,10 @@ def _enter(t: dict, at: datetime, s: dict, rates: dict, realized: float, held: d
     fill = t["plan"]["entry"] * (1 + direction * slip)
     cost_rate = _fee(t, s) + (_tax(t, s) if direction < 0 else 0.0)     # a short sells (and pays the tax) first
     if s["sizing"] == "risk":
-        per_share = abs(fill - t["plan"]["stop"]) * fx
+        # the won one share loses at the stop: the slipped fills both ways and both sides' costs
+        stop_fill = t["plan"]["stop"] * (1 - direction * slip)
+        exit_rate = _fee(t, s) + (_tax(t, s) if direction > 0 else 0.0)
+        per_share = (abs(fill - stop_fill) + fill * cost_rate + stop_fill * exit_rate) * fx
         qty = math.floor(realized * s["risk_pct"] / 100 / per_share) if per_share > 0 else 0
     else:
         qty = math.floor(realized * s["weight_pct"] / 100 / (fill * fx))

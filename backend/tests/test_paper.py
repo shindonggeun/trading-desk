@@ -52,7 +52,8 @@ def test_fees_tax_and_slippage_come_off_the_result():
     s = {**paper.DEFAULTS}                                               # 0.015% fee, 0.18% sell tax, 0.05% slip
     t = _trade(paper.simulate([_run("a")], s, RATES, NOW), "a")
     fill_in, fill_out = 10_000 * 1.0005, 11_000 * 0.9995
-    qty = int(100_000 // (fill_in - 9_500))
+    stop_fill = 9_500 * 0.9995                                           # the stop's loss counts slippage and costs
+    qty = int(100_000 // ((fill_in - stop_fill) + fill_in * 0.00015 + stop_fill * (0.00015 + 0.0018)))
     cost_in = qty * fill_in * 0.00015
     out = qty * fill_out
     cost_out = out * 0.00015 + out * 0.0018
@@ -192,7 +193,7 @@ def test_the_api_keeps_the_settings_and_recomputes(db_url):
         engine.dispose()
         summary = client.get("/api/paper/summary").json()
         assert summary["settings_version"] == 0 and summary["trades"]["closed"] == 1 and summary["trades"]["open"] == 1
-        assert 190_000 < summary["realized_pnl"] < 200_000                    # 2R less the default costs
+        assert 170_000 < summary["realized_pnl"] < 200_000                    # 2R less the default costs
         assert summary["balance"] == 10_000_000 + summary["realized_pnl"] + summary["unrealized_pnl"]
         saved = client.put("/api/paper/settings", json={"start_capital": 20_000_000, "fee_kr_pct": 0}).json()
         assert saved["version"] == 1 and saved["start_capital"] == 20_000_000 and saved["risk_pct"] == 1.0
@@ -365,3 +366,26 @@ def test_the_start_date_is_bounded():
     with pytest.raises(ValueError):
         paper.validate({"start_date": "2026-11-18"}, paper.DEFAULTS, today=NOW.date())
     assert paper.validate({"start_date": "2026-11-17"}, paper.DEFAULTS, today=NOW.date())["start_date"] == "2026-11-17"
+
+
+@pytest.mark.parametrize(("ticker", "bias", "entry", "stop", "target"), [
+    ("005930.KS", "long", 70_000, 66_500, 77_000), ("005930.KS", "short", 70_000, 73_500, 63_000),
+    ("SOXL", "long", 30.0, 28.5, 33.0), ("SQQQ", "short", 30.0, 31.5, 27.0)])
+def test_with_the_default_costs_a_stop_loses_the_set_risk(ticker, bias, entry, stop, target):
+    rates = {"2026-10-01": 1400.0, "2026-10-05": 1400.0}
+    run = _run("x", ticker=ticker, bias=bias, entry=entry, stop=stop, target=target, status="stop", r=-1.0)
+    t = _trade(paper.simulate([run], {**paper.DEFAULTS}, rates, NOW), "x")
+    risk = 10_000_000 * paper.DEFAULTS["risk_pct"] / 100
+    one_share = risk / t["qty"]                          # whole shares: the loss is at most one share short of it
+    assert -risk <= t["pnl_krw"] <= -risk + one_share + 1
+
+
+def test_a_skipped_trade_has_no_r():
+    a = _run("a", exited="2026-10-09T01:00:00+00:00")
+    b = _run("b", filled="2026-10-02T01:00:00+00:00", plan_at="2026-10-01T00:40:00+00:00", r=3.0)
+    got = _sim([a, b], max_positions=1)
+    skipped = _trade(got, "b")
+    assert skipped["skip"]["code"] == "max_positions" and skipped["r"] is None
+    short = _trade(_sim([_run("s", bias="short", entry=10_000, stop=10_500, target=9_000)], allow_short=False), "s")
+    assert short["r"] is None
+

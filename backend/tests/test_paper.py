@@ -101,7 +101,7 @@ def test_unfilled_waiting_unscored_and_odd_plans():
     assert "i" not in ids                                                   # an invalid plan is no trade
     assert ids["n"]["skip"]["code"] == "no_fill" and ids["q"]["skip"]["code"] == "unscorable"
     assert ids["w"]["status"] == "waiting" and ids["x"]["status"] == "waiting"
-    assert ids["t"]["skip"]["code"] == "unsupported"
+    assert ids["t"]["skip"]["code"] == "unsupported" and ids["t"]["market"] is None and ids["t"]["currency"] is None
     assert got["counts"] == {"closed": 0, "open": 0, "waiting": 2, "skipped": 3}
 
 
@@ -221,7 +221,7 @@ def test_a_rate_failure_skips_only_the_us_trades(tmp_path):
     def boom():
         raise OSError("no network")
     desk = paper.Paper(engine, boom)
-    assert desk.rates(True) == {} and desk.rates(False) == {}
+    assert desk.rates() == {}
     assert desk.summary()["trades"] == {"closed": 0, "open": 0, "waiting": 0, "skipped": 0}
     assert desk.settings()["version"] == 0 and desk.save({"max_positions": 3})["version"] == 1
     assert desk.save({"max_positions": 4})["version"] == 2
@@ -230,3 +230,138 @@ def test_a_rate_failure_skips_only_the_us_trades(tmp_path):
     assert paper.market_of("035720.KQ") == "KR" and paper.market_of("^GSPC") is None
     assert paper.fx_on({"2026-10-01": 1400.0}, (datetime(2026, 10, 4)).date()) == 1400.0
     assert paper.fx_on({"2026-10-01": 1400.0}, (datetime(2026, 10, 1) + timedelta(days=10)).date()) is None
+
+
+def test_a_stop_in_the_fill_bar_closes_the_trade_and_frees_its_place():
+    same = "2026-10-01T01:00:00+00:00"
+    a = _run("a", status="stop", r=-1.0, filled=same, exited=same)
+    b = _run("b", filled="2026-10-02T01:00:00+00:00", exited="2026-10-05T01:00:00+00:00",
+             plan_at="2026-10-01T23:00:00+00:00")
+    got = _sim([a, b], max_positions=1)
+    assert _trade(got, "a")["status"] == "closed" and _trade(got, "a")["pnl_krw"] == -100_000
+    assert _trade(got, "b")["status"] == "closed"                            # the place was free again
+    assert got["summary"]["invested"] == 0 and got["summary"]["trades"]["open"] == 0
+    # an intraday plan filled in the session's last bar expires in that same bar
+    e = _run("e", status="expired", r=0.2, filled=same, exited=same)
+    assert _trade(_sim([e]), "e")["pnl_krw"] == 20_000
+
+
+def test_cash_takes_the_entry_costs_of_the_open_trades():
+    got = paper.simulate([_run("o", status="open", r=0.0)], {**paper.DEFAULTS}, RATES, NOW)
+    t = _trade(got, "o")
+    entry_cost = t["qty"] * t["entry"]["fill"] * 0.00015
+    assert got["summary"]["cash"] == pytest.approx(10_000_000 - t["amount_krw"] - entry_cost, abs=1)
+
+
+def test_a_us_short_has_only_its_profit_in_dollars():
+    flat = _trade(_sim([_run("s", ticker="SQQQ", bias="short", entry=100, stop=105, target=90,
+                             status="expired", r=0.0)]), "s")
+    assert flat["fx"] == {"entry": 1400.0, "exit": 1500.0} and flat["pnl_krw"] == 0   # no price move, no won result
+    won = _trade(_sim([_run("s", ticker="SQQQ", bias="short", entry=100, stop=105, target=90)]), "s")
+    assert won["pnl_krw"] == won["qty"] * 10 * 1500
+
+
+def test_a_korean_short_pays_the_sell_tax_at_its_entry():
+    s = {**FREE, "tax_kr_pct": 0.18}
+    short = _trade(paper.simulate([_run("s", bias="short", entry=10_000, stop=10_500, target=9_000)], s, RATES, NOW),
+                   "s")
+    long_ = _trade(paper.simulate([_run("l")], s, RATES, NOW), "l")
+    assert short["costs_krw"] == round(short["amount_krw"] * 0.0018)          # the entry is the sale
+    assert long_["costs_krw"] == round(long_["qty"] * 11_000 * 0.0018)        # the exit is the sale
+    # a whole-balance short leaves no negative cash once the tax is paid
+    tight = paper.simulate([_run("s", bias="short", entry=10_000, stop=10_500, target=9_000, status="open", r=0.0)],
+                           {**paper.DEFAULTS, "start_capital": 1_001_500, "sizing": "weight", "weight_pct": 100.0},
+                           RATES, NOW)
+    assert tight["summary"]["cash"] >= 0
+
+
+@pytest.mark.parametrize(("ticker", "entry", "stop", "target"),
+                         [("005930.KS", 10_000, 9_500, 11_000), ("SOXL", 100, 95, 110)])
+@pytest.mark.parametrize("bias", ["long", "short"])
+def test_without_costs_a_trade_makes_r_times_its_risk(ticker, entry, stop, target, bias):
+    if bias == "short":
+        stop, target = entry + (entry - stop), entry - (target - entry)
+    runs = [_run("x", ticker=ticker, bias=bias, entry=entry, stop=stop, target=target, status="stop", r=-1.0),
+            _run("y", ticker=ticker, bias=bias, entry=entry, stop=stop, target=target, status="expired", r=0.6,
+                 filled="2026-10-10T01:00:00+00:00", exited="2026-10-12T01:00:00+00:00",
+                 plan_at="2026-10-10T00:00:00+00:00")]
+    rates = {"2026-10-01": 1400.0, "2026-10-05": 1400.0, "2026-10-10": 1400.0, "2026-10-12": 1400.0}
+    got = paper.simulate(runs, FREE, rates, NOW)
+    for t in got["trades"]:
+        fx = 1400.0 if t["market"] == "US" else 1.0
+        assert t["pnl_krw"] == pytest.approx(t["r"] * t["qty"] * abs(entry - stop) * fx, abs=1)
+
+
+def test_the_rates_are_keyed_by_the_london_day():
+    import pandas as pd
+
+    idx = pd.DatetimeIndex(["2026-07-14", "2026-07-15", "2026-01-14"]).tz_localize("Europe/London")
+    frame = pd.DataFrame({"Close": [1497.70, 1487.88, 1450.0]}, index=idx)
+    assert paper.rates_from_frame(frame) == {"2026-07-14": 1497.70, "2026-07-15": 1487.88, "2026-01-14": 1450.0}
+
+
+def test_a_failed_rate_fetch_is_tried_again_soon(tmp_path, monkeypatch):
+    from desk.db import make_engine, migrate
+
+    url = f"sqlite:///{tmp_path / 'p.db'}"
+    migrate(url)
+    engine = make_engine(url)
+    answers = [OSError("down"), {"2026-10-01": 1400.0}]
+
+    def fetch():
+        got = answers.pop(0)
+        if isinstance(got, Exception):
+            raise got
+        return got
+    clock = [1000.0]
+    monkeypatch.setattr(paper.time, "monotonic", lambda: clock[0])
+    desk = paper.Paper(engine, fetch)
+    assert desk.rates() == {}
+    clock[0] += paper.FX_RETRY_SEC - 1
+    assert desk.rates() == {}                                               # not yet
+    clock[0] += 2
+    assert desk.rates() == {"2026-10-01": 1400.0}
+    clock[0] += paper.FX_TTL_SEC - 1
+    assert desk.rates() == {"2026-10-01": 1400.0} and answers == []          # kept until the TTL
+    engine.dispose()
+
+
+def test_the_cached_result_follows_the_runs_table(db_url):
+    from sqlalchemy import delete, update
+
+    from desk.db import make_engine, migrate
+    from desk.db import runs as runs_t
+
+    migrate(db_url)
+    engine = make_engine(db_url)
+    desk = paper.Paper(engine, dict)
+
+    def add(run):
+        with engine.begin() as conn:
+            conn.execute(runs_t.insert().values(
+                id=run["id"], ticker=run["ticker"], trade_date="2026-10-01", status="done", options=run["options"],
+                plan=run["plan"], outcome=run["outcome"], outcome_status=(run["outcome"] or {}).get("status"),
+                created_at=run["created_at"], scored_at=run["scored_at"] if run["outcome"] else None))
+    add(_run("a"))
+    add(_run("w", status=None, plan_at="2026-10-02T00:00:00+00:00"))
+    assert desk.summary()["trades"]["waiting"] == 1
+    w = _run("w", plan_at="2026-10-02T00:00:00+00:00", filled="2026-10-02T01:00:00+00:00",
+             exited="2026-10-06T01:00:00+00:00")
+    with engine.begin() as conn:                                             # scored later: filled and closed
+        conn.execute(update(runs_t).where(runs_t.c.id == "w").values(outcome=w["outcome"], outcome_status="target",
+                                                                     scored_at=NOW + timedelta(minutes=5)))
+    assert desk.summary()["trades"] == {"closed": 2, "open": 0, "waiting": 0, "skipped": 0}
+    with engine.begin() as conn:                                             # one gone, another in: same count
+        conn.execute(delete(runs_t).where(runs_t.c.id == "a"))
+    add(_run("bb", plan_at="2026-10-03T00:00:00+00:00", filled="2026-10-03T01:00:00+00:00",
+             exited="2026-10-07T01:00:00+00:00", status="stop", r=-1.0))
+    assert {t["run_id"] for t in desk.trades()["items"]} == {"w", "bb"}
+    engine.dispose()
+
+
+def test_the_start_date_is_bounded():
+    with pytest.raises(ValueError):
+        paper.validate({"start_date": "0001-01-01"}, paper.DEFAULTS)
+    with pytest.raises(ValueError):
+        paper.validate({"start_date": "2026-11-18"}, paper.DEFAULTS, today=NOW.date())
+    assert paper.validate({"start_date": "2026-11-17"}, paper.DEFAULTS, today=NOW.date())["start_date"] == "2026-11-17"

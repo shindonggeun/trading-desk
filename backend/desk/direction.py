@@ -258,7 +258,8 @@ def side_vs(direction: dict | None, side: str) -> str:
 
 def apply(pb: dict, direction: dict | None, h: horizons.Horizon, empty=None) -> dict:
     """Mark each side with / against the trend; with APPLY a SHORT against an uptrend (score
-    >= LEAN) is dropped. A long against a downtrend is only marked. The basket backtest (swing, 6
+    >= LEAN) is dropped. A long against a downtrend is only marked here (desk.setup_filter then drops a
+    swing dip catch against it on a flat 20-day line, ``DIP_AGAINST_SLOPE``). The basket backtest (swing, 6
     tickers, 2019-, costs in) decided it: counter-trend shorts averaged -0.38R, and even halved
     ones (score 30-60) -0.23R, while counter-trend dip catches made -0.10R, better than the average
     plan - catching the crash is what the long is for. Dropping them took the whole book from

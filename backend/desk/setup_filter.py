@@ -9,7 +9,9 @@ became rules here - one or two per setup, the edges fixed at the training dates'
   has run ``RET20_MIN`` in 20 days - the trend is there to pull back in. Training +0.007R / held-out
   +0.153R (rel20) against the setup's -0.091R / -0.001R.
 - dip-catch: skipped on a dry day (volume under ``DRY_VOL`` of its 20-day average) - nobody is
-  buying the low yet. Training -0.236R / held-out -0.268R, the worst bucket of the setup.
+  buying the low yet. Training -0.236R / held-out -0.268R, the worst bucket of the setup. Against
+  the trend (desk.direction leans short) it also needs a falling 20-day line (#166 stage 6,
+  ``DIP_AGAINST_SLOPE``); checked first, so a flat and dry one reads as that rule.
 - short fade: no bucket passed; negative in every regime - off (``FADE_OFF``).
 
 A dropped side is setup none with ``filtered`` naming the setup, the rule and the numbers, so the
@@ -44,6 +46,15 @@ FADE_OFF = True
 REL20_MIN = 0.145        # pullback: 20-day return above the index's by this much...
 RET20_MIN = 0.20         # ...or this much on its own
 DRY_VOL = 0.82           # dip-catch: the plan day's volume under this x its 20-day average
+# #166 stage 6: a dip-catch against the trend (desk.direction leans short) only while the 20-day line
+# is falling - ``slope20`` (the line against itself 5 sessions ago) at or under this. A shallow dip in
+# a downtrend whose 20-day line is still flat is not a sell-off to catch. Swing basket 2019-06-, costs
+# in, gated, cut 2024-08-01: pausing them took the training dates -0.035R -> -0.018R (2,371 -> 2,220
+# fills), every year block better or the same but 2024 (+0.056 -> +0.046R). Chosen on the training
+# dates only (the best training mean whose worst year block lost under 0.02R; -0.02 and the 20-day
+# return cuts lost 0.03R in 2024). Held-out +0.027R -> +0.027R (1,052 -> 1,005 fills); crash 2022
+# -0.132 -> -0.104R, 2020-03 and 2025-04 the same.
+DIP_AGAINST_SLOPE: float | None = -0.01
 EDGES = (                # (id, feature, at least, label) - the score's evidence on a kept long
     ("edge_rel_strength", "rel20", REL20_MIN, "지수보다 강함(20일)"),
     ("edge_trend", "slope20", 0.046, "20일선 상승"),
@@ -66,8 +77,9 @@ def _pct(x: float | None) -> str:
     return "-" if x is None else f"{x * 100:+.1f}%"
 
 
-def verdict(side: str, setup: str, f: dict) -> dict | None:
-    """``filtered`` for a side the rules drop, None for one they keep."""
+def verdict(side: str, setup: str, f: dict, direction: str | None = None) -> dict | None:
+    """``filtered`` for a side the rules drop, None for one they keep. ``direction``: the side against
+    desk.direction (with | against | neutral), set by desk.direction.apply before this runs."""
     if side == "short" and setup == "fade" and FADE_OFF:
         return {"setup": setup, "rule": "fade_off",
                 "reason": "숏 페이드는 백테스트에서 모든 국면 음수 — 기본으로 끔"}
@@ -79,6 +91,12 @@ def verdict(side: str, setup: str, f: dict) -> dict | None:
                 "reason": f"눌림목은 추세가 강할 때만 — 지수 대비 20일 {_pct(rel)}(기준 {_pct(REL20_MIN)} 이상), "
                           f"20일 수익률 {_pct(ret)}(기준 {_pct(RET20_MIN)} 이상)"}
     if side == "long" and setup == "dip_catch":
+        slope = f.get("slope20")
+        if (direction == "against" and DIP_AGAINST_SLOPE is not None and slope is not None
+                and slope > DIP_AGAINST_SLOPE):
+            return {"setup": setup, "rule": "dip_against_flat", "values": {"slope20": slope},
+                    "reason": f"하락 추세 속 하따는 20일선이 꺾여 내려갈 때만 — 20일선 5일 기울기 {_pct(slope)}"
+                              f"(기준 {_pct(DIP_AGAINST_SLOPE)} 이하)"}
         vol = f.get("vol_ratio")
         if vol is None or vol >= DRY_VOL:
             return None
@@ -127,7 +145,7 @@ def apply(pb: dict | None, daily: list[dict], weekly: list[dict] | None, risk: d
         setup = s.get("setup")
         if setup in (None, "none", "value_swing"):
             continue
-        cut = verdict(name, setup, f)
+        cut = verdict(name, setup, f, s.get("direction"))
         if cut:
             out[name] = {**playbook._none_side(cut["reason"], s.get("size_hint") or "half",
                                                bool(s.get("flat_by_close"))),

@@ -61,6 +61,40 @@ def test_a_dip_catch_on_a_dry_day_is_dropped_but_no_volume_is_not_a_reason(chart
     assert out["long"]["setup"] == "dip_catch"
 
 
+def _dip(direction: str) -> dict:
+    pb = _pb("dip_catch", "none")
+    pb["long"] = _side("dip_catch", direction)
+    return pb
+
+
+def test_166_a_dip_catch_against_the_trend_needs_a_falling_20_day_line(chart):
+    chart.update(vol_ratio=1.2, slope20=-0.005)                 # a downtrend, the 20-day line still flat
+    out = setup_filter.apply(_dip("against"), [{}], None, None, "swing", calibrate=False)
+    long = out["long"]
+    assert long["setup"] == "none" and long["filtered"]["rule"] == "dip_against_flat"
+    assert long["filtered"]["values"] == {"slope20": -0.005} and "-0.5%" in long["reason"]
+    assert long["direction"] == "against"
+    chart.update(slope20=-0.01)                                 # at the line: kept
+    assert setup_filter.apply(_dip("against"), [{}], None, None, "swing", calibrate=False)["long"]["setup"] == "dip_catch"
+    chart.update(slope20=-0.03)                                 # the line falling: a sell-off to catch
+    assert setup_filter.apply(_dip("against"), [{}], None, None, "swing", calibrate=False)["long"]["setup"] == "dip_catch"
+
+
+def test_166_the_flat_line_rule_is_only_for_counter_trend_dip_catches(chart, monkeypatch):
+    chart.update(vol_ratio=1.2, slope20=0.02)
+    for direction in ("with", "neutral", None):
+        out = setup_filter.apply(_dip(direction), [{}], None, None, "swing", calibrate=False)
+        assert out["long"]["setup"] == "dip_catch"
+    chart.update(slope20=None)                                  # no line yet: not a reason
+    assert setup_filter.apply(_dip("against"), [{}], None, None, "swing", calibrate=False)["long"]["setup"] == "dip_catch"
+    chart.update(slope20=0.02, vol_ratio=0.5)                   # flat and dry: the flat-line rule reads first
+    out = setup_filter.apply(_dip("against"), [{}], None, None, "swing", calibrate=False)
+    assert out["long"]["filtered"]["rule"] == "dip_against_flat"
+    monkeypatch.setattr(setup_filter, "DIP_AGAINST_SLOPE", None)  # switched off: the dry-volume rule as before
+    out = setup_filter.apply(_dip("against"), [{}], None, None, "swing", calibrate=False)
+    assert out["long"]["filtered"]["rule"] == "dip_dry_volume"
+
+
 def test_other_horizons_value_swing_and_the_switch_are_left_alone(chart, monkeypatch):
     chart.update(rel20=0.0, ret20=0.0, vol_ratio=0.1)
     pb = _pb()

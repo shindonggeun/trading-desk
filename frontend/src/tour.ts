@@ -13,6 +13,8 @@ interface Step {
   /** "무엇인가" 한 줄 + "초보자는 이렇게" 한 줄 */
   what: string;
   how: string;
+  /** 데이터를 받아야 그려지는 대상(오늘 볼 것 · 팁 목록 · 기관 카드) — 이것만 잠깐 기다린다 */
+  late?: boolean;
 }
 interface Segment {
   /** 이 묶음을 보이기 전에 할 일(예: 차트 탭으로) — 끝나면 true */
@@ -26,7 +28,7 @@ const TOURS: Record<TourId, Segment[]> = {
   dashboard: [{
     steps: [
       { targets: ['[data-tour="dash-search"]', ".dash-search"], title: "분석 시작", what: "종목 이름이나 티커(종목 코드)를 넣고 분석을 시작하는 곳입니다.", how: "처음엔 아는 종목 하나를 넣어 결과 화면을 둘러보세요. 한 번에 몇 분 걸립니다." },
-      { targets: ['[data-tour="today"]', ".today-strip"], title: "오늘 볼 것", what: "즐겨찾기 가운데 지금 손댈 만한 종목(구역 근처 · 실적 임박 · 기관 매매)을 모읍니다.", how: "매일 아침 여기부터 보고, 눌러서 차트를 엽니다." },
+      { late: true, targets: ['[data-tour="today"]', ".today-strip"], title: "오늘 볼 것", what: "즐겨찾기 가운데 지금 손댈 만한 종목(구역 근처 · 실적 임박 · 기관 매매)을 모읍니다.", how: "매일 아침 여기부터 보고, 눌러서 차트를 엽니다." },
       { targets: [...sec("market")], title: "시장 · 지수 · 선물", what: "주요 지수 · 선물 · 코인의 등락과 미니 차트입니다. 누르면 지지(받침) · 저항(막힘) 가격이 보입니다.", how: "빨강은 오름, 파랑은 내림. 전체 분위기를 먼저 보고 종목을 고르세요." },
       { targets: ['[data-tour="fear"]', ".fear-strip"], title: "공포지수", what: "VIX · CNN 공포탐욕 등으로 시장이 겁먹었는지(공포) 들떴는지(탐욕) 봅니다.", how: "극단적 공포일 때 서두르지 말고, 극단적 탐욕일 때 추격 매수를 조심하세요." },
       { targets: ['[data-tour="trend"]', ".trend-strip"], title: "지수 지금 추세", what: "코스피 · 나스닥100 등이 대세 상승장인지 하락장인지 지금 상태를 설명합니다.", how: "예측이 아니라 지금 흐름입니다. 흐름과 반대 방향 매매는 비중을 줄이세요." },
@@ -57,13 +59,13 @@ const TOURS: Record<TourId, Segment[]> = {
     steps: [
       { targets: ['[data-tour="trend-card"]', ".trend-card"], title: "대세 국면", what: "지수마다 지금 대세 상승장 · 하락장 · 박스장인지와 근거입니다.", how: "국면별 할 일 · 하지 말 것을 먼저 읽으세요." },
       { targets: ['[data-tour="tip-regime"]', ".tip-regime"], title: "금리 · 달러 국면", what: "기준금리 방향 · 10년물 금리 · 달러 흐름입니다.", how: "금리 인상기엔 원자재 · 금광주처럼 약했던 자산을 조심하세요." },
-      { targets: ['[data-tour="tip-list"]', ".tip-list"], title: "국면별 매매 팁", what: "과거 기록으로 확인한 국면별 주의점입니다.", how: "'근거 약함' 표시가 있으면 참고만 하세요." },
+      { late: true, targets: ['[data-tour="tip-list"]', ".tip-list"], title: "국면별 매매 팁", what: "과거 기록으로 확인한 국면별 주의점입니다.", how: "'근거 약함' 표시가 있으면 참고만 하세요." },
     ],
   }],
   funds: [{
     steps: [
       { targets: ['[data-tour="funds-lag"]', ".funds-lag"], title: "기관 포트폴리오", what: "유명 기관이 분기마다 내는 13F 보유 공시입니다.", how: "분기 끝 뒤 45일 안에 내서 최대 4~5개월 늦은 값입니다 — 지금 그대로 들고 있다고 보지 마세요." },
-      { targets: ['[data-tour="fund-cards"]', ".fund-cards"], title: "기관 카드", what: "기관별 최근 공시 · 신규 매수 상위입니다.", how: "눌러서 보유 표와 전 분기 대비 변화(신규 · 증가 · 감소 · 전량 매도)를 봅니다." },
+      { late: true, targets: ['[data-tour="fund-cards"]', ".fund-cards"], title: "기관 카드", what: "기관별 최근 공시 · 신규 매수 상위입니다.", how: "눌러서 보유 표와 전 분기 대비 변화(신규 · 증가 · 감소 · 전량 매도)를 봅니다." },
     ],
   }],
 };
@@ -104,14 +106,21 @@ export async function startTour(id: TourId): Promise<TourResult> {
     const [{ driver }] = await Promise.all([import("driver.js"), import("driver.js/dist/driver.css")]);
     for (const seg of TOURS[id]) {
       if (seg.before && !(await seg.before())) continue;
-      // 데이터가 늦게 오는 대상(기관 카드 등)을 위해 마지막 단계 대상이 보일 때까지 잠깐(최대 3초) 기다린다
-      const last = seg.steps[seg.steps.length - 1];
-      for (let i = 0; i < 10 && last && !find(last.targets); i++) await wait(300);
+      // 데이터를 받아야 그려지는(late) 대상만 보일 때까지 잠깐(최대 3초) 기다린다. 화면에 원래 없는 대상
+      // (휴대폰의 배치 편집 등)은 기다리지 않는다 — 기다리면 첫 말풍선이 3초 넘게 늦고, 그 사이 새로 고치면 본 것으로 남지 않는다(#491)
+      const late = seg.steps.filter((s) => s.late);
+      for (let i = 0; i < 10 && late.some((s) => !find(s.targets)); i++) await wait(300);
       const steps = seg.steps.map((s) => ({ s, el: find(s.targets) })).filter((x) => x.el);
       if (!steps.length) continue;
+      // 첫 말풍선을 띄우는 순간 본 것으로 — 도중에 새로 고치거나 다른 화면으로 가도 제안 띠가 다시 뜨지 않게
+      if (!shownAny) markSeen(id);
       shownAny = true;
       const done = await new Promise<boolean>((resolve) => {
         let completed = false;
+        let watch = 0;
+        // driver.js 는 말풍선이 뜨는 중(첫 애니메이션)에 Esc · 바깥 누르기로 닫히면 onDestroyed 를 부르지 않는다 —
+        // 그러면 투어가 "도는 중"에 갇혀 ? 버튼이 아무것도 안 한다(#491). 꺼졌는지를 따로 보아 끝낸다
+        const settle = () => { window.clearInterval(watch); resolve(completed); };
         const d = driver({
           steps: steps.map(({ s, el }) => ({
             element: el!,
@@ -131,16 +140,16 @@ export async function startTour(id: TourId): Promise<TourResult> {
             if (d.hasNextStep()) d.moveNext();
             else { completed = true; d.destroy(); }
           },
-          onDestroyed: () => resolve(completed),
+          onDestroyed: settle,
         });
         d.drive();
+        watch = window.setInterval(() => { if (!d.isActive()) settle(); }, 400);
       });
       if (!done) break; // 건너뛰기 · Esc 로 닫으면 다음 묶음도 하지 않는다
     }
   } finally {
     running = false;
   }
-  if (shownAny) markSeen(id);
   return shownAny ? "shown" : "empty";
 }
 

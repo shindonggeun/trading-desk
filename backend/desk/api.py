@@ -907,8 +907,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             if settings.fake_runs:
                 out = await asyncio.to_thread(explain.build, run, fear_items, None)
             else:
-                async with app.state.manager.spare_slot() as free:
-                    out = await asyncio.to_thread(explain.build, run, fear_items, projection.llm_note if free else None)
+                async def work():
+                    async with app.state.manager.spare_slot() as free:
+                        return free, await asyncio.to_thread(explain.build, run, fear_items,
+                                                             projection.llm_note if free else None)
+                # shielded: a client that goes away mid-call must not free the slot while the model call runs
+                free, out = await asyncio.shield(asyncio.create_task(work()))
                 if not free:
                     return {**out, "pending": True}
             if out.get("fallback"):

@@ -3,7 +3,7 @@ the steps to act in, a checklist and a closing line.
 
 The structure and every number come from the desk (the run's plan: summary, levels, ladder, stop,
 targets, support / resistance zones, and the fear gauges when the caller has them). ``rules()``
-writes the whole explanation from those alone - it is also the fallback. ``rewrite()`` hands the
+writes the whole explanation from those alone - it is also the fallback. ``build()`` hands the
 text fields to the model (the ChatGPT plan the runs use, one call) to say them more plainly; a
 sentence of the model's that carries a number the desk did not give is dropped, and a field left
 empty keeps the desk's own wording. Not a forecast and not advice: conditions and what to do.

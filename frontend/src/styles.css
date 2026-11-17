@@ -128,7 +128,6 @@ input[type=checkbox], input[type=radio] { width: auto; accent-color: var(--text)
 .app-notice.notice-warn { background: color-mix(in srgb, var(--warn) 16%, transparent); }
 .install-hint-row { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; }
 .install-hint-actions { display: flex; align-items: center; gap: 12px; }
-.install-hint .install-steps { margin: 8px 0 2px; }
 /* #341 대메뉴(한 줄) + 지금 묶음의 하위 메뉴(헤더 둘째 줄) — 설정은 오른쪽 위 톱니 */
 .topbar { flex-wrap: wrap; row-gap: 0; }
 .topbar .nav-main a { font-weight: 600; }
@@ -321,8 +320,6 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 .topbar nav { display: flex; gap: 16px; }
 .settings-row .pill { white-space: nowrap; flex-shrink: 0; }
 /* #451 앱으로 설치: iOS 안내 순서 · 공유 버튼 그림 */
-.install-steps { margin: 0; padding-left: 22px; display: grid; gap: 6px; font-size: 14px; line-height: 1.6; }
-.install-share { vertical-align: -3px; color: var(--accent); }
 .install-app .settings-notice.notice-info { background: var(--surface-2); color: var(--muted); }
 
 /* trade review (#48) */
@@ -2020,4 +2017,25 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 @media (max-width: 760px) {
   .price-chart-head .chart-intervals { flex: 1 1 100%; flex-wrap: wrap; overflow-x: visible; }
   .price-chart-head .chart-presets { flex: 1 1 auto; min-width: 0; }
+}
+
+/* #451 iOS Safari 홈 화면 추가 그림 안내(카드 · 설정 칸) */
+.ios-guide { display: flex; flex-direction: column; gap: 6px; }
+.ios-guide-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ios-guide-head h2 { margin: 0; font-size: 15px; }
+.ios-guide p { margin: 0; }
+.ios-guide-steps { list-style: none; margin: 4px 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.ios-guide-steps li { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; text-align: center; font-size: 13px; line-height: 1.5; }
+.ios-guide-steps li > span b:first-child { display: inline-grid; place-items: center; width: 18px; height: 18px; margin-right: 4px; border-radius: 50%;
+  background: var(--focus, #3a86f8); color: var(--bg, #0d1117); font-size: 11px; }
+.ios-guide-steps svg { width: 100%; max-width: 96px; height: auto; }
+.ios-guide-steps svg .ln { fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ios-guide-steps svg .mute { fill: var(--surface-3, rgba(127, 127, 127, .2)); }
+.ios-guide-steps svg .row { fill: var(--surface-2, rgba(127, 127, 127, .12)); stroke: var(--border); }
+.ios-guide-steps svg .hl { fill: none; stroke: var(--focus, #3a86f8); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ios-guide-steps svg .hl-bg { fill: color-mix(in srgb, var(--focus, #3a86f8) 18%, transparent); stroke: var(--focus, #3a86f8); stroke-width: 1.5; }
+.ios-guide-steps svg .hl-fill { fill: var(--focus, #3a86f8); }
+@media (max-width: 420px) {
+  .ios-guide-steps { gap: 6px; }
+  .ios-guide-steps li { font-size: 12px; }
 }

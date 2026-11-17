@@ -25,7 +25,7 @@ export default function PaperCard() {
         <span className={tone(s.total_pnl)}>{money(s.total_pnl, "KRW", true)} ({percent(s.total_pnl_pct)})</span></span>
       <span className="paper-card-row"><span className="muted small">이번 달</span>
         <span className={tone(s.this_month.pnl)}>{money(s.this_month.pnl, "KRW", true)}</span></span>
-      <span className="muted small">끝난 {s.trades.closed}건{s.win_rate != null ? ` · 승률 ${Math.round(s.win_rate * 100)}%` : ""} · 과거 성적, 보장 아님</span>
+      <span className="muted small">끝난 {s.trades.closed}건{s.win_rate != null ? ` · 수익 낸 비율 ${Math.round(s.win_rate * 100)}%` : ""} · 과거 성적, 보장 아님</span>
     </a>
   );
 }

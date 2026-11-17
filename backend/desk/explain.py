@@ -119,7 +119,7 @@ def rules(f: dict) -> dict:
     sections = []
     rating_line = f"분석 결론은 '{f.get('rating_ko') or '—'}' 이에요."
     verdict = f.get("verdict")
-    named = [(f.get("entry"), "진입"), (f.get("stop"), "손절")] + [(x, f"목표 {i}") for i, x in enumerate(f.get("targets") or [], 1)]
+    named = [(f.get("entry"), "진입"), (f.get("stop"), "손절")] + [(x, f"{i}차 목표") for i, x in enumerate(f.get("targets") or [], 1)]
     named = [(x, n) for x, n in named if x]
     sections.append({
         "title": "한 줄 결론", "body": f"{rating_line} {verdict}" if verdict else rating_line,

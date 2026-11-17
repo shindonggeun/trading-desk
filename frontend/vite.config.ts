@@ -8,7 +8,7 @@ const VENDOR: Record<string, string[]> = {
   charts: ["lightweight-charts", "fancy-canvas"],
   grid: ["react-grid-layout", "react-draggable", "react-resizable"],
   markdown: ["react-markdown", "remark-gfm"],
-  tour: ["driver.js"],
+  driverjs: ["driver.js"],
   qrcode: ["qrcode"],
 };
 const OWNER = new Map(Object.entries(VENDOR).flatMap(([chunk, pkgs]) => pkgs.map((p) => [p, chunk] as const)));

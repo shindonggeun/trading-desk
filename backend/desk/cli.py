@@ -29,6 +29,7 @@ import getpass
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 
 from sqlalchemy.exc import IntegrityError
@@ -184,17 +185,34 @@ def _flow_history(args) -> int:
     return 0
 
 
-def _news_history(args) -> int:
-    """#390: GDELT's past per news theme into ``--out-dir``; stops at GDELT's first refusal."""
+def gdelt_cache_dir(given: str | None) -> str | None:
+    """#390: the news-history directory - the flag, else DESK_GDELT_CACHE, else None."""
+    return given or os.getenv("DESK_GDELT_CACHE") or None
+
+
+def _news_history(args, sleep=time.sleep) -> int:
+    """#390: GDELT's past per news theme into ``--out-dir`` (or DESK_GDELT_CACHE). Stops at GDELT's
+    first refusal; with ``--retry-after-min`` it waits that long and carries on, up to ``--max-rounds``
+    refusals, so one background run can fill the whole history."""
     from . import news_history
 
-    got = news_history.collect(args.out_dir, first_year=args.first_year,
-                               progress=lambda msg: print(msg, file=sys.stderr))
-    print(f"받음 {got['fetched']} · 있던 것 {got['kept']} · 남은 것 {len(got['missing'])} -> {args.out_dir}")
-    if got["refused"]:
-        print(f"GDELT 가 거절해 멈춤({got['refused'][:80]}) — 15분쯤 뒤 같은 명령으로 이어 받기")
-        return 2
-    return 0
+    out_dir = gdelt_cache_dir(args.out_dir) or "data/gdelt"
+    rounds = 0
+    while True:
+        got = news_history.collect(out_dir, first_year=args.first_year,
+                                   progress=lambda msg: print(msg, file=sys.stderr, flush=True))
+        total = got["fetched"] + got["kept"] + len(got["missing"])
+        print(f"받음 {got['fetched']} · 있던 것 {got['kept']} · 남은 것 {len(got['missing'])} "
+              f"(전체 {total}) -> {out_dir}", flush=True)
+        if not got["refused"]:
+            return 0
+        rounds += 1
+        if args.retry_after_min <= 0 or rounds > args.max_rounds:
+            print(f"GDELT 가 거절해 멈춤({got['refused'][:80]}) — 15분쯤 뒤 같은 명령으로 이어 받기", flush=True)
+            return 2
+        print(f"GDELT 가 거절함({got['refused'][:80]}) — {args.retry_after_min:g}분 쉬고 이어 받기 "
+              f"({rounds}/{args.max_rounds})", flush=True)
+        sleep(args.retry_after_min * 60)
 
 
 def _backtest(args) -> int:
@@ -235,7 +253,7 @@ def _backtest(args) -> int:
     report = backtest.run(tickers, args.horizon, args.start, args.end, args.step, costs, args.sweep,
                           progress=lambda msg: print(msg, file=sys.stderr), risk=not args.no_risk or None,
                           features=args.features, flow_dir=args.flow_dir, flow_weight=args.flow_weight,
-                          news_dir=args.news_dir, macro_weight=args.macro_weight)
+                          news_dir=gdelt_cache_dir(args.news_dir), macro_weight=args.macro_weight)
     backtest.print_summary(report)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
@@ -317,7 +335,8 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--flow-weight", type=float, default=None,
                     help="count the flow part in the direction score at this weight for the run (live weight stays 0)")
     bt.add_argument("--news-dir", default=None,
-                    help="news-history files (#390): every plan gets the news themes of the days before it as the macro part")
+                    help="news-history files (#390; default DESK_GDELT_CACHE): every plan gets the news themes "
+                         "of the days before it as the macro part")
     bt.add_argument("--macro-weight", type=float, default=None,
                     help="count the macro part in the direction score at this weight for the run (live weight stays 0)")
     cb = sub.add_parser("calibrate", help=(
@@ -347,7 +366,11 @@ def main(argv: list[str] | None = None) -> int:
     nh = sub.add_parser("news-history", help=(
         "GDELT's daily tone and article counts per news theme into <out-dir> (#390; one request per 20 s, "
         "stops at the first refusal - run again later to carry on)"))
-    nh.add_argument("--out-dir", default="data/gdelt", help="directory of the files (default data/gdelt)")
+    nh.add_argument("--out-dir", default=None,
+                    help="directory of the files (default DESK_GDELT_CACHE, else data/gdelt)")
+    nh.add_argument("--retry-after-min", type=float, default=0.0,
+                    help="after a refusal wait this many minutes and carry on (default 0 = stop; GDELT blocks ~15 min)")
+    nh.add_argument("--max-rounds", type=int, default=12, help="most refusals to wait out with --retry-after-min (default 12)")
     nh.add_argument("--first-year", type=int, default=2017, help="oldest year (default 2017)")
     sub.add_parser("unfinished", help=(
         "queued / running runs: the count on the first line, then one line each (#431; scripts/deploy.sh "

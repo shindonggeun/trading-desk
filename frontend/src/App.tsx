@@ -16,6 +16,7 @@ import WeeklyMap from "./pages/WeeklyMap";
 import FuturesView from "./pages/FuturesView";
 import Tips from "./pages/Tips";
 import Funds from "./pages/Funds";
+import Reports from "./pages/Reports";
 import Charts from "./pages/Charts";
 import CalendarView from "./pages/CalendarView";
 import Chat from "./pages/Chat";
@@ -103,6 +104,7 @@ export default function App() {
   const chatMatch = route.match(/^#\/chat(?:\?(.*))?$/);
   const tipsMatch = route.match(/^#\/tips(?:\?(.*))?$/);
   const fundsMatch = route.match(/^#\/funds(?:\?(.*))?$/);   // #484 기관 포트폴리오(13F)
+  const reportsMatch = route.match(/^#\/reports(?:\/([\w-]+))?(?:\?.*)?$/);   // #496 초보자 리포트(알림 url /#/reports/{id})
   const futuresMatch = route.match(/^#\/futures(?:\?(.*))?$/);   // #444 코스피200 선물 시세
   // 큰 차트(#97): #/chart/<티커>?run=…&interval=…
   const chartMatch = route.match(/^#\/chart\/([^?]+)(?:\?(.*))?$/);
@@ -174,6 +176,8 @@ export default function App() {
         <Tips key={route} query={new URLSearchParams(tipsMatch[1] ?? "")} />
       ) : fundsMatch ? (
         <Funds query={new URLSearchParams(fundsMatch[1] ?? "")} />
+      ) : reportsMatch ? (
+        <Reports id={reportsMatch[1] ?? null} />
       ) : futuresMatch ? (
         <FuturesView query={new URLSearchParams(futuresMatch[1] ?? "")} />
       ) : weeklyMatch ? (

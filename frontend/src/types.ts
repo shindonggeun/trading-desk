@@ -1824,3 +1824,39 @@ export interface RunExplain {
   pending?: boolean;
   fallback?: string;
 }
+
+
+// #496 초보자 리포트(#495 /api/reports) — 01 계약(이슈 #495 댓글). 본문은 #493 RunExplain 과 같은 모양 + why · similar
+export interface ReportSubject { symbol: string; name: string; kind: "index" | "favorite" }
+export interface ReportSummary {
+  id: string;
+  created_at: string;
+  title: string;
+  summary: string; // 목록 · 대시보드 "오늘 볼 것" 한 줄
+  subject: ReportSubject;
+  source: "ai" | "rules";
+}
+export interface ReportList {
+  items: ReportSummary[];
+  generating: boolean; // 지금 만드는 중(동시 1개)
+  next_due: string | null; // 다음 자동 생성 예정(꺼져 있으면 null)
+  next_before: string | null; // 더 오래된 쪽 페이지 커서
+}
+export interface ReportSection {
+  title: string;
+  body: string;
+  highlight: string;
+  term: { name: string; explain: string };
+  chart: ExplainChart;
+  image: { url: string; alt: string } | null; // #497 — 지금은 늘 null
+}
+export interface ReportDetail extends ReportSummary {
+  why: { text: string; candidates: { symbol: string; name: string; score: number; reasons: string[] }[] } | null;
+  hook: string;
+  sections: ReportSection[];
+  similar: { date: string; what: string; after: string }[];
+  stages: { label: string; low: number | null; high: number | null; why: string }[];
+  checklist: { q: string; a: string }[];
+  closing: string;
+  version: number;
+}

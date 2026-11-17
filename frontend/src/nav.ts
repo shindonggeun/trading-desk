@@ -28,6 +28,7 @@ export const NAV: NavGroup[] = [
       { label: "백테스트", href: "#/backtest", match: starts("#/backtest") },
       { label: "매매 팁", href: "#/tips", match: starts("#/tips") },
       { label: "기관 포트폴리오", href: "#/funds", match: starts("#/funds") },
+      { label: "리포트", href: "#/reports", match: starts("#/reports") },
     ],
   },
   { id: "calendar", label: "캘린더", items: [{ label: "캘린더", href: "#/calendar", match: starts("#/calendar") }] },

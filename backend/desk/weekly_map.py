@@ -29,7 +29,7 @@ from datetime import UTC, date, datetime, timedelta
 
 log = logging.getLogger(__name__)
 
-VERSION = 2               # 2: position also reads the line order - "rebound" (#508)
+VERSION = 3               # 2: position also reads the line order - "rebound" (#508); 3: "reclaimed_red" (#521)
 # (symbol, Korean name, fallback symbol when the first has no bars)
 TARGETS: tuple[tuple[str, str, str | None], ...] = (
     ("NQ=F", "나스닥100 선물", "^NDX"),
@@ -183,11 +183,13 @@ def record(bars: list[dict], i: int) -> dict:
 
 def place(close: float, black: float, red: float) -> str:
     """Where the close sits against both lines (#508), not just against the black one:
-    ``above_black`` over both, ``between`` under the black but over the red one (black over red),
-    ``rebound`` over the black but under the red one (black under red, after a long fall),
-    ``below_red`` under both. A close equal to a line counts as on top of it."""
+    ``above_black`` over both with the lines in order (black over red), ``reclaimed_red`` over both while
+    the black line is still under the red one (#521: the red line just won back after a long fall - an early
+    rebound, not a long rise), ``between`` under the black but over the red one (black over red),
+    ``rebound`` over the black but under the red one (black under red), ``below_red`` under both.
+    A close equal to a line counts as on top of it; equal lines count as in order."""
     if close >= black and close >= red:
-        return "above_black"
+        return "reclaimed_red" if black < red else "above_black"
     if close >= black:
         return "rebound"
     if close >= red:
@@ -266,9 +268,10 @@ def explain(m: dict) -> dict:
     black, red = m["lines"]["black"], m["lines"]["red"]
     bb, rec = m["bollinger"], m["record"]
     down, up = m["scenario"]["down"], m["scenario"]["up"]
-    if m["position"] == "above_black" and black["price"] < red["price"]:
-        head = (f"{name}: 주봉이 빨간선(60주선 {_won(m, red['price'])}) · 검정선(20주선 {_won(m, black['price'])}) 모두 위에 있다. "
-                f"다만 검정선이 아직 빨간선 아래(역배열)라, 빨간선({red['pct']:+.1f}%)을 지키는지가 먼저다.")
+    if m["position"] == "reclaimed_red":
+        head = (f"{name}: 주봉이 빨간선(60주선 {_won(m, red['price'])})을 되찾아 두 선 모두 위에 있다. "
+                f"다만 검정선(20주선 {_won(m, black['price'])})이 아직 빨간선 아래(역배열)인 초기 반등이라, "
+                f"빨간선({red['pct']:+.1f}%) 위에서 주봉 종가가 버티는지가 먼저다.")
     elif m["position"] == "above_black":
         head = (f"{name}: 주봉이 검정선(20주선 {_won(m, black['price'])}) 위에 있다. 검정선을 깨고 마감하면 "
                 f"빨간선(60주선 {_won(m, red['price'])}, 지금보다 {red['pct']:+.1f}%)까지 열어 둔다.")
@@ -328,7 +331,10 @@ def note(m: dict | None, for_ticker: str) -> str | None:
     if not m:
         return None
     bk = m["record"]["black_break"]
-    where = {"above_black": "above its 20-week and 60-week lines", "between": "under its 20-week but above its 60-week line",
+    where = {"above_black": "above its 20-week and 60-week lines",
+             "reclaimed_red": "back above its 60-week line (and its 20-week one) with the 20-week still under the "
+                              "60-week after a long fall (an early rebound, not a long rise yet)",
+             "between": "under its 20-week but above its 60-week line",
              "rebound": "back above its 20-week line but still under its 60-week line, the 20-week under the 60-week "
                         "after a long fall (a rebound attempt, not a turn yet)",
              "below_red": "under its 20-week and 60-week lines"}[m["position"]]

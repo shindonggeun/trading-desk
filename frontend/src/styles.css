@@ -1371,6 +1371,7 @@ h1 .fav-star { font-size: var(--fs-xl); }
 .wm-pos-between { color: var(--warn); }
 .wm-pos-below_red { color: var(--down); }
 .wm-pos-rebound { color: var(--warn); }
+.wm-pos-reclaimed_red { color: var(--accent); }
 .wm-candle { font-weight: 400; color: var(--muted); }
 .wm-candle-long_black { color: var(--down); }
 .wm-candle-long_white { color: var(--up); }
@@ -2317,6 +2318,7 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .wm-todo-between { box-shadow: inset 3px 0 0 var(--warn); }
 .wm-todo-below_red { box-shadow: inset 3px 0 0 var(--down); }
 .wm-todo-rebound { box-shadow: inset 3px 0 0 var(--warn); }
+.wm-todo-reclaimed_red { box-shadow: inset 3px 0 0 var(--accent); }
 .charts-weekly-todo { flex-basis: 100%; color: var(--muted); }
 .wph { display: grid; gap: 6px; }
 .wph-toggle { justify-self: start; }

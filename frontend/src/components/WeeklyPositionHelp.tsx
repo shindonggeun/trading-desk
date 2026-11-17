@@ -1,7 +1,12 @@
 import { useId, useState } from "react";
 import { WEEKLY_WORDS, type WeeklyZone } from "../weekly";
 
-type Position = Exclude<WeeklyZone, "rebound">;
+type Position = Exclude<WeeklyZone, "rebound" | "reclaimed_red">;
+/** 선 순서가 뒤집힌(역배열) 때의 두 구간 — 그림에 점을 찍지 않고 목록 · 문장으로 말한다 */
+const INVERTED: { pos: Exclude<WeeklyZone, Position>; when: string }[] = [
+  { pos: "rebound", when: "긴 하락 뒤 검정선이 빨간선 아래로 내려와 있을 때" },
+  { pos: "reclaimed_red", when: "역배열인 채 빨간선까지 되찾았을 때" },
+];
 
 const ZONES: { pos: Position; y: number }[] = [
   { pos: "above_black", y: 20 }, { pos: "between", y: 58 }, { pos: "below_red", y: 96 },
@@ -39,9 +44,11 @@ export default function WeeklyPositionHelp({ position }: { position?: WeeklyZone
             <li key={z.pos}><strong className={`wm-pos-${z.pos}`}>{WEEKLY_WORDS[z.pos].name}</strong>
               {" "}({WEEKLY_WORDS[z.pos].where}) — {WEEKLY_WORDS[z.pos].todo}</li>
           ))}
-          <li><strong className="wm-pos-rebound">{WEEKLY_WORDS.rebound.name}</strong>
-            {" "}(긴 하락 뒤 검정선이 빨간선 아래로 내려와 있을 때, {WEEKLY_WORDS.rebound.where})
-            {position === "rebound" && <strong> ← 지금</strong>} — {WEEKLY_WORDS.rebound.todo}</li>
+          {INVERTED.map((z) => (
+            <li key={z.pos}><strong className={`wm-pos-${z.pos}`}>{WEEKLY_WORDS[z.pos].name}</strong>
+              {" "}({z.when}, {WEEKLY_WORDS[z.pos].where})
+              {position === z.pos && <strong> ← 지금</strong>} — {WEEKLY_WORDS[z.pos].todo}</li>
+          ))}
         </ul>
         <p className="muted">선은 주봉 종가로 본다. 하루 이틀 넘었다 돌아오는 것은 아직 바뀐 것이 아니다.</p>
       </div>

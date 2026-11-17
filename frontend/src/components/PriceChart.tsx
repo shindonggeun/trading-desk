@@ -1677,7 +1677,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       </div>
       {notice && <p className="error small chart-limit">{notice}</p>}
       {banner}
-      {show.entry && <EntrySummary entry={entry} failed={entryFailed} fromRun={!!plan} />}
+      {show.entry && <EntrySummary entry={entry} failed={entryFailed} fromRun={!!plan}
+        elapsed={interval === "1d" ? candles?.session_elapsed ?? null : null} />}
       {oscLines.length > 0 && (
         <div className={`small chart-limit ${hot ? "error" : "muted"}`} role="status">
           {oscLines.map((t) => <p key={t} className="chart-osc">{hot && t.includes("과열") ? "⚠ " : ""}{t}</p>)}
@@ -1716,6 +1717,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           {drawn && (Object.keys(paneTops) as PaneId[]).map((id) => (
             <PaneTag key={id} id={id} top={paneTops[id] as number} rows={drawn.rows} open={paneHelp === id}
               bottomPane={id === "stoch" || (id === "rsi" && paneTops.stoch == null)}
+              elapsed={interval === "1d" ? candles?.session_elapsed ?? null : null}
               onHelp={() => setPaneHelp((cur) => (cur === id ? null : id))} />
           ))}
           {hover && (
@@ -1997,10 +1999,12 @@ function OutlookSummary({ outlook, period, on, onPick, daily, outside, far }: {
 }
 
 /** #550 보조 칸 왼쪽 위 이름표 — 이름 + 지금 값 + 한 줄 뜻(좁은 화면은 짧게), ⓘ 로 쉬운 설명 몇 줄 */
-function PaneTag({ id, top, rows, open, onHelp, bottomPane = false }: {
+function PaneTag({ id, top, rows, open, onHelp, bottomPane = false, elapsed = null }: {
   id: PaneId; top: number; rows: Row[]; open: boolean; onHelp: () => void;
   /** #560 맨 아래 칸 — 왼쪽 아래 TradingView 로고(라이선스 표기)를 비켜 오른쪽으로 민다 */
   bottomPane?: boolean;
+  /** #559 일봉의 마지막 봉이 진행 중이면 그 장의 경과 비율(0~1, 서버 session_progress) */
+  elapsed?: number | null;
 }) {
   const t = PANE_TEXT[id];
   const last = rows[rows.length - 1]?.bar;
@@ -2008,7 +2012,11 @@ function PaneTag({ id, top, rows, open, onHelp, bottomPane = false }: {
   if (id === "vol" && last) {
     const recent = rows.slice(-21, -1).map((r) => r.bar.volume).filter((v) => v > 0);
     const avg = recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : 0;
-    value = `${shortVolume(last.volume)}${avg > 0 ? ` (평소의 ${(last.volume / avg).toFixed(1)}배)` : ""}`;
+    // #559 진행 중인 오늘 봉은 하루 평균과 그대로 견주지 않는다 — 장 전 · 초반은 판정 안 함, 이후엔 경과 비율로 환산
+    // (기준은 서버 setup_filter.VOL_MIN_ELAPSED 와 같은 0.15)
+    if (elapsed != null && elapsed < 0.15) value = `${shortVolume(last.volume)} (오늘 진행 중 · 집계 중)`;
+    else if (elapsed != null) value = `${shortVolume(last.volume)}${avg > 0 ? ` (오늘 진행 중 · 하루치 환산 평소의 ${(last.volume / elapsed / avg).toFixed(1)}배)` : " (오늘 진행 중)"}`;
+    else value = `${shortVolume(last.volume)}${avg > 0 ? ` (평소의 ${(last.volume / avg).toFixed(1)}배)` : ""}`;
   } else if (id === "rsi" && last?.rsi != null) {
     value = last.rsi.toFixed(1);
   } else if (id === "stoch" && last?.stoch_k != null) {

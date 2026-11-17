@@ -1,5 +1,5 @@
 import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, RunExplain, TipsView } from "./types";
-import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, ReportDetail, ReportList, FundBrief, FundChanges, FundDetail, FearIndex, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
+import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, ReportDetail, ReportList, Halving, FundBrief, FundChanges, FundDetail, FearIndex, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -282,6 +282,8 @@ export const api = {
   report: (id: string) => call<ReportDetail>(`/api/reports/${encodeURIComponent(id)}`),
   /** 202 { generating: true } · 이미 만드는 중이면 409 */
   createReport: () => call<{ generating: boolean }>("/api/reports", { method: "POST" }),
+  /** #515 비트코인 반감기 사이클 비교(#514, 하루 캐시) */
+  halving: () => call<Halving>("/api/crypto/halving"),
   /** #332 금리 · 달러 국면과 매매 팁(#330) */
   tips: (ticker?: string) => call<TipsView>(`/api/tips${ticker ? `?ticker=${encodeURIComponent(ticker)}` : ""}`),
   /** #362 웹 푸시(#361): 서버 공개키 · 이 기기 구독 · 시험 알림 */

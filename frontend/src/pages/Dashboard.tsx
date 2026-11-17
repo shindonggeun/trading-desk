@@ -15,6 +15,7 @@ import PortfolioPanel from "../components/PortfolioPanel";
 import RecentRuns from "../components/RecentRuns";
 import WeeklyMapBrief from "../components/WeeklyMapBrief";
 import BottomZoneBrief from "../components/BottomZoneBrief";
+import HalvingBrief from "../components/HalvingBrief";
 import TodayStrip from "../components/TodayStrip";
 import DashSummary from "../components/DashSummary";
 import { time } from "../format";
@@ -103,7 +104,7 @@ function RegimePanel() {
   );
 }
 
-type SectionId = "macro" | "sectornews" | "favorites" | "market" | "kfutures" | "agenda" | "weekly" | "bottom" | "portfolio" | "recent" | "stats" | "flow" | "credit" | "regime";
+type SectionId = "macro" | "sectornews" | "favorites" | "market" | "kfutures" | "agenda" | "weekly" | "bottom" | "halving" | "portfolio" | "recent" | "stats" | "flow" | "credit" | "regime";
 /** 구역 — 순서는 이슈 #100 의 기본값. wide 는 넓은 화면에서 한 줄을 다 쓴다. */
 const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () => ReactNode }> = {
   macro: { title: "오늘의 거시 · 정책 브리핑", wide: true, render: () => <MacroBrief /> },
@@ -118,6 +119,8 @@ const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () =>
   // #227 주요 지수의 주간 지도(#202) 위치 · 다음 선 한 줄씩
   weekly: { title: "주간 지도", render: () => <WeeklyMapBrief /> },
   bottom: { title: "인생 타점 · 장기 바닥권", render: () => <BottomZoneBrief /> },
+  // #515 비트코인 반감기 사이클 — 지금 위치 한 장, 누르면 #/halving
+  halving: { title: "비트코인 반감기 사이클", render: () => <HalvingBrief /> },
   portfolio: { title: "내 투자", render: () => <PortfolioPanel /> },
   recent: { title: "최근 분석", render: () => <RecentRuns /> },
   stats: { title: "적중률", render: () => <PlanStatsCard /> },
@@ -132,7 +135,7 @@ const BASE_ORDER = Object.keys(SECTIONS) as SectionId[];
 const COLUMN: Record<SectionId, 0 | 1 | 2> = {
   market: 0, kfutures: 0, weekly: 0, regime: 0, credit: 0,
   favorites: 1, macro: 1, sectornews: 1, agenda: 1, recent: 1, bottom: 1,
-  flow: 2, portfolio: 2, stats: 2,
+  flow: 2, portfolio: 2, stats: 2, halving: 2,
 };
 type Layout = "wide" | "normal" | "phone";
 const WIDE_Q = "(min-width: 1280px)";

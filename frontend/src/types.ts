@@ -1864,3 +1864,55 @@ export interface ReportDetail extends ReportSummary {
   closing: string;
   version: number;
 }
+
+/** #514 GET /api/crypto/halving — 비트코인 반감기 사이클 비교(날짜 UTC YYYY-MM-DD, 가격 USD 일봉 종가) */
+export interface HalvingEvent { n: number; block: number; date: string; reward_after: number; estimated: boolean }
+export interface HalvingCycle {
+  halving: string;
+  end: string;
+  /** 이 사이클에서 가격이 있는 첫날 */
+  data_from: string;
+  /** 자료가 사이클 중간부터(2012 사이클) */
+  partial: boolean;
+  peak: { date: string; price: number; days_from_halving: number } | null;
+  bottom: { date: string; price: number; days_from_halving: number; days_from_peak: number | null; drawdown_pct: number | null } | null;
+  note: string | null;
+}
+export type HalvingRangeNow = "before" | "within" | "after";
+export interface HalvingRange { min: number; max: number; cycles: string[] }
+export interface HalvingSeries {
+  halving: string;
+  /** 반감기 날 종가가 없어 비율 기준을 그 사이클 첫 종가로 둔 날(2012 사이클) */
+  base_date?: string;
+  /** [일수, 비율] — 7일마다 */
+  points: [number, number][];
+}
+export interface Halving {
+  as_of: string;
+  source: string;
+  halvings: HalvingEvent[];
+  cycles: HalvingCycle[];
+  current: {
+    halving: string;
+    days_since_halving: number;
+    price: number;
+    high: { date: string; price: number; days_from_halving: number };
+    days_since_high: number;
+    from_high_pct: number;
+    /** 고점 뒤 지금까지 최저 — 바닥 확정 아님 */
+    low_after_high: { date: string; price: number; days_from_halving: number; drawdown_pct: number } | null;
+    from_low_pct: number;
+  };
+  ranges: {
+    bottom_days_from_halving: HalvingRange;
+    bottom_days_from_peak: HalvingRange;
+    bottom_drawdown_pct: HalvingRange;
+    now: {
+      days_since_halving: HalvingRangeNow;
+      days_since_high: HalvingRangeNow | null;
+      from_high_pct: "shallower" | "within" | "deeper" | null;
+    };
+  };
+  series: { by_halving: HalvingSeries[]; by_peak: HalvingSeries[] };
+  notes: string[];
+}

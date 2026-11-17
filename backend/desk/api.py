@@ -57,6 +57,7 @@ from . import (
     regime,
     report_images,
     reports,
+    req_timing,
     review,
     risk_regime,
     sector_news,
@@ -772,6 +773,19 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     @app.get("/api/health")
     def health():
         return {"ok": True}
+
+    # #536 per-route request times (desk.req_timing), read in production without parsing logs
+    timings = req_timing.Timings()
+    app.state.timings = timings
+
+    @app.get("/api/perf/timings")
+    def perf_timings(reset: bool = False):
+        """#536: since the start (or the last ``reset=1``): per route the count, p50 · p95 · max ms, slowest p95 first."""
+        out = {"since": datetime.fromtimestamp(timings.since, UTC).isoformat(timespec="seconds"),
+               "slow_ms": req_timing.SLOW_MS, "routes": timings.stats()}
+        if reset:
+            timings.reset()
+        return out
 
     # --- login -------------------------------------------------------------------------
 
@@ -2336,6 +2350,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return out
 
     _push_routes(app, engine, settings)
+    # outermost (added last): the session check and every other middleware count in the time
+    app.add_middleware(req_timing.TimingMiddleware, timings=timings)
     return app
 
 

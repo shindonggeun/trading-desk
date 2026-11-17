@@ -1780,11 +1780,12 @@ export interface FundHolding {
   cusip: string;
   title: string | null; // COM · CL A …
   put_call: "PUT" | "CALL" | null;
+  share_type: "SH" | "PRN"; // PRN = 채권(shares 가 원금 달러)
   shares: number;
-  value: number; // 달러
-  weight: number; // %
-  change: FundChange;
-  change_shares: number; // 전 분기 대비(±)
+  value: number; // 달러(옵션 줄은 명목가)
+  weight: number | null; // %(옵션 줄은 null — 명목가라 비중에 넣지 않는다)
+  change: FundChange | null; // 전 분기를 못 읽으면 null(그때 아래 셋도 null)
+  change_shares: number | null; // 전 분기 대비(±)
   prev_shares: number | null;
   change_pct: number | null;
 }
@@ -1799,11 +1800,12 @@ export interface FundDetail {
   prev_quarter: string | null;
   quarters: string[]; // 최근 먼저
   reported_by: { name: string; cik: string } | null; // 13F-NT: 다른 제출자가 보고
-  total_value: number;
-  count: number; // 전량 매도 제외 보유 수
+  total_value: number; // 주식 · 채권만(옵션 제외)
+  options_value: number | null; // 옵션 명목가 합계
+  count: number; // 전량 매도 · 옵션 제외 보유 수
   holdings: FundHolding[]; // 평가액 큰 순, 전량 매도는 맨 뒤
   summary: string;
   bullets: string[];
 }
-export interface FundChangeItem { fund: string; name: string; quarter: string; change: FundChange; change_shares: number; shares: number; weight: number }
+export interface FundChangeItem { fund: string; name: string; quarter: string; change: FundChange | null; change_shares: number | null; shares: number; weight: number | null }
 export interface FundChanges { items: Record<string, FundChangeItem[]> }

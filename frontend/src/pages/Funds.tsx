@@ -20,11 +20,14 @@ const lagDays = (period: string, filed: string) => Math.round((Date.parse(filed)
 const fakeable = (e: unknown) => import.meta.env.DEV && e instanceof ApiError && (e.status === 404 || e.status === 503);
 
 function ChangeTag({ h }: { h: FundHolding }) {
+  // 전 분기를 못 읽었으면(change null) 비교하지 않는다
+  if (!h.change) return <span className="fund-chg fund-chg-unchanged" title="전 분기 공시를 읽지 못해 비교할 수 없습니다">비교 불가</span>;
   const pct = h.change_pct != null && h.change !== "new" && h.change !== "sold" ? ` (${h.change_pct > 0 ? "+" : ""}${h.change_pct.toFixed(1)}%)` : "";
+  const unit = h.share_type === "PRN" ? " 달러" : "주";
   return (
     <span className={`fund-chg fund-chg-${h.change}`}>
       {CHANGE_KO[h.change]}
-      {h.change !== "unchanged" && h.change_shares !== 0 && <span className="fund-chg-n"> {signedNum(h.change_shares)}주{pct}</span>}
+      {h.change !== "unchanged" && h.change_shares != null && h.change_shares !== 0 && <span className="fund-chg-n"> {signedNum(h.change_shares)}{unit}{pct}</span>}
     </span>
   );
 }
@@ -45,7 +48,8 @@ function Detail({ id, quarter, onQuarter }: { id: string; quarter: string | null
         const f = fakeable(e) ? fakeFund(id, quarter ?? undefined) : null;
         if (f) { setD(f); setFake(true); return; }
         setD(null);
-        setFailed(e instanceof ApiError && e.status === 503 ? "아직 이 기관의 공시를 한 번도 받지 못했습니다. 잠시 뒤 다시 확인하세요." : e instanceof Error ? e.message : "불러오지 못했습니다");
+        // 서버가 이유를 준다: 미제출 분기(404) · 다른 요청이 SEC 에서 받는 중(503) · SEC 연락처(UA) 거절 등
+        setFailed(e instanceof Error && e.message ? e.message : "불러오지 못했습니다");
       });
     return () => { alive = false; };
   }, [id, quarter]);
@@ -62,7 +66,7 @@ function Detail({ id, quarter, onQuarter }: { id: string; quarter: string | null
         {d.name}{d.manager ? ` · ${d.manager}` : ""} · {qKo(d.quarter)} · 기준일 {day(d.period_of_report)} · 공시일 {day(d.filed_at)}
         {" "}({lagDays(d.period_of_report, d.filed_at)}일 뒤 공시) · {d.form}
         {d.reported_by && ` — 보유는 다른 운용사(${d.reported_by.name})가 보고`}
-        {" "}· 보유 {d.count}종목 · 합계 {usdKo(d.total_value)}
+        {" "}· 보유 {d.count}종목 · 합계 {usdKo(d.total_value)}(주식 · 채권){d.options_value ? ` · 옵션 명목가 ${usdKo(d.options_value)}` : ""}
       </p>
       <div className="fund-tools">
         <div className="chips" role="group" aria-label="분기">
@@ -87,9 +91,9 @@ function Detail({ id, quarter, onQuarter }: { id: string; quarter: string | null
                   {h.put_call && <span className="fund-pc"> {h.put_call === "PUT" ? "풋" : "콜"}</span>}
                   <span className="fund-name muted small">{h.name}{h.title && h.title !== "COM" ? ` · ${h.title}` : ""}</span>
                 </th>
-                <td className="num">{h.change === "sold" ? `0 (전 ${num(h.prev_shares ?? 0)})` : num(h.shares)}</td>
-                <td className="num">{h.change === "sold" ? "—" : usdKo(h.value)}</td>
-                <td className="num">{h.change === "sold" ? "—" : `${h.weight.toFixed(2)}%`}</td>
+                <td className="num">{h.change === "sold" ? `0 (전 ${num(h.prev_shares ?? 0)})` : h.share_type === "PRN" ? `원금 ${usdKo(h.shares)}` : num(h.shares)}</td>
+                <td className="num">{h.change === "sold" ? "—" : h.put_call ? <span title="옵션은 명목가 — 합계 · 비중에 넣지 않습니다">{usdKo(h.value)} <span className="muted small">(명목)</span></span> : usdKo(h.value)}</td>
+                <td className="num">{h.change === "sold" || h.weight == null ? "—" : `${h.weight.toFixed(2)}%`}</td>
                 <td><ChangeTag h={h} /></td>
               </tr>
             ))}

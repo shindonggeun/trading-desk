@@ -37,6 +37,7 @@ function Detail({ id, quarter, onQuarter }: { id: string; quarter: string | null
   useEffect(() => {
     let alive = true;
     setFailed(null);
+    setD((cur) => (cur && cur.quarter !== quarter ? null : cur)); // 다른 분기로 바꾸면 이전 표 대신 "불러오는 중"
     api.fund(id, quarter ?? undefined)
       .then((v) => { if (alive) { setD(v); setFake(false); } })
       .catch((e) => {
@@ -56,7 +57,7 @@ function Detail({ id, quarter, onQuarter }: { id: string; quarter: string | null
     <section className="fund-detail">
       {fake && <p className="notice-warn app-notice">예시 데이터 — 개발 서버에서 #483 API 없이 화면을 보기 위한 값이며 실제 공시 숫자가 아닙니다.</p>}
       <h2 className="fund-headline">{d.summary}</h2>
-      {d.bullets.length > 0 && <ul className="fund-bullets">{d.bullets.map((b) => <li key={b}>{b}</li>)}</ul>}
+      {d.bullets.length > 0 && <ul className="fund-bullets">{d.bullets.map((b, n) => <li key={n}>{b}</li>)}</ul>}
       <p className="muted small fund-meta">
         {d.name}{d.manager ? ` · ${d.manager}` : ""} · {qKo(d.quarter)} · 기준일 {day(d.period_of_report)} · 공시일 {day(d.filed_at)}
         {" "}({lagDays(d.period_of_report, d.filed_at)}일 뒤 공시) · {d.form}
@@ -79,8 +80,8 @@ function Detail({ id, quarter, onQuarter }: { id: string; quarter: string | null
             <tr><th scope="col">종목</th><th scope="col" className="num">주식 수</th><th scope="col" className="num">평가액</th><th scope="col" className="num">비중</th><th scope="col">전 분기 대비{d.prev_quarter ? `(${qKo(d.prev_quarter)})` : ""}</th></tr>
           </thead>
           <tbody>
-            {rows.map((h) => (
-              <tr key={`${h.cusip}-${h.put_call ?? ""}`} className={h.change === "sold" ? "fund-row-sold" : undefined}>
+            {rows.map((h, n) => (
+              <tr key={`${h.cusip}-${h.put_call ?? ""}-${n}`} className={h.change === "sold" ? "fund-row-sold" : undefined}>
                 <th scope="row">
                   {h.ticker ? <a href={`#/chart/${encodeURIComponent(h.ticker)}`}>{h.ticker}</a> : <span className="muted">티커 없음</span>}
                   {h.put_call && <span className="fund-pc"> {h.put_call === "PUT" ? "풋" : "콜"}</span>}
@@ -152,7 +153,7 @@ export default function Funds({ query }: { query: URLSearchParams }) {
         {id && <button type="button" className="link" onClick={() => go(null)}>← 기관 목록</button>}
       </header>
       <p className="muted small funds-lag">{LAG_NOTE}{checked ? ` 마지막 확인 ${day(checked)}.` : ""}</p>
-      {failed && <p className="error">기관 목록을 불러오지 못했습니다: {failed}</p>}
+      {failed && !id && <p className="error">기관 목록을 불러오지 못했습니다: {failed}</p>}
       {id ? (
         <Detail key={id} id={id} quarter={quarter} onQuarter={(q) => go(id, q)} />
       ) : (

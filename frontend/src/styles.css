@@ -2198,7 +2198,7 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .fund-table tbody th { font-weight: 600; }
 .fund-name { display: block; font-weight: 400; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 .fund-pc { font-size: 11px; color: var(--warn); }
-.fund-row-sold { opacity: .7; }
+.fund-row-sold td, .fund-row-sold th > * { opacity: .7; }
 .fund-chg { font-weight: 600; }
 .fund-chg-n { font-weight: 400; color: var(--muted); }
 .fund-chg-new { color: var(--up); }
@@ -2206,7 +2206,8 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .fund-chg-decrease { color: var(--down); }
 .fund-chg-sold { color: var(--down); }
 .fund-chg-unchanged { color: var(--muted); }
-.fund-badge { text-decoration: none; border: 1px solid currentColor; border-radius: 999px; padding: 0 8px; white-space: nowrap; }
+.fund-badge { text-decoration: none; border: 1px solid currentColor; border-radius: 999px; padding: 0 8px; white-space: nowrap;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: bottom; }
 .today-fund { color: var(--accent); }
 .fund-toasts { top: auto; bottom: 16px; right: auto; left: 16px; }
 .fund-toast { border-left-color: var(--accent); }
@@ -2217,3 +2218,6 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 }
 .fund-card-sum { font-weight: 600; line-height: 1.45; }
 .fund-card-new { color: var(--up); }
+@media (max-width: 760px) {
+  .fund-toasts { bottom: calc(88px + env(safe-area-inset-bottom)); } /* 오른쪽 아래 채팅 버튼 위로 */
+}

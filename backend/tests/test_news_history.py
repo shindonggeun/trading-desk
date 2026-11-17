@@ -176,3 +176,41 @@ def test_the_command_waits_out_a_refusal_and_carries_on(tmp_path, monkeypatch, c
     results[:] = [{"fetched": 1, "kept": 0, "missing": ["a"], "refused": "429"}]
     args.retry_after_min = 0.0
     assert cli._news_history(args, sleep=waits.append) == 2 and waits == [960.0]
+
+
+def test_a_batch_stops_at_max_files_without_asking_more(tmp_path):
+    asked = []
+
+    def get(url, params=None, timeout=None):
+        asked.append(params)
+        return Response(200, _timeline({f"{params['startdatetime'][:4]}-03-02": 1.0}))
+
+    clock = Clock()
+    got = news_history.collect(tmp_path, themes=THEMES[:1], first_year=2020, get=get, sleep=clock.sleep,
+                               clock=clock, today=date(2023, 6, 1), max_files=3)
+    assert got["fetched"] == 3 and len(asked) == 3 and got["refused"] is None
+    assert len(got["missing"]) == 2 * 4 - 3                 # 2 modes x 2020..2023, the rest left for later
+    again = news_history.collect(tmp_path, themes=THEMES[:1], first_year=2020, get=get, sleep=clock.sleep,
+                                 clock=clock, today=date(2023, 6, 1), max_files=3)
+    assert again["kept"] == 3 and again["fetched"] == 3      # the next batch carries on
+
+
+def test_the_hourly_loop_waits_for_its_minute_and_runs_until_nothing_is_missing(tmp_path, monkeypatch, capsys):
+    import argparse
+    from datetime import datetime
+
+    from desk import cli
+
+    assert cli.seconds_to_minute(datetime(2026, 11, 17, 10, 5), 17) == 12 * 60
+    assert cli.seconds_to_minute(datetime(2026, 11, 17, 10, 17), 17) == 3600          # just ran: the next hour
+    results = [{"fetched": 0, "kept": 0, "missing": ["a", "b"], "refused": "429"},     # refused: wait an hour
+               {"fetched": 1, "kept": 0, "missing": ["b"], "refused": None},           # batch full: wait an hour
+               {"fetched": 1, "kept": 1, "missing": [], "refused": None}]
+    sizes, waits = [], []
+    monkeypatch.setattr(news_history, "collect", lambda root, **kw: sizes.append(kw["max_files"]) or results.pop(0))
+    args = argparse.Namespace(out_dir=str(tmp_path), first_year=2017, retry_after_min=0.0, max_rounds=12,
+                              max_files=8, hourly_at=17)
+    assert cli._news_history(args, sleep=waits.append, clock=lambda: datetime(2026, 11, 17, 10, 5)) == 0
+    assert sizes == [8, 8, 8] and waits == [720.0] * 3
+    out = capsys.readouterr().out
+    assert "GDELT 거절" in out and "이번 시간 8개" in out

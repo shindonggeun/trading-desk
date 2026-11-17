@@ -190,20 +190,40 @@ def gdelt_cache_dir(given: str | None) -> str | None:
     return given or os.getenv("DESK_GDELT_CACHE") or None
 
 
-def _news_history(args, sleep=time.sleep) -> int:
+def seconds_to_minute(now: datetime, minute: int) -> float:
+    """Until the next wall-clock hh:``minute`` (strictly after ``now``)."""
+    target = now.replace(minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(hours=1)
+    return (target - now).total_seconds()
+
+
+def _news_history(args, sleep=time.sleep, clock=datetime.now) -> int:
     """#390: GDELT's past per news theme into ``--out-dir`` (or DESK_GDELT_CACHE). Stops at GDELT's
     first refusal; with ``--retry-after-min`` it waits that long and carries on, up to ``--max-rounds``
-    refusals, so one background run can fill the whole history."""
+    refusals. With ``--hourly-at M`` it instead runs one batch of ``--max-files`` every hour at hh:M
+    (a refusal only ends that hour's batch) until nothing is missing - one background run, small
+    enough per hour to leave GDELT's limit to the live macro_news refresh on the same address."""
     from . import news_history
 
     out_dir = gdelt_cache_dir(args.out_dir) or "data/gdelt"
+    hourly = getattr(args, "hourly_at", None)
+    max_files = getattr(args, "max_files", None)
     rounds = 0
     while True:
-        got = news_history.collect(out_dir, first_year=args.first_year,
+        if hourly is not None:
+            sleep(seconds_to_minute(clock(), hourly))
+        got = news_history.collect(out_dir, first_year=args.first_year, max_files=max_files,
                                    progress=lambda msg: print(msg, file=sys.stderr, flush=True))
         total = got["fetched"] + got["kept"] + len(got["missing"])
         print(f"받음 {got['fetched']} · 있던 것 {got['kept']} · 남은 것 {len(got['missing'])} "
               f"(전체 {total}) -> {out_dir}", flush=True)
+        if not got["missing"]:
+            return 0
+        if hourly is not None:
+            note = f"GDELT 거절({got['refused'][:60]})" if got["refused"] else f"이번 시간 {max_files}개"
+            print(f"{clock():%m-%d %H:%M} {note} — 다음 정시 {hourly:02d}분에 이어 받기", flush=True)
+            continue
         if not got["refused"]:
             return 0
         rounds += 1
@@ -371,6 +391,9 @@ def main(argv: list[str] | None = None) -> int:
     nh.add_argument("--retry-after-min", type=float, default=0.0,
                     help="after a refusal wait this many minutes and carry on (default 0 = stop; GDELT blocks ~15 min)")
     nh.add_argument("--max-rounds", type=int, default=12, help="most refusals to wait out with --retry-after-min (default 12)")
+    nh.add_argument("--max-files", type=int, default=None, help="fetch at most this many files per batch")
+    nh.add_argument("--hourly-at", type=int, default=None, choices=range(60), metavar="MINUTE",
+                    help="run one batch (--max-files) every hour at this minute until done, e.g. 17")
     nh.add_argument("--first-year", type=int, default=2017, help="oldest year (default 2017)")
     sub.add_parser("unfinished", help=(
         "queued / running runs: the count on the first line, then one line each (#431; scripts/deploy.sh "

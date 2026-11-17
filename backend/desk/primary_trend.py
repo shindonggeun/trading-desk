@@ -350,20 +350,24 @@ class Cache:
         self._lock = threading.Lock()
         self._hit: tuple[float, list[dict]] | None = None
 
-    def view(self) -> list[dict] | None:
+    def view(self, ahead: float = 0.0) -> list[dict] | None:
         """The rows; while another caller is fetching, the last rows at once (None before any) - a
-        slow Yahoo never queues the page's requests behind it."""
+        slow Yahoo never queues the page's requests behind it. ``ahead`` (#536, the prewarm loop):
+        refetch rows that expire within that many seconds."""
         if not self._lock.acquire(blocking=False):
             return self._hit[1] if self._hit else None
         try:
             hit = self._hit
-            if hit and self._clock() - hit[0] < (self.ttl if len(hit[1]) == len(MARKETS) else self.fail_ttl):
+            if hit and self._clock() - hit[0] < (self.ttl if len(hit[1]) == len(MARKETS) else self.fail_ttl) - ahead:
                 return hit[1]
             try:
                 rows = view(self._fetch(SYMBOLS) or {})
             except Exception as exc:  # noqa: BLE001 - nothing this time, asked again soon
                 log.warning("primary trend fetch failed: %s", exc)
                 rows = []
+            if (len(rows) < len(MARKETS) and hit and len(hit[1]) == len(MARKETS)
+                    and self._clock() - hit[0] < self.ttl):
+                return hit[1]                    # #536: a failed refetch-ahead keeps the rows still in date
             self._hit = (self._clock(), rows)
             return rows
         finally:

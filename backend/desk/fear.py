@@ -196,13 +196,21 @@ class Fear:
             why = f"KisError: {str(exc)[:80]}" if isinstance(exc, KisError) else type(exc).__name__
             return _item("vkospi", "VKOSPI", "한국투자증권", error=why), FAIL_TTL_SEC
 
-    async def get(self) -> dict:
+    async def get(self, ahead: float = 0.0) -> dict:
+        """``ahead`` (#536, the prewarm loop): refetch the sources that expire within that many seconds.
+        When every source is fresh the answer is read without the lock - a page never waits behind it."""
+        now = self._clock()
+        if all(k in self._cache and self._cache[k][0] > now + ahead for k in ORDER):
+            return {"items": [self._cache[k][1] for k in ORDER]}
         async with self._lock:
             now = self._clock()
-            stale = [k for k in ORDER if k not in self._cache or self._cache[k][0] <= now]
+            stale = [k for k in ORDER if k not in self._cache or self._cache[k][0] <= now + ahead]
             if stale:
                 got = await asyncio.gather(*(self._vkospi() if k == "vkospi" else asyncio.to_thread(self._one, k)
                                              for k in stale))
                 for k, (item, ttl) in zip(stale, got, strict=True):
+                    old = self._cache.get(k)
+                    if item.get("error") and old and not old[1].get("error") and old[0] > now:
+                        continue                 # #536: a failed refetch-ahead keeps the gauge still in date
                     self._cache[k] = (now + ttl, item)
             return {"items": [self._cache[k][1] for k in ORDER]}

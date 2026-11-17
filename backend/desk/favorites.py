@@ -45,6 +45,14 @@ class Favorites:
             ).mappings().all()
         return [{"ticker": r["ticker"], "name": r["name"], "position": i} for i, r in enumerate(rows)]
 
+    def tickers(self, limit: int) -> list[str]:
+        """#536 the prewarm loop: every account's starred tickers, each account's first ones first, no repeats."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(favorites.c.ticker).order_by(favorites.c.position, favorites.c.user_id, favorites.c.ticker)
+            ).scalars().all()
+        return list(dict.fromkeys(rows))[:limit]
+
     def add(self, user_id: int, ticker: str, name: str | None = None) -> bool:
         """Append ``ticker`` at the end. False when it was already there (left as is).
         Raises TooMany at the cap."""

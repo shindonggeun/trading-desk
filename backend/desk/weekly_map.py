@@ -25,6 +25,7 @@ import statistics
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 
 log = logging.getLogger(__name__)
@@ -441,11 +442,12 @@ class Maps:
         self._lock = threading.Lock()
         self._rows: dict[str, tuple[float, str, list[dict]]] = {}
 
-    def bars(self, symbol: str) -> tuple[str, list[dict]]:
-        """(the symbol the bars came from, weekly bars oldest first); a fallback symbol stands in."""
+    def bars(self, symbol: str, ahead: float = 0.0) -> tuple[str, list[dict]]:
+        """(the symbol the bars came from, weekly bars oldest first); a fallback symbol stands in.
+        ``ahead`` (#536, the prewarm loop): refetch bars that expire within that many seconds."""
         with self._lock:
             hit = self._rows.get(symbol)
-        if hit and self._clock() - hit[0] < self.ttl:
+        if hit and self._clock() - hit[0] < self.ttl - ahead:
             return hit[1], hit[2]
         fallback = next((f for s, _n, f in TARGETS if s == symbol), None)
         got, used = [], symbol
@@ -462,14 +464,17 @@ class Maps:
                 used = sym
                 break
         with self._lock:
+            old = self._rows.get(symbol)
+            if len(got) < RED and old and len(old[2]) >= RED and self._clock() - old[0] < self.ttl:
+                return old[1], old[2]            # #536: a failed refetch-ahead keeps the bars still in date
             self._rows.pop(symbol, None)
             self._rows[symbol] = (self._clock(), used, got)
             while len(self._rows) > CACHE_SYMBOLS:          # dicts keep insertion order: drop the oldest
                 self._rows.pop(next(iter(self._rows)))
         return used, got
 
-    def one(self, symbol: str) -> dict:
-        used, bars = self.bars(symbol)
+    def one(self, symbol: str, ahead: float = 0.0) -> dict:
+        used, bars = self.bars(symbol, ahead)
         m = build(symbol, bars)
         if m is None:
             return {"symbol": symbol, "name": NAMES.get(symbol, symbol), "error": "주봉이 모자라 지도를 만들 수 없습니다"}
@@ -477,15 +482,17 @@ class Maps:
             m["source_symbol"] = used
         return m
 
-    def all(self) -> dict:
-        """Every target; one that fails answers its error and the others still come."""
-        maps = []
-        for symbol, _name, _f in TARGETS:
+    def all(self, ahead: float = 0.0) -> dict:
+        """Every target; one that fails answers its error and the others still come. #536: the targets'
+        bars are fetched side by side (each one a Yahoo request), the maps keep the targets' order."""
+        def one(symbol: str) -> dict:
             try:
-                maps.append(self.one(symbol))
+                return self.one(symbol, ahead)
             except Exception as exc:  # noqa: BLE001
                 log.warning("weekly map %s failed: %s", symbol, exc)
-                maps.append({"symbol": symbol, "name": NAMES.get(symbol, symbol), "error": type(exc).__name__})
+                return {"symbol": symbol, "name": NAMES.get(symbol, symbol), "error": type(exc).__name__}
+        with ThreadPoolExecutor(max_workers=len(TARGETS)) as pool:
+            maps = list(pool.map(one, [symbol for symbol, _name, _f in TARGETS]))
         return {"maps": maps, "generated_at": datetime.now(UTC).isoformat(timespec="seconds")}
 
     def history(self, symbol: str, weeks: int = 8) -> list[dict]:

@@ -218,17 +218,27 @@ class Cache:
         self._hit: tuple[float, dict | None] | None = None
         self.evidence = evidence if evidence is not None else load_evidence()
 
-    def regime(self) -> dict | None:
+    def _fresh(self, ahead: float) -> bool:
+        hit = self._hit
+        return bool(hit) and self._clock() - hit[0] < (self.ttl if hit[1] else self.fail_ttl) - ahead
+
+    def regime(self, ahead: float = 0.0) -> dict | None:
+        """``ahead`` (#536, the prewarm loop): refetch a value that expires within that many seconds.
+        A fresh value is read without the lock, so a page never waits behind that refetch."""
+        if self._fresh(ahead):
+            return self._hit[1]
         with self._lock:
-            hit = self._hit
-            if hit and self._clock() - hit[0] < (self.ttl if hit[1] else self.fail_ttl):
-                return hit[1]
+            if self._fresh(ahead):               # fetched while this one waited
+                return self._hit[1]
             try:
                 series = self._fetch(SYMBOLS)
                 g = regime(series) if series else None
             except Exception as exc:  # noqa: BLE001 - nothing this time, asked again soon
                 log.warning("tips regime fetch failed: %s", exc)
                 series, g = {}, None
+            old = self._hit
+            if g is None and old and old[1] and self._clock() - old[0] < self.ttl:
+                return old[1]                    # #536: a failed refetch-ahead keeps the regime still in date
             # a partial answer (a symbol failed) is kept only as long as a failure, then asked again
             partial = g is not None and not all(series.get(s) for s in SYMBOLS)
             self._hit = (self._clock() - (max(self.ttl - self.fail_ttl, 0.0) if partial else 0.0), g)

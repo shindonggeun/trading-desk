@@ -253,6 +253,7 @@ class PriceSource:
         self._clock = clock
         self._quotes: dict[str, tuple[float, Quote]] = {}
         self._candles: dict[tuple[str, str, int, tuple[str, ...]], tuple[float, dict, float]] = {}
+        self._inflight: dict[tuple[str, str, int, tuple[str, ...]], asyncio.Future] = {}   # #536 single-flight
 
     async def quote(self, ticker: str) -> Quote:
         tick = self.stream.latest(ticker) if self.stream is not None else None
@@ -289,6 +290,25 @@ class PriceSource:
         cached = self._candles.get(key)
         if cached and self._clock() - cached[0] < ttl:
             return cached[1]
+        # #536: one fetch per key at a time - a page's cards (and the playbooks' bars and the levels) asking
+        # for the same bars together share it. A caller that gives up does not cancel it for the others.
+        pending = self._inflight.get(key)
+        if pending is not None and pending.get_loop() is asyncio.get_running_loop():
+            return await asyncio.shield(pending)
+        task = asyncio.ensure_future(self._fetch_candles(ticker, interval, count, indicators, key, ttl))
+        self._inflight[key] = task
+
+        def done(t: asyncio.Future) -> None:
+            if self._inflight.get(key) is t:
+                self._inflight.pop(key, None)
+            if not t.cancelled():
+                t.exception()                  # retrieved: nobody may be left waiting for it
+
+        task.add_done_callback(done)
+        return await asyncio.shield(task)
+
+    async def _fetch_candles(self, ticker: str, interval: str, count: int, indicators: tuple[str, ...],
+                             key: tuple, ttl: float) -> dict:
         # Extra bars ahead of the shown ones so the indicators have settled by the first bar drawn.
         fetch = count + max((WARMUP[i] for i in indicators), default=0)
         try:

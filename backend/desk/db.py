@@ -218,6 +218,17 @@ flow_alerts_sent = Table(
     Index("ix_flow_alerts_sent_trade_date", "trade_date"),
 )
 
+reports = Table(
+    "reports", metadata,
+    Column("id", String(32), primary_key=True),
+    Column("created_at", Timestamp, nullable=False),
+    Column("symbol", String(32), nullable=False),                 # the subject (an index or a favorite)
+    Column("title", String(200), nullable=False),
+    Column("source", String(8), nullable=False),                  # ai | rules
+    Column("body", Json, nullable=False),                         # the whole report (#495 contract)
+    Index("ix_reports_created_at", "created_at"),
+)
+
 
 def now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)

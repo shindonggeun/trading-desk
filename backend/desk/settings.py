@@ -73,6 +73,8 @@ class Settings:
     score_interval_sec: int = field(default_factory=lambda: int(os.getenv("DESK_SCORE_INTERVAL_SEC", "3600")))
     # Seconds between refreshes of the world news-flow themes from GDELT (desk.macro_news). 0 = off.
     macro_interval_sec: int = field(default_factory=lambda: int(os.getenv("DESK_MACRO_INTERVAL_SEC", "3600")))
+    # Days between the automatic beginner reports (desk.reports, #495), after the Korean close. 0 = off.
+    report_every_days: int = field(default_factory=lambda: int(os.getenv("DESK_REPORT_EVERY_DAYS", "3")))
     # Minutes between KOSPI200 futures snapshots in the session (desk.futures_history, #254). 0 = off.
     futures_snapshot_min: float = field(default_factory=lambda: float(os.getenv("DESK_FUTURES_SNAPSHOT_MIN", "1")))
     cors_origins: list[str] = field(default_factory=lambda: _list("DESK_CORS_ORIGINS"))

@@ -714,7 +714,7 @@ export interface DeskEvent {
   run_id: string;
   seq: number;
   ts: string;
-  type: "status" | "message" | "tool" | "plan" | "outlook" | "error" | "done";
+  type: "status" | "message" | "tool" | "plan" | "outlook" | "explain" | "error" | "done";
   agent: string | null;
   content: string | null;
   data: any;
@@ -1809,3 +1809,18 @@ export interface FundDetail {
 }
 export interface FundChangeItem { fund: string; name: string; quarter: string; change: FundChange | null; change_shares: number | null; shares: number; weight: number | null }
 export interface FundChanges { items: Record<string, FundChangeItem[]> }
+
+/** #493 GET /api/runs/{id}/explain — 초보자 해설. 숫자는 데스크 계산값만, 문장은 AI(source "ai") 또는 규칙("rules") */
+export interface ExplainChart { kind: "levels" | "zone" | "none"; levels: number[]; labels?: string[]; marks: number[] }
+export interface RunExplain {
+  version: number;
+  hook: string;
+  sections: { title: string; body: string; highlight: string; term: { name: string; explain: string }; chart: ExplainChart }[];
+  stages: { label: string; low: number | null; high: number | null; why: string }[];
+  checklist: { q: string; a: string }[];
+  closing: string;
+  source: "ai" | "rules";
+  /** 분석이 돌고 있어 규칙 해설만 — 저장하지 않았다(다음에 다시 부르면 AI 로) */
+  pending?: boolean;
+  fallback?: string;
+}

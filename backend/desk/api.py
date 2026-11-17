@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, date, datetime, timedelta, timezone
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
@@ -49,6 +49,7 @@ from . import (
     otp,
     outcome,
     outlook,
+    paper,
     playbook_live,
     positioning,
     primary_trend,
@@ -258,6 +259,21 @@ class ChatMessageIn(BaseModel):
     @classmethod
     def _ticker(cls, v: str | None) -> str | None:
         return clean_ticker(v) if v else None
+
+
+class PaperSettingsIn(BaseModel):
+    """#527 a change to the paper account's settings: only the fields sent change (ranges: desk.paper)."""
+    start_capital: int | None = None
+    start_date: str | None = None
+    sizing: Literal["risk", "weight"] | None = None
+    risk_pct: float | None = None
+    weight_pct: float | None = None
+    max_positions: int | None = None
+    fee_kr_pct: float | None = None
+    fee_us_pct: float | None = None
+    tax_kr_pct: float | None = None
+    slippage_pct: float | None = None
+    allow_short: bool | None = None
 
 
 class FavoriteIn(BaseModel):
@@ -1505,6 +1521,38 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from None
         return news_digest.DIGEST.annotate(macro_news.CACHE.brief(ticker))
+
+    # #527 the paper account: the scored plans traded with won on paper (no orders, no LLM)
+    paper_desk = paper.Paper(engine, (dict) if settings.fake_runs else paper.yahoo_rates, listing_name)
+    app.state.paper = paper_desk
+
+    @app.get("/api/paper/settings")
+    def paper_settings_get():
+        return paper_desk.settings()
+
+    @app.put("/api/paper/settings")
+    def paper_settings_put(body: PaperSettingsIn):
+        patch = body.model_dump(exclude_unset=True)
+        if "start_date" in patch and patch["start_date"] == "":
+            patch["start_date"] = None
+        try:
+            return paper_desk.save(patch)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.get("/api/paper/summary")
+    async def paper_summary():
+        return await asyncio.to_thread(paper_desk.summary)
+
+    @app.get("/api/paper/equity")
+    async def paper_equity():
+        return await asyncio.to_thread(paper_desk.equity)
+
+    @app.get("/api/paper/trades")
+    async def paper_trades(status: Literal["closed", "open", "waiting", "skipped"] | None = None,
+                           direction: Literal["long", "short"] | None = None, ticker: str | None = None,
+                           limit: int = 200):
+        return await asyncio.to_thread(paper_desk.trades, status, direction, ticker, limit)
 
     @app.get("/api/stats/plans")
     def plan_stats(days: int = 90):

@@ -119,3 +119,9 @@ class Universe:
                 or_(instruments.c.yahoo == ticker.upper(), instruments.c.symbol == ticker.upper()))
             ).mappings().first()
         return {"name": row["name"], "market": row["market"]} if row else None
+
+    def market_of(self, symbol: str) -> str | None:
+        """#477: the market of a broker symbol (a bare KRX code), by the primary key - cheap enough for
+        api.clean_ticker on every request that carries a code."""
+        with self.engine.connect() as conn:
+            return conn.execute(select(instruments.c.market).where(instruments.c.symbol == symbol.upper())).scalar()

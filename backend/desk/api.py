@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Annotated
@@ -86,7 +87,7 @@ from .sr import frame_bars, support_resistance
 from .stock_profile import MAX_TICKERS as PROFILE_MAX
 from .stock_profile import Profiles
 from .store import TERMINAL, Store, iso
-from .universe import Universe
+from .universe import KR_SUFFIX, Universe
 
 MAX_BOARD = 30          # tickers per /api/estimates call
 CALENDAR_INTERVAL_SEC = 6 * 3600   # economic calendar re-read (#148)
@@ -154,11 +155,43 @@ class DisableOtpIn(BaseModel):
     code: str = Field(min_length=1, max_length=32)
 
 
-def clean_ticker(v: str) -> str:
+# #477: a bare KRX code (005930, or the newer 0126Z0) is a Korean stock - Yahoo and the page want it
+# with its market's suffix. ``kr_market`` (set by create_app: the instrument list, desk.universe)
+# says KOSPI or KOSDAQ; a code it does not know gets .KS, and /api/candles tries .KQ once when .KS
+# comes back empty (``learned_kr`` then keeps the answer for every other path). The retry only sees
+# an empty answer where Yahoo serves the bars: on a Toss-first path (daily bars) Toss answers the bare
+# code whatever its market, so an unlisted KOSDAQ code stays labelled .KS there - which only happens
+# while the instrument list does not know it (first boot, a Toss outage, a new listing).
+KR_CODE = re.compile(r"^[0-9][0-9A-Z]{5}$")
+kr_market: Callable[[str], str | None] = lambda code: None   # replaced by create_app (Universe.market_of)
+learned_kr: dict[str, str] = {}
+
+
+def kr_ticker(code: str) -> tuple[str, bool]:
+    """(the ticker of a code-shaped symbol, whether its suffix was only a guess). The instrument
+    list first (a code it lists on another market - none today - is left alone), then a market
+    learned from the bars, then .KS."""
+    try:
+        market = kr_market(code)
+    except Exception:  # noqa: BLE001 - the list is a help, not a gate: guess
+        market = None
+    if market:
+        suffix = KR_SUFFIX.get(market)
+        return (code + suffix, False) if suffix else (code, False)
+    learned = learned_kr.get(code)       # one read: another thread may clear the dict
+    return (code + learned, False) if learned else (code + ".KS", True)
+
+
+def resolve_ticker(v: str) -> tuple[str, bool]:
+    """``clean_ticker`` and whether a KRX suffix in it was guessed (/api/candles retries .KQ then)."""
     v = v.strip().upper()
     if not v or len(v) > 20 or not all((c.isascii() and c.isalnum()) or c in ".-^=" for c in v):
         raise ValueError("ticker may contain letters, digits and . - ^ = only")
-    return v
+    return kr_ticker(v) if KR_CODE.match(v) else (v, False)
+
+
+def clean_ticker(v: str) -> str:
+    return resolve_ticker(v)[0]
 
 
 class RunIn(BaseModel):
@@ -285,6 +318,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # Failed codes per account, across IPs (docs/security.md §6).
     otp_fails = LoginThrottle(per_ip=otp.USER_FAILS, window_sec=otp.USER_FAIL_WINDOW_SEC)
     universe = Universe(engine)
+    global kr_market
+    kr_market = universe.market_of   # #477
 
     def listing_name(ticker: str) -> str | None:
         return (universe.lookup(ticker) or {}).get("name")
@@ -1160,17 +1195,35 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         Toss 1m (source "yahoo+toss", #379; buckets count from 09:00 KST, ``at`` = bucket start). ``indicators=rsi,stoch,bb`` (or rsi14, bb20, bb50) adds each bar's
         RSI(14), Stochastic (14, 1, 3) and Bollinger Bands (20 / 50, 2σ) - desk.indicators (#203)."""
         try:
-            ticker = clean_ticker(ticker)
+            raw = ticker.strip().upper()
+            ticker, guessed = resolve_ticker(ticker)
             if interval not in INTERVALS:
                 raise ValueError(f"interval must be one of {', '.join(INTERVALS)}")
             wanted = normalize_indicators(indicators.split(","))
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         try:
-            return await prices.candles(ticker, interval, count, wanted)
+            got = await prices.candles(ticker, interval, count, wanted)
         except Exception as exc:  # noqa: BLE001 - both sources failed
-            log.warning("candles for %s %s failed: %s", ticker, interval, exc)
-            raise HTTPException(503, f"no candles for {ticker}") from None
+            if not guessed:
+                log.warning("candles for %s %s failed: %s", ticker, interval, exc)
+                raise HTTPException(503, f"no candles for {ticker}") from None
+            got = None
+        if guessed and not (got or {}).get("bars"):
+            # #477: a code the list does not know was guessed KOSPI; empty there, try KOSDAQ once
+            try:
+                kq = await prices.candles(raw + ".KQ", interval, count, wanted)
+            except Exception as exc:  # noqa: BLE001 - neither market
+                log.warning("candles for %s (.KS / .KQ) failed: %s", raw, exc)
+                kq = None
+            if kq and kq.get("bars"):
+                if len(learned_kr) > 4096:      # KRX lists about 2,700 codes; never grows past a bad loop
+                    learned_kr.clear()
+                learned_kr[raw] = ".KQ"
+                return kq
+            if got is None:
+                raise HTTPException(503, f"no candles for {ticker}") from None
+        return got
 
     @app.get("/api/oscillator")
     async def oscillator_view(ticker: str, interval: str = "1d"):
@@ -1896,10 +1949,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     @app.delete("/api/favorites/{ticker}", status_code=204)
     def remove_favorite(ticker: str, request: Request):
         try:
+            raw = ticker.strip().upper()
             ticker = clean_ticker(ticker)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         favorites.remove(request.state.user.id, ticker)
+        if raw != ticker:   # #477: a favorite saved as a bare code before the codes got their suffix
+            favorites.remove(request.state.user.id, raw)
 
     # --- #154 short selling & options positioning ------------------------------------------
 

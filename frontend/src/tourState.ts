@@ -17,7 +17,8 @@ function addTo(key: string, id: string) {
 }
 export const tourSeen = (id: TourId) => readSet(SEEN_KEY).includes(id) || readSet(NEVER_KEY).includes(id);
 export const neverTour = (id: TourId) => addTo(NEVER_KEY, id);
-export const markSeen = (id: TourId) => addTo(SEEN_KEY, id);
+export const TOUR_SEEN_EVENT = "desk-tour-seen";
+export const markSeen = (id: TourId) => { addTo(SEEN_KEY, id); window.dispatchEvent(new Event(TOUR_SEEN_EVENT)); };
 
 /** 지금 주소에 맞는 투어(설정 · ? 버튼) */
 export function tourForRoute(hash: string): TourId {
@@ -28,9 +29,18 @@ export function tourForRoute(hash: string): TourId {
 }
 
 /** 투어 모듈을 그때 불러와 시작 — 대상이 하나도 없으면 false */
-export async function startTour(id: TourId): Promise<boolean> {
-  return (await import("./tour")).startTour(id);
+/** 지금 주소가 정말 그 투어의 화면인가(대시보드는 "" · "#/" · "#/?…" 만) */
+export function onRoute(id: TourId, hash: string): boolean {
+  if (id === "dashboard") return hash === "" || hash === "#/" || hash.startsWith("#/?");
+  return tourForRoute(hash) === id;
 }
-export async function goAndStart(id: TourId): Promise<void> {
-  return (await import("./tour")).goAndStart(id);
+
+export type TourResult = "shown" | "empty" | "busy" | "failed";
+
+/** 투어 모듈을 그때 불러와 시작 — 불러오기에 실패해도(배포 뒤 예전 탭 등) 던지지 않고 "failed" */
+export async function startTour(id: TourId): Promise<TourResult> {
+  try { return await (await import("./tour")).startTour(id); } catch { return "failed"; }
+}
+export async function goAndStart(id: TourId): Promise<TourResult> {
+  try { return await (await import("./tour")).goAndStart(id); } catch { return "failed"; }
 }

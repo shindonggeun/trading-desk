@@ -2289,7 +2289,11 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .driver-popover.desk-tour .driver-popover-footer .driver-popover-next-btn { background: var(--text); color: var(--bg); border-color: var(--text); }
 .driver-popover.desk-tour button.driver-popover-close-btn { color: var(--muted); background: none; border: 0; }
 .driver-popover.desk-tour button.driver-popover-close-btn:hover { color: var(--text); }
-.driver-popover.desk-tour .driver-popover-arrow { border-color: var(--surface-2); }
+/* 화살표는 방향마다 칠할 한 변만(네 변을 칠하면 사각 돌기가 된다) */
+.driver-popover.desk-tour .driver-popover-arrow-side-left { border-left-color: var(--surface-2); }
+.driver-popover.desk-tour .driver-popover-arrow-side-right { border-right-color: var(--surface-2); }
+.driver-popover.desk-tour .driver-popover-arrow-side-top { border-top-color: var(--surface-2); }
+.driver-popover.desk-tour .driver-popover-arrow-side-bottom { border-bottom-color: var(--surface-2); }
 .topbar-help { min-width: 28px; min-height: 28px; padding: 0 8px; border-radius: 999px; background: none; border: 1px solid var(--border); color: var(--muted); font-weight: 700; }
 .topbar-help:hover { color: var(--text); border-color: var(--muted); }
 .tour-prompt { display: flex; align-items: center; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap; margin: 8px auto 0; padding: 8px 12px;

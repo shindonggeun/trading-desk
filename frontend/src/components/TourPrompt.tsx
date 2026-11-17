@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { neverTour, startTour, tourSeen } from "../tourState";
+import { useEffect, useState } from "react";
+import { neverTour, startTour, TOUR_SEEN_EVENT, tourSeen } from "../tourState";
 
 // #491 처음 로그인한 브라우저에 대시보드 둘러보기를 한 번 제안한다. "나중에"는 이번 창에서만, "다시 보지 않기"는 기억.
 const LATER_KEY = "desk.tour.later";
@@ -10,6 +10,12 @@ function later(): boolean {
 
 export default function TourPrompt() {
   const [hidden, setHidden] = useState(() => tourSeen("dashboard") || later());
+  // "?" · 설정으로 대시보드 투어를 보면 제안 띠도 내린다
+  useEffect(() => {
+    const on = () => { if (tourSeen("dashboard")) setHidden(true); };
+    window.addEventListener(TOUR_SEEN_EVENT, on);
+    return () => window.removeEventListener(TOUR_SEEN_EVENT, on);
+  }, []);
   if (hidden) return null;
   const close = () => setHidden(true);
   return (

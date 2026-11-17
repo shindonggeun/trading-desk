@@ -35,6 +35,8 @@ from typing import Any
 
 import httpx
 
+from . import macro_history, market_calendar, sessions
+
 log = logging.getLogger(__name__)
 
 GDELT_DOC = "https://api.gdeltproject.org/api/v2/doc/doc"
@@ -52,6 +54,8 @@ SPIKE_BASIS = {"week": "24h_vs_prior_6d_avg", "themes": "vs_other_themes"}
 # #428: the last good pass survives a restart (the backend's volume, as earnings.CACHE_FILE) - the first
 # pass takes minutes and the chat would otherwise find no themes at all in the meantime
 CACHE_FILE = Path.home() / ".tradingagents" / "desk-cache" / "macro_news.json"
+# #485 the tone and article counts each pass receives, kept by day (desk.macro_history), next to the snapshot
+HISTORY_DIRNAME = "news-history"
 SPIKE_ALERT = 1.5              # last 24h at least this many times the prior days' average
 STALE_SEC = 6 * 3600           # an older theme is left out of the agents' note (and marked stale)
 _CONTROL = dict.fromkeys(range(32), " ")
@@ -295,6 +299,7 @@ class Gdelt:
         self._client = client
         self._gap = gap
         self._last = 0.0
+        self.sent = 0                 # #485 requests made, for the pass's log line
 
     async def get(self, query: str, mode: str, timespan: str, **extra) -> Any:
         loop = asyncio.get_running_loop()
@@ -304,6 +309,7 @@ class Gdelt:
         params = {"query": f"{query} sourcelang:english" if mode == "ArtList" else query,
                   "mode": mode, "format": "json", "timespan": timespan, **extra}
         client = self._client or httpx.AsyncClient(timeout=TIMEOUT_SEC)
+        self.sent += 1
         try:
             response = await client.get(GDELT_DOC, params=params)
             response.raise_for_status()
@@ -321,11 +327,26 @@ class RateLimited(Exception):
     """GDELT said no (429 or its plain-text limit note): use the fallback for this pass."""
 
 
-async def fetch_theme(gdelt: Gdelt, theme: Theme, now: datetime) -> dict:
+def market_hours(now: datetime) -> bool:
+    """#485 Korean or US regular session (holidays aside): headlines are fetched only then."""
+    kst = now.astimezone(sessions.KST)
+    if sessions.kr_clock(now) == "regular" and market_calendar.is_open("kr", kst.date()):
+        return True
+    et = now.astimezone(sessions.NEW_YORK)
+    t = et.hour * 60 + et.minute
+    return et.weekday() < 5 and 9 * 60 + 30 <= t < 16 * 60 and market_calendar.is_open("us", et.date())
+
+
+async def fetch_theme(gdelt: Gdelt, theme: Theme, now: datetime, *, headlines_too: bool = True,
+                      previous: dict | None = None, keep=None) -> dict:
+    """One theme from GDELT. ``headlines_too=False`` (#485, outside market hours) skips the article
+    list and keeps the previous pass's headlines; ``keep(theme_id, volume, tones)`` gets the raw
+    timelines to record (desk.macro_history)."""
     try:
         volume = _rows(await gdelt.get(theme.query, "TimelineVolRaw", "7d"), "article")
         tones = _rows(await gdelt.get(theme.query, "TimelineTone", "72h"), "tone")
-        articles = await gdelt.get(theme.query, "ArtList", "72h", maxrecords=str(HEADLINES * 4), sort="HybridRel")
+        articles = (await gdelt.get(theme.query, "ArtList", "72h", maxrecords=str(HEADLINES * 4), sort="HybridRel")
+                    if headlines_too else None)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 429:
             raise RateLimited from exc
@@ -334,12 +355,22 @@ async def fetch_theme(gdelt: Gdelt, theme: Theme, now: datetime) -> dict:
         if "limit" in str(exc).lower():
             raise RateLimited from exc
         raise
+    if keep is not None:
+        try:
+            keep(theme.id, volume, tones)
+        except Exception as exc:  # noqa: BLE001 - a full disk must not cost the brief
+            log.warning("macro news history not kept for %s: %s", theme.id, exc)
     count, ratio = spike(volume, now)
-    # #291: the volume and tone timelines are GDELT's (whole articles); the headlines are the ones titled on the theme
-    found = [h for h in headlines(articles, HEADLINES * 4) if (at := _seen(h)) and in_window(at, now)]
-    mine = [h for h in found if on_topic(theme, h["title"])]     # off_topic: in the window, as on RSS
+    if articles is None:
+        prev = previous if previous and previous.get("source") == "gdelt" else {}
+        shown, off = list(prev.get("headlines") or []), int(prev.get("off_topic") or 0)
+    else:
+        # #291: the volume and tone timelines are GDELT's (whole articles); the headlines are the ones titled on the theme
+        found = [h for h in headlines(articles, HEADLINES * 4) if (at := _seen(h)) and in_window(at, now)]
+        mine = [h for h in found if on_topic(theme, h["title"])]     # off_topic: in the window, as on RSS
+        shown, off = recent(mine, now), len(found) - len(mine)
     return {"id": theme.id, "label": theme.label, "articles_24h": count, "spike": ratio, "spike_kind": "week",
-            "tone": tone(tones), "tone_kind": "gdelt", "headlines": recent(mine, now), "off_topic": len(found) - len(mine),
+            "tone": tone(tones), "tone_kind": "gdelt", "headlines": shown, "off_topic": off,
             "why": theme.why, "source": "gdelt", "fetched_at": now.isoformat()}
 
 
@@ -469,12 +500,20 @@ class Cache:
     restored: bool = False                    # #428: the themes are the snapshot saved before a restart
     cache_file: Path | None = None            # tests; CACHE_FILE otherwise
 
+    def history_dir(self) -> Path:
+        """#485 the kept tone · article-count files, next to the snapshot."""
+        return self._path().parent / HISTORY_DIRNAME
+
     async def refresh(self, gdelt: Gdelt | None = None, now: datetime | None = None,
                       rss=fetch_theme_rss) -> int:
         gdelt = gdelt or Gdelt()
         ok, failures = 0, []
         start = now or datetime.now(UTC)
         use_gdelt = self.gdelt_resume_at is None or start >= self.gdelt_resume_at
+        limited = False                # #485 a 429 this pass: the rest keep their last GDELT values
+        with_headlines = market_hours(start)
+        history = self.history_dir()
+        sent_before = getattr(gdelt, "sent", 0)
         # Built aside and swapped in at the end: a run reading mid-pass sees the last full snapshot,
         # never un-rebased Google News surges.
         fresh = dict(self.themes)
@@ -483,23 +522,31 @@ class Cache:
             try:
                 if use_gdelt:
                     try:
-                        fresh[theme.id] = await fetch_theme(gdelt, theme, at)
+                        fresh[theme.id] = await fetch_theme(
+                            gdelt, theme, at, headlines_too=with_headlines, previous=self.themes.get(theme.id),
+                            keep=lambda tid, vol, tones: macro_history.record(history, tid, vol, tones))
                         ok += 1
                         continue
                     except Exception as exc:  # noqa: BLE001 - 429, timeout, outage: Google News instead
                         use_gdelt = False
                         if isinstance(exc, RateLimited):
+                            limited = True
                             # from the refusal itself. With the default 30-minute pass interval the next
                             # pass is past it anyway; it matters for shorter intervals and manual refreshes.
                             self.gdelt_resume_at = at + timedelta(seconds=RATE_LIMIT_COOL_SEC)
                         log.info("GDELT unavailable (%s); macro news falls back to Google News RSS",
                                  type(exc.__cause__ or exc).__name__)
+                if limited and (self.themes.get(theme.id) or {}).get("source") == "gdelt":
+                    ok += 1                    # keep the last GDELT value rather than mixing sources (#485)
+                    continue
                 fresh[theme.id] = await rss(theme, at)
                 ok += 1
             except Exception as exc:  # noqa: BLE001 - one theme down must not stop the others
                 failures.append(f"{theme.id}: {type(exc).__name__}")
                 log.info("macro news %s failed: %s", theme.id, exc)
         _relative_rss_spikes(fresh)
+        log.info("macro news: %d GDELT request(s) this pass%s%s", getattr(gdelt, "sent", 0) - sent_before,
+                 "" if with_headlines else " (no headlines: outside market hours)", " - rate limited" if limited else "")
         self.themes = fresh
         if ok:
             self.refreshed_at = (now or datetime.now(UTC)).isoformat()

@@ -61,7 +61,7 @@ export default function SummaryCard({ summary, runId, horizon, live: liveOn }: {
   return (
     <section className="card sum-card" aria-label="한눈에 요약">
       {s.action && !broke && (
-        <div className="pa-action">
+        <div className="pa-action" data-tour="plan-action">
           <p className="pa-sentence">{s.action.sentence}</p>
           {s.action.triggers.length > 0 && (
             <p className="muted small">{s.action.triggers.map((t) => triggerLine(t, now)).join(" · ")}</p>

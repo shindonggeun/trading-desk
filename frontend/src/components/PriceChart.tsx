@@ -1419,7 +1419,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   };
 
   return (
-    <section ref={section} className={`card price-chart${expanded ? " price-chart-expanded" : ""}`}
+    <section ref={section} data-tour="price-chart" className={`card price-chart${expanded ? " price-chart-expanded" : ""}`}
       {...(expanded ? { role: "dialog", "aria-modal": true, "aria-label": `${title ?? ticker} 큰 차트` } : {})}>
       <div className="price-chart-head">
         <h3>
@@ -1441,7 +1441,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
             </button>
           ))}
         </div>
-        <details ref={menu} className="chart-menu">
+        <details ref={menu} className="chart-menu" data-tour="chart-menu">
           <summary>표시</summary>
           <div className="chart-menu-body" role="group" aria-label="차트 표시">
             {(Object.keys(SHOW_LABEL) as (keyof Show)[]).filter((k) => k !== "opt" || US_TICKER.test(ticker)).map((k) => (

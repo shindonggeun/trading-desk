@@ -118,7 +118,7 @@ export default function ExplainPanel({ data, failed, plan, focus, onFocusDone }:
   const todo = nowLine(plan, byLine("entry_price"));
 
   return (
-    <details className="explain-panel card" ref={panel} open={wide} aria-label="차트 해설">
+    <details className="explain-panel card" ref={panel} open={wide} aria-label="차트 해설" data-tour="explain">
       <summary><strong>차트 해설</strong> <span className="muted small">지금 가격 · 할 일 · 근거</span></summary>
       {todo && <p className="explain-todo">{todo}</p>}
       <section>

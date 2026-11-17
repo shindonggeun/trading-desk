@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api, ApiError, type Me } from "../api";
 import MarketListEditor from "../components/MarketListEditor";
 import InstallApp from "../components/InstallApp";
+import TourSettings from "../components/TourSettings";
 import PushSettings from "../components/PushSettings";
 
 type Step =
@@ -214,6 +215,8 @@ export default function Settings() {
         )}
       </section>
       <InstallApp />
+      {/* #491 화면 안내 다시 보기 */}
+      <TourSettings />
       <PushSettings />
       <MarketListEditor />
     </div>

@@ -62,6 +62,7 @@ from . import (
     review,
     risk_regime,
     sector_news,
+    session_progress,
     sessions,
     tips,
     verdict,
@@ -1475,10 +1476,22 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 if len(learned_kr) > 4096:      # KRX lists about 2,700 codes; never grows past a bad loop
                     learned_kr.clear()
                 learned_kr[raw] = ".KQ"
-                return kq
+                return _with_session(kq, interval)
             if got is None:
                 raise HTTPException(503, f"no candles for {ticker}") from None
-        return got
+        return _with_session(got, interval)
+
+    def _with_session(got: dict, interval: str) -> dict:
+        """#559 daily bars: how much of the last bar's session has run (desk.session_progress) - the
+        chart's volume tag does not hold a day still trading against whole days. None for a finished
+        bar or a market without one session; only added (and only on 1d)."""
+        if interval != "1d" or not got.get("bars"):
+            return got
+        try:
+            return {**got, "session_elapsed": session_progress.elapsed(got.get("ticker") or "", got["bars"])}
+        except Exception:   # the bars stand without it
+            log.exception("session progress for %s failed", got.get("ticker"))
+            return got
 
     @app.get("/api/oscillator")
     async def oscillator_view(ticker: str, interval: str = "1d"):

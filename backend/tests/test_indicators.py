@@ -175,6 +175,10 @@ def test_candles_endpoint_takes_new_intervals_and_rsi(db_url):
         assert monthly["interval"] == "1M" and len(monthly["bars"]) == 5
         assert client.get("/api/candles?ticker=NVDA&interval=1d&indicators=macd").status_code == 422
         assert client.get("/api/candles?ticker=NVDA&interval=2h").status_code == 422
+        # #559 daily bars say how much of the last bar's session has run (an old January bar: finished)
+        daily = client.get("/api/candles?ticker=NVDA&interval=1d&count=5").json()
+        assert "session_elapsed" in daily and daily["session_elapsed"] is None
+        assert "session_elapsed" not in body
 
 
 class _FakeTicker:

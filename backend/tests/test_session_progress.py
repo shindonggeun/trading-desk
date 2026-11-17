@@ -23,7 +23,7 @@ def test_finished_sessions_other_markets_and_no_bars_are_none():
     yahoo_edt = [{"at": "2026-07-15T04:00:00+00:00"}]
     assert session_progress.elapsed("SOXL", yahoo_edt, datetime(2026, 7, 16, 12, tzinfo=UTC)) is None   # yesterday's
     assert session_progress.elapsed("SOXL", yahoo_edt, datetime(2026, 7, 15, 12, tzinfo=UTC)) == 0.0   # 08:00 EDT
-    for ticker in ("NQ=F", "BTC-USD", "KRW=X", "^GSPC"):            # no one daily session: read as it is
+    for ticker in ("KRW=X", "^N225"):                               # FX, another market's index: read as it is
         assert session_progress.elapsed(ticker, [{"at": "2026-11-16T05:00:00+00:00"}],
                                         datetime(2026, 11, 16, 15, tzinfo=UTC)) is None
     assert session_progress.elapsed("SOXL", [], PRE) is None
@@ -55,3 +55,29 @@ def test_a_tracked_analysis_shows_todays_volume_note_not_the_runs():
     bars = [{"close": 10.0, "high": 10.5, "low": 9.5, "open": 10.0, "at": "2026-11-16T05:00:00+00:00"}] * 30
     out = playbook.track(fresh, run_pb, bars, h)
     assert out["volume_note"] is None
+
+
+def test_cme_futures_run_from_six_the_evening_before_to_five():
+    """#559 NQ=F's daily bar dated Monday trades from Sunday 18:00 ET to Monday 17:00 ET."""
+    mon = [{"at": "2026-11-16T05:00:00+00:00"}]                     # Yahoo: midnight New York (EST)
+    ten_am = datetime(2026, 11, 16, 15, tzinfo=UTC)                 # Monday 10:00 ET: 16 of 23 hours
+    assert session_progress.elapsed("NQ=F", mon, ten_am) == pytest.approx(16 / 23)
+    assert session_progress.elapsed("NQ=F", mon, datetime(2026, 11, 15, 23, 30, tzinfo=UTC)) == pytest.approx(0.5 / 23)
+    # after 17:00 ET Monday's bar is finished; Tuesday's session (if the bar is there) has begun
+    assert session_progress.elapsed("NQ=F", mon, datetime(2026, 11, 16, 22, 30, tzinfo=UTC)) is None
+    tue = [{"at": "2026-11-17T05:00:00+00:00"}]
+    assert session_progress.elapsed("NQ=F", tue, datetime(2026, 11, 17, 0, 0, tzinfo=UTC)) == pytest.approx(1 / 23)
+    # Friday's bar after the 17:00 close and over the weekend: finished
+    fri = [{"at": "2026-11-20T05:00:00+00:00"}]
+    assert session_progress.elapsed("NQ=F", fri, datetime(2026, 11, 21, 15, tzinfo=UTC)) is None
+
+
+def test_crypto_runs_on_the_utc_day_and_indices_on_their_market():
+    btc = [{"at": "2026-11-16T00:00:00+00:00"}]
+    assert session_progress.elapsed("BTC-USD", btc, datetime(2026, 11, 16, 6, tzinfo=UTC)) == pytest.approx(0.25)
+    assert session_progress.elapsed("BTC-USD", btc, datetime(2026, 11, 17, 1, tzinfo=UTC)) is None
+    # ^GSPC on the New York session, ^KS11 on Seoul's (its bar opens at local midnight like a stock's)
+    assert session_progress.elapsed("^GSPC", [{"at": "2026-11-16T05:00:00+00:00"}],
+                                    datetime(2026, 11, 16, 17, 45, tzinfo=UTC)) == pytest.approx(0.5)
+    kospi = [{"at": "2026-11-15T15:00:00+00:00"}]
+    assert session_progress.elapsed("^KS11", kospi, datetime(2026, 11, 16, 0, 30, tzinfo=UTC)) > 0

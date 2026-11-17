@@ -148,6 +148,8 @@ export interface Candles {
   history_limit_days?: number | null;
   /** 요청한 개수보다 적게 왔다. 안내는 history_limit_days 가 있을 때만 — 년봉은 늘 적게 온다. */
   truncated?: boolean;
+  /** #559 일봉만: 마지막 봉의 장이 얼마나 지났는지(0~1). 끝난 봉 · 하루 장이 없는 시장은 null */
+  session_elapsed?: number | null;
 }
 
 export type Alignment = "with_plan" | "against_plan" | "plan_flat" | "no_plan";

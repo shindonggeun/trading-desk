@@ -546,7 +546,9 @@ class Cache:
                 failures.append(f"{theme.id}: {type(exc).__name__}")
                 log.info("macro news %s failed: %s", theme.id, exc)
         _relative_rss_spikes(fresh)
-        log.info("macro news: %d GDELT request(s) this pass%s%s", getattr(gdelt, "sent", 0) - sent_before,
+        # warning, not info: the app sets no logging config, so production shows WARNING and up only - this
+        # line is how the GDELT request count per pass is checked there (#485)
+        log.warning("macro news: %d GDELT request(s) this pass%s%s", getattr(gdelt, "sent", 0) - sent_before,
                  "" if with_headlines else " (no headlines: outside market hours)", " - rate limited" if limited else "")
         self.themes = fresh
         if ok:

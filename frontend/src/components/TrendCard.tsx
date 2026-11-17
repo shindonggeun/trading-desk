@@ -75,7 +75,6 @@ function Guide({ g, open, markets }: { g: TrendGuide; open: boolean; markets: st
   return (
     <details className={`card trend-guide ${STATE_CLASS[g.state]}-edge`} open={open}>
       <summary><h3>{g.title} <span className="muted small">— {markets}</span></h3></summary>
-      <p>{g.summary}</p>
       <div className="trend-guide-cols">
         <div>
           <h4>지금 할 일</h4>
@@ -89,6 +88,7 @@ function Guide({ g, open, markets }: { g: TrendGuide; open: boolean; markets: st
           </ul>
         </div>
       </div>
+      <p>{g.summary}</p>
       <p className="small"><strong><Term word="비중" /></strong> {g.size}</p>
       <p className="small"><strong><Term word="손절" /> · 익절</strong> {g.stops}</p>
       <p className="muted small">{g.basis}</p>

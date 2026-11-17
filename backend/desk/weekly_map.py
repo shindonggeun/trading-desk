@@ -29,7 +29,7 @@ from datetime import UTC, date, datetime, timedelta
 
 log = logging.getLogger(__name__)
 
-VERSION = 1
+VERSION = 2               # 2: position also reads the line order - "rebound" (#508)
 # (symbol, Korean name, fallback symbol when the first has no bars)
 TARGETS: tuple[tuple[str, str, str | None], ...] = (
     ("NQ=F", "나스닥100 선물", "^NDX"),
@@ -181,6 +181,20 @@ def record(bars: list[dict], i: int) -> dict:
     }
 
 
+def place(close: float, black: float, red: float) -> str:
+    """Where the close sits against both lines (#508), not just against the black one:
+    ``above_black`` over both, ``between`` under the black but over the red one (black over red),
+    ``rebound`` over the black but under the red one (black under red, after a long fall),
+    ``below_red`` under both. A close equal to a line counts as on top of it."""
+    if close >= black and close >= red:
+        return "above_black"
+    if close >= black:
+        return "rebound"
+    if close >= red:
+        return "between"
+    return "below_red"
+
+
 def build(symbol: str, bars: list[dict], i: int | None = None, today: date | None = None) -> dict | None:
     """The map of ``symbol`` as of week ``i`` (the last bar when None), from ``bars[:i+1]`` only.
     None with fewer than the red line's weeks."""
@@ -207,13 +221,16 @@ def build(symbol: str, bars: list[dict], i: int | None = None, today: date | Non
         cross = "reclaimed_black"
     else:
         cross = None
-    position = "above_black" if close >= black else "between" if close >= red else "below_red"
-    # the next line each way: under the black line the red one is the floor; under the red one the
+    position = place(close, black, red)
+    # the next line each way: under the black line the red one is the floor; under both lines the
     # nearest of the 52-week low and the lower band. Up: the line just above, or the nearest of the
-    # 52-week high and the upper band above the black line.
+    # 52-week high and the upper band above both lines. In a rebound (#508: the black line under the
+    # red one after a long fall, the close between them) the black line is the floor, the red one the ceiling.
     if position == "below_red":
         down = max((x for x in (lower, lo52) if x < close), default=min(lower, lo52))
-        up = red
+        up = min(black, red)
+    elif position == "rebound":
+        down, up = black, red
     else:
         down = red
         up = black if position == "between" else min((x for x in (hi52, upper) if x > close), default=max(hi52, upper))
@@ -249,9 +266,16 @@ def explain(m: dict) -> dict:
     black, red = m["lines"]["black"], m["lines"]["red"]
     bb, rec = m["bollinger"], m["record"]
     down, up = m["scenario"]["down"], m["scenario"]["up"]
-    if m["position"] == "above_black":
+    if m["position"] == "above_black" and black["price"] < red["price"]:
+        head = (f"{name}: 주봉이 빨간선(60주선 {_won(m, red['price'])}) · 검정선(20주선 {_won(m, black['price'])}) 모두 위에 있다. "
+                f"다만 검정선이 아직 빨간선 아래(역배열)라, 빨간선({red['pct']:+.1f}%)을 지키는지가 먼저다.")
+    elif m["position"] == "above_black":
         head = (f"{name}: 주봉이 검정선(20주선 {_won(m, black['price'])}) 위에 있다. 검정선을 깨고 마감하면 "
                 f"빨간선(60주선 {_won(m, red['price'])}, 지금보다 {red['pct']:+.1f}%)까지 열어 둔다.")
+    elif m["position"] == "rebound":
+        head = (f"{name}: 주봉이 검정선(20주선 {_won(m, black['price'])}) 위로 올라왔지만 아직 빨간선"
+                f"(60주선 {_won(m, red['price'])}, {red['pct']:+.1f}%) 아래다. 긴 하락 뒤 검정선이 빨간선보다 낮은 "
+                f"역배열 — 빨간선을 주봉 종가로 넘기 전까지는 반등 시도다.")
     elif m["position"] == "between":
         head = (f"{name}: 주봉이 검정선 아래, 빨간선 위에 있다. 다음 받침 — 빨간선 {_won(m, red['price'])}"
                 f"({red['pct']:+.1f}%), 그 아래 50주 볼린저 하단 {_won(m, bb['lower'])}({bb['lower_pct']:+.1f}%).")
@@ -302,8 +326,10 @@ def note(m: dict | None, for_ticker: str) -> str | None:
     if not m:
         return None
     bk = m["record"]["black_break"]
-    where = {"above_black": "above its 20-week line", "between": "under its 20-week but above its 60-week line",
-             "below_red": "under its 60-week line"}[m["position"]]
+    where = {"above_black": "above its 20-week and 60-week lines", "between": "under its 20-week but above its 60-week line",
+             "rebound": "back above its 20-week line but still under its 60-week line, the 20-week under the 60-week "
+                        "after a long fall (a rebound attempt, not a turn yet)",
+             "below_red": "under its 20-week and 60-week lines"}[m["position"]]
     rate = f"; past 20-week breaks reached the 60-week line {bk['reached_red']}/{bk['n']}" if bk["n"] else ""
     return (f"Weekly map of {m['symbol']} (the index behind {for_ticker}, week of {m['week']}): close {m['close']}, "
             f"{where} (20w {m['lines']['black']['price']}, 60w {m['lines']['red']['price']}{rate}); "

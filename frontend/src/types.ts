@@ -600,13 +600,13 @@ export interface Trendline {
   /** 스윙 크기: 짧은(k) · 중간(2k) · 긴(4k) */
   scale?: "short" | "mid" | "long";
   swing_k?: number;
-  /** testing · broken 은 state 와 같고, intact 를 그 시간축 ATR 8배 안 near / 밖 far 로 나눈 것 */
+  /** testing · broken 은 state 와 같고, intact 를 |distance_atr| 3배 안 near / 밖 far 로 나눈 것(#530 보완) */
   status?: "broken" | "testing" | "near" | "far";
   /** 선 − 지금가, 지금가 대비 %. + 면 선이 위(저항선이면 닿는 데 필요한 상승률) */
   distance_pct?: number;
   /** 그 선의 봉으로 N봉 뒤 선 값 · 그때 지금가 대비 % */
   ahead?: { bars: number; price: number; distance_pct: number }[];
-  /** 저항선: breakout · reject / 지지선: bounce · breakdown */
+  /** 지금 역할로 2개: 저항 역할 breakout · reject / 지지 역할 bounce · breakdown — 깨진 선은 역할이 뒤집힌다(깨진 지지선 → breakout · reject) */
   scenarios?: TrendScenario[];
   /** 쉬운 한국어 2~3줄(숫자는 모두 계산값) */
   summary?: string[];
@@ -615,7 +615,7 @@ export interface Trendline {
 /** #530 추세선 하나의 시나리오 — 숫자는 서버 계산값(LLM 0) */
 export interface TrendScenario {
   kind: "breakout" | "reject" | "bounce" | "breakdown";
-  /** 조건 가격 = 지금 선 값 */
+  /** 조건 가격 — breakout · breakdown 은 선 ± 0.3 ATR, reject · bounce 는 선 값(#530 보완) */
   trigger: number;
   /** 돌파 · 이탈 때 필요한 거래량(20봉 평균). 거래량 없는 지수 · 막힘/받침은 null */
   volume_min: number | null;

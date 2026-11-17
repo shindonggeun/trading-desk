@@ -236,12 +236,17 @@ def test_a_new_report_gets_its_pictures_before_the_push_and_keeps_going_without(
     with _client_with(db_url, pics) as client:
         class Pusher:                    # what the report held when the push went out
             def to_user(self, _owner, payload):
+                time.sleep(0.3)          # a slow push: the test must wait for it, not race it
                 engine = make_engine(db_url)
                 rid = payload["url"].rsplit("/", 1)[-1]
                 pushed.append([s["image"] for s in rp.Reports(engine, rp.fake_fetch).get(rid)["sections"]])
                 engine.dispose()
         client.app.state.pusher = Pusher()
         full = _made(client)
+        deadline = time.monotonic() + 10        # the push goes out after ``generating`` is false again
+        while not pushed:
+            assert time.monotonic() < deadline, "the report was not pushed"
+            time.sleep(0.05)
         images = [s["image"] for s in full["sections"] if s["image"]]
         if ok:
             assert 1 <= len(images) <= 2 and pushed and [i for i in pushed[0] if i] == images

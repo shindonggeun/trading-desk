@@ -962,11 +962,12 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
 
   // #466 계획선 가까이(12px)를 누르면 그 선의 가격을 알린다 — 해설 패널이 근거를 펼친다
   useEffect(() => {
-    if (!drawn || !onLineClick) return;
+    // 실제로 그린 선만 — 타점선을 끄면 없고, 진입을 사이에 두지 않는 계획(#436)은 진입 · 손절 · 목표를 그리지 않는다
+    if (!drawn || !onLineClick || !show.levels) return;
     const { chart, series } = drawn;
-    const prices = [
-      plan?.entry_price, plan?.stop_loss, plan?.price_target, ...(extraLines ?? []).map((l) => l.price),
-    ].filter((p): p is number => p != null && Number.isFinite(p));
+    const own = levelsContradict(plan) ? [] : [plan?.entry_price, plan?.stop_loss, plan?.price_target];
+    const prices = [...own, ...(extraLines ?? []).map((l) => l.price)]
+      .filter((p): p is number => p != null && Number.isFinite(p));
     const onClick = (param: { point?: { x: number; y: number } }) => {
       const y = param.point?.y;
       if (y == null) return;
@@ -983,7 +984,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     return () => {
       if (drawn.alive.current) chart.unsubscribeClick(onClick);
     };
-  }, [drawn, plan, extraLines, onLineClick]);
+  }, [drawn, plan, extraLines, onLineClick, show.levels]);
 
   // #313 타점 보기 — 자기 띠 · 선을 붙이고 뗀다(다른 그리기와 섞지 않는다)
   useEffect(() => {

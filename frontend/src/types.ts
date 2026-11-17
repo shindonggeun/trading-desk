@@ -1748,7 +1748,7 @@ export interface LineBasis {
   scenario: "long" | "short" | null;
   scenario_ko: string | null;
   hold_plan: boolean; // 관망 계획의 진입 · 손절 · 목표
-  from_now_pct: number;
+  from_now_pct: number | null; // 지금가가 없으면 null
   anchors: LineAnchor[]; // [] = 어떤 레벨과도 안 맞음(모델이 고른 숫자)
   text: string;
 }

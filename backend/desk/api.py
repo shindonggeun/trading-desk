@@ -32,6 +32,7 @@ from . import (
     earnings_preview,
     entry_now,
     events_calendar,
+    explain,
     fear,
     filings,
     flow_intraday,
@@ -859,6 +860,43 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(404, "run not found")
         # #437: the look ahead frozen when the run ended (an ``outlook`` event), None before / without one
         return {**run, "outlook": store.last_event_data(run_id, "outlook")}
+
+    explain_locks: dict[str, asyncio.Lock] = {}
+
+    @app.get("/api/runs/{run_id}/explain")
+    async def run_explain(run_id: str, refresh: bool = False):
+        """#493: the analysis for a beginner (desk.explain) - written once, kept as the run's ``explain``
+        event and reused; ``refresh=1`` writes it again. The model words it only while a run slot is
+        free; otherwise (or when it fails) the desk's own wording comes back, not kept, so a later call
+        tries again."""
+        run = store.get_run(run_id)
+        if not run:
+            raise HTTPException(404, "run not found")
+        if run.get("status") != "done" or not run.get("plan"):
+            raise HTTPException(409, "the analysis has no plan yet")
+        lock = explain_locks.setdefault(run_id, asyncio.Lock())
+        async with lock:
+            kept = None if refresh else store.last_event_data(run_id, "explain")
+            if kept:
+                return kept
+            fear_items = None
+            if fear_gauges is not None:
+                try:
+                    fear_items = (await asyncio.wait_for(fear_gauges.get(), 10))["items"]
+                except Exception:  # noqa: BLE001 - the explanation goes without the market mood
+                    fear_items = None
+            if settings.fake_runs:
+                out = await asyncio.to_thread(explain.build, run, fear_items, None)
+            else:
+                async with app.state.manager.spare_slot() as free:
+                    out = await asyncio.to_thread(explain.build, run, fear_items, projection.llm_note if free else None)
+                if not free:
+                    return {**out, "pending": True}
+            if out.get("fallback"):
+                return out
+            await asyncio.to_thread(store.append_event, run_id, {"type": "explain", "agent": "explain", "content": None,
+                                                                  "data": out})
+            return out
 
     @app.get("/api/runs/{run_id}/events")
     def get_events(run_id: str, after: int = 0):

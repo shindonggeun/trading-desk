@@ -15,12 +15,14 @@ import Backtest from "./pages/Backtest";
 import WeeklyMap from "./pages/WeeklyMap";
 import FuturesView from "./pages/FuturesView";
 import Tips from "./pages/Tips";
+import Funds from "./pages/Funds";
 import Charts from "./pages/Charts";
 import CalendarView from "./pages/CalendarView";
 import Chat from "./pages/Chat";
 import ChatWidget from "./components/ChatWidget";
 import AppNotices from "./components/AppNotices";
 import FlowAlertToast, { FLOW_ROUTE } from "./components/FlowAlertToast";
+import FundsAlert from "./components/FundsAlert";
 import { resetFavorites } from "./favorites";
 
 function safeDecode(v: string): string {
@@ -98,6 +100,7 @@ export default function App() {
   const calendarMatch = route.match(/^#\/calendar(?:\?(.*))?$/);
   const chatMatch = route.match(/^#\/chat(?:\?(.*))?$/);
   const tipsMatch = route.match(/^#\/tips(?:\?(.*))?$/);
+  const fundsMatch = route.match(/^#\/funds(?:\?(.*))?$/);   // #484 기관 포트폴리오(13F)
   const futuresMatch = route.match(/^#\/futures(?:\?(.*))?$/);   // #444 코스피200 선물 시세
   // 큰 차트(#97): #/chart/<티커>?run=…&interval=…
   const chartMatch = route.match(/^#\/chart\/([^?]+)(?:\?(.*))?$/);
@@ -162,6 +165,8 @@ export default function App() {
         <CalendarView query={new URLSearchParams(calendarMatch[1] ?? "")} />
       ) : tipsMatch ? (
         <Tips key={route} query={new URLSearchParams(tipsMatch[1] ?? "")} />
+      ) : fundsMatch ? (
+        <Funds query={new URLSearchParams(fundsMatch[1] ?? "")} />
       ) : futuresMatch ? (
         <FuturesView query={new URLSearchParams(futuresMatch[1] ?? "")} />
       ) : weeklyMatch ? (
@@ -179,6 +184,8 @@ export default function App() {
       {user && <ChatWidget />}
       {/* #362 장중 수급 전향을 앱 안 토스트로 */}
       {user && <FlowAlertToast />}
+      {/* #484 새 13F 공시 */}
+      {user && <FundsAlert />}
     </div>
   );
 }

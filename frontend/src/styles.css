@@ -2176,3 +2176,44 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   border: 1px solid currentColor; text-decoration: none; white-space: nowrap; }
 .trend-chip strong { font-weight: 650; }
 .trend-chip-pend { font-size: 11px; opacity: .8; }
+
+/* #484 기관 포트폴리오(13F) */
+.funds-page { max-width: 1200px; margin: 0 auto; padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20px, env(safe-area-inset-right)); }
+.funds-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.funds-head h1 { margin: 12px 0 4px; font-size: 20px; }
+.funds-lag { margin: 0 0 12px; }
+.fund-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.fund-card { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 14px; cursor: pointer; color: var(--text); }
+.fund-card:disabled { cursor: default; opacity: .75; }
+.fund-card:hover:not(:disabled) { border-color: var(--muted); }
+.fund-card-name { font-size: 16px; }
+.fund-headline { font-size: 18px; margin: 4px 0 8px; line-height: 1.45; }
+.fund-bullets { margin: 0 0 8px; padding-left: 20px; line-height: 1.6; }
+.fund-meta { margin: 0 0 10px; }
+.fund-tools { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.fund-table-wrap { overflow-x: auto; }
+.fund-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.fund-table th, .fund-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; white-space: nowrap; }
+.fund-table .num { text-align: right; }
+.fund-table tbody th { font-weight: 600; }
+.fund-name { display: block; font-weight: 400; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.fund-pc { font-size: 11px; color: var(--warn); }
+.fund-row-sold { opacity: .7; }
+.fund-chg { font-weight: 600; }
+.fund-chg-n { font-weight: 400; color: var(--muted); }
+.fund-chg-new { color: var(--up); }
+.fund-chg-increase { color: var(--up); }
+.fund-chg-decrease { color: var(--down); }
+.fund-chg-sold { color: var(--down); }
+.fund-chg-unchanged { color: var(--muted); }
+.fund-badge { text-decoration: none; border: 1px solid currentColor; border-radius: 999px; padding: 0 8px; white-space: nowrap; }
+.today-fund { color: var(--accent); }
+.fund-toasts { top: auto; bottom: 16px; right: auto; left: 16px; }
+.fund-toast { border-left-color: var(--accent); }
+@media (max-width: 480px) {
+  .fund-table th, .fund-table td { padding: 5px 6px; font-size: 13px; }
+  .fund-table tbody th { position: sticky; left: 0; background: var(--bg); z-index: 1; }
+  .fund-name { max-width: 120px; }
+}
+.fund-card-sum { font-weight: 600; line-height: 1.45; }
+.fund-card-new { color: var(--up); }

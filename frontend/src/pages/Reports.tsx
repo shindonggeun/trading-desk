@@ -73,6 +73,8 @@ function ListView() {
       .then(() => setList((cur) => (cur ? { ...cur, generating: true } : cur)))
       .catch((e) => {
         if (e instanceof ApiError && e.status === 409) { setNote("이미 만드는 중이에요 — 끝나면 맨 위에 보입니다."); setList((cur) => (cur ? { ...cur, generating: true } : cur)); return; }
+        // 429: 직전 리포트 뒤 10분 안 — 만드는 중이 아니므로 폴링하지 않고 서버 문구를 그대로
+        if (e instanceof ApiError && e.status === 429) { setNote(e.message || "방금 만든 리포트가 있어요. 10분 뒤에 다시 만들 수 있어요"); return; }
         setNote(e instanceof Error ? e.message : "만들기를 시작하지 못했습니다");
       });
   };
@@ -156,7 +158,7 @@ function DetailView({ id }: { id: string }) {
         <>
           {fake && <p className="app-notice notice-warn">예시 데이터 — 실제 리포트가 아닙니다.</p>}
           <header className="rp-article-head">
-            <span className="muted small">{fmtDay(r.created_at)} · <Subject r={r} /></span>
+            <span className="muted small">{fmtDay(r.created_at)}{r.as_of ? ` (${r.as_of} 종가 기준)` : ""} · <Subject r={r} /></span>
             <h1>{r.title}</h1>
           </header>
           <ExplainArticle data={r} className="easy-view rp-article"

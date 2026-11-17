@@ -5,6 +5,7 @@ import type { ReportDetail, ReportList } from "./types";
 const A: ReportDetail = {
   id: "rp_example_1",
   created_at: "2026-11-17T07:31:02Z",
+  as_of: "2026-11-14",
   title: "코스피, 전저점까지 깨지면 진짜 하락장일까?",
   summary: "1주 -6.2% 로 전저점까지 1.8% — 깨지면 어디까지, 버티면 어디서 다시 보는지 단계로 정리했어요.",
   subject: { symbol: "^KS11", name: "코스피", kind: "index" },

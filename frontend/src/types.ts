@@ -1851,6 +1851,8 @@ export interface ReportSection {
   image: { url: string; alt: string } | null; // #497 — 지금은 늘 null
 }
 export interface ReportDetail extends ReportSummary {
+  /** 가격 기준 거래일(YYYY-MM-DD) — #495 계약 보충 */
+  as_of?: string | null;
   why: { text: string; candidates: { symbol: string; name: string; score: number; reasons: string[] }[] } | null;
   hook: string;
   sections: ReportSection[];

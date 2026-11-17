@@ -16,7 +16,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { api, type CandleInterval, type Candles, type OscillatorView, type OscReading, type ReviewRow } from "../api";
 import { price } from "../format";
 import FillsTable from "./FillsTable";
@@ -28,6 +28,8 @@ import {
 } from "./chartBands";
 import { crosshairTime, ticksClearOfLabels } from "./chartFormat";
 import { levelsContradict } from "../listLevels";
+import { ALL_ON, devExample, KIND_KO, loadTrendFilter, passes, saveTrendFilter, SCALE_KO, STATUS_KO, trendKey, trendLabel, trendWidth, type TrendFilter } from "../trendLines";
+import TrendLineCard from "./TrendLineCard";
 import type { BottomZone, ChartPattern, FibLevel, Fibonacci, OutlookPeriodId, Plan, Positioning, Projection, RunOutlook, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
 import { clipPath, ConeShade, directionLabel, OUTLOOK_PERIODS, outlookCone } from "./chartOutlook";
@@ -325,7 +327,7 @@ export interface ExtraLine {
  * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
  * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
  */
-export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, onIntervalChange, highlight = null, outlook = null, planLabels, onLineClick }: {
+export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, onIntervalChange, highlight = null, outlook = null, planLabels, onLineClick, trendPick, onTrendPick }: {
   ticker: string;
   tradeDate: string;
   plan: Plan | null;
@@ -352,6 +354,12 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   planLabels?: Partial<Record<"entry_price" | "stop_loss" | "price_target", { title: string; color?: string }>>;
   /** #466 계획선(진입 · 손절 · 목표 · extraLines) 가까이를 누르면 그 선의 가격 — 해설 패널이 근거를 펼친다 */
   onLineClick?: (price: number) => void;
+  /**
+   * #531 추세선을 누르면 그 선(빈 곳 · Esc 면 null) — 주면 바깥(분석 화면 오른쪽 자리)이 선 카드를 그리고 trendPick 으로 고른 선을 알려 준다.
+   * 없으면 차트가 제 아래에 카드를 그린다(큰 차트 화면).
+   */
+  trendPick?: string | null;
+  onTrendPick?: (line: Trendline | null) => void;
 }) {
   const [outlookPrefs, setOutlookPrefs] = useState(loadOutlookPrefs);
   const pickOutlook = (next: Partial<OutlookPrefs>) => {
@@ -413,7 +421,20 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     [sr, srSource, show.all],
   );
   // 추세선 · 피보나치(#73) — 지지 · 저항과 같은 출처(분석 당시 / 지금)
-  const trendLines: Trendline[] = useMemo(() => (show.trend ? srSource?.trendlines ?? [] : []), [show.trend, srSource]);
+  // #531 여러 스윙의 선 — 범례로 짧은 · 중간 · 긴 · 지지 · 저항을 켜고 끈다(개발 서버에서 #530 이 없으면 예시 값)
+  const [trendFilter, setTrendFilterState] = useState<TrendFilter>(loadTrendFilter);
+  const setTrendFilter = (f: TrendFilter) => { setTrendFilterState(f); saveTrendFilter(f); };
+  const allTrends: Trendline[] = useMemo(
+    () => (show.trend ? devExample(srSource?.trendlines ?? [], srSource?.reference_price) : []), [show.trend, srSource]);
+  const trendLines: Trendline[] = useMemo(() => allTrends.filter((t) => passes(t, trendFilter)), [allTrends, trendFilter]);
+  const [ownPick, setOwnPick] = useState<string | null>(null);
+  const pickedId = onTrendPick ? trendPick ?? null : ownPick;
+  const pickedLine = pickedId ? trendLines.find((t) => trendKey(t) === pickedId) ?? null : null;
+  const pickTrend = useCallback((t: Trendline | null) => {
+    if (onTrendPick) onTrendPick(t); else setOwnPick(t ? trendKey(t) : null);
+  }, [onTrendPick]);
+  // 고른 선이 거르기 · 기준 바꾸기로 사라지면 고름도 푼다
+  useEffect(() => { if (pickedId && !pickedLine) pickTrend(null); }, [pickedId, pickedLine, pickTrend]);
   const patterns: ChartPattern[] = useMemo(() => (show.pattern ? srSource?.patterns ?? [] : []), [show.pattern, srSource]);
   // #300 예상도: 이 봉 주기와 짝인 시간축만(일봉 · 1시간 · 5분). 모델 설명이 오는 중이면 20초 뒤 한 번 더 읽는다.
   const projFor = PROJECTION_HORIZON[interval];
@@ -445,7 +466,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const wantSr = show.sr || show.trend || show.pattern || show.fib || show.vp;
   // 분석 당시 값이면 "지금" 이라 하지 않는다 — 선은 오늘까지 그어도 거리 · 상태는 그때 기준
   const when = mode === "plan" ? "분석 당시" : "지금";
-  const [trendDrawn, setTrendDrawn] = useState<{ line: Trendline; series: ISeriesApi<"Line"> }[]>([]);
+  const [trendDrawn, setTrendDrawn] = useState<{ line: Trendline; series: ISeriesApi<"Line">; base: string }[]>([]);
 
   useEffect(() => savePrefs(interval, show, preset, custom), [interval, show, preset, custom]);
   useEffect(() => onIntervalChange?.(interval), [interval, onIntervalChange]);
@@ -1026,7 +1047,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       return barFor(keys, intraday ? kstStamp(iso) : kstDay(iso));
     };
     const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, autoscaleInfoProvider: () => null };
-    const lines: { line: Trendline; series: ISeriesApi<"Line"> }[] = [];
+    const lines: { line: Trendline; series: ISeriesApi<"Line">; base: string }[] = [];
     const marks: { key: Key; m: Omit<SeriesMarker<Time>, "time"> }[] = [];
     let swing: ISeriesApi<"Line"> | null = null;
     const marked = new Set<string>(); // 같은 봉 · 같은 쪽엔 앞(더 강한) 선의 번호 하나만 — 비슷한 선끼리 겹쳐 찍지 않게
@@ -1060,8 +1081,13 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         if (data.length < 2) continue; // 선이 보는 기간 밖에서 끝났다
         const base = css(line.kind === "support" ? "--sr-support" : "--sr-resistance", line.kind === "support" ? "#2bb3a3" : "#b58cf0");
         const broken = line.state === "broken";
-        const s = chart.addSeries(LineSeries, { ...quiet, color: broken ? `${base}80` : base, lineWidth: 2, lineStyle: broken ? LineStyle.Dashed : LineStyle.Solid });
-        lines.push({ line, series: s });
+        // #531 굵기 = 스윙 크기(짧게 얇게 · 길게 굵게), 먼 선(far)은 점선, 이탈은 흐린 파선. 끝 이름표는 가격축에("중기 저항 · +18%")
+        const s = chart.addSeries(LineSeries, {
+          ...quiet, color: broken ? `${base}80` : base, lineWidth: trendWidth(line),
+          lineStyle: broken ? LineStyle.Dashed : line.status === "far" ? LineStyle.Dotted : LineStyle.Solid,
+          lastValueVisible: true, title: trendLabel(line),
+        });
+        lines.push({ line, series: s, base });
         s.setData(data);
         line.touches.forEach((at, i) => {
           const key = Date.parse(at) < first ? null : keyOf(at, line.timeframe);
@@ -1100,6 +1126,61 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (swing) chart.removeSeries(swing);
     };
   }, [drawn, trendLines, fib, ticker, srSource]);
+
+  // #531 고른 추세선 강조 · 나머지 흐리게. 먼 선(far)을 고르면 그 선 값까지 가격축을 넓혀 보이게 한다
+  useEffect(() => {
+    for (const { line, series: s, base } of trendDrawn) {
+      const sel = pickedId != null && trendKey(line) === pickedId;
+      const dim = pickedId != null && !sel;
+      const alpha = dim ? "40" : line.state === "broken" ? "80" : "";
+      s.applyOptions({
+        color: `${base}${alpha}`,
+        lineWidth: (sel ? Math.min(4, trendWidth(line) + 1) : trendWidth(line)) as 1 | 2 | 3 | 4,
+        lastValueVisible: !dim,
+        autoscaleInfoProvider: sel ? () => ({ priceRange: { minValue: line.price_now, maxValue: line.price_now } }) : () => null,
+      });
+    }
+  }, [trendDrawn, pickedId]);
+
+  // #531 추세선 가까이(10px)를 누르면 그 선을 고른다. 선이 아닌 곳을 누르면 고름을 푼다
+  const pickedRef = useRef(pickedId);
+  pickedRef.current = pickedId;
+  useEffect(() => {
+    if (!drawn || trendDrawn.length === 0) return;
+    const { chart, series } = drawn;
+    const onClick = (param: MouseEventParams<Time>) => {
+      const pt = param.point;
+      if (!pt || (param.paneIndex ?? 0) !== 0) return;
+      let best: { line: Trendline; d: number } | null = null;
+      for (const { line, series: s } of trendDrawn) {
+        const v = param.seriesData.get(s) as { value?: number } | undefined;
+        if (v?.value == null) continue;
+        const y = series.priceToCoordinate(v.value);
+        if (y == null) continue;
+        const d = Math.abs(y - pt.y);
+        if (d <= 10 && (!best || d < best.d)) best = { line, d };
+      }
+      const hit = best as { line: Trendline } | null;
+      if (hit) pickTrend(hit.line);
+      else if (pickedRef.current) pickTrend(null);
+    };
+    chart.subscribeClick(onClick);
+    return () => {
+      if (drawn.alive.current) chart.unsubscribeClick(onClick);
+    };
+  }, [drawn, trendDrawn, pickTrend]);
+
+  // #531 Esc 로 고름을 푼다 — 크게 보기의 Esc(닫기)보다 먼저(window 캡처) 받아 한 번은 고름만 푼다
+  useEffect(() => {
+    if (!pickedId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      pickTrend(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [pickedId, pickTrend]);
 
   // #321 휩소 — 직전 저점(고점)을 깨고 구역에 들어왔다가 되돌아 마감한 봉에 "스윕 후 회복". 지지 · 저항을 켰을 때만.
   const sweeps = show.sr ? srSource?.events ?? null : null;
@@ -1527,11 +1608,12 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
                 </>
               ) : hover.type === "trend" ? (
                 <>
-                  <strong>{TREND_NAME[hover.line.kind]} {price(hover.here)}</strong>{" "}
+                  <strong>{hover.line.scale ? `${SCALE_KO[hover.line.scale]} ` : ""}{TREND_NAME[hover.line.kind]} {price(hover.here)}</strong>{" "}
                   <span className="muted">{tfLabel(hover.line.timeframe)} · 터치 {hover.line.touches.length}회</span>
                   <div>
-                    {when} 선 {price(hover.line.price_now)} · 가격은 선에서 {signed(hover.line.distance_atr)} ATR · {TREND_STATE[hover.line.state]}
+                    {when} 선 {price(hover.line.price_now)} · 가격은 선에서 {signed(hover.line.distance_atr)} ATR · {hover.line.status ? STATUS_KO[hover.line.status] : TREND_STATE[hover.line.state]}
                   </div>
+                  {hover.line.scenarios && <div className="muted">눌러서 돌파 · 거절 시나리오 보기</div>}
                 </>
               ) : (
                 <>
@@ -1578,6 +1660,31 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         </p>
       )}
       {outlook && <OutlookSummary outlook={outlook} period={outlookPeriod} on={outlookPrefs.on} onPick={pickOutlook} daily={interval === "1d"} outside={outlookOutside} />}
+      {/* #531 추세선 범례 — 짧은 · 중간 · 긴 · 지지 · 저항 켜고 끄기(이 브라우저에 기억), 선을 누르면 시나리오 */}
+      {show.trend && allTrends.length > 0 && (
+        <div className="trend-legend small" role="group" aria-label="추세선 켜고 끄기">
+          <span className="muted">추세선</span>
+          {allTrends.some((t) => t.scale) && (["short", "mid", "long"] as const).map((k) => (
+            <button key={k} type="button" className={`chip${trendFilter[k] ? " chip-on" : ""}`} aria-pressed={trendFilter[k]}
+              onClick={() => setTrendFilter({ ...trendFilter, [k]: !trendFilter[k] })}>
+              <i className={`tl-sw tl-sw-${k}`} aria-hidden="true" />{SCALE_KO[k]}
+            </button>
+          ))}
+          {(["support", "resistance"] as const).map((k) => (
+            <button key={k} type="button" className={`chip${trendFilter[k] ? " chip-on" : ""}`} aria-pressed={trendFilter[k]}
+              onClick={() => setTrendFilter({ ...trendFilter, [k]: !trendFilter[k] })}>
+              <i className={`tl-sw tl-sw-${k}`} aria-hidden="true" />{KIND_KO[k]}
+            </button>
+          ))}
+          {Object.values(trendFilter).some((v) => !v) && <button type="button" className="link small" onClick={() => setTrendFilter(ALL_ON)}>모두 켜기</button>}
+          <span className="muted">
+            {trendLines.length}개{allTrends.length > trendLines.length ? ` (꺼 둔 ${allTrends.length - trendLines.length}개)` : ""}
+            {trendLines.some((t) => t.scenarios) ? " · 선을 누르면 돌파 · 거절 시나리오, Esc 로 닫기" : ""}
+            {trendLines.some((t) => t.status === "far") ? " · 점선은 지금가에서 먼 선" : ""}
+          </span>
+        </div>
+      )}
+      {!onTrendPick && pickedLine && <TrendLineCard line={pickedLine} when={when} onClose={() => pickTrend(null)} />}
       {((show.fills && fills.length > 0) || rsiOn || stochOn || (drawn && LOG_SCALE.has(interval))) && (
         <p className="muted small price-chart-legend">
           {[
@@ -1633,14 +1740,16 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         trendLines.length > 0 ? (
           <ul className="sr-list trend-list" aria-label="추세선">
             {trendLines.map((t) => (
-              <li key={`${t.kind}-${t.timeframe}-${t.anchors[0].at}-${t.anchors[1]?.at}`} className={`sr-${t.kind} trend-${t.state}`}>
-                <span className="sr-kind">{t.kind === "support" ? "지지" : "저항"}</span>
+              <li key={trendKey(t)} className={`sr-${t.kind} trend-${t.state}${trendKey(t) === pickedId ? " trend-picked" : ""}`}>
+                <span className="sr-kind">{t.scale ? `${SCALE_KO[t.scale]} ` : ""}{t.kind === "support" ? "지지" : "저항"}</span>
                 <strong className="num">{price(t.price_now)}</strong>
                 <span className="muted small">{tfLabel(t.timeframe)} · 터치 {t.touches.length}회</span>
                 <span className="small">
                   {TREND_NAME[t.kind]} · {kstDay(t.anchors[0].at)}부터 · {when} 가격 {signed(t.distance_atr)} ATR ·{" "}
-                  <strong className="trend-state">{TREND_STATE[t.state]}</strong>
+                  <strong className="trend-state">{t.status ? STATUS_KO[t.status] : TREND_STATE[t.state]}</strong>
+                  {t.distance_pct != null && <> · 지금가 대비 {t.distance_pct > 0 ? "+" : ""}{t.distance_pct}%</>}
                 </span>
+                {t.scenarios && <button type="button" className="link small" onClick={() => pickTrend(trendKey(t) === pickedId ? null : t)}>{trendKey(t) === pickedId ? "닫기" : "시나리오"}</button>}
               </li>
             ))}
           </ul>

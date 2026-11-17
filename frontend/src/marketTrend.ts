@@ -22,8 +22,15 @@ export function useTrend(): TrendRow[] {
   const [rows, setRows] = useState<TrendRow[]>([]);
   useEffect(() => {
     let alive = true;
-    loadTrend().then((r) => alive && setRows(r));
-    return () => { alive = false; };
+    let timer: number | undefined;
+    // 배포 직후 등 서버가 아직 계산 중이면 trend 가 비어 온다 — 화면을 연 채로도 1분마다 다시 받아 채운다
+    const load = () => loadTrend().then((r) => {
+      if (!alive) return;
+      setRows(r);
+      if (!r.length) timer = window.setTimeout(load, 60_000);
+    });
+    load();
+    return () => { alive = false; window.clearTimeout(timer); };
   }, []);
   return rows;
 }

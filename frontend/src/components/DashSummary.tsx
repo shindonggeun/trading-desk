@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { price } from "../format";
 import type { FearItem } from "../types";
+import { useTrend } from "../marketTrend";
 import { TrendSummaryItems } from "./TrendChips";
 
 // #464 휴대폰 대시보드 맨 위 요약 줄: 지수 등락 3개 + 공포지수 2개. 구역은 접힌 머리글로 시작하니
@@ -20,6 +21,7 @@ type Quote = { ticker: string; name: string; last: number; change: number | null
 export default function DashSummary() {
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [fear, setFear] = useState<FearItem[]>([]);
+  const trend = useTrend(); // #461 지수 지금 추세 — 시세 · 공포지수가 없어도 추세만으로 줄을 보인다
 
   useEffect(() => {
     let alive = true;
@@ -55,7 +57,7 @@ export default function DashSummary() {
     return () => { alive = false; window.clearInterval(t); };
   }, []);
 
-  if (!quotes.length && !fear.length) return null;
+  if (!quotes.length && !fear.length && !trend.length) return null;
   return (
     <div className="dash-summary" role="group" aria-label="시장 요약">
       {quotes.map((q) => (
@@ -66,7 +68,7 @@ export default function DashSummary() {
           )}
         </span>
       ))}
-      <TrendSummaryItems />
+      <TrendSummaryItems trend={trend} />
       {fear.map((f) => (
         <span key={f.key} className={`dash-sum-item${f.band ? ` fear-${f.band}` : ""}`}>
           <span className="muted">{f.key === "cnn" ? "공포탐욕" : f.name}</span> {Math.round((f.value ?? 0) * 10) / 10}

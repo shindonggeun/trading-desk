@@ -251,9 +251,9 @@ export default function RunView({ runId }: { runId: string }) {
                   <SummaryCard summary={plan.summary} runId={run.id} live={stillOpen(run.trade_date)}
                     horizon={plan.horizon ?? run.options.horizon ?? undefined} />
                 )}
-                {/* #332 이 종목에 지금 켜진 금리 · 달러 국면 팁 */}
                 {/* #461 이 종목 시장(지수)의 지금 추세 — 종목 예측이 아니라 지수 상태 설명 */}
                 <div className="trend-badge-row"><MarketTrendBadges ticker={run.ticker} /></div>
+                {/* #332 이 종목에 지금 켜진 금리 · 달러 국면 팁 */}
                 <TipBadges ticker={run.ticker} />
                 <MoreDetails collapsible={!!plan.summary}>
                 {status === "done" && <ConsensusCard plan={plan} ticker={run.ticker} />}

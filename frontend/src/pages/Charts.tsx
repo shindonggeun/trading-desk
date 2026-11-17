@@ -7,7 +7,7 @@ import { useFavorites } from "../favorites";
 import { price } from "../format";
 import type { Run, WeeklyMap, WeeklyMapError } from "../types";
 import { sameTicker } from "../ticker";
-import { WEEKLY_POSITION, weeklyLink } from "../weekly";
+import { nextLines, weeklyLink, weeklyWords, weeklyZone } from "../weekly";
 
 const PriceChart = lazy(() => import("../components/PriceChart"));
 
@@ -22,7 +22,6 @@ const RECENT_KEY = "desk.charts.recent";
 const RECENT_MAX = 8;
 const WEEKLY_KEY = "desk.charts.weekly";
 
-const pct = (v: number | null | undefined) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`);
 const isMap = (m: WeeklyMap | WeeklyMapError): m is WeeklyMap => !("error" in m);
 
 function css(name: string, fallback: string): string {
@@ -145,6 +144,8 @@ export default function Charts({ query }: { query: URLSearchParams }) {
       { price: map.lines.red.price, label: `빨간선 ${map.lines.red.weeks}주`, color: css("--up", "#e5484d") },
     ];
   }, [map, weeklyOn]);
+  const words = map ? weeklyWords(map) : null;
+  const next = map ? nextLines(map) : null;
   const toggleWeekly = (on: boolean) => {
     setWeeklyOn(on);
     saveWeeklyOn(on);
@@ -192,15 +193,18 @@ export default function Charts({ query }: { query: URLSearchParams }) {
         )}
         {ticker && weekly && (
           <div className="charts-weekly small">
-            {map ? (
+            {map && words && next ? (
               <>
                 <span className="muted">주간</span>
-                <span className={`wm-pos wm-pos-${map.position}`}>{WEEKLY_POSITION[map.position]}</span>
-                <span className="num">검정 {price(map.lines.black.price)} · 빨강 {price(map.lines.red.price)}</span>
-                <span className="num">
-                  다음 선 <span className="down">↓ {price(map.scenario.down.price)} {pct(map.scenario.down.pct)}</span>
-                  {" · "}<span className="up">↑ {price(map.scenario.up.price)} {pct(map.scenario.up.pct)}</span>
+                <span className={`wm-pos wm-pos-${weeklyZone(map)}`} title={`${words.where} — ${words.meaning}`}>
+                  {words.name}
                 </span>
+                <span className="num">검정선(20주 평균) {price(map.lines.black.price)} · 빨간선(60주 평균) {price(map.lines.red.price)}</span>
+                <span className="num">
+                  <span className="down" title={`아래 받침 — ${next.down.what} ${price(next.down.price)}`}>↓ {next.down.text}</span>
+                  {" · "}<span className="up" title={`위 저항 — ${next.up.what} ${price(next.up.price)}`}>↑ {next.up.text}</span>
+                </span>
+                <span className="charts-weekly-todo">{words.todo}</span>
                 {map.cross && <strong>{map.cross === "broke_black" ? "이번 주 검정선 이탈" : "이번 주 검정선 되찾음"}</strong>}
                 <label className="charts-weekly-toggle">
                   <input type="checkbox" checked={weeklyOn} onChange={(e) => toggleWeekly(e.target.checked)} />

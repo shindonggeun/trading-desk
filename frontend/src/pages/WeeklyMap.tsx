@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import InstrumentSearch, { type Picked } from "../components/InstrumentSearch";
 import WeeklyMapChart from "../components/WeeklyMapChart";
+import WeeklyPositionHelp from "../components/WeeklyPositionHelp";
 import { useFavorites } from "../favorites";
 import { price } from "../format";
 import type { WeeklyHistoryRow, WeeklyMap as Map, WeeklyMapError } from "../types";
 import { sameTicker } from "../ticker";
-import { chartsLink, WEEKLY_POSITION } from "../weekly";
+import { chartsLink, nextLines, weeklyEvidence, weeklyWords, weeklyZone } from "../weekly";
 
 /**
  * #205 주간 시장 지도(#202) — 지수마다 "지금 어디쯤인지, 어디까지 빠질 수 있고 어디가 바닥 후보인지"를
@@ -14,7 +15,6 @@ import { chartsLink, WEEKLY_POSITION } from "../weekly";
  * 한 지수가 실패하면 그 카드만 "불러오지 못함".
  */
 
-const POSITION = WEEKLY_POSITION;
 const pct = (v: number | null | undefined) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`);
 const tone = (v: number | null | undefined) => (v == null ? "" : v > 0 ? "up" : v < 0 ? "down" : "");
 const isMap = (m: Map | WeeklyMapError): m is Map => !("error" in m);
@@ -46,12 +46,16 @@ function MapCard({ map, focused }: { map: Map; focused: boolean }) {
     if (focused) ref.current?.scrollIntoView({ block: "start" });
   }, [focused]);
   const weekChange = prev ? ((map.close / prev.close - 1) * 100) : null;
+  const zone = weeklyZone(map);
+  const w = weeklyWords(map);
+  const lines = nextLines(map);
+  const evidence = weeklyEvidence(map);
   return (
     <section ref={ref} id={`wm-${map.symbol}`} className={`card wm-card wm-${map.position}${focused ? " wm-focused" : ""}`}
       aria-labelledby={`wm-title-${map.symbol}`}>
       <div className="wm-head">
         <h3 id={`wm-title-${map.symbol}`}>{map.name}</h3>
-        <span className={`wm-pos wm-pos-${map.position}`}>{POSITION[map.position]}</span>
+        <span className={`wm-pos wm-pos-${zone}`} title={w.where}>{w.name}</span>
         <span className={`wm-candle wm-candle-${map.candle.kind}`}>{map.candle.label}</span>
         <span className="muted small">
           {price(map.close)} · {map.week} 주{!map.week_complete && " (마감 전)"}
@@ -59,13 +63,19 @@ function MapCard({ map, focused }: { map: Map; focused: boolean }) {
         </span>
         <a className="small wm-charts" href={chartsLink(map.source_symbol ?? map.symbol)}>차트 탭에서 보기 →</a>
       </div>
+      <div className={`wm-todo wm-todo-${zone}`}>
+        <p><strong>{w.name}</strong> <span className="muted">({w.where})</span> — {w.meaning}</p>
+        <p><strong>지금 할 일:</strong> {w.todo}</p>
+        {evidence && <p className="muted small">근거: {evidence}</p>}
+        <WeeklyPositionHelp position={zone} />
+      </div>
       <p className="wm-headline">{map.text.headline}</p>
       {prev && (
         <p className="muted small wm-prev">
           지난주 대비 <span className={tone(weekChange)}>{pct(weekChange)}</span>
-          {prev.position !== map.position
-            ? ` · 위치가 바뀜: ${POSITION[prev.position]} → ${POSITION[map.position]}`
-            : ` · 위치 그대로(${POSITION[map.position]})`}
+          {weeklyZone(prev) !== zone
+            ? ` · 위치가 바뀜: ${weeklyWords(prev).name} → ${w.name}`
+            : ` · 위치 그대로(${w.name})`}
         </p>
       )}
       <WeeklyMapChart map={map} />
@@ -76,8 +86,8 @@ function MapCard({ map, focused }: { map: Map; focused: boolean }) {
           sub={`하단 ${pct(map.bollinger.lower_pct)}`} />
         <Fact name="52주 고 · 저" value={`${price(map.range_52w.high)} / ${price(map.range_52w.low)}`}
           sub={`고점 대비 ${pct(map.range_52w.from_high_pct)}`} />
-        <Fact name="다음 선 ↓" value={price(map.scenario.down.price)} sub={pct(map.scenario.down.pct)} cls="down" />
-        <Fact name="다음 선 ↑" value={price(map.scenario.up.price)} sub={pct(map.scenario.up.pct)} cls="up" />
+        <Fact name={`${lines.down.label} — ${lines.down.what}`} value={price(lines.down.price)} sub={lines.down.pctText} cls="down" />
+        <Fact name={`${lines.up.label} — ${lines.up.what}`} value={price(lines.up.price)} sub={lines.up.pctText} cls="up" />
         {map.supports.length > 0 && <Fact name="지지(주봉 저점)" value={map.supports.map((p) => price(p)).join(" · ")} />}
         {map.resistances.length > 0 && <Fact name="저항(주봉 고점)" value={map.resistances.map((p) => price(p)).join(" · ")} />}
       </dl>

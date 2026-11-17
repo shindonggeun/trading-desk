@@ -1370,6 +1370,7 @@ h1 .fav-star { font-size: var(--fs-xl); }
 .wm-pos-above_black { color: var(--up); }
 .wm-pos-between { color: var(--warn); }
 .wm-pos-below_red { color: var(--down); }
+.wm-pos-rebound { color: var(--warn); }
 .wm-candle { font-weight: 400; color: var(--muted); }
 .wm-candle-long_black { color: var(--down); }
 .wm-candle-long_white { color: var(--up); }
@@ -1419,19 +1420,18 @@ h1 .fav-star { font-size: var(--fs-xl); }
 /* #227 대시보드 주간 지도 요약 */
 .wmb { display: grid; gap: 6px; }
 .wmb-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
-.wmb-row { display: grid; grid-template-columns: minmax(0, 1.3fr) auto minmax(0, 1fr) auto; align-items: center; gap: 4px 10px;
+.wmb-row { display: grid; grid-template-columns: minmax(0, 1.3fr) auto minmax(0, 1fr); align-items: center; gap: 4px 10px;
   padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); text-decoration: none; }
 a.wmb-row:hover { border-color: var(--accent); }
 .wmb-cross { box-shadow: inset 3px 0 0 var(--warn); }
 .wmb-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmb-candle { min-width: 0; }
-.wmb-lines { display: flex; gap: 10px; white-space: nowrap; justify-content: flex-end; }
+.wmb-lines { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 2px 12px; }
 .wmb-error { grid-template-columns: 1fr auto; }
 .wmb-foot { margin: 0; }
 @media (max-width: 760px) {
   .wmb-row { grid-template-columns: minmax(0, 1fr) auto; }
-  .wmb-candle { grid-column: 1; }
-  .wmb-lines { grid-column: 2; }
+  .wmb-candle { grid-column: 1 / -1; }
 }
 
 /* #229 주간 지도 — 다른 종목 검색 · 즐겨찾기 종목 */
@@ -2300,3 +2300,28 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   max-width: 1680px; width: calc(100% - 40px); box-sizing: border-box; border-radius: var(--radius-s); background: var(--surface-2); }
 .tour-prompt-actions { display: inline-flex; align-items: center; gap: 10px; }
 @media (max-width: 480px) { .tour-prompt { width: calc(100% - 32px); } }
+
+/* #490 주간 지도 위치를 초보자 말로 — 할 일 한 줄 · 카드의 할 일 상자 · ⓘ 그림 */
+.wmb-todo { grid-column: 1 / -1; color: var(--muted); line-height: 1.4; }
+.wm-todo { display: grid; gap: 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); }
+.wm-todo p { margin: 0; line-height: 1.5; }
+.wm-todo-above_black { box-shadow: inset 3px 0 0 var(--up); }
+.wm-todo-between { box-shadow: inset 3px 0 0 var(--warn); }
+.wm-todo-below_red { box-shadow: inset 3px 0 0 var(--down); }
+.wm-todo-rebound { box-shadow: inset 3px 0 0 var(--warn); }
+.charts-weekly-todo { flex-basis: 100%; color: var(--muted); }
+.wph { display: grid; gap: 6px; }
+.wph-toggle { justify-self: start; }
+.wph-body { display: grid; gap: 6px; }
+.wph-body[hidden] { display: none; }
+.wph-svg { width: 100%; max-width: 360px; height: auto; }
+.wph-black { stroke: var(--text); stroke-width: 2; }
+.wph-red { stroke: var(--up); stroke-width: 2; }
+.wph-label { fill: var(--muted); font-size: 10px; }
+.wph-zone text { fill: var(--muted); font-size: 11px; }
+.wph-zone circle { fill: var(--surface-2); stroke: var(--muted); }
+.wph-above_black.wph-now circle { fill: var(--up); stroke: var(--up); }
+.wph-between.wph-now circle { fill: var(--warn); stroke: var(--warn); }
+.wph-below_red.wph-now circle { fill: var(--down); stroke: var(--down); }
+.wph-now text { fill: var(--text); font-weight: 600; }
+.wph-list { margin: 0; padding-left: 18px; display: grid; gap: 2px; line-height: 1.45; }

@@ -40,6 +40,7 @@ from . import (
     futures_quote,
     halving,
     horizons,
+    language,
     line_basis,
     live,
     macro_news,
@@ -514,6 +515,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        related=None if settings.fake_runs else collect_related,
                                        lever_analyst=fake_analyst if settings.fake_runs else llm_analyst,
                                        summariser=fake_summariser if settings.fake_runs else llm_summariser,
+                                       # #567: a scripted run spends no quota on translation
+                                       translator=None if settings.fake_runs else language.llm_translator,
                                        # #437: the run's frozen look ahead (#299's daily projection)
                                        outlook=fake_outlook if settings.fake_runs else run_outlook,
                                        # world news flow: the background cache below, never fetched in a run

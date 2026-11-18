@@ -15,6 +15,7 @@ from typing import Any
 
 from . import (
     horizons,
+    language,
     macro_news,
     outlook,
     playbook,
@@ -138,6 +139,9 @@ def run_tradingagents(request: RunRequest, emit: Emit, portfolio: Any) -> RunRes
     config = build_default_config()
     if request.output_language:
         config["output_language"] = request.output_language
+    # #567: TradingAgents says "Write your entire response in <output_language>" - a Korean run gets
+    # "Hangul only, never Japanese or Chinese" spelled out inside that name
+    config["output_language"] = language.instruction_name(config.get("output_language"))
     if request.max_debate_rounds:
         config["max_debate_rounds"] = request.max_debate_rounds
     if request.max_risk_rounds:
@@ -145,7 +149,7 @@ def run_tradingagents(request: RunRequest, emit: Emit, portfolio: Any) -> RunRes
 
     graph = TradingAgentsGraph(selected_analysts=request.graph_analysts(), config=config)
     ticker, date, asset_type = request.ticker, request.trade_date, request.asset_type()
-    differ = StateDiffer()
+    differ = StateDiffer(config.get("output_language"))
     final_state: dict[str, Any] = {}
 
     with run_config(graph.config):
@@ -239,7 +243,7 @@ def make_fake_runner(delay: float) -> Runner:
             ([], _fake_decision(request)),
         ]
 
-        differ = StateDiffer()
+        differ = StateDiffer(request.output_language)
         final_state: dict[str, Any] = {}
         for messages, chunk in steps:
             time.sleep(delay)
@@ -388,7 +392,7 @@ class _Gate:
 class RunManager:
     def __init__(self, store: Store, hub: Hub, runner: Runner, broker: Broker, max_concurrent: int,
                  levels=fill_levels, prices: PriceSource | None = None, related=collect_related,
-                 lever_analyst=llm_analyst, summariser=llm_summariser,
+                 lever_analyst=llm_analyst, summariser=llm_summariser, translator=language.llm_translator,
                  macro: Callable[[str], str | None] | None = None,
                  tips: Callable[[str], str | None] | None = None,
                  filings: Callable[[str], Awaitable[str | None]] | None = None,
@@ -428,6 +432,10 @@ class RunManager:
         # #330: rate / dollar regime tips on the run's own ticker (desk.tips.Cache.note, Yahoo in a thread)
         self.tips = tips
         self.summariser = summariser
+        # #567: the quick-model translation of a Korean run's decision, leverage call and summary when
+        # they came back in Japanese or Chinese - None only marks them (desk.language)
+        self.translator = translator
+        self._language: dict[str, dict] = {}   # run id -> {"fixed": [...], "mismatch": [...]}
         # #437: the daily projection (desk.projection, #299) for (ticker, trade date, price, levels),
         # frozen with the plan as the run's outlook - None leaves the run without one
         self.outlook = outlook
@@ -705,6 +713,12 @@ class RunManager:
             except Exception as exc:  # noqa: BLE001 - incl. timeout: the run ends on the underlying's call
                 log.warning("leverage analyst failed for %s: %s", request.ticker, exc)
                 error = f"{type(exc).__name__}: {exc}"
+        if text and text.strip() and self._korean_run(request) and language.foreign(text):   # #567
+            same = language.plan_text_same(lambda t: parse_plan(
+                {"final_trade_decision": strip_extras(t), "trader_investment_plan": strip_extras(t)}))
+            text, kind, status = await self._guard(lambda t=text: language.fix_text(t, self.translator, same),
+                                                   (text, language.foreign(text), "mismatch"))
+            self._language_note(run_id, "leverage", kind, status)
         if text and text.strip():
             self._publish(run_id, {"type": "message", "agent": "leverage_analyst", "content": text.strip(),
                                    "data": None})
@@ -756,6 +770,49 @@ class RunManager:
             plan["holder_exit"] = holder
         return plan
 
+    def _korean_run(self, request: RunRequest) -> bool:
+        return language.korean(language.target(request.output_language))
+
+    def _language_note(self, run_id: str, where: str, kind: str | None, status: str) -> None:
+        """#567: the run's record of text that was not Korean - fixed or left - and one chat line."""
+        if status == "ok":
+            return
+        note = self._language.setdefault(run_id, {"fixed": [], "mismatch": []})
+        note[status].append(where)
+        what = {"decision": "최종 결정", "leverage": "레버리지 분석", "consensus": "결론 정리"}.get(where, where)
+        name = language.NAMES.get(kind or "", "다른 언어")
+        content = (f"{what} 글이 {name}로 나와 한국어로 옮겼습니다(등급 · 가격은 그대로)" if status == "fixed" else
+                   f"{what} 글이 {name}로 나왔습니다 — 원문 언어가 달라 그대로 둡니다")
+        log.warning("run %s language %s: %s (%s)", run_id, status, where, kind)
+        self._publish(run_id, {"type": "status", "agent": "system", "content": content,
+                               "data": {"code": f"language_{status}", "where": where, "kind": kind}})
+
+    async def _guard(self, fix: Callable[[], Any], fallback: Any) -> Any:
+        """A desk.language fix in a thread with a backstop; the fallback (left as it was) on timeout."""
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(fix), language.TRANSLATE_TIMEOUT_SEC * 2 + 30)
+        except Exception as exc:  # noqa: BLE001 - incl. timeout: the text stays as the model wrote it
+            log.warning("language guard failed: %s", type(exc).__name__)
+            return fallback
+
+    async def _decision_language(self, run_id: str, request: RunRequest, result: RunResult) -> RunResult:
+        """#567: the decision fields in Korean before the plan is read from them (levels unchanged)."""
+        if not self._korean_run(request):
+            return result
+        state = result.final_state
+        foreign = {k: kind for k in language.STATE_FIELDS
+                   if isinstance(state.get(k), str) and (kind := language.foreign(state[k]))}
+        if not foreign:
+            return result
+        fixed, report = await self._guard(
+            lambda: language.fix_state(state, self.translator),
+            (state, {"fixed": [], "mismatch": list(foreign), "kind": next(iter(foreign.values()))}))
+        if report["fixed"]:
+            self._language_note(run_id, "decision", report["kind"], "fixed")
+        if report["mismatch"]:
+            self._language_note(run_id, "decision", report["kind"], "mismatch")
+        return replace(result, final_state=fixed)
+
     async def _consensus(self, run_id: str, request: RunRequest, subject: str, final_state: dict,
                          plan: dict, price: float | None = None, book: Any = None) -> dict:
         """#94: the closing summary as ``{"consensus": ...}``; a failure only gives
@@ -773,6 +830,10 @@ class RunManager:
         try:   # the HTTP call has its own timeout; this is the backstop for the thread
             text = await asyncio.wait_for(asyncio.to_thread(self.summariser, ctx), CONSENSUS_TIMEOUT_SEC + 30)
             summary = parse_consensus(text, final_state, subject, plan, price, position)
+            if self._korean_run(request):   # #567
+                summary, kind, status = await self._guard(
+                    lambda: language.fix_summary(summary, self.translator), (summary, None, "mismatch"))
+                self._language_note(run_id, "consensus", kind, status)
         except Exception as exc:  # noqa: BLE001 - incl. timeout and unreadable JSON
             log.warning("consensus failed for %s: %s", request.ticker, exc)
             # the rail and chat stop showing the summariser as working
@@ -941,6 +1002,7 @@ class RunManager:
                 watch.mark("desk_pre")
                 result = await asyncio.to_thread(self.runner, subject, emit, portfolio)
                 watch.mark("graph")
+                result = await self._decision_language(run_id, request, result)   # #567
                 # a related set too slow for the prompt still serves the plan (beta, VIX, the panel);
                 # it has its own timeout. Late filings/positioning only ever fed the prompt.
                 if "related" in late:
@@ -1013,6 +1075,10 @@ class RunManager:
                 # the side calls catch their own failures; a rate limit there still slows the queue
                 for error in (plan.get("leverage_analyst_error"), plan.get("consensus_error")):
                     self._note_rate_limit(run_id, error)
+                if note := self._language.pop(run_id, None):   # #567: what was translated or left foreign
+                    plan["language"] = note
+                    if note["mismatch"]:
+                        plan["language_mismatch"] = note["mismatch"]
                 plan = with_sides(plan)     # #311: long / short view of the levels, conflicts, trigger warnings
                 # #437 first: a run read as done already carries its outlook
                 self._publish_outlook(run_id, request, plan, await ahead)
@@ -1029,5 +1095,6 @@ class RunManager:
                 self._publish(run_id, {"type": "error", "agent": "system", "content": message})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "failed"})
             finally:
+                self._language.pop(run_id, None)
                 for lookup in notes.values():   # a failed run does not wait for its notes
                     lookup.cancel()

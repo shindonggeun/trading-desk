@@ -9,9 +9,14 @@ Debate histories only ever grow, so the new part of a history is the new turn.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable
 from typing import Any
+
+from . import language as lang
+
+log = logging.getLogger(__name__)
 
 # (state key, agent id) for single-shot outputs, and (debate key, [(history key, agent id)]).
 # Listed in pipeline order so one state carrying several fields still reads in order.
@@ -58,9 +63,11 @@ def _tool_calls(message: Any) -> list[tuple[str, dict]]:
 class StateDiffer:
     """Feed it every streamed pair; it returns only what is new since the last call."""
 
-    def __init__(self) -> None:
+    def __init__(self, language: str | None = None) -> None:
         self._seen: dict[str, str] = {}
         self._messages: set[Any] = set()
+        # #567: a Korean run's turn in another language is logged (live turns are not translated)
+        self._korean = lang.korean(language)
 
     def seed(self, key: str, value: str) -> None:
         """A state field the run starts with (#171: a reused report) - already said, not new."""
@@ -88,6 +95,10 @@ class StateDiffer:
             elif isinstance(value, dict):
                 for history_key, agent in target:
                     events.extend(self._debate_turn(f"{key}.{history_key}", value.get(history_key), agent))
+        if self._korean:
+            for event in events:
+                if event["type"] == "message" and (kind := lang.foreign(event["content"])):
+                    log.warning("language: %s wrote %s in a Korean run", event["agent"], kind)
         return events
 
     def _debate_turn(self, seen_key: str, history: Any, agent: str) -> list[dict]:

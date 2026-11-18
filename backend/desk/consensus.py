@@ -17,6 +17,7 @@ import json
 import re
 from dataclasses import dataclass, replace
 
+from . import language
 from .plan import BIAS
 
 CONSENSUS_TIMEOUT_SEC = 120.0
@@ -177,7 +178,7 @@ def build_prompt(ctx: ConsensusContext) -> str:
          "to hold: weigh the final decision, the debate, where price sits against the levels and, if known, the "
          "average price. cut_level: the level whose break means exiting everything (below the price for a long "
          "holder). trim_level: where to reduce, or null. reason: one sentence with the evidence."),
-        f"- Write the text in {ctx.language or 'English'}. Keep the JSON keys and stance values in English.",
+        f"- {language.directive(ctx.language)} Keep the JSON keys and stance values in English.",   # #567
         "",
         "Answer with JSON only, no prose around it:",
         ('{"votes": [{"agent": "<agent id>", "stance": "long|short|hold", "reason": "<one short sentence>"}], '

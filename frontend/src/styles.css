@@ -2661,3 +2661,5 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .dash-top { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 .dash-top:empty { display: none; }
 .dash-top > * { min-width: 0; grid-column: auto; }   /* 넓은 구역(dash-wide)이어도 이 줄에서는 나란히 */
+.daycall-session { margin: 0 0 6px; }
+.daycall-past { color: var(--warn); font-weight: 600; }

@@ -1,5 +1,5 @@
 import type { DayCallCallStats, DayCallEntry, DayCallHistory, DayCallHistoryItem, DayCallKind, DayCallMarket, DayCallProbs, DayCallStage, DayCallStats, DayCallToday, MorningBrief, MorningBriefList } from "./types";
-import { DAY_CALL_KINDS, DAY_CALL_STAGES, KIND_KO, STAGE_KO } from "./dayCall";
+import { DAY_CALL_KINDS, DAY_CALL_STAGES, KIND_KO, scoredOutcome, STAGE_KO } from "./dayCall";
 
 /**
  * #573 개발 모드에서만 — 아침 시황(#571) · 오늘 방향(#572) API 가 아직 없을 때(404) 계약 모양의 예시로 화면을 그린다.
@@ -111,14 +111,19 @@ export function fakeDayCallHistory(market: DayCallMarket, days = 90): DayCallHis
     for (const kind of DAY_CALL_KINDS) {
       const r = seeded(i + (market === "us" ? 100 : 0) + (kind === "open" ? 50 : 0));
       const pr = probs([10 + r * 10, 30 - r * 10, 25 + r * 5, 25 - r * 5, 10].map((x) => Math.round(x * 10) / 10));
-      items.push({ date: day, ...entry(market, kind, day, 2, pr, i > 0, i) });
+      const it: DayCallHistoryItem = { date: day, ...entry(market, kind, day, 2, pr, i > 0, i) };
+      if (i === 3) it.outcome = { unscorable: true, scored_at: `${day}T07:30:00+00:00` };   // 지수 자료가 오지 않은 날
+      items.push(it);
     }
   }
   return { market, days, items };
 }
 
 export function fakeDayCallStats(market: DayCallMarket, days = 90): DayCallStats {
-  const all = fakeDayCallHistory(market, days).items.filter((it) => it.outcome);
+  const all = fakeDayCallHistory(market, days).items.flatMap((it) => {
+    const o = scoredOutcome(it.outcome);
+    return o ? [{ ...it, outcome: o }] : [];   // 채점 불가 · 채점 전은 통계에서 빠진다
+  });
   const ratio = (xs: boolean[]) => (xs.length ? xs.filter(Boolean).length / xs.length : null);
   const one = (kind: DayCallKind): DayCallCallStats => {
     const scored = all.filter((h) => h.call === kind);

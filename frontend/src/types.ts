@@ -2088,7 +2088,10 @@ export interface DayCallOutcome {
   hit_stage: boolean;
   brier: number;
   scored_at: string;
+  unscorable?: false;
 }
+/** 채점할 수 없었던 판정(지수 자료가 2일 넘게 없음) — stats 에서 빠진다 */
+export interface DayCallUnscorable { unscorable: true; scored_at: string }
 /** 그 판정의 적중 기록 — 실시간 판정이 30개 미만이면 검증 구간(backtest) 기준 */
 export interface DayCallRecord {
   n: number;
@@ -2117,7 +2120,7 @@ export interface DayCallEntry {
   context?: { key: string; label: string; value: string; in_model: boolean }[];
   model_version?: string;
   source: "live" | "backfill";
-  outcome: DayCallOutcome | null;
+  outcome: DayCallOutcome | DayCallUnscorable | null;
   record?: DayCallRecord;
 }
 export interface DayCallToday {

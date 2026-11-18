@@ -1,7 +1,7 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { api, ApiError } from "../api";
 import { fakeDayCall } from "../briefsFake";
-import { DAY_CALL_KINDS, DAY_CALL_STAGES, KIND_KO, kstStamp, MARKET_KO, percent, rate, STAGE_KO, STAGE_MARK, verdictText } from "../dayCall";
+import { DAY_CALL_KINDS, DAY_CALL_STAGES, KIND_KO, kstStamp, MARKET_KO, percent, rate, scoredOutcome, STAGE_KO, STAGE_MARK, verdictText } from "../dayCall";
 import type { DayCallEntry, DayCallMarket, DayCallProbs, DayCallReason, DayCallRecord, DayCallStage, DayCallToday } from "../types";
 
 const is404 = (e: unknown) => e instanceof ApiError && e.status === 404;
@@ -53,6 +53,7 @@ function CallBlock({ c, kind }: { c: DayCallEntry | null | undefined; kind: "pre
     );
   }
   const v = verdictText(c);
+  const out = scoredOutcome(c.outcome);
   return (
     <div className="daycall-call">
       <h4 className="daycall-call-title">{c.call_label || KIND_KO[kind]} <span className="muted small">{c.round_label} · {kstStamp(c.called_at)}</span></h4>
@@ -64,11 +65,12 @@ function CallBlock({ c, kind }: { c: DayCallEntry | null | undefined; kind: "pre
       {c.fallback && <p className="small muted">야간 선물이 없어 선물 없이 낸 판정이에요.</p>}
       <ProbBars probs={c.probs} stage={c.stage} />
       <RecordLine r={c.record} />
-      {c.outcome && (
+      {c.outcome?.unscorable && <p className="small muted">결과 채점 불가 — 지수 자료가 오지 않았어요.</p>}
+      {out && (
         <p className="small">
-          <span className="muted">결과</span> {c.outcome.label} ({c.outcome.return_pct > 0 ? "+" : ""}{c.outcome.return_pct.toFixed(2)}%) ·{" "}
-          {c.outcome.hit_direction == null ? <span className="muted">보류라 채점 안 함</span>
-            : c.outcome.hit_direction ? <span className="daycall-hit">✓ 방향 맞음</span> : <span className="daycall-miss">✗ 방향 틀림</span>}
+          <span className="muted">결과</span> {out.label} ({out.return_pct > 0 ? "+" : ""}{out.return_pct.toFixed(2)}%) ·{" "}
+          {out.hit_direction == null ? <span className="muted">보류라 방향 표시 안 함</span>
+            : out.hit_direction ? <span className="daycall-hit">✓ 방향 맞음</span> : <span className="daycall-miss">✗ 방향 틀림</span>}
         </p>
       )}
       {(c.reasons?.length ?? 0) > 0 && (

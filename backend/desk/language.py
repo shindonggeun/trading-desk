@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import time
 import unicodedata
 from collections.abc import Callable
 from typing import Any
@@ -21,6 +22,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 TRANSLATE_TIMEOUT_SEC = 60.0
+BUDGET_SEC = 120.0        # no new translation call starts after this long (one fix: a run's fields together)
 BATCH_CHARS = 6000        # one translation call carries at most this much text
 MAX_CHARS = 30000         # more foreign text than this is not translated (marked instead)
 MIN_LETTERS = 8           # fewer CJK letters than this cannot be told apart
@@ -45,8 +47,9 @@ def target(language: str | None) -> str:
     return language or os.getenv("TRADINGAGENTS_OUTPUT_LANGUAGE") or "English"
 
 
-KOREAN_NAME = ("Korean (한국어: 한글로만 쓴다. 일본어 · 중국어 문장은 쓰지 않는다. 종목명 · 지표명 · 숫자는 그대로 둔다 - "
-               "Hangul only, never Japanese or Chinese; keep tickers, indicator names and numbers as they are)")
+KOREAN_NAME = ("Korean (한국어: 한글로만 쓴다. 일본어 · 중국어 문장은 쓰지 않는다. 종목명 · 지표명 · 숫자와 영어 라벨 줄은 "
+               "그대로 둔다 - Hangul only, never Japanese or Chinese; keep tickers, indicator names, numbers and the "
+               "English labelled lines as they are)")
 
 
 def instruction_name(language: str | None) -> str | None:
@@ -67,42 +70,67 @@ def _counts(text: str) -> tuple[int, int, int]:
     return len(_HANGUL.findall(text)), len(_KANA.findall(text)), len(_HAN.findall(text))
 
 
-def foreign(text: str | None, min_letters: int = MIN_LETTERS) -> str | None:
-    """'ja' when the text is Japanese (kana), 'zh' when it is Chinese (Han characters without Hangul
-    or kana), None for Korean, English, a Korean text with a quoted name, or too little to tell."""
-    hangul, kana, han = _counts(text or "")
+def _whole(text: str) -> str | None:
+    hangul, kana, han = _counts(text)
     letters = hangul + kana + han
-    if letters < min_letters:
+    if letters < MIN_LETTERS:
         return None
-    if kana >= min(5, min_letters) and kana >= 0.1 * letters:
+    if kana >= 5 and kana >= 0.1 * letters:
         return "ja"
-    if han >= min_letters and han >= 0.5 * letters:
+    if han >= MIN_LETTERS and han >= 0.5 * letters:
         return "zh"
     return None
 
 
+def _strong(line: str) -> str | None:
+    """One line that is plainly Japanese or Chinese, whatever the text around it is."""
+    hangul, kana, han = _counts(line)
+    letters = hangul + kana + han
+    if kana >= 5 and kana >= 0.3 * letters:
+        return "ja"
+    if han >= MIN_LETTERS and han >= 0.7 * letters:
+        return "zh"
+    return None
+
+
+def foreign(text: str | None) -> str | None:
+    """'ja' when the text is Japanese (kana), 'zh' when it is Chinese (Han characters without Hangul
+    or kana) - as a whole, or in any one line (a Korean report with one Japanese summary line);
+    None for Korean, English, a Korean text with a quoted name or a hanja word, or too little to tell."""
+    text = text or ""
+    if kind := _whole(text):
+        return kind
+    return next((kind for line in text.split("\n") if (kind := _strong(line))), None)
+
+
 def _foreign_line(line: str) -> bool:
-    return foreign(line, min_letters=1) is not None
+    """A line to translate once its text is foreign: any kana, or Han characters without Hangul."""
+    hangul, kana, han = _counts(line)
+    letters = hangul + kana + han
+    return bool(letters) and ((kana and kana >= 0.1 * letters) or (han >= 2 and not hangul))
 
 
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 # ASCII-letter edges, not \b: in "Holdで" the kana is a word character too
-_LABEL = re.compile(r"\*\*[A-Za-z][A-Za-z /&()-]*\*\*\s*:|(?<![A-Za-z])[A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*)*\s*:")
-_RATING = re.compile(r"(?<![A-Za-z])(?:Buy|Overweight|Hold|Underweight|Sell|BUY|HOLD|SELL)(?![A-Za-z])")
+_LABEL = re.compile(r"\*\*[A-Za-z][A-Za-z /&()-]*\*\*\s*:|(?<![A-Za-z])(?:Exit by|[A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*)*)\s*:")
+_RATING = re.compile(r"(?<![A-Za-z])(?:buy|overweight|hold|underweight|sell)(?![A-Za-z])", re.IGNORECASE)
 
 
-def _tokens(line: str) -> list[str]:
-    """What a translation may not change: numbers, English labels and rating words."""
+def _tokens(line: str) -> tuple[list[str], list[str]]:
+    """What a translation may not change: the numbers in their order (a holder's exit stays the exit,
+    the price now stays the price now), and the English labels and rating words."""
     s = unicodedata.normalize("NFKC", line).replace(",", "")
-    return sorted([*_NUMBER.findall(s), *(re.sub(r"\s+", " ", t) for t in _LABEL.findall(s)), *_RATING.findall(s)])
+    words = [*(re.sub(r"\s+", " ", t) for t in _LABEL.findall(s)), *(w.lower() for w in _RATING.findall(s))]
+    return _NUMBER.findall(s), sorted(words)
 
 
 def kept(original: str, translated: str) -> bool:
     return _tokens(original) == _tokens(translated)
 
 
-def _translate(items: list[str], translate: Translate) -> list[str] | None:
-    """Translated items, in batches; None when any batch fails or comes back malformed."""
+def _translate(items: list[str], translate: Translate, deadline: float | None = None) -> list[str] | None:
+    """Translated items, in batches; None when any batch fails, comes back malformed or would start
+    after the deadline (time.monotonic) - a slow model never keeps calling once the run moved on."""
     if sum(len(s) for s in items) > MAX_CHARS:
         log.warning("language: %d chars of foreign text, not translated", sum(len(s) for s in items))
         return None
@@ -114,6 +142,9 @@ def _translate(items: list[str], translate: Translate) -> list[str] | None:
             batches.append([item])
     out: list[str] = []
     for batch in batches:
+        if deadline is not None and time.monotonic() > deadline:
+            log.warning("language: out of time, %d batch(es) not translated", len(batches))
+            return None
         try:
             got = translate(batch, "Korean")
         except Exception as exc:  # noqa: BLE001 - the original stays, marked
@@ -126,8 +157,8 @@ def _translate(items: list[str], translate: Translate) -> list[str] | None:
     return out
 
 
-def fix_text(text: str, translate: Translate | None,
-             same: Callable[[str, str], bool] | None = None) -> tuple[str, str | None, str]:
+def fix_text(text: str, translate: Translate | None, same: Callable[[str, str], bool] | None = None,
+             deadline: float | None = None) -> tuple[str, str | None, str]:
     """(text, kind, status): status ``ok`` (Korean already), ``fixed`` (the foreign lines translated)
     or ``mismatch`` (left as it was). ``same(original, fixed)`` is the caller's check that the program
     reads the fixed text the same way (the plan's levels)."""
@@ -136,12 +167,14 @@ def fix_text(text: str, translate: Translate | None,
         return text, None, "ok"
     lines = text.split("\n")
     idx = [i for i, line in enumerate(lines) if _foreign_line(line)]
-    got = _translate([lines[i] for i in idx], translate) if translate and idx else None
+    if deadline is None:
+        deadline = time.monotonic() + BUDGET_SEC
+    got = _translate([lines[i] for i in idx], translate, deadline) if translate and idx else None
     if got is None:
         return text, kind, "mismatch"
     new = list(lines)
     for i, line in zip(idx, got, strict=True):
-        if not kept(lines[i], line) or _foreign_line(line):
+        if not kept(lines[i], line) or _strong(line):
             log.warning("language: a translated line lost a number or label, or is still not Korean")
             return text, kind, "mismatch"
         new[i] = line
@@ -155,14 +188,20 @@ def fix_text(text: str, translate: Translate | None,
 
 STATE_FIELDS = ("final_trade_decision", "trader_investment_plan", "investment_plan")
 # parse_plan fields that are the model's prose - they are meant to change
-_PROSE = {"trader_action", "time_horizon", "position_sizing", "executive_summary", "levels_contradiction",
-          "invalidation", "exit_by"}
+_PROSE = {"time_horizon", "position_sizing", "executive_summary", "levels_contradiction", "invalidation", "exit_by"}
+
+
+def _first_word(value: Any) -> Any:
+    """The trader's action is prose after its verb ('buy - on the dip'): the verb must stay."""
+    m = re.match(r"\W*([A-Za-z]+)", value) if isinstance(value, str) else None
+    return m.group(1).lower() if m else value
 
 
 def _skeleton(value: Any) -> Any:
     """A parsed plan without its prose: numbers, ratings, sides and short English codes."""
     if isinstance(value, dict):
-        return {k: _skeleton(v) for k, v in value.items() if k not in _PROSE}
+        return {k: _first_word(v) if k == "trader_action" else _skeleton(v)
+                for k, v in value.items() if k not in _PROSE}
     if isinstance(value, list):
         return [_skeleton(v) for v in value]
     if isinstance(value, str):
@@ -185,11 +224,12 @@ def fix_state(state: dict, translate: Translate | None) -> tuple[dict, dict]:
     ``{"fixed": [field...], "mismatch": [field...], "kind": "ja"|"zh"|None}``."""
     out = dict(state)
     report: dict = {"fixed": [], "mismatch": [], "kind": None}
+    deadline = time.monotonic() + BUDGET_SEC   # the fields share one budget
     for key in STATE_FIELDS:
         text = out.get(key)
         if not isinstance(text, str) or not text.strip():
             continue
-        fixed, kind, status = fix_text(text, translate, lambda a, b, key=key: same_plan(out, key, b))
+        fixed, kind, status = fix_text(text, translate, lambda a, b, key=key: same_plan(out, key, b), deadline)
         if status == "ok":
             continue
         report["kind"] = report["kind"] or kind
@@ -220,15 +260,15 @@ def fix_summary(summary: dict, translate: Translate | None) -> tuple[dict, str |
     are translated, each keeping its numbers; anything off leaves the whole summary as it was."""
     copy = json.loads(json.dumps(summary))
     slots = _summary_slots(copy)
-    kind = foreign("\n".join(box[k] for box, k in slots))
+    kind = foreign("\n".join(box[k] for box, k in slots))   # one sentence per line: each is judged too
     if kind is None:
         return summary, None, "ok"
     todo = [(box, k) for box, k in slots if _foreign_line(box[k])]
-    got = _translate([box[k] for box, k in todo], translate) if translate and todo else None
+    got = _translate([box[k] for box, k in todo], translate, time.monotonic() + BUDGET_SEC) if translate and todo else None
     if got is None:
         return summary, kind, "mismatch"
     for (box, k), line in zip(todo, got, strict=True):
-        if not kept(box[k], line) or _foreign_line(line):
+        if not kept(box[k], line) or _strong(line):
             return summary, kind, "mismatch"
         box[k] = line
     if foreign("\n".join(box[k] for box, k in _summary_slots(copy))) is not None:

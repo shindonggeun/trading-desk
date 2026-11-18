@@ -280,7 +280,10 @@ export default function Dashboard() {
   const flip = (id: SectionId) =>
     update(layout === "phone" ? { ...prefs, mobileOpen: toggled(prefs.mobileOpen, id) } : { ...prefs, closed: toggled(prefs.closed, id) });
   // 옮길 수 있는 이웃: 넓은 화면은 같은 열 안에서, 그 밖에는 전체 순서에서
-  const peers = (id: SectionId) => (layout === "wide" ? prefs.order.filter((s) => COLUMN[s] === COLUMN[id]) : prefs.order);
+  // 넓은 화면: 맨 위 한 줄(아침 시황 · 오늘 방향)은 그 둘끼리, 나머지는 같은 열 안에서
+  const peers = (id: SectionId) => (layout !== "wide" ? prefs.order
+    : TOP_SECTIONS.includes(id) ? prefs.order.filter((s) => TOP_SECTIONS.includes(s))
+    : prefs.order.filter((s) => !TOP_SECTIONS.includes(s) && COLUMN[s] === COLUMN[id]));
   const move = (id: SectionId, by: -1 | 1) => {
     const line = peers(id);
     const other = line[line.indexOf(id) + by];
@@ -330,7 +333,13 @@ export default function Dashboard() {
     // 높이는 모두 자동(#519)이라 잰 높이는 내용을 다시 잴 때까지의 첫 짐작 — 접힌 구역 · 아직 불러오는 중인 구역은 보통 높이로
     const measured = (flowRef.current ? measureLayout(flowRef.current, prefs.order) : [])
       .map((it) => ({ ...it, h: prefs.closed.includes(it.i as SectionId) || it.h <= HEAD_ROWS ? DEFAULT_H : it.h }));
-    const items = band === "wide" ? measured.map((it) => ({ ...it, x: COLUMN[it.i as SectionId] * 4, w: 4 })) : measured;
+    // #573 맨 위 한 줄은 넓게(8칸) · 좁게(4칸) 그대로, 나머지는 3열(4칸씩)
+    const topOrder = prefs.order.filter((s) => TOP_SECTIONS.includes(s));
+    const items = band === "wide" ? measured.map((it) => {
+      const t = topOrder.indexOf(it.i as SectionId);
+      if (t >= 0) return { ...it, y: 0, x: t === 0 ? 0 : GRID_COLS - MIN_W, w: t === 0 && topOrder.length > 1 ? GRID_COLS - MIN_W : t === 0 ? GRID_COLS : MIN_W };
+      return { ...it, x: COLUMN[it.i as SectionId] * 4, w: 4 };
+    }) : measured;
     setDraft({ items, hidden: [], fixed: [] });
   };
   const finishEdit = () => {
@@ -463,12 +472,16 @@ export default function Dashboard() {
           )}
         </div>
       ) : layout === "wide" ? (
-        <div className="dash-columns" ref={flowRef}>
-          {([0, 1, 2] as const).map((col) => (
-            <div key={col} className="dash-col">
-              {prefs.order.filter((id) => COLUMN[id] === col).map(renderSection)}
-            </div>
-          ))}
+        <div className="dash-wide-flow" ref={flowRef}>
+          {/* #573 아침 시황 · 오늘 방향은 3열 위 한 줄 — 넓은 화면 첫눈에 */}
+          <div className="dash-top">{prefs.order.filter((id) => TOP_SECTIONS.includes(id)).map(renderSection)}</div>
+          <div className="dash-columns">
+            {([0, 1, 2] as const).map((col) => (
+              <div key={col} className="dash-col">
+                {prefs.order.filter((id) => !TOP_SECTIONS.includes(id) && COLUMN[id] === col).map(renderSection)}
+              </div>
+            ))}
+          </div>
         </div>
       ) : (
         <div className="dash-sections" ref={flowRef}>{prefs.order.map(renderSection)}</div>

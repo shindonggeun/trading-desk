@@ -2655,3 +2655,9 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .daycall-reasons summary { cursor: pointer; }
 .daycall-page-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
 .daycall-notes { margin: 6px 0 0; padding-left: 1.1em; display: grid; gap: 2px; }
+
+/* #573 넓은 화면 기본 배치: 아침 시황 · 오늘 방향을 3열 위 한 줄로 */
+.dash-wide-flow { display: grid; gap: 14px; min-width: 0; }
+.dash-top { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.dash-top:empty { display: none; }
+.dash-top > * { min-width: 0; grid-column: auto; }   /* 넓은 구역(dash-wide)이어도 이 줄에서는 나란히 */

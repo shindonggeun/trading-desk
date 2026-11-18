@@ -116,7 +116,7 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli day-call backtest --mark
 
 검증 90일은 약 60세션이다(KR 59 · US 63). 방향 적중률의 표준오차는 약 ±6%p 이고, 55% 는 우연과 구분되지 않는다. 기준선은 항상 롱만이 아니라 **항상 숏**과도 같이 본다. 하락장 검증 구간에서는 숏 쪽으로 기운 모델이 항상 롱을 쉽게 이기기 때문이다(`called_long_share`).
 
-## 운영 (`desk/day_calls.py`, Alembic 0017 `day_calls`)
+## 운영 (`desk/day_calls.py`, Alembic 0019 `day_calls`, 0018 `notify_channels` 다음)
 
 - **판정**: 앱 안 루프가 2분마다 돈다. 각 시장의 개장일에 회차 창 안이면 두 판정을 만든다. 전일 종가 대비 · 시가 대비를 한 번 받은 봉으로 만든다.
 - **창**: KR 07:30~08:00 · 09:30~11:00 KST, US 09:00~09:30 · 10:00~10:30 ET.

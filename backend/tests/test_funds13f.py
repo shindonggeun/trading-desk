@@ -225,7 +225,7 @@ def test_a_13f_nt_is_followed_to_the_manager_that_reports_and_summarised(tmp_pat
     assert funds.refresh() == len(f13.FUNDS)
     v = funds.view("pershing")
     assert v["quarter"] == "2026Q3" and v["form"] == "13F-NT" and v["filed_at"] == "2026-11-16"   # its own filing
-    assert v["reported_by"] == {"name": "Pershing Square Holdco, L.P.", "cik": HOLDCO, "own_rows": False}
+    assert v["reported_by"] == {"name": "Pershing Square Holdco, L.P.", "cik": HOLDCO, "own_rows": False, "scope": None}
     assert v["prev_quarter"] == "2026Q2" and v["quarters"] == ["2026Q3", "2026Q2"]
     assert v["count"] == 4 and v["total_value"] == STOCKS_Q3 and v["options_value"] == 100_000_000
     uber = next(h for h in v["holdings"] if h["ticker"] == "UBER" and not h["put_call"])
@@ -568,14 +568,16 @@ def test_oaktree_is_read_from_its_own_rows_of_brookfields_report(tmp_path):
     assert funds.refresh() == len(f13.FUNDS) and funds.errors["oaktree"] is None
     v = funds.view("oaktree")
     assert v["quarter"] == "2026Q3" and v["form"] == "13F-NT"
-    assert v["reported_by"] == {"name": "Brookfield Corp", "cik": BROOK, "own_rows": True}
+    assert v["reported_by"] == {"name": "Brookfield Corp", "cik": BROOK, "own_rows": True,
+                                "scope": f13.BY_ID["oaktree"].reporters[0].scope}
+    assert "Oaktree Fund Advisors 는 빼서" in v["reported_by"]["scope"]                # seq 8 is not Oaktree's 13F
     by = {(h["name"], h["put_call"]): h for h in v["holdings"]}
     assert set(by) == {("TORM PLC", None), ("QVC GROUP INC", None), ("WESTERN DIGITAL CORP", "PUT"),
                        ("BAUSCH LOMB CORP", None)}                                  # no Brookfield or other adviser rows
     assert by[("TORM PLC", None)]["shares"] == 20_500_000 and by[("TORM PLC", None)]["change"] == "decrease"
     assert by[("QVC GROUP INC", None)]["change"] == "new" and by[("BAUSCH LOMB CORP", None)]["change"] == "sold"
     assert v["prev_quarter"] == "2026Q2" and v["count"] == 2 and v["total_value"] == 310_000_000 + 99_080_000
-    assert (tmp_path / f"table-{BROOK_Q3}-for-{OAK}.json").exists()                 # kept apart from a whole table
+    assert (tmp_path / f"table-{BROOK_Q3}-for-{OAK}-r{f13.SHARE_RULE}.json").exists()   # apart from a whole table
     assert not (tmp_path / f"table-{BROOK_Q3}.json").exists()
     offline = {k: (f13.FundsUnavailable("offline") if "Archives" in k and "primary_doc" not in k else v)
                for k, v in _oaktree_pages().items()}
@@ -613,3 +615,18 @@ def test_a_reporter_amendment_for_other_advisers_leaves_the_funds_rows_as_they_w
     v = funds.view("oaktree")
     assert v["count"] == 2 and v["total_value"] == 310_000_000 + 99_080_000 and v["form"] == "13F-NT"
     assert not any(h["name"] == "SECRET PICK" for h in v["holdings"])
+
+
+def test_a_new_share_rule_reads_the_reporters_table_again(tmp_path, monkeypatch):
+    funds = _funds(pages=_oaktree_pages(), tmp_path=tmp_path)
+    funds.refresh()
+    assert funds.view("oaktree")["count"] == 2
+    monkeypatch.setattr(f13, "SHARE_RULE", f13.SHARE_RULE + 1)
+    again = _funds(pages=_oaktree_pages(), tmp_path=tmp_path)
+    again.refresh()
+    assert again.view("oaktree")["count"] == 2
+    assert any(u.endswith("61004.xml") for u in again.edgar.asked)                   # not the old rule's cache
+    assert (tmp_path / f"table-{BROOK_Q3}-for-{OAK}-r{f13.SHARE_RULE}.json").exists()
+    same = _funds(pages=_oaktree_pages(), tmp_path=tmp_path)
+    same.refresh()
+    assert not any(u.endswith("61004.xml") for u in same.edgar.asked)                # the same rule: from disk

@@ -2864,3 +2864,17 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .mini-tone.tone-caution { color: var(--warn); }
 .mini-tone.tone-warning { color: var(--danger); }
 .mini-tone.tone-neutral, .mini-tone.sev-info { color: var(--muted); }
+/* #630 고른 삼각수렴 · 쐐기 — 목록 칩으로 고르고, 설명 카드(쉬운 설명 · 구간 · 확률 · 목표 · 예측 아님) */
+.pattern-list .pattern-chip { color: var(--warn); font-weight: 650; }
+.pattern-list li.pattern-picked { background: var(--surface-2); }
+.pattern-card { margin-top: 10px; display: grid; gap: 6px; }
+.pattern-card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.pattern-card p { margin: 0; }
+.pattern-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; }
+.pattern-facts dt { color: var(--muted); }
+.pattern-facts dd { margin: 0; overflow-wrap: anywhere; }
+.pattern-progress { color: var(--warn); }
+@media (max-width: 480px) {
+  .pattern-facts { grid-template-columns: minmax(0, 1fr); }
+  .pattern-facts dd { margin-bottom: 4px; }
+}

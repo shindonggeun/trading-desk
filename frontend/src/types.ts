@@ -658,6 +658,18 @@ export interface ChartPattern {
   width_pct: number;
   narrowed: number;
   stats: PatternStats | null;
+  /** #629 꼭짓점 봉 시각(UTC ISO) — 봉이 모자라면 null */
+  apex_at?: string | null;
+  /** #629 흔히 방향이 나오는 구간(마지막 봉 뒤 bars_ahead 칸) — passed 면 이미 지났다 */
+  breakout_window?: { from: string; to: string; bars_ahead: [number, number]; share: [number, number];
+    basis: "measured" | "textbook"; passed: boolean } | null;
+  /** #629 위 · 아래로 깼을 때의 목표(패턴 높이만큼), reach_pct 는 과거 도달 비율 */
+  targets?: { up: number; down: number; height_pct: number; reach_pct: number | null; basis: string } | null;
+  /** #629 어느 쪽 확률 — small_sample(n<30)이면 "표본 적음", verdict 가 edge 가 아니면 방향 근거 약함 */
+  odds?: { up_pct: number; down_pct: number; none_pct: number | null; n: number; prior: unknown; small_sample: boolean;
+    false_break_pct: number | null; verdict: string; edge_pct: number | null } | null;
+  /** #629 쉬운 말 한 줄(끝이 "예측 아님.") */
+  explain?: string;
 }
 
 export interface FibLevel {

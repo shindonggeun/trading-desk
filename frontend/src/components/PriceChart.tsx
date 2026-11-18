@@ -38,6 +38,7 @@ import { oddsLabel } from "../gapOdds";
 import type { GapReport, LinesReport, OpenGap } from "../types";
 import type { BottomZone, ChartPattern, FibLevel, Fibonacci, OutlookPeriodId, Plan, Positioning, Projection, RunOutlook, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
+import PatternCard, { patternKey } from "./PatternCard";
 import { clipPath, ConeShade, directionLabel, OUTLOOK_PERIODS, outlookCone } from "./chartOutlook";
 import { css, useColorScheme } from "../chartColors";
 
@@ -470,6 +471,9 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // 고른 선이 거르기 · 기준 바꾸기로 사라지면 고름도 푼다
   useEffect(() => { if (pickedId && !pickedLine) pickTrend(null); }, [pickedId, pickedLine, pickTrend]);
   const patterns: ChartPattern[] = useMemo(() => (show.pattern ? srSource?.patterns ?? [] : []), [show.pattern, srSource]);
+  // #630 고른 패턴(목록 칩 · 다시 누르면 풀림) — 강조해 그리고 돌파 예상 구간 띠 · 꼭짓점 · 목표선 · 설명 카드
+  const [patSel, setPatSel] = useState<string | null>(null);
+  const picked = patterns.find((p) => patternKey(p) === patSel) ?? null;
   // #300 예상도: 이 봉 주기와 짝인 시간축만(일봉 · 1시간 · 5분). 모델 설명이 오는 중이면 20초 뒤 한 번 더 읽는다.
   const projFor = PROJECTION_HORIZON[interval];
   const [proj, setProj] = useState<Projection | null>(null);
@@ -1563,8 +1567,11 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, autoscaleInfoProvider: () => null };
     const added: ISeriesApi<"Line">[] = [];
     const detach: (() => void)[] = [];
-    const color = css("--warn");
+    const warn = css("--warn");
+    const sel = patSel && patterns.some((x) => patternKey(x) === patSel) ? patSel : null;
     for (const p of patterns) {
+      const mine = sel === patternKey(p);
+      const color = sel && !mine ? withAlpha(warn, 0.3) : warn;
       try {
         const series: ISeriesApi<"Line">[] = [];
         for (const side of [p.upper, p.lower]) {
@@ -1584,11 +1591,12 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
             if (Number.isFinite(v) && v > 0) data.push({ time: time(rows[i].key), value: v });
           }
           if (data.length < 2) continue;
-          const s = chart.addSeries(LineSeries, { ...quiet, color, lineWidth: 2, lineStyle: LineStyle.Dashed });
+          const s = chart.addSeries(LineSeries, { ...quiet, color, lineWidth: mine ? 3 : sel ? 1 : 2, lineStyle: mine ? LineStyle.Solid : LineStyle.Dashed });
           s.setData(data);
           added.push(s);
           series.push(s);
         }
+        if (mine) drawPicked(p);
         if (series[0]) {
           const state = p.state === "converging" ? `수렴 중 · 정점 ${Math.round(p.apex.bars_ahead)}봉 뒤` : PATTERN_STATE[p.state];
           const m = createSeriesMarkers(series[0], [{ time: time(rows[rows.length - 1].key), position: "aboveBar", shape: "square",
@@ -1599,12 +1607,48 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
         /* 이상한 패턴 하나는 건너뛴다 — 차트는 그대로 */
       }
     }
+    // #630 고른 패턴: 돌파 예상 구간(이 차트 주기와 같을 때 — 마지막 봉 뒤 bars_ahead 칸)을 세로 띠로,
+    // 꼭짓점을 점으로, 위 · 아래 목표를 점선 가격선(축 이름표)으로. 띠 · 점은 축 범위에 넣지 않는다.
+    function drawPicked(p: ChartPattern) {
+      const last = rows[rows.length - 1].key;
+      const w = p.breakout_window;
+      const sameTf = p.timeframe === drawn!.interval;
+      const reach = Math.max(sameTf ? Math.ceil(p.apex.bars_ahead) : 0, sameTf && w ? w.bars_ahead[1] : 0);
+      const future = reach > 0 ? futureKeys(last, drawn!.interval, Math.min(reach, 400)) : [];
+      const keyAt = (bar: number) => (bar <= 0 ? last : future[Math.min(bar, future.length) - 1]);
+      if (w && sameTf && !w.passed && future.length) {
+        const band = chart.addSeries(HistogramSeries, { priceScaleId: "pattern-band", color: withAlpha(warn, w.basis === "measured" ? 0.2 : 0.12),
+          priceLineVisible: false, lastValueVisible: false, base: 0 });
+        band.priceScale().applyOptions({ scaleMargins: { top: 0, bottom: 0 }, visible: false });
+        const keys = new Set<Key>();
+        for (let b = Math.max(1, w.bars_ahead[0]); b <= w.bars_ahead[1]; b++) keys.add(keyAt(b));
+        band.setData([...keys].map((k) => ({ time: time(k), value: 1 })));
+        added.push(band as unknown as ISeriesApi<"Line">);
+      }
+      if (sameTf && p.apex.price > 0 && p.apex.bars_ahead > 0 && future.length) {
+        const apex = chart.addSeries(LineSeries, { ...quiet, color: warn, lineVisible: false, pointMarkersVisible: false });
+        apex.setData([{ time: time(keyAt(Math.round(p.apex.bars_ahead))), value: p.apex.price }]);
+        added.push(apex);
+        const m = createSeriesMarkers(apex, [{ time: time(keyAt(Math.round(p.apex.bars_ahead))), position: "inBar", shape: "circle",
+          color: warn, text: "꼭짓점", size: 0.8 } as SeriesMarker<Time>]);
+        detach.push(() => m.detach());
+      }
+      const t = p.targets;
+      if (t) {
+        for (const [v, label, c] of [[t.up, "위 목표", css("--long")], [t.down, "아래 목표", css("--short")]] as const) {
+          if (!(v > 0)) continue;
+          const line = drawn!.series.createPriceLine({ price: v, title: `${label} ${price(v)}`, color: withAlpha(c, 0.85),
+            lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true });
+          detach.push(() => drawn!.series.removePriceLine(line));
+        }
+      }
+    }
     return () => {
       if (!drawn.alive.current) return;
       for (const d of detach) d();
       for (const s of added) chart.removeSeries(s);
     };
-  }, [drawn, patterns, ticker]);
+  }, [drawn, patterns, ticker, patSel]);
 
   // #300 예상도 — 마지막 봉 뒤 미래 칸에 확률 원뿔(68% 실선 · 95% 점선 · 가운데 점선)과 시나리오 경로(강세 · 약세 · 범위)를 그린다.
   // 축 범위엔 95% 띠를 넣지 않는다(먼 범위가 봉을 누르지 않게). 이 차트 주기와 같은 시간축의 예상도만 그린다.
@@ -2155,8 +2199,11 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
         patterns.length > 0 ? (
           <ul className="sr-list pattern-list" aria-label="삼각수렴 · 쐐기">
             {patterns.map((p) => (
-              <li key={`${p.kind}-${p.timeframe}-${p.upper.from.at}`} className={`pattern-${p.state}`}>
-                <span className="sr-kind">{p.label}</span>
+              <li key={patternKey(p)} className={`pattern-${p.state}${patSel === patternKey(p) ? " pattern-picked" : ""}`}>
+                <button type="button" className={`chip pattern-chip${patSel === patternKey(p) ? " chip-on" : ""}`} aria-pressed={patSel === patternKey(p)}
+                  title="차트에 강조하고 돌파 예상 구간 · 목표를 그려요" onClick={() => setPatSel((cur) => (cur === patternKey(p) ? null : patternKey(p)))}>
+                  {p.label}
+                </button>
                 <strong className="num">{price(p.upper.to.price)} / {price(p.lower.to.price)}</strong>
                 <span className="muted small">
                   {tfLabel(p.timeframe)} · {PATTERN_STATE[p.state]}{p.state === "converging" ? ` · 정점 ${Math.round(p.apex.bars_ahead)}봉 뒤` : ""} · 폭 {p.width_pct}%
@@ -2172,6 +2219,10 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
                 : "지금 좁혀지는 삼각수렴 · 쐐기가 없습니다."}
           </p>
         )
+      )}
+      {show.pattern && picked && (
+        <PatternCard p={picked} last={drawn ? drawn.rows[drawn.rows.length - 1].bar.close : null}
+          sameTf={!!drawn && picked.timeframe === drawn.interval} onClose={() => setPatSel(null)} />
       )}
       {fib && (
         <p className="muted small fib-note">

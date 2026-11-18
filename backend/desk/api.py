@@ -91,6 +91,7 @@ from .prices import INTERVALS, PriceSource
 from .profile import PROFILES
 from .related import collect as collect_related
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
+from .runner import rate_limited as run_rate_limited
 from .sectors import Duplicate, NotFound, Sectors, clean_name, clean_tickers
 from .settings import Settings, load
 from .sr import frame_bars, support_resistance
@@ -436,10 +437,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             if settings.fake_runs or desk_only:
                 out = await asyncio.to_thread(morning_brief.write, b, None)
             else:
-                async with app.state.manager.spare_slot() as free:     # the slot only around the one model call
-                    if not free and trigger == "auto":
-                        return "busy"
-                    out = await asyncio.to_thread(morning_brief.write, b, projection.llm_note if free else None)
+                try:
+                    async with app.state.manager.spare_slot() as free:  # the slot only around the one model call
+                        if not free and trigger == "auto":
+                            return "busy"
+                        out = await asyncio.to_thread(morning_brief.write, b, projection.llm_note if free else None)
+                except Exception as exc:
+                    if trigger == "auto" or not run_rate_limited(exc):
+                        raise
+                    out = await asyncio.to_thread(morning_brief.write, b, None)   # asked for now: the desk's words
             model = None if out["source"] == "rules" else os.getenv("TRADINGAGENTS_QUICK_THINK_LLM") or "quick"
             saved = await asyncio.to_thread(brief_desk.save, out, morning_brief._public(b), model, trigger)
         finally:
@@ -762,14 +768,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             # tries again every few minutes, and past DESK_AFTER_SEC it goes out in the desk's own words
             failures = 0
             while True:
-                due = brief_desk.next_due()
-                wait = (due - datetime.now(UTC)).total_seconds()
-                if wait > 0:
-                    await asyncio.sleep(min(wait, 3600))
-                    continue
-                late = -wait >= morning_brief.DESK_AFTER_SEC
-                try:
-                    got = await make_brief("auto", desk_only=late)
+                try:                 # a database blip must not end the loop for good
+                    due = await asyncio.to_thread(brief_desk.next_due)
+                    wait = (due - datetime.now(UTC)).total_seconds()
+                    if wait > 0:
+                        await asyncio.sleep(min(wait, 3600))
+                        continue
+                    got = await make_brief("auto", desk_only=-wait >= morning_brief.DESK_AFTER_SEC)
                 except Exception:  # a failed pass must not stop the next one
                     log.exception("morning brief failed")
                     got = "failed"
@@ -1210,8 +1215,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         poll ``GET /api/briefs/morning`` for ``generating``."""
         if brief_desk.generating:
             raise HTTPException(409, "이미 만드는 중이에요")
+        brief_desk.generating = True      # taken now (no await since the check): a second click gets 409
         today = datetime.now(market_calendar.KST).date()
-        if await asyncio.to_thread(brief_desk.count, today, "manual") >= morning_brief.MANUAL_PER_DAY:
+        try:
+            used = await asyncio.to_thread(brief_desk.count, today, "manual")
+        except Exception:
+            brief_desk.generating = False
+            raise
+        if used >= morning_brief.MANUAL_PER_DAY:
+            brief_desk.generating = False
             raise HTTPException(429, f"오늘은 직접 만들기를 {morning_brief.MANUAL_PER_DAY}번 다 썼어요. 내일 다시 할 수 있어요")
 
         async def work():
@@ -1220,7 +1232,6 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             except Exception:  # logged; the page sees generating go false
                 log.exception("manual morning brief failed")
 
-        brief_desk.generating = True      # taken now: a second click right away gets 409
         task = asyncio.create_task(work())
         brief_tasks.add(task)
         task.add_done_callback(brief_tasks.discard)

@@ -135,7 +135,7 @@ def test_the_models_wording_is_kept_only_where_its_numbers_are_the_bundles_and_i
     answer = {
         "title": "나스닥 +1.20% 상승 마감, 반도체 강세",                # numbers from the bundle: kept
         "numbers": ["나스닥 22,264 (+1.20%)", "엔비디아 매출 570억 달러"],   # a made-up number: that item dropped
-        "kr_flow": "어제 외국인이 코스피를 -1,234억 팔았습니다。日本語の文です",   # Japanese: the draft stays
+        "kr_flow": "어제 외국인이 코스피를 -1,234억 팔았습니다。日本語の文章ですから注意してください",   # Japanese: the draft stays
         "done": ["헤드라인의 12% 급등"],                            # a number only a headline had: dropped
         "closing": "오늘은 FOMC 의사록 전까지 확인 위주로 대응하세요.",
     }
@@ -173,9 +173,9 @@ def test_a_failing_model_keeps_the_desk_brief_and_a_rate_limit_is_raised():
 
 def test_foreign_text_is_told_apart():
     assert mb.foreign("오늘 코스피는 강세") is None
-    assert mb.foreign("今日の市場") == "ja"
-    assert mb.foreign("今天市场上涨很多") == "zh"
-    assert mb.foreign("반도체(半導體) 강세") is None or mb.foreign("반도체(半導體) 강세") == "zh"   # hanja: #567 decides
+    assert mb.foreign("今日の市場はとても強いです") == "ja"
+    assert mb.foreign("今天市场上涨很多投资者买入") == "zh"
+    assert mb.foreign("반도체(半導體) 강세가 이어졌어요") is None          # a hanja word in Korean
 
 
 @pytest.mark.parametrize(("now_kst", "last", "want"), [
@@ -264,3 +264,69 @@ def test_the_api_writes_lists_and_pushes_a_brief_and_guards_the_quota(db_url):
         client.cookies.clear()
         assert client.get("/api/briefs/morning").status_code == 401
         assert client.post("/api/briefs/morning/run").status_code in (401, 403)
+
+
+def test_a_flipped_sign_an_invented_date_or_a_date_digit_is_not_a_bundle_number():
+    b = _bundle()
+    allowed = mb.allowed_numbers(b)
+    assert mb._ok("나스닥이 +1.20% 올랐어요.", allowed, 200)
+    assert mb._ok("나스닥이 1.20% 올랐어요.", allowed, 200)              # the size alone: the words say the side
+    assert mb._ok("나스닥이 -1.20% 내렸어요.", allowed, 200) is None      # the bundle says +1.20%
+    assert mb._ok("외국인이 18억 샀어요.", allowed, 200) is None          # "18" is only the day of the date
+    assert mb._ok("외국인이 2026억 샀어요.", allowed, 200) is None
+    assert mb._ok("11/21(금) 04:00 FOMC 가 있어요.", allowed, 200) is None   # no such date or time
+    got = mb._ok("FOMC 의사록은 11/20(목) 04:00. 나스닥은 -9.99% 였어요.", allowed, 300)
+    assert got == "FOMC 의사록은 11/20(목) 04:00."                       # the bad sentence alone is dropped
+
+
+def test_the_schedule_is_in_time_order_across_a_month_end():
+    now = datetime(2026, 11, 27, 21, 40, tzinfo=UTC)
+    extra = [{"date": "2026-12-02", "label": "둘째", "time_kst": "09:00"},
+             {"date": "2026-11-30", "label": "첫째", "time_kst": "22:30"},
+             {"date": "2026-12-01", "label": "시각 없음", "time_kst": None}]
+    raw = asyncio.run(mb.collect(_sources(month=lambda m: {"days": []}, extra=lambda: extra), now))
+    ahead = mb.bundle(raw, now)["events_ahead"]
+    assert [e["label"] for e in ahead] == ["첫째", "시각 없음", "둘째"]
+    assert ahead[1]["when"] == "12/1(화)"                                 # no made-up 09:00
+
+
+def test_the_time_setting_never_breaks_the_start():
+    assert mb.parse_at("7시") is None and mb.parse_at("11:30") is None and mb.parse_at("06:45").hour == 6
+
+
+def test_a_busy_brief_is_409_a_failed_push_keeps_the_brief_and_the_list_needs_a_session(db_url):
+    with _client(db_url) as client:
+        class Broken:
+            def broadcast(self, *kinds, payload):
+                raise RuntimeError("push service down")
+        client.app.state.pusher = Broken()
+        assert client.post("/api/briefs/morning/run").status_code == 202
+        deadline = time.monotonic() + 30
+        while (listed := client.get("/api/briefs/morning/list").json())["generating"] or not listed["items"]:
+            assert time.monotonic() < deadline, "the brief was not written"
+            time.sleep(0.05)
+        assert client.get("/api/briefs/morning").status_code == 200       # stored although the push failed
+        client.cookies.clear()
+        assert client.get("/api/briefs/morning/list").status_code == 401
+
+
+def test_a_second_click_while_one_is_written_is_409(db_url, monkeypatch):
+    import threading
+
+    gate = threading.Event()
+    real = mb.write
+
+    def slow(b, model=None):
+        gate.wait(10)
+        return real(b, model)
+    monkeypatch.setattr(mb, "write", slow)
+    with _client(db_url) as client:
+        client.app.state.pusher = type("P", (), {"broadcast": lambda self, *k, payload: 1})()
+        assert client.post("/api/briefs/morning/run").status_code == 202
+        assert client.post("/api/briefs/morning/run").status_code == 409
+        gate.set()
+        deadline = time.monotonic() + 30
+        while (listed := client.get("/api/briefs/morning/list").json())["generating"] or not listed["items"]:
+            assert time.monotonic() < deadline, "the brief was not written"
+            time.sleep(0.05)
+        assert len(listed["items"]) == 1

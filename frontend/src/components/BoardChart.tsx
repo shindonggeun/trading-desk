@@ -4,6 +4,7 @@ import { api, type CandleInterval, type Candles } from "../api";
 import { price } from "../format";
 import { crosshairTime } from "./chartFormat";
 import type { EstimatedCandles } from "../types";
+import { css, useColorScheme } from "../chartColors";
 
 // 분봉 시각은 한국 시각으로(LiveChart · PriceChart 와 같은 방식)
 const KST_SEC = 9 * 3600;
@@ -42,9 +43,6 @@ const ESTIMATED = new Set<BoardInterval>(["5m", "10m", "15m", "1h", "1d", "1w"])
 
 type Bar = { time: UTCTimestamp; open: number; high: number; low: number; close: number };
 
-function css(name: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
 function toTime(iso: string): UTCTimestamp {
   return (Math.floor(new Date(iso).getTime() / 1000) + KST_SEC) as UTCTimestamp;
 }
@@ -72,7 +70,7 @@ function merge10(bars: Bar[]): Bar[] {
 /**
  * mark: #296 종목 정보 카드의 지지/저항 단계를 눌러 넘어온 가격 — 굵은 강조선을 긋고 축이 그 가격까지 보이게 넓힌다.
  */
-export default function BoardChart({ ticker, name, mark }: { ticker: string; name?: string; mark?: { price: number; label: string } | null }) {
+function BoardChartInner({ ticker, name, mark }: { ticker: string; name?: string; mark?: { price: number; label: string } | null }) {
   const box = useRef<HTMLDivElement>(null);
   const ref = useRef<{ chart: IChartApi; real: ISeriesApi<"Candlestick">; est: ISeriesApi<"Candlestick"> } | null>(null);
   const [interval, setIv] = useState<BoardInterval>(() => {
@@ -89,12 +87,12 @@ export default function BoardChart({ ticker, name, mark }: { ticker: string; nam
   useEffect(() => {
     const el = box.current;
     if (!el) return;
-    const up = css("--up") || "#f2464b";
-    const down = css("--down") || "#3a86f8";
-    const grid = css("--border") || "#2a3038";
+    const up = css("--up");
+    const down = css("--down");
+    const grid = css("--border");
     const chart = createChart(el, {
       autoSize: true,
-      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: css("--muted") || "#8c939d" },
+      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: css("--muted") },
       grid: { vertLines: { color: grid }, horzLines: { color: grid } },
       rightPriceScale: { borderColor: grid },
       timeScale: { borderColor: grid, timeVisible: true, secondsVisible: false },
@@ -119,7 +117,7 @@ export default function BoardChart({ ticker, name, mark }: { ticker: string; nam
   useEffect(() => {
     const c = ref.current;
     if (!c || !mark) return;
-    const color = css("--accent") || "#c9d1db";
+    const color = css("--accent");
     const line = c.real.createPriceLine({ price: mark.price, title: mark.label, color, lineWidth: 3, lineStyle: LineStyle.Solid, axisLabelVisible: true });
     c.real.applyOptions({
       autoscaleInfoProvider: (original: () => AutoscaleInfo | null) => {
@@ -168,7 +166,7 @@ export default function BoardChart({ ticker, name, mark }: { ticker: string; nam
       c.est.setData(est);
       if (line) c.real.removePriceLine(line);
       line = estData && est.length
-        ? c.real.createPriceLine({ price: estData.close, title: "기준 종가", color: css("--muted") || "#8c939d", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true })
+        ? c.real.createPriceLine({ price: estData.close, title: "기준 종가", color: css("--muted"), lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true })
         : null;
       setInfo({ est: est.length ? estData : null, real: real.length, failed: realRes.status === "rejected" && !est.length });
     };
@@ -210,4 +208,10 @@ export default function BoardChart({ ticker, name, mark }: { ticker: string; nam
       </p>
     </section>
   );
+}
+
+/** #627 테마(다크 · 라이트)가 바뀌면 새 색으로 차트를 다시 만든다 — 차트 라이브러리는 CSS 변수를 직접 못 받는다 */
+export default function BoardChart(props: Parameters<typeof BoardChartInner>[0]) {
+  const scheme = useColorScheme();
+  return <BoardChartInner key={scheme} {...props} />;
 }

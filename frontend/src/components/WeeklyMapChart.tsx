@@ -14,6 +14,7 @@ import { api } from "../api";
 import { price } from "../format";
 import { crosshairTime } from "./chartFormat";
 import type { WeeklyMap } from "../types";
+import { css, useColorScheme } from "../chartColors";
 
 /**
  * #205 주봉 차트 — 검정선(20주) · 빨간선(60주) · 50주 볼린저밴드(2σ)를 주봉에서 서버(desk/weekly_map.py)와
@@ -25,9 +26,6 @@ const COUNT = 260;          // 약 5년 — 60주선이 앞쪽부터 그려지�
 const KST_MS = 9 * 3600 * 1000;
 const NARROW_WEEKS = 104;   // 좁은 화면에 처음 보이는 주봉 수(약 2년)
 
-function css(name: string, fallback: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
-}
 /** 주봉의 그 시장 날짜(한국 지수는 서울 자정 = UTC 전날 15시) */
 const dayOf = (iso: string) => new Date(new Date(iso).getTime() + KST_MS).toISOString().slice(0, 10);
 
@@ -45,7 +43,7 @@ function pstdev(xs: number[], n: number, i: number): number | null {
   return Math.sqrt(s / n);
 }
 
-export default function WeeklyMapChart({ map }: { map: WeeklyMap }) {
+function WeeklyMapChartInner({ map }: { map: WeeklyMap }) {
   const box = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState(false);
   const symbol = map.source_symbol ?? map.symbol;
@@ -61,11 +59,11 @@ export default function WeeklyMapChart({ map }: { map: WeeklyMap }) {
         return;
       }
       try {
-        const grid = css("--border", "#2a2f37");
-        const up = css("--up", "#e5484d");
-        const down = css("--down", "#3e7bfa");
-        const text = css("--text", "#e6e9ee");
-        const muted = css("--muted", "#8c939d");
+        const grid = css("--border");
+        const up = css("--up");
+        const down = css("--down");
+        const text = css("--text");
+        const muted = css("--muted");
         chart = createChart(el, {
           autoSize: true,
           layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: muted,
@@ -145,4 +143,10 @@ export default function WeeklyMapChart({ map }: { map: WeeklyMap }) {
       </p>
     </div>
   );
+}
+
+/** #627 테마(다크 · 라이트)가 바뀌면 새 색으로 차트를 다시 만든다 — 차트 라이브러리는 CSS 변수를 직접 못 받는다 */
+export default function WeeklyMapChart(props: Parameters<typeof WeeklyMapChartInner>[0]) {
+  const scheme = useColorScheme();
+  return <WeeklyMapChartInner key={scheme} {...props} />;
 }

@@ -8,6 +8,7 @@ import { api, ApiError, type MarketAlert } from "../api";
 import { hhmm as alertTime, SEVERITY_LABEL, useTodayAlerts } from "../alertsFeed";
 import AlertTimeline from "./AlertTimeline";
 import type { IntradayBucket, IntradayFlow, IntradayFuturesBar, IntradaySpotBar, IntradayTurn } from "../types";
+import { css, useColorScheme } from "../chartColors";
 
 // #360 시장 수급 "오늘 장중": 현물(코스피/코스닥) · 코스피200 선물의 외국인 · 기관 · 개인 누적 수급과
 // 고른 봉의 구간 순매수 막대, 외국인 순매수/순매도 전향 마커. 데이터는 #359 GET /api/market/flow/intraday.
@@ -47,9 +48,6 @@ function savePrefs(p: Prefs) {
   try { localStorage.setItem(PREFS, JSON.stringify({ ...p, v: PREFS_VERSION })); } catch { /* 저장 못 해도 화면은 그대로 */ }
 }
 
-function css(name: string, fallback: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
-}
 // 가로축을 KST 시계로 읽게: UTC 초에 9시간을 더해 차트(UTC 표시)에 넘긴다.
 function kstTime(iso: string): UTCTimestamp {
   return Math.floor((Date.parse(iso) + KST_MS) / 1000) as UTCTimestamp;
@@ -113,11 +111,11 @@ type Pane = {
 /** #401 차트 하나: 오른쪽 축 = 누적, 아래 1/4 = 외국인 구간 순매수 막대, 가로축은 08:45~15:45 bucket 격자.
  *  막대 시리즈를 돌려준다 — 모든 격자 시각에 점(또는 빈 점)이 있어 십자선 맞추기의 기준이 된다. */
 function drawPane(el: HTMLElement, date: string, bucketMin: number, pane: Pane): { chart: IChartApi; anchor: ISeriesApi<"Histogram"> } {
-  const grid = css("--border", "#2a3038");
-  const up = css("--up", "#f2464b"), down = css("--down", "#3a86f8");
+  const grid = css("--border");
+  const up = css("--up"), down = css("--down");
   const chart = createChart(el, {
     autoSize: true,
-    layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: css("--muted", "#8c939d"), attributionLogo: false },
+    layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: css("--muted"), attributionLogo: false },
     grid: { vertLines: { color: grid }, horzLines: { color: grid } },
     rightPriceScale: { visible: true, borderColor: grid, scaleMargins: { top: 0.08, bottom: 0.3 } },
     leftPriceScale: { visible: false },
@@ -173,7 +171,7 @@ function drawPane(el: HTMLElement, date: string, bucketMin: number, pane: Pane):
     if (ms.length) createSeriesMarkers(foreignLine, ms);
   }
   // #581 수급 흐름 알림: 막대(격자 전체가 있는 시리즈) 위에, 알림 시각을 봉 격자로 내려 붙인다
-  const warn = css("--warn", "#e5a23a");
+  const warn = css("--warn");
   const am: SeriesMarker<Time>[] = pane.alerts.map((a): SeriesMarker<Time> => {
     const t = kstTime(a.t) as number;
     const snapped = (open + Math.floor((t - open) / step) * step) as UTCTimestamp;
@@ -181,7 +179,7 @@ function drawPane(el: HTMLElement, date: string, bucketMin: number, pane: Pane):
       time: Math.min(Math.max(snapped, open), close) as UTCTimestamp,
       position: "aboveBar",
       shape: a.severity === "strong" ? "square" : "circle",
-      color: a.severity === "info" ? css("--muted", "#8c939d") : warn,
+      color: a.severity === "info" ? css("--muted") : warn,
       text: narrow ? SEVERITY_LABEL[a.severity] : `${alertTime(a.t)} ${SEVERITY_LABEL[a.severity]}`,
     };
   }).sort((a, b) => (a.time as number) - (b.time as number));
@@ -235,7 +233,7 @@ function fakeFlow(bucket: IntradayBucket): IntradayFlow {
   return { supported: true, date, bucket_min: bucket, market_open: true, spot: { kospi, kosdaq: spotBars(0.4) }, futures, turns };
 }
 
-export default function IntradayFlowView() {
+function IntradayFlowViewInner() {
   const [prefs, setPrefs] = useState(loadPrefs);
   const [data, setData] = useState<IntradayFlow | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
@@ -282,13 +280,13 @@ export default function IntradayFlowView() {
     const on = WHO.filter((w) => prefs.who[w.key]);
     const rows = data.spot[prefs.spot];
     const spot = drawPane(se, data.date, data.bucket_min, {
-      lines: on.map((w) => ({ who: w.key, color: css(w.color, "#a371f7"), points: rows.map((b) => ({ t: b.t, v: b[w.key] })) })),
+      lines: on.map((w) => ({ who: w.key, color: css(w.color), points: rows.map((b) => ({ t: b.t, v: b[w.key] })) })),
       deltas: rows.map((b) => ({ t: b.t, v: b.foreign_delta })),
       turns: data.turns.filter((t) => t.market === prefs.spot), unit: "억",
       alerts: shifts.filter((a) => a.market === prefs.spot),
     });
     const fut = drawPane(fe, data.date, data.bucket_min, {
-      lines: on.map((w) => ({ who: w.key, color: css(w.color, "#a371f7"), points: data.futures.map((b) => ({ t: b.t, v: b[FUT_KEY[w.key]] as number | null })) })),
+      lines: on.map((w) => ({ who: w.key, color: css(w.color), points: data.futures.map((b) => ({ t: b.t, v: b[FUT_KEY[w.key]] as number | null })) })),
       deltas: data.futures.map((b) => ({ t: b.t, v: b.foreign_delta })),
       turns: data.turns.filter((t) => t.market === "futures"), unit: "계약",
       alerts: shifts.filter((a) => a.market === "futures"),
@@ -352,4 +350,10 @@ export default function IntradayFlowView() {
       <AlertTimeline />
     </div>
   );
+}
+
+/** #627 테마(다크 · 라이트)가 바뀌면 새 색으로 차트를 다시 만든다 — 차트 라이브러리는 CSS 변수를 직접 못 받는다 */
+export default function IntradayFlowView() {
+  const scheme = useColorScheme();
+  return <IntradayFlowViewInner key={scheme} />;
 }

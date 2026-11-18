@@ -18,6 +18,7 @@ import { levelsContradict } from "../listLevels";
 import type { Plan } from "../types";
 import { quoteSourceText } from "../korean";
 import { bucketStart, LIVE_INTERVALS, LiveBucket, loadLiveInterval, minutesOf, saveLiveInterval } from "../liveBuckets";
+import { css, useColorScheme } from "../chartColors";
 
 // 분봉 시각은 한국 시각으로 보인다(PriceChart 와 같은 방식).
 const KST_SEC = 9 * 3600;
@@ -26,9 +27,6 @@ const KST_SEC = 9 * 3600;
 const HISTORY = 200;
 type Bar = Candles["bars"][number];
 
-function css(name: string, fallback: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
-}
 
 function toTime(iso: string): UTCTimestamp {
   return (Math.floor(new Date(iso).getTime() / 1000) + KST_SEC) as UTCTimestamp;
@@ -38,7 +36,7 @@ function toTime(iso: string): UTCTimestamp {
  * 실시간 차트(#26): 처음엔 /api/candles 의 고른 간격 봉, 그 뒤엔 /api/live/stream 이 주는 최근 1분봉 · 현재가를
  * 같은 간격의 봉으로 접어(#380, 경계는 liveBuckets) 진행 중인 봉을 늘린다. 계획이 있으면 진입 · 손절 · 목표와 지지 · 저항(분석 당시)을 겹쳐 그린다.
  */
-export default function LiveChart({ ticker, plan, onPrice }: {
+function LiveChartInner({ ticker, plan, onPrice }: {
   ticker: string;
   plan: Plan | null;
   onPrice?: (p: number) => void;
@@ -63,12 +61,12 @@ export default function LiveChart({ ticker, plan, onPrice }: {
     const el = box.current;
     if (!el) return;
     let alive = true;
-    const up = css("--up", "#f2464b");
-    const down = css("--down", "#3a86f8");
-    const grid = css("--border", "#2a3038");
+    const up = css("--up");
+    const down = css("--down");
+    const grid = css("--border");
     const chart = createChart(el, {
       autoSize: true,
-      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: css("--muted", "#8c939d") },
+      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: css("--muted") },
       grid: { vertLines: { color: grid }, horzLines: { color: grid } },
       rightPriceScale: { borderColor: grid },
       timeScale: { borderColor: grid, timeVisible: true, secondsVisible: false },
@@ -189,13 +187,13 @@ export default function LiveChart({ ticker, plan, onPrice }: {
     const levels = !levelsContradict(plan);
     const lines: [number | null | undefined, string, string, LineStyle][] = [
       ...(levels ? [
-        [plan?.entry_price, "진입", css("--accent", "#c9d1db"), LineStyle.Solid],
+        [plan?.entry_price, "진입", css("--accent"), LineStyle.Solid],
         // #311 손절 = 손실색 · 목표 = 이익색
-        [plan?.stop_loss, "손절", css("--danger", "#ff6a3d"), LineStyle.Solid],
-        [plan?.price_target, "목표", css("--ok", "#3fb68b"), LineStyle.Solid],
+        [plan?.stop_loss, "손절", css("--danger"), LineStyle.Solid],
+        [plan?.price_target, "목표", css("--ok"), LineStyle.Solid],
       ] as [number | null | undefined, string, string, LineStyle][] : []),
-      [plan?.long_trigger, "롱 조건", css("--long", "#f2464b"), LineStyle.Dotted],
-      [plan?.short_trigger, "숏 조건", css("--short", "#3a86f8"), LineStyle.Dotted],
+      [plan?.long_trigger, "롱 조건", css("--long"), LineStyle.Dotted],
+      [plan?.short_trigger, "숏 조건", css("--short"), LineStyle.Dotted],
     ];
     const made: IPriceLine[] = [];
     for (const [value, title, color, lineStyle] of lines) {
@@ -209,15 +207,15 @@ export default function LiveChart({ ticker, plan, onPrice }: {
     c.series.attachPrimitive(bands);
     // 플레이북 구역 · 사다리 · 손절 · 목표(#117) — 실시간으로 구역에 다가가는 것을 본다
     const book = plan?.playbooks
-      ? playbookDrawing(plan.playbooks, { long: css("--long", "#f2464b"), short: css("--short", "#3a86f8") }, price)
+      ? playbookDrawing(plan.playbooks, { long: css("--long"), short: css("--short") }, price)
       : { bands: [], marks: [] };
     bands.set(
       [
         ...book.bands,
-        ...planBands(plan, null, { loss: css("--danger", css("--up", "#f2464b")), profit: css("--ok", "#3fb68b") }),
+        ...planBands(plan, null, { loss: css("--danger"), profit: css("--ok") }),
         ...srBands(
           sr?.reference_price != null ? nearestLevels(sr.levels ?? [], sr.reference_price, 3, false) : [],
-          sr?.atr, { support: css("--sr-support", "#2bb3a3"), resistance: css("--sr-resistance", "#b58cf0") },
+          sr?.atr, { support: css("--sr-support"), resistance: css("--sr-resistance") },
         ),
       ],
       book.marks,
@@ -257,4 +255,10 @@ export default function LiveChart({ ticker, plan, onPrice }: {
       <div ref={box} className="live-chart-box" />
     </section>
   );
+}
+
+/** #627 테마(다크 · 라이트)가 바뀌면 새 색으로 차트를 다시 만든다 — 차트 라이브러리는 CSS 변수를 직접 못 받는다 */
+export default function LiveChart(props: Parameters<typeof LiveChartInner>[0]) {
+  const scheme = useColorScheme();
+  return <LiveChartInner key={scheme} {...props} />;
 }

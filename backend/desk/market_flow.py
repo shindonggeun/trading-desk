@@ -20,6 +20,7 @@ import logging
 import time
 from datetime import UTC, date, datetime, timedelta, timezone
 
+from . import freshness
 from .broker.base import INSTITUTION_KINDS, INVESTORS, Broker, FlowRecord
 
 log = logging.getLogger(__name__)
@@ -142,7 +143,13 @@ class MarketFlow:
                 cached = (self._clock(), ttl, value)
                 self._cache[key] = cached
         value = cached[2]
-        return {**value, "records": value["records"][:count]}
+        now = self._now()
+        latest = (value.get("records") or [None])[0] or {}
+        # #645 how old the figures are: Toss stamps today's record with its own update time
+        fresh = freshness.stamp(value.get("fetched_at"), now, cached[1], live=market_open(now),
+                                source_at=latest.get("updated_at") if latest.get("in_progress") else None,
+                                source="toss_investors")
+        return {**value, "records": value["records"][:count], "freshness": fresh}
 
     async def _fetch(self, market: str, interval: str) -> tuple[dict, bool]:
         now = self._now()

@@ -17,7 +17,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { api, type CandleInterval, type Candles, type OscillatorView, type OscReading, type ReviewRow } from "../api";
+import { api, ApiError, type CandleInterval, type Candles, type OscillatorView, type OscReading, type ReviewRow } from "../api";
 import { price } from "../format";
 import FillsTable from "./FillsTable";
 import { drawEntry, useEntryNow } from "./chartEntry";
@@ -32,8 +32,10 @@ import { levelsContradict } from "../listLevels";
 import { ALL_ON, devExample, KIND_KO, loadTrendFilter, passes, saveTrendFilter, SCALE_KO, STATUS_KO, trendKey, trendLabel, trendWidth, type TrendFilter } from "../trendLines";
 import TrendLineCard from "./TrendLineCard";
 import GapOddsCard from "./GapOddsCard";
+import ChannelLineCard, { type LinePick } from "./ChannelLineCard";
+import { channelTitle, fakeLines, isLineTf, TF_KO, TREND_STATE_KO, CHANNEL_STATE_KO, trendTitle } from "../channelLines";
 import { oddsLabel } from "../gapOdds";
-import type { GapReport, OpenGap } from "../types";
+import type { GapReport, LinesReport, OpenGap } from "../types";
 import type { BottomZone, ChartPattern, FibLevel, Fibonacci, OutlookPeriodId, Plan, Positioning, Projection, RunOutlook, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
 import { clipPath, ConeShade, directionLabel, OUTLOOK_PERIODS, outlookCone } from "./chartOutlook";
@@ -61,13 +63,15 @@ const MAX_BARS = 2000;
 // 보이는 범위의 왼쪽 끝이 첫 봉에서 이만큼 안쪽이면 더 받는다
 const OLDER_EDGE = 5;
 
-type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; pattern: boolean; proj: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean; bz: boolean; entry: boolean; gaps: boolean; ma: boolean };
+type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; pattern: boolean; proj: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean; bz: boolean; entry: boolean; gaps: boolean; ma: boolean; chan: boolean; ltrend: boolean };
 const SHOW_LABEL: Record<keyof Show, string> = {
   levels: "타점선", pb: "플레이북", sr: "지지 · 저항", all: "모든 지지 · 저항", vp: "매물대", trend: "추세선", pattern: "삼각수렴 · 쐐기", proj: "예상도", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
   opt: "옵션 벽 · 맥스 페인",
   bz: "인생 타점 줍줍",
   entry: "지금 타점(최적)",
   gaps: "안 메운 갭 · 메움 확률",
+  chan: "평행 채널(분봉 · 일봉)",
+  ltrend: "짧은 추세선 · 이탈 표시",
   stoch: "스토캐스틱", bb: "볼린저밴드(20)", osc: "과열 · 침체 표시",
   ma: "이동평균(5 · 20 · 60 · 120)",
 };
@@ -76,16 +80,16 @@ const US_TICKER = /^[A-Z]{1,6}(?:[.-][A-Z])?$/;
 const WALL_RANGE = 0.15;
 const WALLS_SHOWN = 2;
 // #98: 지지 · 저항은 가까운 3개씩만, 피보나치는 켤 때만 — 차트가 선으로 덮이지 않게
-const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, pattern: false, proj: false, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true, bz: true, entry: true, gaps: true, ma: true };
+const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, pattern: false, proj: false, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true, bz: true, entry: true, gaps: true, ma: true, chan: true, ltrend: true };
 // #298 표시 묶음: 가격 칸 위의 선 · 표시만 한 번에 바꾼다(RSI · 스토캐스틱 칸 · #550 이동평균은 그대로). 체크를 손으로 바꾸면 "직접".
 // #313 "타점 보기" = 지금가 기준 최적 타점 + 분석 타점선 · 체결 · 분석일만(처음 여는 사람의 기본)
 type Preset = "entry" | "sr" | "trend" | "all" | "custom";
 const PRESET_LABEL: Record<Preset, string> = { entry: "타점 보기", sr: "지지·저항만", trend: "추세·패턴", all: "전부", custom: "직접" };
-const OVERLAYS: (keyof Show)[] = ["levels", "pb", "sr", "all", "vp", "trend", "pattern", "proj", "fib", "fills", "analysis", "opt", "bb", "osc", "bz", "entry", "gaps"];
+const OVERLAYS: (keyof Show)[] = ["levels", "pb", "sr", "all", "vp", "trend", "pattern", "proj", "fib", "fills", "analysis", "opt", "bb", "osc", "bz", "entry", "gaps", "chan", "ltrend"];
 const PRESET_ON: Record<Exclude<Preset, "custom">, (keyof Show)[]> = {
   entry: ["entry", "levels", "fills", "analysis", "gaps"],
   sr: ["sr", "vp", "gaps"],
-  trend: ["sr", "trend", "pattern", "fib"],
+  trend: ["sr", "trend", "pattern", "fib", "chan", "ltrend"],
   all: OVERLAYS,
 };
 function applyPreset(show: Show, p: Exclude<Preset, "custom">): Show {
@@ -116,6 +120,8 @@ function loadPrefs(): { interval: Interval; show: Show; preset: Preset; custom: 
     if (typeof raw.show?.entry !== "boolean") show.entry = preset !== "custom" && PRESET_ON[preset].includes("entry");
     // #466 갭 표시가 생기기 전 설정: 고른 묶음을 따르고, "직접" 이면 켠다
     if (typeof raw.show?.gaps !== "boolean") show.gaps = preset === "custom" || PRESET_ON[preset].includes("gaps");
+    // #612 평행 채널 · 짧은 추세선이 생기기 전 설정: 고른 묶음을 따르고, "직접" 이면 켠다
+    for (const k of ["chan", "ltrend"] as const) if (typeof raw.show?.[k] !== "boolean") show[k] = preset === "custom" || PRESET_ON[preset].includes(k);
     const custom = { ...show };
     for (const k of Object.keys(DEFAULT_SHOW) as (keyof Show)[]) if (typeof raw.custom?.[k] === "boolean") custom[k] = raw.custom[k];
     if (typeof raw.custom?.entry !== "boolean") custom.entry = false;
@@ -400,6 +406,11 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const [gapRep, setGapRep] = useState<GapReport | null>(null);
   const [gapPick, setGapPick] = useState<OpenGap | null>(null);
   const closeGap = useCallback(() => setGapPick(null), []);
+  // #612 평행 채널 · 짧은 추세선(#611 /api/lines) — 이 주기(5m · 15m · 60m · 240m · 1d)의 선, 누른 선의 설명 카드
+  const [linesRep, setLinesRep] = useState<LinesReport | "fake" | null>(null);
+  const [linePick, setLinePick] = useState<LinePick | null>(null);
+  const closeLine = useCallback(() => setLinePick(null), []);
+  const [lineDrawn, setLineDrawn] = useState<{ pick: LinePick; series: ISeriesApi<"Line"> }[]>([]);
   const [failed, setFailed] = useState(false);
   // #206 과열 · 침체 판정(일봉 · 주봉만 — 분봉 · 월 · 년봉은 일봉 판정을 배지로만)
   const [osc, setOsc] = useState<OscillatorView | null>(null);
@@ -734,6 +745,31 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       live = false;
     };
   }, [ticker, show.gaps]);
+
+  // #612 평행 채널 · 짧은 추세선 — 분봉은 1분마다 다시 받는다(서버는 같은 마지막 봉 · 종가면 다시 계산하지 않는다).
+  // DEV 에서 API 가 없으면(#611 전) 그린 봉으로 만든 가짜를 쓴다
+  const wantLines = (show.chan || show.ltrend) && isLineTf(interval);
+  useEffect(() => {
+    setLinesRep(null);
+    setLinePick(null);
+    if (!wantLines || !isLineTf(interval)) return;
+    const tf = interval;
+    let live = true;
+    const load = () => api.lines(ticker, tf).then((r) => live && setLinesRep(r), (e) => {
+      if (live && import.meta.env.DEV && e instanceof ApiError && e.status === 404) setLinesRep("fake");
+    });
+    load();
+    const id = INTRADAY.has(tf) ? window.setInterval(load, 60_000) : undefined;
+    return () => {
+      live = false;
+      window.clearInterval(id);
+    };
+  }, [ticker, interval, wantLines]);
+  const lines: LinesReport | null = useMemo(() => {
+    if (linesRep !== "fake") return linesRep;
+    if (!drawn || !isLineTf(drawn.interval)) return null;
+    return fakeLines(drawn.rows.map((r) => r.bar), drawn.interval, ticker);
+  }, [linesRep, drawn, ticker]);
 
   // RSI 를 켜고 끄면 다시 받는다(서버가 30초 캐시) — RSI 는 봉과 같은 응답에 실린다.
   useEffect(() => {
@@ -1123,6 +1159,21 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     return best;
   }, [drawn, trendDrawn]);
 
+  // #612 누른 자리에서 가장 가까운(10px 안) 평행 채널 · 짧은 추세선 — 갭 띠 클릭(#578)도 이 선에 양보한다
+  const nearestLine = useCallback((param: MouseEventParams<Time>): { pick: LinePick; d: number } | null => {
+    const pt = param.point;
+    if (!drawn || !pt || (param.paneIndex ?? 0) !== 0) return null;
+    let best: { pick: LinePick; d: number } | null = null;
+    for (const { pick, series: s } of lineDrawn) {
+      const v = param.seriesData.get(s) as { value?: number } | undefined;
+      const y = v?.value == null ? null : drawn.series.priceToCoordinate(v.value);
+      if (y == null) continue;
+      const d = Math.abs(y - pt.y);
+      if (d <= 10 && (!best || d < best.d)) best = { pick, d };
+    }
+    return best;
+  }, [drawn, lineDrawn]);
+
   // #578 세션 갭 띠 안을 누르면 그 갭의 메움 확률 카드 — 띠 밖을 누르면 닫는다. 그린 띠(지금에서 30% 안, 갭이 생긴 봉부터 오른쪽)만
   // 반응하고, 추세선 가까이를 누른 것은 추세선 카드(#531)에 맡긴다
   useEffect(() => {
@@ -1133,7 +1184,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (!drawn.alive.current) return;
       const pt = param.point;
       if (!pt || (param.paneIndex ?? 0) !== 0 || rows.length === 0) return;
-      if (nearestTrend(param)) return;
+      if (nearestTrend(param) || nearestLine(param)) return;
       const p = series.coordinateToPrice(pt.y);
       const at = chart.timeScale().coordinateToLogical(pt.x);   // 오른쪽 빈 칸(미래)도 마지막 봉으로
       if (p == null || at == null) return;
@@ -1145,7 +1196,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     return () => {
       if (drawn.alive.current) chart.unsubscribeClick(onClick);
     };
-  }, [drawn, gapRep, show.gaps, nearestTrend]);
+  }, [drawn, gapRep, show.gaps, nearestTrend, nearestLine]);
   // 누를 수 있는 계획선 가격(#466 과 같은 규칙) — 추세선 클릭이 더 가까운 계획선에 양보할 때 쓴다
   const planLinePrices = useMemo(() => (!onLineClick || !show.levels ? [] : [
     ...(levelsContradict(plan) ? [] : [plan?.entry_price, plan?.stop_loss, plan?.price_target]),
@@ -1299,6 +1350,114 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (swing) chart.removeSeries(swing);
     };
   }, [drawn, trendLines, fib, ticker, srSource]);
+
+  // #612 평행 채널 — 하단 굵은 실선 · 상단 얇은 실선 · 가운데 흐린 파선 · 바깥(폭 한 칸 밖) 점선, 둘째 채널은 흐리게.
+  // 짧은 추세선은 다른 색(주황), 이탈한 선은 파선 + 이탈 봉에 화살표. 선은 로그 가격 × 봉 순서 직선(#611 과 같게),
+  // 축 범위엔 넣지 않는다(바깥 선이 봉을 누르지 않게). 가격축 이름표는 첫 채널 상 · 하단과 추세선만.
+  useEffect(() => {
+    if (!drawn || !lines || lines.timeframe !== drawn.interval || (!show.chan && !show.ltrend)) return;
+    const { chart, series, rows, intraday } = drawn;
+    if (rows.length < 2) return;
+    const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
+    const keys = rows.map((r) => r.key);
+    const first = Date.parse(rows[0].bar.at);
+    const index = new Map(keys.map((k, i) => [k, i]));
+    const idxOf = (iso: string | null | undefined): number | null => {
+      if (!iso) return null;
+      const t = Date.parse(iso);
+      if (!Number.isFinite(t) || t < first) return null;
+      const k = barFor(keys, intraday ? kstStamp(iso) : kstDay(iso));
+      return k == null ? null : index.get(k) ?? null;
+    };
+    const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, autoscaleInfoProvider: () => null };
+    const made: { pick: LinePick; series: ISeriesApi<"Line"> }[] = [];
+    const marks: { key: Key; m: Omit<SeriesMarker<Time>, "time"> }[] = [];
+    type Style = { color: string; lineWidth: 1 | 2 | 3; lineStyle: LineStyle; lastValueVisible?: boolean; title?: string };
+    // 두 점(또는 끝점 + 봉당 기울기)으로, 그 선이 시작한 봉(보는 기간 전이면 첫 봉)부터 마지막 봉까지
+    const draw = (a: { at: string; price: number }, b: { at: string; price: number }, slopePct: number, style: Style, pick: LinePick) => {
+      const ia = idxOf(a.at);
+      const ib = idxOf(b.at) ?? rows.length - 1;
+      const k = ia != null && ib > ia && a.price > 0 && b.price > 0 ? Math.log(b.price / a.price) / (ib - ia) : Math.log(1 + slopePct / 100);
+      const from = ia ?? (Date.parse(a.at) < first ? 0 : null);
+      if (from == null || !(b.price > 0)) return;
+      const data = [];
+      for (let i = from; i < rows.length; i++) {
+        const v = b.price * Math.exp(k * (i - ib));
+        if (Number.isFinite(v) && v > 0) data.push({ time: time(rows[i].key), value: v });
+      }
+      if (data.length < 2) return;
+      const s = chart.addSeries(LineSeries, { ...quiet, ...style });
+      s.setData(data);
+      made.push({ pick, series: s });
+    };
+    try {
+      if (show.chan) {
+        lines.channels.slice(0, 2).forEach((c, ci) => {
+          const accent = css("--accent", "#4c8dff");
+          const color = accent + (ci === 0 ? "" : "99");
+          const faint = accent + (ci === 0 ? "88" : "55");
+          const pick: LinePick = { kind: "channel", id: c.id };
+          const name = ci === 0 ? "채널" : "채널2";
+          draw(c.lower.start, c.lower.end, c.slope_pct_per_bar, { color, lineWidth: 3, lineStyle: LineStyle.Solid, lastValueVisible: ci === 0, title: `${name} 하단` }, pick);
+          draw(c.upper.start, c.upper.end, c.slope_pct_per_bar, { color, lineWidth: 1, lineStyle: LineStyle.Solid, lastValueVisible: ci === 0, title: `${name} 상단` }, pick);
+          draw(c.mid.start, c.mid.end, c.slope_pct_per_bar, { color: faint, lineWidth: 1, lineStyle: LineStyle.Dashed }, pick);
+          draw(c.outer_upper.start, c.outer_upper.end, c.slope_pct_per_bar, { color: faint, lineWidth: 1, lineStyle: LineStyle.Dotted }, pick);
+          draw(c.outer_lower.start, c.outer_lower.end, c.slope_pct_per_bar, { color: faint, lineWidth: 1, lineStyle: LineStyle.Dotted }, pick);
+          const bi = idxOf(c.broke_at);
+          if (bi != null && (c.state === "above" || c.state === "below")) {
+            const up = c.state === "above";
+            marks.push({ key: keys[bi], m: { position: up ? "belowBar" : "aboveBar", shape: up ? "arrowUp" : "arrowDown", color, text: "채널 밖" } });
+          }
+        });
+      }
+      if (show.ltrend) {
+        const base = css("--warn", "#e0a030");
+        for (const t of lines.trendlines) {
+          if (!t.anchors[0]) continue;
+          const broken = t.state === "broken";
+          const label = `${t.kind === "support" ? "상승선" : "하락선"}${broken ? " 이탈" : ""}`;
+          draw(t.anchors[0], t.end, t.slope_pct_per_bar,
+            { color: broken ? `${base}99` : base, lineWidth: 2, lineStyle: broken ? LineStyle.Dashed : LineStyle.Solid, lastValueVisible: true, title: label },
+            { kind: "trend", id: t.id });
+          const bi = idxOf(t.broken_at);
+          if (bi != null) {
+            const down = t.kind === "support";
+            marks.push({ key: keys[bi], m: { position: down ? "aboveBar" : "belowBar", shape: down ? "arrowDown" : "arrowUp", color: base, text: "이탈" } });
+          }
+        }
+      }
+    } catch {
+      /* 이상한 선 하나 때문에 차트가 깨지지 않게 — 그린 것까지만 */
+    }
+    marks.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    const breakMarks = createSeriesMarkers(series, marks.map(({ key, m }) => ({ ...m, time: time(key) }) as SeriesMarker<Time>));
+    setLineDrawn(made);
+    return () => {
+      setLineDrawn([]);
+      if (!drawn.alive.current) return;
+      breakMarks.detach();
+      for (const { series: s } of made) chart.removeSeries(s);
+    };
+  }, [drawn, lines, show.chan, show.ltrend]);
+
+  // #612 채널 · 짧은 추세선 가까이(10px)를 누르면 그 선의 설명 카드, 선이 아닌 곳을 누르면 닫는다
+  useEffect(() => {
+    if (!drawn || lineDrawn.length === 0) return;
+    const { chart } = drawn;
+    const onClick = (param: MouseEventParams<Time>) => {
+      if (!drawn.alive.current || !param.point || (param.paneIndex ?? 0) !== 0) return;
+      setLinePick(nearestLine(param)?.pick ?? null);
+    };
+    chart.subscribeClick(onClick);
+    return () => {
+      if (drawn.alive.current) chart.unsubscribeClick(onClick);
+    };
+  }, [drawn, lineDrawn, nearestLine]);
+
+  // 그 종류를 끄면 열린 카드도 닫는다
+  useEffect(() => {
+    if (linePick && ((linePick.kind === "channel" && !show.chan) || (linePick.kind === "trend" && !show.ltrend))) setLinePick(null);
+  }, [linePick, show.chan, show.ltrend]);
 
   // #531 고른 추세선 강조 · 나머지 흐리게. 먼 선(far)을 고르면 그 선 값까지 가격축을 넓혀 보이게 한다
   useEffect(() => {
@@ -1908,6 +2067,13 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       )}
       {!onTrendPick && pickedLine && <TrendLineCard line={pickedLine} when={when} onClose={() => pickTrend(null)} />}
       {gapPick && gapRep && <GapOddsCard rep={gapRep} gap={gapPick} onClose={closeGap} />}
+      {linePick && lines && <ChannelLineCard rep={lines} pick={linePick} onClose={closeLine} />}
+      {lists && (show.chan || show.ltrend) && !isLineTf(interval) && (
+        <p className="muted small">평행 채널 · 짧은 추세선은 5분 · 15분 · 1시간 · 4시간 · 일봉 차트에서 보여요.</p>
+      )}
+      {lists && wantLines && lines && lines.timeframe === interval && (
+        <LineList lines={lines} chan={show.chan} ltrend={show.ltrend} onPick={setLinePick} />
+      )}
       {((show.fills && fills.length > 0) || rsiOn || stochOn || (drawn && LOG_SCALE.has(interval))) && (
         <p className="muted small price-chart-legend">
           {[
@@ -2103,6 +2269,38 @@ function PaneTag({ id, top, rows, open, onHelp, bottomPane = false, elapsed = nu
           {t.help.map((line) => <p key={line}>{line}</p>)}
         </div>
       )}
+    </div>
+  );
+}
+
+/** #612 차트 아래 채널 · 짧은 추세선 목록 — 얇은 선을 누르기 어려운 좁은 화면에서도 이름을 눌러 설명을 연다 */
+function LineList({ lines, chan, ltrend, onPick }: { lines: LinesReport; chan: boolean; ltrend: boolean; onPick: (p: LinePick) => void }) {
+  const chans = chan ? lines.channels.slice(0, 2) : [];
+  const trends = ltrend ? lines.trendlines : [];
+  return (
+    <div className="line-list">
+      {chans.length + trends.length === 0 ? (
+        <p className="muted small">이 {TF_KO[lines.timeframe] ?? "주기"}에서 찾은 채널 · 추세선이 없어요.</p>
+      ) : (
+        <ul className="sr-list" aria-label="평행 채널 · 짧은 추세선">
+          {chans.map((c) => (
+            <li key={c.id}>
+              <button type="button" className="link" onClick={() => onPick({ kind: "channel", id: c.id })}>{channelTitle(c)}</button>{" "}
+              <span className="muted small">{CHANNEL_STATE_KO[c.state]} · 하단 {price(c.lower.end.price)} · 상단 {price(c.upper.end.price)}</span>
+            </li>
+          ))}
+          {trends.map((t) => (
+            <li key={t.id}>
+              <button type="button" className="link" onClick={() => onPick({ kind: "trend", id: t.id })}>{trendTitle(t)}</button>{" "}
+              <span className="muted small">{TREND_STATE_KO[t.state]} · {price(t.end.price)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="muted small">
+        굵은 선 = 채널 하단 · 얇은 선 = 상단 · 점선 = 폭 한 칸 바깥 · 주황 = 짧은 추세선(▼▲ 이탈). 선이나 이름을 누르면 설명이 떠요. {lines.note}
+        {lines.fake ? " (API 전이라 화면 확인용 가짜)" : ""}
+      </p>
     </div>
   );
 }

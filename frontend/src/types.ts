@@ -2224,3 +2224,66 @@ export interface DayCallStats {
   /** 검증 구간을 만든 모델 — holdout_from 이후가 학습에 안 쓴 날, stale 이면 지금 코드와 모델이 어긋남 */
   backtest?: { model_version: string | null; holdout_from: string | null; stale: boolean };
 }
+
+/** #612 평행 채널 · 짧은 추세선(#611 GET /api/lines, docs/lines.md). 시각은 UTC ISO, 선은 로그 가격 × 봉 순서 직선 */
+export type LineTf = "5m" | "15m" | "60m" | "240m" | "1d";
+export interface LinePoint { at: string; price: number }
+export interface LineSegment { start: LinePoint; end: LinePoint }
+/** 선에 닿은 뒤 HORIZON 봉 안에 1 ATR 반등 / 0.3 ATR 이탈 비율과 같은 기울기 · 거리의 아무 선(기준선) 반등 */
+export interface LineRate { n: number; bounce_rate: number | null; break_rate: number | null; baseline_bounce_rate: number | null; horizon_bars: number }
+/** 막 이탈한 추세선이 그 방향으로 1 ATR 더 간 비율과 기준선 */
+export interface LineBreakRate { n: number; follow_rate: number | null; baseline_rate: number | null; horizon_bars: number }
+export type ChannelState = "inside" | "near_upper" | "near_lower" | "above" | "below";
+export interface ParallelChannel {
+  id: string;
+  timeframe: string;
+  direction: "up" | "down" | "flat";
+  base: "upper" | "lower";
+  start_at: string;
+  upper: LineSegment; lower: LineSegment; mid: LineSegment; outer_upper: LineSegment; outer_lower: LineSegment;
+  slope_pct_per_bar: number;
+  width_pct: number;
+  width_atr: number;
+  position: number;
+  state: ChannelState;
+  broke_at: string | null;
+  touches: { upper: string[]; lower: string[] };
+  body_breaks: number;
+  score: number;
+  explain: string;
+  hit_rate: { lower: LineRate | null; upper: LineRate | null } | null;
+}
+export interface ShortTrendline {
+  id: string;
+  timeframe: string;
+  kind: "support" | "resistance";
+  anchors: LinePoint[];
+  end: LinePoint;
+  touches: string[];
+  slope_pct_per_bar: number;
+  state: "intact" | "testing" | "broken";
+  broken_at: string | null;
+  broken_price: number | null;
+  fresh_break?: boolean;
+  distance_atr: number | null;
+  explain: string;
+  hit_rate: LineRate | LineBreakRate | null;
+}
+export interface LineEvent { at: string; kind: "trend_break" | "channel_break"; line_id: string; text: string }
+export interface LinesReport {
+  ticker: string;
+  interval: string;
+  timeframe: string;
+  source: string;
+  live_bar?: boolean;
+  as_of: string | null;
+  reference_price: number | null;
+  atr: number | null;
+  channels: ParallelChannel[];
+  trendlines: ShortTrendline[];
+  events: LineEvent[];
+  note: string;
+  backtest: { generated_at: string; timeframes: Record<string, { from: string; to: string; steps: number }> } | null;
+  /** DEV 에서 API 가 없을 때 봉으로 만든 가짜(화면 확인용) */
+  fake?: boolean;
+}

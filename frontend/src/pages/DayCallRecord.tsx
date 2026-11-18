@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import { fakeDayCallHistory, fakeDayCallStats } from "../briefsFake";
-import { DAY_CALL_KINDS, KIND_KO, MARKET_INDEX, MARKET_KO, percent, rate, STAGE_KO, STAGE_MARK, verdictText } from "../dayCall";
+import { DAY_CALL_KINDS, KIND_KO, MARKET_INDEX, MARKET_KO, percent, rate, scoredOutcome, STAGE_KO, STAGE_MARK, verdictText } from "../dayCall";
 import type { DayCallHistory, DayCallHistoryItem, DayCallKind, DayCallMarket, DayCallStage, DayCallStats } from "../types";
 
 const is404 = (e: unknown) => e instanceof ApiError && e.status === 404;
@@ -19,8 +19,10 @@ function Verdict({ it }: { it: DayCallHistoryItem }) {
 }
 
 function Mark({ it }: { it: DayCallHistoryItem }) {
-  const ok = it.outcome?.hit_direction;
-  if (!it.outcome) return <span className="muted">—</span>;
+  if (it.outcome?.unscorable) return <span className="muted">채점 불가</span>;
+  const out = scoredOutcome(it.outcome);
+  const ok = out?.hit_direction;
+  if (!out) return <span className="muted">—</span>;
   if (ok == null) return <span className="muted">보류</span>;
   return ok ? <span className="daycall-hit">✓ 맞음</span> : <span className="daycall-miss">✗ 틀림</span>;
 }
@@ -80,7 +82,8 @@ export default function DayCallRecord() {
         <p className="muted small">
           확률은 추정이에요. 방향 적중은 롱 · 숏 방향이 맞은 판정, 단계 적중은 다섯 단계까지 맞은 판정이에요.
           정답은 {MARKET_INDEX[market]} {ANSWER[kind]} 움직임을 그날 변동폭(ATR)으로 나눠 매겨요.
-          {kind === "open" ? " 시가 대비는 롱 · 숏 확률 차가 10%p 안이면 판단을 보류하고, 보류한 날은 방향 적중에서 빠져요." : ""}
+          {kind === "open" ? " 시가 대비는 롱 · 숏 확률 차가 10%p 안이면 판단을 보류해요. 방향 적중은 보류한 날도 확률이 기운 쪽으로 채점하고(검증과 같은 정의), 보류가 아닌 날만 센 적중은 따로 적어요." : ""}
+          {" "}지수 자료가 오지 않아 채점하지 못한 날은 통계에서 빠져요.
         </p>
         {st && (
           <dl className="daycall-stats">
@@ -145,11 +148,11 @@ export default function DayCallRecord() {
                     <td>{it.date.slice(5).replace("-", "/")} <span className="muted">{it.round_label}{it.source === "backfill" ? " · 백필" : ""}{it.fallback ? " · 선물 없이" : ""}</span></td>
                     <td><Verdict it={it} /></td>
                     <td className="col-prob"><Stage s={it.stage} /> <span className="muted">{percent(it.probs[it.stage], 0)}</span></td>
-                    <td><Stage s={it.outcome?.stage} /></td>
-                    <td className={`num ${!it.outcome ? "" : it.outcome.return_pct > 0 ? "up" : it.outcome.return_pct < 0 ? "down" : ""}`}>
-                      {!it.outcome ? "—" : `${it.outcome.return_pct > 0 ? "+" : ""}${it.outcome.return_pct.toFixed(2)}%`}
+                    <td>{it.outcome?.unscorable ? <span className="muted">채점 불가</span> : <Stage s={scoredOutcome(it.outcome)?.stage} />}</td>
+                    <td className={`num ${(() => { const o = scoredOutcome(it.outcome); return !o ? "" : o.return_pct > 0 ? "up" : o.return_pct < 0 ? "down" : ""; })()}`}>
+                      {(() => { const o = scoredOutcome(it.outcome); return !o ? "—" : `${o.return_pct > 0 ? "+" : ""}${o.return_pct.toFixed(2)}%`; })()}
                     </td>
-                    <td><Mark it={it} />{it.outcome?.hit_stage ? <span className="muted small"> · 단계까지</span> : null}</td>
+                    <td><Mark it={it} />{scoredOutcome(it.outcome)?.hit_stage ? <span className="muted small"> · 단계까지</span> : null}</td>
                   </tr>
                 ))}</tbody>
               </table>

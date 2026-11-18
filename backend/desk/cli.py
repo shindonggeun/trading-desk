@@ -310,6 +310,36 @@ def _weekly_lines(args) -> int:
     return 0
 
 
+def _day_call(args) -> int:
+    """#572: fit before the hold-out, score the hold-out once, write the model and the report."""
+    import json
+    from datetime import date
+    from pathlib import Path
+
+    from . import day_call_train as dct
+
+    series = dct.fetch()
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    start = date.fromisoformat(args.start) if args.start else None
+    for market in (("kr", "us") if args.market == "all" else (args.market,)):
+        model, report = dct.backtest(market, series, args.holdout_days or dct.HOLDOUT_DAYS, start,
+                                     progress=lambda msg: print(msg, file=sys.stderr))
+        for name, body in ((f"model_{market}.json", model), (f"report_{market}.json", report)):
+            with open(out / name, "w", encoding="utf-8", newline="\n") as f:
+                json.dump(body, f, ensure_ascii=False, indent=1)
+                f.write("\n")
+        for r, rep in report["rounds"].items():
+            h = rep["holdout"]
+            b = h["baselines"]
+            print(f"{market} {r}차  n={h['n']}  방향 {h['direction_hit_rate']:.3f} {h['direction_ci95']}  "
+                  f"단계 {h['stage_hit_rate']:.3f}  Brier {h['brier']:.4f} (기후 {b['climatology']['brier']:.4f}, "
+                  f"skill {h['brier_skill']:+.3f})  항상 롱 {b['always_long']['direction_hit_rate']:.3f}  "
+                  f"전날 따라 {b['follow_yesterday']['direction_hit_rate']}")
+        print(f"{market}: {out / f'model_{market}.json'} · {out / f'report_{market}.json'}  ({report['version']})")
+    return 0
+
+
 def _unfinished(url: str) -> int:
     """#431 no migration here: it runs inside the live container, and only reads."""
     from .store import Store
@@ -394,6 +424,14 @@ def main(argv: list[str] | None = None) -> int:
     wl = sub.add_parser("weekly-lines", help=(
         "compare the weekly map's black / red line pairs on the indices' weekly history (#216)"))
     wl.add_argument("--out", default=None, help="write the full JSON report here")
+    dcp = sub.add_parser("day-call", help=(
+        "#572 today's direction call: fit the model on Yahoo daily bars before the hold-out and score the "
+        "hold-out once; writes model_<market>.json and report_<market>.json"))
+    dcp.add_argument("action", choices=("backtest",))
+    dcp.add_argument("--market", choices=("kr", "us", "all"), default="all")
+    dcp.add_argument("--from", dest="start", default=None, help="first session to use, YYYY-MM-DD")
+    dcp.add_argument("--holdout-days", type=int, default=None, help="calendar days held out (default 90)")
+    dcp.add_argument("--out-dir", default="desk/data/day_call", help="where the model and report files go")
     bz = sub.add_parser("bottom-backtest", help=(
         "the long-term bottom zone (#240) on past big lows: signals, how early, staged-buy returns"))
     bz.add_argument("tickers", nargs="*", default=["^NDX", "^GSPC", "^SOX", "^KS11", "005930.KS", "000660.KS"])
@@ -441,6 +479,9 @@ def main(argv: list[str] | None = None) -> int:
         return _entry_backtest(args)
     if args.command == "weekly-lines":
         return _weekly_lines(args)
+    if args.command == "day-call":
+        _utf8_out()
+        return _day_call(args)
     if args.command == "flow-history":
         return _flow_history(args)
     if args.command == "news-history":

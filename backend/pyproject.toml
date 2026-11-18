@@ -25,6 +25,7 @@ dependencies = [
     "cryptography>=42",
     "pywebpush>=2.0",          # web push with VAPID (desk.push, #361)
     "holidays>=0.60",          # KRX / NYSE closed days for the market calendar (desk.market_calendar)
+    "numpy>=1.26",             # fitting the day-call model offline (desk.day_call_train, #572); already in via TradingAgents
 ]
 
 [project.optional-dependencies]
@@ -35,7 +36,7 @@ include = ["desk*"]
 
 [tool.setuptools.package-data]
 "desk.migrations" = ["alembic.ini", "script.py.mako"]
-"desk" = ["data/*.json", "data/backtest/*.json"]
+"desk" = ["data/*.json", "data/backtest/*.json", "data/day_call/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

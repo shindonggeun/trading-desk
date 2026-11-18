@@ -1,0 +1,714 @@
+{
+ "version": "dc-20260820-331db246",
+ "market": "kr",
+ "target": "^KS11",
+ "commit": "f71afb9728de",
+ "code": "f13399e1c53f",
+ "holdout_days": 90,
+ "edges": [
+  0.3,
+  1.0
+ ],
+ "rounds": {
+  "1": {
+   "features": [
+    "t_ret1",
+    "t_ret5",
+    "t_ret20",
+    "t_ma20",
+    "t_oc1",
+    "t_rv",
+    "t_atrp",
+    "us_ret1",
+    "nq_ret1",
+    "vix_lvl",
+    "vix_chg",
+    "krw_chg",
+    "tnx_chg",
+    "expiry",
+    "monday"
+   ],
+   "l2": 0.1,
+   "lambda": 0.35,
+   "cv": {
+    "folds": [
+     2024,
+     2025,
+     2026
+    ],
+    "brier": 0.6913
+   },
+   "train": {
+    "n": 2192,
+    "from": "2017-09-01",
+    "to": "2026-08-20",
+    "stage_share": [
+     0.042,
+     0.235,
+     0.424,
+     0.238,
+     0.061
+    ]
+   },
+   "holdout": {
+    "n": 59,
+    "from": "2026-08-21",
+    "to": "2026-11-18",
+    "direction_hit_rate": 0.661,
+    "direction_ci95": [
+     0.54,
+     0.782
+    ],
+    "stage_hit_rate": 0.441,
+    "brier": 0.6669,
+    "log_loss": 1.2342,
+    "baselines": {
+     "always_long": {
+      "direction_hit_rate": 0.373
+     },
+     "follow_yesterday": {
+      "direction_hit_rate": 0.475
+     },
+     "climatology": {
+      "brier": 0.6775,
+      "stage_hit_rate": 0.441
+     }
+    },
+    "brier_skill": 0.0158,
+    "per_stage": [
+     {
+      "stage": "strong_long",
+      "label": "강한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 2
+     },
+     {
+      "stage": "weak_long",
+      "label": "약한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 10
+     },
+     {
+      "stage": "flat",
+      "label": "약보합",
+      "called": 59,
+      "called_hit": 26,
+      "actual": 26
+     },
+     {
+      "stage": "weak_short",
+      "label": "약한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 20
+     },
+     {
+      "stage": "strong_short",
+      "label": "강한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 1
+     }
+    ],
+    "calibration": [
+     {
+      "lo": 0,
+      "hi": 10,
+      "n": 118,
+      "mean_prob": 4.2,
+      "actual_rate": 2.5
+     },
+     {
+      "lo": 10,
+      "hi": 20,
+      "n": 9,
+      "mean_prob": 19.0,
+      "actual_rate": 11.1
+     },
+     {
+      "lo": 20,
+      "hi": 30,
+      "n": 108,
+      "mean_prob": 23.8,
+      "actual_rate": 25.9
+     },
+     {
+      "lo": 30,
+      "hi": 40,
+      "n": 2,
+      "mean_prob": 34.7,
+      "actual_rate": 50.0
+     },
+     {
+      "lo": 40,
+      "hi": 50,
+      "n": 56,
+      "mean_prob": 44.6,
+      "actual_rate": 44.6
+     },
+     {
+      "lo": 50,
+      "hi": 60,
+      "n": 2,
+      "mean_prob": 50.8,
+      "actual_rate": 50.0
+     }
+    ]
+   },
+   "holdout_alt_edges": {
+    "edges": [
+     0.25,
+     0.75
+    ],
+    "n": 59,
+    "from": "2026-08-21",
+    "to": "2026-11-18",
+    "direction_hit_rate": 0.61,
+    "direction_ci95": [
+     0.486,
+     0.735
+    ],
+    "stage_hit_rate": 0.339,
+    "brier": 0.737,
+    "log_loss": 1.4393,
+    "baselines": {
+     "always_long": {
+      "direction_hit_rate": 0.373
+     },
+     "follow_yesterday": {
+      "direction_hit_rate": 0.475
+     },
+     "climatology": {
+      "brier": 0.7492,
+      "stage_hit_rate": 0.339
+     }
+    },
+    "brier_skill": 0.0162,
+    "per_stage": [
+     {
+      "stage": "strong_long",
+      "label": "강한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 4
+     },
+     {
+      "stage": "weak_long",
+      "label": "약한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 12
+     },
+     {
+      "stage": "flat",
+      "label": "약보합",
+      "called": 59,
+      "called_hit": 20,
+      "actual": 20
+     },
+     {
+      "stage": "weak_short",
+      "label": "약한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 18
+     },
+     {
+      "stage": "strong_short",
+      "label": "강한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 5
+     }
+    ],
+    "calibration": [
+     {
+      "lo": 0,
+      "hi": 10,
+      "n": 84,
+      "mean_prob": 8.1,
+      "actual_rate": 6.0
+     },
+     {
+      "lo": 10,
+      "hi": 20,
+      "n": 49,
+      "mean_prob": 13.7,
+      "actual_rate": 14.3
+     },
+     {
+      "lo": 20,
+      "hi": 30,
+      "n": 104,
+      "mean_prob": 22.9,
+      "actual_rate": 26.0
+     },
+     {
+      "lo": 30,
+      "hi": 40,
+      "n": 52,
+      "mean_prob": 36.7,
+      "actual_rate": 34.6
+     },
+     {
+      "lo": 40,
+      "hi": 50,
+      "n": 6,
+      "mean_prob": 41.1,
+      "actual_rate": 33.3
+     }
+    ]
+   },
+   "coefficients": [
+    {
+     "feature": "t_ret1",
+     "label": "전일 등락",
+     "beta": 0.0653,
+     "gamma": -0.0577
+    },
+    {
+     "feature": "t_ret5",
+     "label": "5일 흐름",
+     "beta": -0.0163,
+     "gamma": -0.0846
+    },
+    {
+     "feature": "t_ret20",
+     "label": "20일 흐름",
+     "beta": 0.0064,
+     "gamma": 0.0849
+    },
+    {
+     "feature": "t_ma20",
+     "label": "20일선 이격",
+     "beta": 0.0309,
+     "gamma": 0.0011
+    },
+    {
+     "feature": "t_oc1",
+     "label": "전일 시가→종가",
+     "beta": -0.0419,
+     "gamma": 0.0259
+    },
+    {
+     "feature": "t_rv",
+     "label": "최근 변동성(5일/20일)",
+     "beta": 0.0067,
+     "gamma": 0.0059
+    },
+    {
+     "feature": "t_atrp",
+     "label": "ATR 수준",
+     "beta": 0.0123,
+     "gamma": -0.035
+    },
+    {
+     "feature": "us_ret1",
+     "label": "전일 S&P500",
+     "beta": 0.0164,
+     "gamma": -0.0239
+    },
+    {
+     "feature": "nq_ret1",
+     "label": "전일 나스닥",
+     "beta": -0.0727,
+     "gamma": -0.0053
+    },
+    {
+     "feature": "vix_lvl",
+     "label": "VIX 수준",
+     "beta": 0.0149,
+     "gamma": 0.0148
+    },
+    {
+     "feature": "vix_chg",
+     "label": "VIX 변화",
+     "beta": -0.0219,
+     "gamma": 0.0152
+    },
+    {
+     "feature": "krw_chg",
+     "label": "원/달러 변화",
+     "beta": 0.0102,
+     "gamma": 0.0165
+    },
+    {
+     "feature": "tnx_chg",
+     "label": "미 10년물 금리 변화",
+     "beta": -0.0458,
+     "gamma": 0.0144
+    },
+    {
+     "feature": "expiry",
+     "label": "만기일",
+     "beta": 0.006,
+     "gamma": -0.0229
+    },
+    {
+     "feature": "monday",
+     "label": "월요일",
+     "beta": 0.0036,
+     "gamma": -0.0071
+    }
+   ]
+  },
+  "2": {
+   "features": [
+    "t_ret1",
+    "t_ret5",
+    "t_ret20",
+    "t_ma20",
+    "t_oc1",
+    "t_rv",
+    "t_atrp",
+    "us_ret1",
+    "nq_ret1",
+    "vix_lvl",
+    "vix_chg",
+    "krw_chg",
+    "tnx_chg",
+    "expiry",
+    "monday",
+    "gap"
+   ],
+   "l2": 0.01,
+   "lambda": 0.35,
+   "cv": {
+    "folds": [
+     2024,
+     2025,
+     2026
+    ],
+    "brier": 0.6854
+   },
+   "train": {
+    "n": 2193,
+    "from": "2017-08-31",
+    "to": "2026-08-20",
+    "stage_share": [
+     0.042,
+     0.235,
+     0.424,
+     0.238,
+     0.061
+    ]
+   },
+   "holdout": {
+    "n": 59,
+    "from": "2026-08-21",
+    "to": "2026-11-18",
+    "direction_hit_rate": 0.644,
+    "direction_ci95": [
+     0.522,
+     0.766
+    ],
+    "stage_hit_rate": 0.441,
+    "brier": 0.6657,
+    "log_loss": 1.2271,
+    "baselines": {
+     "always_long": {
+      "direction_hit_rate": 0.373
+     },
+     "follow_yesterday": {
+      "direction_hit_rate": 0.475
+     },
+     "climatology": {
+      "brier": 0.6775,
+      "stage_hit_rate": 0.441
+     }
+    },
+    "brier_skill": 0.0173,
+    "per_stage": [
+     {
+      "stage": "strong_long",
+      "label": "강한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 2
+     },
+     {
+      "stage": "weak_long",
+      "label": "약한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 10
+     },
+     {
+      "stage": "flat",
+      "label": "약보합",
+      "called": 59,
+      "called_hit": 26,
+      "actual": 26
+     },
+     {
+      "stage": "weak_short",
+      "label": "약한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 20
+     },
+     {
+      "stage": "strong_short",
+      "label": "강한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 1
+     }
+    ],
+    "calibration": [
+     {
+      "lo": 0,
+      "hi": 10,
+      "n": 116,
+      "mean_prob": 4.2,
+      "actual_rate": 2.6
+     },
+     {
+      "lo": 10,
+      "hi": 20,
+      "n": 27,
+      "mean_prob": 17.8,
+      "actual_rate": 14.8
+     },
+     {
+      "lo": 20,
+      "hi": 30,
+      "n": 82,
+      "mean_prob": 24.0,
+      "actual_rate": 26.8
+     },
+     {
+      "lo": 30,
+      "hi": 40,
+      "n": 20,
+      "mean_prob": 34.3,
+      "actual_rate": 30.0
+     },
+     {
+      "lo": 40,
+      "hi": 50,
+      "n": 45,
+      "mean_prob": 44.8,
+      "actual_rate": 51.1
+     },
+     {
+      "lo": 50,
+      "hi": 60,
+      "n": 5,
+      "mean_prob": 51.5,
+      "actual_rate": 20.0
+     }
+    ]
+   },
+   "holdout_alt_edges": {
+    "edges": [
+     0.25,
+     0.75
+    ],
+    "n": 59,
+    "from": "2026-08-21",
+    "to": "2026-11-18",
+    "direction_hit_rate": 0.627,
+    "direction_ci95": [
+     0.504,
+     0.751
+    ],
+    "stage_hit_rate": 0.322,
+    "brier": 0.7343,
+    "log_loss": 1.4266,
+    "baselines": {
+     "always_long": {
+      "direction_hit_rate": 0.373
+     },
+     "follow_yesterday": {
+      "direction_hit_rate": 0.475
+     },
+     "climatology": {
+      "brier": 0.7491,
+      "stage_hit_rate": 0.339
+     }
+    },
+    "brier_skill": 0.0198,
+    "per_stage": [
+     {
+      "stage": "strong_long",
+      "label": "강한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 4
+     },
+     {
+      "stage": "weak_long",
+      "label": "약한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 12
+     },
+     {
+      "stage": "flat",
+      "label": "약보합",
+      "called": 58,
+      "called_hit": 19,
+      "actual": 20
+     },
+     {
+      "stage": "weak_short",
+      "label": "약한 숏",
+      "called": 1,
+      "called_hit": 0,
+      "actual": 18
+     },
+     {
+      "stage": "strong_short",
+      "label": "강한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 5
+     }
+    ],
+    "calibration": [
+     {
+      "lo": 0,
+      "hi": 10,
+      "n": 84,
+      "mean_prob": 7.4,
+      "actual_rate": 6.0
+     },
+     {
+      "lo": 10,
+      "hi": 20,
+      "n": 69,
+      "mean_prob": 15.7,
+      "actual_rate": 13.0
+     },
+     {
+      "lo": 20,
+      "hi": 30,
+      "n": 82,
+      "mean_prob": 24.0,
+      "actual_rate": 30.5
+     },
+     {
+      "lo": 30,
+      "hi": 40,
+      "n": 47,
+      "mean_prob": 35.8,
+      "actual_rate": 31.9
+     },
+     {
+      "lo": 40,
+      "hi": 50,
+      "n": 13,
+      "mean_prob": 41.4,
+      "actual_rate": 38.5
+     }
+    ]
+   },
+   "coefficients": [
+    {
+     "feature": "t_ret1",
+     "label": "전일 등락",
+     "beta": 0.104,
+     "gamma": -0.0649
+    },
+    {
+     "feature": "t_ret5",
+     "label": "5일 흐름",
+     "beta": -0.0233,
+     "gamma": -0.0995
+    },
+    {
+     "feature": "t_ret20",
+     "label": "20일 흐름",
+     "beta": 0.0001,
+     "gamma": 0.1414
+    },
+    {
+     "feature": "t_ma20",
+     "label": "20일선 이격",
+     "beta": 0.0415,
+     "gamma": -0.0291
+    },
+    {
+     "feature": "t_oc1",
+     "label": "전일 시가→종가",
+     "beta": -0.0541,
+     "gamma": 0.0291
+    },
+    {
+     "feature": "t_rv",
+     "label": "최근 변동성(5일/20일)",
+     "beta": 0.0023,
+     "gamma": 0.0028
+    },
+    {
+     "feature": "t_atrp",
+     "label": "ATR 수준",
+     "beta": 0.0062,
+     "gamma": -0.0343
+    },
+    {
+     "feature": "us_ret1",
+     "label": "전일 S&P500",
+     "beta": 0.0205,
+     "gamma": 0.0099
+    },
+    {
+     "feature": "nq_ret1",
+     "label": "전일 나스닥",
+     "beta": -0.152,
+     "gamma": 0.0332
+    },
+    {
+     "feature": "vix_lvl",
+     "label": "VIX 수준",
+     "beta": 0.0207,
+     "gamma": 0.017
+    },
+    {
+     "feature": "vix_chg",
+     "label": "VIX 변화",
+     "beta": -0.0223,
+     "gamma": 0.0116
+    },
+    {
+     "feature": "krw_chg",
+     "label": "원/달러 변화",
+     "beta": 0.0208,
+     "gamma": 0.0277
+    },
+    {
+     "feature": "tnx_chg",
+     "label": "미 10년물 금리 변화",
+     "beta": -0.049,
+     "gamma": 0.021
+    },
+    {
+     "feature": "expiry",
+     "label": "만기일",
+     "beta": 0.0039,
+     "gamma": -0.0229
+    },
+    {
+     "feature": "monday",
+     "label": "월요일",
+     "beta": 0.0053,
+     "gamma": -0.0142
+    },
+    {
+     "feature": "gap",
+     "label": "오늘 시가 갭",
+     "beta": 0.1035,
+     "gamma": -0.1079
+    }
+   ]
+  }
+ },
+ "not_run": {
+  "flow": "투자자별 수급 기록(flow-history)은 서버에만 있어 이 실행에 넣지 않음",
+  "news": "GDELT 뉴스 톤 기록이 이 PC 에 거의 없어(2개 파일) 넣지 않음",
+  "live_only": "야간선물 · 선물 수급 · VKOSPI · 커뮤니티는 과거 기록이 없어 모델 밖(context)"
+ }
+}

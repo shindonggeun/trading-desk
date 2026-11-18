@@ -108,6 +108,7 @@ cd backend && tradingagents login chatgpt     # 브라우저로 로그인 → ~/
 cd backend
 PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli backtest --basket --horizon swing --from 2019-06-01 --out desk/data/backtest/swing.json
 PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli backtest --basket --horizon intraday --out desk/data/backtest/intraday.json
+PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli day-call backtest --market all --out-dir desk/data/day_call   # #572 오늘 방향 판정 모델 · 리포트 (docs/day-call.md)
 ```
 
 파일 이름이 곧 보기 id 다(`desk/horizons.py`). 이미지에는 package-data 로 들어간다.

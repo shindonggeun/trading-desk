@@ -16,6 +16,7 @@ import {
   type Time,
 } from "lightweight-charts";
 import type { Plan, SrLevel } from "../types";
+import { every } from "../poll";
 
 export interface Band {
   top: number;
@@ -371,10 +372,10 @@ export function keepAxisLabelsApart(chart: IChartApi, series: ISeriesApi<SeriesT
   const scale = chart.timeScale();
   scale.subscribeVisibleLogicalRangeChange(schedule);
   scale.subscribeSizeChange(schedule);
-  const timer = window.setInterval(schedule, 1000);   // 새 봉 · 자동 축척은 범위 이벤트 없이도 좌표를 바꾼다
+  const stopTimer = every(schedule, 1000);   // 새 봉 · 자동 축척은 범위 이벤트 없이도 좌표를 바꾼다
   return (alive: boolean) => {
     cancelAnimationFrame(frame);
-    window.clearInterval(timer);
+    stopTimer();
     if (alive) {
       scale.unsubscribeVisibleLogicalRangeChange(schedule);
       scale.unsubscribeSizeChange(schedule);

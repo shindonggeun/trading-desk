@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { api } from "../api";
 import { krwShort, price } from "../format";
 import type { FuturesFlow, FuturesInvestor } from "../types";
 import FuturesHistoryView from "./FuturesHistoryView";
+import { usePoll } from "../poll";
 
 // 시장 수급의 "선물" 보기(#161): 코스피200 근월물의 투자자별 순매수(계약 · 금액), 미결제약정, 베이시스,
 // 외국인 현물 · 선물 엇갈림. 막대 색은 현물 보기와 같은 극성(순매수 빨강 · 순매도 파랑).
@@ -55,39 +56,21 @@ export default function FuturesFlowView() {
   const [data, setData] = useState<FuturesFlow | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const liveRef = useRef(true);
-  const seq = useRef(0);
 
-  useEffect(() => {
-    let alive = true;
-    let timer: number | undefined;
-    const visible = () => document.visibilityState === "visible";
-    const schedule = () => {
-      window.clearInterval(timer);
-      timer = window.setInterval(() => visible() && load(), liveRef.current ? REFRESH_LIVE_MS : REFRESH_IDLE_MS);
-    };
-    const load = () => {
-      const mine = ++seq.current;
-      api.marketFutures().then((d) => {
-        if (!alive || mine !== seq.current) return; // 겹친 요청 중 늦게 온 이전 응답
-        // 시세를 못 받은 응답은 마지막 값을 두고 알림만(처음이면 그 응답을 그대로 보여 준다)
-        setData((old) => (d.price == null && old?.price ? old : d));
-        setFailed(d.price == null && d.supported ? d.error : null);
-        if (d.market_open !== liveRef.current) {
-          liveRef.current = d.market_open;
-          schedule();
-        }
-      }, (e) => alive && mine === seq.current && setFailed(e instanceof Error ? e.message : "불러오지 못했습니다."));
-    };
-    const onVisible = () => visible() && load();
-    load();
-    schedule();
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, []);
+  // #626 장중 30초 · 장외 5분(가려진 탭은 쉰다). 겹친 요청 · 늦은 응답은 훅이 막는다
+  const [refreshMs, setRefreshMs] = useState(REFRESH_LIVE_MS);
+  usePoll("market-futures", () => api.marketFutures(), refreshMs, {
+    onData: (d) => {
+      // 시세를 못 받은 응답은 마지막 값을 두고 알림만(처음이면 그 응답을 그대로 보여 준다)
+      setData((old) => (d.price == null && old?.price ? old : d));
+      setFailed(d.price == null && d.supported ? d.error : null);
+      if (d.market_open !== liveRef.current) {
+        liveRef.current = d.market_open;
+        setRefreshMs(d.market_open ? REFRESH_LIVE_MS : REFRESH_IDLE_MS);
+      }
+    },
+    onError: (e) => setFailed(e instanceof Error ? e.message : "불러오지 못했습니다."),
+  });
 
   const p = data?.price;
   const inv = data?.investors;

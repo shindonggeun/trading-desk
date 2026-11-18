@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { alertKey, alertLines, badgeOf, hhmm } from "../alertsFeed";
+import { alertKey, alertLines, ALERTS_KEY, badgeOf, hhmm, loadAlerts } from "../alertsFeed";
 import { api, Unauthorized, type MarketAlert } from "../api";
 import MiniTickerEditor from "../components/MiniTickerEditor";
 import { krwShort, price } from "../format";
 import { loadMiniPrefs, MINI_FUTURES, saveMiniPrefs, useMiniItems, type MiniPrefs } from "../miniWindow";
 import { byAsked } from "../ticker";
 import type { BoardItem } from "../types";
+import { usePoll } from "../poll";
 
 const QUOTE_MS = 15_000;          // 시세판과 같은 주기
 const FLOW_MS = 60_000;
@@ -61,60 +62,52 @@ export default function MiniWindow({ pip = false }: { pip?: boolean }) {
 
   const boardKey = items.filter((it) => it.ticker !== MINI_FUTURES).map((it) => it.ticker).join(",");
   const wantFutures = items.some((it) => it.ticker === MINI_FUTURES);
-  useEffect(() => {
-    if (!boardKey) return;
-    let alive = true;
-    const asked = boardKey.split(",");
-    const load = () => api.board(asked).then((r) => {
-      if (!alive) return;
+  // #626 작은 창은 연 탭이 가려져도(다른 앱을 보는 중) 계속 읽는다
+  usePoll(boardKey ? `board:${boardKey}` : null, () => api.board(boardKey.split(",")), QUOTE_MS, {
+    pauseHidden: false,
+    onData: (r) => {
       ok();
       // 맨 국내 코드(005930)를 물으면 서버는 005930.KS 로 답한다 — 물은 티커로 다시 읽는다
-      const got = byAsked(asked, r.items);
+      const got = byAsked(boardKey.split(","), r.items);
       setQuotes((q) => ({ ...q, ...Object.fromEntries(Object.entries(got).map(([k, it]) => [k, fromBoard(it)])) }));
-    }).catch(fail);
-    load();
-    const id = window.setInterval(load, QUOTE_MS);
-    return () => { alive = false; window.clearInterval(id); };
-  }, [boardKey, fail, ok]);
+    },
+    onError: fail,
+  });
 
-  useEffect(() => {
-    if (!wantFutures) return;
-    let alive = true;
-    const load = () => api.futuresQuote().then((f) => {
-      if (!alive) return;
+  usePoll(wantFutures ? "futures-quote" : null, () => api.futuresQuote(), QUOTE_MS, {
+    pauseHidden: false,
+    onData: (f) => {
       ok();
       const q: Quote = f.supported && f.price != null
         ? { price: f.price, change_pct: f.change_pct ?? null, stale: f.stale }
         : { price: null, change_pct: null };
       setQuotes((all) => ({ ...all, [MINI_FUTURES]: q }));
-    }).catch(fail);
-    load();
-    const id = window.setInterval(load, QUOTE_MS);
-    return () => { alive = false; window.clearInterval(id); };
-  }, [wantFutures, fail, ok]);
+    },
+    onError: fail,
+  });
 
-  useEffect(() => {
-    let alive = true;
-    const loadFlow = () => api.marketFlow("KOSPI", "1d", 1).then((f) => {
+  usePoll("market-flow:KOSPI:1d:1", () => api.marketFlow("KOSPI", "1d", 1), FLOW_MS, {
+    pauseHidden: false,
+    onData: (f) => {
       const r = f.records[0];
-      if (alive) ok();
-      if (alive) setFlow(r ? { foreign: r.investors.foreigner?.net ?? null, inst: r.investors.institution?.net ?? null, provisional: r.provisional } : null);
-    }).catch(fail);
-    const loadAlert = () => api.alertsToday().then((a) => {
-      if (!alive) return;
+      ok();
+      setFlow(r ? { foreign: r.investors.foreigner?.net ?? null, inst: r.investors.institution?.net ?? null, provisional: r.provisional } : null);
+    },
+    onError: fail,
+  });
+  // 대시보드 알림 띠와 같은 요청을 함께 쓴다(작은 창이 떠 있는 동안은 15초마다)
+  usePoll(ALERTS_KEY, loadAlerts, QUOTE_MS, {
+    pauseHidden: false,
+    onData: (a) => {
       ok();
       const last = a.items[a.items.length - 1] ?? null;
       setAlert(last);
       const k = last ? alertKey(last) : "";
       if (last && lastSeen.current !== null && k !== lastSeen.current) setFresh(true);   // 처음 불러온 것은 새 알림이 아니다
       lastSeen.current = k;
-    }).catch(fail);
-    loadFlow();
-    loadAlert();
-    const f = window.setInterval(loadFlow, FLOW_MS);
-    const a = window.setInterval(loadAlert, QUOTE_MS);
-    return () => { alive = false; window.clearInterval(f); window.clearInterval(a); };
-  }, [fail, ok]);
+    },
+    onError: fail,
+  });
 
   useEffect(() => {
     if (!fresh) return;

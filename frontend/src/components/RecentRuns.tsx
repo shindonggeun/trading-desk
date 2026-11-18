@@ -3,6 +3,7 @@ import { api } from "../api";
 import { STATUS_LABEL, time } from "../format";
 import { HORIZON, OPINION, OUTCOME } from "../korean";
 import type { Run } from "../types";
+import { usePoll } from "../poll";
 
 const COUNT = 6;
 const POLL_MS = 5000;
@@ -35,11 +36,7 @@ export default function RecentRuns() {
 
   // 진행 중인 분석이 있을 때만, 화면이 보일 때만 다시 읽는다
   const running = !!runs?.some(active);
-  useEffect(() => {
-    if (!running) return;
-    const timer = window.setInterval(() => document.visibilityState === "visible" && load(), POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [running, load]);
+  usePoll(running ? "recent-runs" : null, load, POLL_MS, { delay: POLL_MS });
 
   if (failed && !runs) return <p className="empty-state">최근 분석을 불러오지 못했습니다. 잠시 뒤 새로 고쳐 주세요.</p>;
   if (!runs) return <p className="empty-state">불러오는 중…</p>;

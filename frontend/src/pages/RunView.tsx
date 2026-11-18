@@ -23,6 +23,7 @@ import type { DeskEvent, Plan, Run, RunOutlook } from "../types";
 import TipBadges from "../components/TipBadges";
 import { MarketTrendBadges } from "../components/TrendChips";
 import RetryRunButton from "../components/RetryRunButton";
+import { every } from "../poll";
 
 // 백엔드 desk/profile.py 의 label 과 같다. 옛 분석(성향 없음)은 표시하지 않는다
 const PROFILE_LABEL: Record<string, string> = { aggressive_leverage: "공격형 · 레버리지", balanced: "균형형" };
@@ -156,8 +157,7 @@ export default function RunView({ runId }: { runId: string }) {
   // Elapsed time ticks while running.
   useEffect(() => {
     if (run?.status !== "running") return;
-    const t = setInterval(() => tick((n) => n + 1), 1000);
-    return () => clearInterval(t);
+    return every(() => tick((n) => n + 1), 1000);
   }, [run?.status]);
 
   const plan: Plan | null = run?.plan ?? (events.find((e) => e.type === "plan")?.data as Plan | undefined) ?? null;

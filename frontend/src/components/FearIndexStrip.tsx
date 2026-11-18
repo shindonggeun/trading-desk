@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { api, ApiError } from "../api";
 import type { FearIndex, FearItem } from "../types";
 import FearGauge from "./FearGauge";
+import { usePoll } from "../poll";
 
 // #463 시장 · 지수 · 선물 위 공포지수 4칸: VIX · CNN 공포탐욕 · VKOSPI · 암호화폐 공포탐욕(#462).
 // #475 지수마다 반원 게이지(FearGauge): 공포 = 왼쪽 빨강 → 탐욕 = 오른쪽 초록, 어제 · 지난주 값과 그때 구간.
@@ -20,24 +21,18 @@ export default function FearIndexStrip() {
   const [data, setData] = useState<FearIndex | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    const load = () => api.marketFear()
-      .then((d) => {
-        if (!alive) return;
-        if (import.meta.env.DEV && d.items.length === 0) d = { items: FAKE };
-        setData(d); setFailed(null);
-      })
-      .catch((e) => {
-        if (!alive) return;
-        // 404 = 공포지수 API(#462)가 아직 배포되지 않음: 운영에서는 칸을 그리지 않는다
-        if (e instanceof ApiError && e.status === 404) { setData({ items: import.meta.env.DEV ? FAKE : [] }); return; }
-        setFailed(e instanceof Error ? e.message : "불러오지 못했습니다");
-      });
-    load();
-    const t = window.setInterval(load, REFRESH_MS);
-    return () => { alive = false; window.clearInterval(t); };
-  }, []);
+  // #626 대시보드 요약(DashSummary)과 같은 요청 하나를 함께 쓴다(가려진 탭은 쉰다)
+  usePoll("market-fear", () => api.marketFear(), REFRESH_MS, {
+    onData: (d) => {
+      if (import.meta.env.DEV && d.items.length === 0) d = { items: FAKE };
+      setData(d); setFailed(null);
+    },
+    onError: (e) => {
+      // 404 = 공포지수 API(#462)가 아직 배포되지 않음: 운영에서는 칸을 그리지 않는다
+      if (e instanceof ApiError && e.status === 404) { setData({ items: import.meta.env.DEV ? FAKE : [] }); return; }
+      setFailed(e instanceof Error ? e.message : "불러오지 못했습니다");
+    },
+  });
 
   // 이미 받은 값이 있으면 갱신 한 번 실패해도 그 값을 두고 아래에 작게만 알린다(배포 중 502 등)
   if (!data) return failed ? <p className="muted small fear-failed">공포지수를 불러오지 못했습니다: {failed}</p> : null;

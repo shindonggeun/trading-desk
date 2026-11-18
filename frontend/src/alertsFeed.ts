@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { api, ApiError, type AlertTone, type MarketAlert, type MarketAlertsDay } from "./api";
+import { usePoll } from "./poll";
 
 /** #581 오늘 알림(GET /api/alerts/today) — 대시보드 띠 · 타임라인 · 장중 수급 차트 마커가 같이 쓴다.
  *  화면이 보이는 동안 POLL_MS 마다 다시 읽고, 같은 페이지의 여러 구독자는 요청 하나를 나눠 쓴다. */
@@ -49,51 +49,18 @@ export function sideOf(a: MarketAlert): "up" | "down" | null {
 }
 
 type Feed = { data: MarketAlertsDay | null; error: string | null };
-const shared: { feed: Feed; listeners: Set<(f: Feed) => void>; timer?: number; inflight?: Promise<void> } = {
-  feed: { data: null, error: null }, listeners: new Set(),
-};
 
-function publish(feed: Feed) {
-  shared.feed = feed;
-  shared.listeners.forEach((l) => l(feed));
-}
+/** #626 같은 요청(ALERTS_KEY)을 대시보드 띠 · 타임라인 · 토스트 · 작은 창이 함께 쓴다. DEV 에서 API 가 없으면(404) 예시 */
+export const ALERTS_KEY = "alerts-today";
+export const loadAlerts = (): Promise<MarketAlertsDay> => api.alertsToday().catch((e) => {
+  if (import.meta.env.DEV && e instanceof ApiError && e.status === 404) return fakeAlerts();
+  throw e;
+});
 
-async function load(): Promise<void> {
-  if (shared.inflight) return shared.inflight;
-  shared.inflight = api.alertsToday()
-    .then((d) => publish({ data: d, error: null }))
-    .catch((e) => {
-      if (import.meta.env.DEV && e instanceof ApiError && e.status === 404) return publish({ data: fakeAlerts(), error: null });
-      publish({ data: shared.feed.data, error: e instanceof Error ? e.message : "불러오지 못했습니다" });
-    })
-    .finally(() => { shared.inflight = undefined; });
-  return shared.inflight;
-}
-
-function schedule() {
-  window.clearTimeout(shared.timer);
-  if (!shared.listeners.size) return;
-  shared.timer = window.setTimeout(async () => {
-    if (document.visibilityState === "visible") await load();
-    schedule();
-  }, POLL_MS);
-}
-
-/** 오늘 알림 — 첫 구독자가 읽기를 시작하고, 마지막 구독자가 떠나면 멈춘다. */
+/** 오늘 알림 — 1분마다(가려진 탭은 쉰다), 실패하면 앞서 받은 값을 두고 오류만 */
 export function useTodayAlerts(): Feed {
-  const [feed, setFeed] = useState<Feed>(shared.feed);
-  useEffect(() => {
-    shared.listeners.add(setFeed);
-    if (shared.listeners.size === 1) { void load(); schedule(); }
-    const onVisible = () => { if (document.visibilityState === "visible") void load(); };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      shared.listeners.delete(setFeed);
-      document.removeEventListener("visibilitychange", onVisible);
-      if (!shared.listeners.size) window.clearTimeout(shared.timer);
-    };
-  }, []);
-  return feed;
+  const s = usePoll(ALERTS_KEY, loadAlerts, POLL_MS);
+  return { data: s.data ?? null, error: s.failing ? (s.error instanceof Error ? s.error.message : "불러오지 못했습니다") : null };
 }
 
 /** DEV 에서 백엔드에 /api/alerts/today 가 없을 때(404)만 쓰는 예시 */

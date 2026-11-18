@@ -4,6 +4,7 @@ import { api } from "../api";
 import { price } from "../format";
 import { ACTION, BIAS, FACTOR, HORIZON, OPINION, OUTCOME, quoteSourceText, RATING, term } from "../korean";
 import type { Estimate, Outcome, OutcomeStatus, Plan } from "../types";
+import { useNow as useNowAt, usePoll } from "../poll";
 
 export function BiasBadge({ plan }: { plan: Plan }) {
   const b = BIAS[plan.bias];
@@ -127,22 +128,10 @@ interface Live {
 /** 카드가 열려 있는 동안 현재가를 주기적으로 다시 읽는다. 실패하면 계획에 저장된 값을 쓴다. */
 export function useLiveQuote(symbol: string | undefined, fallback: Live | undefined, enabled: boolean): Live | null {
   const [quote, setQuote] = useState<Live | null>(null);
-  useEffect(() => {
-    if (!symbol || !enabled) return;
-    let alive = true;
-    const load = () => {
-      if (document.hidden) return;
-      api.quote(symbol).then((q) => alive && setQuote(q), () => {});
-    };
-    load();
-    const timer = setInterval(load, QUOTE_EVERY_MS);
-    document.addEventListener("visibilitychange", load); // 탭으로 돌아오면 바로
-    return () => {
-      alive = false;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", load);
-    };
-  }, [symbol, enabled]);
+  // #626 가려진 탭은 쉬고, 탭으로 돌아오면 건너뛴 차례를 바로
+  usePoll(symbol && enabled ? `quote:${symbol}` : null, () => api.quote(symbol!), QUOTE_EVERY_MS, {
+    onData: (q) => setQuote(q),
+  });
   return quote ?? fallback ?? null;
 }
 
@@ -151,32 +140,20 @@ type ClosedEstimate = Extract<Estimate, { supported: true }>;
 /** 장이 닫혀 있는 동안의 추정가(바이낸스 주식 무기한 선물). 계약이 없거나 장중 · 실패면 null. */
 export function useEstimate(symbol: string | undefined, enabled: boolean): ClosedEstimate | null {
   const [est, setEst] = useState<Estimate | null>(null);
+  // #626 계약이 없는 종목은 다시 묻지 않는다. 가려진 탭은 쉰다
+  const [estStopped, setEstStopped] = useState(false);
   useEffect(() => {
     setEst(null);
-    if (!symbol || !enabled) return;
-    let alive = true;
-    let stopped = false;
-    const load = () => {
-      if (document.hidden || stopped) return;
-      api.estimate(symbol).then(
-        (e) => {
-          if (!alive) return;
-          setEst(e);
-          if (!e.supported) stopped = true; // 계약이 없는 종목은 다시 묻지 않는다
-        },
-        // 한 번 실패로 기준이 추정가 ↔ 현재가로 흔들리지 않게, 오래되기 전까지는 마지막 값을 둔다
-        () => alive && setEst((prev) => (prev?.supported && Date.now() - Date.parse(prev.fetched_at) < ESTIMATE_STALE_MS ? prev : null)),
-      );
-    };
-    load();
-    const timer = setInterval(load, ESTIMATE_EVERY_MS);
-    document.addEventListener("visibilitychange", load);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", load);
-    };
+    setEstStopped(false);
   }, [symbol, enabled]);
+  usePoll(symbol && enabled && !estStopped ? `estimate:${symbol}` : null, () => api.estimate(symbol!), ESTIMATE_EVERY_MS, {
+    onData: (e) => {
+      setEst(e);
+      if (!e.supported) setEstStopped(true);
+    },
+    // 한 번 실패로 기준이 추정가 ↔ 현재가로 흔들리지 않게, 오래되기 전까지는 마지막 값을 둔다
+    onError: () => setEst((prev) => (prev?.supported && Date.now() - Date.parse(prev.fetched_at) < ESTIMATE_STALE_MS ? prev : null)),
+  });
   // #209: NXT trading (until 20:00 KST) shows its real trade; after it, the estimate
   return est && est.supported && (est.market_state === "closed" || est.market_state === "nxt") ? est : null;
 }
@@ -260,13 +237,7 @@ function LiveWarning({ g, basis }: { g: Gap | null; basis: string }) {
 
 /** 30초마다 바뀌는 지금 시각 — 진입 유효 시간이 지났는지 볼 때. */
 function useNow(enabled: boolean): number {
-  const [t, setT] = useState(Date.now());
-  useEffect(() => {
-    if (!enabled) return;
-    const timer = setInterval(() => setT(Date.now()), 30_000);
-    return () => clearInterval(timer);
-  }, [enabled]);
-  return t;
+  return useNowAt(30_000, enabled);
 }
 
 function stamp(iso: string): string {

@@ -3,6 +3,7 @@ import { api } from "../api";
 import { byAsked } from "../ticker";
 import { time } from "../format";
 import type { LongShortItem, LongShortSplit } from "../types";
+import { usePoll } from "../poll";
 
 const POLL_MS = 5 * 60_000;            // 바이낸스 통계가 5분마다 바뀐다(시세 15초와 따로)
 const SHOW_KEY = "desk.longshort.show";
@@ -52,22 +53,10 @@ export function LongShortToggle({ shown, onFlip }: { shown: boolean; onFlip: () 
 export function useLongShort(tickers: string[], enabled: boolean): Record<string, LongShortItem> {
   const [items, setItems] = useState<Record<string, LongShortItem>>({});
   const key = tickers.slice(0, 30).join(",");
-  useEffect(() => {
-    if (!key || !enabled) return;
-    let alive = true;
-    const load = () => {
-      if (document.hidden) return;
-      api.longShort(key.split(","))
-        .then((r) => alive && setItems((cur) => ({ ...cur, ...byAsked(key.split(","), r.items) })))
-        .catch(() => { /* 실패하면 마지막 값을 그대로 둔다 */ });
-    };
-    load();
-    const t = window.setInterval(load, POLL_MS);
-    return () => {
-      alive = false;
-      window.clearInterval(t);
-    };
-  }, [key, enabled]);
+  // #626 5분마다(가려진 탭은 쉰다). 실패하면 마지막 값을 그대로 둔다
+  usePoll(key && enabled ? `long-short:${key}` : null, () => api.longShort(key.split(",")), POLL_MS, {
+    onData: (r) => setItems((cur) => ({ ...cur, ...byAsked(key.split(","), r.items) })),
+  });
   return items;
 }
 

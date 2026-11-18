@@ -41,6 +41,7 @@ function useEarningsSoon(key: string): Record<string, number> {
 import StockProfileCard from "./StockProfileCard";
 import { fundBadgeText, fundHref, useFundChanges } from "../fundBadges";
 import type { FundChangeItem } from "../types";
+import { usePoll } from "../poll";
 
 const POLL_MS = 15_000;      // 시세판과 같은 주기
 const SPARK_MS = 120_000;    // 작은 차트는 2분마다
@@ -69,38 +70,18 @@ function useSeen<T extends Element>(): [(el: T | null) => void, boolean] {
  *  #644 타일이 보이기 전(접힌 즐겨찾기 · 화면 밖)에는 묻지 않는다 — 30종목이면 첫 화면 요청이 60개 줄어든다 */
 function useSpark(ticker: string, order: number, seen: boolean): Line | null | "none" {
   const [line, setLine] = useState<Line | null | "none">(null);
-  useEffect(() => {
-    if (!seen) return;
-    let alive = true;
-    let missed = false;
-    const load = async () => {
-      if (document.hidden) {
-        missed = true;   // 가려진 동안 건너뛴 차례는 다시 보일 때 바로 채운다
-        return;
-      }
-      missed = false;
-      const [real, est] = await Promise.allSettled([api.candles(ticker, "5m", 78), api.estimateCandles(ticker, "5m")]);
-      if (!alive) return;
+  // #626 작은 차트는 화면에 보인 뒤(#644)부터 2분마다, 카드마다 조금씩 늦춰 시작한다. 가려진 동안 건너뛴 차례는 다시 보일 때 훅이 바로 채운다
+  usePoll(seen ? `spark:${ticker}` : null, () => Promise.allSettled([api.candles(ticker, "5m", 78), api.estimateCandles(ticker, "5m")]), SPARK_MS, {
+    delay: order * SPARK_STAGGER_MS,
+    onData: ([real, est]) => {
       const bars = real.status === "fulfilled" ? real.value.bars : [];
       const lastAt = bars.length ? new Date(bars[bars.length - 1].at).getTime() : 0;
       const e = est.status === "fulfilled" && "bars" in est.value ? (est.value as EstimatedCandles) : null;
       const estBars = e && e.market_state === "closed" ? e.bars.filter((b) => new Date(b.at).getTime() > lastAt).slice(-78) : [];
       const next = { real: bars.map((b) => b.close), est: estBars.map((b) => b.close) };
       setLine(next.real.length + next.est.length >= 2 ? next : "none");
-    };
-    const first = window.setTimeout(load, order * SPARK_STAGGER_MS);
-    const t = window.setInterval(load, SPARK_MS);
-    const onShow = () => {
-      if (!document.hidden && missed) load();
-    };
-    document.addEventListener("visibilitychange", onShow);
-    return () => {
-      alive = false;
-      window.clearTimeout(first);
-      window.clearInterval(t);
-      document.removeEventListener("visibilitychange", onShow);
-    };
-  }, [ticker, order, seen]);
+    },
+  });
   return line;
 }
 
@@ -201,26 +182,14 @@ export default function FavoritesPanel() {
   const fundCh = useFundChanges(tickers);   // #484 기관 배지
   const [preview, setPreview] = useState<{ ticker: string; name: string } | null>(null);
 
-  useEffect(() => {
-    if (!key) return;
-    let alive = true;
-    const load = () => {
-      if (document.hidden) return;
-      api.board(key.split(","))
-        .then((r) => {
-          if (!alive) return;
-          setItems((cur) => ({ ...cur, ...byAsked(key.split(","), r.items) }));
-          setFailedAt(null);
-        })
-        .catch(() => alive && setFailedAt(new Date().toISOString()));
-    };
-    load();
-    const t = window.setInterval(load, POLL_MS);
-    return () => {
-      alive = false;
-      window.clearInterval(t);
-    };
-  }, [key]);
+  // #626 15초마다(가려진 탭은 쉰다) — 같은 종목 묶음이면 시세판 · 섹터 화면과 요청 하나를 함께 쓴다
+  usePoll(key ? `board:${key}` : null, () => api.board(key.split(",")), POLL_MS, {
+    onData: (r) => {
+      setItems((cur) => ({ ...cur, ...byAsked(key.split(","), r.items) }));
+      setFailedAt(null);
+    },
+    onError: () => setFailedAt(new Date().toISOString()),
+  });
 
   if (list === null) return <p className="empty-state">불러오는 중…</p>;
   const updated = Object.values(items).map((i) => i.fetched_at).filter(Boolean).sort().pop();

@@ -6,6 +6,7 @@ import type {
   PlaybookCalibration, Playbooks, RegimeId, RiskPhase, RiskRegime,
 } from "../types";
 import { useEstimate, useLiveQuote } from "./PlanCard";
+import { every, usePoll } from "../poll";
 
 /** 서버 캐시 TTL(desk/horizons.py sr_ttl_sec)에 맞춘 폴링 간격 — 더 자주 불러도 같은 값이다 */
 const POLL_MS: Record<HorizonId, number> = { scalp: 30_000, intraday: 60_000, short_swing: 120_000, swing: 300_000 };
@@ -18,22 +19,12 @@ export function useLivePlaybooks(runId: string | undefined, horizon: HorizonId |
   const [data, setData] = useState<LivePlaybooks | null>(null);
   useEffect(() => {
     setData(null);
-    if (!runId || !enabled) return;
-    let alive = true;
-    const load = () => {
-      if (document.hidden) return;
-      // 거의 동시에 부른 두 응답이 거꾸로 와도 더 오래된 계산(as_of)으로 되돌아가지 않게
-      api.livePlaybooks(runId).then((d) => alive && setData((old) => (old && old.as_of > d.as_of ? old : d)), () => {});
-    };
-    load();
-    const timer = setInterval(load, POLL_MS[horizon ?? "swing"] ?? POLL_MS.swing);
-    document.addEventListener("visibilitychange", load);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", load);
-    };
-  }, [runId, horizon, enabled]);
+  }, [runId, enabled]);
+  // #626 주기는 계획 기간(단타 · 스윙 · 장기)에 따라, 가려진 탭은 쉰다.
+  // 거의 동시에 부른 두 응답이 거꾸로 와도 더 오래된 계산(as_of)으로 되돌아가지 않게
+  usePoll(runId && enabled ? `live-playbooks:${runId}` : null, () => api.livePlaybooks(runId!), POLL_MS[horizon ?? "swing"] ?? POLL_MS.swing, {
+    onData: (d) => setData((old) => (old && old.as_of > d.as_of ? old : d)),
+  });
   return data;
 }
 
@@ -506,8 +497,7 @@ export default function PlaybookCard({ plan, symbol, outcome, runId, horizon }: 
   useEffect(() => {
     if (!fresh) return;
     setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 60_000);
-    return () => clearInterval(t);
+    return every(() => setNow(Date.now()), 60_000);
   }, [fresh]);
   if (!saved) return null;
   // levels_from "fresh" 는 분석의 레벨이 아니라 새로 계산한 것 — 이 카드(분석의 플레이북)에는 쓰지 않는다

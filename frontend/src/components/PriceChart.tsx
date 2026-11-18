@@ -35,12 +35,13 @@ import GapOddsCard from "./GapOddsCard";
 import ChannelLineCard, { type LinePick } from "./ChannelLineCard";
 import { channelTitle, fakeLines, isLineTf, TF_KO, TREND_STATE_KO, CHANNEL_STATE_KO, trendTitle } from "../channelLines";
 import { oddsLabel } from "../gapOdds";
-import type { GapReport, LinesReport, OpenGap } from "../types";
+import type { GapReport, LinesReport, LineTf, OpenGap } from "../types";
 import type { BottomZone, ChartPattern, FibLevel, Fibonacci, OutlookPeriodId, Plan, Positioning, Projection, RunOutlook, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
 import PatternCard, { patternKey } from "./PatternCard";
 import { clipPath, ConeShade, directionLabel, OUTLOOK_PERIODS, outlookCone } from "./chartOutlook";
 import { css, useColorScheme } from "../chartColors";
+import { usePoll } from "../poll";
 
 export type Interval = Exclude<CandleInterval, "1m">;
 const INTERVALS: { iv: Interval; label: string; count: number }[] = [
@@ -755,19 +756,12 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   useEffect(() => {
     setLinesRep(null);
     setLinePick(null);
-    if (!wantLines || !isLineTf(interval)) return;
-    const tf = interval;
-    let live = true;
-    const load = () => api.lines(ticker, tf).then((r) => live && setLinesRep(r), (e) => {
-      if (live && import.meta.env.DEV && e instanceof ApiError && e.status === 404) setLinesRep("fake");
-    });
-    load();
-    const id = INTRADAY.has(tf) ? window.setInterval(load, 60_000) : undefined;
-    return () => {
-      live = false;
-      window.clearInterval(id);
-    };
   }, [ticker, interval, wantLines]);
+  // #626 분봉은 1분, 일봉은 30분마다(가려진 탭은 쉰다)
+  usePoll(wantLines && isLineTf(interval) ? `lines:${ticker}:${interval}` : null, () => api.lines(ticker, interval as LineTf), INTRADAY.has(interval) ? 60_000 : 30 * 60_000, {
+    onData: (r) => setLinesRep(r),
+    onError: (e) => { if (import.meta.env.DEV && e instanceof ApiError && e.status === 404) setLinesRep("fake"); },
+  });
   const lines: LinesReport | null = useMemo(() => {
     if (linesRep !== "fake") return linesRep;
     if (!drawn || !isLineTf(drawn.interval)) return null;

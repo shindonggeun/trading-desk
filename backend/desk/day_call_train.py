@@ -68,7 +68,7 @@ def rows(market: str, round_: int, series: dict[str, Sequence], edges: tuple[flo
     """One row per finished target session (at ``now``) with its features (as of the round's cutoff)
     and its answer (``kind``: open or previous close to close)."""
     m = dc.MARKETS[market]
-    days = sorted({dc.session_day(m.target, b) for b in series[m.target]})
+    days = sorted({dc.session_day(m.target, b) for b in dc.answer_bars(market, series)})
     out, prev_dir = [], None
     for day in days:
         answer = dc.label(market, day, series, kind, now)
@@ -415,7 +415,7 @@ def answers(check: dict | None, keep: int = 40) -> dict:
     Yahoo's only."""
     if not check or check.get("source") != "krx":
         return {"kospi": "yahoo", "note": "KRX 일봉(krx_daily)을 주지 않아 국장 정답 · 특징은 야후 ^KS11 이다"}
-    return {"kospi": "krx", "krx_days": check["krx_days"], "yahoo_only_days": check["yahoo_only_days"],
+    return {"kospi": "krx", "used_for": "정답만(특징은 야후 ^KS11)", "krx_days": check["krx_days"], "yahoo_only_days": check["yahoo_only_days"],
             "from": check["from"], "to": check["to"], "diff_pct": check["diff_pct"],
             "diff_days": len(check["diffs"]), "diffs": check["diffs"][:keep],
             "only_yahoo": check["only_yahoo"][:keep], "only_krx": check["only_krx"][:keep]}

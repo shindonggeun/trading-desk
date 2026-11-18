@@ -117,6 +117,7 @@ class DayCalls:
         self._tried: dict[tuple[str, int, date], datetime] = {}
         self._fetched: tuple[datetime, dict] | None = None
         self._krx_days: set[date] = set()
+        self._warned: set[str] = set()
         self._recheck_try: datetime | None = None
 
     # ------------------------------------------------------------------ making calls
@@ -202,18 +203,23 @@ class DayCalls:
         return series
 
     def _with_krx(self, series: dict, now: datetime) -> None:
-        """#604 KRX's own KOSPI bars in place of Yahoo's on the days krx_daily has (desk.day_call_krx):
-        the Korean answers are KRX's open and close. Without rows (no key yet) the bars stay Yahoo's."""
+        """#604 the answer series (desk.day_call_krx.apply): KRX's own KOSPI bars on the days krx_daily
+        has, so the Korean answers are KRX's open and close. The features keep Yahoo's bars. Without
+        rows (no key yet), or when anything here fails, the answers read Yahoo's bars as before."""
         try:
             rows = day_call_krx.load_db(self.engine, now.date() - timedelta(days=KRX_READ_DAYS))
-        except Exception:  # the calls go on with Yahoo's bars
-            log.warning("day calls: krx_daily not readable", exc_info=True)
-            rows = {}
-        check = day_call_krx.apply(series, rows)
-        self._krx_days = set(rows)
-        for d in check["diffs"][-3:]:
-            log.warning("day calls: KOSPI %s KRX vs Yahoo apart %s%% (open, close)", d["day"],
-                        (d["pct"]["open"], d["pct"]["close"]))
+            check = day_call_krx.apply(series, rows)
+        except Exception:  # the calls and the scoring go on with Yahoo's bars
+            log.warning("day calls: KRX answers not available", exc_info=True)
+            series.pop(dc.MARKETS["kr"].target + dc.ANSWER, None)
+            self._krx_days = set()
+            return
+        self._krx_days = check["days"]
+        for d in check["diffs"]:
+            if d["day"] not in self._warned:        # each day once per process, not on every fetch
+                self._warned.add(d["day"])
+                log.warning("day calls: KOSPI %s KRX vs Yahoo apart %s%% (open, close)", d["day"],
+                            (d["pct"]["open"], d["pct"]["close"]))
 
     # ------------------------------------------------------------------ scoring
 
@@ -266,7 +272,8 @@ class DayCalls:
         return {"outcome": out, "hit_direction": out["hit_direction"], "hit_stage": out["hit_stage"],
                 "brier": out["brier"]}
 
-    def recheck_krx(self, now: datetime | None = None, series: dict | None = None) -> int:
+    def recheck_krx(self, now: datetime | None = None, series: dict | None = None,
+                    days: int = KRX_RECHECK_DAYS) -> int:
         """#604 the Korean calls scored on Yahoo's bar in the last KRX_RECHECK_DAYS, scored again on KRX's
         once krx_daily has the session (the next business day 08:30 KST). The Yahoo answer stays in the
         outcome (``yahoo_answer``) when the two differ by more than day_call_krx.DIFF_PCT. Returns how
@@ -274,7 +281,7 @@ class DayCalls:
         now = now or self.clock()
         if series is None and self._recheck_try and now - self._recheck_try < SCORE_EVERY:
             return 0                     # a row KRX cannot answer must not fetch Yahoo every tick
-        first = now.date() - timedelta(days=KRX_RECHECK_DAYS)
+        first = now.date() - timedelta(days=days)
         try:
             krx_days = set(day_call_krx.load_db(self.engine, first))
         except Exception:  # noqa: BLE001
@@ -303,11 +310,13 @@ class DayCalls:
             before = r["outcome"]
             gap = {f: round((answer[f] / before[f] - 1) * 100, 3) if before.get(f) else None
                    for f in ("open", "close")}
-            if any(v is None or abs(v) > day_call_krx.DIFF_PCT for v in gap.values()):
+            flipped = (values["hit_direction"] != r["hit_direction"]
+                       or values["outcome"]["raw_hit_direction"] != before.get("raw_hit_direction"))
+            if flipped or any(v is None or abs(v) > day_call_krx.DIFF_PCT for v in gap.values()):
                 values["outcome"]["yahoo_answer"] = {f: before.get(f) for f in ("open", "close", "ret_atr", "stage", "return_pct")}
                 log.warning("day calls: kr %s %s %s answer KRX vs Yahoo apart %s%% (open, close)%s",
                             r["trade_date"], r["round"], r["call"], (gap["open"], gap["close"]),
-                            " - the hit changed" if values["hit_direction"] != r["hit_direction"] else "")
+                            " - the hit changed" if flipped else "")
             with self.engine.begin() as conn:
                 conn.execute(update(t).where(t.c.id == r["id"]).values(**values))
             done += 1

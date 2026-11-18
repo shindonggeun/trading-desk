@@ -415,12 +415,15 @@ def _day_call_backfill(engine, args) -> int:
     desk = day_calls.DayCalls(engine, yahoo_candles)
     # hourly futures far enough back for the hold-out (about 24 bars a day)
     series = day_calls.fetch_series(yahoo_candles, hourly_bars=24 * (args.days + 15))
+    desk._with_krx(series, now())          # #604 the Korean answers on KRX's bars where krx_daily has them
     for market in (("kr", "us") if args.market == "all" else (args.market,)):
         if not desk.models.get(market):
             print(f"{market}: no committed model", file=sys.stderr)
             continue
         made = desk.backfill(market, series, args.days)
         print(f"{market}: {made} calls backfilled")
+    # the Korean calls scored on Yahoo's bar before krx_daily had the session, scored again on KRX's
+    print(f"kr: {desk.recheck_krx(now(), series, days=args.days + 7)} call(s) scored again on KRX's bars")
     return 0
 
 

@@ -4,8 +4,11 @@ open -> close) is KRX's official open and close, not Yahoo's copy.
 desk.krx keeps KRX's end-of-day rows in krx_daily (api kospi_dd_trd, code "코스피", from the next business
 day 08:30 KST). ``merge`` puts them in place of Yahoo's ^KS11 bars on the days KRX has (the latest
 session, not published yet, stays Yahoo's) and lists every day the two disagree by more than
-DIFF_PCT, or that only one of them has. The training (desk.day_call_train, ``--krx-file`` or
-``--krx-db``) and the live scoring (desk.day_calls) use the merged bars.
+DIFF_PCT, or that only one of them has. ``apply`` keeps the merged bars apart, as the answer series
+(desk.day_call.ANSWER): only the answers read them. The features stay on Yahoo's bars - the ones a
+live call has at 07:30, before KRX publishes the day before - so a model trained on KRX answers sees
+the same inputs it is served. The training (desk.day_call_train, ``--krx-file`` or ``--krx-db``) and
+the live scoring (desk.day_calls) both do this.
 
 A training run on the PC has no krx_daily: ``python -m desk.cli krx export`` on the server writes the
 rows to a file it can read.
@@ -75,8 +78,8 @@ def load_file(path: str | Path) -> dict[date, dict]:
     return {date.fromisoformat(d): row for d, row in body["rows"].items()}
 
 
-def _pct(a: float, b: float) -> float:
-    return (b / a - 1) * 100
+def _pct(a: float, b: float) -> float | None:
+    return (b / a - 1) * 100 if a else None
 
 
 def merge(yahoo: Sequence[Bar], rows: dict[date, dict]) -> tuple[list[Bar], dict]:
@@ -98,17 +101,23 @@ def merge(yahoo: Sequence[Bar], rows: dict[date, dict]) -> tuple[list[Bar], dict
             elif y is None:
                 only_krx.append(day.isoformat())
             else:
-                gaps = {f: round(_pct(getattr(y, f), getattr(k, f)), 3) for f in ("open", "close")}  # KRX vs Yahoo
-                if any(abs(v) > DIFF_PCT for v in gaps.values()):
+                gaps = {f: round(g, 3) if (g := _pct(getattr(y, f), getattr(k, f))) is not None else None
+                        for f in ("open", "close")}                    # KRX vs Yahoo, % (None: Yahoo's 0)
+                if any(v is None or abs(v) > DIFF_PCT for v in gaps.values()):
                     diffs.append({"day": day.isoformat(), "krx": {"open": k.open, "close": k.close},
                                   "yahoo": {"open": y.open, "close": y.close}, "pct": gaps})
-    check = {"source": "krx" if ours else "yahoo", "krx_days": len(ours), "yahoo_only_days": len(set(theirs) - set(ours)),
+    check = {"source": "krx" if ours else "yahoo", "days": set(ours), "krx_days": len(ours), "yahoo_only_days": len(set(theirs) - set(ours)),
              "from": min(ours).isoformat() if ours else None, "to": max(ours).isoformat() if ours else None,
              "diff_pct": DIFF_PCT, "diffs": diffs, "only_yahoo": only_yahoo, "only_krx": only_krx}
     return [merged[d] for d in sorted(merged)], check
 
 
 def apply(series: dict[str, list], rows: dict[date, dict]) -> dict:
-    """Put KRX's bars into ``series`` (in place: a new ^KS11 list) and return the check."""
-    series[SYMBOL], check = merge(series.get(SYMBOL) or [], rows)
+    """The answer series (``^KS11`` + desk.day_call.ANSWER) from Yahoo's ^KS11 and KRX's rows, set in
+    ``series`` (Yahoo's own list untouched); returns the check (``days``: the sessions KRX answers).
+    Without KRX rows nothing is set - the answers read Yahoo's bars as before."""
+    series.pop(SYMBOL + dc.ANSWER, None)
+    merged, check = merge(series.get(SYMBOL) or [], rows)
+    if check["days"]:
+        series[SYMBOL + dc.ANSWER] = merged
     return check

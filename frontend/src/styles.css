@@ -2611,19 +2611,19 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   --dc-s: color-mix(in srgb, var(--down) 55%, transparent); --dc-ss: var(--down); }
 .daycall-head { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
 .daycall-verdict { font-size: 1.1rem; }
-.daycall-verdict.daycall-strong_long, .daycall-verdict.daycall-long, .daycall-tag.daycall-strong_long, .daycall-tag.daycall-long { color: var(--up); }
-.daycall-verdict.daycall-short, .daycall-verdict.daycall-strong_short, .daycall-tag.daycall-short, .daycall-tag.daycall-strong_short { color: var(--down); }
+.daycall-verdict.daycall-strong_long, .daycall-verdict.daycall-weak_long, .daycall-tag.daycall-strong_long, .daycall-tag.daycall-weak_long { color: var(--up); }
+.daycall-verdict.daycall-weak_short, .daycall-verdict.daycall-strong_short, .daycall-tag.daycall-weak_short, .daycall-tag.daycall-strong_short { color: var(--down); }
 .daycall-verdict.daycall-flat, .daycall-tag.daycall-flat { color: var(--muted); }
 .daycall-bars { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
-.daycall-row { display: grid; grid-template-columns: 5.6em minmax(0, 1fr) 3em auto; align-items: center; gap: 8px; font-size: var(--fs-s); }
+.daycall-row { display: grid; grid-template-columns: 6.8em minmax(0, 1fr) 3em 3.6em; align-items: center; gap: 8px; font-size: var(--fs-s); }
 .daycall-name { white-space: nowrap; }
-.daycall-mark { display: inline-block; min-width: 1.7em; }
+.daycall-mark { display: inline-block; min-width: 2.3em; }
 .daycall-track { height: 10px; border-radius: 5px; background: var(--surface-2); overflow: hidden; }
 .daycall-fill { display: block; height: 100%; border-radius: 5px; }
 .daycall-strong_long .daycall-fill { background: var(--dc-sl); }
-.daycall-long .daycall-fill { background: var(--dc-l); }
+.daycall-weak_long .daycall-fill { background: var(--dc-l); }
 .daycall-flat .daycall-fill { background: var(--dc-f); }
-.daycall-short .daycall-fill { background: var(--dc-s); }
+.daycall-weak_short .daycall-fill { background: var(--dc-s); }
 .daycall-strong_short .daycall-fill { background: var(--dc-ss); }
 .daycall-pct { text-align: right; font-variant-numeric: tabular-nums; }
 .daycall-row.is-call { font-weight: 700; }
@@ -2641,6 +2641,8 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .daycall-hit { color: var(--ok); }
 .daycall-miss { color: var(--danger); }
 @media (max-width: 480px) {
-  .daycall-row { grid-template-columns: 5.2em minmax(0, 1fr) 2.8em; }
-  .daycall-pick { grid-column: 1 / -1; justify-self: end; margin-top: -2px; }
+  .daycall-row { grid-template-columns: 6.4em minmax(0, 1fr) 2.8em 1.1em; gap: 6px; }
+  .daycall-pick-word { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .daycall-table .col-prob { display: none; }
 }
+.daycall-effect { white-space: nowrap; font-weight: 600; }

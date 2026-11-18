@@ -1,4 +1,4 @@
-import type { DayCall, DayCallHistory, DayCallMarket, DayCallStats, MorningBrief, MorningBriefList } from "./types";
+import type { DayCallHistory, DayCallMarket, DayCallStats, DayCallToday, MorningBrief, MorningBriefList } from "./types";
 import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, PaperEquity, PaperSettings, PaperSettingsPatch, PaperSummary, PaperTrades, RunExplain, TipsView } from "./types";
 import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, ReportDetail, ReportList, Halving, FundBrief, FundChanges, FundDetail, FearIndex, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
 
@@ -378,8 +378,8 @@ export const api = {
   morningBrief: (date?: string) =>
     call<MorningBrief>(`/api/briefs/morning${date ? `?date=${encodeURIComponent(date)}` : ""}`),
   morningBriefs: (limit = 20) => call<MorningBriefList>(`/api/briefs/morning/list?limit=${limit}`),
-  // #573 오늘 방향(#572) — 아직 판정이 없으면 200 + null
-  dayCall: () => call<DayCall | null>("/api/day-call"),
+  // #573 오늘 방향(#572) — 판정이 없으면 200 + call: null
+  dayCall: (market: DayCallMarket) => call<DayCallToday>(`/api/day-call?market=${market}`),
   dayCallHistory: (market: DayCallMarket, days = 90) =>
     call<DayCallHistory>(`/api/day-call/history?market=${market}&days=${days}`),
   dayCallStats: (market: DayCallMarket, days = 90) =>

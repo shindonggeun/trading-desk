@@ -369,7 +369,7 @@ def rules(b: dict) -> dict:
     if not bad:
         bad.append("간밤 상승 · 하락이 국장 하루 내내 이어진다고 단정하기 쉬워요")
     first = schedule[0] if schedule else None
-    closing = (f"오늘은 {b['day_call']}" if b.get("day_call")
+    closing = (b["day_call"] if b.get("day_call")   # #572 line: "오늘 국장은 전일 종가 대비 …"
                else f"다음 큰 일정은 {first} — 그 전까지는 무리한 베팅보다 확인 위주로." if first
                else "큰 일정이 없는 날 — 개별 재료와 수급을 확인하며 대응하세요.")
     return {"title": title, "numbers": numbers[:LIST_MAX + 4], "kr_flow": kr_flow, "done": done[:LIST_MAX],

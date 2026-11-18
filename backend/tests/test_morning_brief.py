@@ -377,3 +377,10 @@ def test_the_same_verbs_pass_when_they_agree():
     for sentence in ("나스닥이 1.20% 떨어졌어요.", "코스피가 0.42% 뛰었어요.", "나스닥 1.20%↓",
                      "나스닥은 하락폭을 줄여 -1.20%로 마감했어요.", "외국인 순매도 규모가 줄어 1,234억에 그쳤어요."):
         assert mb._ok(sentence, check, 200) == sentence, sentence
+
+
+def test_todays_call_line_is_the_closing_as_it_is():
+    line = "오늘 국장은 전일 종가 대비 약한 롱(34%) 우세, 간밤 미장은 약보합(38%)"
+    b = _bundle(day_call=lambda: {"date": "2026-11-18", "kr": {"label": "약한 롱"}, "us": None, "line": line})
+    assert b["day_call"] == line and mb.rules(b)["closing"] == line
+    assert _bundle(day_call=lambda: None)["day_call"] is None

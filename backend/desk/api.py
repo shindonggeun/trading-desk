@@ -31,6 +31,7 @@ from . import (
     chat,
     credit,
     day_calls,
+    day_sectors,
     earnings,
     earnings_preview,
     entry_now,
@@ -123,6 +124,7 @@ FUNDS_TICKERS_MAX = 30   # #483 tickers per /api/funds/changes call (the favorit
 # skipped, not the weekly map, when a cold cache is slower)
 BOTTOM_NOTE_SEC = 4.0
 BOTTOM_QUOTE_SEC = 2.0   # #310: the price the bottom-zone ladder is cut at, per lookup
+SECTORS_WAIT_SEC = 20.0  # #620: a first /api/day-call/sectors waits this long for the bars, then says "loading"
 TREND_WAIT_SEC = 8.0     # #460: /api/tips waits this long for the indices' trend, then answers without it
 GAPS_TTL_SEC = 300.0     # #465: a ticker's unfilled gaps are kept as long as its swing levels (desk.horizons sr_ttl_sec)
 GAP_FILL_MAX = 4          # #577: background reads of the gap odds at once (the entry summary never waits for one)
@@ -436,7 +438,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             macro=lambda: macro_news.CACHE.brief(None),
             day_call=morning_brief.day_call_source(),
             extra=morning_brief.hand_kept,
-            krx=lambda: krx_etp.summary(engine, datetime.now(krx.KST).date()))
+            krx=lambda: krx_etp.summary(engine, datetime.now(krx.KST).date()),
+            sectors=(lambda: sector_cache.read("kr", sector_candles)) if sector_candles is not None else None)
 
     async def make_brief(trigger: str, desk_only: bool = False, taken: bool = False) -> str:
         """One brief (#571): ``made`` or ``busy`` (one being written, or - automatic only - no free ChatGPT
@@ -481,6 +484,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # with the same switch as the news flow and the prewarm: scripted runs and tests fetch nothing
     day_desk = day_calls.DayCalls(engine, None if settings.fake_runs or settings.macro_interval_sec <= 0
                                   else (lambda *a: prices._yahoo_candles(*a)))
+    # #620 today's strong / weak sectors per market, from the sector ETFs' daily bars (the same switch)
+    sector_candles = None if settings.fake_runs or settings.macro_interval_sec <= 0 else day_sectors.yahoo_adjusted
+    sector_cache = day_sectors.Cache()
+    sector_tasks: dict[str, asyncio.Task] = {}
     # #601 KRX OPEN API end-of-day history: only with a key, and off in scripted runs and tests
     krx_desk = (krx.KrxDaily(engine, krx.Client(settings.krx_api_key))
                 if settings.krx_api_key and not settings.fake_runs and settings.macro_interval_sec > 0 else None)
@@ -904,6 +911,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 "gaps": lambda: asyncio.gather(*(asyncio.to_thread(gap_fill.read, gap_fetch, t, gap_events,
                                                                    ahead=ahead) for t in gap_fill.WATCH)),
             }
+            if sector_candles is not None:   # #620 both markets' sector picks, so a first look is instant
+                jobs["sectors"] = lambda: asyncio.gather(*(asyncio.to_thread(sector_cache.read, m, sector_candles,
+                                                                             None, ahead) for m in day_sectors.MARKETS))
             if risk_cache is not None:
                 jobs["risk_us"] = lambda: asyncio.to_thread(risk_cache.series, False, ahead)
                 jobs["risk_kr"] = lambda: asyncio.to_thread(risk_cache.series, True, ahead)
@@ -1497,6 +1507,32 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     @app.get("/api/day-call/stats")
     def day_call_stats(market: str = "kr", days: int = day_calls.RECORD_DAYS):
         return day_desk.stats(_day_market(market), min(max(days, 1), 365))
+
+    @app.get("/api/day-call/sectors")
+    async def day_call_sectors(market: str = "kr"):
+        """#620 the market's sectors most and least likely to beat its benchmark today (desk.day_sectors):
+        probability, reasons, the last 90 sessions' record against following yesterday's strong
+        sectors, and today's score after the close. Built from the sector ETFs' daily bars in the
+        background - a first ask waits SECTORS_WAIT_SEC, then answers ``loading``."""
+        if market not in day_sectors.MARKETS:
+            raise HTTPException(422, "market must be kr or us")
+        now = datetime.now(UTC)
+        if (v := sector_cache.cached(market, now)) is not None:
+            return v
+        if sector_candles is None:
+            raise HTTPException(503, "섹터 판정은 시세 연결이 필요합니다")
+        task = sector_tasks.get(market)
+        if task is None or task.done():
+            task = sector_tasks[market] = asyncio.create_task(
+                asyncio.to_thread(sector_cache.read, market, sector_candles, now))
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), SECTORS_WAIT_SEC)
+        except TimeoutError:
+            return {"market": market, "ready": False, "loading": True,
+                    "note": "섹터 ETF 일봉을 받는 중입니다 — 잠시 뒤 다시 보세요."}
+        except Exception as exc:  # noqa: BLE001 - a source down: said, not raised
+            log.warning("day sectors %s failed: %s", market, type(exc).__name__)
+            raise HTTPException(503, "섹터 판정을 만들지 못했습니다") from None
 
     @app.get("/api/market/fear")
     async def market_fear():

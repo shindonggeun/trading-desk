@@ -99,7 +99,8 @@ class Sources:
     """Where the inputs come from (desk.api wires the live ones; tests and scripted runs fake them).
     ``candles(symbol, interval, count)`` desk.prices; ``fear()`` desk.fear.Fear.get; ``flow(market)`` desk.market_flow
     (1d records); ``month("YYYY-MM")`` desk.market_calendar.month_view; ``macro()`` desk.macro_news brief;
-    ``day_call()`` today's direction line (#572), None until it exists; ``krx()`` desk.krx_etp.summary (#605)."""
+    ``day_call()`` today's direction line (#572), None until it exists; ``krx()`` desk.krx_etp.summary (#605);
+    ``sectors()`` desk.day_sectors' Korean view (#620 - the US one needs Korea's close, not in by 07:00)."""
     candles: Callable[[str, str, int], list]
     fear: Callable[[], Awaitable[dict]] | None = None
     flow: Callable[[str], Awaitable[dict]] | None = None
@@ -108,6 +109,7 @@ class Sources:
     day_call: Callable[[], dict | None] | None = None
     extra: Callable[[], list[dict]] | None = None
     krx: Callable[[], dict | None] | None = None
+    sectors: Callable[[], dict | None] | None = None
 
 
 def day_call_source() -> Callable[[], dict | None] | None:
@@ -154,6 +156,7 @@ async def collect(src: Sources, now: datetime | None = None) -> dict:
     raw["day_call"] = await guard("day_call", asyncio.to_thread(src.day_call)) if src.day_call else None
     raw["extra"] = (await guard("calendar.json", asyncio.to_thread(src.extra))) if src.extra else []
     raw["krx"] = await guard("krx", asyncio.to_thread(src.krx)) if src.krx else None
+    raw["sectors"] = await guard("sectors", asyncio.to_thread(src.sectors)) if src.sectors else None
     return raw
 
 
@@ -294,6 +297,17 @@ def _krx(raw: dict) -> dict:
     return out
 
 
+def _sectors(raw: dict, today: date) -> dict | None:
+    """#620 the Korean sectors most and least likely to beat the market today, with their probability -
+    only today's picks (a brief on a closed day, or before the picks are ready, says nothing of them)."""
+    v = raw.get("sectors") or {}
+    if not v.get("ready") or not v.get("top") or v.get("date") != today.isoformat():
+        return None
+    def side(rows):
+        return [{"name": r["name"], "prob": f"{round(r['prob'] * 100)}%"} for r in rows]
+    return {"date": v.get("date"), "strong": side(v["top"]), "weak": side(v["bottom"])}
+
+
 def _themes(raw: dict) -> list[dict]:
     """The surging news themes (label and the first headline - untrusted text, no numbers taken from it)."""
     rows = [t for t in (raw.get("macro") or {}).get("themes") or [] if not t.get("quiet") and not t.get("stale")]
@@ -325,7 +339,7 @@ def bundle(raw: dict, now: datetime | None = None) -> dict:
     return {"date": today.isoformat(), "us": us, "futures": fut, "kr": kr, "flow": flow, "fear": fear,
             "events_done": done, "events_ahead": ahead, "earnings_done": reported, "earnings_ahead": due,
             "themes": _themes(raw), "day_call": (call or {}).get("line") if isinstance(call, dict) else None,
-            "krx": _krx(raw), "missing": list(raw.get("missing") or [])}
+            "krx": _krx(raw), "sectors": _sectors(raw, today), "missing": list(raw.get("missing") or [])}
 
 
 def _public(b: dict) -> dict:
@@ -394,6 +408,13 @@ def rules(b: dict) -> dict:
         net = kf["_net"]["foreigner"]
         (good if net > 0 else bad).append(
             f"어제 외국인은 코스피를 {kf['net']['외국인']} {'샀어요' if net > 0 else '팔았어요'} — 오늘도 이어지는지 보세요")
+    sec = b.get("sectors")
+    if sec:     # #620 the model's sector picks (probability of beating the market, not a forecast)
+        # second, after the overnight lead line, so the caps never cut it
+        good.insert(min(1, len(good)), "오늘 국장에서 시장보다 강할 확률이 높은 섹터: "
+                    + " · ".join(f"{r['name']} {r['prob']}" for r in sec["strong"]))
+        bad.insert(min(1, len(bad)), "오늘 국장에서 시장보다 약할 확률이 높은 섹터(강할 확률): "
+                   + " · ".join(f"{r['name']} {r['prob']}" for r in sec["weak"]))
     if not good:
         good.append("숫자 하나로 방향을 단정하기보다 개장 30분 수급을 먼저 확인하세요")
     if not bad:
@@ -403,7 +424,7 @@ def rules(b: dict) -> dict:
                else f"다음 큰 일정은 {first} — 그 전까지는 무리한 베팅보다 확인 위주로." if first
                else "큰 일정이 없는 날 — 개별 재료와 수급을 확인하며 대응하세요.")
     return {"title": title, "numbers": numbers[:LIST_MAX + 4], "kr_flow": kr_flow, "done": done[:LIST_MAX],
-            "pending": pending[:LIST_MAX], "schedule": schedule[:LIST_MAX + 2], "good": good[:3], "bad": bad[:3],
+            "pending": pending[:LIST_MAX], "schedule": schedule[:LIST_MAX + 2], "good": good[:4], "bad": bad[:4],
             "closing": closing, "day_call": b.get("day_call"), "source": "rules"}
 
 
@@ -507,6 +528,9 @@ def _subjects(b: dict) -> dict[str, set[str]]:
         add(i["name"], *_SIGNED.findall(i["text"].replace(i["name"], " ")))
     for name, text in ((k.get("ktb") or {}).get("years") or {}).items():
         add(name, *_SIGNED.findall(text.replace(name, " ")))
+    sec = b.get("sectors") or {}
+    for r in (sec.get("strong") or []) + (sec.get("weak") or []):   # #620 a sector's own probability only
+        add(r["name"], r["prob"])
     return out
 
 

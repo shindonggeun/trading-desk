@@ -98,7 +98,7 @@ export function fakeDayCall(market: DayCallMarket): DayCallToday {
   const round = market === "kr" ? 2 : 1;
   const prev = entry(market, "prev_close", day, round, market === "kr" ? probs([8.1, 34.2, 31.0, 21.3, 5.4]) : probs([5.2, 20.1, 33.0, 29.4, 12.3]), false);
   const open = entry(market, "open", day, round, market === "kr" ? probs([6.0, 26.0, 38.0, 22.0, 8.0]) : probs([10.4, 30.1, 30.2, 22.0, 7.3]), false);
-  return { market, date: today, stages: STAGES, calls: { prev_close: prev, open }, rounds: { prev_close: [prev], open: [open] }, note: NOTE };
+  return { market, date: day, today: market === "kr", stages: STAGES, calls: { prev_close: prev, open }, rounds: { prev_close: [prev], open: [open] }, note: NOTE };
 }
 
 export function fakeDayCallHistory(market: DayCallMarket, days = 90): DayCallHistory {

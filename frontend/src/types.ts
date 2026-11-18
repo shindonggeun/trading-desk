@@ -2122,7 +2122,8 @@ export interface DayCallEntry {
 }
 export interface DayCallToday {
   market: DayCallMarket;
-  date: string;
+  date: string;          // 돌려준 판정의 세션 날짜(그 시장의 가장 최근 판정 날, 현지 오늘 이하)
+  today?: boolean;       // false 면 지난 세션 판정(예: KST 아침의 미장)
   stages: { key: DayCallStage; label: string }[];
   calls: Partial<Record<DayCallKind, DayCallEntry | null>>;
   rounds: Partial<Record<DayCallKind, DayCallEntry[]>>;

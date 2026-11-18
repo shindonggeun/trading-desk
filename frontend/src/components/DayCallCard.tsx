@@ -141,9 +141,15 @@ export default function DayCallCard() {
               {market === "kr" ? "국장은 07:30 에 1차, 09:30 에 2차 판정이 나와요." : "미장은 뉴욕 09:00 에 1차, 10:00 에 2차 판정이 나와요."}
             </p>
           ) : (
+            <>
+            <p className="daycall-session small">
+              <span className="muted">{ok?.date ? `${Number(ok.date.slice(5, 7))}/${Number(ok.date.slice(8, 10))} 세션` : ""}</span>
+              {ok?.today === false && <span className="daycall-past"> · 지난 세션 판정</span>}
+            </p>
             <div className="daycall-calls">
               {DAY_CALL_KINDS.map((k) => <CallBlock key={k} kind={k} c={calls[k]} />)}
             </div>
+            </>
           )}
         <p className="daycall-note small muted">
           확률은 추정이에요{note ? ` — ${note}` : ""}. <a href="#/day-call">적중 기록</a>

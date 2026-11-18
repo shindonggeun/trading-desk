@@ -987,6 +987,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.exception("day call push failed")
             with jobs.part("day_call_scoring", "day call scoring failed"):
                 await asyncio.wait_for(asyncio.to_thread(day_desk.score), 180)
+                # #604 the Korean answers again on KRX's bars once krx_daily has them
+                await asyncio.wait_for(asyncio.to_thread(day_desk.recheck_krx), 180)
             return day_calls.TICK_SEC
 
         oi_pending = {"due": False}

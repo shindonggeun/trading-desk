@@ -322,12 +322,35 @@ def _day_call(args) -> int:
     from . import day_call_train as dct
 
     series = dct.fetch(flow_dir=args.flow_dir)
+    krx_check = None
+    if args.krx_file or args.krx_db:            # #604 KRX's KOSPI bars for the answers
+        from . import day_call_krx as dck
+
+        if args.krx_file:
+            rows = dck.load_file(args.krx_file)
+        else:
+            settings = load()
+            migrate(settings.database_url)
+            engine = make_engine(settings.database_url)
+            try:
+                rows = dck.load_db(engine)
+            finally:
+                engine.dispose()
+        krx_check = dck.apply(series, rows)
+        print(f"KRX KOSPI {krx_check['krx_days']}일 ({krx_check['from']} ~ {krx_check['to']}), 야후만 "
+              f"{krx_check['yahoo_only_days']}일, {dck.DIFF_PCT}% 넘게 다른 날 {len(krx_check['diffs'])}일 · 한쪽만 "
+              f"있는 날 야후 {len(krx_check['only_yahoo'])} / KRX {len(krx_check['only_krx'])}", file=sys.stderr)
+        for d in krx_check["diffs"][:20]:
+            print(f"  {d['day']}  시가 {d['pct']['open']:+.3f}%  종가 {d['pct']['close']:+.3f}%  "
+                  f"(KRX {d['krx']['open']} → {d['krx']['close']} / 야후 {d['yahoo']['open']} → {d['yahoo']['close']})",
+                  file=sys.stderr)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     start = date.fromisoformat(args.start) if args.start else None
     for market in (("kr", "us") if args.market == "all" else (args.market,)):
         model, report = dct.backtest(market, series, args.holdout_days or dct.HOLDOUT_DAYS, start,
-                                     progress=lambda msg: print(msg, file=sys.stderr), compare=not args.no_compare)
+                                     progress=lambda msg: print(msg, file=sys.stderr), compare=not args.no_compare,
+                                     krx_check=krx_check)
         for name, body in ((f"model_{market}.json", model), (f"report_{market}.json", report)):
             with open(out / name, "w", encoding="utf-8", newline="\n") as f:
                 json.dump(body, f, ensure_ascii=False, indent=1)
@@ -416,6 +439,11 @@ def _krx(engine, args, key: str) -> int:
         print(f"unknown --api {args.api}: {', '.join(krx.APIS)}", file=sys.stderr)
         return 2
     apis = list(krx.APIS) if args.api == "all" else [args.api]
+    if args.action == "export":
+        from . import day_call_krx
+
+        print(f"{day_call_krx.export(engine, args.out)} day(s) of {day_call_krx.API} {day_call_krx.NAME} -> {args.out}")
+        return 0
     if args.action == "status":
         with engine.connect() as conn:
             got = conn.execute(select(krx_days.c.api, krx_days.c.bas_dd, krx_days.c.rows)
@@ -593,7 +621,12 @@ def main(argv: list[str] | None = None) -> int:
                           "hold-out sessions re-made as of each cutoff into the database (source backfill), scored")
     dcp.add_argument("--days", type=int, default=90, help="backfill: how many calendar days back (default 90)")
     dcp.add_argument("--market", choices=("kr", "us", "all"), default="all")
-    dcp.add_argument("--from", dest="start", default=None, help="first session to use, YYYY-MM-DD")
+    dcp.add_argument("--from", dest="start", default=None,
+                     help="first session to fit on, YYYY-MM-DD (default 2015-01-01, desk.day_call_train.TRAIN_FROM)")
+    dcp.add_argument("--krx-file", default=None,
+                     help="#604 KRX's KOSPI daily rows (python -m desk.cli krx export on the server) for the answers")
+    dcp.add_argument("--krx-db", action="store_true",
+                     help="#604 read KRX's KOSPI daily rows from this database's krx_daily (on the server)")
     dcp.add_argument("--holdout-days", type=int, default=None, help="calendar days held out (default 90)")
     dcp.add_argument("--out-dir", default="desk/data/day_call", help="where the model and report files go")
     dcp.add_argument("--flow-dir", default=None,
@@ -628,8 +661,10 @@ def main(argv: list[str] | None = None) -> int:
     kx = sub.add_parser("krx", help=(
         "#601 KRX OPEN API end-of-day history into krx_daily (needs DESK_KRX_API_KEY and each service's approval; "
         "run on the server; days already stored are skipped)"))
-    kx.add_argument("action", choices=("backfill", "status", "derive"),
-                    help="derive: #603 futures_oi_daily from the stored fut/opt rows (--from, --to)")
+    kx.add_argument("action", choices=("backfill", "status", "derive", "export"),
+                    help="derive: #603 futures_oi_daily from the stored fut/opt rows (--from, --to); "
+                         "export: the KOSPI rows to --out for a day-call training run elsewhere (#604)")
+    kx.add_argument("--out", default="krx_kospi.json", help="export: the file (default krx_kospi.json)")
     kx.add_argument("--api", default="all", help="a service id (desk.krx.APIS, e.g. kospi_dd_trd) or all (default)")
     kx.add_argument("--from", dest="start", default="2015-01-01", help="first basDd, YYYY-MM-DD (default 2015-01-01)")
     kx.add_argument("--to", dest="end", default=None, help="last basDd, YYYY-MM-DD (default yesterday KST)")

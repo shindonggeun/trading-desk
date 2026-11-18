@@ -21,8 +21,8 @@ from sqlalchemy import and_, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from . import day_call as dc
+from . import day_call_krx, market_calendar
 from . import day_rounds as dr
-from . import market_calendar
 from .db import day_calls as t
 from .db import now as db_now
 
@@ -35,6 +35,8 @@ GIVE_UP_AFTER = timedelta(days=2)    # a call Yahoo still has no answer for is m
 RETRY_EVERY = timedelta(minutes=10)  # a round tried already waits this long before the next fetch
 SHARE_FOR = timedelta(minutes=1)     # bars fetched within this are reused (the calls, then the scoring)
 SCORE_EVERY = timedelta(minutes=30)
+KRX_RECHECK_DAYS = 14                # a Korean call scored on Yahoo's bar is scored again on KRX's within this
+KRX_READ_DAYS = 400                  # KRX rows read into the bars (the ATR's 120 sessions and then some)
 TICK_SEC = 120
 DAILY_BARS = 300
 HOURLY_BARS = 300
@@ -114,6 +116,8 @@ class DayCalls:
         self._scored_try: datetime | None = None
         self._tried: dict[tuple[str, int, date], datetime] = {}
         self._fetched: tuple[datetime, dict] | None = None
+        self._krx_days: set[date] = set()
+        self._recheck_try: datetime | None = None
 
     # ------------------------------------------------------------------ making calls
 
@@ -193,8 +197,23 @@ class DayCalls:
         if self._fetched and now - self._fetched[0] < SHARE_FOR:
             return self._fetched[1]
         series = fetch_series(self.candles)
+        self._with_krx(series, now)
         self._fetched = (now, series)
         return series
+
+    def _with_krx(self, series: dict, now: datetime) -> None:
+        """#604 KRX's own KOSPI bars in place of Yahoo's on the days krx_daily has (desk.day_call_krx):
+        the Korean answers are KRX's open and close. Without rows (no key yet) the bars stay Yahoo's."""
+        try:
+            rows = day_call_krx.load_db(self.engine, now.date() - timedelta(days=KRX_READ_DAYS))
+        except Exception:  # the calls go on with Yahoo's bars
+            log.warning("day calls: krx_daily not readable", exc_info=True)
+            rows = {}
+        check = day_call_krx.apply(series, rows)
+        self._krx_days = set(rows)
+        for d in check["diffs"][-3:]:
+            log.warning("day calls: KOSPI %s KRX vs Yahoo apart %s%% (open, close)", d["day"],
+                        (d["pct"]["open"], d["pct"]["close"]))
 
     # ------------------------------------------------------------------ scoring
 
@@ -228,17 +247,69 @@ class DayCalls:
                 out = {"unscorable": True, "scored_at": now.isoformat()}
                 values = {"outcome": out, "hit_direction": None, "hit_stage": None, "brier": None}
             else:
-                out = dc.score(r["probs"], answer)
-                # the direction the probabilities lean, scored on every call (as the backtest does);
-                # the call's own direction hit is None on a hold (판단 보류)
-                out["raw_hit_direction"] = out["hit_direction"]
-                if r["verdict"] == "hold":
-                    out["hit_direction"] = None
-                out["scored_at"] = now.isoformat()
-                values = {"outcome": out, "hit_direction": out["hit_direction"], "hit_stage": out["hit_stage"],
-                          "brier": out["brier"]}
+                values = self._scored(r, answer, now)
             with self.engine.begin() as conn:
                 conn.execute(update(t).where(t.c.id == r["id"]).values(**values, scored_at=now.astimezone(UTC)))
+            done += 1
+        return done
+
+    def _scored(self, r, answer: dict, now: datetime) -> dict:
+        out = dc.score(r["probs"], answer)
+        # the direction the probabilities lean, scored on every call (as the backtest does);
+        # the call's own direction hit is None on a hold (판단 보류)
+        out["raw_hit_direction"] = out["hit_direction"]
+        if r["verdict"] == "hold":
+            out["hit_direction"] = None
+        out["scored_at"] = now.isoformat()
+        # #604 whose bar the answer is: KRX's (krx_daily) or Yahoo's, the Korean ones checked again on KRX's
+        out["answer_source"] = "krx" if r["market"] == "kr" and r["trade_date"] in self._krx_days else "yahoo"
+        return {"outcome": out, "hit_direction": out["hit_direction"], "hit_stage": out["hit_stage"],
+                "brier": out["brier"]}
+
+    def recheck_krx(self, now: datetime | None = None, series: dict | None = None) -> int:
+        """#604 the Korean calls scored on Yahoo's bar in the last KRX_RECHECK_DAYS, scored again on KRX's
+        once krx_daily has the session (the next business day 08:30 KST). The Yahoo answer stays in the
+        outcome (``yahoo_answer``) when the two differ by more than day_call_krx.DIFF_PCT. Returns how
+        many were scored again."""
+        now = now or self.clock()
+        if series is None and self._recheck_try and now - self._recheck_try < SCORE_EVERY:
+            return 0                     # a row KRX cannot answer must not fetch Yahoo every tick
+        first = now.date() - timedelta(days=KRX_RECHECK_DAYS)
+        try:
+            krx_days = set(day_call_krx.load_db(self.engine, first))
+        except Exception:  # noqa: BLE001
+            return 0
+        if not krx_days:
+            return 0
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(t).where(and_(t.c.market == "kr", t.c.trade_date >= first,
+                                                     t.c.scored_at.is_not(None)))).mappings().all()
+        todo = [r for r in rows if r["trade_date"] in krx_days and r["outcome"]
+                and not r["outcome"].get("unscorable") and r["outcome"].get("answer_source") != "krx"]
+        if not todo:
+            return 0
+        if series is None:
+            if self.candles is None:
+                return 0
+            self._recheck_try = now
+            series = self._series(now)
+        done = 0
+        for r in todo:
+            kind = "oc" if r["call"] == "open" else "cc"
+            answer = dc.label("kr", r["trade_date"], series, kind, now)
+            if answer is None or r["trade_date"] not in self._krx_days:
+                continue
+            values = self._scored(r, answer, now)
+            before = r["outcome"]
+            gap = {f: round((answer[f] / before[f] - 1) * 100, 3) if before.get(f) else None
+                   for f in ("open", "close")}
+            if any(v is None or abs(v) > day_call_krx.DIFF_PCT for v in gap.values()):
+                values["outcome"]["yahoo_answer"] = {f: before.get(f) for f in ("open", "close", "ret_atr", "stage", "return_pct")}
+                log.warning("day calls: kr %s %s %s answer KRX vs Yahoo apart %s%% (open, close)%s",
+                            r["trade_date"], r["round"], r["call"], (gap["open"], gap["close"]),
+                            " - the hit changed" if values["hit_direction"] != r["hit_direction"] else "")
+            with self.engine.begin() as conn:
+                conn.execute(update(t).where(t.c.id == r["id"]).values(**values))
             done += 1
         return done
 

@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { api } from "../api";
 import { sameTicker } from "../ticker";
 import { time } from "../format";
 import type { SectorNewsView } from "../types";
 import { Impact, Lean, NewsHeadline } from "./NewsRead";
+import { usePoll } from "../poll";
 
 /**
  * #245 섹터 · 인물 이슈(#244 GET /api/sector-news) — 섹터별 기사 급증 이슈 카드: 유형 태그 · 급증 배수 · 영향 ·
@@ -37,16 +38,11 @@ export default function SectorNews({ tickers, name }: { tickers?: string[]; name
   const [pick, setPick] = useState<string | null>(loadPick);
   const linked = tickers !== undefined;
 
-  useEffect(() => {
-    let alive = true;
-    let timer = 0;
-    const load = () => api.sectorNews().then(
-      (d) => { if (alive) { setData(d); setFailed(false); } },
-      () => alive && setFailed(true),
-    ).finally(() => { if (alive) timer = window.setTimeout(load, POLL_MS); });
-    load();
-    return () => { alive = false; window.clearTimeout(timer); };
-  }, []);
+  // #626 10분마다(가려진 탭은 쉰다)
+  usePoll("sector-news", () => api.sectorNews(), POLL_MS, {
+    onData: (d) => { setData(d); setFailed(false); },
+    onError: () => setFailed(true),
+  });
 
   if (!data) return <p className="muted small">{failed ? "섹터 이슈를 불러오지 못했습니다." : "섹터 이슈를 받는 중…"}</p>;
 

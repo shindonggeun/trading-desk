@@ -30,6 +30,7 @@ from . import (
     bottom_zone,
     calibration,
     channels,
+    chart_read,
     chat,
     credit,
     day_calls,
@@ -2076,8 +2077,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         key = (ticker, interval)
         memo = lines_memo.get(key)
         # the last bar still trading is not judged a break (it may close back): see desk.channels
-        live = bool(bars) and (interval in channels.GROUPED or (datetime.fromisoformat(bars[-1]["at"])
-                               + timedelta(minutes=channels.MINUTES[interval])) > datetime.now(UTC))
+        live = channels.is_live(bars, interval)
         stamp = (bars[-1]["at"], round(bars[-1]["close"] * 1e4), live) if bars else ("", 0, False)
         if memo is None or memo[:3] != stamp:
             found = await asyncio.to_thread(channels.lines, bars, interval, lines_bt.rates(ticker, interval), live)
@@ -2086,6 +2086,71 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             lines_memo[key] = memo = (*stamp, found)
         return {"ticker": ticker, "interval": interval, "source": got.get("source"), "live_bar": live, **memo[3],
                 "backtest": lines_bt.summary(ticker)}
+
+    chart_reads: dict[tuple[str, tuple[str, ...]], tuple[float, dict]] = {}
+
+    @app.get("/api/chart-read")
+    async def chart_read_get(ticker: str = "NQ=F", tf: str | None = None):
+        """#631 the chart alone (desk.chart_read): per timeframe the trend, channel, pattern, nearest
+        lines, volume and a plain sentence, where the timeframes disagree, one summary - rule-based,
+        no model. ``tf``: comma separated (5m · 15m · 1h · 2h · 4h · 1d, default 5m,15m,1h,4h,1d).
+        Kept until the shortest timeframe's bar ends (a read is then one cached answer)."""
+        try:
+            ticker = clean_ticker(ticker)
+            names = [t.strip() for t in (tf or "").split(",") if t.strip()]
+            tfs = tuple(dict.fromkeys(channels.TF_ALIASES.get(t, "?") for t in names)) or chart_read.TIMEFRAMES
+            if "?" in tfs:
+                raise ValueError(f"tf must be among {', '.join(channels.TF_ALIASES)}")
+            tfs = tuple(sorted(tfs, key=channels.TIMEFRAMES.index))       # one cache entry whatever the order
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        key = (ticker, tfs)
+        hit = chart_reads.get(key)
+        if hit and hit[0] > time.monotonic():
+            return hit[1]
+        wanted = [prices.candles(ticker, t, channels.BARS[t]) for t in tfs]
+        if "1d" in tfs:
+            wanted.append(prices.candles(ticker, "1w", CHART_READ_WEEKS))    # the weekly gaps beside the daily
+        got = await asyncio.gather(*wanted, return_exceptions=True)
+        weeks = got[len(tfs)]["bars"] if "1d" in tfs and not isinstance(got[len(tfs)], BaseException) else None
+        now = datetime.now(UTC)
+        frames, keep = [], CHART_READ_MAX_SEC
+        if "1d" in tfs and weeks is None:
+            keep = CHART_READ_MIN_SEC * 4                  # the weekly gaps missing: ask again soon
+        for t, res in zip(tfs, got, strict=False):
+            if isinstance(res, BaseException):
+                log.info("chart read %s %s failed: %s", ticker, t, type(res).__name__)
+                frames.append({"timeframe": t, "error": type(res).__name__})
+                keep = min(keep, CHART_READ_MIN_SEC * 4)
+                continue
+            bars = res["bars"]
+            live = channels.is_live(bars, t, now)
+            gaps, gaps_error = [], None
+            if t == "1d" and bars:
+                try:
+                    gaps = await asyncio.to_thread(line_basis.gaps, bars, weeks, bars[-1]["close"], ticker)
+                except Exception as exc:  # noqa: BLE001 - the read stands without the gaps
+                    gaps_error = type(exc).__name__
+                if weeks is None:
+                    gaps_error = gaps_error or "no weekly bars"
+            try:
+                one = await asyncio.to_thread(chart_read.frame, bars, t, live, lines_bt.rates(ticker, t), gaps)
+            except Exception as exc:  # noqa: BLE001 - one timeframe failing leaves the others
+                log.warning("chart read %s %s failed: %s", ticker, t, type(exc).__name__)
+                frames.append({"timeframe": t, "error": type(exc).__name__})
+                keep = min(keep, CHART_READ_MIN_SEC * 4)
+                continue
+            if t == "1d":
+                one["gaps_error"] = gaps_error
+            frames.append(one)
+            if live and bars and t not in channels.GROUPED:
+                end = datetime.fromisoformat(bars[-1]["at"]) + timedelta(minutes=channels.MINUTES[t])
+                keep = min(keep, (end - now).total_seconds() + 5)
+        out = chart_read.read(ticker, frames)
+        if len(chart_reads) > 256:
+            chart_reads.clear()
+        chart_reads[key] = (time.monotonic() + max(CHART_READ_MIN_SEC, keep), out)
+        return out
 
     @app.get("/api/stock/profile")
     async def stock_profile(ticker: str | None = None, tickers: str | None = None):
@@ -3024,6 +3089,11 @@ class KakaoCallbackIn(BaseModel):
     code: str = Field(min_length=1, max_length=512)
     state: str = Field(min_length=1, max_length=128)
 
+
+# #631 GET /api/chart-read: kept until the shortest timeframe's bar ends, within these bounds
+CHART_READ_MIN_SEC = 15.0
+CHART_READ_MAX_SEC = 300.0
+CHART_READ_WEEKS = 120
 
 NOTIFY_LABELS = {"telegram": "텔레그램", "kakao": "카카오톡"}
 KAKAO_STATE_TTL_SEC = 600

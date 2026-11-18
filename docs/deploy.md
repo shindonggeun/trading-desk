@@ -153,3 +153,20 @@ docker run --rm -it -p 127.0.0.1:1455:1455 -v trading-desk-tradingagents-home:/h
   거절된 종목(`refused`) · 접속키가 마지막으로 거절된 시각(`approval_refused_at`) · 마지막 끊김(`last_drop`: 시각 · 예외 타입, 정기 접속키 교체는 빼고). 키 · 접속키는 들어 있지 않다.
   INFO 로그는 출력하지 않는다(상태는 이 API 로 본다). 문제는 백엔드 로그(WARNING)의 `kis stream dropped: <예외 타입>` · `kis stream refused <종목>: <사유>` · `approval key refused` 로도 남는다. 그동안 화면은 토스 폴링으로 계속 돈다.
 - 규칙(키 보관 · 회전 · 로그)은 [security.md §5](security.md#5-비밀).
+
+## 10. 알림 채널 — 텔레그램 · 카카오톡 (#580)
+
+값은 서버 `.env.runtime` 에만 넣고, 넣은 뒤 `scripts/deploy.sh HEAD backend`. 하나라도 비면 그 채널만 꺼진다(보안 규칙: [security.md §5](security.md)).
+
+- 공통: `DESK_PUBLIC_URL=https://trading.8llow8llowme.com` (메시지 링크 · 카카오 Redirect URI 의 앞부분)
+- **텔레그램**
+  1. 텔레그램에서 `@BotFather` → `/newbot` → 토큰을 `DESK_TELEGRAM_BOT_TOKEN` 에.
+  2. 만든 봇에게 아무 말이나 한 번 보낸 뒤, 서버에서 `curl -s "https://api.telegram.org/bot<토큰>/getUpdates"` 의 `message.chat.id` 를 `DESK_TELEGRAM_CHAT_ID` 에(이 명령은 셸 기록에 토큰이 남으니 끝나면 `history -d`).
+  3. 재배포 → 화면 설정 → 알림 채널 → 텔레그램 "켜기" → "시험 보내기".
+- **카카오톡 "나에게 보내기"**
+  1. [카카오 디벨로퍼스](https://developers.kakao.com) → 앱 만들기 → 앱 키의 **REST API 키**를 `DESK_KAKAO_REST_KEY` 에.
+  2. 카카오 로그인 켜기 → Redirect URI 에 `https://trading.8llow8llowme.com/kakao-callback.html` 등록.
+  3. 보안 → Client Secret 발급 · **사용함** → `DESK_KAKAO_CLIENT_SECRET` 에.
+  4. 동의 항목 → "카카오톡 메시지 전송(talk_message)" 선택 동의. 플랫폼 → Web 사이트 도메인에 `https://trading.8llow8llowme.com`(메시지 링크).
+  5. `docker exec trading-desk-backend-prod python -m desk.cli otp-key` 로 새 키를 만들어 `DESK_NOTIFY_KEY` 에(OTP 키와 다른 값).
+  6. 재배포 → 설정 → 카카오톡 "연결" → 카카오 로그인 · 동의 → 돌아오면 "시험 보내기". 리프레시 토큰은 약 2달이라, 화면에 "다시 연결"이 뜨면 같은 순서로 한 번 더.

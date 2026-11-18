@@ -240,6 +240,19 @@ market_alerts = Table(
     Index("ix_market_alerts_trade_date", "trade_date"),
 )
 
+# #580 the alert channels beside web push (desk.notify_channels): one row per channel, the desk's own
+notify_channels = Table(
+    "notify_channels", metadata,
+    Column("channel", String(16), primary_key=True),              # telegram | kakao
+    Column("enabled", Boolean, nullable=False),
+    Column("kinds", Json, nullable=False),                        # kind -> on; a kind not stored is on
+    Column("secret", Text),                                       # Kakao tokens, Fernet-sealed (DESK_NOTIFY_KEY)
+    Column("access_expires_at", Timestamp),
+    Column("refresh_expires_at", Timestamp),
+    Column("needs_reconnect", Boolean, nullable=False),
+    Column("updated_at", Timestamp, nullable=False),
+)
+
 reports = Table(
     "reports", metadata,
     Column("id", String(32), primary_key=True),

@@ -38,15 +38,22 @@ class OtpUnavailable(RuntimeError):
 
 
 class SecretBox:
-    def __init__(self, key: str | None) -> None:
+    """Fernet sealing under one env key (``name``): DESK_OTP_KEY for TOTP secrets, DESK_NOTIFY_KEY for
+    the alert channels' tokens (#580) - separate keys, so rotating one never breaks the other."""
+
+    def __init__(self, key: str | None, name: str = "DESK_OTP_KEY") -> None:
         self.error: str | None = None
+        self.name = name
         self._fernet = None
         if key:
             try:
                 self._fernet = Fernet(key.encode())
             except ValueError:
-                # A malformed key disables OTP only (fail closed for OTP accounts); the app still starts.
-                self.error = "DESK_OTP_KEY is not a valid Fernet key (python -m desk.cli otp-key)"
+                # A malformed key disables what it seals only (fail closed); the app still starts.
+                self.error = f"{name} is not a valid Fernet key (python -m desk.cli otp-key)"
+
+    def __repr__(self) -> str:
+        return f"SecretBox({self.name}, available={self.available})"
 
     @property
     def available(self) -> bool:
@@ -54,16 +61,16 @@ class SecretBox:
 
     def seal(self, secret: str) -> str:
         if self._fernet is None:
-            raise OtpUnavailable("DESK_OTP_KEY is not set on the server")
+            raise OtpUnavailable(f"{self.name} is not set on the server")
         return self._fernet.encrypt(secret.encode()).decode()
 
     def open(self, sealed: str) -> str:
         if self._fernet is None:
-            raise OtpUnavailable("DESK_OTP_KEY is not set on the server")
+            raise OtpUnavailable(f"{self.name} is not set on the server")
         try:
             return self._fernet.decrypt(sealed.encode()).decode()
         except InvalidToken as exc:
-            raise OtpUnavailable("DESK_OTP_KEY does not match the stored OTP secret") from exc
+            raise OtpUnavailable(f"{self.name} does not match the stored secret") from exc
 
 
 def new_key() -> str:

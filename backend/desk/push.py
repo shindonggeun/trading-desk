@@ -62,14 +62,17 @@ class PushStore:
         self.engine = engine
 
     def subscribe(self, user_id: int, endpoint: str, keys: dict, device: str, kinds: dict) -> dict:
-        """Add or refresh; an endpoint another account registered moves to this one (same browser)."""
-        row = {"user_id": user_id, "keys": {"p256dh": keys["p256dh"], "auth": keys["auth"]},
-               "device": device, "kinds": {k: bool(kinds.get(k, True)) for k in KINDS}}
+        """Add or refresh; an endpoint another account registered moves to this one (same browser).
+        #641 a kind the request leaves out keeps what this endpoint stored (a page that does not know a
+        newer switch, e.g. tone_*, must not turn it back on), else on."""
+        row = {"user_id": user_id, "keys": {"p256dh": keys["p256dh"], "auth": keys["auth"]}, "device": device}
         with self.engine.begin() as conn:
-            got = conn.execute(select(push_subscriptions.c.id, push_subscriptions.c.user_id)
+            got = conn.execute(select(push_subscriptions.c.id, push_subscriptions.c.user_id, push_subscriptions.c.kinds)
                                .where(push_subscriptions.c.endpoint == endpoint)).first()
             if got and got.user_id != user_id:
                 raise Taken("이미 다른 계정의 구독")
+            kept = (got.kinds or {}) if got else {}
+            row["kinds"] = {k: bool(kinds[k]) if k in kinds else bool(kept.get(k, True)) for k in KINDS}
             if got:
                 conn.execute(update(push_subscriptions).where(push_subscriptions.c.id == got.id).values(**row))
             else:

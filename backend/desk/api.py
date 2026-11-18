@@ -2919,7 +2919,8 @@ def _push_routes(app: FastAPI, engine, settings: Settings) -> None:
             raise HTTPException(503, "push is off")
         try:
             return store.subscribe(request.state.user.id, body.endpoint, body.keys.model_dump(),
-                                   body.device.strip() or "기기", body.kinds.model_dump())
+                                   body.device.strip() or "기기",
+                                   body.kinds.model_dump(exclude_unset=True))   # #641 left out = as stored
         except (push.TooMany, push.Taken) as exc:
             raise HTTPException(409, str(exc)) from None
 

@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edgarSubmission xsi:schemaLocation="http://www.sec.gov/edgar/thirteenffiler eis_13F_Filer.xsd" xmlns:ns1="http://www.sec.gov/edgar/common" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.sec.gov/edgar/thirteenffiler">
+  <schemaVersion>X0202</schemaVersion>
+  <headerData>
+    <submissionType>13F-HR</submissionType>
+    <filerInfo>
+      <liveTestFlag>LIVE</liveTestFlag>
+      <flags/>
+      <filer>
+        <credentials>
+          <cik>0001001085</cik>
+          <ccc>XXXXXXXX</ccc>
+        </credentials>
+      </filer>
+      <periodOfReport>09-30-2026</periodOfReport>
+    </filerInfo>
+  </headerData>
+  <formData>
+    <coverPage>
+      <reportCalendarOrQuarter>09-30-2026</reportCalendarOrQuarter>
+      <isAmendment>false</isAmendment>
+      <filingManager>
+        <name>BROOKFIELD Corp /ON/</name>
+        <address>
+          <ns1:street1>BROOKFIELD PLACE, 181 BAY ST, STE 100</ns1:street1>
+          <ns1:street2>PO BOX 762</ns1:street2>
+          <ns1:city>TORONTO</ns1:city>
+          <ns1:stateOrCountry>A6</ns1:stateOrCountry>
+          <ns1:zipCode>M5J2T3</ns1:zipCode>
+        </address>
+      </filingManager>
+      <reportType>13F COMBINATION REPORT</reportType>
+      <form13FFileNumber>028-14349</form13FFileNumber>
+      <otherManagersInfo>
+        <otherManager>
+          <form13FFileNumber>028-05050</form13FFileNumber>
+          <crdNumber>000106793</crdNumber>
+          <secFileNumber>801-49023</secFileNumber>
+          <name>Oaktree Capital Management, L.P.</name>
+        </otherManager>
+        <otherManager>
+          <form13FFileNumber>028-21340</form13FFileNumber>
+          <crdNumber>000290193</crdNumber>
+          <secFileNumber>801-112570</secFileNumber>
+          <name>Oaktree Fund Advisors, LLC</name>
+        </otherManager>
+      </otherManagersInfo>
+      <provideInfoForInstruction>N</provideInfoForInstruction>
+    </coverPage>
+    <summaryPage>
+      <otherIncludedManagersCount>8</otherIncludedManagersCount>
+      <tableEntryTotal>319</tableEntryTotal>
+      <tableValueTotal>81399794511</tableValueTotal>
+      <isConfidentialOmitted>false</isConfidentialOmitted>
+      <otherManagers2Info>
+        <otherManager2>
+          <sequenceNumber>1</sequenceNumber>
+          <otherManager>
+            <form13FFileNumber>028-13826</form13FFileNumber>
+            <crdNumber>000110497</crdNumber>
+            <secFileNumber>801-34605</secFileNumber>
+            <name>Brookfield Public Securities Group LLC</name>
+          </otherManager>
+        </otherManager2>
+        <otherManager2>
+          <sequenceNumber>2</sequenceNumber>
+          <otherManager>
+            <form13FFileNumber>028-16270</form13FFileNumber>
+            <crdNumber>000151599</crdNumber>
+            <secFileNumber>801-72031</secFileNumber>
+            <name>Brookfield Asset Management Private Institutional Capital Adviser US, LLC</name>
+          </otherManager>
+        </otherManager2>
+        <otherManager2>
+          <sequenceNumber>3</sequenceNumber>
+          <otherManager>
+            <form13FFileNumber>028-14362</form13FFileNumber>
+            <crdNumber>000151605</crdNumber>
+            <secFileNumber>801-70688</secFileNumber>
+            <name>Brookfield Asset Management Private Institutional Capital Adviser (Canada), LLC</name>
+          </otherManager>
+        </otherManager2>
+        <otherManager2>
+          <sequenceNumber>4</sequenceNumber>
+          <otherManager>
+            <form13FFileNumber>028-17298</form13FFileNumber>
+            <crdNumber>000171207</crdNumber>
+            <secFileNumber>801-79916</secFileNumber>
+            <name>Brookfield Asset Management Private Institutional Capital Adviser (Private Equity), LLC</name>
+          </otherManager>
+        </otherManager2>
+        <otherManager2>
+          <sequenceNumber>5</sequenceNumber>
+          <otherManager>
+            <form13FFileNumber>028-21426</form13FFileNumber>
+            <crdNumber>000312792</crdNumber>
+            <secFileNumber>801-120634</secFileNumber>
+            <name>BAM Credit and Insurance Solutions Advisor LLC</name>
+          </otherManager>
+        </otherManager2>
+        <otherManager2>
+          <sequenceNumber>6</sequenceNumber>
+          <otherManager>
+            <form13FFileNumber>028-23148</form13FFileNumber>
+            <crdNumber>000316590</crdNumber>
+            <secFileNumber>801-122588</secFileNumber>
+            <name>Brookfield Renewable Energy Group LLC</name>
+          </otherManager>
+        </otherManager2>
+        <otherManager2>
+          <sequenceNumber>7</sequenceNumber>
+          <otherManager>
+            <form13FFileNumber>028-05050</form13FFileNumber>
+            <crdNumber>000106793</crdNumber>
+            <secFileNumber>801-48923</secFileNumber>
+            <name>Oaktree Capital Management, L.P.</name>
+          </otherManager>
+        </otherManager2>
+        <otherManager2>
+          <sequenceNumber>8</sequenceNumber>
+          <otherManager>
+            <form13FFileNumber>028-21340</form13FFileNumber>
+            <crdNumber>000290193</crdNumber>
+            <secFileNumber>801-112570</secFileNumber>
+            <name>Oaktree Fund Advisors, LLC</name>
+          </otherManager>
+        </otherManager2>
+      </otherManagers2Info>
+    </summaryPage>
+  </formData>
+</edgarSubmission>

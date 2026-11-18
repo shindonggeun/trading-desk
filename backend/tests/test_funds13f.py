@@ -4,6 +4,7 @@ the deadlines, the safety limits and the API."""
 import json
 import threading
 from datetime import date
+from pathlib import Path
 
 import httpx
 import pytest
@@ -12,16 +13,19 @@ from desk import funds13f as f13
 from tests.test_api import _client
 
 NS = "http://www.sec.gov/edgar/document/thirteenf/informationtable"
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _table(rows: list[tuple]) -> bytes:
-    """rows: (issuer, class, cusip, value, shares, put_call | None[, share type])."""
+    """rows: (issuer, class, cusip, value, shares, put_call | None[, share type[, other managers]])."""
     items = "".join(
         f"<ns1:infoTable><ns1:nameOfIssuer>{r[0]}</ns1:nameOfIssuer><ns1:titleOfClass>{r[1]}</ns1:titleOfClass>"
         f"<ns1:cusip>{r[2]}</ns1:cusip><ns1:value>{r[3]}</ns1:value><ns1:shrsOrPrnAmt><ns1:sshPrnamt>{r[4]}</ns1:sshPrnamt>"
         f"<ns1:sshPrnamtType>{r[6] if len(r) > 6 else 'SH'}</ns1:sshPrnamtType></ns1:shrsOrPrnAmt>"
         + (f"<ns1:putCall>{r[5]}</ns1:putCall>" if r[5] else "")
-        + "<ns1:investmentDiscretion>SOLE</ns1:investmentDiscretion></ns1:infoTable>"
+        + "<ns1:investmentDiscretion>SOLE</ns1:investmentDiscretion>"
+        + (f"<ns1:otherManager>{r[7]}</ns1:otherManager>" if len(r) > 7 and r[7] else "")
+        + "</ns1:infoTable>"
         for r in rows)
     return f'<?xml version="1.0"?><ns1:informationTable xmlns:ns1="{NS}">{items}</ns1:informationTable>'.encode()
 
@@ -221,7 +225,7 @@ def test_a_13f_nt_is_followed_to_the_manager_that_reports_and_summarised(tmp_pat
     assert funds.refresh() == len(f13.FUNDS)
     v = funds.view("pershing")
     assert v["quarter"] == "2026Q3" and v["form"] == "13F-NT" and v["filed_at"] == "2026-11-16"   # its own filing
-    assert v["reported_by"] == {"name": "Pershing Square Holdco, L.P.", "cik": HOLDCO}
+    assert v["reported_by"] == {"name": "Pershing Square Holdco, L.P.", "cik": HOLDCO, "own_rows": False}
     assert v["prev_quarter"] == "2026Q2" and v["quarters"] == ["2026Q3", "2026Q2"]
     assert v["count"] == 4 and v["total_value"] == STOCKS_Q3 and v["options_value"] == 100_000_000
     uber = next(h for h in v["holdings"] if h["ticker"] == "UBER" and not h["put_call"])
@@ -497,3 +501,115 @@ def test_no_listing_keeps_no_ticker_and_searches_are_spaced(tmp_path):
     funds._map([_alcon(), nestle], 20, f13.SEARCH_PER_PASS)
     assert funds._tickers["H01301128"] is None and funds._searched == {"H01301128", "H57312649"}
     assert slept == [f13.SEARCH_GAP_SEC]
+
+
+# ------------------------------------------------------------------ #599 a 13F-NT naming its reporter without a CIK
+
+OAK, BROOK = "0000949509", "0001001085"
+OAK_Q2, OAK_NT, BROOK_Q3 = "0000949509-26-000005", "0001193125-26-464327", "0001193125-26-464328"
+OAK_NT_COVER = (FIXTURES / "oaktree_13f_nt_2026q3_cover.xml").read_bytes()        # EDGAR, signature block left out
+BROOK_COVER = (FIXTURES / "brookfield_13f_hr_2026q3_cover.xml").read_bytes()
+# Brookfield's combination report: Oaktree Capital Management is sequence 7, Oaktree Fund Advisors 8
+BROOK_TABLE = _table([("BROOKFIELD ASSET MANAGEMENT LTD", "COMMON STOCK", "113004105", 50_000_000_000, 1_000_000_000, None),
+                      ("BROOKFIELD ASSET MANAGEMENT LTD", "COMMON STOCK", "113004105", 2_900_000_000, 65_000_000, None,
+                       "SH", "5"),
+                      ("TORM PLC", "CL A", "G89479102", 300_000_000, 20_000_000, None, "SH", "7"),
+                      ("TORM PLC", "CL A", "G89479102", 10_000_000, 500_000, None, "SH", "1,7"),
+                      ("QVC GROUP INC", "COM", "74915M100", 99_080_000, 7_190_400, None, "SH", " 7 "),
+                      ("WESTERN DIGITAL CORP", "COM", "958102105", 50_000_000, 100_000, "Put", "SH", "7"),
+                      ("FUND ADVISORS PICK", "COM", "000000000", 5_000_000, 1_000, None, "SH", "8"),
+                      ("PUBLIC SECURITIES PICK", "COM", "111111111", 7_000_000, 2_000, None, "SH", "1")])
+OAK_Q2_TABLE = _table([("TORM PLC", "CL A", "G89479102", 700_000_000, 40_000_000, None, "SH", "1,2"),
+                       ("BAUSCH LOMB CORP", "COM", "071705107", 60_000_000, 4_000_000, None, "SH", "1,2")])
+
+
+def _oaktree_pages(brook_cover: bytes = BROOK_COVER) -> dict:
+    """Oaktree: Q2 13F-HR of its own, Q3 a 13F-NT naming Brookfield Corp by name and file number only."""
+    pages = {k: v for k, v in _pershing_pages().items() if k != SUBS(cik=OAK)}
+    pages.update({
+        SUBS(cik=OAK): json.dumps(_subs([("13F-NT", OAK_NT, "2026-11-17", "2026-09-30"),
+                                         ("13F-HR", OAK_Q2, "2026-08-14", "2026-06-30")])).encode(),
+        _archive(OAK, OAK_NT) + "primary_doc.xml": OAK_NT_COVER,
+        SUBS(cik=BROOK): json.dumps(_subs([("13F-HR", BROOK_Q3, "2026-11-17", "2026-09-30")])).encode(),
+        _archive(BROOK, BROOK_Q3) + "primary_doc.xml": brook_cover,
+        _archive(BROOK, BROOK_Q3) + "index.json": _index("61004.xml"),
+        _archive(BROOK, BROOK_Q3) + "61004.xml": BROOK_TABLE,
+        _archive(OAK, OAK_Q2) + "index.json": _index("infotable.xml"),
+        _archive(OAK, OAK_Q2) + "infotable.xml": OAK_Q2_TABLE,
+    })
+    return pages
+
+
+def test_the_oaktree_notice_names_brookfield_only_by_name_and_file_number():
+    page = f13.cover(OAK_NT_COVER)
+    assert page["file_number"] == "028-05050"                                       # Oaktree's own
+    assert page["other"] == {"cik": None, "name": "Brookfield Corp"}
+    assert [o["file_number"] for o in page["others"]] == ["028-14349", "028-17598", "028-17875"]
+    assert f13.reporter_of(page["others"], f13.BY_ID["oaktree"].reporters) == (BROOK, "Brookfield Corp", True)
+    assert f13.reporter_of(page["others"], ()) is None                              # no CIK and not known: not followed
+    # a sub-adviser named later is never taken for the reporter; a CIK on the cover still wins as before
+    assert f13.reporter_of(page["others"][1:], f13.BY_ID["oaktree"].reporters) is None
+    assert f13.reporter_of(f13.cover(_cover())["others"], ()) == (HOLDCO, "Pershing Square Holdco, L.P.", False)
+
+
+def test_a_combination_report_lists_the_managers_its_rows_are_tagged_with():
+    page = f13.cover(BROOK_COVER)
+    assert page["file_number"] == "028-14349" and len(page["included"]) == 8
+    assert page["included"][7]["file_number"] == "028-05050" and page["included"][7]["name"].startswith("Oaktree Capital")
+    assert [o["file_number"] for o in page["others"]] == ["028-05050", "028-21340"]   # cover list, not the summary's
+    rows = f13.parse_info_table(BROOK_TABLE, managers={7})
+    assert [(r["name"], r["shares"]) for r in rows] == [("TORM PLC", 20_000_000), ("TORM PLC", 500_000),
+                                                        ("QVC GROUP INC", 7_190_400), ("WESTERN DIGITAL CORP", 100_000)]
+    assert len(f13.parse_info_table(BROOK_TABLE)) == 8                              # no filter: every row
+
+
+def test_oaktree_is_read_from_its_own_rows_of_brookfields_report(tmp_path):
+    funds = _funds(pages=_oaktree_pages(), tmp_path=tmp_path)
+    assert funds.refresh() == len(f13.FUNDS) and funds.errors["oaktree"] is None
+    v = funds.view("oaktree")
+    assert v["quarter"] == "2026Q3" and v["form"] == "13F-NT"
+    assert v["reported_by"] == {"name": "Brookfield Corp", "cik": BROOK, "own_rows": True}
+    by = {(h["name"], h["put_call"]): h for h in v["holdings"]}
+    assert set(by) == {("TORM PLC", None), ("QVC GROUP INC", None), ("WESTERN DIGITAL CORP", "PUT"),
+                       ("BAUSCH LOMB CORP", None)}                                  # no Brookfield or other adviser rows
+    assert by[("TORM PLC", None)]["shares"] == 20_500_000 and by[("TORM PLC", None)]["change"] == "decrease"
+    assert by[("QVC GROUP INC", None)]["change"] == "new" and by[("BAUSCH LOMB CORP", None)]["change"] == "sold"
+    assert v["prev_quarter"] == "2026Q2" and v["count"] == 2 and v["total_value"] == 310_000_000 + 99_080_000
+    assert (tmp_path / f"table-{BROOK_Q3}-for-{OAK}.json").exists()                 # kept apart from a whole table
+    assert not (tmp_path / f"table-{BROOK_Q3}.json").exists()
+    offline = {k: (f13.FundsUnavailable("offline") if "Archives" in k and "primary_doc" not in k else v)
+               for k, v in _oaktree_pages().items()}
+    again = _funds(pages=offline, tmp_path=tmp_path)
+    again.refresh()
+    assert again.view("oaktree")["count"] == 2 and again.errors["oaktree"] is None
+
+
+def test_a_report_that_does_not_list_the_fund_is_not_shown_as_its_holdings(tmp_path):
+    cover = BROOK_COVER.replace(b"<form13FFileNumber>028-05050</form13FFileNumber>",
+                                b"<form13FFileNumber>028-00001</form13FFileNumber>")
+    funds = _funds(pages=_oaktree_pages(cover), tmp_path=tmp_path)
+    funds.refresh()
+    assert "이 기관 몫을 가려낼 수 없습니다" in funds.errors["oaktree"]
+    assert funds.next_delay() != f13.RETRY_SEC                                       # not retried every half hour
+    assert not any("61004.xml" in u for u in funds.edgar.asked)                      # the whole table never read
+
+
+def test_a_reporter_amendment_for_other_advisers_leaves_the_funds_rows_as_they_were(tmp_path):
+    pages = _oaktree_pages()
+    amend, other = "0001193125-26-500001", "0001193125-26-500002"
+    pages[SUBS(cik=BROOK)] = json.dumps(_subs([("13F-HR/A", other, "2026-12-02", "2026-09-30"),
+                                               ("13F-HR/A", amend, "2026-12-01", "2026-09-30"),
+                                               ("13F-HR", BROOK_Q3, "2026-11-17", "2026-09-30")])).encode()
+    new_holdings = BROOK_COVER.replace(b"<coverPage>", b"<coverPage><amendmentInfo><amendmentType>NEW HOLDINGS"
+                                                       b"</amendmentType></amendmentInfo>", 1)
+    # one lists Oaktree among its managers but has only another adviser's rows; one does not list Oaktree at all
+    pages[_archive(BROOK, amend) + "primary_doc.xml"] = new_holdings
+    pages[_archive(BROOK, amend) + "index.json"] = _index("t.xml")
+    pages[_archive(BROOK, amend) + "t.xml"] = _table([("SECRET PICK", "COM", "222222222", 9_000_000, 1, None, "SH", "2")])
+    pages[_archive(BROOK, other) + "primary_doc.xml"] = new_holdings.replace(b"028-05050", b"028-00001")
+    funds = _funds(pages=pages, tmp_path=tmp_path)
+    funds.refresh()
+    assert funds.errors["oaktree"] is None
+    v = funds.view("oaktree")
+    assert v["count"] == 2 and v["total_value"] == 310_000_000 + 99_080_000 and v["form"] == "13F-NT"
+    assert not any(h["name"] == "SECRET PICK" for h in v["holdings"])

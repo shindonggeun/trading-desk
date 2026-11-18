@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edgarSubmission xsi:schemaLocation="http://www.sec.gov/edgar/thirteenffiler eis_13F_Filer.xsd" xmlns:ns1="http://www.sec.gov/edgar/common" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.sec.gov/edgar/thirteenffiler">
+  <schemaVersion>X0202</schemaVersion>
+  <headerData>
+    <submissionType>13F-NT</submissionType>
+    <filerInfo>
+      <liveTestFlag>LIVE</liveTestFlag>
+      <flags/>
+      <filer>
+        <credentials>
+          <cik>0000949509</cik>
+          <ccc>XXXXXXXX</ccc>
+        </credentials>
+      </filer>
+      <periodOfReport>09-30-2026</periodOfReport>
+    </filerInfo>
+  </headerData>
+  <formData>
+    <coverPage>
+      <reportCalendarOrQuarter>09-30-2026</reportCalendarOrQuarter>
+      <isAmendment>false</isAmendment>
+      <filingManager>
+        <name>OAKTREE CAPITAL MANAGEMENT LP</name>
+        <address>
+          <ns1:street1>333 S GRAND AVE 28TH FL</ns1:street1>
+          <ns1:city>LOS ANGELES</ns1:city>
+          <ns1:stateOrCountry>CA</ns1:stateOrCountry>
+          <ns1:zipCode>90071</ns1:zipCode>
+        </address>
+      </filingManager>
+      <reportType>13F NOTICE</reportType>
+      <form13FFileNumber>028-05050</form13FFileNumber>
+      <otherManagersInfo>
+        <otherManager>
+          <form13FFileNumber>028-14349</form13FFileNumber>
+          <name>Brookfield Corp</name>
+        </otherManager>
+        <otherManager>
+          <form13FFileNumber>028-17598</form13FFileNumber>
+          <name>Russell Investments Group, Ltd.</name>
+        </otherManager>
+        <otherManager>
+          <form13FFileNumber>028-17875</form13FFileNumber>
+          <name>Hartree Partners, LP</name>
+        </otherManager>
+      </otherManagersInfo>
+      <provideInfoForInstruction>N</provideInfoForInstruction>
+    </coverPage>
+  </formData>
+</edgarSubmission>

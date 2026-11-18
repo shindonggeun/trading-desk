@@ -8,8 +8,11 @@ quarter. For each fund in ``FUNDS`` (CIKs checked on EDGAR, 2026-11-17) this rea
 - A period's table: the latest original 13F-HR (or a 13F-HR/A whose cover says RESTATEMENT), with
   every later NEW HOLDINGS amendment added on top - Berkshire has revealed positions kept confidential
   that way. A period with only a 13F-NT ("another manager reports for us"): the cover page names that
-  manager (by CIK), whose 13F-HR for the same period is read instead (``reported_by``). Pershing Square
-  has filed 13F-NT for 2026Q2-Q3.
+  manager, whose 13F-HR for the same period is read instead (``reported_by``). Pershing Square has filed
+  13F-NT for 2026Q2-Q3 naming its parent by CIK. A cover that names the manager only by name and 13F file
+  number (Oaktree 2026Q3 → Brookfield Corp, #599) is followed through the fund's ``reporters`` (file
+  number → CIK, checked on EDGAR); when that manager's table mixes many advisers' positions, only the
+  rows tagged with the fund's own sequence number (its cover's included managers) are read.
 - The information table XML of each filing (``www.sec.gov/Archives/edgar/data/<cik>/<accession>/``),
   merged per CUSIP and option side. Values are dollars for filings made from 2023-01-03 (SEC's 2023
   amendment), thousands before.
@@ -56,11 +59,23 @@ log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class Reporter:
+    """A manager that reports a fund's holdings in its own 13F-HR (the fund files a 13F-NT naming it).
+    #599: SEC has no JSON lookup from a 13F file number to a CIK and a name search is ambiguous
+    (Brookfield has many filers), so the ones a cover names without a CIK are written down here.
+    ``own_rows``: its table holds other advisers' positions too - only the fund's own rows are read."""
+    file_number: str
+    cik: str
+    own_rows: bool = False
+
+
+@dataclass(frozen=True)
 class Fund:
     id: str
     name: str
     manager: str
     cik: str
+    reporters: tuple[Reporter, ...] = ()
 
 
 FUNDS = (
@@ -68,7 +83,10 @@ FUNDS = (
     Fund("pershing", "퍼싱스퀘어", "빌 애크먼", "0001336528"),
     Fund("bridgewater", "브리지워터", "레이 달리오", "0001350694"),
     Fund("citadel", "시타델 어드바이저스", "켄 그리핀", "0001423053"),
-    Fund("oaktree", "오크트리 캐피털", "하워드 막스", "0000949509"),
+    # 2026Q3 13F-NT: Brookfield Corp (028-14349, CIK 0001001085, EDGAR 2026-11-18) reports Oaktree's
+    # positions - sequence 7 among the eight advisers of its combination report
+    Fund("oaktree", "오크트리 캐피털", "하워드 막스", "0000949509",
+         reporters=(Reporter("028-14349", "0001001085", own_rows=True),)),
 )
 BY_ID = {f.id: f for f in FUNDS}
 
@@ -90,6 +108,7 @@ ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/"
 FIGI_URL = "https://api.openfigi.com/v3/mapping"
 ACC_RE = re.compile(r"\d{10}-\d{2}-\d{6}")
 CIK_RE = re.compile(r"\d{1,10}")
+FILE_NO_RE = re.compile(r"\d{2,3}-\d{1,6}")       # a 13F file number, 028-05050
 XML_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,100}\.xml", re.IGNORECASE)
 MIN_GAP_SEC = 0.2            # SEC: at most ten a second - five here
 TIMEOUT_SEC = 30.0
@@ -99,6 +118,7 @@ WINDOW_DAYS = 14             # around the due date the funds are asked every WIN
 WINDOW_EVERY_SEC = 3 * 3600
 DAILY_SEC = 24 * 3600
 RETRY_SEC = 30 * 60          # a failed pass is tried again this soon (not for a reason that will not change)
+LASTING = ("운용사를 찾지 못했습니다", "몫을 가려낼 수 없습니다")   # ... such as these: until a new filing
 FAIL_TTL_SEC = 10 * 60       # a document that failed is not asked again before this
 KEEP_TABLES = 16             # tables kept in memory (5 funds x the latest two quarters, and a few more)
 KEEP_VIEWS = 12
@@ -224,14 +244,18 @@ def root_name(xml: bytes) -> str | None:
     return None
 
 
-def parse_info_table(xml: bytes, dollars: bool = True) -> list[dict]:
+def parse_info_table(xml: bytes, dollars: bool = True, managers: set[int] | None = None) -> list[dict]:
     """The information table's rows: issuer, class, CUSIP, option side, shares (or principal, PRN),
-    value in dollars. Read row by row (each row cleared): a large fund's table has many thousand rows."""
+    value in dollars. Read row by row (each row cleared): a large fund's table has many thousand rows.
+    ``managers``: only the rows whose other-manager numbers ("7", "1,7") include one of these."""
     _no_dtd(xml)
     scale = 1 if dollars else 1000
     rows = []
     for _event, el in ElementTree.iterparse(io.BytesIO(xml), events=("end",)):
         if _local(el.tag) != "infoTable":
+            continue
+        if managers is not None and not managers & {int(n) for n in re.findall(r"\d+", _text(el, "otherManager") or "")}:
+            el.clear()
             continue
         put_call = (_text(el, "putCall") or "").upper() or None
         rows.append({"name": _text(el, "nameOfIssuer") or "", "title": _text(el, "titleOfClass") or "",
@@ -256,20 +280,54 @@ def merge(rows: list[dict]) -> list[dict]:
     return list(out.values())
 
 
+def _manager(el) -> dict:
+    cik, number = _text(el, "cik"), _text(el, "form13FFileNumber")
+    return {"cik": f"{int(cik):010d}" if cik and CIK_RE.fullmatch(cik) else None, "name": _text(el, "name"),
+            "file_number": number if number and FILE_NO_RE.fullmatch(number) else None}
+
+
 def cover(xml: bytes) -> dict:
-    """A cover page (primary_doc.xml): the amendment type and the other manager a 13F-NT names."""
+    """A cover page (primary_doc.xml): the amendment type, the filer's own 13F file number, the other
+    managers a 13F-NT names (``others``, in order; ``other`` the first) and the managers a combination
+    report includes by sequence number (``included``, the numbers its table rows carry)."""
     _no_dtd(xml)
     root = ElementTree.fromstring(xml)
-    out: dict = {"amendment_type": None, "other": None}
+    out: dict = {"amendment_type": None, "other": None, "others": [], "file_number": None, "included": {}}
+    listed = set()
+    for el in root.iter():
+        if _local(el.tag) == "otherManager2":
+            seq, m = _text(el, "sequenceNumber"), _child(el, "otherManager")
+            if m is not None:
+                listed.add(id(m))
+                if seq and seq.isdigit():
+                    out["included"][int(seq)] = _manager(m)
     for el in root.iter():
         name = _local(el.tag)
         if name == "amendmentType" and el.text:
             out["amendment_type"] = el.text.strip().upper()
-        elif name in ("otherManager", "otherManagerInfo") and out["other"] is None:
-            cik, other = _text(el, "cik"), _text(el, "name")
-            if cik or other:
-                out["other"] = {"cik": f"{int(cik):010d}" if cik and CIK_RE.fullmatch(cik) else None, "name": other}
+        elif name == "coverPage":
+            number = _text(el, "form13FFileNumber")
+            out["file_number"] = number if number and FILE_NO_RE.fullmatch(number) else None
+        elif name in ("otherManager", "otherManagerInfo") and id(el) not in listed:
+            m = _manager(el)
+            if m["cik"] or m["name"] or m["file_number"]:
+                out["others"].append(m)
+    if out["others"]:
+        out["other"] = {"cik": out["others"][0]["cik"], "name": out["others"][0]["name"]}
     return out
+
+
+def reporter_of(others: list[dict], reporters: tuple[Reporter, ...]) -> tuple[str, str, bool] | None:
+    """The manager a 13F-NT's cover names that reports for the fund: (CIK, name, own rows only). One of
+    the fund's known reporters anywhere on the list (Oaktree names Brookfield, then two sub-advisers),
+    else the first one named with a CIK; None when neither."""
+    for o in others:
+        for r in reporters:
+            if (o["file_number"] and o["file_number"] == r.file_number) or (o["cik"] and o["cik"] == r.cik):
+                return r.cik, o["name"] or r.cik, r.own_rows
+    if others and others[0]["cik"]:
+        return others[0]["cik"], others[0]["name"] or others[0]["cik"], False
+    return None
 
 
 # ------------------------------------------------------------------ comparing
@@ -537,7 +595,7 @@ class Funds:
             except Exception as exc:  # noqa: BLE001 - the list still shows the filing, without its table
                 log.warning("13F table for %s failed: %s", fund.id, _short(exc))
                 self.errors[fund.id] = _short(exc)
-                self._lasting[fund.id] = isinstance(exc, FundsUnavailable) and "운용사를 찾지 못했습니다" in str(exc)
+                self._lasting[fund.id] = isinstance(exc, FundsUnavailable) and any(w in str(exc) for w in LASTING)
         self.checked_at = datetime.now(UTC).isoformat(timespec="seconds")
         return ok
 
@@ -562,28 +620,43 @@ class Funds:
             self._save_json("amendments.json", dict(self._kinds))
         return self._kinds[acc]
 
-    def _table(self, cik: str, filing: dict) -> list[dict]:
-        """One filing's merged rows (memory, disk, then SEC)."""
+    def _table(self, cik: str, filing: dict, only: tuple[str, str | None] | None = None,
+               strict: bool = True) -> list[dict]:
+        """One filing's merged rows (memory, disk, then SEC); with ``only`` (a fund's CIK and 13F file
+        number) just that fund's rows of a combination report, kept apart from the whole table - an
+        amendment (``strict`` False) with none of them adds nothing."""
         acc = filing["accession"]
-        if acc in self._tables:
-            self._tables.move_to_end(acc)
-            return self._tables[acc]
-        cached = self._load_json(f"table-{acc}.json")
+        key = acc if only is None else f"{acc}-for-{only[0]}"
+        if key in self._tables:
+            self._tables.move_to_end(key)
+            return self._tables[key]
+        cached = self._load_json(f"table-{key}.json")
         if cached is None:
-            self._failed(acc)
+            self._failed(key)
             try:
-                cached = {"rows": self._fetch_table(cik, filing)}
+                cached = {"rows": self._fetch_table(cik, filing, only, strict)}
             except Exception as exc:
-                self._remember_fail(acc, exc)
+                self._remember_fail(key, exc)
                 raise
-            self._save_json(f"table-{acc}.json", cached)
-        self._tables[acc] = cached["rows"]
+            self._save_json(f"table-{key}.json", cached)
+        self._tables[key] = cached["rows"]
         while len(self._tables) > KEEP_TABLES:
             self._tables.popitem(last=False)
         return cached["rows"]
 
-    def _fetch_table(self, cik: str, filing: dict) -> list[dict]:
+    def _fetch_table(self, cik: str, filing: dict, only: tuple[str, str | None] | None = None,
+                     strict: bool = True) -> list[dict]:
         base = ARCHIVE_URL.format(cik=int(cik), acc=filing["accession"].replace("-", ""))
+        managers = None
+        if only is not None:
+            # the fund's sequence number among the managers this report includes (by CIK or file number)
+            included = cover(self.edgar.fetch(base + "primary_doc.xml"))["included"]
+            managers = {seq for seq, m in included.items()
+                        if (m["cik"] and m["cik"] == only[0]) or (m["file_number"] and m["file_number"] == only[1])}
+            if not managers:
+                if not strict:           # another adviser's amendment: the fund's table stands as it was
+                    return []
+                raise FundsUnavailable("보고한 운용사의 공시에서 이 기관 몫을 가려낼 수 없습니다")
         index = self.edgar.json(base + "index.json")
         names = [i.get("name", "") for i in (index.get("directory") or {}).get("item") or []]
         names = [n for n in names if XML_NAME_RE.fullmatch(n) and n.lower() != "primary_doc.xml"]
@@ -592,24 +665,25 @@ class Funds:
             xml = self.edgar.fetch(base + name)
             if root_name(xml) != "informationTable":
                 continue
-            rows = merge(parse_info_table(xml, dollars))
-            if not rows:
+            rows = merge(parse_info_table(xml, dollars, managers))
+            if not rows and not (managers and not strict):
                 raise FundsUnavailable("공시의 보유 표가 비어 있습니다")
             return rows
         raise FundsUnavailable("공시에 보유 표(information table)가 없습니다")
 
-    def _period_rows(self, cik: str, fs: list[dict], nested: bool = False) -> tuple[list[dict], dict | None]:
+    def _period_rows(self, cik: str, fs: list[dict], reporters: tuple[Reporter, ...] = (), nested: bool = False,
+                     only: tuple[str, str | None] | None = None) -> tuple[list[dict], dict | None]:
         """A period's merged rows: the latest original or restatement plus later NEW HOLDINGS amendments;
-        a 13F-NT followed (once) to the manager that reports."""
+        a 13F-NT followed (once) to the manager that reports (``only``: the reported fund's own rows)."""
         hr = [f for f in fs if f["form"] in HR_FORMS]
         if hr:
             base = 0
             for i, f in enumerate(hr):
                 if f["form"] == "13F-HR" or self._kind(cik, f) != "NEW HOLDINGS":
                     base = i
-            rows = list(self._table(cik, hr[base]))
+            rows = list(self._table(cik, hr[base], only))
             for f in hr[base + 1:]:
-                rows += self._table(cik, f)          # every later one is a NEW HOLDINGS amendment
+                rows += self._table(cik, f, only, strict=False)   # every later one is a NEW HOLDINGS amendment
             return merge(rows), None
         if nested:
             raise FundsUnavailable("보고한 운용사도 13F-NT 만 냈습니다")
@@ -617,19 +691,22 @@ class Funds:
         key = "nt-" + nt["accession"]
         self._failed(key)
         try:
-            other = cover(self.edgar.fetch(ARCHIVE_URL.format(cik=int(cik), acc=nt["accession"].replace("-", ""))
-                                           + "primary_doc.xml"))["other"]
-            if not other or not other.get("cik"):
-                raise FundsUnavailable("13F-NT: 보유를 보고한 운용사를 찾지 못했습니다"
-                                       + (f"({other['name']})" if other and other.get("name") else ""))
-            theirs = filings(self.edgar.json(SUBMISSIONS_URL.format(cik=other["cik"]))).get(nt["period"])
+            page = cover(self.edgar.fetch(ARCHIVE_URL.format(cik=int(cik), acc=nt["accession"].replace("-", ""))
+                                          + "primary_doc.xml"))
+            found = reporter_of(page["others"], reporters)
+            if found is None:
+                named = page["other"]["name"] if page["other"] and page["other"]["name"] else ""
+                raise FundsUnavailable("13F-NT: 보유를 보고한 운용사를 찾지 못했습니다" + (f"({named})" if named else ""))
+            their_cik, their_name, own_rows = found
+            theirs = filings(self.edgar.json(SUBMISSIONS_URL.format(cik=their_cik))).get(nt["period"])
             if not theirs:
-                raise FundsUnavailable(f"13F-NT: {other['name'] or other['cik']} 의 같은 분기 공시가 아직 없습니다")
-            rows, _ = self._period_rows(other["cik"], theirs, nested=True)
+                raise FundsUnavailable(f"13F-NT: {their_name} 의 같은 분기 공시가 아직 없습니다")
+            rows, _ = self._period_rows(their_cik, theirs, nested=True,
+                                        only=(cik, page["file_number"]) if own_rows else None)
         except Exception as exc:
             self._remember_fail(key, exc)
             raise
-        return rows, {"name": other["name"], "cik": other["cik"]}
+        return rows, {"name": their_name, "cik": their_cik, "own_rows": own_rows}
 
     # --- tickers
     def _map(self, holdings: list[dict], budget: int, search_budget: int = 0) -> None:
@@ -718,11 +795,11 @@ class Funds:
             self._views.move_to_end(key)
             return hit
         with self._fetching(wait):
-            rows, reported_by = self._period_rows(fund.cik, periods[period])
+            rows, reported_by = self._period_rows(fund.cik, periods[period], fund.reporters)
             prev_rows = None
             if prev_period in periods:
                 try:
-                    prev_rows, _ = self._period_rows(fund.cik, periods[prev_period])
+                    prev_rows, _ = self._period_rows(fund.cik, periods[prev_period], fund.reporters)
                 except Exception as exc:  # noqa: BLE001 - the quarter stands without its comparison
                     log.info("13F %s %s (previous) failed: %s", fund.id, prev_q, _short(exc))
             holdings = compare(rows, prev_rows)

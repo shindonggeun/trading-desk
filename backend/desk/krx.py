@@ -334,6 +334,19 @@ class KrxDaily:
         self._later = {k: v for k, v in self._later.items() if at - v < timedelta(days=EMPTY_AFTER_DAYS)}
         return results
 
+    def cooldowns(self, at: datetime) -> list[tuple[str, str, datetime]]:
+        """#623 what this collector waits out now: the daily quota (until midnight KST) and each service
+        the key was refused for (REFUSED_FOR) - (name, label, until)."""
+        out = []
+        today = kst_today(at)
+        if self.client._quota_day == today or self.client.spent() >= self.client.budget:
+            out.append(("krx_quota", "KRX 하루 한도", datetime.combine(today + timedelta(days=1), time(0), KST)))
+        refused_now = dict(self._refused)          # a copy (one C call): the collector's thread adds to it
+        for api, refused in sorted(refused_now.items()):
+            if at - refused < REFUSED_FOR:
+                out.append((f"krx_refused_{api}", f"KRX {api} 거절(키 · 이용 신청)", refused + REFUSED_FOR))
+        return out
+
     def rows(self, api: str, day: date) -> list[dict]:
         with self.engine.connect() as conn:
             return [r.payload for r in conn.execute(

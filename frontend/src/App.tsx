@@ -16,6 +16,7 @@ import ChatWidget from "./components/ChatWidget";
 import AppNotices from "./components/AppNotices";
 import FlowAlertToast, { FLOW_ROUTE } from "./components/FlowAlertToast";
 import FundsAlert from "./components/FundsAlert";
+import StatusDot from "./components/StatusDot";
 import { resetFavorites } from "./favorites";
 import TourPrompt from "./components/TourPrompt";
 import { goAndStart, startTour, tourForRoute } from "./tourState";
@@ -166,6 +167,8 @@ export default function App() {
               {/* #491 지금 화면의 안내 투어 */}
               <button type="button" className="topbar-help" aria-label="이 화면 안내" title="이 화면 안내"
                 onClick={() => { void startTour(tourForRoute(route)).then((r) => { if (r === "empty") void goAndStart("dashboard"); }); }}>?</button>
+              {/* #624 늦거나 멈춘 데이터 원천이 있을 때만 — 누르면 설정의 상태 칸 */}
+              <StatusDot />
               {/* #582 회사에서 조용히 띄워 두는 작은 창 */}
               <button type="button" className="topbar-mini" aria-label="작은 창 띄우기" title="작은 창 띄우기(늘 위)"
                 onClick={() => { void openMini(); }}>▭</button>

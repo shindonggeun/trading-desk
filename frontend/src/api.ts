@@ -394,6 +394,8 @@ export const api = {
   flowAlerts: (date?: string) =>
     call<{ date: string; items: FlowAlert[] }>(`/api/alerts/flow${date ? `?date=${encodeURIComponent(date)}` : ""}`),
   /** #581 오늘(또는 date, KST) 알림 타임라인 — 수급 전향(#361) · 수급 흐름 변화 · NQ 이상 징후(#579), 오래된 것부터 */
+  // #624 데이터 원천 상태(#623)
+  status: () => call<DeskStatus>("/api/status"),
   alertsToday: (date?: string) =>
     call<MarketAlertsDay>(`/api/alerts/today${date ? `?date=${encodeURIComponent(date)}` : ""}`),
   // #581 알림 채널(#580) — 텔레그램 · 카카오톡. 웹 푸시는 기기별 구독(/api/push/*)
@@ -614,3 +616,22 @@ export function entryNow(ticker: string, horizon?: string): Promise<import("./ty
   const q = new URLSearchParams({ ticker, ...(horizon ? { horizon } : {}) });
   return call(`/api/entry-now?${q}`);
 }
+
+/** #623 GET /api/status — 백그라운드 작업 · 원천마다 한 줄. 오류는 예외 종류 이름(또는 짧은 고정 문구)만 */
+export interface StatusJob {
+  name: string;
+  label: string;
+  source: string;
+  parent: string | null;
+  state: "fresh" | "stale" | "error" | "starting" | "running" | "stopped" | "off";
+  runs: number;
+  errors: number;
+  last_run: string | null;
+  last_ok: string | null;
+  last_error: string | null;
+  last_error_at: string | null;
+  next_due: string | null;
+  interval_sec: number | null;
+}
+export interface StatusCooldown { name: string; label: string; until: string | null; left_sec: number }
+export interface DeskStatus { now: string; jobs: StatusJob[]; cooldowns: StatusCooldown[] }

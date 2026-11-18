@@ -19,6 +19,7 @@ import WeeklyMapBrief from "../components/WeeklyMapBrief";
 import BottomZoneBrief from "../components/BottomZoneBrief";
 import HalvingBrief from "../components/HalvingBrief";
 import TodayStrip from "../components/TodayStrip";
+import AlertStrip from "../components/AlertStrip";
 import WhenVisible from "../components/WhenVisible";
 import SectionBoundary from "../components/SectionBoundary";
 import ChunkFailed from "../components/ChunkFailed";
@@ -427,6 +428,8 @@ export default function Dashboard() {
       </div>
       {/* #464 휴대폰: 구역을 펼치지 않아도 지수 등락 · 공포지수를 한 줄로 */}
       {layout === "phone" && <DashSummary />}
+      {/* #581 오늘 최근 알림 — 없으면 자리를 차지하지 않는다 */}
+      <AlertStrip />
       {/* #317 즐겨찾기 가운데 지금 손댈 종목 */}
       <TodayStrip />
       {band && (

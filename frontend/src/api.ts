@@ -391,6 +391,17 @@ export const api = {
   /** #362 오늘(또는 date) 보낸 수급 전향 알림 — 앱 안 토스트가 폴링한다 */
   flowAlerts: (date?: string) =>
     call<{ date: string; items: FlowAlert[] }>(`/api/alerts/flow${date ? `?date=${encodeURIComponent(date)}` : ""}`),
+  /** #581 오늘(또는 date, KST) 알림 타임라인 — 수급 전향(#361) · 수급 흐름 변화 · NQ 이상 징후(#579), 오래된 것부터 */
+  alertsToday: (date?: string) =>
+    call<MarketAlertsDay>(`/api/alerts/today${date ? `?date=${encodeURIComponent(date)}` : ""}`),
+  // #581 알림 채널(#580) — 텔레그램 · 카카오톡. 웹 푸시는 기기별 구독(/api/push/*)
+  notifyChannels: () => call<NotifyChannels>("/api/notify/channels"),
+  saveNotifyChannel: (id: NotifyChannelId, body: { enabled?: boolean; kinds?: Record<string, boolean> }) =>
+    call<NotifyChannel>(`/api/notify/channels/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  testNotifyChannel: (id: NotifyChannelId) =>
+    call<{ ok: boolean; error: string | null }>(`/api/notify/channels/${id}/test`, { method: "POST" }),
+  kakaoConnect: () => call<{ url: string }>("/api/notify/kakao/connect", { method: "POST" }),
+  kakaoDisconnect: () => call<void>("/api/notify/kakao", { method: "DELETE" }),
 };
 
 /** #361 구독 알림 종류 — flow 는 전체 스위치, 나머지는 그 시장의 전향만(빠진 키는 서버가 켜짐으로) */
@@ -401,6 +412,45 @@ export interface PushKinds {
   flow_kosdaq: boolean;
   morning_brief?: boolean;   // #573 아침 시황(#571)
   day_call?: boolean;        // #573 오늘 방향(#572)
+  flow_shift?: boolean;      // #581 수급 흐름 변화(#579)
+  nq_alert?: boolean;        // #581 나스닥 선물 이상 징후(#579)
+}
+
+/** #581 알림 타임라인 한 건(GET /api/alerts/today) — flow_turn 은 #361 의 수급 전향 */
+export interface MarketAlert {
+  trade_date: string;
+  kind: "flow_turn" | "flow_shift" | "nq_alert";
+  rule: string;
+  market: "kospi" | "kosdaq" | "futures" | "nq";
+  who: "foreign" | "institution" | "individual" | "all";
+  severity: "info" | "caution" | "strong";
+  t: string;               // ISO (KST 오프셋)
+  value: number | null;
+  prev: number | null;
+  text: string;            // 서버가 만든 한국어 한 줄
+  pushed: boolean;         // 푸시로 나간 것(info 는 타임라인에만)
+}
+export interface MarketAlertsDay {
+  date: string;
+  items: MarketAlert[];
+}
+
+/** #581 알림 채널(#580) */
+export type NotifyChannelId = "telegram" | "kakao";
+export interface NotifyChannel {
+  id: NotifyChannelId;
+  label: string;
+  configured: boolean;     // 서버 env 가 있는지
+  connected: boolean;      // 텔레그램 = configured, 카카오 = OAuth 를 마쳤는지
+  enabled: boolean;
+  kinds: Record<string, boolean>;
+  needs_reconnect: boolean;
+  refresh_expires_at: string | null;
+}
+export interface NotifyChannels {
+  kinds: string[];
+  can_edit: boolean;
+  channels: NotifyChannel[];
 }
 
 /** #361 수급 전향 한 건 */

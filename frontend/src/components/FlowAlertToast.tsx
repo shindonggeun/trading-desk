@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type FlowAlert, type PushKinds } from "../api";
+import { api, type FlowAlert, type MarketAlert, type PushKinds } from "../api";
 
 /** #362 앱 안 토스트 — 장중에 수급 전향 목록(/api/alerts/flow)을 폴링해 새로 온 것만 화면 위에 띄운다.
  * 푸시가 꺼진 기기 · 지원하지 않는 브라우저에서도 앱을 열어 두면 볼 수 있게. */
@@ -33,9 +33,12 @@ export function saveToastMarkets(m: ToastMarkets) {
   }
 }
 
-/** #573 수급 전향 말고 받을 알림 종류 — 아침 시황(#571) · 오늘 방향(#572). 이 브라우저에 기억하고 기본은 켬 */
-export type ExtraKinds = { morning_brief: boolean; day_call: boolean };
+/** #573 수급 전향 말고 받을 알림 종류 — 아침 시황(#571) · 오늘 방향(#572), #581 수급 흐름 변화 · 나스닥 선물 이상 징후(#579).
+ *  이 브라우저에 기억하고 기본은 켬. 수급 흐름 · 나스닥 선물은 앱 안 토스트에도 같이 적용된다. */
+export type ExtraKinds = { flow_shift: boolean; nq_alert: boolean; morning_brief: boolean; day_call: boolean };
 export const EXTRA_KINDS: { key: keyof ExtraKinds; label: string; note: string }[] = [
+  { key: "flow_shift", label: "수급 흐름 변화", note: "외국인 · 기관의 매수 · 매도 확대 · 축소(장중)" },
+  { key: "nq_alert", label: "나스닥 선물 이상", note: "나스닥100 선물의 급한 매도세(거의 24시간)" },
   { key: "morning_brief", label: "아침 시황", note: "평일 오전 7시쯤" },
   { key: "day_call", label: "오늘 방향", note: "국장 · 미장 판정이 나올 때" },
 ];
@@ -44,9 +47,10 @@ const EXTRA_KEY = "desk.pushKinds.extra";
 export function loadExtraKinds(): ExtraKinds {
   try {
     const raw = JSON.parse(localStorage.getItem(EXTRA_KEY) ?? "{}");
-    return { morning_brief: raw.morning_brief !== false, day_call: raw.day_call !== false };
+    return { flow_shift: raw.flow_shift !== false, nq_alert: raw.nq_alert !== false,
+             morning_brief: raw.morning_brief !== false, day_call: raw.day_call !== false };
   } catch {
-    return { morning_brief: true, day_call: true };
+    return { flow_shift: true, nq_alert: true, morning_brief: true, day_call: true };
   }
 }
 
@@ -73,16 +77,43 @@ export function inFlowHours(now = new Date()): boolean {
 
 const keyOf = (a: FlowAlert) => `${a.trade_date}|${a.market}|${a.kind}|${a.t}`;
 
-type Shown = FlowAlert & { key: string; until: number };
+const shiftKey = (a: MarketAlert) => `${a.kind}|${a.rule}|${a.market}|${a.who}|${a.t}`;
+/** 토스트 한 건 — 수급 전향(#361) 또는 #579 알림(푸시로 나간 것) */
+type Toast = { key: string; text: string; tone: "buy" | "sell" | "warn" };
+type Shown = Toast & { until: number };
 
 export default function FlowAlertToast() {
   const [shown, setShown] = useState<Shown[]>([]);
   const seen = useRef<Set<string> | null>(null); // 처음 읽은 목록은 이미 지난 것 — 토스트 없이 기준으로
+  const seenShift = useRef<Set<string> | null>(null);
 
   useEffect(() => {
     let alive = true;
     let timer: number | undefined;
     const tick = async () => {
+      const extra = loadExtraKinds();
+      // #581 나스닥 선물 알림은 장 밖(밤)에도 온다 — 그 종류를 켰으면 화면이 보이는 동안 늘 읽는다
+      if ((inFlowHours() || extra.nq_alert) && document.visibilityState === "visible") {
+        try {
+          const day = await api.alertsToday();
+          if (!alive) return;
+          const pushed = day.items.filter((a) => a.pushed && a.kind !== "flow_turn");
+          if (seenShift.current === null) {
+            seenShift.current = new Set(pushed.map(shiftKey));
+          } else {
+            const fresh = pushed.filter((a) => !seenShift.current!.has(shiftKey(a)));
+            fresh.forEach((a) => seenShift.current!.add(shiftKey(a)));
+            const wanted = fresh.filter((a) => (a.kind === "flow_shift" ? extra.flow_shift : extra.nq_alert));
+            if (wanted.length) {
+              const until = Date.now() + SHOW_MS;
+              setShown((s) => [...wanted.map((a): Shown => ({ key: shiftKey(a), text: a.text, tone: "warn", until })), ...s]
+                .slice(0, MAX_SHOWN));
+            }
+          }
+        } catch {
+          /* /api/alerts/today 가 없거나 잠깐 안 되면 수급 전향만 */
+        }
+      }
       if (inFlowHours() && document.visibilityState === "visible") {
         try {
           const { items } = await api.flowAlerts();
@@ -96,7 +127,8 @@ export default function FlowAlertToast() {
             const wanted = fresh.filter((a) => markets[a.market]);
             if (wanted.length) {
               const until = Date.now() + SHOW_MS;
-              setShown((s) => [...wanted.map((a) => ({ ...a, key: keyOf(a), until })), ...s].slice(0, MAX_SHOWN));
+              setShown((s) => [...wanted.map((a): Shown => ({ key: keyOf(a), text: a.text,
+                tone: a.kind === "buy_turn" ? "buy" : "sell", until })), ...s].slice(0, MAX_SHOWN));
             }
           }
         } catch {
@@ -123,7 +155,7 @@ export default function FlowAlertToast() {
   return (
     <div className="flow-toasts" role="status" aria-live="polite">
       {shown.map((a) => (
-        <div key={a.key} className={`flow-toast ${a.kind === "buy_turn" ? "flow-toast-buy" : "flow-toast-sell"}`}>
+        <div key={a.key} className={`flow-toast flow-toast-${a.tone}`}>
           <a href={FLOW_ROUTE} onClick={() => setShown((s) => s.filter((x) => x.key !== a.key))}>{a.text}</a>
           <button type="button" className="flow-toast-close" aria-label="닫기"
             onClick={() => setShown((s) => s.filter((x) => x.key !== a.key))}>×</button>

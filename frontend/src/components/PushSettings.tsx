@@ -4,6 +4,7 @@ import { disablePush, enablePush, isIOS, isStandalone, pushState, STATE_TEXT, up
 import {
   EXTRA_KINDS, loadExtraKinds, loadToastMarkets, pushKindsOf, saveExtraKinds, saveToastMarkets, TOAST_MARKETS, type ExtraKinds, type ToastMarkets,
 } from "./FlowAlertToast";
+import NotifyChannels from "./NotifyChannels";
 
 /** #362 설정의 "알림" 칸 — 이 기기 푸시 켜기 · 끄기, 시험 알림, 앱 안 토스트에 보일 시장. */
 export default function PushSettings() {
@@ -13,6 +14,10 @@ export default function PushSettings() {
   const [markets, setMarkets] = useState<ToastMarkets>(loadToastMarkets);
   const [extra, setExtra] = useState<ExtraKinds>(loadExtraKinds);
 
+  // #581 카카오 연결에서 돌아오면(#/settings?kakao=ok|fail) 이 칸으로
+  useEffect(() => {
+    if (/[?&]kakao=(ok|fail)(?:&|$)/.test(window.location.hash)) document.getElementById("notify")?.scrollIntoView({ block: "start" });
+  }, []);
   useEffect(() => {
     let alive = true;
     pushState().then((s) => alive && setState(s)).catch(() => alive && setState("unsupported"));
@@ -50,9 +55,9 @@ export default function PushSettings() {
   };
 
   return (
-    <section className="card settings-card push-settings">
+    <section className="card settings-card push-settings" id="notify">
       <h2>알림</h2>
-      <p className="muted">외국인 수급이 순매수 · 순매도로 돌아서면(전향), 아침 시황이 나오면, 오늘 방향 판정이 나오면 알려 드립니다.</p>
+      <p className="muted">외국인 수급이 순매수 · 순매도로 돌아서면(전향), 외국인 · 기관 수급 흐름이 크게 바뀌면, 나스닥 선물에 급한 매도세가 나오면, 아침 시황 · 오늘 방향 판정이 나오면 알려 드립니다.</p>
 
       <div className="settings-row">
         <span>이 기기 푸시</span>
@@ -100,7 +105,7 @@ export default function PushSettings() {
       </div>
 
       <h3>그 밖의 알림</h3>
-      <p className="muted small">✓ 표시가 받는 알림입니다. 이 기기의 푸시에만 적용됩니다.</p>
+      <p className="muted small">✓ 표시가 받는 알림입니다. 이 기기의 푸시와, 수급 흐름 · 나스닥 선물은 앱 안 토스트에도 적용됩니다.</p>
       <div className="push-markets">
         {EXTRA_KINDS.map(({ key, label, note }) => (
           <button key={key} type="button" className={`chip ${extra[key] ? "chip-on" : ""}`} aria-pressed={extra[key]}
@@ -111,6 +116,8 @@ export default function PushSettings() {
         ))}
       </div>
 
+      {/* #581 텔레그램 · 카카오톡(#580) */}
+      <NotifyChannels />
       {isIOS() && !isStandalone() && (
         <p className="muted small">iPhone · iPad: Safari 공유 버튼 → "홈 화면에 추가" 로 설치한 뒤, 설치한 앱에서 이 화면을 열어 알림을 켜세요(iOS 16.4 이상).</p>
       )}

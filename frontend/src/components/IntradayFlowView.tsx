@@ -4,7 +4,9 @@ import {
   type IChartApi, type ISeriesApi, type SeriesMarker, type Time, type UTCTimestamp,
 } from "lightweight-charts";
 import { crosshairTime, ticksClearOfLabels } from "./chartFormat";
-import { api, ApiError } from "../api";
+import { api, ApiError, type MarketAlert } from "../api";
+import { hhmm as alertTime, SEVERITY_LABEL, useTodayAlerts } from "../alertsFeed";
+import AlertTimeline from "./AlertTimeline";
 import type { IntradayBucket, IntradayFlow, IntradayFuturesBar, IntradaySpotBar, IntradayTurn } from "../types";
 
 // #360 시장 수급 "오늘 장중": 현물(코스피/코스닥) · 코스피200 선물의 외국인 · 기관 · 개인 누적 수급과
@@ -103,6 +105,8 @@ type Pane = {
   deltas: Point[];
   /** 전향 마커를 다는 시장(외국인 선이 켜져 있을 때만) */
   turns: IntradayTurn[];
+  /** #581 이 시장의 수급 흐름 알림(#579) — 막대 위에 시각 · 강도 표시 */
+  alerts: MarketAlert[];
   unit: string;
 };
 
@@ -168,6 +172,20 @@ function drawPane(el: HTMLElement, date: string, bucketMin: number, pane: Pane):
     })).sort((a, b) => (a.time as number) - (b.time as number));
     if (ms.length) createSeriesMarkers(foreignLine, ms);
   }
+  // #581 수급 흐름 알림: 막대(격자 전체가 있는 시리즈) 위에, 알림 시각을 봉 격자로 내려 붙인다
+  const warn = css("--warn", "#e5a23a");
+  const am: SeriesMarker<Time>[] = pane.alerts.map((a): SeriesMarker<Time> => {
+    const t = kstTime(a.t) as number;
+    const snapped = (open + Math.floor((t - open) / step) * step) as UTCTimestamp;
+    return {
+      time: Math.min(Math.max(snapped, open), close) as UTCTimestamp,
+      position: "aboveBar",
+      shape: a.severity === "strong" ? "square" : "circle",
+      color: a.severity === "info" ? css("--muted", "#8c939d") : warn,
+      text: narrow ? SEVERITY_LABEL[a.severity] : `${alertTime(a.t)} ${SEVERITY_LABEL[a.severity]}`,
+    };
+  }).sort((a, b) => (a.time as number) - (b.time as number));
+  if (am.length) createSeriesMarkers(bars, am);
   chart.timeScale().fitContent();
   return { chart, anchor: bars };
 }
@@ -252,6 +270,10 @@ export default function IntradayFlowView() {
   }, [prefs.bucket]);
 
   const summary = useMemo(() => (data ? summarize(data, prefs.spot) : null), [data, prefs.spot]);
+  // #581 오늘 알림 가운데 이 차트의 시장 · 날짜의 수급 흐름 변화(전향은 위의 전향 마커가 이미 그린다)
+  const { data: alertDay } = useTodayAlerts();
+  const shifts = useMemo(() => (alertDay && data && alertDay.date === data.date
+    ? alertDay.items.filter((a) => a.kind === "flow_shift") : []), [alertDay, data]);
 
   // #401 차트 2개(현물 · 선물). 십자선은 한쪽에서 가리킨 시각을 다른 쪽에도 그린다.
   useEffect(() => {
@@ -263,11 +285,13 @@ export default function IntradayFlowView() {
       lines: on.map((w) => ({ who: w.key, color: css(w.color, "#a371f7"), points: rows.map((b) => ({ t: b.t, v: b[w.key] })) })),
       deltas: rows.map((b) => ({ t: b.t, v: b.foreign_delta })),
       turns: data.turns.filter((t) => t.market === prefs.spot), unit: "억",
+      alerts: shifts.filter((a) => a.market === prefs.spot),
     });
     const fut = drawPane(fe, data.date, data.bucket_min, {
       lines: on.map((w) => ({ who: w.key, color: css(w.color, "#a371f7"), points: data.futures.map((b) => ({ t: b.t, v: b[FUT_KEY[w.key]] as number | null })) })),
       deltas: data.futures.map((b) => ({ t: b.t, v: b.foreign_delta })),
       turns: data.turns.filter((t) => t.market === "futures"), unit: "계약",
+      alerts: shifts.filter((a) => a.market === "futures"),
     });
     const link = (from: typeof spot, to: typeof spot) => from.chart.subscribeCrosshairMove((p) => {
       if (p.time === undefined) to.chart.clearCrosshairPosition();
@@ -276,7 +300,7 @@ export default function IntradayFlowView() {
     link(spot, fut);
     link(fut, spot);
     return () => { spot.chart.remove(); fut.chart.remove(); };
-  }, [data, prefs.spot, prefs.who]);
+  }, [data, prefs.spot, prefs.who, shifts]);
 
   const supported = data?.supported !== false;
 
@@ -320,10 +344,12 @@ export default function IntradayFlowView() {
           <PaneHead title="코스피200 선물" unit="계약"
             values={WHO.filter((w) => prefs.who[w.key]).map((w) => ({ who: w.key, v: lastValue(data.futures, (b) => b[FUT_KEY[w.key]] as number | null) }))} />
           <div className="intraday-chart intraday-chart-pane" ref={futBox} aria-label="오늘 장중 선물 수급 차트(계약)" />
-          <p className="muted small">선 = 주체별 오늘 누적 순매수(현물 억원 · 선물 계약) · 막대 = 외국인 {data.bucket_min}분 순매수 · 화살표 = 외국인 전향</p>
+          <p className="muted small">선 = 주체별 오늘 누적 순매수(현물 억원 · 선물 계약) · 막대 = 외국인 {data.bucket_min}분 순매수 · 화살표 = 외국인 전향 · ● ■ = 수급 흐름 알림(■ 강함)</p>
         </>
       )}
       {!data && !failed && <p className="muted small">불러오는 중…</p>}
+      {/* #581 오늘 알림 타임라인 — 장이 끝나도 · 수급을 못 받아도 보인다 */}
+      <AlertTimeline />
     </div>
   );
 }

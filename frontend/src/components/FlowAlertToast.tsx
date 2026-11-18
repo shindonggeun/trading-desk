@@ -36,12 +36,13 @@ export function saveToastMarkets(m: ToastMarkets) {
 
 /** #573 수급 전향 말고 받을 알림 종류 — 아침 시황(#571) · 오늘 방향(#572), #581 수급 흐름 변화 · 나스닥 선물 이상 징후(#579).
  *  이 브라우저에 기억하고 기본은 켬. 수급 흐름 · 나스닥 선물은 앱 안 토스트에도 같이 적용된다. */
-export type ExtraKinds = { flow_shift: boolean; nq_alert: boolean; morning_brief: boolean; day_call: boolean };
+export type ExtraKinds = { flow_shift: boolean; nq_alert: boolean; morning_brief: boolean; day_call: boolean; line_signal: boolean };
 export const EXTRA_KINDS: { key: keyof ExtraKinds; label: string; note: string }[] = [
   { key: "flow_shift", label: "수급 흐름 변화", note: "외국인 · 기관의 매수 · 매도 확대 · 축소(장중)" },
   { key: "nq_alert", label: "나스닥 선물 이상", note: "나스닥100 선물의 급한 매도세(거의 24시간)" },
   { key: "morning_brief", label: "아침 시황", note: "평일 오전 7시쯤" },
   { key: "day_call", label: "오늘 방향", note: "국장 · 미장 판정이 나올 때" },
+  { key: "line_signal", label: "차트 선", note: "고른 종목 · 시간봉의 채널 · 추세선 닿음 · 이탈(설정 → 차트 선 알림에서 켬)" },
 ];
 const EXTRA_KEY = "desk.pushKinds.extra";
 
@@ -49,9 +50,9 @@ export function loadExtraKinds(): ExtraKinds {
   try {
     const raw = JSON.parse(localStorage.getItem(EXTRA_KEY) ?? "{}");
     return { flow_shift: raw.flow_shift !== false, nq_alert: raw.nq_alert !== false,
-             morning_brief: raw.morning_brief !== false, day_call: raw.day_call !== false };
+             morning_brief: raw.morning_brief !== false, day_call: raw.day_call !== false, line_signal: raw.line_signal !== false };
   } catch {
-    return { flow_shift: true, nq_alert: true, morning_brief: true, day_call: true };
+    return { flow_shift: true, nq_alert: true, morning_brief: true, day_call: true, line_signal: true };
   }
 }
 

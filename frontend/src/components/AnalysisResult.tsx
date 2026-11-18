@@ -8,6 +8,7 @@ import ExplainPanel, { lineTitle } from "./ExplainPanel";
 import type { ExtraLine, Interval } from "./PriceChart";
 import LevelLadder from "./LevelLadder";
 import SectionBoundary from "./SectionBoundary";
+import { css, useColorScheme } from "../chartColors";
 
 const PriceChart = lazy(() => import("./PriceChart"));
 
@@ -38,8 +39,6 @@ export interface Related {
 
 const ROLE: Record<RelatedRow["role"], string> = { self: "이 종목", underlying: "본주", peer: "관련 종목", driver: "동인" };
 
-const css = (name: string, fallback: string) =>
-  getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 
 /** 관망(또는 어느 계획이든) 롱 · 숏 진입 조건 가격을 점선으로. #466 근거가 있으면 "롱 조건 · 피보 0.382" 처럼. */
 function triggerLines(plan: Plan | null, basis: LineBasis[]): ExtraLine[] {
@@ -49,8 +48,8 @@ function triggerLines(plan: Plan | null, basis: LineBasis[]): ExtraLine[] {
     const b = basis.find((x) => x.line === k);
     return b ? lineTitle(b) : plain;
   };
-  if (plan.long_trigger != null) lines.push({ price: plan.long_trigger, label: title("long_trigger", "롱 조건"), color: css("--long", "#f2464b"), dashed: true });
-  if (plan.short_trigger != null) lines.push({ price: plan.short_trigger, label: title("short_trigger", "숏 조건"), color: css("--short", "#3a86f8"), dashed: true });
+  if (plan.long_trigger != null) lines.push({ price: plan.long_trigger, label: title("long_trigger", "롱 조건"), color: css("--long"), dashed: true });
+  if (plan.short_trigger != null) lines.push({ price: plan.short_trigger, label: title("short_trigger", "숏 조건"), color: css("--short"), dashed: true });
   return lines;
 }
 
@@ -59,7 +58,7 @@ function ownLabels(basis: LineBasis[]) {
   const out: Partial<Record<"entry_price" | "stop_loss" | "price_target", { title: string; color?: string }>> = {};
   for (const b of basis) {
     if (b.line !== "entry_price" && b.line !== "stop_loss" && b.line !== "price_target") continue;
-    const color = b.hold_plan ? (b.scenario === "short" ? css("--short", "#3a86f8") : b.scenario === "long" ? css("--long", "#f2464b") : css("--muted", "#8c939d")) : undefined;
+    const color = b.hold_plan ? (b.scenario === "short" ? css("--short") : b.scenario === "long" ? css("--long") : css("--muted")) : undefined;
     out[b.line] = { title: lineTitle(b), color };
   }
   return out;
@@ -82,8 +81,9 @@ function Chart({ ticker, tradeDate, plan, title, outlook = null, runId }: { tick
     return () => { live = false; };
   }, [hasPlan, runId, ticker]);
   const basis = useMemo(() => sr?.basis ?? [], [sr]);
-  const extra = useMemo(() => triggerLines(plan, basis), [plan, basis]);
-  const labels = useMemo(() => ownLabels(basis), [basis]);
+  const scheme = useColorScheme();   // #627 테마가 바뀌면 조건선 색도 다시 읽는다
+  const extra = useMemo(() => triggerLines(plan, basis), [plan, basis, scheme]);
+  const labels = useMemo(() => ownLabels(basis), [basis, scheme]);
   const [picked, setPicked] = useState<number | null>(null);   // #440 사다리에서 고른 가격
   const [focus, setFocus] = useState<PlanLineKey | null>(null);
   const onLineClick = useCallback((p: number) => {
@@ -147,7 +147,8 @@ export function ResultChart({ plan, ticker, tradeDate, outlook = null, runId }: 
 }
 
 function signed(v: number | null): string {
-  return v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`;
+  // #627 색만으로 오름 · 내림을 가르지 않게 ▲▼ 와 부호를 같이
+  return v == null ? "—" : `${v > 0 ? "▲ +" : v < 0 ? "▼ " : ""}${v.toFixed(1)}%`;
 }
 
 /** 본주 · 관련 종목 · 동인(금 선물 · 지수 · 금리)의 추이 — 판단에 쓴 숫자 그대로. */

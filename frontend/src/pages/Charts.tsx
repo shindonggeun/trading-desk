@@ -8,6 +8,7 @@ import { price } from "../format";
 import type { Run, WeeklyMap, WeeklyMapError } from "../types";
 import { sameTicker } from "../ticker";
 import { nextLines, WEEKLY_WORDS, weeklyLink } from "../weekly";
+import { css, useColorScheme } from "../chartColors";
 
 const PriceChart = lazy(() => import("../components/PriceChart"));
 
@@ -24,10 +25,6 @@ const WEEKLY_KEY = "desk.charts.weekly";
 
 const isMap = (m: WeeklyMap | WeeklyMapError): m is WeeklyMap => !("error" in m);
 
-function css(name: string, fallback: string): string {
-  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return v || fallback;
-}
 
 /** #235 주간 선(검정선 · 빨간선)을 차트에 겹칠지 — 이 브라우저에 기억, 기본 켬 */
 function loadWeeklyOn(): boolean {
@@ -137,13 +134,14 @@ export default function Charts({ query }: { query: URLSearchParams }) {
 
   // 다른 심볼로 계산한 지도(코스피200 → 069500.KS 등)는 가격 단위가 달라 선을 겹치지 않는다
   const map = weekly && isMap(weekly) && (!weekly.source_symbol || sameTicker(weekly.source_symbol, ticker)) ? weekly : null;
+  const scheme = useColorScheme();   // #627 테마가 바뀌면 선 색도 다시 읽는다
   const weeklyLines = useMemo<ExtraLine[] | undefined>(() => {
     if (!map || !weeklyOn) return undefined;
     return [
-      { price: map.lines.black.price, label: `검정선 ${map.lines.black.weeks}주`, color: css("--text", "#e6e9ee") },
-      { price: map.lines.red.price, label: `빨간선 ${map.lines.red.weeks}주`, color: css("--up", "#e5484d") },
+      { price: map.lines.black.price, label: `검정선 ${map.lines.black.weeks}주`, color: css("--text") },
+      { price: map.lines.red.price, label: `빨간선 ${map.lines.red.weeks}주`, color: css("--up") },
     ];
-  }, [map, weeklyOn]);
+  }, [map, weeklyOn, scheme]);
   const words = map ? WEEKLY_WORDS[map.position] : null;
   const next = map ? nextLines(map) : null;
   const toggleWeekly = (on: boolean) => {

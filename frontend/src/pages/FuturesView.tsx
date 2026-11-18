@@ -8,6 +8,7 @@ import { crosshairTime, ticksClearOfLabels } from "../components/chartFormat";
 import { percent, price, tone } from "../format";
 import { chartSec, contracts, hidden, isLive, kstStamp, LIVE_REFRESH_MS, nextRefresh, SESSION_HOURS, SESSION_KO, sessionBadge } from "../futures";
 import type { FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession } from "../types";
+import { css, useColorScheme } from "../chartColors";
 
 /**
  * #444 코스피200 선물 시세 전용 화면(#/futures?session=day|night&iv=1m|5m|15m).
@@ -19,9 +20,6 @@ const INTERVALS: { iv: FuturesInterval; label: string }[] = [
 ];
 const IV_KEY = "desk.futures.iv";
 
-function css(name: string, fallback: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
-}
 
 function savedIv(): FuturesInterval {
   try {
@@ -31,7 +29,7 @@ function savedIv(): FuturesInterval {
   return "5m";
 }
 
-export default function FuturesView({ query }: { query: URLSearchParams }) {
+function FuturesViewInner({ query }: { query: URLSearchParams }) {
   const qs = query.get("session");
   const asked: FuturesSession | undefined = qs === "day" || qs === "night" ? qs : undefined;
   const qi = query.get("iv");
@@ -170,12 +168,12 @@ function FuturesChart({ candles, iv, base, baseLabel }: { candles: FuturesCandle
   useEffect(() => {
     const el = box.current;
     if (!el) return;
-    const grid = css("--border", "#2a3038");
-    const up = css("--up", "#f2464b");
-    const down = css("--down", "#3a86f8");
+    const grid = css("--border");
+    const up = css("--up");
+    const down = css("--down");
     const chart = createChart(el, {
       autoSize: true,
-      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: css("--muted", "#8c939d") },
+      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: css("--muted") },
       grid: { vertLines: { color: grid }, horzLines: { color: grid } },
       rightPriceScale: { borderColor: grid },
       timeScale: { borderColor: grid, timeVisible: true, secondsVisible: false },
@@ -201,14 +199,14 @@ function FuturesChart({ candles, iv, base, baseLabel }: { candles: FuturesCandle
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
-    const up = css("--up", "#f2464b");
-    const down = css("--down", "#3a86f8");
+    const up = css("--up");
+    const down = css("--down");
     const bars = candles?.bars ?? [];
     c.series.setData(bars.map((b) => ({ time: chartSec(b.t) as UTCTimestamp, open: b.o, high: b.h, low: b.l, close: b.c })));
     c.volume.setData(bars.map((b) => ({ time: chartSec(b.t) as UTCTimestamp, value: b.v, color: (b.c >= b.o ? up : down) + "55" })));
     if (baseLine.current) c.series.removePriceLine(baseLine.current);
     baseLine.current = base == null ? null : c.series.createPriceLine({
-      price: base, title: baseLabel, color: css("--muted", "#8c939d"), lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true,
+      price: base, title: baseLabel, color: css("--muted"), lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true,
     });
   }, [candles, base, baseLabel]);
 
@@ -226,4 +224,10 @@ function FuturesChart({ candles, iv, base, baseLabel }: { candles: FuturesCandle
       {empty && <p className="fv-chart-empty muted small">이 세션의 봉이 아직 없습니다.</p>}
     </div>
   );
+}
+
+/** #627 테마(다크 · 라이트)가 바뀌면 새 색으로 차트를 다시 만든다 — 차트 라이브러리는 CSS 변수를 직접 못 받는다 */
+export default function FuturesView(props: Parameters<typeof FuturesViewInner>[0]) {
+  const scheme = useColorScheme();
+  return <FuturesViewInner key={scheme} {...props} />;
 }

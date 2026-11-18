@@ -39,6 +39,7 @@ import type { GapReport, LinesReport, OpenGap } from "../types";
 import type { BottomZone, ChartPattern, FibLevel, Fibonacci, OutlookPeriodId, Plan, Positioning, Projection, RunOutlook, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
 import { clipPath, ConeShade, directionLabel, OUTLOOK_PERIODS, outlookCone } from "./chartOutlook";
+import { css, useColorScheme } from "../chartColors";
 
 export type Interval = Exclude<CandleInterval, "1m">;
 const INTERVALS: { iv: Interval; label: string; count: number }[] = [
@@ -235,9 +236,6 @@ function saveOutlookPrefs(p: OutlookPrefs) {
   }
 }
 
-function css(name: string, fallback: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
-}
 
 type SrMode = "plan" | "now";
 const SR_LABEL: Record<SrMode, string> = { plan: "분석 당시", now: "지금" };
@@ -340,7 +338,7 @@ export interface ExtraLine {
  * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
  * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
  */
-export default function PriceChart({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, banner, onIntervalChange, highlight = null, outlook = null, planLabels, onLineClick, trendPick, onTrendPick }: {
+function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, banner, onIntervalChange, highlight = null, outlook = null, planLabels, onLineClick, trendPick, onTrendPick }: {
   ticker: string;
   tradeDate: string;
   plan: Plan | null;
@@ -616,7 +614,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     try {
       for (const n of MA_PERIODS) {
         if (!maOn[n]) continue;
-        const s = chart.addSeries(LineSeries, { color: css(`--ma${n}`, "#8c939d"), lineWidth: 1, priceLineVisible: false,
+        const s = chart.addSeries(LineSeries, { color: css(`--ma${n}`), lineWidth: 1, priceLineVisible: false,
           lastValueVisible: false, crosshairMarkerVisible: false, autoscaleInfoProvider: () => null });
         added.push(s);
         s.setData(rows.flatMap(({ key }, i) => (maValues[n][i] == null ? [] : [{ time: time(key), value: maValues[n][i] as number }])));
@@ -688,7 +686,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         el.appendChild(span);
       };
       add("시", price(o), tone); add("고", price(h), tone); add("저", price(l), tone); add("종", price(c), tone);
-      if (chg != null) add("", `${chg > 0 ? "+" : ""}${chg.toFixed(2)}%`, chg >= 0 ? "up" : "down");
+      // #627 색만으로 오름 · 내림을 가르지 않게 ▲▼ 와 부호를 같이
+      if (chg != null) add("", `${chg > 0 ? "▲ +" : chg < 0 ? "▼ " : ""}${chg.toFixed(2)}%`, chg >= 0 ? "up" : "down");
       if (v != null) add("거래량", v.toLocaleString("ko-KR"));
       if (r != null) add("RSI", r.toFixed(1));
       if (stoch && k != null) add("스토캐스틱", `${k.toFixed(0)}${d != null ? ` / ${d.toFixed(0)}` : ""}`);
@@ -812,14 +811,14 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     let chart: IChartApi | null = null;
     const alive = { current: true };
     try {
-      const up = css("--up", "#f2464b");
-      const down = css("--down", "#3a86f8");
-      const grid = css("--border", "#2a3038");
+      const up = css("--up");
+      const down = css("--down");
+      const grid = css("--border");
       chart = createChart(el, {
         autoSize: true,
         layout: {
           background: { type: ColorType.Solid, color: "transparent" },
-          textColor: css("--muted", "#8c939d"),
+          textColor: css("--muted"),
           fontFamily: getComputedStyle(document.body).fontFamily,
           panes: { separatorColor: grid },
         },
@@ -853,7 +852,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (candles.indicators?.includes("rsi14")) {
         const own: ISeriesApi<"Line">[] = [];
         rsi = chart.addSeries(LineSeries, {
-          color: css("--warn", "#e5a23a"), lineWidth: 2, priceLineVisible: false, lastValueVisible: true,
+          color: css("--warn"), lineWidth: 2, priceLineVisible: false, lastValueVisible: true,
           // #434 작은 패널에서 70 · 30 라벨과 눈금 80 · 0 이 겹쳐 "70/80" 으로 보였다 — 라벨 가까운 눈금은 비운다
           priceFormat: { type: "custom", formatter: osc, tickmarksFormatter: ticksClearOfLabels(() => own, osc), minMove: 0.01 },
           autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
@@ -862,7 +861,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         own.push(rsi);
         rsi.priceScale().applyOptions({ mode: PriceScaleMode.Normal, scaleMargins: { top: 0.08, bottom: 0.08 } });
         rsi.setData(rows.flatMap(({ key, bar }) => (bar.rsi == null ? [] : [{ time: time(key), value: bar.rsi }])));
-        const muted = css("--muted", "#8c939d");
+        const muted = css("--muted");
         // #550 기준선 옆 짧은 이름표
         for (const [lv, name] of [[70, "과열"], [30, "과매도"]] as const) rsi.createPriceLine({ price: lv, color: muted, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: name });
         chart.panes()[1]?.setHeight(rsiHeight(el.clientHeight));
@@ -870,7 +869,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
 
       // #206 볼린저밴드(20, 2σ) — 가격 패널, 상 · 하단 실선 · 가운데 점선
       if (candles.indicators?.includes("bb20")) {
-        const band = css("--muted", "#8c939d");
+        const band = css("--muted");
         for (const [k, style] of [["upper", LineStyle.Solid], ["mid", LineStyle.Dotted], ["lower", LineStyle.Solid]] as const) {
           const line = chart.addSeries(LineSeries, { color: band, lineWidth: 1, lineStyle: style, priceLineVisible: false,
             lastValueVisible: false, crosshairMarkerVisible: false });
@@ -885,15 +884,15 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         const own: ISeriesApi<"Line">[] = [];
         const scale = { autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
           priceFormat: { type: "custom" as const, formatter: osc, tickmarksFormatter: ticksClearOfLabels(() => own, osc), minMove: 0.01 } };
-        stoch = chart.addSeries(LineSeries, { color: css("--accent", "#3a86f8"), lineWidth: 2, priceLineVisible: false,
+        stoch = chart.addSeries(LineSeries, { color: css("--accent"), lineWidth: 2, priceLineVisible: false,
           lastValueVisible: true, ...scale }, pane);
         own.push(stoch);
         stoch.priceScale().applyOptions({ mode: PriceScaleMode.Normal, scaleMargins: { top: 0.08, bottom: 0.08 } });
         stoch.setData(rows.flatMap(({ key, bar }) => (bar.stoch_k == null ? [] : [{ time: time(key), value: bar.stoch_k }])));
-        const d = chart.addSeries(LineSeries, { color: css("--warn", "#e5a23a"), lineWidth: 1, lineStyle: LineStyle.Dashed,
+        const d = chart.addSeries(LineSeries, { color: css("--warn"), lineWidth: 1, lineStyle: LineStyle.Dashed,
           priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, ...scale }, pane);
         d.setData(rows.flatMap(({ key, bar }) => (bar.stoch_d == null ? [] : [{ time: time(key), value: bar.stoch_d }])));
-        const muted = css("--muted", "#8c939d");
+        const muted = css("--muted");
         for (const [lv, name] of [[80, "과열"], [20, "침체"]] as const) stoch.createPriceLine({ price: lv, color: muted, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: name });
         chart.panes()[pane]?.setHeight(rsiHeight(el.clientHeight));
       }
@@ -939,20 +938,20 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const nearPrice = (v: number) => Math.abs(v - lastClose) / lastClose <= WALL_RANGE;
     const optionLines: [number, string, string, LineStyle][] = show.opt && optionData ? [
       ...optionData.call_walls.filter((w) => nearPrice(w.strike)).slice(0, WALLS_SHOWN)
-        .map((w): [number, string, string, LineStyle] => [w.strike, "콜벽", css("--sr-resistance", "#b58cf0"), LineStyle.Dashed]),
+        .map((w): [number, string, string, LineStyle] => [w.strike, "콜벽", css("--sr-resistance"), LineStyle.Dashed]),
       ...optionData.put_walls.filter((w) => nearPrice(w.strike)).slice(0, WALLS_SHOWN)
-        .map((w): [number, string, string, LineStyle] => [w.strike, "풋벽", css("--sr-support", "#2bb3a3"), LineStyle.Dashed]),
+        .map((w): [number, string, string, LineStyle] => [w.strike, "풋벽", css("--sr-support"), LineStyle.Dashed]),
       ...(optionData.max_pain.strike != null && nearPrice(optionData.max_pain.strike)
-        ? [[optionData.max_pain.strike, "맥스페인", css("--warn", "#e5a23a"), LineStyle.SparseDotted] as [number, string, string, LineStyle]]
+        ? [[optionData.max_pain.strike, "맥스페인", css("--warn"), LineStyle.SparseDotted] as [number, string, string, LineStyle]]
         : []),
     ] : [];
     // #436 진입을 사이에 두지 않는 등급상 타점(손절 = 목표 등)은 그리지 않는다 — 조건선 · 띠는 그대로
     const ownLevels: [number | null | undefined, string, string, LineStyle][] = levelsContradict(plan) ? [] : [
       // #466 근거가 있으면 "롱 진입 · 갭 메움" 처럼 시나리오 · 근거 한 단어, 관망 계획은 시나리오 색
-      [plan?.entry_price, planLabels?.entry_price?.title ?? "진입", planLabels?.entry_price?.color ?? css("--accent", "#c9d1db"), LineStyle.Solid],
+      [plan?.entry_price, planLabels?.entry_price?.title ?? "진입", planLabels?.entry_price?.color ?? css("--accent"), LineStyle.Solid],
       // #311 손절 = 손실색 · 목표 = 이익색(롱 · 숏 어느 관점이든 같은 뜻)
-      [plan?.stop_loss, planLabels?.stop_loss?.title ?? "손절", planLabels?.stop_loss?.color ?? css("--danger", "#ff6a3d"), LineStyle.Solid],
-      [plan?.price_target, planLabels?.price_target?.title ?? "목표", planLabels?.price_target?.color ?? css("--ok", "#3fb68b"), LineStyle.Solid],
+      [plan?.stop_loss, planLabels?.stop_loss?.title ?? "손절", planLabels?.stop_loss?.color ?? css("--danger"), LineStyle.Solid],
+      [plan?.price_target, planLabels?.price_target?.title ?? "목표", planLabels?.price_target?.color ?? css("--ok"), LineStyle.Solid],
     ];
     const planLines: [number | null | undefined, string, string, LineStyle][] = show.levels
       ? [
@@ -976,7 +975,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     }
     // #241 인생 타점 줍줍 선: 단계별 가격(비중) · 계획 접는 선 — 옵션 벽처럼 축 라벨 · 축 범위 없이
     if (show.bz && bottom?.supported && (bottom.stage === "approach" || bottom.stage === "bottom")) {
-      const color = css("--long", "#f2464b");
+      const color = css("--long");
       // #310 지금가가 이미 지나간 옛 단계는 그리지 않는다
       for (const s of (bottom.ladder ?? []).filter((x) => x.status !== "passed")) {
         made.push(series.createPriceLine({ price: s.price, title: `줍줍${s.step} ${s.weight_pct}%`, color: withAlpha(color, 0.7),
@@ -984,7 +983,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       }
       const voidAt = bottom.invalidation?.monthly_close_below;
       if (voidAt != null) {
-        made.push(series.createPriceLine({ price: voidAt, title: "바닥 판단 접기(월봉)", color: css("--muted", "#8a94a3"),
+        made.push(series.createPriceLine({ price: voidAt, title: "바닥 판단 접기(월봉)", color: css("--muted"),
           lineWidth: 1, lineStyle: LineStyle.SparseDotted, axisLabelVisible: false }));
       }
     }
@@ -999,8 +998,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       },
     });
 
-    const up = css("--up", "#f2464b");
-    const down = css("--down", "#3a86f8");
+    const up = css("--up");
+    const down = css("--down");
     const keys = rows.map((r) => r.key);
     const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
     const list: { key: Key; m: Omit<SeriesMarker<Time>, "time"> }[] = [];
@@ -1009,7 +1008,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       // 주말 · 휴장일 분석이면 그 전 거래일 — 일봉과 같은 규칙
       const day = intraday ? barFor(rows.map((r) => r.day), tradeDate) : null;
       const at = intraday ? (day == null ? null : rows.find((r) => r.day === day)?.key ?? null) : barFor(keys, tradeDate);
-      if (at != null) list.push({ key: at, m: { position: "aboveBar", shape: "arrowDown", color: css("--warn", "#e5a23a"), text: "분석" } });
+      if (at != null) list.push({ key: at, m: { position: "aboveBar", shape: "arrowDown", color: css("--warn"), text: "분석" } });
     }
     if (show.fills) {
       // #334 같은 봉의 체결은 하나로 — 매수만 ↑ · 매도만 ↓ · 둘 다 ●, 글자 없이 작게(가격은 옆 표에). 표에서 고른 날은 크게.
@@ -1026,7 +1025,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       for (const [at, g] of byBar) {
         const size = g.picked ? 1.6 : 0.7;
         const text = g.picked ? "선택한 체결" : "";
-        if (g.buy && g.sell) list.push({ key: at, m: { position: "aboveBar", shape: "circle", size, color: css("--warn", "#e5a23a"), text } });
+        if (g.buy && g.sell) list.push({ key: at, m: { position: "aboveBar", shape: "circle", size, color: css("--warn"), text } });
         else if (g.buy) list.push({ key: at, m: { position: "belowBar", shape: "arrowUp", size, color: up, text } });
         else list.push({ key: at, m: { position: "aboveBar", shape: "arrowDown", size, color: down, text } });
       }
@@ -1041,7 +1040,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         const hot = e.kind.endsWith("hot");
         const text = narrow ? "" : `${hot ? "과열" : "침체"}${e.ret20 != null ? ` ${pct(e.ret20)}` : ""}`;
         list.push({ key: at, m: { position: hot ? "aboveBar" : "belowBar", shape: "circle", size: 0.6,
-          color: hot ? css("--warn", "#e5a23a") : css("--accent", "#3a86f8"), text } });
+          color: hot ? css("--warn") : css("--accent"), text } });
       }
     }
     list.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
@@ -1056,7 +1055,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   // #440 가격 사다리에서 고른 가격 — 겹친 라벨과 상관없이 그 가격 하나만 굵게
   useEffect(() => {
     if (!drawn || highlight == null) return;
-    const line = drawn.series.createPriceLine({ price: highlight, title: "▶", color: css("--warn", "#e5a23a"), lineWidth: 3,
+    const line = drawn.series.createPriceLine({ price: highlight, title: "▶", color: css("--warn"), lineWidth: 3,
       lineStyle: LineStyle.Solid, axisLabelVisible: true });
     return () => {
       if (drawn.alive.current) drawn.series.removePriceLine(line);
@@ -1073,18 +1072,18 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     // 타점 영역은 분석한 날의 봉부터(분봉은 그날 첫 봉) — 분석일 마커와 같은 규칙
     const day = intraday ? barFor(rows.map((r) => r.day), tradeDate) : null;
     const at = intraday ? (day == null ? null : rows.find((r) => r.day === day)?.key ?? null) : barFor(rows.map((r) => r.key), tradeDate);
-    const muted = css("--muted", "#8c939d");
+    const muted = css("--muted");
     const profile = vp
-      ? volumeProfileDrawing(vp, { bar: muted, thick: css("--warn", "#e5a23a"), poc: css("--warn", "#e5a23a"), label: muted }, price)
+      ? volumeProfileDrawing(vp, { bar: muted, thick: css("--warn"), poc: css("--warn"), label: muted }, price)
       : { bands: [], marks: [], bars: [] };
     // 플레이북(#117) — 분석 당시 계획의 값(지금 기준으로 다시 계산하지 않는다)
     const book = show.pb && plan?.playbooks
-      ? playbookDrawing(plan.playbooks, { long: css("--long", "#f2464b"), short: css("--short", "#3a86f8") }, price)
+      ? playbookDrawing(plan.playbooks, { long: css("--long"), short: css("--short") }, price)
       : { bands: [], marks: [] };
     // #321 저가매수 구간 — 지지 · 저항을 켰을 때만(가까운 지지 몇 개)
-    const buyZones = buyZoneDrawing(srShown.filter((lv) => lv.kind === "support"), css("--ok", "#3fb68b"), price);
+    const buyZones = buyZoneDrawing(srShown.filter((lv) => lv.kind === "support"), css("--ok"), price);
     // #466 안 메운 갭 — 생긴 봉부터 오른쪽으로 옅은 상자(아직 안 메운 부분), 가까운 것 몇 개만
-    const gapColor = css("--warn", "#e5a23a");
+    const gapColor = css("--warn");
     const gapFrom = (date: string): Time | null => {
       if (!intraday) {
         const k = barFor(rows.map((r) => r.key), date as Key);
@@ -1123,8 +1122,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       [
         ...profile.bands,
         ...book.bands,
-        ...(show.levels ? planBands(plan, at == null ? null : time(at), { loss: css("--danger", css("--up", "#f2464b")), profit: css("--ok", "#3fb68b") }) : []),
-        ...srBands(srShown, srSource?.atr, { support: css("--sr-support", "#2bb3a3"), resistance: css("--sr-resistance", "#b58cf0") }, price),
+        ...(show.levels ? planBands(plan, at == null ? null : time(at), { loss: css("--danger"), profit: css("--ok") }) : []),
+        ...srBands(srShown, srSource?.atr, { support: css("--sr-support"), resistance: css("--sr-resistance") }, price),
         ...buyZones.bands,
         ...gapBands,
         ...sessionBands,
@@ -1235,8 +1234,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   useEffect(() => {
     if (!drawn || !show.entry || !entry) return;
     return drawEntry(drawn.series, entry, {
-      long: css("--long", "#f2464b"), short: css("--short", "#3a86f8"), loss: css("--danger", "#ff6a3d"),
-      profit: css("--ok", "#3fb68b"), muted: css("--muted", "#8c939d"),
+      long: css("--long"), short: css("--short"), loss: css("--danger"),
+      profit: css("--ok"), muted: css("--muted"),
     }, price, `11px ${getComputedStyle(document.body).fontFamily}`, () => drawn.alive.current);
   }, [drawn, entry, show.entry]);
 
@@ -1303,7 +1302,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
           if (Number.isFinite(v) && v > 0) data.push({ time: time(rows[i].key), value: v });
         }
         if (data.length < 2) continue; // 선이 보는 기간 밖에서 끝났다
-        const base = css(line.kind === "support" ? "--sr-support" : "--sr-resistance", line.kind === "support" ? "#2bb3a3" : "#b58cf0");
+        const base = css(line.kind === "support" ? "--sr-support" : "--sr-resistance");
         const broken = line.state === "broken";
         // #531 굵기 = 스윙 크기(짧게 얇게 · 길게 굵게), 먼 선(far)은 점선, 이탈은 흐린 파선. 끝 이름표는 가격축에("중기 저항 · +18%")
         const s = chart.addSeries(LineSeries, {
@@ -1326,7 +1325,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     }
     if (fib) {
       try {
-        const color = css("--muted", "#8c939d");   // 비율 가로선은 띠 effect 가 왼쪽 글자와 함께 그린다
+        const color = css("--muted");   // 비율 가로선은 띠 effect 가 왼쪽 글자와 함께 그린다
         const tf = srSource?.intervals?.primary ?? "1d";
         const a = keyOf(fib.from.at, tf);
         const b = keyOf(fib.to.at, tf);
@@ -1393,7 +1392,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     try {
       if (show.chan) {
         lines.channels.slice(0, 2).forEach((c, ci) => {
-          const accent = css("--accent", "#4c8dff");
+          const accent = css("--accent");
           const color = accent + (ci === 0 ? "" : "99");
           const faint = accent + (ci === 0 ? "88" : "55");
           const pick: LinePick = { kind: "channel", id: c.id };
@@ -1411,7 +1410,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         });
       }
       if (show.ltrend) {
-        const base = css("--warn", "#e0a030");
+        const base = css("--warn");
         for (const t of lines.trendlines) {
           if (!t.anchors[0]) continue;
           const broken = t.state === "broken";
@@ -1536,7 +1535,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       if (key == null) continue;
       const up = e.side === "support";
       list.push({ time: time(key), position: up ? "belowBar" : "aboveBar", shape: up ? "arrowUp" : "arrowDown",
-                  color: css(up ? "--ok" : "--danger", up ? "#3fb68b" : "#ff6a3d"), text: "스윕 후 회복" } as SeriesMarker<Time>);
+                  color: css(up ? "--ok" : "--danger"), text: "스윕 후 회복" } as SeriesMarker<Time>);
     }
     list.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
     // 이웃한 봉의 글자가 겹치니 글자는 가장 최근 것에만(앞의 것은 화살표만)
@@ -1564,7 +1563,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, autoscaleInfoProvider: () => null };
     const added: ISeriesApi<"Line">[] = [];
     const detach: (() => void)[] = [];
-    const color = css("--warn", "#e5a23a");
+    const color = css("--warn");
     for (const p of patterns) {
       try {
         const series: ISeriesApi<"Line">[] = [];
@@ -1618,7 +1617,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const keyAt = (bar: number) => (bar <= 0 ? last : future[Math.min(bar, future.length) - 1]);
     const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false };
     const noScale = { ...quiet, autoscaleInfoProvider: () => null };
-    const muted = css("--muted", "#8c939d");
+    const muted = css("--muted");
     const added: ISeriesApi<"Line">[] = [];
     const detach: (() => void)[] = [];
     const line = (values: number[], opts: object) => {
@@ -1633,7 +1632,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       line(proj.cone.map((c) => c.p97_5), { ...noScale, color: withAlpha(muted, 0.6), lineStyle: LineStyle.Dotted });
       line(proj.cone.map((c) => c.p2_5), { ...noScale, color: withAlpha(muted, 0.6), lineStyle: LineStyle.Dotted });
       line(proj.cone.map((c) => c.p50), { color: withAlpha(muted, 0.7), lineStyle: LineStyle.Dashed });
-      const color = { bull: css("--long", "#f2464b"), bear: css("--short", "#3a86f8"), range: muted };
+      const color = { bull: css("--long"), bear: css("--short"), range: muted };
       for (const path of proj.paths) {
         const pts = path.points.filter((p) => p.price > 0);
         if (pts.length < 2) continue;
@@ -1693,8 +1692,8 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     };
     const times = cone.map((c) => keyAt(c.bar));
     const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false };
-    const muted = css("--muted", "#8c939d");
-    const color = { bull: css("--long", "#f2464b"), bear: css("--short", "#3a86f8"), range: muted };
+    const muted = css("--muted");
+    const color = { bull: css("--long"), bear: css("--short"), range: muted };
     const added: ISeriesApi<"Line">[] = [];
     const detach: (() => void)[] = [];
     const shade = new ConeShade();
@@ -1759,7 +1758,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     const inv = outlook.invalidation;
     const stopDrawn = show.levels && !!plan && !levelsContradict(plan) && plan.stop_loss != null && inv != null && price(plan.stop_loss) === price(inv);
     if (inv == null || !(inv > 0) || stopDrawn) return;
-    const line = drawn.series.createPriceLine({ price: inv, title: `전망 무효 ${price(inv)}`, color: withAlpha(css("--danger", "#ff6a3d"), 0.7),
+    const line = drawn.series.createPriceLine({ price: inv, title: `전망 무효 ${price(inv)}`, color: withAlpha(css("--danger"), 0.7),
       lineWidth: 1, lineStyle: LineStyle.SparseDotted, axisLabelVisible: false });
     return () => {
       if (drawn.alive.current) drawn.series.removePriceLine(line);
@@ -2303,4 +2302,10 @@ function LineList({ lines, chan, ltrend, onPick }: { lines: LinesReport; chan: b
       </p>
     </div>
   );
+}
+
+/** #627 테마(다크 · 라이트)가 바뀌면 새 색으로 차트를 다시 만든다 — 차트 라이브러리는 CSS 변수를 직접 못 받는다 */
+export default function PriceChart(props: Parameters<typeof PriceChartInner>[0]) {
+  const scheme = useColorScheme();
+  return <PriceChartInner key={scheme} {...props} />;
 }

@@ -481,7 +481,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 if settings.krx_api_key and not settings.fake_runs and settings.macro_interval_sec > 0 else None)
     # #462: VIX · CNN / crypto Fear & Greed · VKOSPI, cached per source (fakes stay offline in tests)
     fear_gauges = (fear.Fear(candles=lambda *a: prices._yahoo_candles(*a),   # read when asked, as risk does
-                             kis=lambda: getattr(futures, "rest", None))         # #486 VKOSPI via the futures KIS client
+                             kis=lambda: getattr(futures, "rest", None),         # #486 VKOSPI via the futures KIS client
+                             history=lambda: fear.krx_history(engine))           # #602 its KRX closes (#601 krx_daily)
                    if not settings.fake_runs else None)
     # #146: the market's selling score from the same Yahoo source as the prices (cached ~15 min)
     risk_cache = None if settings.fake_runs else risk_regime.Cache(

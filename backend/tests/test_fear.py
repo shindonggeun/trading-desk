@@ -1,6 +1,9 @@
 """#462: the fear gauges - parsing, bands, and one failed source leaving the others."""
 
 import asyncio
+import json
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -244,3 +247,160 @@ def test_a_refetch_ahead_that_only_gets_the_estimate_keeps_kis_value_in_date():
     now[0] = fear.TTL_SEC["vkospi"] - 30                  # due within the prewarm's lead, still in date
     vk = {x["key"]: x for x in asyncio.run(f.get(ahead=60))["items"]}["vkospi"]
     assert vk["name"] == "VKOSPI" and vk["value"] == 24.51 and len(kis.calls) == 2
+
+
+# #602 the VKOSPI's real history from KRX (desk.krx, krx_daily); the fixture is the hand-made one of #601
+KRX_FIX = Path(__file__).parent / "fixtures" / "krx" / "drvprod_dd_trd.json"
+
+
+def _hist(n, last=None, base=20.0):
+    """n KRX closes on consecutive days ending ``last`` (yesterday): 20.0, 20.1, ..."""
+    last = last or datetime.now(fear.KST).date() - timedelta(days=1)
+    return [((last - timedelta(days=n - 1 - i)).isoformat(), round(base + i / 10, 2)) for i in range(n)]
+
+
+def _fear(kis=None, history=None, candles=None, clock=None):
+    def no_estimate(*a):
+        raise AssertionError("the estimate is not asked while KRX has the value")
+    return fear.Fear(candles=candles or no_estimate, get=_get({fear.CNN_URL: CNN, fear.CRYPTO_URL: CRYPTO}),
+                     kis=kis, history=history, **({"clock": clock} if clock else {}))
+
+
+def _vkospi(f, ahead=0.0):
+    return {x["key"]: x for x in asyncio.run(f.get(ahead))["items"]}["vkospi"]
+
+
+def test_krx_history_reads_the_vkospi_closes_from_krx_daily(db_url):
+    from desk import krx
+    from desk.db import make_engine, migrate
+
+    migrate(db_url)
+    engine = make_engine(db_url)
+    try:
+        store = krx.KrxDaily(engine, client=None)
+        rows = json.loads(KRX_FIX.read_text(encoding="utf-8"))["OutBlock_1"]
+        store.store(fear.KRX_API, date(2026, 11, 17), rows)
+        store.store(fear.KRX_API, date(2026, 11, 16), [{**rows[1], "BAS_DD": "20261116",
+                                                         "IDX_NM": "코스피200변동성지수", "CLSPRC_IDX": "1,023.10"}])
+        store.store(fear.KRX_API, date(2026, 11, 13), [{**rows[1], "BAS_DD": "20261113", "CLSPRC_IDX": "-"}])
+        store.store(fear.KRX_API, date(2026, 11, 12), [{**rows[1], "BAS_DD": "20261112",          # spaced apart
+                                                         "IDX_NM": "코스피200 변동성 지수", "CLSPRC_IDX": "22.00"},
+                                                        {**rows[1], "IDX_NM": "코스피 200 변동성지수 선물"}])
+        store.store("kospi_dd_trd", date(2026, 11, 12), [{**rows[1], "BAS_DD": "20261112"}])   # another service
+        assert fear.krx_history(engine, today=date(2026, 11, 18)) == [
+            ("2026-11-12", 22.0), ("2026-11-16", 1023.1), ("2026-11-17", 24.18)]
+        assert fear.krx_history(engine, today=date(2026, 11, 16))[-1] == ("2026-11-16", 1023.1)   # nothing ahead
+        assert fear.krx_history(engine, today=date(2026, 11, 18), days=1) == [("2026-11-17", 24.18)]
+    finally:
+        engine.dispose()
+
+
+def test_the_percentile_needs_most_of_a_year_of_closes():
+    assert fear.percentile(30.0, [20.0] * (fear.PCT_MIN - 1)) is None
+    assert fear.percentile(30.0, [20.0] * fear.PCT_MIN) == 100
+    past = [float(i) for i in range(1, 400)]                       # only the last PCT_WINDOW - 1 count
+    assert fear.percentile(past[-252], past) == round(100 * 1 / 252)
+    assert fear.percentile(0.5, past) == round(100 * 1 / 252)       # itself only
+
+
+def test_kis_gives_today_and_krx_the_days_it_lacks_and_the_percentile():
+    short = {**KIS_BODY, "output2": KIS_BODY["output2"][:3]}       # 11-17 · 11-16 · 11-13: no week before
+    history = [*_hist(260, last=date(2026, 11, 16)), ("2026-11-17", 99.0)]   # KIS' own day is not history
+    vk = _vkospi(_fear(kis=lambda: FakeKis(short), history=lambda: history))
+    past = [c for _, c in history[:-1]]
+    assert (vk["value"], vk["prev_day"], vk["prev_week"], vk["as_of"]) == (24.51, 22.1, past[-5], "2026-11-17")
+    assert vk["origin"] == {"value": "kis", "prev_day": "kis", "prev_week": "krx"} and "estimated" not in vk
+    assert vk["source"].startswith("한국투자증권") and f"지난주 값은 {fear.KRX_SOURCE}" in vk["source"]
+    assert vk["percentile_1y"] == fear.percentile(24.51, past) == round(100 * 38 / 252)   # 20.9 .. 24.5 and itself
+
+    # no KRX rows yet: the week before comes from the estimate as before (#486), and no percentile
+    vk = _vkospi(_fear(kis=lambda: FakeKis(short), history=list, candles=lambda s, i, n: _kodex()))
+    assert vk["prev_week"] == _expected(_kodex(), 34) and vk["estimated"] == ["prev_week"]
+    assert vk["origin"]["prev_week"] == "estimate" and vk["percentile_1y"] is None
+
+
+def test_without_kis_krx_last_close_stands_in_before_the_estimate():
+    from desk.futures_flow import KisError
+
+    history = _hist(260)
+    vk = _vkospi(_fear(history=lambda: history))
+    assert (vk["name"], vk["value"], vk["as_of"]) == ("VKOSPI", history[-1][1], history[-1][0])
+    assert (vk["prev_day"], vk["prev_week"]) == (history[-2][1], history[-6][1])
+    assert vk["origin"] == {"value": "krx", "prev_day": "krx", "prev_week": "krx"} and "estimated" not in vk
+    assert vk["percentile_1y"] == 100 and vk["source"].startswith("KRX") and vk["fallback_reason"] == fear.NO_SOURCE
+
+    now = [0.0]
+    down = _fear(kis=lambda: FakeKis(error=KisError("FHPUP02120000: HTTP 500 EGW00201")),
+                 history=lambda: history, clock=lambda: now[0])
+    vk = _vkospi(down)
+    assert vk["origin"]["value"] == "krx" and "KisError" in vk["fallback_reason"]
+    now[0] = fear.FAIL_TTL_SEC + 1                                    # KIS is asked again soon, as before
+    assert _vkospi(down)["origin"]["value"] == "krx"
+
+    # KRX stale (the collector stopped) or empty: the estimate, as before
+    stale = _hist(30, last=datetime.now(fear.KST).date() - timedelta(days=fear.KRX_STALE_DAYS + 1))
+    for h in (stale, []):
+        vk = _vkospi(_fear(history=lambda h=h: h, candles=lambda s, i, n: _kodex()))
+        assert vk["name"] == fear.ESTIMATE_NAME and vk["origin"]["value"] == "estimate"
+
+
+def test_the_krx_history_is_read_once_an_hour_and_a_failed_read_leaves_the_estimate():
+    now, reads = [0.0], []
+    history = _hist(30)
+    f = _fear(history=lambda: reads.append(1) or history, clock=lambda: now[0])
+    _vkospi(f)
+    now[0] = fear.TTL_SEC["vkospi"] + 1                               # the gauge refetches, the history is cached
+    _vkospi(f)
+    assert len(reads) == 1
+    now[0] = fear.HISTORY_TTL_SEC + 1
+    _vkospi(f)
+    assert len(reads) == 2
+
+    def broken():
+        raise RuntimeError("db down")
+    vk = _vkospi(_fear(history=broken, candles=lambda s, i, n: _kodex()))
+    assert vk["name"] == fear.ESTIMATE_NAME
+
+
+def test_a_refetch_ahead_that_only_gets_krx_keeps_kis_value_in_date():
+    from desk.futures_flow import KisError
+
+    now, kis = [0.0], FakeKis(KIS_BODY)
+    f = _fear(kis=lambda: kis, history=lambda: _hist(30), clock=lambda: now[0])
+    asyncio.run(f.get())
+    kis.error = KisError("FHPUP02120000: HTTP 500 EGW00201")
+    now[0] = fear.TTL_SEC["vkospi"] - 30
+    vk = _vkospi(f, ahead=60)
+    assert vk["origin"]["value"] == "kis" and vk["value"] == 24.51 and len(kis.calls) == 2
+
+
+def test_kis_with_only_its_day_takes_both_days_before_from_krx_and_no_value_still_has_the_fields():
+    from desk.futures_flow import KisError
+
+    one = {**KIS_BODY, "output2": KIS_BODY["output2"][:1]}
+    history = _hist(260, last=date(2026, 11, 16))
+    vk = _vkospi(_fear(kis=lambda: FakeKis(one), history=lambda: history))
+    assert (vk["prev_day"], vk["prev_week"]) == (history[-1][1], history[-5][1])
+    assert vk["origin"] == {"value": "kis", "prev_day": "krx", "prev_week": "krx"}
+    assert "어제 · 지난주 값은 KRX" in vk["source"]
+
+    def no_estimate(*a):
+        raise ValueError("no bars")
+    for kis in (None, lambda: FakeKis(error=KisError("FHPUP02120000: HTTP 500 EGW00201"))):
+        vk = _vkospi(_fear(kis=kis, history=list, candles=no_estimate))
+        assert vk["value"] is None and vk["error"] and (vk["origin"], vk["percentile_1y"]) == ({}, None)
+
+
+def test_a_refetch_ahead_that_fails_keeps_the_estimate_in_date():
+    now, bars = [0.0], [_kodex()]
+
+    def candles(s, i, n):
+        if not bars[0]:
+            raise ValueError("no bars")
+        return bars[0]
+    f = _fear(history=list, candles=candles, clock=lambda: now[0])
+    assert _vkospi(f)["origin"]["value"] == "estimate"
+    bars[0] = []
+    now[0] = fear.TTL_SEC["vkospi"] - 30
+    vk = _vkospi(f, ahead=60)
+    assert vk["origin"]["value"] == "estimate" and "error" not in vk

@@ -6,6 +6,7 @@ import InstallApp from "../components/InstallApp";
 import TourSettings from "../components/TourSettings";
 import PaperSettings from "../components/PaperSettings";
 import PushSettings from "../components/PushSettings";
+import MiniSettings from "../components/MiniSettings";
 
 type Step =
   | { kind: "idle" }
@@ -220,6 +221,7 @@ export default function Settings() {
       <PaperSettings />
       <TourSettings />
       <PushSettings />
+      <MiniSettings />
       <MarketListEditor />
     </div>
   );

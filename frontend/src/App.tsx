@@ -6,9 +6,10 @@ import Dashboard from "./pages/Dashboard";
 import SectionBoundary from "./components/SectionBoundary";
 import ChunkFailed from "./components/ChunkFailed";
 import { activeNav, NAV, navigation } from "./nav";
+import { openMini } from "./miniWindow";
 // #537 대시보드 밖 화면은 갈 때 받는다(메뉴에 올리면 미리)
 import {
-  Backtest, CalendarView, Charts, ChartView, Chat, DayCallRecord, FuturesView, Funds, Halving, History, Live, MorningBriefPage, Paper, prefetchRoute,
+  Backtest, CalendarView, Charts, ChartView, Chat, DayCallRecord, FuturesView, Funds, Halving, History, Live, MiniWindow, MorningBriefPage, Paper, prefetchRoute,
   Reports, Review, RunView, Sectors, Settings, Tips, WeeklyMap,
 } from "./lazyPages";
 import ChatWidget from "./components/ChatWidget";
@@ -128,6 +129,9 @@ export default function App() {
     return () => window.removeEventListener("resize", measureSub);
   }, [measureSub]);
 
+  // #582 작은 창(팝업으로 연 #/mini) — 머리글 · 메뉴 없이 그 화면만. 세션이 끝나면 화면 안에서 안내한다
+  if (route.startsWith("#/mini")) return <Suspense fallback={null}><MiniWindow /></Suspense>;
+
   return (
     <div className="shell">
       <header className="topbar">
@@ -162,6 +166,9 @@ export default function App() {
               {/* #491 지금 화면의 안내 투어 */}
               <button type="button" className="topbar-help" aria-label="이 화면 안내" title="이 화면 안내"
                 onClick={() => { void startTour(tourForRoute(route)).then((r) => { if (r === "empty") void goAndStart("dashboard"); }); }}>?</button>
+              {/* #582 회사에서 조용히 띄워 두는 작은 창 */}
+              <button type="button" className="topbar-mini" aria-label="작은 창 띄우기" title="작은 창 띄우기(늘 위)"
+                onClick={() => { void openMini(); }}>▭</button>
               <a href="#/settings" className={`topbar-settings${onSettings ? " active" : ""}`} aria-label="설정"
                 onPointerEnter={() => prefetchRoute("#/settings")} onFocus={() => prefetchRoute("#/settings")}
                 aria-current={onSettings ? "page" : undefined} title="설정">⚙<span className="topbar-settings-label"> 설정</span></a>

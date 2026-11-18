@@ -2717,3 +2717,32 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   padding: 8px 0; border-top: 1px solid var(--border); }
 .notify-channel .settings-actions { grid-column: 1 / -1; }
 .flow-toast.flow-toast-warn { border-left-color: var(--warn); }
+
+/* #582 작은 창(#/mini · Document PiP) — 한 줄 띠(낮은 창) · 세로 카드(높은 창), 조용한 모드는 회색조 + ▲▼ 기호 */
+.topbar-mini { background: none; border: 0; color: var(--muted); font-size: 15px; padding: 2px 6px; cursor: pointer; }
+.topbar-mini:hover { color: var(--text); }
+@media (max-width: 480px) { .topbar-mini { display: none; } }
+.mini { box-sizing: border-box; min-height: 100vh; display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  background: var(--bg); color: var(--text); font-size: 12px; overflow: hidden; }
+.mini-size-s { font-size: 11px; }
+.mini-size-l { font-size: 14px; }
+.mini-quiet { filter: grayscale(1); }
+.mini-quiet .mini-alert, .mini-quiet .mini-name { font-weight: 400; }
+.mini-items { list-style: none; margin: 0; padding: 0; min-width: 0; flex: 1; }
+.mini-strip .mini-items { display: flex; gap: 14px; align-items: center; white-space: nowrap; overflow: hidden; }
+.mini-card { align-items: flex-start; flex-direction: column; }
+.mini-card .mini-items { display: grid; gap: 4px; width: 100%; flex: 0 1 auto; align-content: start; }
+.mini-card .mini-tools { align-self: flex-end; }
+.mini-quote, .mini-flow, .mini-alert { font-variant-numeric: tabular-nums; min-width: 0; }
+.mini-strip .mini-items > li { flex-shrink: 0; }   /* 줄지 않게 — 넘치는 뒤쪽은 잘린다 */
+.mini-strip .mini-alert { overflow: hidden; text-overflow: ellipsis; flex-shrink: 1; min-width: 6em; }
+.mini-card .mini-alert, .mini-card .mini-flow { white-space: normal; overflow-wrap: anywhere; }
+.mini-name { font-weight: 650; }
+.mini-mark { display: inline-block; margin-right: 2px; font-size: .85em; }
+.mini-muted { color: var(--muted); }
+.mini-new { font-weight: 700; }
+.mini-badge { font-size: .85em; padding: 0 4px; border-radius: 4px; background: var(--surface-3); }
+.mini-login { margin: 0; flex: 1; }
+.mini-tools { display: flex; gap: 2px; flex-shrink: 0; }
+.mini-tools button { background: none; border: 0; color: var(--muted); padding: 2px 4px; cursor: pointer; font: inherit; }
+.mini-tools button:hover, .mini-tools button[aria-pressed="true"] { color: var(--text); }

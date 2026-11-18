@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, ApiError, type MarketAlert, type MarketAlertsDay } from "./api";
+import { api, ApiError, type AlertTone, type MarketAlert, type MarketAlertsDay } from "./api";
 
 /** #581 오늘 알림(GET /api/alerts/today) — 대시보드 띠 · 타임라인 · 장중 수급 차트 마커가 같이 쓴다.
  *  화면이 보이는 동안 POLL_MS 마다 다시 읽고, 같은 페이지의 여러 구독자는 요청 하나를 나눠 쓴다. */
@@ -11,6 +11,24 @@ export const KIND_LABEL: Record<MarketAlert["kind"], string> = {
   nq_alert: "나스닥 선물",
 };
 export const SEVERITY_LABEL: Record<MarketAlert["severity"], string> = { info: "참고", caution: "주의", strong: "강함" };
+/** #642 tone(#641) — 색만으로 가르지 않게 글자와 기호를 같이. 한국식 오름 빨강과 겹치지 않게 호재는 초록 ◎ */
+export const TONE_LABEL: Record<AlertTone, string> = { positive: "호재", neutral: "참고", caution: "주의", warning: "경고" };
+export const TONE_MARK: Record<AlertTone, string> = { positive: "◎", neutral: "·", caution: "!", warning: "⚠" };
+/** 알림의 등급 표 — tone 이 있으면 tone, 없으면(예전 알림) 지금처럼 크기 */
+export function badgeOf(a: Pick<MarketAlert, "tone" | "severity">): { cls: string; label: string; mark: string } {
+  if (a.tone) return { cls: `tone-${a.tone}`, label: TONE_LABEL[a.tone], mark: TONE_MARK[a.tone] };
+  return { cls: `sev-${a.severity}`, label: SEVERITY_LABEL[a.severity], mark: "" };
+}
+/** 경고인가(tone 이 없으면 크기 "강함") — "경고만" 거르기 */
+export const isWarning = (a: Pick<MarketAlert, "tone" | "severity">) => (a.tone ? a.tone === "warning" : a.severity === "strong");
+/** 화면에 띄울 만한가 — 참고(tone 이 없으면 크기 info)는 띠 · 토스트에서 뺀다 */
+export const isNotable = (a: Pick<MarketAlert, "tone" | "severity">) => (a.tone ? a.tone !== "neutral" : a.severity !== "info");
+/** 서버 글(#641 "🟢 호재 · …\n해석", 예전 "🔴 …")의 머리 표시를 떼고 첫 줄 · 해석으로 — 등급은 이름표가 따로 보인다 */
+export function alertLines(text: string): { head: string; reading: string } {
+  const [first, ...rest] = text.split("\n");
+  const head = first.replace(/^[🔴🟠🟡🟢⚪🔵]\s*(?:(?:호재|참고|주의|경고)\s*·\s*)?/u, "");
+  return { head, reading: rest.join(" ").trim() };
+}
 
 export const alertKey = (a: MarketAlert) => `${a.kind}|${a.rule}|${a.market}|${a.who}|${a.t}`;
 
@@ -87,16 +105,17 @@ export function fakeAlerts(): MarketAlertsDay {
   return {
     date: kst,
     items: [
-      a({ kind: "nq_alert", rule: "nq_drop", market: "nq", who: "all", severity: "caution", t: at("08:20"),
-          text: "🟠 나스닥 선물 5분 -0.42% — 평소 하위 1% 보다 큰 하락, 거래량 1.8배 (예시)" }),
-      a({ kind: "flow_shift", rule: "sell_grow", market: "futures", severity: "caution", t: at("09:35"),
-          text: "🟠 외인 선물 매도 확대 — 30분 -1,240계약 (예시)" }),
-      a({ kind: "flow_turn", rule: "buy_turn", market: "kospi", severity: "caution", t: at("10:41"),
-          text: "외국인 코스피 순매수 전향 +312억 (예시)" }),
-      a({ kind: "flow_shift", rule: "buy_shrink", market: "kospi", who: "institution", severity: "info", t: at("11:10"),
-          text: "기관 코스피 현물 매수 축소 — 30분 -420억 (예시)" }),
+      // #642 #641 형식(머리 등급 + 둘째 줄 해석) — 네 가지 tone 이 다 보이게
+      a({ kind: "nq_alert", rule: "nq_drop", market: "nq", who: "all", severity: "caution", tone: "warning", t: at("08:20"),
+          text: "🔴 경고 · 나스닥 선물 5분 -0.42% — 평소 하위 1% 보다 큰 하락, 거래량 1.8배 (예시)\n나스닥 급락 — 장 초반 지수에 부담" }),
+      a({ kind: "flow_shift", rule: "sell_grow", market: "futures", severity: "caution", tone: "caution", t: at("09:35"),
+          text: "🟠 주의 · 외인 선물 매도 확대 — 30분 -1,240계약 (예시)\n외인 선물 매도 늘어남 — 지수에 부담" }),
+      a({ kind: "flow_turn", rule: "buy_turn", market: "kospi", severity: "caution", tone: "positive", t: at("10:41"),
+          text: "🟢 호재 · 외국인 코스피 순매수 전향 +312억 (예시)\n외인 매수 유입 — 지수에 우호적" }),
+      a({ kind: "flow_shift", rule: "buy_grow", market: "kospi", who: "individual", severity: "info", tone: "neutral", t: at("11:10"),
+          text: "⚪ 참고 · 개인 코스피 현물 매수 확대 — 30분 +420억 (예시)\n개인은 대개 반대편 — 참고만" }),
       a({ kind: "flow_shift", rule: "sell_grow", market: "kospi", severity: "strong", t: at("13:25"),
-          text: "🔴 외인 코스피 현물 매도 확대 — 30분 -2,850억 (예시)" }),
+          text: "🔴 외인 코스피 현물 매도 확대 — 30분 -2,850억 (예시 · tone 없는 예전 알림)" }),
     ],
   };
 }

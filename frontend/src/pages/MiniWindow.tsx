@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { alertKey, hhmm } from "../alertsFeed";
+import { alertKey, alertLines, badgeOf, hhmm } from "../alertsFeed";
 import { api, Unauthorized, type MarketAlert } from "../api";
 import MiniTickerEditor from "../components/MiniTickerEditor";
 import { krwShort, price } from "../format";
@@ -176,7 +176,8 @@ export default function MiniWindow({ pip = false }: { pip?: boolean }) {
           )}
           {alert && (
             <li className={`mini-alert${fresh ? " mini-new" : ""}`} role="status">
-              <span className="mini-muted">{hhmm(alert.t)}</span> {fresh && <span className="mini-badge">새 알림</span>} {alert.text}
+              <span className="mini-muted">{hhmm(alert.t)}</span> {fresh && <span className="mini-badge">새 알림</span>}{" "}
+              <span className={`mini-tone ${badgeOf(alert).cls}`}>{badgeOf(alert).mark} {badgeOf(alert).label}</span> {alertLines(alert.text).head}
             </li>
           )}
         </ul>

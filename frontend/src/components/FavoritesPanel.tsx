@@ -50,10 +50,27 @@ const SPARK_STAGGER_MS = 250; // 타일 i 의 첫 차트는 i × 0.25초 뒤
 
 type Line = { real: number[]; est: number[] };
 
-/** 최근 5분봉 종가 + 장외면 그 뒤의 추정 봉 종가. 타일마다 시작을 조금씩 늦춰 한꺼번에 몰리지 않게 한다. */
-function useSpark(ticker: string, order: number): Line | null | "none" {
+/** #644 이 요소가 화면(+ 여백)에 한 번이라도 들어왔는가 — 접혀 숨은 타일(display:none) · 화면 밖 타일은 false */
+function useSeen<T extends Element>(): [(el: T | null) => void, boolean] {
+  const [el, setEl] = useState<T | null>(null);
+  const [seen, setSeen] = useState(typeof IntersectionObserver === "undefined");
+  useEffect(() => {
+    if (seen || !el) return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) setSeen(true);
+    }, { rootMargin: "300px 0px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [el, seen]);
+  return [setEl, seen];
+}
+
+/** 최근 5분봉 종가 + 장외면 그 뒤의 추정 봉 종가. 타일마다 시작을 조금씩 늦춰 한꺼번에 몰리지 않게 한다.
+ *  #644 타일이 보이기 전(접힌 즐겨찾기 · 화면 밖)에는 묻지 않는다 — 30종목이면 첫 화면 요청이 60개 줄어든다 */
+function useSpark(ticker: string, order: number, seen: boolean): Line | null | "none" {
   const [line, setLine] = useState<Line | null | "none">(null);
   useEffect(() => {
+    if (!seen) return;
     let alive = true;
     let missed = false;
     const load = async () => {
@@ -83,13 +100,14 @@ function useSpark(ticker: string, order: number): Line | null | "none" {
       window.clearInterval(t);
       document.removeEventListener("visibilitychange", onShow);
     };
-  }, [ticker, order]);
+  }, [ticker, order, seen]);
   return line;
 }
 
 export function Spark({ ticker, tone, order }: { ticker: string; tone: "up" | "down" | ""; order: number }) {
-  const line = useSpark(ticker, order);
-  if (line === null) return <span className="spark spark-empty" />;
+  const [ref, seen] = useSeen<Element>();
+  const line = useSpark(ticker, order, seen);
+  if (line === null) return <span ref={ref} className="spark spark-empty" />;
   if (line === "none") return <span className="spark spark-empty fav-spark-none muted small">차트 없음</span>;
   const all = [...line.real, ...line.est];
   const lo = Math.min(...all);

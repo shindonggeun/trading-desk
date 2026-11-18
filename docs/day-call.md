@@ -105,7 +105,8 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli day-call backtest --mark
 
 ### 국장 정답은 KRX 일봉 (#604)
 
-- KRX 수집기(#601, `krx_daily` 의 `kospi_dd_trd` · `코스피` 행)가 있으면 `^KS11` 의 시가 · 고가 · 저가 · 종가를 KRX 공식 값으로 바꿔 쓴다(`desk/day_call_krx.py`). KRX 에 없는 날(아직 안 올라온 최근 세션)은 야후 그대로다.
+- KRX 수집기(#601, `krx_daily` 의 `kospi_dd_trd` · `코스피` 행)가 있으면 **정답만** KRX 공식 시가 · 종가로 읽는다(`desk/day_call_krx.py`, 정답 시리즈 `^KS11@answer`). KRX 에 없는 날(아직 안 올라온 최근 세션)은 야후 그대로다.
+- **특징은 야후 그대로**다. 1차(07:30)에는 전날 KRX 값이 아직 없어(08:30 반영) 운영 판정은 언제나 야후 봉을 본다. 학습도 같은 입력을 봐야 해서 KRX 봉은 정답에만 쓴다. 야후가 비면 예전처럼 판정하지 않는다(하루 늦은 KRX 봉으로 판정하지 않는다).
 - 바꾸면서 KRX 와 야후의 시가 · 종가가 **0.1% 넘게** 다른 날, 한쪽에만 있는 날을 적는다 — 학습은 리포트 `answers`(+ 실행 로그), 운영은 WARNING 로그.
 - 학습 PC 에는 `krx_daily` 가 없다. 서버에서 내보내 가져온다:
 
@@ -116,7 +117,7 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli day-call backtest --mark
 ```
 
   서버에서 바로 돌릴 때는 `--krx-db`. 둘 다 없으면 리포트 `answers.kospi` 가 `yahoo` 다.
-- 운영 채점: 장 마감 30분 뒤 채점할 때 KRX 에 그날이 있으면 KRX 로, 없으면 야후로 채점하고 `outcome.answer_source` 에 적는다. 야후로 채점한 국장 판정은 다음 영업일 08:30 뒤 KRX 가 올라오면 다시 채점하고(최근 14일), 둘이 0.1% 넘게 다르면 야후 정답을 `outcome.yahoo_answer` 에 남긴다.
+- 운영 채점: 장 마감 30분 뒤 채점할 때 KRX 에 그날이 있으면 KRX 로, 없으면 야후로 채점하고 `outcome.answer_source` 에 적는다. 야후로 채점한 국장 판정은 다음 영업일 08:30 뒤 KRX 가 올라오면 다시 채점하고(최근 14일), 둘이 0.1% 넘게 다르거나 적중이 뒤집히면 야후 정답을 `outcome.yahoo_answer` 에 남긴다. 검증 구간 백필(`day-call backfill`)도 KRX 정답으로 채점하고, 그 기간 중 야후로 채점된 국장 판정을 KRX 로 다시 채점한다.
 
 ## 지표
 

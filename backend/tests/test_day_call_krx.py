@@ -128,9 +128,49 @@ def test_a_korean_call_scored_on_yahoo_is_scored_again_on_krx_next_morning(desk)
 
 def test_a_session_krx_already_has_is_scored_on_it_at_once(desk):
     y = _yahoo(DAY)
-    _store_krx(desk.engine, DAY, _row(DAY, y.open, y.high, y.low, y.close))
     desk.run(_kst(DAY, 7, 40))
-    desk.score(_kst(DAY, 16, 5))
+    _store_krx(desk.engine, DAY, _row(DAY, y.open, y.high, y.low, y.close))   # a late first scoring
+    desk.score(_kst(DAY + timedelta(days=1), 9, 0))
     rows = _rows(desk.engine)
     assert {r["outcome"]["answer_source"] for r in rows.values()} == {"krx"}
     assert "yahoo_answer" not in rows[(1, "open")]["outcome"]
+
+
+def test_the_features_never_read_krx_bars():
+    y = _yahoo(DAY_BEFORE)
+    series = dict(SERIES)
+    check = dck.apply(series, {DAY_BEFORE: _row(DAY_BEFORE, y.open * 1.01, y.high * 1.01, y.low, y.close * 0.98)})
+    assert check["days"] == {DAY_BEFORE} and series["^KS11"] is SERIES["^KS11"]
+    for market, round_ in (("kr", 1), ("kr", 2), ("us", 1)):
+        assert dc.features(market, round_, DAY, series)[0] == dc.features(market, round_, DAY, SERIES)[0]
+    assert dc.label("kr", DAY_BEFORE, series, "cc", _kst(DAY, 7))["close"] == pytest.approx(y.close * 0.98, abs=0.006)
+    no_yahoo = {**SERIES, "^KS11": []}
+    dck.apply(no_yahoo, {DAY_BEFORE: _row(DAY_BEFORE, 1, 2, 1, 2)})
+    with pytest.raises(dc.NoData):                    # Yahoo down: no call, as before - not a call a day late
+        dc.features("kr", 1, DAY, no_yahoo)
+
+
+def test_a_day_without_krx_prices_or_with_a_zero_yahoo_open_does_not_break_anything():
+    series = dict(SERIES)
+    check = dck.apply(series, {DAY: {**_row(DAY, 1, 1, 1, 1), "CLSPRC_IDX": "-"}})
+    assert check["days"] == set() and "^KS11" + dc.ANSWER not in series      # nothing KRX answers
+    y = _yahoo(DAY)
+    zero = [b if dc.session_day("^KS11", b) != DAY else type(b)(**{**vars(b), "open": 0.0}) for b in SERIES["^KS11"]]
+    _m, check = dck.merge(zero, {DAY: _row(DAY, y.open, y.high, y.low, y.close)})
+    assert check["diffs"][0]["pct"]["open"] is None
+
+
+def test_a_hit_that_flips_keeps_yahoos_answer_whatever_the_gap(desk):
+    desk.run(_kst(DAY, 7, 40))
+    desk.score(_kst(DAY, 16, 5))
+    first = _rows(desk.engine)[(1, "prev_close")]
+    o = first["outcome"]
+    # KRX's close a hair on the other side of the previous close: the direction flips
+    start, close = o["open"], o["close"]
+    flipped = start - (close - start) * 0.01 if close != start else start * 0.9999
+    y = _yahoo(DAY)
+    _store_krx(desk.engine, DAY, _row(DAY, y.open, max(y.high, flipped), min(y.low, flipped), flipped))
+    desk.recheck_krx(_kst(DAY + timedelta(days=1), 8, 40))
+    again = _rows(desk.engine)[(1, "prev_close")]["outcome"]
+    assert again["answer_source"] == "krx" and again["raw_hit_direction"] != o["raw_hit_direction"]
+    assert again["yahoo_answer"]["close"] == close

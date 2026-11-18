@@ -94,6 +94,7 @@ from .futures_history import FuturesHistory, closing_window, interval_min, secon
 from .futures_oi import FUT_API, OPT_API, FuturesOi
 from .futures_oi import MAX_DAYS as OI_MAX_DAYS
 from .indicators import normalize as normalize_indicators
+from .jobs import Jobs
 from .leverage_analyst import fake_analyst, llm_analyst
 from .longshort import LongShort
 from .market_flow import MarketFlow
@@ -583,6 +584,34 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         """DESK_FAKE_RUNS: the projection on a scripted walk around the plan's price (no prices source)."""
         return outlook.fake_projection(price, sr) if price else None
 
+    # #623 the background jobs and what GET /api/status shows of them (desk.jobs). Parts are the sources
+    # read inside one loop's pass, each with its own line
+    jobs = Jobs()
+    for name, label, source, parent in (
+        ("listing", "종목 목록", "토스", None),
+        ("futures_snapshot", "코스피200 선물 수급 스냅숏", "한투(KIS)", None),
+        ("nq_watch", "나스닥 선물 이상 징후", "야후", None),
+        ("credit", "빚투 · 예탁금", "금융투자협회(KOFIA)", None),
+        ("news", "뉴스 흐름", "GDELT · 구글 뉴스", None),
+        ("macro_news", "거시 · 정책 뉴스", "GDELT · 구글 뉴스", "news"),
+        ("sector_news", "섹터 · 인물 이슈", "GDELT · 구글 뉴스", "news"),
+        ("calendar", "일정", "FOMC · BLS · 나스닥", None),
+        ("economic_calendar", "경제 일정(FOMC · BLS)", "연준 · BLS", "calendar"),
+        ("earnings", "실적 일정", "나스닥", "calendar"),
+        ("prewarm", "대시보드 미리 읽기", "야후 · 토스 · 한투", None),
+        ("briefs", "아침 시황", "ChatGPT · 데스크", None),
+        ("day_call", "오늘 방향", "야후", None),
+        ("day_calls", "오늘 방향 판정", "야후", "day_call"),
+        ("day_call_scoring", "오늘 방향 채점", "야후", "day_call"),
+        ("krx", "KRX 일별 이력", "KRX OPEN API", None),
+        ("reports", "정기 리포트", "ChatGPT · 야후", None),
+        ("funds", "13F 기관 보유", "SEC EDGAR", None),
+        ("scoring", "분석 채점", "야후", None),
+        ("purge", "오래된 분석 정리", "DB", None),
+        ("kis_stream", "실시간 시세 스트림", "한투(KIS)", None),
+    ):
+        jobs.add(name, label, source, parent)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         stale = store.fail_unfinished(RESTART_REASON)
@@ -625,221 +654,165 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        reuse_minutes=settings.reuse_reports_min,
                                        rate_limit_cooldown_min=settings.rate_limit_cooldown_min)
 
-        async def keep_listing_fresh():
-            while True:
-                await universe.refresh_if_stale(broker)
-                await asyncio.sleep(3600)
+        # #623 every loop below is a step that returns its next wait, run by jobs.run_forever: an exception
+        # is logged and the loop goes on after its retry wait; GET /api/status shows each one's state
+        async def keep_listing_fresh() -> float:
+            await universe.refresh_if_stale(broker)
+            return 3600
 
-        async def purge_old_runs():
-            while True:
-                try:
-                    purge_expired_runs(store, settings.retention_days)
-                except Exception:  # a failed sweep must not stop the next one
-                    log.exception("retention sweep failed")
-                await asyncio.sleep(24 * 3600)
+        async def purge_old_runs() -> float:
+            await asyncio.to_thread(purge_expired_runs, store, settings.retention_days)
+            return 24 * 3600
 
-        async def score_plans():
+        scoring = {"fresh": True}                         # the live record is read once at boot
+
+        async def score_plans() -> float:
             # How each plan played out, on the bars that came after it (desk.outcome). Starts at boot.
-            fresh = True                                  # the live record is read once at boot
-            while True:
-                try:
-                    scored = await outcome.sweep(store, prices)
-                    if scored:
-                        log.info("scored %d plan(s)", scored)
-                    if scored or fresh:
-                        # #147: the playbooks' live record on top of the backtest prior
-                        since = now() - timedelta(days=calibration.LIVE_DAYS)
-                        runs_scored = await asyncio.to_thread(store.scored_since, since)
-                        calibration.TABLE.set_live(runs_scored)
-                        fresh = False
-                except Exception:  # a failed pass must not stop the next one
-                    log.exception("plan scoring failed")
-                await asyncio.sleep(settings.score_interval_sec)
+            scored = await outcome.sweep(store, prices)
+            if scored:
+                log.info("scored %d plan(s)", scored)
+            if scored or scoring["fresh"]:
+                # #147: the playbooks' live record on top of the backtest prior
+                since = now() - timedelta(days=calibration.LIVE_DAYS)
+                runs_scored = await asyncio.to_thread(store.scored_since, since)
+                calibration.TABLE.set_live(runs_scored)
+                scoring["fresh"] = False
+            return settings.score_interval_sec
 
-        async def refresh_macro():
+        async def refresh_macro() -> float:
             # GDELT allows one request every five seconds: a full pass takes a couple of minutes,
             # so it runs here in the background and runs read the snapshot (desk.macro_news).
-            # #428: the pass saved before a restart answers until the first one here finishes
-            if await asyncio.to_thread(macro_news.CACHE.load):
-                log.info("macro news: last saved snapshot loaded")
-            while True:
-                try:
-                    ok = await macro_news.CACHE.refresh()
-                    log.info("macro news: %d/%d theme(s) refreshed", ok, len(macro_news.THEMES))
-                    # #242: Korean titles and a market read, only while no analysis holds the plan
-                    read = await news_digest.DIGEST.refresh(macro_news.CACHE.themes, slot=app.state.manager.spare_slot)
-                    if read:
-                        log.info("news digest: %d headline(s) read", read)
-                except Exception:  # a failed pass must not stop the next one
-                    log.exception("macro news refresh failed")
-                try:                # #244: sector / key-person surges, read the same way
-                    ok = await sector_news.CACHE.refresh()
-                    read = await news_digest.DIGEST.refresh(sector_news.CACHE.as_themes(),
-                                                            slot=app.state.manager.spare_slot)
-                    log.info("sector news: %d topic(s) refreshed, %d headline(s) read", ok, read)
-                except Exception:  # a failed pass must not stop the next one
-                    log.exception("sector news refresh failed")
-                await asyncio.sleep(settings.macro_interval_sec)
+            with jobs.part("macro_news", "macro news refresh failed"):
+                ok = await macro_news.CACHE.refresh()
+                log.info("macro news: %d/%d theme(s) refreshed", ok, len(macro_news.THEMES))
+                # #242: Korean titles and a market read, only while no analysis holds the plan
+                read = await news_digest.DIGEST.refresh(macro_news.CACHE.themes, slot=app.state.manager.spare_slot)
+                if read:
+                    log.info("news digest: %d headline(s) read", read)
+            with jobs.part("sector_news", "sector news refresh failed"):   # #244: sector / key-person surges
+                ok = await sector_news.CACHE.refresh()
+                read = await news_digest.DIGEST.refresh(sector_news.CACHE.as_themes(),
+                                                        slot=app.state.manager.spare_slot)
+                log.info("sector news: %d topic(s) refreshed, %d headline(s) read", ok, read)
+            return settings.macro_interval_sec
 
-        async def refresh_calendar():
+        async def refresh_calendar() -> float:
             # #148: FOMC + BLS release dates change rarely; a few reads a day keep them current
-            # #308: the earnings saved before a restart show until the first pass answers
-            if await asyncio.to_thread(earnings.CACHE.load):
-                log.info("earnings calendar: last saved rows loaded")
-            while True:
-                try:
-                    ok = await events_calendar.CACHE.refresh()
-                    log.info("economic calendar: %d/2 source(s) refreshed", ok)
-                except Exception:  # a failed pass must not stop the next one
-                    log.exception("economic calendar refresh failed")
-                try:                # #243: company earnings for this month and the next
-                    ok = await earnings.CACHE.refresh()
-                    log.info("earnings calendar: %d day(s)/ticker(s) refreshed", ok)
-                except Exception:
-                    log.exception("earnings calendar refresh failed")
-                # #308: a failed earnings pass comes back sooner (30 min, 1 h, 2 h, 4 h)
-                await asyncio.sleep(earnings.CACHE.next_delay(CALENDAR_INTERVAL_SEC))
+            with jobs.part("economic_calendar", "economic calendar refresh failed"):
+                ok = await events_calendar.CACHE.refresh()
+                log.info("economic calendar: %d/2 source(s) refreshed", ok)
+            with jobs.part("earnings", "earnings calendar refresh failed"):   # #243: this month and the next
+                ok = await earnings.CACHE.refresh()
+                log.info("earnings calendar: %d day(s)/ticker(s) refreshed", ok)
+            # #308: a failed earnings pass comes back sooner (30 min, 1 h, 2 h, 4 h)
+            return earnings.CACHE.next_delay(CALENDAR_INTERVAL_SEC)
 
-        async def refresh_credit():
+        async def refresh_credit() -> float:
             # #155: margin loans and investor deposits (KOFIA) - a few reads a day catch the new day
-            while True:
-                ok = False
-                try:
-                    ok = await credit.CACHE.refresh()
-                    log.info("KOFIA credit: %s", "refreshed" if ok else f"failed ({credit.CACHE.error})")
-                except Exception:  # a failed pass must not stop the next one
-                    log.exception("KOFIA credit refresh failed")
-                # a failure (KOFIA slow at boot) is retried soon: the cache lives in memory only
-                await asyncio.sleep(CREDIT_INTERVAL_SEC if ok else CREDIT_RETRY_SEC)
+            ok = await credit.CACHE.refresh()
+            log.info("KOFIA credit: %s", "refreshed" if ok else f"failed ({credit.CACHE.error})")
+            if not ok:
+                jobs.mark_error("credit", "refresh failed")
+            # a failure (KOFIA slow at boot) is retried soon: the cache lives in memory only
+            return CREDIT_INTERVAL_SEC if ok else CREDIT_RETRY_SEC
 
-        async def snapshot_futures():
+        snapshot_marks: dict[str, date | None] = {"pruned_on": None, "closed_on": None}
+        futures_every = interval_min(settings.futures_snapshot_min)
+
+        async def snapshot_futures() -> float:
             # #254: the futures investor flows through the session, every DESK_FUTURES_SNAPSHOT_MIN
             # minutes (desk.futures_history); outside the session it only checks the clock
             # on the wall clock's grid from 08:45, plus one closing snapshot just after 15:45 (the
             # day's final totals: its daily row); each one fetches fresh, never a cached pre-open value
-            pruned_on, closed_on = None, None
-            every = interval_min(settings.futures_snapshot_min)
-            while True:
+            moment = datetime.now(UTC)
+            today_kst = moment.astimezone(futures_kst).date()
+            if futures_open(moment) or (closing_window(moment) and snapshot_marks["closed_on"] != today_kst):
+                view = await futures.get(fresh=True)
+                # #359 the spot flows at the same moment (a broker failure is an ``error`` body)
+                # (bounded: a hung broker must not cost the futures snapshot)
                 try:
-                    moment = datetime.now(UTC)
-                    today_kst = moment.astimezone(futures_kst).date()
-                    if futures_open(moment) or (closing_window(moment) and closed_on != today_kst):
-                        view = await futures.get(fresh=True)
-                        # #359 the spot flows at the same moment (a broker failure is an ``error`` body)
-                        # (bounded: a hung broker must not cost the futures snapshot)
-                        try:
-                            got = await asyncio.wait_for(asyncio.gather(
-                                flow.get("KOSPI", "1d", 1), flow.get("KOSDAQ", "1d", 1)), SPOT_TIMEOUT_SEC)
-                            spot = {"kospi": got[0], "kosdaq": got[1]}
-                        except TimeoutError:
-                            log.warning("spot flow for the futures snapshot timed out")
-                            spot = None
-                        await asyncio.to_thread(futures_history.record, view, None, spot)
-                        try:                     # #361: a push problem never stops the snapshots
-                            await asyncio.to_thread(app.state.flow_alerts.after_snapshot, futures_history.intraday)
-                        except Exception as exc:  # noqa: BLE001
-                            log.warning("flow turn alerts failed: %s", exc)
-                        try:                     # #579 the flow shifts, the same way
-                            await asyncio.to_thread(app.state.market_alerts.after_snapshot, futures_history)
-                        except Exception as exc:  # noqa: BLE001
-                            log.warning("flow shift alerts failed: %s", exc)
-                        if closing_window(moment):
-                            closed_on = today_kst
-                    today = datetime.now(UTC).date()
-                    if pruned_on != today:
-                        dropped = await asyncio.to_thread(futures_history.prune)
-                        if dropped:
-                            log.info("futures history: thinned %d old snapshot(s)", dropped)
-                        pruned_on = today
-                except Exception:  # a failed pass must not stop the next one
-                    log.exception("futures snapshot failed")
-                await asyncio.sleep(seconds_to_next(datetime.now(UTC), every))
+                    got = await asyncio.wait_for(asyncio.gather(
+                        flow.get("KOSPI", "1d", 1), flow.get("KOSDAQ", "1d", 1)), SPOT_TIMEOUT_SEC)
+                    spot = {"kospi": got[0], "kosdaq": got[1]}
+                except TimeoutError:
+                    log.warning("spot flow for the futures snapshot timed out")
+                    spot = None
+                await asyncio.to_thread(futures_history.record, view, None, spot)
+                try:                     # #361: a push problem never stops the snapshots
+                    await asyncio.to_thread(app.state.flow_alerts.after_snapshot, futures_history.intraday)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("flow turn alerts failed: %s", exc)
+                try:                     # #579 the flow shifts, the same way
+                    await asyncio.to_thread(app.state.market_alerts.after_snapshot, futures_history)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("flow shift alerts failed: %s", exc)
+                if closing_window(moment):
+                    snapshot_marks["closed_on"] = today_kst
+            today = datetime.now(UTC).date()
+            if snapshot_marks["pruned_on"] != today:
+                dropped = await asyncio.to_thread(futures_history.prune)
+                if dropped:
+                    log.info("futures history: thinned %d old snapshot(s)", dropped)
+                snapshot_marks["pruned_on"] = today
+            return seconds_to_next(datetime.now(UTC), futures_every)
 
-        async def watch_nq():
+        async def watch_nq() -> float:
             # #579 NQ=F selling alarms (desk.nq_watch) on Yahoo's 5-minute bars while CME trades -
             # just after each bar closes on the 5-minute grid, so every finished bar is judged once
-            while True:
-                try:
-                    if nq_watch.cme_open(datetime.now(UTC)):
-                        got = await prices.candles(nq_watch.TICKER, "5m", nq_watch.BARS)
-                        await asyncio.to_thread(app.state.market_alerts.nq_pass, got["bars"])
-                except Exception:  # a failed pass must not stop the next one
-                    log.exception("NQ alarms failed")
-                await asyncio.sleep(nq_watch.seconds_to_next(datetime.now(UTC)))
+            if nq_watch.cme_open(datetime.now(UTC)):
+                got = await prices.candles(nq_watch.TICKER, "5m", nq_watch.BARS)
+                await asyncio.to_thread(app.state.market_alerts.nq_pass, got["bars"])
+            return nq_watch.seconds_to_next(datetime.now(UTC))
 
-        refresher = asyncio.create_task(keep_listing_fresh())
-        futures_task = (asyncio.create_task(snapshot_futures())
-                        if interval_min(settings.futures_snapshot_min) > 0
-                        and getattr(futures, "rest", None) is not None else None)
-        # the same switch as the news flow: off in tests and scripted runs
-        nq_task = (asyncio.create_task(watch_nq())
-                   if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
-        # the same switch as the news flow: off in tests and scripted runs
-        credit_task = (asyncio.create_task(refresh_credit())
-                       if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
-        macro = (asyncio.create_task(refresh_macro())
-                 if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
-        # the same switch as the news flow: off in tests and scripted runs
-        calendar_task = (asyncio.create_task(refresh_calendar())
-                         if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
-
-        async def refresh_funds():
+        async def refresh_funds() -> float:
             # #483: the funds' filings every few hours around the 45-day deadline, else daily
-            while True:
-                try:
-                    ok = await asyncio.to_thread(funds.refresh)
-                    log.info("13F: %d/%d fund(s) refreshed", ok, len(funds13f.FUNDS))
-                except Exception:  # a failed pass must not stop the next one
-                    log.exception("13F refresh failed")
-                await asyncio.sleep(funds.next_delay())
+            ok = await asyncio.to_thread(funds.refresh)
+            log.info("13F: %d/%d fund(s) refreshed", ok, len(funds13f.FUNDS))
+            return funds.next_delay()
 
-        async def write_reports():
+        report_failures = {"n": 0}
+
+        async def write_reports() -> float:
             # #495: one report every DESK_REPORT_EVERY_DAYS days after the Korean close; while a run holds
             # the ChatGPT slot it waits and tries again; a failure (no prices, the model, the DB) tries again
             # later and later (30 min doubling to 8 h) so a lasting fault never burns the quota or Yahoo
-            failures = 0
-            while True:
-                wait = (report_desk.next_due() - datetime.now(UTC)).total_seconds()
-                if wait > 0:
-                    await asyncio.sleep(min(wait, 3600))
-                    continue
-                try:
-                    got = await make_report(auto=True)
-                except Exception:  # a failed pass must not stop the next one
-                    log.exception("report failed")
-                    got = "failed"
-                if got == "made":
-                    failures = 0
-                elif got == "busy":
-                    await asyncio.sleep(reports.RETRY_SEC)
-                else:
-                    failures += 1
-                    await asyncio.sleep(reports.RETRY_SEC * 2 ** min(failures - 1, 4))
+            wait = (report_desk.next_due() - datetime.now(UTC)).total_seconds()
+            if wait > 0:
+                return min(wait, 3600)
+            failed: BaseException | None = None
+            try:
+                got = await make_report(auto=True)
+            except Exception as exc:  # a failed pass must not stop the next one
+                log.exception("report failed")
+                failed, got = exc, "failed"
+            if got == "made":
+                report_failures["n"] = 0
+                return 0
+            if got == "busy":
+                return reports.RETRY_SEC
+            jobs.mark_error("reports", failed or f"report {got}")
+            report_failures["n"] += 1
+            return reports.RETRY_SEC * 2 ** min(report_failures["n"] - 1, 4)
 
-        async def make_day_calls():
+        async def make_day_calls() -> float:
             # #572: every TICK_SEC - a round inside its window gets its calls (both markets), the closed
             # sessions get scored; each market's first call of the day is pushed (kind day_call)
-            while True:
-                made = []
-                try:
-                    made = await asyncio.wait_for(asyncio.to_thread(day_desk.run), 180)
-                except Exception:  # a failed pass must not stop the next one
-                    log.exception("day calls failed")
-                for row in made:
-                    if row["round"] != 1 or row["call"] != "prev_close":
-                        continue
-                    try:                     # a failed push loses only itself
-                        await asyncio.to_thread(notify.send, app.state.pusher, "day_call", payload={
-                            "title": f"오늘 {'국장' if row['market'] == 'kr' else '미장'} 방향",
-                            "body": day_calls.push_text(row),
-                            "tag": f"day_call-{row['market']}", "url": "/#/day-call", "kind": "day_call"})
-                    except Exception:
-                        log.exception("day call push failed")
-                try:
-                    await asyncio.wait_for(asyncio.to_thread(day_desk.score), 180)
+            made = []
+            with jobs.part("day_calls", "day calls failed"):
+                made = await asyncio.wait_for(asyncio.to_thread(day_desk.run), 180)
+            for row in made:
+                if row["round"] != 1 or row["call"] != "prev_close":
+                    continue
+                try:                     # a failed push loses only itself
+                    await asyncio.to_thread(notify.send, app.state.pusher, "day_call", payload={
+                        "title": f"오늘 {'국장' if row['market'] == 'kr' else '미장'} 방향",
+                        "body": day_calls.push_text(row),
+                        "tag": f"day_call-{row['market']}", "url": "/#/day-call", "kind": "day_call"})
                 except Exception:
-                    log.exception("day call scoring failed")
-                await asyncio.sleep(day_calls.TICK_SEC)
+                    log.exception("day call push failed")
+            with jobs.part("day_call_scoring", "day call scoring failed"):
+                await asyncio.wait_for(asyncio.to_thread(day_desk.score), 180)
+            return day_calls.TICK_SEC
 
         oi_pending = {"due": False}
 
@@ -851,46 +824,46 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             log.info("futures oi: %d day(s) derived", written)
             futures_oi.check(futures_history.daily(krx.CATCH_UP_DAYS))
 
-        async def collect_krx():
+        async def collect_krx() -> float:
             # #601: every TICK_SEC - each service's missing business days of the last two weeks, once KRX
             # has published them (08:30 KST the next business day); a refused service waits 6 h
-            while True:
-                try:
-                    results = await asyncio.wait_for(asyncio.to_thread(krx_desk.run), 600)
-                    for result in results:
-                        log.info("krx %s: %s day(s), %s row(s), stopped %s", result["api"], result["stored"],
-                                 result["rows"], result["stopped"])
-                    if any(r["api"] in (FUT_API, OPT_API) and r["stored"] for r in results):
-                        oi_pending["due"] = True
-                    if oi_pending["due"]:            # also again after a failed derive, on the next pass
-                        await asyncio.to_thread(derive_futures_oi)
-                        oi_pending["due"] = False
-                except Exception:  # a failed pass must not stop the next one
-                    log.exception("krx collect failed")
-                await asyncio.sleep(krx.TICK_SEC)
+            results = await asyncio.wait_for(asyncio.to_thread(krx_desk.run), 600)
+            for result in results:
+                log.info("krx %s: %s day(s), %s row(s), stopped %s", result["api"], result["stored"],
+                         result["rows"], result["stopped"])
+            stopped = sorted({r["stopped"] for r in results if r["stopped"] in ("refused", "quota", "error")})
+            if stopped:
+                jobs.mark_error("krx", "stopped: " + ", ".join(stopped))
+            if any(r["api"] in (FUT_API, OPT_API) and r["stored"] for r in results):
+                oi_pending["due"] = True
+            if oi_pending["due"]:            # also again after a failed derive, on the next pass
+                await asyncio.to_thread(derive_futures_oi)
+                oi_pending["due"] = False
+            return krx.TICK_SEC
 
-        async def write_briefs():
+        brief_failures = {"n": 0}
+
+        async def write_briefs() -> float:
             # #571: at DESK_MORNING_BRIEF_AT on Korean trading days; while a run holds the ChatGPT slot it
             # tries again every few minutes, and past DESK_AFTER_SEC it goes out in the desk's own words
-            failures = 0
-            while True:
-                try:                 # a database blip must not end the loop for good
-                    due = await asyncio.to_thread(brief_desk.next_due)
-                    wait = (due - datetime.now(UTC)).total_seconds()
-                    if wait > 0:
-                        await asyncio.sleep(min(wait, 3600))
-                        continue
-                    got = await make_brief("auto", desk_only=-wait >= morning_brief.DESK_AFTER_SEC)
-                except Exception:  # a failed pass must not stop the next one
-                    log.exception("morning brief failed")
-                    got = "failed"
-                if got == "made":
-                    failures = 0
-                elif got == "busy":
-                    await asyncio.sleep(morning_brief.RETRY_SEC)
-                else:
-                    failures += 1
-                    await asyncio.sleep(morning_brief.RETRY_SEC * 2 ** min(failures - 1, 3))
+            failed: BaseException | None = None
+            try:                 # a database blip must not end the loop for good
+                due = await asyncio.to_thread(brief_desk.next_due)
+                wait = (due - datetime.now(UTC)).total_seconds()
+                if wait > 0:
+                    return min(wait, 3600)
+                got = await make_brief("auto", desk_only=-wait >= morning_brief.DESK_AFTER_SEC)
+            except Exception as exc:  # a failed pass must not stop the next one
+                log.exception("morning brief failed")
+                failed, got = exc, "failed"
+            if got == "made":
+                brief_failures["n"] = 0
+                return 0
+            if got == "busy":
+                return morning_brief.RETRY_SEC
+            jobs.mark_error("briefs", failed or f"brief {got}")
+            brief_failures["n"] += 1
+            return morning_brief.RETRY_SEC * 2 ** min(brief_failures["n"] - 1, 3)
 
         def prewarm_jobs() -> dict[str, prewarm.Job]:
             # #536: the dashboard's shared data, refetched before it expires (desk.prewarm)
@@ -941,22 +914,48 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         app.state.prewarm_jobs, app.state.prewarm_tickers = prewarm_jobs, prewarm_tickers   # tests run them once
         app.state.prewarm_then = prewarm_then
         # the same switch as the news flow: off in tests and scripted runs
-        prewarm_task = (asyncio.create_task(prewarm.run(prewarm_jobs, prewarm_tickers, _positioning, then=prewarm_then))
-                        if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
-        brief_task = asyncio.create_task(write_briefs()) if brief_desk.at is not None else None
+        # #623 the jobs: each loop through jobs.run_forever (a failed pass is logged, the next one runs),
+        # started only when its switch is on - the others show "off" in GET /api/status
+        feeds_on = settings.macro_interval_sec > 0 and not settings.fake_runs   # the news flow's switch
+        started: list[asyncio.Task] = []
+
+        def start(name: str, on: bool, step, retry, failed: str | None = None) -> None:
+            if on:
+                started.append(jobs.spawn(name, jobs.run_forever(name, step, retry, failed)))
+
+        start("listing", True, keep_listing_fresh, 3600, "listing refresh failed")
+        start("futures_snapshot", interval_min(settings.futures_snapshot_min) > 0
+              and getattr(futures, "rest", None) is not None,
+              snapshot_futures, lambda: seconds_to_next(datetime.now(UTC), futures_every), "futures snapshot failed")
+        start("nq_watch", feeds_on, watch_nq, lambda: nq_watch.seconds_to_next(datetime.now(UTC)), "NQ alarms failed")
+        start("credit", feeds_on, refresh_credit, CREDIT_RETRY_SEC, "KOFIA credit refresh failed")
+        if feeds_on:
+            # #428: the pass saved before a restart answers until the first one here finishes
+            # #308: the earnings saved before a restart show until the first pass answers
+            # (a damaged file costs only that snapshot, never the start)
+            for what, cache in (("macro news", macro_news.CACHE), ("earnings calendar", earnings.CACHE)):
+                try:
+                    if await asyncio.to_thread(cache.load):
+                        log.info("%s: last saved snapshot loaded", what)
+                except Exception:
+                    log.exception("%s: saved snapshot not loaded", what)
+        start("news", feeds_on, refresh_macro, settings.macro_interval_sec)
+        start("calendar", feeds_on, refresh_calendar, CALENDAR_INTERVAL_SEC)
+        if feeds_on:
+            started.append(jobs.spawn("prewarm", prewarm.run(prewarm_jobs, prewarm_tickers, _positioning,
+                                                             then=prewarm_then)))
+        start("briefs", brief_desk.at is not None, write_briefs, morning_brief.RETRY_SEC)
         day_calls.bind(day_desk)          # desk.day_call.today_call (#571) reads this app's calls
-        day_call_task = asyncio.create_task(make_day_calls()) if day_desk.candles is not None else None
-        krx_task = asyncio.create_task(collect_krx()) if krx_desk is not None else None
-        report_task = (asyncio.create_task(write_reports())
-                       if settings.report_every_days > 0 and not settings.fake_runs else None)
-        funds_task = (asyncio.create_task(refresh_funds())
-                      if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
+        start("day_call", day_desk.candles is not None, make_day_calls, day_calls.TICK_SEC)
+        start("krx", krx_desk is not None, collect_krx, krx.TICK_SEC, "krx collect failed")
+        start("reports", settings.report_every_days > 0 and not settings.fake_runs, write_reports, reports.RETRY_SEC)
+        start("funds", feeds_on, refresh_funds, lambda: funds.next_delay(), "13F refresh failed")
         # Scripted runs have made-up levels; scoring them against real bars means nothing.
-        scorer = (asyncio.create_task(score_plans())
-                  if settings.score_interval_sec > 0 and not settings.fake_runs else None)
-        purger = asyncio.create_task(purge_old_runs()) if settings.retention_days > 0 else None
+        start("scoring", settings.score_interval_sec > 0 and not settings.fake_runs, score_plans,
+              settings.score_interval_sec, "plan scoring failed")
+        start("purge", settings.retention_days > 0, purge_old_runs, 24 * 3600, "retention sweep failed")
         # connects only once a page watches a KIS-streamable ticker (desk.broker.kis_stream)
-        kis = asyncio.create_task(kis_feed.run()) if kis_feed is not None else None
+        kis = jobs.spawn("kis_stream", kis_feed.run()) if kis_feed is not None else None
         if kis:
             log.info("kis stream on")
         yield
@@ -966,28 +965,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             with suppress(asyncio.CancelledError):
                 await kis                   # the socket closes before its http client does
             await kis_feed.aclose()
-        refresher.cancel()
-        if futures_task:
-            futures_task.cancel()
-        if nq_task:
-            nq_task.cancel()
-        if macro:
-            macro.cancel()
-        if calendar_task:
-            calendar_task.cancel()
-        if funds_task:
-            funds_task.cancel()
-        if report_task:
-            report_task.cancel()
-        if brief_task:
-            brief_task.cancel()
-        if day_call_task:
-            day_call_task.cancel()
-        if krx_task:
-            krx_task.cancel()
+        for task in started:
+            task.cancel()
         day_calls.bind(None)
-        if prewarm_task:
-            prewarm_task.cancel()
         pictures.stop.set()              # a report being drawn takes no next picture
         for task in list(report_tasks):  # a manual report still being written
             task.cancel()
@@ -995,12 +975,6 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             task.cancel()
         for task in list(brief_tasks):   # a manual brief still being written
             task.cancel()
-        if credit_task:
-            credit_task.cancel()
-        if scorer:
-            scorer.cancel()
-        if purger:
-            purger.cancel()
         await estimator.aclose()
         await longshort.aclose()
         await futures.aclose()
@@ -1028,6 +1002,32 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     @app.get("/api/health")
     def health():
         return {"ok": True}
+
+    def cooldowns() -> list[dict]:
+        """#623 the waits after a provider said "too many": the model plan (runs · chat · briefs), GDELT,
+        KRX's daily quota and a KRX service the key was refused for. ``until`` null when not waiting."""
+        at = datetime.now(UTC)
+        iso = lambda d: d.astimezone(UTC).isoformat(timespec="seconds") if d else None
+        manager = getattr(app.state, "manager", None)
+        wait = manager.rate_limit_wait() if manager is not None else 0.0
+        out = [{"name": "chatgpt", "label": "ChatGPT 플랜(분석 · 채팅 · 아침 시황)",
+                "until": iso(at + timedelta(seconds=wait)) if wait > 0 else None, "left_sec": max(0, round(wait))}]
+        resume = macro_news.CACHE.gdelt_resume_at
+        left = (resume - at).total_seconds() if resume else 0.0
+        out.append({"name": "gdelt", "label": "GDELT(뉴스 — 그동안 구글 뉴스)",
+                    "until": iso(resume) if left > 0 else None, "left_sec": max(0, round(left))})
+        if krx_desk is not None:
+            for name, label, until in krx_desk.cooldowns(at):
+                out.append({"name": name, "label": label, "until": iso(until),
+                            "left_sec": max(0, round((until - at).total_seconds()))})
+        return out
+
+    @app.get("/api/status")
+    def status():
+        """#623 the background jobs (state fresh · stale · error · starting · stopped · off, last success,
+        last error as a type name, next pass) and the providers' rate-limit waits. Session required."""
+        return {"now": datetime.now(UTC).isoformat(timespec="seconds"), "jobs": jobs.status(),
+                "cooldowns": cooldowns()}
 
     # #536 per-route request times (desk.req_timing), read in production without parsing logs
     timings = req_timing.Timings()

@@ -368,6 +368,54 @@ def _day_call_backfill(engine, args) -> int:
     return 0
 
 
+def _krx(engine, args, key: str) -> int:
+    """#601: KRX OPEN API end-of-day rows into krx_daily. Days already stored are skipped (rerun-safe);
+    stops at --max-calls, a refused service (the key or its approval) or KRX's daily quota."""
+    from datetime import date
+
+    from . import krx
+
+    if args.api != "all" and args.api not in krx.APIS:
+        print(f"unknown --api {args.api}: {', '.join(krx.APIS)}", file=sys.stderr)
+        return 2
+    desk = krx.KrxDaily(engine, krx.Client(key))
+    apis = list(krx.APIS) if args.api == "all" else [args.api]
+    if args.action == "status":
+        from sqlalchemy import func, select
+
+        from .db import krx_days
+        with engine.connect() as conn:
+            q = (select(krx_days.c.api, func.count(), func.min(krx_days.c.bas_dd), func.max(krx_days.c.bas_dd),
+                        func.sum(krx_days.c.rows)).group_by(krx_days.c.api).order_by(krx_days.c.api))
+            for api, days, first, last, rows in conn.execute(q):
+                print(f"{api}  {days} day(s)  {first} ~ {last}  {rows} row(s)")
+        return 0
+    if not desk.client.enabled:
+        print("DESK_KRX_API_KEY 가 비어 있다 — 서버 .env.runtime 에 넣고 컨테이너 안에서 돌린다", file=sys.stderr)
+        return 2
+    at = now()
+    first = date.fromisoformat(args.start)
+    last = date.fromisoformat(args.end) if args.end else krx.kst_today(at) - timedelta(days=1)
+    left = args.max_calls
+    for api in apis:
+        days = desk.missing(api, first, last, at)
+        print(f"{api}: {len(days)} day(s) to fetch")
+        for i in range(0, len(days), 100):
+            if left <= 0:
+                print("--max-calls 를 다 썼다 — 다시 돌리면 남은 날부터 받는다")
+                return 0
+            r = desk.collect(api, days[i:i + 100], at, max_calls=left)
+            left -= r["calls"]
+            print(f"  {days[i]} ~: {r['stored']} day(s) stored, {r['rows']} row(s), {r['empty']} empty, "
+                  f"{r['later']} later, {r['calls']} call(s)")
+            if r["stopped"] in ("refused", "quota", "error"):
+                print(f"  stopped: {r['stopped']} (로그 참고) — 다시 돌리면 남은 날부터 받는다", file=sys.stderr)
+                if r["stopped"] == "quota":
+                    return 1
+                break
+    return 0
+
+
 def _unfinished(url: str) -> int:
     """#431 no migration here: it runs inside the live container, and only reads."""
     from .store import Store
@@ -492,6 +540,15 @@ def main(argv: list[str] | None = None) -> int:
     nh.add_argument("--hourly-at", type=int, default=None, choices=range(60), metavar="MINUTE",
                     help="run one batch (--max-files) every hour at this minute until done, e.g. 17")
     nh.add_argument("--first-year", type=int, default=2017, help="oldest year (default 2017)")
+    kx = sub.add_parser("krx", help=(
+        "#601 KRX OPEN API end-of-day history into krx_daily (needs DESK_KRX_API_KEY and each service's approval; "
+        "run on the server; days already stored are skipped)"))
+    kx.add_argument("action", choices=("backfill", "status"))
+    kx.add_argument("--api", default="all", help="a service id (desk.krx.APIS, e.g. kospi_dd_trd) or all (default)")
+    kx.add_argument("--from", dest="start", default="2015-01-01", help="first basDd, YYYY-MM-DD (default 2015-01-01)")
+    kx.add_argument("--to", dest="end", default=None, help="last basDd, YYYY-MM-DD (default yesterday KST)")
+    kx.add_argument("--max-calls", type=int, default=3000,
+                    help="most KRX calls this run (default 3000; the key's quota is 10,000 a day)")
     sub.add_parser("unfinished", help=(
         "queued / running runs: the count on the first line, then one line each (#431; scripts/deploy.sh "
         "asks this inside the backend container before it restarts it)"))
@@ -542,6 +599,11 @@ def main(argv: list[str] | None = None) -> int:
         _utf8_out()
         try:
             return _day_call_backfill(engine, args)
+        finally:
+            engine.dispose()
+    if args.command == "krx":
+        try:
+            return _krx(engine, args, settings.krx_api_key)
         finally:
             engine.dispose()
     if args.command == "timing":

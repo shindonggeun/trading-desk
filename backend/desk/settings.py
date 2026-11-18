@@ -94,6 +94,8 @@ class Settings:
     # Empty = the real-trading endpoints; mock-trading keys need the mock ones (.env.example).
     kis_ws_url: str = field(default_factory=lambda: os.getenv("DESK_KIS_WS_URL", ""))
     kis_rest_url: str = field(default_factory=lambda: os.getenv("DESK_KIS_REST_URL", ""))
+    # #601 KRX OPEN API (desk.krx): end-of-day history from the next business day 08:30 KST. Empty = off.
+    krx_api_key: str = field(default_factory=lambda: os.getenv("DESK_KRX_API_KEY", ""), repr=False)
     # Toss gives a bare 6-digit code for KR listings; Yahoo needs .KS (KOSPI) or .KQ (KOSDAQ).
     kosdaq_symbols: list[str] = field(default_factory=lambda: _list("DESK_KOSDAQ_SYMBOLS"))
 

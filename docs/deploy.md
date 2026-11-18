@@ -170,3 +170,11 @@ docker run --rm -it -p 127.0.0.1:1455:1455 -v trading-desk-tradingagents-home:/h
   4. 동의 항목 → "카카오톡 메시지 전송(talk_message)" 선택 동의. 플랫폼 → Web 사이트 도메인에 `https://trading.8llow8llowme.com`(메시지 링크).
   5. `docker exec trading-desk-backend-prod python -m desk.cli otp-key` 로 새 키를 만들어 `DESK_NOTIFY_KEY` 에(OTP 키와 다른 값).
   6. 재배포 → 설정 → 카카오톡 "연결" → 카카오 로그인 · 동의 → 돌아오면 "시험 보내기". 리프레시 토큰은 약 2달이라, 화면에 "다시 연결"이 뜨면 같은 순서로 한 번 더.
+
+## 11. KRX OPEN API 일별 이력 (#601)
+
+- openapi.krx.co.kr 에서 인증키를 받고, 쓸 서비스마다 **이용 신청**을 해 승인을 받는다(목록 · 필드는 [krx.md](krx.md)). 승인 안 된 서비스는 401 로 답하고 6시간 건너뛴다.
+- 서버 `.env.runtime` 에 `DESK_KRX_API_KEY` 를 넣고 `scripts/deploy.sh HEAD backend`. 비어 있으면 수집이 꺼지고 다른 기능은 그대로다.
+- 그다음부터 KRX 영업일 08:30 KST 뒤 첫 패스(15분 간격)가 전 영업일치를 `krx_daily` 에 쌓는다. 서버가 쉬었으면 최근 2주 중 빠진 날을 채운다.
+- 과거치: `ssh -t homelab-backend-server docker exec -it trading-desk-backend-prod python -m desk.cli krx backfill --api kospi_dd_trd --from 2015-01-01`
+  (이미 받은 날은 건너뛴다 · 기본 `--max-calls 3000`, 키 한도는 하루 10,000건). 진행은 `python -m desk.cli krx status`.

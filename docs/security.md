@@ -70,6 +70,7 @@ SSE(`EventSource`)도 쿠키로 인증된다. URL 에 토큰을 싣지 않는다
 | KIS REST 접근 토큰(access token) | 백엔드 프로세스 메모리(20시간마다 새로 발급, 1분에 1번 이하) | 없음 |
 | 텔레그램 봇 토큰 · chat_id · 카카오 REST 키 · 클라이언트 시크릿 · `DESK_NOTIFY_KEY` (#580) | 서버 `.env.runtime` | `.env.example` 에 이름만 |
 | 카카오 액세스 · 리프레시 토큰 (#580) | DB `notify_channels.secret`, `DESK_NOTIFY_KEY`(Fernet)로 봉인 | 없음 |
+| KRX OPEN API 인증키 (#601) | 서버 `.env.runtime` 의 `DESK_KRX_API_KEY`. 요청 헤더 `AUTH_KEY` 로만 보내고 로그 · URL · DB 에 남기지 않는다 | `.env.example` 에 이름만 |
 
 ### KIS 실시간 시세 키 (#125)
 

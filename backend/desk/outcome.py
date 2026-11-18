@@ -58,6 +58,9 @@ def _sessions(bars: list[dict]) -> list[int]:
     return out
 
 
+US_OPENS_AFTER = market_calendar.daily_open_offset("us")   # the default: a US daily bar
+
+
 def session_open(ticker: str) -> timedelta:
     """How long after its local midnight a market opens; daily bars are stamped at that midnight."""
     return market_calendar.daily_open_offset("kr" if ticker.upper().endswith((".KS", ".KQ")) else "us")
@@ -68,7 +71,7 @@ def _levels_make_sense(direction: int, entry: float, stop: float, target: float)
 
 
 def judge(plan: dict, bars: list[dict], horizon: horizons.Horizon, plan_at: str,
-          opens_after: timedelta = timedelta(hours=9, minutes=30)) -> dict:
+          opens_after: timedelta = US_OPENS_AFTER) -> dict:
     """The outcome of one plan on ``bars`` (oldest first, desk.prices shape). Pure function.
     ``opens_after``: the market's open after local midnight (``session_open``), used for daily
     bars, which are stamped at that midnight."""
@@ -188,7 +191,7 @@ PB_PENDING = ("waiting", "open", "error")
 
 
 def judge_playbook(side: dict, direction: int, bars: list[dict], horizon: horizons.Horizon, plan_at: str,
-                   opens_after: timedelta = timedelta(hours=9, minutes=30),
+                   opens_after: timedelta = US_OPENS_AFTER,
                    valid_until: str | None = None) -> dict:
     """One playbook's outcome: ladder fills (limits first; a stop entry only on a later bar - the
     long's confirmation step after a limit fill, a lone stop entry (the short fade) after the price

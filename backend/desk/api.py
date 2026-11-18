@@ -28,6 +28,7 @@ from . import (
     backtest_reports,
     bottom_zone,
     calibration,
+    channels,
     chat,
     credit,
     day_calls,
@@ -48,6 +49,7 @@ from . import (
     krx_etp,
     language,
     line_basis,
+    lines_bt,
     live,
     macro_news,
     market_calendar,
@@ -1975,6 +1977,40 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         # a new dict: the levels are a cached object shared with other callers
         return {**sr, "gaps": gap_rows, "gaps_error": gaps_error, "basis": lines,
                 "explain": line_basis.explain(sr, gap_rows, lines)}
+
+    lines_memo: dict[tuple[str, str], tuple[str, int, bool, dict]] = {}
+
+    @app.get("/api/lines")
+    async def chart_lines(ticker: str = "NQ=F", tf: str = "5m"):
+        """#611 parallel channels and short trendlines on one timeframe (desk.channels), each line with
+        its past hit rate where desk.lines_bt has run for the ticker. ``tf``: 5m · 15m · 1h · 4h · 1d
+        (or the chart's 60m · 240m). Recomputed only when a new bar comes in."""
+        try:
+            ticker = clean_ticker(ticker)
+            interval = channels.TF_ALIASES.get(tf)
+            if interval is None:
+                raise ValueError(f"tf must be one of {', '.join(channels.TF_ALIASES)}")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        try:
+            got = await prices.candles(ticker, interval, channels.BARS[interval])
+        except Exception as exc:  # noqa: BLE001 - no bars
+            log.warning("lines for %s %s failed: %s", ticker, interval, type(exc).__name__)
+            raise HTTPException(503, f"no bars for {ticker}") from None
+        bars = got["bars"]
+        key = (ticker, interval)
+        memo = lines_memo.get(key)
+        # the last bar still trading is not judged a break (it may close back): see desk.channels
+        live = bool(bars) and (datetime.fromisoformat(bars[-1]["at"])
+                               + timedelta(minutes=channels.MINUTES[interval])) > datetime.now(UTC)
+        stamp = (bars[-1]["at"], round(bars[-1]["close"] * 1e4), live) if bars else ("", 0, False)
+        if memo is None or memo[:3] != stamp:
+            found = await asyncio.to_thread(channels.lines, bars, interval, lines_bt.rates(ticker, interval), live)
+            if len(lines_memo) > 256:
+                lines_memo.clear()
+            lines_memo[key] = memo = (*stamp, found)
+        return {"ticker": ticker, "interval": interval, "source": got.get("source"), "live_bar": live, **memo[3],
+                "backtest": lines_bt.summary(ticker)}
 
     @app.get("/api/stock/profile")
     async def stock_profile(ticker: str | None = None, tickers: str | None = None):

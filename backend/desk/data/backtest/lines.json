@@ -1,0 +1,262 @@
+{
+ "tickers": {
+  "NQ=F": {
+   "5m": {
+    "timeframe": "5m",
+    "bars": 13166,
+    "from": "2026-09-11T04:05:00+00:00",
+    "to": "2026-11-18T06:00:00+00:00",
+    "steps": 1063,
+    "window": 400,
+    "horizon_bars": 12,
+    "bounce_atr": 1.0,
+    "seed": 0,
+    "roles": {
+     "channel_lower": {
+      "n": 538,
+      "bounce": 224,
+      "break": 307,
+      "none": 7,
+      "bounce_rate": 0.416,
+      "break_rate": 0.571,
+      "baseline": {
+       "n": 529,
+       "bounce": 229,
+       "break": 292,
+       "none": 8,
+       "bounce_rate": 0.433,
+       "break_rate": 0.552
+      }
+     },
+     "channel_upper": {
+      "n": 543,
+      "bounce": 255,
+      "break": 280,
+      "none": 8,
+      "bounce_rate": 0.47,
+      "break_rate": 0.516,
+      "baseline": {
+       "n": 552,
+       "bounce": 232,
+       "break": 309,
+       "none": 11,
+       "bounce_rate": 0.42,
+       "break_rate": 0.56
+      }
+     },
+     "trend_support": {
+      "n": 198,
+      "bounce": 76,
+      "break": 121,
+      "none": 1,
+      "bounce_rate": 0.384,
+      "break_rate": 0.611,
+      "baseline": {
+       "n": 199,
+       "bounce": 66,
+       "break": 132,
+       "none": 1,
+       "bounce_rate": 0.332,
+       "break_rate": 0.663
+      }
+     },
+     "trend_resistance": {
+      "n": 217,
+      "bounce": 83,
+      "break": 133,
+      "none": 1,
+      "bounce_rate": 0.382,
+      "break_rate": 0.613,
+      "baseline": {
+       "n": 231,
+       "bounce": 71,
+       "break": 156,
+       "none": 4,
+       "bounce_rate": 0.307,
+       "break_rate": 0.675
+      }
+     },
+     "trend_break_follow": {
+      "n": 39,
+      "follow": 19,
+      "baseline_n": 42,
+      "baseline_follow": 29,
+      "follow_rate": 0.487,
+      "baseline_rate": 0.69
+     }
+    }
+   },
+   "60m": {
+    "timeframe": "60m",
+    "bars": 12000,
+    "from": "2024-10-14T11:00:00+00:00",
+    "to": "2026-11-18T06:00:00+00:00",
+    "steps": 1437,
+    "window": 500,
+    "horizon_bars": 8,
+    "bounce_atr": 1.0,
+    "seed": 0,
+    "roles": {
+     "channel_lower": {
+      "n": 558,
+      "bounce": 224,
+      "break": 320,
+      "none": 14,
+      "bounce_rate": 0.401,
+      "break_rate": 0.573,
+      "baseline": {
+       "n": 586,
+       "bounce": 247,
+       "break": 305,
+       "none": 34,
+       "bounce_rate": 0.422,
+       "break_rate": 0.52
+      }
+     },
+     "channel_upper": {
+      "n": 474,
+      "bounce": 167,
+      "break": 271,
+      "none": 36,
+      "bounce_rate": 0.352,
+      "break_rate": 0.572,
+      "baseline": {
+       "n": 507,
+       "bounce": 194,
+       "break": 281,
+       "none": 32,
+       "bounce_rate": 0.383,
+       "break_rate": 0.554
+      }
+     },
+     "trend_support": {
+      "n": 257,
+      "bounce": 91,
+      "break": 163,
+      "none": 3,
+      "bounce_rate": 0.354,
+      "break_rate": 0.634,
+      "baseline": {
+       "n": 253,
+       "bounce": 90,
+       "break": 155,
+       "none": 8,
+       "bounce_rate": 0.356,
+       "break_rate": 0.613
+      }
+     },
+     "trend_resistance": {
+      "n": 240,
+      "bounce": 81,
+      "break": 145,
+      "none": 14,
+      "bounce_rate": 0.338,
+      "break_rate": 0.604,
+      "baseline": {
+       "n": 248,
+       "bounce": 81,
+       "break": 154,
+       "none": 13,
+       "bounce_rate": 0.327,
+       "break_rate": 0.621
+      }
+     },
+     "trend_break_follow": {
+      "n": 62,
+      "follow": 27,
+      "baseline_n": 51,
+      "baseline_follow": 31,
+      "follow_rate": 0.435,
+      "baseline_rate": 0.608
+     }
+    }
+   },
+   "1d": {
+    "timeframe": "1d",
+    "bars": 6500,
+    "from": "2001-02-22T05:00:00+00:00",
+    "to": "2026-11-18T05:00:00+00:00",
+    "steps": 1239,
+    "window": 300,
+    "horizon_bars": 5,
+    "bounce_atr": 1.0,
+    "seed": 0,
+    "roles": {
+     "channel_lower": {
+      "n": 439,
+      "bounce": 200,
+      "break": 196,
+      "none": 43,
+      "bounce_rate": 0.456,
+      "break_rate": 0.446,
+      "baseline": {
+       "n": 418,
+       "bounce": 181,
+       "break": 192,
+       "none": 45,
+       "bounce_rate": 0.433,
+       "break_rate": 0.459
+      }
+     },
+     "channel_upper": {
+      "n": 415,
+      "bounce": 153,
+      "break": 190,
+      "none": 72,
+      "bounce_rate": 0.369,
+      "break_rate": 0.458,
+      "baseline": {
+       "n": 399,
+       "bounce": 142,
+       "break": 198,
+       "none": 59,
+       "bounce_rate": 0.356,
+       "break_rate": 0.496
+      }
+     },
+     "trend_support": {
+      "n": 214,
+      "bounce": 73,
+      "break": 119,
+      "none": 22,
+      "bounce_rate": 0.341,
+      "break_rate": 0.556,
+      "baseline": {
+       "n": 204,
+       "bounce": 75,
+       "break": 95,
+       "none": 34,
+       "bounce_rate": 0.368,
+       "break_rate": 0.466
+      }
+     },
+     "trend_resistance": {
+      "n": 156,
+      "bounce": 33,
+      "break": 104,
+      "none": 19,
+      "bounce_rate": 0.212,
+      "break_rate": 0.667,
+      "baseline": {
+       "n": 133,
+       "bounce": 42,
+       "break": 72,
+       "none": 19,
+       "bounce_rate": 0.316,
+       "break_rate": 0.541
+      }
+     },
+     "trend_break_follow": {
+      "n": 33,
+      "follow": 12,
+      "baseline_n": 40,
+      "baseline_follow": 19,
+      "follow_rate": 0.364,
+      "baseline_rate": 0.475
+     }
+    }
+   }
+  }
+ },
+ "generated_at": "2026-11-18T06:11:50+00:00"
+}

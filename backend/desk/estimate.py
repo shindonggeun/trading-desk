@@ -58,6 +58,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from . import market_calendar
+from .ttl_cache import TTLCache
 
 log = logging.getLogger(__name__)
 
@@ -133,8 +134,10 @@ DailyCloses = Callable[[str], list[tuple[date, float]]]
 CLOSES_TTL_SEC = 300.0
 CLOSES_RETRY_SEC = 30.0            # #391: after an empty answer ask Yahoo again this soon, not in 5 minutes
 CLOSES_STALE_MAX_SEC = 3 * 86400.0  # #391: the last good rows stand in for an empty answer this long
-_CLOSES: dict[str, tuple[float, list[tuple[date, float]], datetime]] = {}
-_CLOSES_FAILED: dict[str, float] = {}   # ticker -> when Yahoo last gave nothing
+CLOSES_MAX = 256
+# ticker → (rows, when read): an entry lives CLOSES_STALE_MAX_SEC as the fallback, fresh for CLOSES_TTL_SEC
+_CLOSES: TTLCache[str, tuple[list[tuple[date, float]], datetime]] = TTLCache(CLOSES_MAX, CLOSES_STALE_MAX_SEC)
+_CLOSES_FAILED: TTLCache[str, bool] = TTLCache(CLOSES_MAX, CLOSES_RETRY_SEC)   # Yahoo just gave nothing
 _clock = time.monotonic
 
 
@@ -160,20 +163,18 @@ def yahoo_daily_closes(ticker: str, ahead: float = 0.0) -> list[tuple[date, floa
     (up to CLOSES_STALE_MAX_SEC old) and Yahoo is asked again after CLOSES_RETRY_SEC; without good
     rows it is retried once at once, then YahooEmpty."""
     session = session_of(ticker)
-    hit = _CLOSES.get(ticker)
     now = _wall()
     mono = _clock()
-    if hit and mono - hit[0] < CLOSES_TTL_SEC - ahead:
+    hit = _CLOSES.entry(ticker, now=mono)          # (age, (rows, when read)), up to CLOSES_STALE_MAX_SEC old
+    if hit and hit[0] < CLOSES_TTL_SEC - ahead:
         # rows read before today's close still hold an intraday price for today: read again
         today_close = session.close_moment(now.astimezone(session.zone).date())
-        if not (hit[2] < today_close <= now):
-            return hit[1]
+        if not (hit[1][1] < today_close <= now):
+            return hit[1][0]
     # only bars that had closed when they were read: a bar still trading then holds an intraday
     # price, and standing in after its close it would pass for that day's close
-    usable = ([(d, c) for d, c in hit[1] if session.close_moment(d) <= hit[2]] or None
-              if hit and mono - hit[0] <= CLOSES_STALE_MAX_SEC else None)
-    failed = _CLOSES_FAILED.get(ticker)
-    if failed is not None and mono - failed < CLOSES_RETRY_SEC:
+    usable = ([(d, c) for d, c in hit[1][0] if session.close_moment(d) <= hit[1][1]] or None) if hit else None
+    if _CLOSES_FAILED.get(ticker, now=mono) is not None:
         if usable is not None:
             return usable
         raise YahooEmpty(f"Yahoo gave no daily bars for {ticker} (asking again in {CLOSES_RETRY_SEC:.0f}s)")
@@ -181,17 +182,13 @@ def yahoo_daily_closes(ticker: str, ahead: float = 0.0) -> list[tuple[date, floa
     if not rows and usable is None:
         rows = _yahoo_rows(ticker, session)        # one quick retry: nothing to fall back on
     if not rows:
-        if len(_CLOSES_FAILED) > 256:
-            _CLOSES_FAILED.clear()
-        _CLOSES_FAILED[ticker] = mono
+        _CLOSES_FAILED.put(ticker, True, now=mono)   # never the empty rows themselves (#391)
         if usable is not None:
-            log.warning("Yahoo gave no daily bars for %s; keeping the rows read %.0fs ago", ticker, mono - hit[0])
+            log.warning("Yahoo gave no daily bars for %s; keeping the rows read %.0fs ago", ticker, hit[0])
             return usable
         raise YahooEmpty(f"Yahoo gave no daily bars for {ticker}")
-    _CLOSES_FAILED.pop(ticker, None)
-    if len(_CLOSES) > 256:
-        _CLOSES.clear()
-    _CLOSES[ticker] = (mono, rows, now)
+    _CLOSES_FAILED.pop(ticker)
+    _CLOSES.put(ticker, (rows, now), now=mono)
     return rows
 
 
@@ -406,7 +403,7 @@ class BinanceEstimator:
         self._us_loaded = -CONTRACTS_TTL_SEC
         self._contracts_lock = asyncio.Lock()
         # ticker -> (stamp, Estimate | None for "no contract" | Exception for a recent failure)
-        self._cache: dict[str, tuple[float, object]] = {}
+        self._cache: TTLCache[str, object] = TTLCache(CACHE_MAX, ESTIMATE_TTL_SEC, clock=lambda: self._clock())
         self._anchors: dict[tuple[str, int], float] = {}
         self._marks: tuple[float, dict[str, float]] = (-MARKS_TTL_SEC, {})
         self._marks_lock = asyncio.Lock()
@@ -488,8 +485,8 @@ class BinanceEstimator:
         """None when Binance has no contract for the ticker. A failure is remembered for the
         cache window too, so a page polling a broken ticker does not hammer Binance/Yahoo."""
         ticker = ticker.upper()
-        cached = self._cache.get(ticker)
-        if cached and self._clock() - cached[0] < ESTIMATE_TTL_SEC:
+        cached = self._cache.entry(ticker)          # its value may be None: no contract
+        if cached is not None:
             if isinstance(cached[1], Exception):
                 raise cached[1]
             return cached[1]
@@ -524,9 +521,7 @@ class BinanceEstimator:
         return sum(1 for g in got if g is True)
 
     def _remember(self, ticker: str, value: object) -> None:
-        if len(self._cache) >= CACHE_MAX:
-            self._cache.clear()
-        self._cache[ticker] = (self._clock(), value)
+        self._cache.put(ticker, value)
 
     async def resolve(self, ticker: str) -> tuple[str, str, str | None, float] | None:
         """(contract, method, basis ticker, multiple) for ``ticker``, or None: its own contract,

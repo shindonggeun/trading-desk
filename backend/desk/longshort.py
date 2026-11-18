@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 import httpx
 
 from .estimate import BINANCE_URL
+from .ttl_cache import TTLCache
 
 log = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ class LongShort:
         self._clock = clock
         # contract -> (stamp, summary | the failure's message, kept as text: a re-raised cached
         # exception would grow its traceback on every hit)
-        self._cache: dict[str, tuple[float, dict | str]] = {}
+        self._cache: TTLCache[str, dict | str] = TTLCache(CACHE_MAX, CACHE_TTL_SEC, clock=lambda: self._clock())
         self._resolve_failed = -FAIL_TTL_SEC      # the contract list failed: skip it for a while
         self._locks: dict[str, asyncio.Lock] = {}
         self._gate = asyncio.Semaphore(PARALLEL)
@@ -114,12 +115,10 @@ class LongShort:
         lock = self._locks.setdefault(contract, asyncio.Lock())
         async with lock:                          # a board asking twice reads Binance once
             cached = self._cache.get(contract)
-            if cached:
-                ttl = FAIL_TTL_SEC if isinstance(cached[1], str) else CACHE_TTL_SEC
-                if self._clock() - cached[0] < ttl:
-                    if isinstance(cached[1], str):
-                        raise RuntimeError(cached[1])
-                    return cached[1]
+            if cached is not None:
+                if isinstance(cached, str):
+                    raise RuntimeError(cached)
+                return cached
             try:
                 async with self._gate:
                     accounts, top, takers = await asyncio.gather(
@@ -136,9 +135,8 @@ class LongShort:
             return out
 
     def _remember(self, contract: str, value: dict | str) -> None:
-        if len(self._cache) >= CACHE_MAX:
-            self._cache.clear()
-        self._cache[contract] = (self._clock(), value)
+        # #391 / #628: a failure (its message) is kept only FAIL_TTL_SEC
+        self._cache.put(contract, value, FAIL_TTL_SEC if isinstance(value, str) else None)
 
     async def get(self, ticker: str) -> dict:
         """{ticker, contract, basis, multiple, accounts, top_positions, taker, change_24h, source} or

@@ -7,6 +7,7 @@ from datetime import date, timedelta
 from types import SimpleNamespace
 
 from desk import stock_profile as sp
+from desk.ttl_cache import TTLCache
 from tests.test_api import _client
 
 
@@ -104,7 +105,7 @@ class _Prices:
 
 
 def test_one_source_failing_leaves_the_rest_of_the_card(monkeypatch):
-    monkeypatch.setattr(sp, "_INFO", {})
+    monkeypatch.setattr(sp, "_INFO", TTLCache(sp.INFO_CACHE_MAX, sp.INFO_TTL_SEC))
     bars = _bars([100 + (i % 7) for i in range(60)])
 
     async def levels(prices, ticker):
@@ -131,7 +132,7 @@ def test_one_source_failing_leaves_the_rest_of_the_card(monkeypatch):
 
 
 def test_one_card_failing_outright_does_not_fail_the_others(monkeypatch):
-    monkeypatch.setattr(sp, "_INFO", {})
+    monkeypatch.setattr(sp, "_INFO", TTLCache(sp.INFO_CACHE_MAX, sp.INFO_TTL_SEC))
 
     async def levels(prices, ticker):
         if ticker == "BAD":
@@ -157,7 +158,7 @@ def test_one_card_failing_outright_does_not_fail_the_others(monkeypatch):
 
 
 def test_a_failed_or_empty_info_is_asked_again_in_minutes_not_a_day(monkeypatch):
-    monkeypatch.setattr(sp, "_INFO", {})
+    monkeypatch.setattr(sp, "_INFO", TTLCache(sp.INFO_CACHE_MAX, sp.INFO_TTL_SEC))
     now = [0.0]
     answers = [ValueError("429"), {}, {"longName": "Micron"}]
 
@@ -180,7 +181,7 @@ def test_a_failed_or_empty_info_is_asked_again_in_minutes_not_a_day(monkeypatch)
 
 
 def test_info_is_cached_for_a_day(monkeypatch):
-    monkeypatch.setattr(sp, "_INFO", {})
+    monkeypatch.setattr(sp, "_INFO", TTLCache(sp.INFO_CACHE_MAX, sp.INFO_TTL_SEC))
     now = [0.0]
     asked = []
 

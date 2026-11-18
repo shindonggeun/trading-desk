@@ -11,6 +11,7 @@ from desk.db import make_engine
 from desk.estimate import BinanceEstimator
 from desk.runner import make_fake_runner
 from desk.settings import Settings
+from desk.ttl_cache import TTLCache
 from tests.test_api import OWNER, PASSWORD
 
 SATURDAY_KST_10AM = datetime(2026, 11, 7, 1, 0, tzinfo=UTC)
@@ -420,8 +421,8 @@ class _FlakyYahoo:
         monkeypatch.setattr(estimate, "_clock", clock)
         self.wall = wall
         monkeypatch.setattr(estimate, "_wall", lambda: yahoo.wall)
-        monkeypatch.setattr(estimate, "_CLOSES", {})
-        monkeypatch.setattr(estimate, "_CLOSES_FAILED", {})
+        monkeypatch.setattr(estimate, "_CLOSES", TTLCache(estimate.CLOSES_MAX, estimate.CLOSES_STALE_MAX_SEC, clock=clock))
+        monkeypatch.setattr(estimate, "_CLOSES_FAILED", TTLCache(estimate.CLOSES_MAX, estimate.CLOSES_RETRY_SEC, clock=clock))
 
 
 def test_an_empty_yahoo_answer_keeps_the_last_good_closes_and_the_board_keeps_its_estimate(monkeypatch):

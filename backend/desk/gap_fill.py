@@ -35,6 +35,7 @@ from typing import Any
 from . import market_calendar
 from . import underlying as under
 from .sr import _local_day
+from .ttl_cache import TTLCache
 
 log = logging.getLogger(__name__)
 
@@ -280,27 +281,25 @@ def report(fetch: Fetch, ticker: str, events: Events | None = None) -> dict:
                        "bar": "1d", "fill": "a later low (up gap) / high (down gap) at the last close"}}
 
 
-_CACHE: dict[str, tuple[float, dict]] = {}
+CACHE_MAX = 128
+_CACHE: TTLCache[str, dict] = TTLCache(CACHE_MAX, CACHE_TTL_SEC)    # #628 bounded: the oldest go first
 
 
 def read(fetch: Fetch, ticker: str, events: Events | None = None, clock: Callable[[], float] = time.monotonic,
          ahead: float = 0.0) -> dict:
     """``report`` cached CACHE_TTL_SEC; ``ahead`` refreshes one that would expire that soon (prewarm)."""
     key = ticker.upper()
-    hit = _CACHE.get(key)
-    if hit and clock() - hit[0] < CACHE_TTL_SEC - ahead:
-        return hit[1]
-    result = report(fetch, key, events)
-    if len(_CACHE) > 200:
-        _CACHE.clear()
-    _CACHE[key] = (clock(), result)
+    hit = _CACHE.get(key, ahead=ahead, now=clock())
+    if hit is not None:
+        return hit
+    result = report(fetch, key, events)   # a failure raises: nothing is kept
+    _CACHE.put(key, result, now=clock())
     return result
 
 
 def cached(ticker: str, clock: Callable[[], float] = time.monotonic) -> dict | None:
     """The report already made, if still fresh - never fetches (for the tips' page)."""
-    hit = _CACHE.get(ticker.upper())
-    return hit[1] if hit and clock() - hit[0] < CACHE_TTL_SEC else None
+    return _CACHE.get(ticker.upper(), now=clock())
 
 
 # ------------------------------------------------------------------ words

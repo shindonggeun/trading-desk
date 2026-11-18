@@ -85,6 +85,7 @@
 - 학습 구간의 단계 빈도(기후 확률)와 섞는다: `p = (1−λ)·p_model + λ·p_기후`.
 - 학습은 표준화한 특징에 L2 를 걸고, 0 에서 시작해 Adam 1500 번(float64)을 돈다. 같은 머신에서 같은 봉이면 같은 계수가 나온다. 다른 머신은 BLAS 때문에 마지막 비트가 다를 수 있어, 버전 해시는 계수를 9자리로 반올림해서 만든다.
 - L2 와 λ 는 학습 구간 안의 확장 창 폴드(마지막 3년을 1년씩)에서 Brier 가 가장 낮은 값으로 고른다. 최근 90일(검증)은 고르는 데 한 번도 쓰지 않는다.
+- 학습 구간은 2015-01-01(`TRAIN_FROM`, `--from` 으로 바꾼다)부터 검증 전까지다(#604). 야간 선물 특징은 야후 60분봉이 약 2년뿐이라 그 판정(`prev_close`)은 있는 날만으로 학습하고, 특징 없는 판정(`prev_close_plain` · `open`)이 2015년부터를 쓴다.
 - 서버는 학습하지 않는다. 커밋된 모델을 순수 파이썬으로 읽는다.
 - 커밋하는 모델은 검증 구간 **전**까지로 학습한 것이다. 그래서 검증 90일을 PR-B 에서 정직한 백필로 채울 수 있다.
 
@@ -100,7 +101,22 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli day-call backtest --mark
 - 다만 야후의 일봉 · 60분봉은 받는 시각마다 끝이 달라져 모델 버전이 바뀐다.
 - 그래서 커밋하는 모델은 두 장이 모두 끝난 시각(KST 06:30~08:00 이나 16:00~22:00)에 만드는 것이 깔끔하다.
 
-`report.code` 는 `day_call.py` · `day_call_train.py` 의 지문이다. 코드를 바꾸면 다시 만든다.
+`report.code` 는 `day_call.py` · `day_call_train.py` · `day_call_krx.py` 의 지문이다. 코드를 바꾸면 다시 만든다.
+
+### 국장 정답은 KRX 일봉 (#604)
+
+- KRX 수집기(#601, `krx_daily` 의 `kospi_dd_trd` · `코스피` 행)가 있으면 `^KS11` 의 시가 · 고가 · 저가 · 종가를 KRX 공식 값으로 바꿔 쓴다(`desk/day_call_krx.py`). KRX 에 없는 날(아직 안 올라온 최근 세션)은 야후 그대로다.
+- 바꾸면서 KRX 와 야후의 시가 · 종가가 **0.1% 넘게** 다른 날, 한쪽에만 있는 날을 적는다 — 학습은 리포트 `answers`(+ 실행 로그), 운영은 WARNING 로그.
+- 학습 PC 에는 `krx_daily` 가 없다. 서버에서 내보내 가져온다:
+
+```bash
+ssh -t homelab-backend-server docker exec -it trading-desk-backend-prod python -m desk.cli krx export --out /tmp/krx_kospi.json
+# 파일을 PC 로 가져와
+PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli day-call backtest --market all --out-dir desk/data/day_call --krx-file krx_kospi.json
+```
+
+  서버에서 바로 돌릴 때는 `--krx-db`. 둘 다 없으면 리포트 `answers.kospi` 가 `yahoo` 다.
+- 운영 채점: 장 마감 30분 뒤 채점할 때 KRX 에 그날이 있으면 KRX 로, 없으면 야후로 채점하고 `outcome.answer_source` 에 적는다. 야후로 채점한 국장 판정은 다음 영업일 08:30 뒤 KRX 가 올라오면 다시 채점하고(최근 14일), 둘이 0.1% 넘게 다르면 야후 정답을 `outcome.yahoo_answer` 에 남긴다.
 
 ## 지표
 

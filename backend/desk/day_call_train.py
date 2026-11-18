@@ -27,7 +27,8 @@ import numpy as np
 
 from . import day_call as dc
 
-HISTORY_BARS = 2400           # ~9.5 years of daily bars
+HISTORY_BARS = 3100           # daily bars back to 2014 (#604): the ATR's 120 sessions before TRAIN_FROM
+TRAIN_FROM = date(2015, 1, 1)  # the first session a model is fitted on (``start`` overrides)
 HOLDOUT_DAYS = 90
 CV_YEARS = 3
 L2_GRID = (0.003, 0.01, 0.03, 0.1)
@@ -291,7 +292,8 @@ def _commit() -> str | None:
 def code_hash() -> str:
     """The model code's fingerprint (this module and desk.day_call): a report from other code is stale."""
     here = Path(__file__).parent
-    blob = b"".join((here / f).read_bytes().replace(b"\r\n", b"\n") for f in ("day_call.py", "day_call_train.py"))
+    blob = b"".join((here / f).read_bytes().replace(b"\r\n", b"\n")
+                    for f in ("day_call.py", "day_call_train.py", "day_call_krx.py"))
     return hashlib.sha256(blob).hexdigest()[:12]
 
 
@@ -306,8 +308,11 @@ def fit_round(market: str, round_: int, series: dict[str, Sequence], holdout_fro
               extras: Sequence[str] = (), edges: tuple[float, float] | None = None,
               start: date | None = None) -> tuple[dict, dict]:
     """One market and round: L2 and lambda from the training folds, the model fitted on every session
-    before ``holdout_from``, and its scores on the sessions from it. ``edges`` None keeps dc.EDGES;
-    "balanced" fits them to the training |z| (BALANCED quantiles)."""
+    from ``start`` (default TRAIN_FROM) before ``holdout_from``, and its scores on the sessions from it.
+    ``edges`` None keeps dc.EDGES; "balanced" fits them to the training |z| (BALANCED quantiles). A
+    feature group with a shorter history (night: Yahoo's 60-minute bars, about two years) trains on
+    the sessions it has."""
+    start = start or TRAIN_FROM
     rs = [r for r in rows(market, round_, series, dc.EDGES, kind, extras) if start is None or r["day"] >= start]
     train_z = np.abs([r["z"] for r in rs if r["day"] < holdout_from])
     if len(train_z) < 100:
@@ -362,10 +367,11 @@ NOTES = {
 def backtest(market: str, series: dict[str, Sequence], holdout_days: int = HOLDOUT_DAYS,
              start: date | None = None, progress: Callable[[str], None] | None = None, *,
              calls: dict[str, tuple[str, tuple[str, ...]]] | None = None,
-             compare: bool = True) -> tuple[dict, dict]:
+             compare: bool = True, krx_check: dict | None = None) -> tuple[dict, dict]:
     """The model file and the report for ``market``: every call in ``calls`` (default dc.CALLS: name ->
     answer kind and feature groups) for both rounds, fitted before the hold-out and scored on it;
-    ``compare`` adds every variant scored on the same hold-out."""
+    ``compare`` adds every variant scored on the same hold-out. ``krx_check`` (desk.day_call_krx.apply on
+    the series) says whose KOSPI bars the answers are."""
     say = progress or (lambda _msg: None)
     calls = calls or dc.CALLS
     holdout_from = holdout_start(market, series, holdout_days)
@@ -400,5 +406,16 @@ def backtest(market: str, series: dict[str, Sequence], holdout_days: int = HOLDO
     report = {"version": version, "market": market, "target": dc.MARKETS[market].target, "commit": _commit(),
               "code": code_hash(), "holdout_days": holdout_days, "holdout_from": holdout_from.isoformat(),
               "edges": list(dc.EDGES), "hold_margin": dc.HOLD_MARGIN, "calls": reports, "variants": table,
-              "notes": NOTES, "not_run": not_run}
+              "notes": NOTES, "not_run": not_run, "answers": answers(krx_check)}
     return model_file, report
+
+
+def answers(check: dict | None, keep: int = 40) -> dict:
+    """#604 the report's word on the KOSPI answers: KRX's bars (how many days, where Yahoo differs) or
+    Yahoo's only."""
+    if not check or check.get("source") != "krx":
+        return {"kospi": "yahoo", "note": "KRX 일봉(krx_daily)을 주지 않아 국장 정답 · 특징은 야후 ^KS11 이다"}
+    return {"kospi": "krx", "krx_days": check["krx_days"], "yahoo_only_days": check["yahoo_only_days"],
+            "from": check["from"], "to": check["to"], "diff_pct": check["diff_pct"],
+            "diff_days": len(check["diffs"]), "diffs": check["diffs"][:keep],
+            "only_yahoo": check["only_yahoo"][:keep], "only_krx": check["only_krx"][:keep]}

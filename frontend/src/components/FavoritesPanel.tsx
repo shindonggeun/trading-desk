@@ -45,6 +45,7 @@ import type { FundChangeItem } from "../types";
 const POLL_MS = 15_000;      // 시세판과 같은 주기
 const SPARK_MS = 120_000;    // 작은 차트는 2분마다
 const MAX_QUOTES = 30;       // /api/estimates 한 번에 30종목
+const FOLD = 8;              // #636 넓은 화면 3열에서 처음 보이는 수 — 30개면 가운데 열만 1,800px 로 길어진다(styles.css 와 같이)
 const SPARK_STAGGER_MS = 250; // 타일 i 의 첫 차트는 i × 0.25초 뒤
 
 type Line = { real: number[]; est: number[] };
@@ -172,6 +173,7 @@ export default function FavoritesPanel() {
   const [items, setItems] = useState<Record<string, BoardItem>>({});
   const [failedAt, setFailedAt] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [all, setAll] = useState(false);       // #636 넓은 화면 3열에서는 앞 FOLD 개만, 누르면 전부
   const [info, setInfo] = useState<string | null>(null);
   const tickers = (list ?? []).slice(0, MAX_QUOTES).map((f) => f.ticker);
   const key = tickers.join(",");
@@ -206,7 +208,7 @@ export default function FavoritesPanel() {
   const updated = Object.values(items).map((i) => i.fetched_at).filter(Boolean).sort().pop();
   const shown = list.slice(0, MAX_QUOTES);
   return (
-    <section className="card fav-panel" aria-label="즐겨찾기 시세">
+    <section className={`card fav-panel${all || editing ? " fav-all" : ""}`} aria-label="즐겨찾기 시세">
       {error && (
         <p className="error small">
           {error} <button type="button" className="link small" onClick={clearFavoriteError}>닫기</button>
@@ -239,6 +241,12 @@ export default function FavoritesPanel() {
                 onInfo={(t) => setInfo((cur) => (cur === t ? null : t))} funds={fundCh[f.ticker]} />
             ))}
           </div>
+          {shown.length > FOLD && (
+            // 넓은 화면 3열에서만 보인다(CSS) — 그 밖에서는 처음부터 전부
+            <button type="button" className="link small fav-more" aria-expanded={all || editing} onClick={() => setAll((v) => !v)}>
+              {all || editing ? "접기" : `나머지 ${shown.length - FOLD}개 더 보기`}
+            </button>
+          )}
           {info && <StockProfileCard ticker={info} onClose={() => setInfo(null)} />}
           <p className="muted small qb-note">추정가 · 점선은 바이낸스 무기한 선물로 낸 장외 추정이며 실제 체결가가 아닙니다.</p>
         </>

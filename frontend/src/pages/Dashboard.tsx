@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { Layout as GridLayoutItems } from "react-grid-layout";
 import { api } from "../api";
+import { balanceColumns, CLOSED_PX, loadColumns, loadHeights, saveColumns, saveHeights, type Col } from "../dashBalance";
 import FavoritesPanel from "../components/FavoritesPanel";
 import FuturesQuoteCard from "../components/FuturesQuoteCard";
 import CreditPanel from "../components/CreditPanel";
@@ -277,6 +278,16 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const layout = useLayout();
+  // #636 넓은 화면 3열: 지난번 잰 구역 높이로 열을 고른다(화면을 여는 순간 한 번 — 보는 동안 구역이 열 사이를 뛰지 않게)
+  const [balanced] = useState(() => {
+    const heights = loadHeights();
+    const closed = new Set(prefs.closed);
+    const cols = balanceColumns(prefs.order.filter((s) => !TOP_SECTIONS.includes(s)), COLUMN,
+      (id) => (closed.has(id) ? CLOSED_PX : heights[id] ?? null), loadColumns() as Partial<Record<SectionId, Col>>);
+    if (layout === "wide") saveColumns(cols);       // 다음에 열 때 이 배치가 아직 고르면 그대로
+    return cols;
+  });
+  const colOf = (id: SectionId): Col => balanced[id] ?? COLUMN[id];
   const toggled = (list: SectionId[], id: SectionId) => (list.includes(id) ? list.filter((c) => c !== id) : [...list, id]);
   const isOpen = (id: SectionId) => (layout === "phone" ? prefs.mobileOpen.includes(id) : !prefs.closed.includes(id));
   const flip = (id: SectionId) =>
@@ -285,7 +296,7 @@ export default function Dashboard() {
   // 넓은 화면: 맨 위 한 줄(아침 시황 · 오늘 방향)은 그 둘끼리, 나머지는 같은 열 안에서
   const peers = (id: SectionId) => (layout !== "wide" ? prefs.order
     : TOP_SECTIONS.includes(id) ? prefs.order.filter((s) => TOP_SECTIONS.includes(s))
-    : prefs.order.filter((s) => !TOP_SECTIONS.includes(s) && COLUMN[s] === COLUMN[id]));
+    : prefs.order.filter((s) => !TOP_SECTIONS.includes(s) && colOf(s) === colOf(id)));
   const move = (id: SectionId, by: -1 | 1) => {
     const line = peers(id);
     const other = line[line.indexOf(id) + by];
@@ -328,6 +339,26 @@ export default function Dashboard() {
     setSaved(band ? loadBand(band, DEFAULT_ORDER, TOP_SECTIONS) : null);
   }, [band]);
   const grid = band ? draft ?? saved : null;
+  // #636 넓은 화면 3열에서 구역 높이를 재 두었다가 다음에 열 때 열을 고르는 데 쓴다 — 펼친 채, 내용을 그린 뒤의 높이만
+  const heightsSeen = useRef<Record<string, number>>(loadHeights());
+  useEffect(() => {
+    const cols = layout === "wide" && !grid ? flowRef.current?.querySelector(".dash-columns") : null;
+    if (!cols) return;
+    let timer: number | undefined;
+    const ro = new ResizeObserver((entries) => {
+      let changed = false;
+      for (const e of entries) {
+        const el = e.target as HTMLElement;
+        const id = el.dataset.section;
+        if (!id || el.classList.contains("dash-closed") || el.querySelector(".when-visible-wait")) continue;
+        const px = Math.round(el.getBoundingClientRect().height);
+        if (px > 0 && heightsSeen.current[id] !== px) { heightsSeen.current[id] = px; changed = true; }
+      }
+      if (changed) { window.clearTimeout(timer); timer = window.setTimeout(() => saveHeights(heightsSeen.current), 1000); }
+    });
+    cols.querySelectorAll<HTMLElement>("section[data-section]").forEach((s) => ro.observe(s));
+    return () => { ro.disconnect(); window.clearTimeout(timer); };
+  }, [layout, grid, prefs]);
   const startEdit = () => {
     if (!band) return;
     if (saved) { setDraft({ items: saved.items.map((it) => ({ ...it })), hidden: [...saved.hidden], fixed: [...saved.fixed] }); return; }
@@ -344,7 +375,7 @@ export default function Dashboard() {
         const w = topOrder.length > 1 ? TOP_W[it.i] : GRID_COLS;
         return { ...it, y: 0, x: t === 0 ? 0 : GRID_COLS - w, w };
       }
-      return { ...it, x: COLUMN[it.i as SectionId] * 4, w: 4 };
+      return { ...it, x: colOf(it.i as SectionId) * 4, w: 4 };
     }) : measured;
     setDraft({ items, hidden: [], fixed: [] });
   };
@@ -486,7 +517,7 @@ export default function Dashboard() {
           <div className="dash-columns">
             {([0, 1, 2] as const).map((col) => (
               <div key={col} className="dash-col">
-                {prefs.order.filter((id) => !TOP_SECTIONS.includes(id) && COLUMN[id] === col).map(renderSection)}
+                {prefs.order.filter((id) => !TOP_SECTIONS.includes(id) && colOf(id) === col).map(renderSection)}
               </div>
             ))}
           </div>

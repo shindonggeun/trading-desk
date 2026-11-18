@@ -172,6 +172,11 @@ def test_the_estimate_is_kodex_200s_realised_volatility_named_an_estimate():
     assert calm["value"] < v["value"] and "fallback_reason" not in calm
     with pytest.raises(ValueError):
         fear.vkospi_estimate(lambda s, i, n: _kodex(fear.ESTIMATE_DAYS))   # 19 returns: no 20-session window
+    # ±1% each day: a 20-day sample stdev of 1.026%, × √252 = 16.29% annualised, × 0.9
+    assert abs(v["value"] - 14.66) < 0.01
+    # Yahoo dates a Korean daily bar at midnight Seoul time, 15:00 UTC the day before
+    yahoo = [SimpleNamespace(at=b.at.replace("T06:30", "T15:00"), close=b.close) for b in bars]
+    assert fear.vkospi_estimate(lambda s, i, n: yahoo)["as_of"] == "2026-11-10"
 
 
 def test_without_kis_or_when_it_fails_the_gauge_shows_the_estimate_and_asks_kis_again_soon():
@@ -191,6 +196,28 @@ def test_without_kis_or_when_it_fails_the_gauge_shows_the_estimate_and_asks_kis_
     kis.body = KIS_BODY
     vk = {x["key"]: x for x in asyncio.run(down.get())["items"]}["vkospi"]
     assert len(kis.calls) == 2 and vk["name"] == "VKOSPI" and vk["value"] == 24.51 and "estimated" not in vk
+    # anything but a KisError says its class only (its text could carry anything)
+    odd = fear.Fear(candles=lambda s, i, n: _kodex(), get=_get(routes),
+                    kis=lambda: FakeKis(error=RuntimeError("Bearer abc")))
+    vk = {x["key"]: x for x in asyncio.run(odd.get())["items"]}["vkospi"]
+    assert "RuntimeError" in vk["fallback_reason"] and "abc" not in vk["fallback_reason"]
+
+
+def test_without_kis_the_estimate_is_kept_as_long_as_a_kis_value_would_be():
+    now, asked = [0.0], []
+
+    def candles(symbol, interval, count):
+        asked.append(symbol)
+        return _kodex()
+
+    f = fear.Fear(candles=candles, get=_get({fear.CNN_URL: CNN, fear.CRYPTO_URL: CRYPTO}), clock=lambda: now[0])
+    asyncio.run(f.get())
+    now[0] = fear.FAIL_TTL_SEC + 1
+    asyncio.run(f.get())
+    assert asked.count(fear.ESTIMATE_SYMBOL) == 1
+    now[0] = fear.TTL_SEC["vkospi"] + 1
+    asyncio.run(f.get())
+    assert asked.count(fear.ESTIMATE_SYMBOL) == 2
 
 
 def test_a_kis_answer_without_the_week_before_takes_it_from_the_estimate():
@@ -200,6 +227,7 @@ def test_a_kis_answer_without_the_week_before_takes_it_from_the_estimate():
     vk = {x["key"]: x for x in asyncio.run(f.get())["items"]}["vkospi"]
     assert (vk["value"], vk["prev_day"], vk["name"]) == (24.51, 22.1, "VKOSPI")      # KIS' own
     assert vk["prev_week"] == _expected(_kodex(), 34) and vk["estimated"] == ["prev_week"]
+    assert vk["source"].startswith("한국투자증권") and "지난주 값은 추정" in vk["source"]   # the tooltip says so
     full = fear.Fear(candles=lambda s, i, n: _kodex(), get=_get({fear.CNN_URL: CNN, fear.CRYPTO_URL: CRYPTO}),
                      kis=lambda: FakeKis(KIS_BODY))
     assert "estimated" not in {x["key"]: x for x in asyncio.run(full.get())["items"]}["vkospi"]

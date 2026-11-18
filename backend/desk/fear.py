@@ -52,6 +52,9 @@ FAIL_TTL_SEC = 120.0
 # 2026-11-17 / the day before / a week before (53.81 · 52.64 · 58.19) over this estimate on those days
 # (58.22 · 58.57 · 65.67) is 0.92 · 0.90 · 0.89. That is a stormy market; in a calm one the implied
 # volatility usually sits above the realised, so the estimate then reads low - it is named an estimate.
+# The closes are unadjusted (desk.prices): KODEX 200's distribution days (end of Jan · Apr · Jul · Oct)
+# drop the price by the payout, a return that is not volatility and lifts a calm month's estimate.
+# KIS is asked first and the estimate only after it fails; asking both at once would shorten that wait.
 ESTIMATE_SYMBOL = "069500.KS"
 ESTIMATE_DAYS = 20
 ESTIMATE_SCALE = 0.9
@@ -188,12 +191,18 @@ def vkospi_estimate(candles: Callable, why: str | None = None) -> dict:
     return item
 
 
+_PREV_KO = {"prev_day": "어제", "prev_week": "지난주"}
+
+
 def fill_missing(item: dict, estimate: dict) -> dict:
-    """A KIS item missing the day or week before takes them from the estimate, listed in ``estimated``."""
+    """A KIS item missing the day or week before takes them from the estimate, listed in ``estimated``
+    and said in ``source`` (the gauge's tooltip): those values are another measure."""
     missing = [k for k in ("prev_day", "prev_week") if item.get(k) is None and estimate.get(k) is not None]
     if not missing:
         return item
-    return {**item, **{k: estimate[k] for k in missing}, "estimated": missing}
+    said = " · ".join(_PREV_KO[k] for k in missing)
+    return {**item, **{k: estimate[k] for k in missing}, "estimated": missing,
+            "source": f"{item['source']} · {said} 값은 {ESTIMATE_SOURCE}"}
 
 
 def _get_json(url: str, get: Callable[..., httpx.Response], **params) -> dict:

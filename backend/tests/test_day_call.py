@@ -50,7 +50,28 @@ def _series(days: int = 700, seed: int = 7) -> dict[str, list]:
     return out
 
 
+def _hourly(seed: int, start: datetime, hours: int, level: float) -> list[SimpleNamespace]:
+    rng = random.Random(seed)
+    out = []
+    for h in range(hours):
+        at = start + timedelta(hours=h)
+        o = level
+        level *= 1 + rng.gauss(0, 0.002)
+        out.append(SimpleNamespace(at=at.isoformat(), open=o, high=max(o, level), low=min(o, level), close=level,
+                                   volume=0))
+    return out
+
+
+def _flow_rows(days: list[date], seed: int = 3) -> dict:
+    rng = random.Random(seed)
+    return {d.isoformat(): {"foreigner": rng.gauss(0, 5e11), "institution": rng.gauss(0, 3e11)} for d in days}
+
+
 SERIES = _series()
+_FIRST = datetime(2023, 1, 1, tzinfo=UTC)
+SERIES["ES=F@60m"] = _hourly(11, _FIRST, 24 * 1000, 4000.0)
+SERIES["NQ=F@60m"] = _hourly(12, _FIRST, 24 * 1000, 12000.0)
+SERIES[dc.FLOW] = _flow_rows([dc.session_day("^KS11", b) for b in SERIES["^KS11"]])
 
 
 def test_stages_by_the_atr_edges():
@@ -84,19 +105,46 @@ def test_the_cutoff_reads_the_us_session_that_closed_before_the_korean_morning()
 @pytest.mark.parametrize(("market", "round_"), [("kr", 1), ("kr", 2), ("us", 1), ("us", 2)])
 def test_no_feature_reads_a_bar_that_was_not_over_by_the_cutoff(market, round_):
     day = date(2024, 6, 12)
-    full, _meta = dc.features(market, round_, day, SERIES)
+    extras = ("flow", "night")
+    full, _meta = dc.features(market, round_, day, SERIES, extras)
+    assert {"es_night", "nq_night"} <= set(full) and (("frn1" in full) == (market == "kr"))
     cutoff = dc.cutoff_of(market, day, round_)
     target = dc.MARKETS[market].target
-    seen = {}
+    # a flow row is final the evening of its day: the call's own day and later are not read
+    seen = {dc.FLOW: {d: ({k: v * 7 for k, v in row.items()} if d >= day.isoformat() else row)
+                      for d, row in SERIES[dc.FLOW].items()}}
     for symbol, bars in SERIES.items():
+        if symbol == dc.FLOW:
+            continue
         kept = [b for b in bars if dc.closed_at(symbol, b) <= cutoff]
         later = [SimpleNamespace(**{**vars(b), "high": b.high * 3, "low": b.low / 3, "close": b.close * 2})
                  for b in bars if dc.closed_at(symbol, b) > cutoff]
         if symbol == target and round_ == 1:
             later = [SimpleNamespace(**{**vars(b), "open": b.open * 5}) for b in later]   # nor the open yet
         seen[symbol] = kept + later
-    assert dc.features(market, round_, day, seen)[0] == full
+    assert dc.features(market, round_, day, seen, extras)[0] == full
     assert ("gap" in full) == (round_ == 2)
+
+
+def test_the_night_move_runs_from_the_last_session_close_to_the_cutoff():
+    day = date(2024, 6, 12)                              # KR: since 15:30 KST on the 11th, to 07:30 KST
+    x, meta = dc.features("kr", 1, day, SERIES, ("night",))
+    es = SERIES["ES=F@60m"]
+    since = datetime(2024, 6, 11, 15, 30, tzinfo=dc.KST)
+    then = [b for b in es if dc.closed_at("ES=F@60m", b) <= since][-1]
+    now = [b for b in es if dc.closed_at("ES=F@60m", b) <= meta["cutoff"]][-1]
+    assert x["es_night"] == pytest.approx(math.log(now.close / then.close) / (meta["atr_pct"] / 100))
+    with pytest.raises(dc.NoData):                       # no hourly bars that far back
+        dc.features("kr", 1, date(2023, 1, 2) + timedelta(days=40), {**SERIES, "ES=F@60m": es[-100:]}, ("night",))
+
+
+def test_the_close_to_close_answer_includes_the_gap():
+    day = date(2024, 6, 12)
+    oc, cc = dc.label("kr", day, SERIES, "oc"), dc.label("kr", day, SERIES, "cc")
+    bars = SERIES["^KS11"]
+    i = next(i for i, b in enumerate(bars) if dc.session_day("^KS11", b) == day)
+    assert cc["open"] == bars[i - 1].close and oc["open"] == bars[i].open and cc["close"] == oc["close"]
+    assert cc["z"] == pytest.approx((bars[i].close - bars[i - 1].close) / cc["atr"])
 
 
 def test_the_answer_is_open_to_close_in_the_atr_of_the_days_before():
@@ -159,8 +207,20 @@ def test_the_backtest_holds_out_the_last_90_days_and_the_server_reads_the_same_n
     model, report = dct.backtest("kr", SERIES)
     r1 = report["rounds"]["1"]
     hold = r1["holdout"]
-    assert hold["n"] > 50 and r1["train"]["to"] < hold["from"]
-    assert set(hold["baselines"]) == {"always_long", "follow_yesterday", "climatology"}
+    assert hold["n"] > 50 and r1["train"]["to"] < report["holdout_from"] <= hold["from"]
+    assert set(hold["baselines"]) == {"always_long", "always_short", "follow_yesterday", "climatology"}
+    moved = hold["baselines"]["always_long"]["direction_hit_rate"] + hold["baselines"]["always_short"]["direction_hit_rate"]
+    assert moved == pytest.approx(1, abs=0.002)
+    # the wider the margin, the fewer calls made (the rest is "판단 보류")
+    cover = [m["coverage"] for m in hold["margins"]]
+    assert cover[0] == 1.0 and cover == sorted(cover, reverse=True)
+    # every variant on the same held-out sessions: both answers, the flow and night groups, other edges
+    table = report["variants"]
+    assert {(v["label"], tuple(v["extras"])) for v in table} >= {
+        ("oc", ()), ("cc", ()), ("oc", ("night",)), ("oc", ("flow",)), ("cc", ("flow", "night"))}
+    assert all(v["from"] >= report["holdout_from"] for v in table)
+    balanced = [v for v in table if v["edges"] not in (list(dc.EDGES), list(dct.ALT_EDGES))]
+    assert balanced and balanced[0]["stage_share"][2] == pytest.approx(0.2, abs=0.03)   # flat ~20% of training
     assert sum(s["actual"] for s in hold["per_stage"]) == hold["n"] and hold["calibration"]
     assert [s["stage"] for s in hold["per_stage"]] == list(dc.DISPLAY_ORDER)
     m = model["rounds"]["1"]
@@ -191,9 +251,58 @@ def test_a_call_from_the_committed_model_has_the_contract_shape(quick, tmp_path)
 def test_the_cli_writes_the_model_and_the_report(quick, tmp_path, monkeypatch, capsys):
     from desk import cli
 
-    monkeypatch.setattr(dct, "fetch", lambda candles=None: SERIES)
+    monkeypatch.setattr(dct, "fetch", lambda candles=None, flow_dir=None: SERIES)
     assert cli.main(["day-call", "backtest", "--market", "kr", "--out-dir", str(tmp_path)]) == 0
     assert json.loads((tmp_path / "model_kr.json").read_text(encoding="utf-8"))["market"] == "kr"
     report = json.loads((tmp_path / "report_kr.json").read_text(encoding="utf-8"))
-    assert report["code"] == dct.code_hash() and "flow" in report["not_run"]
+    assert report["code"] == dct.code_hash() and "news" in report["not_run"] and "flow" not in report["not_run"]
     assert "kr 1차" in capsys.readouterr().out
+
+
+def test_a_session_still_in_progress_is_no_answer():
+    bars = SERIES["^KS11"]
+    last = bars[-1]
+    day = dc.session_day("^KS11", last)
+    during = datetime.combine(day, time(11, 0), dc.KST)          # Yahoo already has the day's bar at 11:00
+    assert dc.label("kr", day, SERIES, now=during) is None
+    assert dc.label("kr", day, SERIES, now=during + timedelta(hours=5)) is not None
+    assert all(r["day"] < day for r in dct.rows("kr", 1, SERIES, now=during))
+
+
+def test_the_held_out_sessions_choose_nothing(quick):
+    model, report = dct.backtest("us", SERIES, compare=False)
+    start = date.fromisoformat(report["holdout_from"])
+    moved = {**SERIES, "^GSPC": [SimpleNamespace(**{**vars(b), "close": b.close * (1.03 if i % 2 else 0.97)})
+                                  if dc.session_day("^GSPC", b) >= start else b
+                                  for i, b in enumerate(SERIES["^GSPC"])]}
+    again, other = dct.backtest("us", moved, compare=False)
+    assert again["rounds"] == model["rounds"] and other["rounds"]["1"]["holdout"] != report["rounds"]["1"]["holdout"]
+
+
+def test_no_second_call_on_a_ten_oclock_opening():
+    assert dc.kr_late_open(date(2026, 11, 19)) and dc.kr_late_open(date(2026, 1, 2))
+    assert not dc.kr_late_open(date(2026, 1, 5)) and not dc.kr_late_open(date(2026, 11, 18))
+    day = date(2024, 11, 14)                                     # the 2024 CSAT, inside the test series
+    with pytest.raises(dc.NoData):
+        dc.features("kr", 2, day, SERIES)
+    assert dc.features("kr", 1, day, SERIES)[0]                  # the 07:30 call does not need the open
+
+
+def test_daylight_saving_moves_what_the_korean_morning_reads():
+    # summer (BST, EDT): the London FX bar of the day before is over at 08:00 KST - read at 09:30, not at 07:30
+    summer = date(2024, 6, 12)
+    assert dc.session_day("KRW=X", dc.cut("KRW=X", SERIES["KRW=X"], dc.cutoff_of("kr", summer, 2))[-1]) == date(2024, 6, 11)
+    assert dc.session_day("KRW=X", dc.cut("KRW=X", SERIES["KRW=X"], dc.cutoff_of("kr", summer, 1))[-1]) == date(2024, 6, 10)
+    # winter (EST): the 10-year yield's 17:00 ET close is 07:00 KST - in time for 07:30
+    winter = date(2024, 1, 10)
+    assert dc.session_day("^TNX", dc.cut("^TNX", SERIES["^TNX"], dc.cutoff_of("kr", winter, 1))[-1]) == date(2024, 1, 9)
+
+
+def test_ties_go_to_the_long_side_in_the_service_and_the_backtest():
+    even = {"strong_long": 10.0, "weak_long": 30.0, "flat": 20.0, "weak_short": 30.0, "strong_short": 10.0}
+    assert dc.direction(even) == "long" and dc.top_stage(even) == "weak_long"
+    P = np.array([[0.1, 0.3, 0.2, 0.3, 0.1]])                    # STAGES order
+    rs = [{"day": date(2024, 1, 2), "stage": "weak_long", "z": 0.5, "prev_dir": 1}]
+    m = dct.metrics(P, rs, np.full(5, 0.2))
+    assert m["direction_hit_rate"] == 1.0 and m["stage_hit_rate"] == 1.0 and m["called_long_share"] == 1.0
+    assert dct.metrics(P, [{**rs[0], "z": 0.0}], np.full(5, 0.2)) == {"n": 1}   # nothing moved: no rates

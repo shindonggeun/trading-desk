@@ -20,7 +20,7 @@ import json
 import math
 import subprocess
 from collections.abc import Callable, Sequence
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -34,30 +34,48 @@ L2_GRID = (0.003, 0.01, 0.03, 0.1)
 LAMBDA_GRID = (0.0, 0.1, 0.2, 0.35, 0.5)
 STEPS = 1500
 LEARNING_RATE = 0.05
+FALLBACK = (0.1, 0.35)        # L2 and lambda when no fold fits: the most shrunk the folds ever chose
 ALT_EDGES = (0.25, 0.75)
 VERSION = 1
 
 
 # ------------------------------------------------------------------ data
 
-def fetch(candles: Callable | None = None) -> dict[str, list]:
-    """Daily bars for every symbol the calls read (desk.prices.yahoo_candles)."""
+HOURLY_BARS = 12000           # Yahoo's 60-minute bars reach back about two years
+MARGINS = (0.0, 0.05, 0.10, 0.15, 0.20)   # |P(long) - P(short)| a call needs not to be "판단 보류"
+BALANCED = (0.2, 0.7)         # |z| quantiles for edges fitted to the training spread: 20% flat, 30% strong
+
+
+def fetch(candles: Callable | None = None, flow_dir: str | None = None) -> dict[str, list]:
+    """Daily bars for every symbol the calls read, hourly futures bars (desk.prices.yahoo_candles) and,
+    with ``flow_dir``, the KOSPI investor flow file (desk.flow_history, collected on the server)."""
     if candles is None:
         from .prices import yahoo_candles as candles
-    return {s: [b for b in candles(s, "1d", HISTORY_BARS) if b.close] for s in dc.SYMBOLS}
+    out = {s: [b for b in candles(s, "1d", HISTORY_BARS) if b.close] for s in dc.SYMBOLS}
+    for key in dc.HOURLY:
+        out[key] = [b for b in candles(key.split("@")[0], "60m", HOURLY_BARS) if b.close]
+    if flow_dir:
+        from . import flow_history
+
+        data = flow_history.load(flow_history.path_for(flow_dir, "KOSPI"))
+        out[dc.FLOW] = (data or {}).get("rows") or {}
+    return out
 
 
-def rows(market: str, round_: int, series: dict[str, Sequence], edges: tuple[float, float] = dc.EDGES) -> list[dict]:
-    """One row per target session with its features (as of the round's cutoff) and its answer."""
+def rows(market: str, round_: int, series: dict[str, Sequence], edges: tuple[float, float] = dc.EDGES,
+         kind: str = "oc", extras: Sequence[str] = (), now: datetime | None = None) -> list[dict]:
+    """One row per finished target session (at ``now``) with its features (as of the round's cutoff)
+    and its answer (``kind``: open or previous close to close)."""
     m = dc.MARKETS[market]
     days = sorted({dc.session_day(m.target, b) for b in series[m.target]})
     out, prev_dir = [], None
     for day in days:
-        answer = dc.label(market, day, series)
+        answer = dc.label(market, day, series, kind, now)
         if answer is None:
+            prev_dir = None
             continue
         try:
-            x, _meta = dc.features(market, round_, day, series)
+            x, _meta = dc.features(market, round_, day, series, extras)
         except dc.NoData:
             prev_dir = math.copysign(1, answer["z"]) if answer["z"] else None
             continue
@@ -142,7 +160,8 @@ def _brier(P: np.ndarray, y: np.ndarray) -> float:
     return float(((P - onehot) ** 2).sum(axis=1).mean())
 
 
-def _fit_model(train: Sequence[dict], names: Sequence[str], edges, l2: float, lam: float) -> dict:
+def _fit_model(train: Sequence[dict], names: Sequence[str], edges, l2: float, lam: float,
+               kind: str = "oc", extras: Sequence[str] = ()) -> dict:
     X = _matrix(train, names)
     mean, std = _standardize(X)
     y = _class_index([r["stage"] for r in train])
@@ -152,7 +171,7 @@ def _fit_model(train: Sequence[dict], names: Sequence[str], edges, l2: float, la
             "beta": theta[1:k + 1].tolist(), "gamma0": float(theta[k + 1]), "gamma": theta[k + 2:].tolist(),
             "edges": list(edges), "lambda": lam, "l2": l2, "climatology": _climatology(y).tolist(),
             "trained_from": train[0]["day"].isoformat(), "trained_through": train[-1]["day"].isoformat(),
-            "n_train": len(train)}
+            "n_train": len(train), "label": kind, "extras": list(extras)}
 
 
 def _predict(model: dict, rs: Sequence[dict]) -> np.ndarray:
@@ -178,6 +197,8 @@ def select(train: Sequence[dict], names: Sequence[str], edges) -> tuple[float, f
             y = _class_index([r["stage"] for r in test_rows])
             for lam in LAMBDA_GRID:
                 scores.setdefault((l2, lam), []).append(_brier((1 - lam) * P + lam * clim, y))
+    if not scores:                               # too short a history for a fold (the hourly futures)
+        return FALLBACK[0], FALLBACK[1], {"folds": [], "brier": None}
     mean = {key: float(np.mean(v)) for key, v in scores.items()}
     l2, lam = min(mean, key=lambda key: (round(mean[key], 6), -key[1], -key[0]))
     return l2, lam, {"folds": [f[1][0]["day"].year for f in folds], "brier": round(mean[(l2, lam)], 4)}
@@ -191,15 +212,20 @@ def metrics(P: np.ndarray, rs: Sequence[dict], clim: np.ndarray) -> dict:
     n = len(rs)
     if n == 0:
         return {"n": 0}
+    # scored as the service shows and scores them: % with one decimal (dc.percent), ties to the long side;
+    # the log loss reads the unrounded ones (a shown 0.0% is not a zero probability)
+    raw, P = P, np.array([list(dc.percent(p).values()) for p in P]) / 100
     y = _class_index([r["stage"] for r in rs])
     up = P[:, 3] + P[:, 4]
     down = P[:, 0] + P[:, 1]
     actual = np.array([math.copysign(1, r["z"]) if r["z"] else 0 for r in rs])
     called = np.where(up >= down, 1, -1)
     moved = actual != 0
+    if not moved.any():
+        return {"n": n}
     dir_hit = float((called[moved] == actual[moved]).mean())
-    se = math.sqrt(dir_hit * (1 - dir_hit) / max(moved.sum(), 1))
-    top = P.argmax(axis=1)
+    se = math.sqrt(dir_hit * (1 - dir_hit) / moved.sum())
+    top = 4 - P[:, ::-1].argmax(axis=1)              # a tie goes to the long side, as dc.top_stage
     clim_P = np.tile(clim, (n, 1))
     prev = np.array([r["prev_dir"] or 0 for r in rs])
     follow = moved & (prev != 0)
@@ -213,12 +239,18 @@ def metrics(P: np.ndarray, rs: Sequence[dict], clim: np.ndarray) -> dict:
     return {
         "n": n, "from": rs[0]["day"].isoformat(), "to": rs[-1]["day"].isoformat(),
         "direction_hit_rate": round(dir_hit, 3),
+        "called_long_share": round(float((called[moved] > 0).mean()), 3),
         "direction_ci95": [round(dir_hit - 1.96 * se, 3), round(dir_hit + 1.96 * se, 3)],
         "stage_hit_rate": round(float((top == y).mean()), 3),
         "brier": round(_brier(P, y), 4),
-        "log_loss": round(float(-np.log(np.clip(P[np.arange(n), y], 1e-12, None)).mean()), 4),
+        "log_loss": round(float(-np.log(np.clip(raw[np.arange(n), y], 1e-12, None)).mean()), 4),
+        "margins": [{"margin": m, "coverage": round(float((cover := moved & (np.abs(up - down) >= m)).sum()
+                                                             / max(moved.sum(), 1)), 3),
+                     "direction_hit_rate": round(float((called[cover] == actual[cover]).mean()), 3) if cover.any() else None}
+                    for m in MARGINS],
         "baselines": {
             "always_long": {"direction_hit_rate": round(float((actual[moved] > 0).mean()), 3)},
+            "always_short": {"direction_hit_rate": round(float((actual[moved] < 0).mean()), 3)},
             "follow_yesterday": {"direction_hit_rate": round(float((prev[follow] == actual[follow]).mean()), 3)
                                  if follow.any() else None},
             "climatology": {"brier": round(_brier(clim_P, y), 4),
@@ -233,7 +265,17 @@ def metrics(P: np.ndarray, rs: Sequence[dict], clim: np.ndarray) -> dict:
 
 
 def _version(models: dict) -> str:
-    blob = json.dumps(models, sort_keys=True).encode()
+    """From the coefficients rounded to 9 digits: another machine's BLAS may differ in the last bits."""
+    def rounded(v):
+        if isinstance(v, float):
+            return round(v, 9)
+        if isinstance(v, list):
+            return [rounded(x) for x in v]
+        if isinstance(v, dict):
+            return {k: rounded(x) for k, x in v.items()}
+        return v
+
+    blob = json.dumps(rounded(models), sort_keys=True).encode()
     through = min(m["trained_through"] for m in models.values())
     return f"dc-{through.replace('-', '')}-{hashlib.sha256(blob).hexdigest()[:8]}"
 
@@ -253,46 +295,99 @@ def code_hash() -> str:
     return hashlib.sha256(blob).hexdigest()[:12]
 
 
+def holdout_start(market: str, series: dict[str, Sequence], holdout_days: int = HOLDOUT_DAYS) -> date:
+    """The first held-out day: the same for every variant, so their scores are on the same sessions."""
+    m = dc.MARKETS[market]
+    last = max(dc.session_day(m.target, b) for b in series[m.target])
+    return last - timedelta(days=holdout_days) + timedelta(days=1)
+
+
+def fit_round(market: str, round_: int, series: dict[str, Sequence], holdout_from: date, *, kind: str = "oc",
+              extras: Sequence[str] = (), edges: tuple[float, float] | None = None,
+              start: date | None = None) -> tuple[dict, dict]:
+    """One market and round: L2 and lambda from the training folds, the model fitted on every session
+    before ``holdout_from``, and its scores on the sessions from it. ``edges`` None keeps dc.EDGES;
+    "balanced" fits them to the training |z| (BALANCED quantiles)."""
+    rs = [r for r in rows(market, round_, series, dc.EDGES, kind, extras) if start is None or r["day"] >= start]
+    train_z = np.abs([r["z"] for r in rs if r["day"] < holdout_from])
+    if len(train_z) < 100:
+        raise ValueError(f"{market} round {round_} {kind} {list(extras)}: {len(train_z)} training sessions")
+    if edges == "balanced":
+        edges = tuple(round(float(np.quantile(train_z, q)), 3) for q in BALANCED)
+    edges = edges or dc.EDGES
+    rs = [{**r, "stage": dc.stage_of(r["z"], edges)} for r in rs]
+    train = [r for r in rs if r["day"] < holdout_from]
+    hold = [r for r in rs if r["day"] >= holdout_from]
+    names = [n for n in dc.FEATURES if n in rs[0]["x"]]
+    l2, lam, cv = select(train, names, edges)
+    model = _fit_model(train, names, edges, l2, lam, kind, extras)
+    clim = np.array(model["climatology"])
+    share = np.bincount(_class_index([r["stage"] for r in train]), minlength=5) / len(train)
+    return model, {
+        "label": kind, "extras": list(extras), "edges": list(edges), "features": names, "l2": l2, "lambda": lam,
+        "cv": cv,
+        "train": {"n": len(train), "from": train[0]["day"].isoformat(), "to": train[-1]["day"].isoformat(),
+                  "stage_share": [round(float(v), 3) for v in share][::-1]},
+        "holdout": metrics(_predict(model, hold), hold, clim),
+        "coefficients": [{"feature": n, "label": dc.FEATURES[n][0], "beta": round(b, 4), "gamma": round(g, 4)}
+                         for n, b, g in zip(names, model["beta"], model["gamma"], strict=True)],
+    }
+
+
+def variants(market: str) -> list[dict]:
+    """The label × feature-group combinations the report compares (flow only for the KOSPI)."""
+    groups: list[tuple[str, ...]] = [(), ("night",)]
+    if market == "kr":
+        groups += [("flow",), ("flow", "night")]
+    out = [{"kind": k, "extras": g, "edges": None} for k in dc.LABELS for g in groups]
+    return out + [{"kind": "oc", "extras": (), "edges": ALT_EDGES}, {"kind": "oc", "extras": (), "edges": "balanced"}]
+
+
+def _compact(rep: dict) -> dict:
+    h = rep["holdout"]
+    keep = ("n", "from", "to", "direction_hit_rate", "direction_ci95", "stage_hit_rate", "brier", "brier_skill",
+            "margins", "baselines", "per_stage")
+    return {"label": rep["label"], "extras": rep["extras"], "edges": rep["edges"], "l2": rep["l2"],
+            "lambda": rep["lambda"], "train_n": rep["train"]["n"], "train_from": rep["train"]["from"],
+            "stage_share": rep["train"]["stage_share"], **{k: h[k] for k in keep if k in h}}
+
+
 def backtest(market: str, series: dict[str, Sequence], holdout_days: int = HOLDOUT_DAYS,
-             start: date | None = None, progress: Callable[[str], None] | None = None) -> tuple[dict, dict]:
-    """The model file (both rounds, fitted before the hold-out) and the report for ``market``."""
+             start: date | None = None, progress: Callable[[str], None] | None = None, *,
+             kind: str = "oc", extras: Sequence[str] = (), compare: bool = True) -> tuple[dict, dict]:
+    """The model file (both rounds, the chosen label and feature groups, fitted before the hold-out)
+    and the report for ``market``; ``compare`` adds every variant scored on the same hold-out."""
     say = progress or (lambda _msg: None)
-    models, report_rounds = {}, {}
+    holdout_from = holdout_start(market, series, holdout_days)
+    models, report_rounds, table = {}, {}, []
     for round_ in sorted(dc.MARKETS[market].rounds):
-        rs = [r for r in rows(market, round_, series) if start is None or r["day"] >= start]
-        if not rs:
-            raise ValueError(f"{market} round {round_}: no rows")
-        holdout_from = rs[-1]["day"] - timedelta(days=holdout_days)
-        train = [r for r in rs if r["day"] <= holdout_from]
-        hold = [r for r in rs if r["day"] > holdout_from]
-        names = [n for n in dc.FEATURES if n in rs[0]["x"]]
-        say(f"{market} round {round_}: {len(train)} training sessions, {len(hold)} held out")
-        l2, lam, cv = select(train, names, dc.EDGES)
-        model = _fit_model(train, names, dc.EDGES, l2, lam)
-        clim = np.array(model["climatology"])
-        P = _predict(model, hold)
-        # the same choice of L2 and lambda on the other edges, refitted: how the stage counts move
-        alt_rows = [{**r, "stage": dc.stage_of(r["z"], ALT_EDGES)} for r in rs]
-        alt_train = [r for r in alt_rows if r["day"] <= holdout_from]
-        alt_hold = [r for r in alt_rows if r["day"] > holdout_from]
-        alt = _fit_model(alt_train, names, ALT_EDGES, l2, lam)
+        say(f"{market} round {round_}: {kind} {list(extras)}")
+        model, rep = fit_round(market, round_, series, holdout_from, kind=kind, extras=extras, start=start)
         models[str(round_)] = model
-        report_rounds[str(round_)] = {
-            "features": names, "l2": l2, "lambda": lam, "cv": cv,
-            "train": {"n": len(train), "from": train[0]["day"].isoformat(), "to": train[-1]["day"].isoformat(),
-                      "stage_share": [round(v, 3) for v in np.bincount(_class_index([r["stage"] for r in train]),
-                                                                       minlength=5) / len(train)][::-1]},
-            "holdout": metrics(P, hold, clim),
-            "holdout_alt_edges": {"edges": list(ALT_EDGES),
-                                  **metrics(_predict(alt, alt_hold), alt_hold, np.array(alt["climatology"]))},
-            "coefficients": [{"feature": n, "label": dc.FEATURES[n][0], "beta": round(b, 4), "gamma": round(g, 4)}
-                             for n, b, g in zip(names, model["beta"], model["gamma"], strict=True)],
-        }
+        report_rounds[str(round_)] = rep
+        for v in variants(market) if compare else ():
+            if v["edges"] is None and v["kind"] == kind and tuple(v["extras"]) == tuple(extras):
+                table.append({"round": round_, **_compact(rep)})
+                continue
+            if "flow" in v["extras"] and dc.FLOW not in series:
+                continue
+            try:
+                _m, other = fit_round(market, round_, series, holdout_from, kind=v["kind"], extras=v["extras"],
+                                      edges=v["edges"], start=start)
+            except ValueError as exc:
+                say(f"  skip {v}: {exc}")
+                continue
+            say(f"  {v['kind']} {list(v['extras'])} edges={other['edges']}: dir "
+                f"{other['holdout'].get('direction_hit_rate')} brier skill {other['holdout'].get('brier_skill')}")
+            table.append({"round": round_, **_compact(other)})
     version = _version(models)
     model_file = {"version": version, "market": market, "format": VERSION, "code": code_hash(), "rounds": models}
+    not_run = {"news": "GDELT 뉴스 톤 기록이 이 PC 에 거의 없어(2개 파일) 넣지 않음",
+               "live_only": "KIS 야간선물 · 선물 수급 · VKOSPI · 커뮤니티는 과거 기록이 없어 모델 밖(context)"}
+    if dc.FLOW not in series and market == "kr":
+        not_run["flow"] = "투자자별 수급 파일(--flow-dir)을 주지 않아 넣지 않음"
     report = {"version": version, "market": market, "target": dc.MARKETS[market].target, "commit": _commit(),
-              "code": code_hash(), "holdout_days": holdout_days, "edges": list(dc.EDGES), "rounds": report_rounds,
-              "not_run": {"flow": "투자자별 수급 기록(flow-history)은 서버에만 있어 이 실행에 넣지 않음",
-                          "news": "GDELT 뉴스 톤 기록이 이 PC 에 거의 없어(2개 파일) 넣지 않음",
-                          "live_only": "야간선물 · 선물 수급 · VKOSPI · 커뮤니티는 과거 기록이 없어 모델 밖(context)"}}
+              "code": code_hash(), "holdout_days": holdout_days, "holdout_from": holdout_from.isoformat(),
+              "label": kind, "extras": list(extras), "edges": list(dc.EDGES), "rounds": report_rounds,
+              "variants": table, "not_run": not_run}
     return model_file, report

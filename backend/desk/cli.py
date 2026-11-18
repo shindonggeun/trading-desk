@@ -318,13 +318,16 @@ def _day_call(args) -> int:
 
     from . import day_call_train as dct
 
-    series = dct.fetch()
+    series = dct.fetch(flow_dir=args.flow_dir)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     start = date.fromisoformat(args.start) if args.start else None
+    extras = tuple(e for e in args.extras.split(",") if e)
     for market in (("kr", "us") if args.market == "all" else (args.market,)):
+        mine = tuple(e for e in extras if e != "flow" or market == "kr")
         model, report = dct.backtest(market, series, args.holdout_days or dct.HOLDOUT_DAYS, start,
-                                     progress=lambda msg: print(msg, file=sys.stderr))
+                                     progress=lambda msg: print(msg, file=sys.stderr), kind=args.label,
+                                     extras=mine, compare=not args.no_compare)
         for name, body in ((f"model_{market}.json", model), (f"report_{market}.json", report)):
             with open(out / name, "w", encoding="utf-8", newline="\n") as f:
                 json.dump(body, f, ensure_ascii=False, indent=1)
@@ -336,6 +339,14 @@ def _day_call(args) -> int:
                   f"단계 {h['stage_hit_rate']:.3f}  Brier {h['brier']:.4f} (기후 {b['climatology']['brier']:.4f}, "
                   f"skill {h['brier_skill']:+.3f})  항상 롱 {b['always_long']['direction_hit_rate']:.3f}  "
                   f"전날 따라 {b['follow_yesterday']['direction_hit_rate']}")
+        for v in report["variants"]:
+            b = v["baselines"]
+            hold = {m["margin"]: m for m in v["margins"]}[0.1]
+            print(f"  {market} {v['round']}차 {v['label']} {'+'.join(v['extras']) or '-':11} edges={v['edges']} "
+                  f"n={v['n']} train={v['train_n']}  방향 {v['direction_hit_rate']:.3f} (롱 {b['always_long']['direction_hit_rate']:.3f}"
+                  f" · 숏 {b['always_short']['direction_hit_rate']:.3f})  단계 {v['stage_hit_rate']:.3f} "
+                  f"(기후 {b['climatology']['stage_hit_rate']:.3f})  skill {v['brier_skill']:+.3f}  "
+                  f"보류 10%p: 범위 {hold['coverage']:.2f} 적중 {hold['direction_hit_rate']}")
         print(f"{market}: {out / f'model_{market}.json'} · {out / f'report_{market}.json'}  ({report['version']})")
     return 0
 
@@ -432,6 +443,12 @@ def main(argv: list[str] | None = None) -> int:
     dcp.add_argument("--from", dest="start", default=None, help="first session to use, YYYY-MM-DD")
     dcp.add_argument("--holdout-days", type=int, default=None, help="calendar days held out (default 90)")
     dcp.add_argument("--out-dir", default="desk/data/day_call", help="where the model and report files go")
+    dcp.add_argument("--label", choices=("oc", "cc"), default="oc",
+                     help="the model's answer: open -> close (default) or the previous close -> close")
+    dcp.add_argument("--extras", default="", help="feature groups for the model, comma-separated: flow,night")
+    dcp.add_argument("--flow-dir", default=None,
+                     help="flow-history files (#389; collected on the server) for the KOSPI flow features")
+    dcp.add_argument("--no-compare", action="store_true", help="skip the table of every variant")
     bz = sub.add_parser("bottom-backtest", help=(
         "the long-term bottom zone (#240) on past big lows: signals, how early, staged-buy returns"))
     bz.add_argument("tickers", nargs="*", default=["^NDX", "^GSPC", "^SOX", "^KS11", "005930.KS", "000660.KS"])

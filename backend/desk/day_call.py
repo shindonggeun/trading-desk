@@ -50,6 +50,11 @@ ATR_WINDOW = 120            # bars an ATR is read over
 CLOSES = {"^KS11": (KST, time(15, 30)), "^GSPC": (ET, time(16, 0)), "^IXIC": (ET, time(16, 0)),
           "^VIX": (ET, time(16, 15)), "^TNX": (ET, time(17, 0)), "DX-Y.NYB": (ET, time(17, 0))}
 FX = {"KRW=X"}
+# 60-minute futures bars ("<symbol>@60m"): over an hour after they start. Yahoo keeps about two years.
+HOURLY = ("ES=F@60m", "NQ=F@60m")
+FLOW = "flow:KOSPI"         # desk.flow_history rows {day: {investor: net KRW}}: a day's row is final that evening
+FLOW_WINDOW = 20
+EXTRAS = ("flow", "night")  # optional feature groups: investor flow (KR), overnight futures (both)
 
 
 @dataclass(frozen=True)
@@ -78,32 +83,35 @@ ROUND_KO = {1: "1차", 2: "2차"}
 def session_day(symbol: str, bar) -> date:
     """The trading day a daily bar belongs to (Yahoo dates it at local midnight)."""
     at = datetime.fromisoformat(bar.at)
-    zone = CLOSES[symbol][0] if symbol in CLOSES else ZoneInfo("Europe/London")
+    zone = CLOSES[symbol][0] if symbol in CLOSES else ET if symbol in HOURLY else ZoneInfo("Europe/London")
     return at.astimezone(zone).date()
 
 
 def closed_at(symbol: str, bar) -> datetime:
     """When the bar's session was over: no feature may read it before."""
+    if symbol in HOURLY:
+        return datetime.fromisoformat(bar.at) + timedelta(hours=1)
     if symbol in FX:
         return datetime.fromisoformat(bar.at) + timedelta(days=1)
     zone, close = CLOSES[symbol]
     return datetime.combine(session_day(symbol, bar), close, zone)
 
 
-_INDEX: dict[tuple, tuple[list[datetime], dict[date, int]]] = {}
+_INDEX: dict[tuple, tuple[Sequence, list[datetime], dict[date, int]]] = {}
 
 
 def _index(symbol: str, bars: Sequence) -> tuple[list[datetime], dict[date, int]]:
     """Each bar's close time and the position of each session day, kept per series (the backtest asks
-    for the same bars thousands of times)."""
-    key = (symbol, id(bars), len(bars), bars[0].at if bars else None, bars[-1].at if bars else None)
+    for the same bars thousands of times). The entry holds the list itself, so its id cannot be reused
+    by another list while it is cached; a series is not changed in place once read."""
+    key = (symbol, id(bars), len(bars))
     got = _INDEX.get(key)
-    if got is None:
+    if got is None or got[0] is not bars:
         if len(_INDEX) > 64:
             _INDEX.clear()
-        got = _INDEX[key] = ([closed_at(symbol, b) for b in bars],
+        got = _INDEX[key] = (bars, [closed_at(symbol, b) for b in bars],
                              {session_day(symbol, b): i for i, b in enumerate(bars)})
-    return got
+    return got[1], got[2]
 
 
 def cut(symbol: str, bars: Sequence, cutoff: datetime) -> list:
@@ -159,6 +167,8 @@ FEATURES = {
     "kospi_ret1": ("오늘 코스피", "atr"), "vix_lvl": ("VIX 수준", "level"), "vix_chg": ("VIX 변화", "logpct"),
     "krw_chg": ("원/달러 변화", "pct100"), "tnx_chg": ("미 10년물 금리 변화", "bp"), "dxy_chg": ("달러인덱스 변화", "pct100"),
     "expiry": ("만기일", "flag"), "monday": ("월요일", "flag"), "gap": ("오늘 시가 갭", "atr"),
+    "frn1": ("전일 외국인 순매수", "flow"), "frn5": ("5일 외국인 순매수", "flow"), "inst1": ("전일 기관 순매수", "flow"),
+    "es_night": ("밤사이 S&P 선물", "atr"), "nq_night": ("밤사이 나스닥 선물", "atr"),
 }
 
 
@@ -172,6 +182,23 @@ def _rv(bars: Sequence, n: int) -> float:
     return math.sqrt(sum((r - mean) ** 2 for r in rets) / (n - 1))
 
 
+# KRX opens at 10:00 on the year's first session and on the 수능 (CSAT) day: the 09:30 round has no
+# open yet. CSAT days (Ministry of Education; 2017 was put off a week by the Pohang earthquake, 2020 by
+# COVID-19) - add each year's when it is announced.
+CSAT_DAYS = {date(2017, 11, 23), date(2018, 11, 15), date(2019, 11, 14), date(2020, 12, 3), date(2021, 11, 18),
+             date(2022, 11, 17), date(2023, 11, 16), date(2024, 11, 14), date(2025, 11, 13), date(2026, 11, 19)}
+
+
+def kr_late_open(day: date) -> bool:
+    """A KRX session that opens at 10:00: the year's first one, or the CSAT day."""
+    if day in CSAT_DAYS:
+        return True
+    first = date(day.year, 1, 1)
+    while not market_calendar.is_open("kr", first):
+        first += timedelta(days=1)
+    return day == first
+
+
 def _expiry(market: str, day: date) -> bool:
     return any(e["date"] == day.isoformat() and e["market"] == market
                for e in market_calendar.expiries(day.year, day.month))
@@ -181,9 +208,41 @@ class NoData(ValueError):
     """Not enough finished bars before the cutoff for this call."""
 
 
-def features(market: str, round_: int, day: date, series: dict[str, Sequence]) -> tuple[dict[str, float], dict]:
+def _flow(series: dict, day: date) -> dict[str, float]:
+    """Foreign and institutional net buying of the KOSPI on the sessions before ``day``, each over the
+    mean absolute day of the last FLOW_WINDOW (a row is final the evening of its day)."""
+    rows = series.get(FLOW) or {}
+    days = [d for d in sorted(rows) if d < day.isoformat()][-FLOW_WINDOW:]
+    if len(days) < FLOW_WINDOW:
+        raise NoData(f"flow: {len(days)} days before {day}")
+
+    def net(d: str, who: str) -> float:
+        return float(rows[d].get(who) or 0)
+
+    scale = {w: (sum(abs(net(d, w)) for d in days) / len(days)) or 1.0 for w in ("foreigner", "institution")}
+    return {"frn1": net(days[-1], "foreigner") / scale["foreigner"],
+            "frn5": sum(net(d, "foreigner") for d in days[-5:]) / (5 * scale["foreigner"]),
+            "inst1": net(days[-1], "institution") / scale["institution"]}
+
+
+def _night(series: dict, symbol: str, since: datetime, cutoff: datetime) -> float:
+    """The futures' move from the last hourly bar finished by ``since`` to the last one finished by
+    ``cutoff`` (log), the most recent at most three hours before the cutoff."""
+    bars = cut(symbol, series.get(symbol) or [], cutoff)
+    if not bars or cutoff - closed_at(symbol, bars[-1]) > timedelta(hours=3):
+        raise NoData(f"{symbol}: no bar near {cutoff}")
+    closes, _days = _index(symbol, series[symbol])
+    i = bisect_right(closes, since) - 1
+    if i < 0 or since - closes[i] > timedelta(hours=6) or not series[symbol][i].close:
+        raise NoData(f"{symbol}: no bar near {since}")
+    return math.log(bars[-1].close / series[symbol][i].close)
+
+
+def features(market: str, round_: int, day: date, series: dict[str, Sequence],
+             extras: Sequence[str] = ()) -> tuple[dict[str, float], dict]:
     """The feature values for ``market``'s call on ``day`` at ``round_``'s cutoff, read only from bars
-    finished by then (``cut``), and what the target's last finished bar and ATR were."""
+    finished by then (``cut``), and what the target's last finished bar and ATR were. ``extras`` adds
+    feature groups (EXTRAS): "flow" (KR only) and "night" - the futures since the last session's close."""
     m = MARKETS[market]
     cutoff = cutoff_of(market, day, round_)
     t = cut(m.target, series[m.target], cutoff)
@@ -232,26 +291,44 @@ def features(market: str, round_: int, day: date, series: dict[str, Sequence]) -
     x["monday"] = 1.0 if day.weekday() == 0 else 0.0
     if round_ == 2:
         today = on_day(m.target, series[m.target], day)
-        if today is None or not today.open or datetime.combine(day, m.open_at, m.zone) > cutoff:
+        late = market == "kr" and kr_late_open(day)
+        if today is None or not today.open or late or datetime.combine(day, m.open_at, m.zone) > cutoff:
             raise NoData(f"no {day} open by {cutoff}")
         x["gap"] = (today.open - t[-1].close) / a
+    if "flow" in extras and market == "kr":
+        x.update(_flow(series, day))
+    if "night" in extras:
+        zone, close = CLOSES[m.target]
+        since = datetime.combine(session_day(m.target, t[-1]), close, zone)   # the last session's close
+        x["es_night"] = _night(series, "ES=F@60m", since, cutoff) / atrp
+        x["nq_night"] = _night(series, "NQ=F@60m", since, cutoff) / atrp
     return x, {"last_close": t[-1].close, "atr": a, "atr_pct": atrp * 100, "cutoff": cutoff}
 
 
-def label(market: str, day: date, series: dict[str, Sequence]) -> dict | None:
-    """The session's answer: open, close, z against the ATR of the days before, its stage."""
+LABELS = ("oc", "cc")      # open -> close (the call), or the previous close -> close (the gap included)
+
+
+def label(market: str, day: date, series: dict[str, Sequence], kind: str = "oc",
+          now: datetime | None = None) -> dict | None:
+    """The session's answer: from the open (``kind`` "oc") or the previous close ("cc") to the close,
+    z against the ATR of the days before, its stage. ``open`` is where the move is measured from. None
+    while the session is not over at ``now`` (default: the real clock) - Yahoo's bar of a session in
+    progress is not an answer."""
     m = MARKETS[market]
     bars = series[m.target]
-    i = _index(m.target, bars)[1].get(day)
-    if i is None:
+    closes, days = _index(m.target, bars)
+    i = days.get(day)
+    if i is None or i == 0 or closes[i] > (now or datetime.now(ZoneInfo("UTC"))):
         return None
-    a = atr([x for x in bars[max(0, i - ATR_WINDOW - 1):i] if x.close])
+    before = [x for x in bars[max(0, i - ATR_WINDOW - 1):i] if x.close]
+    a = atr(before)
     b = bars[i]
-    if not a or not b.open or not b.close:
+    start = b.open if kind == "oc" else (before[-1].close if before else None)
+    if not a or not start or not b.close:
         return None
-    z = (b.close - b.open) / a
-    return {"open": b.open, "close": b.close, "atr": a, "z": z, "stage": stage_of(z),
-            "return_pct": (b.close / b.open - 1) * 100}
+    z = (b.close - start) / a
+    return {"open": start, "close": b.close, "atr": a, "z": z, "stage": stage_of(z),
+            "return_pct": (b.close / start - 1) * 100}
 
 
 # ------------------------------------------------------------------ the model (inference only)
@@ -289,12 +366,14 @@ def percent(p: Sequence[float]) -> dict[str, float]:
 
 
 def direction(probs: dict[str, float]) -> str:
+    """The larger of the two long and the two short stages; a tie is long (as the backtest scores)."""
     up = probs["strong_long"] + probs["weak_long"]
     down = probs["strong_short"] + probs["weak_short"]
     return "long" if up >= down else "short"
 
 
 def top_stage(probs: dict[str, float]) -> str:
+    """The most likely stage; a tie goes to the first in DISPLAY_ORDER (the long side)."""
     return max(DISPLAY_ORDER, key=lambda s: probs[s])
 
 
@@ -314,6 +393,8 @@ def _value_text(name: str, value: float) -> str:
         return f"{value:+.1f}bp"
     if kind == "ratio":
         return f"{math.exp(value):.2f}배"
+    if kind == "flow":
+        return f"{value:+.2f}배(20일 평균 크기 대비)"
     return f"{value:+.2f} ATR"
 
 
@@ -358,7 +439,7 @@ def load_model(market: str, root: Path = DATA) -> dict | None:
 def call(model_file: dict, market: str, round_: int, day: date, series: dict[str, Sequence]) -> dict:
     """One call: the stage probabilities (%), the top stage, the reasons and the day's edges in %."""
     model = model_file["rounds"][str(round_)]
-    x, meta = features(market, round_, day, series)
+    x, meta = features(market, round_, day, series, model.get("extras") or ())
     probs = percent(raw_probs(model, x))
     stage = top_stage(probs)
     flat, strong = model["edges"]

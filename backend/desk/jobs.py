@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -74,6 +75,7 @@ class Jobs:
     def __init__(self, clock: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None:
         self.clock = clock
         self._jobs: dict[str, Job] = {}
+        self._bad_wait: set[str] = set()       # jobs whose pass returned no usable wait (warned once)
 
     # --- registry
     def add(self, name: str, label: str, source: str, parent: str | None = None) -> Job:
@@ -133,13 +135,27 @@ class Jobs:
                     job.ok(self.clock())
             finally:
                 job.running = False
-            delay = max(self.min_delay, float(delay))
+            delay = self._wait(name, delay, retry)
             job.interval = delay
             job.next_due = self.clock() + timedelta(seconds=delay)
             for child in self._jobs.values():          # its parts are due with it
                 if child.parent == name:
                     child.interval, child.next_due = delay, job.next_due
             await asyncio.sleep(delay)
+
+    def _wait(self, name: str, delay: object, retry: Delay) -> float:
+        """What a pass returned as its wait. #628: None or a value that is no finite number would end the
+        loop - it waits ``retry`` instead, with one WARNING per job."""
+        try:
+            value = float(delay)  # type: ignore[arg-type]
+            if not math.isfinite(value):
+                raise ValueError(value)
+        except (TypeError, ValueError):
+            value = float(retry() if callable(retry) else retry)
+            if name not in self._bad_wait:
+                self._bad_wait.add(name)
+                log.warning("%s: a pass returned no wait (%s) - waiting %.0fs instead", name, type(delay).__name__, value)
+        return max(self.min_delay, value)
 
     def spawn(self, name: str, coro: Awaitable[None]) -> asyncio.Task:
         """Start a job's task; if it ever ends other than by cancellation, say so in the log and status."""

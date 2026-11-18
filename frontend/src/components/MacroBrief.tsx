@@ -4,6 +4,7 @@ import { time } from "../format";
 import { HORIZON } from "../korean";
 import type { DeskConfig, MacroBrief as Brief, MacroLean, MacroTheme } from "../types";
 import { Impact, Lean, NewsHeadline } from "./NewsRead";
+import { usePoll } from "../poll";
 
 // 서버는 30분마다 새로 모은다 — 화면은 10분마다 다시 읽는다. 아직 비었거나 못 읽었으면 자주.
 const POLL_MS = 10 * 60_000;
@@ -103,31 +104,16 @@ export default function MacroBrief() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    let timer = 0;
-    const load = () =>
-      api.macroBrief()
-        .then((b) => {
-          if (!alive) return;
-          setBrief(b);
-          setFailedAt(null);
-          return b.themes.length > 0;
-        })
-        .catch(() => {
-          if (alive) setFailedAt(new Date().toISOString());
-          return false;
-        })
-        .then((full) => {
-          // 첫 회차 전 · 실패 중이면 45초 뒤, 채워졌으면 10분 뒤
-          if (alive) timer = window.setTimeout(load, full ? POLL_MS : RETRY_MS);
-        });
-    load();
-    return () => {
-      alive = false;
-      window.clearTimeout(timer);
-    };
-  }, []);
+  // #626 첫 회차 전(테마가 아직 없음)이면 45초 뒤, 채워졌으면 10분 뒤. 가려진 탭은 쉬고, 실패하면 간격을 늘린다
+  const [briefMs, setBriefMs] = useState(RETRY_MS);
+  usePoll("macro-brief", () => api.macroBrief(), briefMs, {
+    onData: (b) => {
+      setBrief(b);
+      setFailedAt(null);
+      setBriefMs(b.themes.length > 0 ? POLL_MS : RETRY_MS);
+    },
+    onError: () => setFailedAt(new Date().toISOString()),
+  });
   useEffect(() => {
     if (pick && !config) api.config().then(setConfig).catch(() => {});
   }, [pick, config]);

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { krwShort, price } from "../format";
 import type { FuturesDaily, FuturesIntraday, FuturesPoint } from "../types";
+import { usePoll } from "../poll";
 
 // 선물 수급 기록(#255, 데이터 #254): 간결 = 최근 20거래일 누적 순매수(계약) 선 + 일자별 표,
 // 자세히 = 오늘 장중 스냅샷(15분 간격, 그날 누적) 선. 색 · 순서는 현물 추이와 같다(외국인 → 기관 → 개인).
@@ -155,43 +156,31 @@ export default function FuturesHistoryView() {
 
   useEffect(() => {
     let alive = true;
-    let timer: number | undefined;
     setFailed(null);
-    const fail = (e: unknown) => alive && setFailed(e instanceof Error ? e.message : "불러오지 못했습니다.");
     if (prefs.mode === "brief") {
-      api.marketFuturesDaily(DAYS).then((d) => alive && setDaily(d), fail);
-    } else {
-      let open = false;          // 마지막으로 받은 장 상태 — 실패해도 이것으로 다음 예약을 정한다
-      let every = 15;
-      const next = () => {
-        window.clearTimeout(timer);
-        // 장중이면 다음 스냅샷 무렵, 장 밖에도 가끔(장 전에 열어 둔 화면이 개장 뒤 따라오게)
-        timer = window.setTimeout(load, open ? Math.max(MIN_REFRESH_MS, every * 60_000) : CLOSED_REFRESH_MS);
-      };
-      const load = () => api.marketFuturesIntraday().then(async (today) => {
-        open = today.market_open;
-        every = today.interval_min || every;
-        let d = today;
-        // 오늘 기록이 아직 없으면(주말 · 휴장일 · 장 전 · 첫 스냅샷 전) 마지막 거래일의 장중을 보여 준다
-        if (d.supported && d.points.length === 0) {
-          const last = (await api.marketFuturesDaily(1).catch(() => null))?.days[0];
-          if (last && last.date !== d.date) d = await api.marketFuturesIntraday(last.date).catch(() => d);
-        }
-        if (!alive) return;
-        setIntraday(d);
-        setFailed(null);
-        next();
-      }, (e) => {
-        fail(e);
-        if (alive) next();       // 일시 오류(배포 재시작 등) 뒤에도 갱신을 이어 간다
-      });
-      load();
+      api.marketFuturesDaily(DAYS).then((d) => alive && setDaily(d), (e) => alive && setFailed(e instanceof Error ? e.message : "불러오지 못했습니다."));
     }
-    return () => {
-      alive = false;
-      window.clearTimeout(timer);
-    };
+    return () => { alive = false; };
   }, [prefs.mode]);
+  // #626 장중이면 다음 스냅샷 무렵, 장 밖에도 가끔(장 전에 열어 둔 화면이 개장 뒤 따라오게). 가려진 탭은 쉰다
+  const [histMs, setHistMs] = useState(CLOSED_REFRESH_MS);
+  usePoll(prefs.mode === "brief" ? null : "futures-intraday", async () => {
+    const today = await api.marketFuturesIntraday();
+    let d = today;
+    // 오늘 기록이 아직 없으면(주말 · 휴장일 · 장 전 · 첫 스냅샷 전) 마지막 거래일의 장중을 보여 준다
+    if (d.supported && d.points.length === 0) {
+      const last = (await api.marketFuturesDaily(1).catch(() => null))?.days[0];
+      if (last && last.date !== d.date) d = await api.marketFuturesIntraday(last.date).catch(() => d);
+    }
+    return { today, d };
+  }, histMs, {
+    onData: ({ today, d }) => {
+      setIntraday(d);
+      setFailed(null);
+      setHistMs(today.market_open ? Math.max(MIN_REFRESH_MS, (today.interval_min || 15) * 60_000) : CLOSED_REFRESH_MS);
+    },
+    onError: (e) => setFailed(e instanceof Error ? e.message : "불러오지 못했습니다."),
+  });
 
   // 간결: 날마다 그날 순매수(마감 누적)를 오래된 날부터 더해 간다
   const dailyRows: Row[] = useMemo(() => {

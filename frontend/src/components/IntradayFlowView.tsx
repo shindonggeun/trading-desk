@@ -249,6 +249,8 @@ function IntradayFlowViewInner() {
     let alive = true;
     let timer: number | undefined;
     const load = () => {
+      // #626 가려진 탭은 쉰다(장중 봉 간격으로 다시 보며 기다린다)
+      if (document.hidden) { timer = window.setTimeout(load, 30_000); return; }
       api.marketFlowIntraday(prefs.bucket)
         .then((d) => {
           if (!alive) return;

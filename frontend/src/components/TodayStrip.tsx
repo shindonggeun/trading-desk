@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { byAsked } from "../ticker";
 import { useFavorites } from "../favorites";
 import type { BoardItem, LivePlaybooks, LongShortItem, MarketMonth, Projection } from "../types";
 import { fundBadgeText, useFundChanges } from "../fundBadges";
 import { useLatestReport } from "../latestReport";
+import { usePoll } from "../poll";
 
 /**
  * #317 대시보드 맨 위 "오늘 볼 것" — 즐겨찾기 가운데 지금 손댈 종목만 이유와 함께 칩으로 모은다.
@@ -70,74 +71,63 @@ export default function TodayStrip() {
   const [found, setFound] = useState<Record<string, Reason[]> | null>(null);
   const fundCh = useFundChanges(list.map((x) => x.ticker));   // #484 기관 13F 배지
   const report = useLatestReport();   // #496 최신 리포트 한 줄
+  const firstRun = useRef(false);
 
   useEffect(() => {
-    if (!key) {
-      setFound(favs ? {} : null);
-      return;
-    }
-    const tickers = key.split(",");
-    let alive = true;
-    let timer = 0;
-    let first = true;
-    const load = async () => {
-      // 종목별 요청은 처음엔 잠깐 뒤에 — 그사이 시세 · 롱숏 · 일정으로 먼저 그린다
-      const later = first;
-      first = false;
-      const perP = (async () => {
-        if (later) await new Promise((r) => window.setTimeout(r, PER_TICKER_AFTER_MS));
-        if (!alive) return [];
-        return Promise.allSettled(tickers.map((t) => Promise.allSettled([api.playbooksFor(t), api.projection(t, "swing")])));
-      })();
-      const today = kstDay();
-      const month = today.slice(0, 7);
-      const months = dayDiff(today, `${nextMonth(month)}-01`) <= EARN_DAYS ? [month, nextMonth(month)] : [month];
-      const [board, ls, cal] = await Promise.allSettled([
-        api.board(tickers),
-        api.longShort(tickers),
-        Promise.all(months.map((m) => api.marketMonth(m))),
-      ]);
-      if (!alive) return;
-      const quotes: Record<string, BoardItem> = {};
-      if (board.status === "fulfilled") Object.assign(quotes, byAsked(tickers, board.value.items as BoardItem[]));
-      const lsBy: Record<string, LongShortItem> = {};
-      if (ls.status === "fulfilled") Object.assign(lsBy, byAsked(tickers, ls.value.items));
-      const earn: Record<string, string> = {};
-      if (cal.status === "fulfilled") {
-        for (const d of (cal.value as MarketMonth[]).flatMap((m) => m.days)) {
-          const left = dayDiff(today, d.date);
-          if (left < 0 || left > EARN_DAYS) continue;
-          for (const r of d.earnings) if (tickers.includes(r.ticker) && !earn[r.ticker]) earn[r.ticker] = left === 0 ? "오늘 실적" : `실적 D-${left}`;
-        }
-      }
-      const build = (per: PromiseSettledResult<unknown>[]) => {
-      const out: Record<string, Reason[]> = {};
-      tickers.forEach((t, i) => {
-        const reasons: Reason[] = [];
-        const got = per[i];
-        if (got?.status === "fulfilled") {
-          const [pb, proj] = got.value as [PromiseSettledResult<LivePlaybooks>, PromiseSettledResult<Projection>];
-          const z = pb.status === "fulfilled" ? zoneReason(pb.value) : null;
-          if (z) reasons.push(z);
-          const r = proj.status === "fulfilled" ? rangeReason(proj.value, quotes[t]) : null;
-          if (r) reasons.push(r);
-        }
-        if (earn[t]) reasons.push({ kind: "earnings", text: earn[t] });
-        const l = lsReason(lsBy[t]);
-        if (l) reasons.push(l);
-        if (reasons.length) out[t] = reasons;
-      });
-      return out;
-      };
-      if (later) setFound(build([]));
-      const per = await perP;
-      if (!alive) return;
-      setFound(build(per));
-      timer = window.setTimeout(load, REFRESH_MS);
-    };
-    load();
-    return () => { alive = false; window.clearTimeout(timer); };
+    if (!key) setFound(favs ? {} : null);
   }, [key, favs]);
+  // #626 5분마다(가려진 탭은 쉰다) — 시세 · 롱숏 · 실적 일정 · 플레이북 · 예상 범위를 한 번에
+  usePoll(key ? `today-strip:${key}` : null, async () => {
+    const tickers = key.split(",");
+    const today = kstDay();
+    const month = today.slice(0, 7);
+    const months = dayDiff(today, `${nextMonth(month)}-01`) <= EARN_DAYS ? [month, nextMonth(month)] : [month];
+    // #644 종목별 요청은 처음 한 번만 잠깐 뒤에 — 그사이 시세 · 롱숏 · 일정으로 먼저 그린다
+    const later = !firstRun.current;
+    firstRun.current = true;
+    const perP = (async () => {
+      if (later) await new Promise((r) => window.setTimeout(r, PER_TICKER_AFTER_MS));
+      return Promise.allSettled(tickers.map((t) => Promise.allSettled([api.playbooksFor(t), api.projection(t, "swing")])));
+    })();
+    const [board, ls, cal] = await Promise.allSettled([
+      api.board(tickers),
+      api.longShort(tickers),
+      Promise.all(months.map((m) => api.marketMonth(m))),
+    ]);
+    const quotes: Record<string, BoardItem> = {};
+    if (board.status === "fulfilled") Object.assign(quotes, byAsked(tickers, board.value.items as BoardItem[]));
+    const lsBy: Record<string, LongShortItem> = {};
+    if (ls.status === "fulfilled") Object.assign(lsBy, byAsked(tickers, ls.value.items));
+    const earn: Record<string, string> = {};
+    if (cal.status === "fulfilled") {
+      for (const d of (cal.value as MarketMonth[]).flatMap((m) => m.days)) {
+        const left = dayDiff(today, d.date);
+        if (left < 0 || left > EARN_DAYS) continue;
+        for (const r of d.earnings) if (tickers.includes(r.ticker) && !earn[r.ticker]) earn[r.ticker] = left === 0 ? "오늘 실적" : `실적 D-${left}`;
+      }
+    }
+    const build = (per: PromiseSettledResult<unknown>[]) => {
+    const out: Record<string, Reason[]> = {};
+    tickers.forEach((t, i) => {
+      const reasons: Reason[] = [];
+      const got = per[i];
+      if (got?.status === "fulfilled") {
+        const [pb, proj] = got.value as [PromiseSettledResult<LivePlaybooks>, PromiseSettledResult<Projection>];
+        const z = pb.status === "fulfilled" ? zoneReason(pb.value) : null;
+        if (z) reasons.push(z);
+        const r = proj.status === "fulfilled" ? rangeReason(proj.value, quotes[t]) : null;
+        if (r) reasons.push(r);
+      }
+      if (earn[t]) reasons.push({ kind: "earnings", text: earn[t] });
+      const l = lsReason(lsBy[t]);
+      if (l) reasons.push(l);
+      if (reasons.length) out[t] = reasons;
+    });
+    return out;
+    };
+    if (later) setFound(build([]));
+    return build(await perP);
+  }, REFRESH_MS, { onData: (out) => setFound(out) });
 
   if (favs === null) return null;
   const names = Object.fromEntries(list.map((f) => [f.ticker, f.name ?? f.ticker]));

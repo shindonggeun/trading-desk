@@ -5,7 +5,7 @@ import type { FearItem } from "../types";
 import { useTrend } from "../marketTrend";
 import { TrendSummaryItems } from "./TrendChips";
 import { useHalving, WHERE_DAYS_SHORT } from "../halving";
-import { usePoll } from "../poll";
+import { staleText, usePoll } from "../poll";
 
 // #464 휴대폰 대시보드 맨 위 요약 줄: 지수 등락 3개 + 공포지수 2개. 구역은 접힌 머리글로 시작하니
 // 펼치지 않아도 시장 분위기를 한 줄로 본다. 실패한 항목은 조용히 뺀다(아래 구역에서 자세히 본다).
@@ -30,7 +30,7 @@ export default function DashSummary() {
   const hvWhere = hv?.ranges.now.days_since_halving ?? null;
 
   // #626 1분마다(가려진 탭은 쉰다). 한 번 실패해도 앞서 받은 값을 둔다(종목별로 새 값만 덮어쓴다)
-  usePoll("dash-summary:indices", () => Promise.all(INDICES.map((m) => api.candles(m.ticker, "1d", 5)
+  const indexPoll = usePoll("dash-summary:indices", () => Promise.all(INDICES.map((m) => api.candles(m.ticker, "1d", 5)
     .then((c): Quote | null => {
       const bars = c.bars;
       if (!bars.length) return null;
@@ -38,7 +38,9 @@ export default function DashSummary() {
       const prev = bars.length > 1 ? bars[bars.length - 2].close : null;
       return { ...m, last, change: prev ? ((last - prev) / prev) * 100 : null };
     })
-    .catch(() => null))), REFRESH_MS, {
+    .catch(() => null)))
+    // 하나도 못 받았으면 실패로 — 다음 차례를 늦추고 카드에 "마지막 갱신 · 다시 시도 중" 을 적는다
+    .then((qs) => { if (qs.every((q) => q == null)) throw new Error("지수를 받지 못함"); return qs; }), REFRESH_MS, {
     onData: (qs) => setQuotes((prev) => INDICES.flatMap((m) => {
       const q = qs.find((x) => x?.ticker === m.ticker) ?? prev.find((x) => x.ticker === m.ticker);
       return q ? [q] : [];
@@ -64,6 +66,8 @@ export default function DashSummary() {
         </span>
       ))}
       <TrendSummaryItems trend={trend} />
+      {/* #626 지수를 다시 받지 못하는 동안: 마지막으로 받은 시각과 다시 시도 중 */}
+      {staleText(indexPoll) && <span className="dash-sum-item muted small" role="status">{staleText(indexPoll)}</span>}
       {fear.map((f) => (
         <span key={f.key} className={`dash-sum-item${f.band ? ` fear-${f.band}` : ""}`}>
           <span className="muted">{f.key === "cnn" ? "공포탐욕" : f.name}</span> {Math.round((f.value ?? 0) * 10) / 10}

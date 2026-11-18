@@ -2805,3 +2805,7 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .line-list { margin-top: 6px; }
 .line-list .sr-list { margin-bottom: 4px; }
 .gap-card.line-card { border-left-color: var(--accent); }
+/* #636 넓은 화면 3열의 즐겨찾기 시세: 앞 8개(FavoritesPanel FOLD)만, "더 보기" 로 전부 — 다른 폭 · 배치 격자는 전부 */
+.fav-more { display: none; }
+.dash-columns .fav-more { display: inline-block; margin-top: 6px; }
+.dash-columns .fav-panel:not(.fav-all) .fav-grid > .fav-cell:nth-child(n + 9) { display: none; }

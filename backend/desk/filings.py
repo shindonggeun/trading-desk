@@ -20,6 +20,7 @@ from datetime import UTC, date, datetime, timedelta
 import httpx
 
 from .events_calendar import user_agent
+from .ttl_cache import TTLCache
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ SUBMISSIONS_TTL_SEC = 30 * 60
 EIGHT_K_DAYS = 30
 INSIDER_DAYS = 30
 MAX_8K = 5
+SUBS_MAX = 64
 
 # 8-K items (sec.gov/fast-answers/answersform8khtm) worth a line in a trading note
 ITEMS = {
@@ -67,7 +69,7 @@ class Filings:
         self._client = client
         self._clock = clock
         self._ciks: tuple[float, dict[str, int]] | None = None
-        self._subs: dict[int, tuple[float, dict]] = {}
+        self._subs: TTLCache[int, dict] = TTLCache(SUBS_MAX, SUBMISSIONS_TTL_SEC, clock=lambda: self._clock())
         self._lock = asyncio.Lock()
 
     async def _get_json(self, url: str):
@@ -97,14 +99,10 @@ class Filings:
         cik = await self.cik(ticker)
         if cik is None:
             return None
-        hit = self._subs.get(cik)
-        if hit and self._clock() - hit[0] < SUBMISSIONS_TTL_SEC:
-            data = hit[1]
-        else:
-            data = await self._get_json(SUBMISSIONS_URL.format(cik=cik))
-            if len(self._subs) > 64:
-                self._subs.clear()
-            self._subs[cik] = (self._clock(), data)
+        data = self._subs.get(cik)
+        if data is None:
+            data = await self._get_json(SUBMISSIONS_URL.format(cik=cik))   # a failure raises: nothing is kept
+            self._subs.put(cik, data)
         return summarise(data, today or datetime.now(UTC).date())
 
 

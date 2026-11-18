@@ -24,6 +24,7 @@ from dataclasses import asdict, is_dataclass
 
 from . import underlying as under
 from .indicators import rsi, stochastic
+from .ttl_cache import TTLCache
 
 INTERVALS = ("1d", "1w")
 HISTORY_BARS = {"1d": 800, "1w": 260}   # about three years of daily bars, five of weekly
@@ -195,19 +196,18 @@ def _reason(ticker: str, interval: str, now: dict, by_kind: dict, effect: dict, 
 # ------------------------------------------------------------------- fetching
 
 
-_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+CACHE_MAX = 128
+_CACHE: TTLCache[tuple[str, str], dict] = TTLCache(CACHE_MAX, CACHE_TTL_SEC)
 
 
 def read(fetch: Fetch, ticker: str, interval: str = "1d", clock: Callable[[], float] = time.monotonic) -> dict:
     """``report`` on ``fetch(ticker, interval)``'s bars, cached a quarter of an hour."""
     key = (ticker.upper(), interval)
-    hit = _CACHE.get(key)
-    if hit and clock() - hit[0] < CACHE_TTL_SEC:
-        return hit[1]
+    hit = _CACHE.get(key, now=clock())
+    if hit is not None:
+        return hit
     result = report(fetch(ticker, interval), ticker.upper(), interval)
-    if len(_CACHE) > 200:
-        _CACHE.clear()
-    _CACHE[key] = (clock(), result)
+    _CACHE.put(key, result, now=clock())
     return result
 
 

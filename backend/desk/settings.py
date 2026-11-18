@@ -36,7 +36,8 @@ def _effort(raw: str | None) -> str:
 @dataclass(frozen=True)
 class Settings:
     # sqlite:///data/desk.db locally; postgresql+psycopg://user:pw@host:5432/db?options=-csearch_path%3Ddesk
-    database_url: str = field(default_factory=lambda: os.getenv("DESK_DATABASE_URL", "sqlite:///data/desk.db"))
+    database_url: str = field(default_factory=lambda: os.getenv("DESK_DATABASE_URL", "sqlite:///data/desk.db"),
+                              repr=False)   # #628 carries the PostgreSQL password
     # Fake runs replay a scripted debate: build the UI without spending the plan's quota.
     fake_runs: bool = field(default_factory=lambda: _bool("DESK_FAKE_RUNS"))
     fake_delay: float = field(default_factory=lambda: float(os.getenv("DESK_FAKE_DELAY", "0.6")))
@@ -66,7 +67,7 @@ class Settings:
     # FastAPI's /docs and /openapi.json. Even when on, they sit behind the login.
     enable_docs: bool = field(default_factory=lambda: _bool("DESK_ENABLE_DOCS"))
     # Fernet key that seals TOTP secrets (python -m desk.cli otp-key). Empty = OTP cannot be enabled.
-    otp_key: str = field(default_factory=lambda: os.getenv("DESK_OTP_KEY", ""))
+    otp_key: str = field(default_factory=lambda: os.getenv("DESK_OTP_KEY", ""), repr=False)
     # Finished runs (and their events) older than this are deleted at start and once a day. 0 keeps all.
     retention_days: int = field(default_factory=lambda: int(os.getenv("DESK_RETENTION_DAYS", "90")))
     # Seconds between passes that score finished plans against later bars (desk.outcome). 0 = off.

@@ -24,6 +24,8 @@ import random
 import re
 from pathlib import Path
 
+from .ttl_cache import TTLCache
+
 STEPS = {"1d": 20, "1w": 12, "60m": 35}        # bars ahead per timeframe
 SIGMA_BARS = 60                                # returns the volatility is read from
 MIN_RETURNS = 20
@@ -271,7 +273,7 @@ class Projections:
 
         self._note_fn = note_fn
         self._clock = clock or time.monotonic
-        self._cache: dict[tuple[str, str], tuple[float, dict]] = {}
+        self._cache: TTLCache[tuple[str, str], dict] = TTLCache(CACHE_MAX, 24 * 3600, clock=lambda: self._clock())
         self._tasks: set = set()
 
     async def get(self, ticker: str, horizon_id: str, ttl: float, levels, bars_for, slot=None) -> dict:
@@ -280,8 +282,8 @@ class Projections:
         import asyncio
 
         key = (ticker, horizon_id)
-        hit = self._cache.get(key)
-        if hit and self._clock() - hit[0] < ttl:
+        hit = self._cache.entry(key)               # each ask brings its own ttl
+        if hit is not None and hit[0] < ttl:
             return dict(hit[1])
         sr_result = await levels()
         frame, timeframe = await bars_for(sr_result)
@@ -293,9 +295,7 @@ class Projections:
             task = asyncio.create_task(self._fill(key, out, slot))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
-        if len(self._cache) >= CACHE_MAX:
-            self._cache.clear()
-        self._cache[key] = (self._clock(), out)
+        self._cache.put(key, out, ttl)
         return dict(out)
 
     async def _fill(self, key: tuple[str, str], out: dict, slot) -> None:

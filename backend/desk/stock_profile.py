@@ -29,6 +29,7 @@ from statistics import fmean
 from .indicators import bollinger as indicators_bollinger
 from .indicators import rsi as indicators_rsi
 from .sr import _local_day, support_resistance
+from .ttl_cache import TTLCache
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ INFO_CACHE_MAX = 512
 MAX_TICKERS = 30
 KR_SHORT_NOTE = "한국 공매도 잔고는 KRX 정보데이터시스템이 로그인을 요구해 무료로 받을 수 없습니다"
 
-_INFO: dict[str, tuple[float, dict]] = {}
+_INFO: TTLCache[str, object] = TTLCache(INFO_CACHE_MAX, INFO_TTL_SEC)   # the info, or a recent failure
 
 
 def _pct(price: float | None, base: float | None) -> float | None:
@@ -211,11 +212,11 @@ class Profiles:
         self.prices, self.listing, self.info, self.levels, self.clock = prices, listing, info, levels, clock
 
     async def _info(self, ticker: str) -> dict:
-        cached = _INFO.get(ticker)
-        if cached and self.clock() < cached[0]:
-            if isinstance(cached[1], Exception):
-                raise cached[1]
-            return cached[1]
+        cached = _INFO.get(ticker, now=self.clock())
+        if cached is not None:
+            if isinstance(cached, Exception):
+                raise cached
+            return cached
         try:
             found = await asyncio.to_thread(self.info, ticker)
         except Exception as exc:
@@ -226,9 +227,7 @@ class Profiles:
         return found
 
     def _keep(self, ticker: str, value, ttl: float) -> None:
-        if len(_INFO) >= INFO_CACHE_MAX:
-            _INFO.clear()
-        _INFO[ticker] = (self.clock() + ttl, value)
+        _INFO.put(ticker, value, ttl, now=self.clock())
 
     async def one(self, ticker: str) -> dict:
         errors: dict[str, str] = {}

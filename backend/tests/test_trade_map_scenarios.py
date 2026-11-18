@@ -124,3 +124,11 @@ def test_the_summary_rows_and_the_worst_run():
     r = rows["long:support:range"]
     assert (r["n"], r["fill_rate"], r["win_rate"], r["avg_r"], r["max_dd_r"]) == (4, 0.5, 0.5, 0.25, -2.0)
     assert rows["long:support:all"]["n"] == 4
+
+
+def test_one_scenario_only_is_not_called_a_thin_sample():
+    # #671 no strong level near: one scenario on the side, so nothing to compare - not "표본 부족"
+    table = {"rows": {"long:breakout:downtrend": {"n": 120, "win_rate": 0.41, "avg_r": -0.05}}}
+    only = [s for s in trade_map.scenarios(KORU, 6.93, 0.6, "long", 7.73) if s["kind"] == "breakout"]
+    got = trade_map_record.lookup("downtrend", only, table)
+    assert got["regime_note"] is None and only[0]["record"]["n"] == 120

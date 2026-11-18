@@ -54,6 +54,7 @@ from . import (
     line_signals,
     lines_bt,
     live,
+    live_bars,
     macro_news,
     market_calendar,
     morning_brief,
@@ -580,6 +581,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     live_streams: dict[str, int] = {}   # open /api/live/stream per session (token hash)
     calendar = live.Calendar(broker)     # market holidays for the live stream, cached per market
+    # #653 the analysis chart's last bar carried on with the price now (short cache, one fetch per key)
+    chart_live = live_bars.LiveBars(prices, estimator, lambda t: sessions.session(calendar, t),
+                                    watch=lambda t: live.watch(prices, t))
     if runner is None:
         runner = make_fake_runner(settings.fake_delay) if settings.fake_runs else run_tradingagents
 
@@ -1828,10 +1832,33 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 if len(learned_kr) > 4096:      # KRX lists about 2,700 codes; never grows past a bad loop
                     learned_kr.clear()
                 learned_kr[raw] = ".KQ"
-                return _with_session(kq, interval)
+                return _delayed(_with_session(kq, interval))
             if got is None:
                 raise HTTPException(503, f"no candles for {ticker}") from None
-        return _with_session(got, interval)
+        return _delayed(_with_session(got, interval))
+
+    def _delayed(got: dict) -> dict:
+        """#653 about how far the series runs behind (late Yahoo feeds: KRX, CME futures) - added only."""
+        return {**got, "delay_sec": live_bars.series_delay(got.get("source") or "", got.get("ticker") or "")}
+
+    @app.get("/api/candles/live")
+    async def candles_live(ticker: str, interval: str = "1d"):
+        """#653 the chart's last bar with the price now, for a page polling every few seconds: ``bar`` (the
+        last bar carried on - ``state`` updated - or a new one - appended; ``price_only`` when the price is
+        an estimate in a real bar's bucket), ``price`` and its ``source`` (kis · toss · yahoo · nxt ·
+        binance-estimate, ``estimated``), ``session``, ``delay_sec`` (the price's age) and the series'
+        own source. Cached LiveBars.TTL_SEC per ticker and interval (desk.live_bars)."""
+        try:
+            ticker, _ = resolve_ticker(ticker)
+            if interval not in INTERVALS:
+                raise ValueError(f"interval must be one of {', '.join(INTERVALS)}")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        try:
+            return await chart_live.get(ticker, interval)
+        except Exception as exc:  # noqa: BLE001 - no bars or no price: the chart keeps what it has
+            log.warning("live bar for %s %s failed: %s", ticker, interval, type(exc).__name__)
+            raise HTTPException(503, f"no live bar for {ticker}") from None
 
     def _with_session(got: dict, interval: str) -> dict:
         """#559 daily bars: how much of the last bar's session has run (desk.session_progress) - the

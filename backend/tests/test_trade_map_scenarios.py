@@ -83,3 +83,44 @@ def test_the_regime_record_says_which_entry_did_better():
     thin = {"rows": {"long:breakout:range": {"n": 5, "win_rate": 0.4, "avg_r": 0.1}}}
     assert "표본" in trade_map_record.lookup("range", found, thin)["regime_note"]
     assert trade_map_record.lookup(None, found, table)["regime_note"] is None
+
+
+def _bar(o, h, lo, c):
+    return {"open": o, "high": h, "low": lo, "close": c}
+
+
+def test_a_limit_fills_on_the_touch_and_the_stop_comes_first_on_a_wide_bar():
+    from desk import trade_map_bt as bt
+
+    sc = {"side": "long", "kind": "support", "entry": 10.0, "entry_type": "limit", "stop": 9.0,
+          "targets": [{"price": 12.0, "rr": 2.0}]}
+    win = bt.play(sc, [_bar(10.5, 10.6, 10.2, 10.4), _bar(10.3, 10.4, 9.9, 10.1), _bar(10.2, 12.3, 10.1, 12.0)],
+                  cost_bps=0)
+    assert win["exit"] == "target" and win["fill"] == 10.0 and win["r"] == 2.0
+    both = bt.play(sc, [_bar(10.2, 10.3, 9.95, 10.1), _bar(10.0, 12.5, 8.8, 11.0)], cost_bps=0)
+    assert both["exit"] == "stop" and both["r"] == -1.0                    # a bar through both: the stop
+    assert bt.play(sc, [_bar(11, 11.5, 10.5, 11)] * 6) is None             # never reached in 5 bars
+
+
+def test_a_breakout_fills_at_the_open_when_it_gaps_through_and_a_short_mirrors():
+    from desk import trade_map_bt as bt
+
+    sc = {"side": "long", "kind": "breakout", "entry": 10.0, "entry_type": "stop", "stop": 9.5,
+          "targets": [{"price": 11.0, "rr": 2.0}]}
+    got = bt.play(sc, [_bar(10.4, 10.6, 10.3, 10.5), _bar(10.5, 10.7, 10.4, 10.6)], cost_bps=0)
+    assert got["fill"] == 10.4 and got["exit"] == "time" and round(got["r"], 3) == round(0.2 / 0.5, 3)   # plan risk
+    short = {"side": "short", "kind": "support", "entry": 10.0, "entry_type": "now", "stop": 10.5,
+             "targets": [{"price": 9.0, "rr": 2.0}]}
+    s = bt.play(short, [_bar(10.0, 10.1, 9.9, 10.0), _bar(9.8, 9.9, 8.9, 9.0)], cost_bps=0)
+    assert s["exit"] == "target" and s["r"] == 2.0
+
+
+def test_the_summary_rows_and_the_worst_run():
+    from desk import trade_map_bt as bt
+
+    trades = [{"day": f"2026-01-0{i}", "ticker": "X", "side": "long", "kind": "support", "regime": "range",
+               "r": r, "exit": "stop" if r < 0 else "target"} for i, r in enumerate([1.0, -1.0, -1.0, 2.0], 1)]
+    rows = bt.summarize(trades, {"long:support:range": 8, "long:support:all": 8})
+    r = rows["long:support:range"]
+    assert (r["n"], r["fill_rate"], r["win_rate"], r["avg_r"], r["max_dd_r"]) == (4, 0.5, 0.5, 0.25, -2.0)
+    assert rows["long:support:all"]["n"] == 4

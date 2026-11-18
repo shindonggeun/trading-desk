@@ -1,9 +1,10 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { krwShort, price } from "../format";
 import type { FlowInterval, FlowMarket, FlowRecord, FlowSide, InstitutionKind, Investor, MarketFlow } from "../types";
 import FuturesFlowView from "./FuturesFlowView";
-import IntradayFlowView from "./IntradayFlowView";
+// #644 오늘 장중(차트 라이브러리 160KB)은 그 탭을 열 때만 받는다 — 대시보드 첫 화면은 현물 탭이라 차트가 없다
+const IntradayFlowView = lazy(() => import("./IntradayFlowView"));
 
 // 메인 화면 "시장 수급"(#78): 코스피 · 코스닥에서 개인 · 외국인 · 기관 · 기타법인이 얼마를 사고팔았는지.
 // 막대 색은 극성(순매수 빨강 · 순매도 파랑, 한국식), 추이 선 색은 주체(외국인 · 기관 · 개인) —
@@ -321,7 +322,7 @@ export default function MarketFlowPanel() {
           ))}
         </div>
       </div>
-      {prefs.market === "INTRADAY" ? <IntradayFlowView /> : !spotMarket ? <FuturesFlowView /> : <>
+      {prefs.market === "INTRADAY" ? <Suspense fallback={<p className="muted small">불러오는 중…</p>}><IntradayFlowView /></Suspense> : !spotMarket ? <FuturesFlowView /> : <>
       <div className="flow-sub">
         <div className="flow-index">
           {data?.index ? <><strong>{price(data.index.price)}</strong> <span className="muted small">{marketLabel}</span></> : <span className="muted small">{marketLabel}</span>}

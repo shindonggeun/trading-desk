@@ -140,7 +140,10 @@ export function fakeDayCallStats(market: DayCallMarket, days = 90): DayCallStats
       }),
       calibration: Array.from({ length: 10 }, (_, k) => ({ lo: k * 10, hi: k * 10 + 10, n: [60, 48, 52, 40, 22, 9, 3, 1, 0, 0][k],
         mean_prob: k < 8 ? k * 10 + 5.3 : null, actual_rate: k < 7 ? [7.7, 14.2, 23.0, 36.1, 41.0, 52.2, 66.7][k] : null })),
-      by_round: { "1": { n: 20, direction_hit_rate: 0.52 }, "2": { n: scored.length, direction_hit_rate: 0.55 } },
+      by_round: {
+        "1": { n: 20, direction_hit_rate: 0.52, live_n: 4, live: { n: 4, direction_hit_rate: 0.5 }, backfill: { n: 16, direction_hit_rate: 0.563 } },
+        "2": { n: scored.length, direction_hit_rate: 0.55, live_n: 4, live: { n: 4, direction_hit_rate: 0.75 }, backfill: { n: scored.length - 4, direction_hit_rate: 0.53 } },
+      },
       by_source: { live: { n: 8 }, backfill: { n: scored.length - 8 } },
       ...(kind === "open" ? { hold_rate: scored.length ? 1 - decided.length / scored.length : null, called: { n: decided.length, direction_hit_rate: ratio(decided.map((h) => !!h.outcome!.hit_direction)) } } : {}),
     };

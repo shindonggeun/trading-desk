@@ -2195,6 +2195,7 @@ export interface DayCallToday {
 export interface DayCallHistoryItem extends DayCallEntry { date: string }
 export interface DayCallHistory { market: DayCallMarket; days: number; items: DayCallHistoryItem[] }
 export interface DayCallRates { n?: number; direction_hit_rate?: number | null; stage_hit_rate?: number | null; brier?: number | null }
+export interface DayCallRoundRates extends DayCallRates { live_n?: number; live?: DayCallRates; backfill?: DayCallRates }
 export interface DayCallCallStats {
   n: number;
   missed: number;
@@ -2209,7 +2210,8 @@ export interface DayCallCallStats {
   };
   per_stage: { stage: DayCallStage; label: string; called: number; called_hit: number; actual: number }[];
   calibration: { lo: number; hi: number; n: number; mean_prob: number | null; actual_rate: number | null }[];
-  by_round: Record<string, DayCallRates>;
+  /** #606 회차별 — 그 안에서 실제 판정(live) · 검증 구간(backfill)을 나눈 것도 같이(카드의 적중 기록은 이 회차 하나다) */
+  by_round: Record<string, DayCallRoundRates>;
   by_source: Record<string, DayCallRates>;
   hold_rate?: number | null;                                   // 시가 대비만
   called?: { n: number; direction_hit_rate: number | null };   // 시가 대비 — 보류가 아닌 날만
@@ -2219,4 +2221,6 @@ export interface DayCallStats {
   days: number;
   calls: Partial<Record<DayCallKind, DayCallCallStats>>;
   note?: string[];
+  /** 검증 구간을 만든 모델 — holdout_from 이후가 학습에 안 쓴 날, stale 이면 지금 코드와 모델이 어긋남 */
+  backtest?: { model_version: string | null; holdout_from: string | null; stale: boolean };
 }

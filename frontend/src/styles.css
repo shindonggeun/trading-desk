@@ -2652,6 +2652,12 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .daycall-call-title { margin: 0; font-size: var(--fs-s); font-weight: 700; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
 .daycall-hold { color: var(--muted); }
 .daycall-record { margin: 0; }
+.daycall-record p { margin: 0; }
+.daycall-basis { padding: 0 4px; border-radius: 4px; background: var(--surface-3); white-space: nowrap; }
+.daycall-record-src summary { cursor: pointer; width: fit-content; }
+.daycall-record-src p { margin-top: 2px; }
+.daycall-basis-note { margin-top: 8px; display: grid; gap: 4px; }
+.daycall-basis-note p { margin: 0; }
 .daycall-reasons summary { cursor: pointer; }
 .daycall-page-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
 .daycall-notes { margin: 6px 0 0; padding-left: 1.1em; display: grid; gap: 2px; }

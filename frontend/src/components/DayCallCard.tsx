@@ -1,7 +1,7 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { api, ApiError } from "../api";
 import { fakeDayCall } from "../briefsFake";
-import { DAY_CALL_KINDS, DAY_CALL_STAGES, KIND_KO, kstStamp, MARKET_KO, percent, rate, scoredOutcome, STAGE_KO, STAGE_MARK, verdictText } from "../dayCall";
+import { DAY_CALL_KINDS, DAY_CALL_STAGES, KIND_KO, kstStamp, LIVE_RECORD_MIN, MARKET_KO, percent, rate, scoredOutcome, STAGE_KO, STAGE_MARK, verdictText } from "../dayCall";
 import type { DayCallEntry, DayCallMarket, DayCallProbs, DayCallReason, DayCallRecord, DayCallStage, DayCallToday } from "../types";
 
 const is404 = (e: unknown) => e instanceof ApiError && e.status === 404;
@@ -32,14 +32,30 @@ export function ProbBars({ probs, stage }: { probs: DayCallProbs; stage: DayCall
   );
 }
 
-/** "적중 76% · 늘 롱 43% · 늘 숏 57% · 63번(검증 구간)" — 적중률은 언제나 기준선 · 표본 수와 같이 */
-export function RecordLine({ r }: { r: DayCallRecord | undefined }) {
+/** "적중 64% · 늘 롱 43% · 늘 숏 57% · 2차 판정만 59번 · 검증 구간" — 적중률은 언제나 기준선 · 표본 수 · 출처와 같이.
+ *  #606 이 회차만 센 숫자라 지난 90일 1 · 2차를 합친 적중 기록 화면(stats)과 다를 수 있다 — 그 이유를 접힌 설명으로 밝힌다. */
+export function RecordLine({ r, roundLabel }: { r: DayCallRecord | undefined; roundLabel?: string }) {
   if (!r) return <p className="daycall-record small muted">적중 기록이 아직 없어요.</p>;
+  const live = r.basis === "live";
+  const round = roundLabel ?? "이 회차";
   return (
-    <p className="daycall-record small">
-      <span className="muted">적중</span> <strong>{rate(r.direction_hit_rate)}</strong>
-      <span className="muted"> · 늘 롱 {rate(r.always_long)} · 늘 숏 {rate(r.always_short)} · {r.n}번{r.basis === "backtest" ? "(검증 구간)" : "(실제 판정)"}</span>
-    </p>
+    <div className="daycall-record small">
+      <p>
+        <span className="muted">적중</span> <strong>{rate(r.direction_hit_rate)}</strong>
+        <span className="muted"> · 늘 롱 {rate(r.always_long)} · 늘 숏 {rate(r.always_short)} · {round} 판정만 {r.n}번 · </span>
+        <span className="daycall-basis">{live ? "실제 판정" : "검증 구간"}</span>
+      </p>
+      <details className="daycall-record-src">
+        <summary className="muted">이 숫자의 기준</summary>
+        <p className="muted">
+          {live
+            ? `지난 90일 동안 실제로 낸 ${round} 판정 ${r.n}번을 채점한 숫자예요.`
+            : `모델 학습에 쓰지 않은 날(검증 구간)을 그날 그 시각 기준으로 다시 판정해 채점한 ${round} 판정 ${r.n}번이에요. `
+              + `실제 판정이 ${round}에 ${LIVE_RECORD_MIN}번 쌓이면 실제 판정 숫자로 바뀌어요.`}
+          {" "}적중 기록 화면은 지난 90일의 1 · 2차와 검증 구간 · 실제 판정을 모두 합쳐 세서 숫자가 다를 수 있어요.
+        </p>
+      </details>
+    </div>
   );
 }
 
@@ -64,7 +80,7 @@ function CallBlock({ c, kind }: { c: DayCallEntry | null | undefined; kind: "pre
       {c.verdict === "hold" && <p className="small muted">롱 · 숏 확률 차가 10%p 안이라 방향을 고르지 않았어요.</p>}
       {c.fallback && <p className="small muted">야간 선물이 없어 선물 없이 낸 판정이에요.</p>}
       <ProbBars probs={c.probs} stage={c.stage} />
-      <RecordLine r={c.record} />
+      <RecordLine r={c.record} roundLabel={c.round_label} />
       {c.outcome?.unscorable && <p className="small muted">결과 채점 불가 — 지수 자료가 오지 않았어요.</p>}
       {out && (
         <p className="small">

@@ -202,7 +202,7 @@ export default function LiveChart({ ticker, plan, onPrice }: {
       if (value != null) made.push(c.series.createPriceLine({ price: value, title, color, lineWidth: 1, lineStyle, axisLabelVisible: true }));
     }
     // 1분봉이 늦게 와도 · 새 봉으로 축척이 움직여도 다시 맞춘다
-    const stopLabels = keepAxisLabelsApart(c.chart, c.series, made);
+    const stopLabels = keepAxisLabelsApart(c.chart, c.series, made, 16, () => chartRef.current?.series === c.series);
     // 지지 · 저항은 축 라벨 없는 띠 — 기준가에서 가까운 3개씩
     const sr = plan?.support_resistance;
     const bands = new PriceBands(`11px ${getComputedStyle(document.body).fontFamily}`);

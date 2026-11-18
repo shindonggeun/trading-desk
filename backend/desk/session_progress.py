@@ -84,22 +84,32 @@ def _futures(t: str, daily: list[dict], now: datetime | None) -> float | None:
     futures trade most of their volume in New York's regular hours, so the clock is that session's,
     not the 23 hours': before 09:30 ET the volume is not judged yet (0.0, like a stock's pre-market),
     from the open it runs to 16:00 (an early close at 13:00), then the day is whole (1.0). The night's
-    volume already in the bar makes an early reading high, never falsely dry (#432's concern)."""
+    volume already in the bar makes an early reading high, never falsely dry (#432's concern).
+
+    #568 from 18:00 ET Yahoo dates the new session's bar by the evening it opened (Tuesday's bar reads
+    Monday until midnight New York), so before the regular open a last bar dated the evening before
+    is today's too - 0.0, not judged. Should it be the finished day still (Yahoo not rolled over yet),
+    0.0 only holds its volume back from a verdict; None would read the night's few contracts as a
+    whole day (the 0.0x the issue saw)."""
     zone = US.zone
     local = (now or datetime.now(UTC)).astimezone(zone)
     day = local.date() if local.time() < FUTURES_CLOSES else local.date() + timedelta(days=1)
     if day.weekday() >= 5:
-        return None
-    try:
-        if bar_day(daily[-1]["at"], t) != day:
-            return None
-    except (TypeError, ValueError):
         return None
     opens, closes = US.hours(day)
     if market_calendar.us_early_close(day):
         closes = min(closes, US_EARLY_CLOSE)
     start = datetime.combine(day, opens, zone)
     end = datetime.combine(day, closes, zone)
+    evening = day - timedelta(days=1)                    # Sunday for Monday's session
+    try:
+        dated = bar_day(daily[-1]["at"], t)
+    except (TypeError, ValueError):
+        return None
+    if dated == evening and datetime.combine(evening, FUTURES_OPENS, zone) <= local < start:
+        return 0.0
+    if dated != day:
+        return None
     return min(1.0, max(0.0, (local - start) / (end - start)))
 
 

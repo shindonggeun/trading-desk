@@ -2,7 +2,9 @@
 
 One short read of "what happened overnight and what to watch in Korea today", in the order the user's
 example uses: a headline, the key numbers (US indexes and index futures, the fear gauges), yesterday's
-Korean flow (foreign · institution · individual net buying and the index level), the things that are done
+Korean flow (foreign · institution · individual net buying and the index level; #605 the leveraged /
+inverse ETFs' net assets and units and the KTB 3 / 10-year yields from KRX, with their date - KRX
+publishes a day at 08:00 KST the next business day), the things that are done
 and the ones still ahead, the schedule (releases, expiries, earnings, hand-kept items in
 ``data/calendar.json``), 🟢 what reads well / 🔴 what is easy to misread, and a closing line.
 
@@ -32,7 +34,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 
-from desk import explain, market_calendar, runner
+from desk import explain, krx_etp, market_calendar, runner
 from desk.db import morning_briefs as briefs_t
 from desk.db import now as db_now
 
@@ -58,6 +60,8 @@ FLOW_MARKETS = ("KOSPI", "KOSDAQ")
 FLOW_NAMES = {"foreigner": "외국인", "institution": "기관", "individual": "개인"}
 FIELDS = ("title", "numbers", "kr_flow", "done", "pending", "schedule", "good", "bad", "closing")
 LISTS = ("numbers", "done", "pending", "schedule", "good", "bad")
+TEXT_LIMIT = 300                 # characters of a model's text field read; kr_flow carries #605's KRX lines too
+TEXT_LIMITS = {"kr_flow": 700}
 WEEKDAY_KO = "월화수목금토일"
 
 
@@ -95,7 +99,7 @@ class Sources:
     """Where the inputs come from (desk.api wires the live ones; tests and scripted runs fake them).
     ``candles(symbol, interval, count)`` desk.prices; ``fear()`` desk.fear.Fear.get; ``flow(market)`` desk.market_flow
     (1d records); ``month("YYYY-MM")`` desk.market_calendar.month_view; ``macro()`` desk.macro_news brief;
-    ``day_call()`` today's direction line (#572), None until it exists."""
+    ``day_call()`` today's direction line (#572), None until it exists; ``krx()`` desk.krx_etp.summary (#605)."""
     candles: Callable[[str, str, int], list]
     fear: Callable[[], Awaitable[dict]] | None = None
     flow: Callable[[str], Awaitable[dict]] | None = None
@@ -103,6 +107,7 @@ class Sources:
     macro: Callable[[], dict] | None = None
     day_call: Callable[[], dict | None] | None = None
     extra: Callable[[], list[dict]] | None = None
+    krx: Callable[[], dict | None] | None = None
 
 
 def day_call_source() -> Callable[[], dict | None] | None:
@@ -148,6 +153,7 @@ async def collect(src: Sources, now: datetime | None = None) -> dict:
     raw["macro"] = await guard("macro", asyncio.to_thread(src.macro)) if src.macro else None
     raw["day_call"] = await guard("day_call", asyncio.to_thread(src.day_call)) if src.day_call else None
     raw["extra"] = (await guard("calendar.json", asyncio.to_thread(src.extra))) if src.extra else []
+    raw["krx"] = await guard("krx", asyncio.to_thread(src.krx)) if src.krx else None
     return raw
 
 
@@ -269,6 +275,25 @@ def _earnings(raw: dict, now: datetime) -> tuple[list[dict], list[dict]]:
     return rows(us_day), rows(nxt)
 
 
+def _md(iso: str) -> str:
+    d = date.fromisoformat(iso)
+    return f"{d.month}/{d.day}"
+
+
+def _krx(raw: dict) -> dict:
+    """#605 the brief's ETFs (desk.krx_etp.ETFS with ``brief``) and the KTB yields, as the words say them."""
+    got = raw.get("krx") or {}
+    etf, ktb = got.get("etf"), got.get("ktb")
+    out: dict[str, Any] = {"etf": None, "ktb": None}
+    items = [i for i in (etf or {}).get("items") or [] if i.get("brief")]
+    if items:
+        out["etf"] = {"date": _md(etf["date"]), "items": [{"name": i["name"], "text": krx_etp.etf_line(i)} for i in items]}
+    if ktb and ktb.get("years"):
+        out["ktb"] = {"date": _md(ktb["date"]), "text": krx_etp.ktb_line(ktb),
+                      "years": {f"국고 {y}년": krx_etp.ktb_line({"years": {y: v}}) for y, v in ktb["years"].items()}}
+    return out
+
+
 def _themes(raw: dict) -> list[dict]:
     """The surging news themes (label and the first headline - untrusted text, no numbers taken from it)."""
     rows = [t for t in (raw.get("macro") or {}).get("themes") or [] if not t.get("quiet") and not t.get("stale")]
@@ -300,7 +325,7 @@ def bundle(raw: dict, now: datetime | None = None) -> dict:
     return {"date": today.isoformat(), "us": us, "futures": fut, "kr": kr, "flow": flow, "fear": fear,
             "events_done": done, "events_ahead": ahead, "earnings_done": reported, "earnings_ahead": due,
             "themes": _themes(raw), "day_call": (call or {}).get("line") if isinstance(call, dict) else None,
-            "missing": list(raw.get("missing") or [])}
+            "krx": _krx(raw), "missing": list(raw.get("missing") or [])}
 
 
 def _public(b: dict) -> dict:
@@ -344,6 +369,11 @@ def rules(b: dict) -> dict:
             text += ", " + " · ".join(f"{k} {v}" for k, v in f["net"].items())
         kr_parts.append(text)
     kr_flow = ("어제 " + " / ".join(kr_parts)) if kr_parts else "어제 국장 수급을 받지 못했어요."
+    k = b.get("krx") or {}
+    if k.get("etf"):
+        kr_flow += f" 레버리지 · 인버스 ETF({k['etf']['date']} 기준): " + " / ".join(i["text"] for i in k["etf"]["items"]) + "."
+    if k.get("ktb"):
+        kr_flow += f" 국채 금리({k['ktb']['date']} 기준): {k['ktb']['text']}."
     done = [f"{e['label']}({e['when']}) 발표가 지나갔어요" for e in b["events_done"]]
     done += [f"{r['name']}({r['ticker']}) {r['when']} 실적 발표" + (f" — 예상 EPS {r['eps_estimate']}" if r["eps_estimate"] else "")
              for r in b["earnings_done"]]
@@ -472,6 +502,11 @@ def _subjects(b: dict) -> dict[str, set[str]]:
     for f in (b.get("flow") or {}).values():
         for who, v in f["net"].items():
             add(who, v.rstrip("억"))
+    k = b.get("krx") or {}
+    for i in (k.get("etf") or {}).get("items") or []:       # #605 the numbers of each ETF's phrase, its name aside
+        add(i["name"], *_SIGNED.findall(i["text"].replace(i["name"], " ")))
+    for name, text in ((k.get("ktb") or {}).get("years") or {}).items():
+        add(name, *_SIGNED.findall(text.replace(name, " ")))
     return out
 
 
@@ -491,7 +526,10 @@ def _ok(text, allowed: Check, limit: int) -> str | None:
     wrong sign or direction, or on the wrong subject) dropped; None if nothing is left or it is not Korean."""
     if not isinstance(text, str) or not text.strip():
         return None
-    keep = [s.strip() for s in explain._SENTENCE.split(text.strip()[:limit]) if s.strip() and allowed.sentence_ok(s.strip())]
+    parts = explain._SENTENCE.split(text.strip()[:limit])
+    if len(text.strip()) > limit:
+        parts = parts[:-1]                              # cut mid-sentence: the broken last piece is not said
+    keep = [s.strip() for s in parts if s.strip() and allowed.sentence_ok(s.strip())]
     good = " ".join(keep)
     return good if good and not foreign(good) else None
 
@@ -511,7 +549,7 @@ def merge(draft: dict, answer: dict | None, allowed: Check) -> dict:
             if items:
                 out[k], taken = items, taken + 1
         else:
-            x = _ok(got, allowed, 300)
+            x = _ok(got, allowed, TEXT_LIMITS.get(k, TEXT_LIMIT))
             if x:
                 out[k], taken = x, taken + 1
     if taken:

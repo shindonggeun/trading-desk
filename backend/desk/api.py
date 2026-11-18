@@ -45,6 +45,7 @@ from . import (
     halving,
     horizons,
     krx,
+    krx_etp,
     language,
     line_basis,
     live,
@@ -434,7 +435,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             month=market_calendar.month_view,
             macro=lambda: macro_news.CACHE.brief(None),
             day_call=morning_brief.day_call_source(),
-            extra=morning_brief.hand_kept)
+            extra=morning_brief.hand_kept,
+            krx=lambda: krx_etp.summary(engine, datetime.now(krx.KST).date()))
 
     async def make_brief(trigger: str, desk_only: bool = False, taken: bool = False) -> str:
         """One brief (#571): ``made`` or ``busy`` (one being written, or - automatic only - no free ChatGPT
@@ -2061,8 +2063,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(503, "rate / dollar series unavailable")
         error = (None if trend else "지수 일봉을 불러오는 중입니다 — 잠시 뒤 다시 확인하세요" if trend is None
                  else "지수 일봉을 받지 못해 대세 국면을 판정하지 못했습니다")
+        try:     # #605 the leveraged / inverse ETFs' units and the KTB yields from the stored KRX rows
+            krx_lines = await asyncio.to_thread(krx_etp.tips_view, engine, datetime.now(krx.KST).date())
+        except Exception as exc:  # noqa: BLE001 - the tips stand without them
+            log.warning("krx tips failed: %s", type(exc).__name__)
+            krx_lines = {"etf_flow": [], "ktb": None}
         return {**out, "trend": trend or [], "guide": primary_trend.guide(), "trend_error": error,
-                "gaps": gap_lines(gap_fill.WATCH)}
+                "gaps": gap_lines(gap_fill.WATCH), **krx_lines}
 
     def gap_lines(tickers) -> list[dict]:
         """#577 the tips' gap lines: each ticker's nearest open gap, from the cache only (prewarmed)."""

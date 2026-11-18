@@ -2,8 +2,8 @@
  "version": "dc-20260820-619da11b",
  "market": "kr",
  "target": "^KS11",
- "commit": "0ebdb714ca7f",
- "code": "c687af1a17e6",
+ "commit": "8a4c052f3ad3",
+ "code": "42d9c6a79138",
  "holdout_days": 90,
  "holdout_from": "2026-08-21",
  "edges": [

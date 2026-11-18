@@ -101,7 +101,20 @@ def closed_at(symbol: str, bar) -> datetime:
     if symbol in FX:
         return datetime.fromisoformat(bar.at) + timedelta(days=1)
     zone, close = CLOSES[symbol]
-    return datetime.combine(session_day(symbol, bar), close, zone)
+    day = session_day(symbol, bar)
+    if symbol == "^KS11" and day in CSAT_DAYS:     # the CSAT session runs an hour late: 10:00 to 16:30
+        close = time(16, 30)
+    return datetime.combine(day, close, zone)
+
+
+def session_close(market: str, day: date) -> datetime:
+    """When ``market``'s session of ``day`` is over (the target's bar, as ``closed_at`` reads it): a
+    US half day still waits for 16:00 - the daily bar is read the same way."""
+    m = MARKETS[market]
+    zone, close = CLOSES[m.target]
+    if market == "kr" and day in CSAT_DAYS:
+        close = time(16, 30)
+    return datetime.combine(day, close, zone)
 
 
 _INDEX: dict[tuple, tuple[Sequence, list[datetime], dict[date, int]]] = {}

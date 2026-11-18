@@ -29,9 +29,8 @@ log = logging.getLogger(__name__)
 
 WINDOWS = {("kr", 1): (time(7, 30), time(8, 0)), ("kr", 2): (time(9, 30), time(11, 0)),
            ("us", 1): (time(9, 0), time(9, 30)), ("us", 2): (time(10, 0), time(10, 30))}
-CLOSE = {"kr": time(15, 30), "us": time(16, 0)}
-US_HALF_DAY_CLOSE = time(13, 0)
 SCORE_AFTER = timedelta(minutes=30)
+GIVE_UP_AFTER = timedelta(days=2)    # a call Yahoo still has no answer for is marked unscorable
 SCORE_EVERY = timedelta(minutes=30)
 TICK_SEC = 120
 DAILY_BARS = 300
@@ -48,19 +47,25 @@ WORD = {"long": "롱 우세", "short": "숏 우세", "hold": "판단 보류"}
 
 
 def fetch_series(candles: Callable, hourly_bars: int = HOURLY_BARS, daily_bars: int = DAILY_BARS) -> dict:
-    """The bars a call reads: daily for every symbol, hourly futures (desk.prices yahoo_candles shape)."""
-    out = {s: [b for b in candles(s, "1d", daily_bars) if b.close] for s in dc.SYMBOLS}
+    """The bars a call reads: daily for every symbol, hourly futures (desk.prices yahoo_candles shape).
+    A symbol that fails comes back empty: the calls that need it say NoData (prev_close falls back to
+    the model without the futures), the others are still made."""
+    def get(symbol: str, interval: str, count: int) -> list:
+        try:
+            return [b for b in candles(symbol, interval, count) if b.close]
+        except Exception as exc:  # noqa: BLE001 - one flaky ticker must not lose the round
+            log.info("day calls: %s %s failed: %s", symbol, interval, type(exc).__name__)
+            return []
+
+    out = {s: get(s, "1d", daily_bars) for s in dc.SYMBOLS}
     for key in dc.HOURLY:
-        out[key] = [b for b in candles(key.split("@")[0], "60m", hourly_bars) if b.close]
+        out[key] = get(key.split("@")[0], "60m", hourly_bars)
     return out
 
 
 def closes_at(market: str, day: date) -> datetime:
-    m = dc.MARKETS[market]
-    close = CLOSE[market]
-    if market == "us" and market_calendar.us_early_close(day):
-        close = US_HALF_DAY_CLOSE
-    return datetime.combine(day, close, m.zone)
+    """The session's close as the answer reads it (desk.day_call.session_close: 16:30 on the CSAT)."""
+    return dc.session_close(market, day)
 
 
 def _rate(values: Sequence) -> float | None:
@@ -122,7 +127,9 @@ class DayCalls:
             used = "prev_close_plain" if c["fallback"] else name
             row = {"market": market, "trade_date": day, "round": round_, "call": name, "model": used,
                    "model_version": model_file["version"], "source": source,
-                   "called_at": called_at or db_now(), "cutoff_at": datetime.fromisoformat(c["cutoff_at"]),
+                   # UTC: SQLite keeps no offset, and a Seoul or New York time would read back hours off
+                   "called_at": (called_at or db_now()).astimezone(UTC),
+                   "cutoff_at": datetime.fromisoformat(c["cutoff_at"]).astimezone(UTC),
                    "stage": c["stage"], "verdict": c["verdict"], "probs": c["probs"], "reasons": c["reasons"],
                    "edges_pct": c["edges_pct"], "features": {k: round(v, 6) for k, v in c["features"].items()}}
             try:
@@ -167,15 +174,23 @@ class DayCalls:
             kind = "oc" if r["call"] == "open" else "cc"
             answer = dc.label(r["market"], r["trade_date"], series, kind, now)
             if answer is None:
-                continue
-            out = dc.score(r["probs"], answer)
-            if r["verdict"] == "hold":
-                out["hit_direction"] = None
-            out["scored_at"] = now.isoformat()
+                if now - closes_at(r["market"], r["trade_date"]) < GIVE_UP_AFTER:
+                    continue            # Yahoo may not have the bar yet
+                # no bar, or the session before is missing: stop asking (stats leave it out)
+                out = {"unscorable": True, "scored_at": now.isoformat()}
+                values = {"outcome": out, "hit_direction": None, "hit_stage": None, "brier": None}
+            else:
+                out = dc.score(r["probs"], answer)
+                # the direction the probabilities lean, scored on every call (as the backtest does);
+                # the call's own direction hit is None on a hold (판단 보류)
+                out["raw_hit_direction"] = out["hit_direction"]
+                if r["verdict"] == "hold":
+                    out["hit_direction"] = None
+                out["scored_at"] = now.isoformat()
+                values = {"outcome": out, "hit_direction": out["hit_direction"], "hit_stage": out["hit_stage"],
+                          "brier": out["brier"]}
             with self.engine.begin() as conn:
-                conn.execute(update(t).where(t.c.id == r["id"]).values(
-                    outcome=out, hit_direction=out["hit_direction"], hit_stage=out["hit_stage"],
-                    brier=out["brier"], scored_at=now))
+                conn.execute(update(t).where(t.c.id == r["id"]).values(**values, scored_at=now.astimezone(UTC)))
             done += 1
         return done
 
@@ -208,7 +223,8 @@ class DayCalls:
         if since:
             q = q.where(t.c.trade_date >= since)
         with self.engine.connect() as conn:
-            return [dict(r) for r in conn.execute(q.order_by(t.c.trade_date.desc(), t.c.round.desc())).mappings()]
+            return [dict(r) for r in conn.execute(q.order_by(t.c.trade_date.desc(), t.c.round.desc(),
+                                                              t.c.call.desc())).mappings()]
 
     def entry(self, r: dict) -> dict:
         """A stored call as the API gives it (#572 contract)."""
@@ -245,14 +261,15 @@ class DayCalls:
                 "calls": calls, "rounds": rounds, "note": NOTE}
 
     def record(self, market: str, name: str, round_: int, stats: dict | None = None) -> dict:
-        """The call's record next to it: the stored calls of that round, or the hold-out report."""
+        """The call's record next to it, for that round: the live calls once there are LIVE_RECORD_MIN
+        of them; before that the backfilled hold-out calls; with neither, the hold-out report."""
         stats = stats or self.stats(market)
         by_round = stats["calls"][name]["by_round"].get(str(round_)) or {}
-        live = by_round.get("live_n", 0)
-        if by_round.get("n"):
-            return {"n": by_round["n"], "direction_hit_rate": by_round["direction_hit_rate"],
-                    "always_long": by_round["always_long"], "always_short": by_round["always_short"],
-                    "brier_skill": by_round["brier_skill"], "basis": "live" if live >= LIVE_RECORD_MIN else "backtest"}
+        for basis, part in (("live", by_round.get("live") or {}), ("backtest", by_round.get("backfill") or {})):
+            if part.get("n") and (basis == "backtest" or part["n"] >= LIVE_RECORD_MIN):
+                return {"n": part["n"], "direction_hit_rate": part["direction_hit_rate"],
+                        "always_long": part["always_long"], "always_short": part["always_short"],
+                        "brier_skill": part["brier_skill"], "basis": basis}
         rep = ((self.reports.get(market) or {}).get("calls", {}).get(name, {}).get("rounds", {})
                .get(str(round_), {}).get("holdout") or {})
         b = rep.get("baselines") or {}
@@ -276,14 +293,21 @@ class DayCalls:
         out = {}
         for name in SHOWN:
             mine = [r for r in rows if r["call"] == name]
-            scored = sorted((r for r in mine if r["scored_at"] is not None), key=lambda r: (r["trade_date"], r["round"]))
+            # unscorable rows (no answer from Yahoo) are left out of every number
+            scored = sorted((r for r in mine if r["scored_at"] is not None and r["brier"] is not None),
+                            key=lambda r: (r["trade_date"], r["round"]))
             clim = {k: (model_file.get("calls", {}).get(name, {}).get("rounds", {}).get(k) or {}).get("climatology")
                     for k in ("1", "2")}
-            block = _summary(scored, clim)
+            block = _summary(market, scored, clim)
             block["missed"] = self._missed(market, mine, today, now)
-            block["by_round"] = {str(k): {**_summary([r for r in scored if r["round"] == k], clim),
-                                          "live_n": sum(1 for r in scored if r["round"] == k and r["source"] == "live")}
-                                 for k in sorted(m.rounds)}
+            block["by_round"] = {}
+            for k in sorted(m.rounds):
+                in_round = [r for r in scored if r["round"] == k]
+                block["by_round"][str(k)] = {
+                    **_summary(market, in_round, clim),
+                    "live_n": sum(1 for r in in_round if r["source"] == "live"),
+                    **{s: _summary(market, [r for r in in_round if r["source"] == s], clim) for s in ("live", "backfill")},
+                }
             block["by_source"] = {s: {"n": sum(1 for r in scored if r["source"] == s)} for s in ("live", "backfill")}
             if name == "open":
                 n = len(scored)
@@ -321,7 +345,7 @@ class DayCalls:
         now = now or self.clock()
         kst_today = now.astimezone(dc.KST).date()
         out: dict = {"date": kst_today.isoformat()}
-        parts = []
+        text: dict[str, str] = {}
         for market in dc.MARKETS:
             rows = [r for r in self._rows(market, kst_today - timedelta(days=5))
                     if r["call"] == "prev_close" and r["trade_date"] <= kst_today]
@@ -329,28 +353,44 @@ class DayCalls:
                 out[market] = None
                 continue
             r = rows[0]
-            p = r["probs"][r["stage"]]
+            if market == "kr" and r["trade_date"] != kst_today:
+                # the 07:00 brief comes before the 07:30 call: yesterday's call is not today's line
+                out[market] = None
+                text["kr_later"] = f"오늘 국장 판정은 {WINDOWS[('kr', 1)][0]:%H:%M} 에 나온다"
+                continue
             out[market] = {"label": dc.LABEL_KO[r["stage"]], "stage": r["stage"], "probs": r["probs"],
                            "round": r["round"], "session_date": r["trade_date"].isoformat(), "verdict": r["verdict"]}
             if market == "kr":
-                when = "오늘 국장은" if r["trade_date"] == kst_today else f"{r['trade_date']:%m/%d} 국장은"
-                parts.append(f"{when} 전일 종가 대비 {dc.LABEL_KO[r['stage']]}({p:.0f}%) {WORD[r['verdict']]}")
+                text["kr"] = f"오늘 국장은 전일 종가 대비 {call_words(r)}"
             else:
-                parts.append(f"간밤 미장 판정은 {dc.LABEL_KO[r['stage']]}({p:.0f}%)")
-        if not parts:
+                result = (r["outcome"] or {}).get("label")
+                text["us"] = f"간밤 미장 판정은 {call_words(r)}" + (f"(결과 {result})" if result else "")
+        if all(out[m] is None for m in dc.MARKETS):
             return None
-        out["line"] = ", ".join(parts) + "."
+        out["line"] = ", ".join(text[k] for k in ("kr", "us", "kr_later") if k in text) + "."
         return out
+
+
+def call_words(row: dict) -> str:
+    """"약한 롱(34%) 우세": the top stage and its probability, and the side the long and short stages
+    add up to when it is not the stage's own (a flat stage, or a near tie)."""
+    stage, verdict = row["stage"], row["verdict"]
+    head = f"{dc.LABEL_KO[stage]}({row['probs'][stage]:.0f}%)"
+    if verdict == "hold":
+        return f"{head} · 판단 보류"
+    side = "long" if stage.endswith("long") else "short" if stage.endswith("short") else None
+    if side == verdict:
+        return f"{head} 우세"
+    return f"{head}, 롱 · 숏 합으로는 {'롱' if verdict == 'long' else '숏'} 쪽"
 
 
 def push_text(row: dict) -> str:
     """The push body of a stored prev_close call: the stage, its probability, and where the record is."""
-    p = row["probs"][row["stage"]]
-    return (f"전일 종가 대비 {dc.LABEL_KO[row['stage']]}({p:.0f}%) {WORD[row['verdict']]}"
+    return (f"전일 종가 대비 {call_words(row)}"
             f"{' · 야간 선물 없이' if row['model'] == 'prev_close_plain' else ''} — 적중 기록 · 기준선은 앱에서")
 
 
-def _summary(rows: list[dict], clim: dict[str, list[float] | None]) -> dict:
+def _summary(market: str, rows: list[dict], clim: dict[str, list[float] | None]) -> dict:
     n = len(rows)
     if n == 0:
         return {"n": 0, "direction_hit_rate": None, "stage_hit_rate": None, "brier": None, "brier_skill": None,
@@ -361,13 +401,14 @@ def _summary(rows: list[dict], clim: dict[str, list[float] | None]) -> dict:
     moved = [r for r in rows if r["outcome"]["close"] != r["outcome"]["open"]]
     ups = [r["outcome"]["close"] > r["outcome"]["open"] for r in moved]
     up = round(sum(ups) / len(ups), 3) if ups else None
-    follow, prev = [], None
+    # follow yesterday: the same round's answer on the market's previous session, when it was scored
+    moves = {(r["round"], r["trade_date"]): r["outcome"]["close"] - r["outcome"]["open"] for r in rows}
+    follow = []
     for r in rows:
-        actual = r["outcome"]["close"] - r["outcome"]["open"]
-        if prev is not None and prev != 0 and actual != 0 and r["round"] == 1:
-            follow.append((prev > 0) == (actual > 0))
-        if r["round"] == 1:
-            prev = actual
+        actual = moves[(r["round"], r["trade_date"])]
+        before = moves.get((r["round"], dc.previous_session(market, r["trade_date"])))
+        if before and actual:
+            follow.append((before > 0) == (actual > 0))
     brier = sum(r["brier"] for r in rows) / n
     cb = []
     for r in rows:
@@ -383,7 +424,7 @@ def _summary(rows: list[dict], clim: dict[str, list[float] | None]) -> dict:
             calib.append({"lo": lo, "hi": lo + 10, "n": len(hit), "mean_prob": round(sum(p for p, _ in hit) / len(hit), 1),
                           "actual_rate": round(sum(y for _, y in hit) / len(hit) * 100, 1)})
     return {
-        "n": n, "direction_hit_rate": _rate(r["hit_direction"] for r in rows),
+        "n": n, "direction_hit_rate": _rate(r["outcome"].get("raw_hit_direction", r["hit_direction"]) for r in rows),
         "stage_hit_rate": _rate(r["hit_stage"] for r in rows), "brier": round(brier, 4),
         "brier_skill": round(1 - brier / clim_brier, 4) if clim_brier else None,
         "always_long": up, "always_short": None if up is None else round(1 - up, 3),

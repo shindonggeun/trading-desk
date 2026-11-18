@@ -96,7 +96,8 @@ def test_the_views_the_record_and_the_morning_line(desk):
     pc = v["calls"]["prev_close"]
     assert pc["round"] == 2 and [e["round"] for e in v["rounds"]["prev_close"]] == [1, 2]
     assert pc["call_label"] == "전일 종가 대비" and pc["measured_from"] == "prev_close" and pc["outcome"]
-    assert pc["record"]["n"] == 1 and pc["record"]["basis"] == "backtest"     # under 30 live calls
+    assert pc["record"] == {"n": 0, "direction_hit_rate": None, "always_long": None, "always_short": None,
+                            "brier_skill": None, "basis": "backtest"}   # one live call: the report (none here)
     assert v["calls"]["open"]["verdict"] == "hold" and len(v["note"]) == 3
     assert desk.view("kr", now + timedelta(days=1))["today"] is False          # the next morning: the last session
     h = desk.history("kr", 30, now)
@@ -104,7 +105,7 @@ def test_the_views_the_record_and_the_morning_line(desk):
     s = desk.stats("kr", 30, now)["calls"]
     assert s["prev_close"]["n"] == 2 and s["prev_close"]["by_round"]["1"]["n"] == 1
     assert s["open"]["hold_rate"] == 1.0 and s["open"]["called"] == {"n": 0, "direction_hit_rate": None}
-    assert s["open"]["direction_hit_rate"] is None and s["prev_close"]["missed"] == 0
+    assert s["open"]["direction_hit_rate"] is not None and s["prev_close"]["missed"] == 0   # every day, holds too
     assert sum(p["actual"] for p in s["prev_close"]["per_stage"]) == 2
     line = desk.today_call(now)
     assert line["kr"]["label"] == dc.LABEL_KO[line["kr"]["stage"]] and line["us"] is None
@@ -139,7 +140,8 @@ def test_the_api_needs_a_session_checks_the_market_and_answers_empty(db_url):
     from tests.test_api import OWNER, PASSWORD, _client
 
     with _client(db_url, login=False) as client:
-        assert client.get("/api/day-call").status_code == 401
+        for path in ("/api/day-call", "/api/day-call/history", "/api/day-call/stats"):
+            assert client.get(path).status_code == 401, path
         client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
         assert client.get("/api/day-call?market=jp").status_code == 422
         body = client.get("/api/day-call?market=us").json()
@@ -160,3 +162,64 @@ def test_the_api_needs_a_session_checks_the_market_and_answers_empty(db_url):
         assert got["today"] is True and got["calls"]["prev_close"]["label"] == "약한 롱"
         assert got["calls"]["prev_close"]["record"]["basis"] == "backtest" and got["calls"]["open"] is None
     assert "day_call" in push.KINDS
+
+
+def test_the_csat_session_is_scored_after_its_1630_close(desk):
+    csat = date(2024, 11, 14)
+    assert desk.run(_kst(csat, 7, 40))
+    assert desk.score(_kst(csat, 16, 35)) == 0                       # 16:30 + 30 min not yet
+    assert desk.score(_kst(csat, 17, 5), force=True) == 2
+    assert day_calls.closes_at("kr", csat) == _kst(csat, 16, 30) and day_calls.closes_at("kr", DAY) == _kst(DAY, 15, 30)
+
+
+def test_a_call_yahoo_never_answers_stops_being_asked(desk):
+    desk.run(_kst(DAY, 7, 40))
+    gap = {**SERIES, "^KS11": [b for b in SERIES["^KS11"] if dc.session_day("^KS11", b) != DAY]}
+    assert desk.score(_kst(DAY, 16, 5), series=gap) == 0             # no bar yet: try again later
+    assert desk.score(_kst(DAY + timedelta(days=3), 9), series=gap, force=True) == 2
+    with desk.engine.connect() as conn:
+        rows = conn.execute(select(t)).mappings().all()
+    assert all(r["outcome"] == {"unscorable": True, "scored_at": r["outcome"]["scored_at"]} for r in rows)
+    assert desk.score(_kst(DAY + timedelta(days=4), 9), series=gap, force=True) == 0
+    assert desk.stats("kr", 30, _kst(DAY, 17))["calls"]["prev_close"]["n"] == 0    # left out of every number
+
+
+def test_one_failing_symbol_loses_only_the_calls_that_need_it():
+    def flaky(symbol, interval, count):
+        if symbol == "ES":
+            raise RuntimeError("rate limited")
+        return _candles(symbol, interval, count)
+
+    got = day_calls.fetch_series(lambda s, i, n: flaky("ES" if s == "ES=F" else s, i, n))
+    assert got["ES=F@60m"] == [] and got["^KS11"] and got["NQ=F@60m"]
+
+
+def test_the_record_comes_from_the_backfill_then_the_live_calls(desk):
+    desk.backfill("kr", SERIES, 90, datetime(2025, 9, 6, 12, tzinfo=UTC))
+    now = datetime(2025, 9, 6, 12, tzinfo=UTC)
+    rec = desk.record("kr", "prev_close", 1, desk.stats("kr", 120, now))
+    assert rec["basis"] == "backtest" and rec["n"] > 0
+    assert desk.record("kr", "open", 1, desk.stats("kr", 120, now))["direction_hit_rate"] is not None
+
+
+def test_the_seven_oclock_brief_does_not_take_yesterdays_korean_call(desk):
+    desk.run(_kst(DAY, 7, 40))
+    desk.run(_et(DAY, 9, 10))                                         # the US call that night (KST)
+    morning = _kst(DAY + timedelta(days=1), 7, 0)                    # before the next 07:30 call
+    line = desk.today_call(morning)
+    assert line["kr"] is None and line["us"]["session_date"] == DAY.isoformat()
+    assert "오늘 국장 판정은 07:30 에 나온다" in line["line"] and line["line"].startswith("간밤 미장 판정은")
+
+
+def test_the_words_of_a_call():
+    probs = {"strong_long": 10.0, "weak_long": 34.0, "flat": 30.0, "weak_short": 20.0, "strong_short": 6.0}
+    assert day_calls.call_words({"stage": "weak_long", "verdict": "long", "probs": probs}) == "약한 롱(34%) 우세"
+    flat = {**probs, "weak_long": 30.0, "flat": 34.0}
+    assert day_calls.call_words({"stage": "flat", "verdict": "long", "probs": flat}) == "약보합(34%), 롱 · 숏 합으로는 롱 쪽"
+    assert day_calls.call_words({"stage": "flat", "verdict": "hold", "probs": flat}).endswith("판단 보류")
+
+
+def test_the_times_read_back_in_utc(desk):
+    desk.run(_kst(DAY, 7, 40))
+    item = desk.history("kr", 30, _kst(DAY, 9))["items"][0]
+    assert datetime.fromisoformat(item["cutoff_at"]) == _kst(DAY, 7, 30)

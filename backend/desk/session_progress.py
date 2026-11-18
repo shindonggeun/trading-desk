@@ -24,11 +24,10 @@ from datetime import time as clock_time
 from . import market_calendar
 from .estimate import KRX, US
 
-US_EARLY_CLOSE = clock_time(13, 0)
 # #559 the chart's volume tag and the entry summary read NQ=F's day so far against whole days
 US_INDICES = frozenset({"^GSPC", "^NDX", "^IXIC", "^DJI", "^SOX", "^RUT"})
-FUTURES_OPENS = clock_time(18, 0)    # CME Globex: the session dated D runs 18:00 ET on D-1 ...
-FUTURES_CLOSES = clock_time(17, 0)   # ... to 17:00 ET on D (equity index futures; a holiday is not modelled)
+FUTURES_OPENS = market_calendar.CME_OPENS     # CME Globex: the session dated D runs 18:00 ET on D-1 ...
+FUTURES_CLOSES = market_calendar.CME_CLOSES   # ... to 17:00 ET on D (equity index futures; a holiday is not modelled)
 
 
 def _korean(ticker: str) -> bool:
@@ -38,12 +37,7 @@ def _korean(ticker: str) -> bool:
 
 def bar_day(at: str, ticker: str) -> date:
     """The market's own date of a daily bar (desk.sr._local_day's rule; a bare date is read as is)."""
-    stamp = datetime.fromisoformat(at)
-    if stamp.tzinfo is not None:
-        stamp = stamp.astimezone(UTC)
-        if _korean(ticker):
-            stamp += timedelta(hours=9)
-    return stamp.date()
+    return market_calendar.bar_day(at, _korean(ticker))
 
 
 def elapsed(ticker: str, daily: list[dict], now: datetime | None = None) -> float | None:
@@ -69,8 +63,6 @@ def elapsed(ticker: str, daily: list[dict], now: datetime | None = None) -> floa
     except (TypeError, ValueError):
         return None
     opens, closes = session.hours(local.date())
-    if session is US and market_calendar.us_early_close(local.date()):
-        closes = min(closes, US_EARLY_CLOSE)
     start = datetime.combine(local.date(), opens, session.zone)
     end = datetime.combine(local.date(), closes, session.zone)
     if end <= start or local >= end:
@@ -93,12 +85,10 @@ def _futures(t: str, daily: list[dict], now: datetime | None) -> float | None:
     whole day (the 0.0x the issue saw)."""
     zone = US.zone
     local = (now or datetime.now(UTC)).astimezone(zone)
-    day = local.date() if local.time() < FUTURES_CLOSES else local.date() + timedelta(days=1)
+    day = market_calendar.cme_trade_day(local)
     if day.weekday() >= 5:
         return None
     opens, closes = US.hours(day)
-    if market_calendar.us_early_close(day):
-        closes = min(closes, US_EARLY_CLOSE)
     start = datetime.combine(day, opens, zone)
     end = datetime.combine(day, closes, zone)
     evening = day - timedelta(days=1)                    # Sunday for Monday's session

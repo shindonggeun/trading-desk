@@ -100,21 +100,17 @@ def closed_at(symbol: str, bar) -> datetime:
         return datetime.fromisoformat(bar.at) + timedelta(hours=1)
     if symbol in FX:
         return datetime.fromisoformat(bar.at) + timedelta(days=1)
-    zone, close = CLOSES[symbol]
     day = session_day(symbol, bar)
-    if symbol == "^KS11" and day in CSAT_DAYS:     # the CSAT session runs an hour late: 10:00 to 16:30
-        close = time(16, 30)
+    if symbol == "^KS11":                          # the CSAT session runs an hour late: 10:00 to 16:30
+        return market_calendar.session_close("kr", day)
+    zone, close = CLOSES[symbol]
     return datetime.combine(day, close, zone)
 
 
 def session_close(market: str, day: date) -> datetime:
     """When ``market``'s session of ``day`` is over (the target's bar, as ``closed_at`` reads it): a
     US half day still waits for 16:00 - the daily bar is read the same way."""
-    m = MARKETS[market]
-    zone, close = CLOSES[m.target]
-    if market == "kr" and day in CSAT_DAYS:
-        close = time(16, 30)
-    return datetime.combine(day, close, zone)
+    return market_calendar.session_close(MARKETS[market].calendar, day, early_close=False)
 
 
 _INDEX: dict[tuple, tuple[Sequence, list[datetime], dict[date, int]]] = {}
@@ -203,20 +199,9 @@ def _rv(bars: Sequence, n: int) -> float:
 
 
 # KRX opens at 10:00 on the year's first session and on the 수능 (CSAT) day: the 09:30 round has no
-# open yet. CSAT days (Ministry of Education; 2017 was put off a week by the Pohang earthquake, 2020 by
-# COVID-19) - add each year's when it is announced.
-CSAT_DAYS = {date(2017, 11, 23), date(2018, 11, 15), date(2019, 11, 14), date(2020, 12, 3), date(2021, 11, 18),
-             date(2022, 11, 17), date(2023, 11, 16), date(2024, 11, 14), date(2025, 11, 13), date(2026, 11, 19)}
-
-
-def kr_late_open(day: date) -> bool:
-    """A KRX session that opens at 10:00: the year's first one, or the CSAT day."""
-    if day in CSAT_DAYS:
-        return True
-    first = date(day.year, 1, 1)
-    while not market_calendar.is_open("kr", first):
-        first += timedelta(days=1)
-    return day == first
+# open yet (desk.market_calendar keeps the CSAT days and the rule).
+CSAT_DAYS = market_calendar.CSAT_DAYS
+kr_late_open = market_calendar.kr_late_open
 
 
 def _expiry(market: str, day: date) -> bool:
@@ -330,12 +315,7 @@ LABELS = ("oc", "cc")      # open -> close (the call), or the previous close -> 
 
 def previous_session(market: str, day: date) -> date:
     """The market's trading day before ``day`` (desk.market_calendar)."""
-    d = day - timedelta(days=1)
-    for _ in range(15):
-        if market_calendar.is_open(MARKETS[market].calendar, d):
-            return d
-        d -= timedelta(days=1)
-    return d
+    return market_calendar.previous_open(MARKETS[market].calendar, day)
 
 
 def label(market: str, day: date, series: dict[str, Sequence], kind: str = "oc",

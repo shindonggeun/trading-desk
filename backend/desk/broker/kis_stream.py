@@ -41,10 +41,11 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from datetime import time as clock_time
 from zoneinfo import ZoneInfo
 
 import httpx
+
+from .. import market_calendar
 
 log = logging.getLogger(__name__)
 
@@ -101,20 +102,10 @@ def market_of(ticker: str) -> str | None:
 
 
 def us_session(now: datetime | None = None) -> str | None:
-    """The US equity session by the New York clock: regular (09:30-16:00), pre (04:00-09:30),
-    post (16:00-20:00), overnight (20:00-04:00, Sunday night to Friday morning) or None (weekend).
-    Holidays are not known here: on one nothing trades and the stream simply gets no ticks."""
-    ny = (now or datetime.now(UTC)).astimezone(_NEW_YORK)
-    t, day = ny.time(), ny.weekday()
-    if t >= clock_time(20):
-        return "overnight" if day in (6, 0, 1, 2, 3) else None
-    if t < clock_time(4):
-        return "overnight" if day in (0, 1, 2, 3, 4) else None
-    if day >= 5:
-        return None
-    if t < clock_time(9, 30):
-        return "pre"
-    return "regular" if t < clock_time(16) else "post"
+    """The US equity session by the New York clock (desk.market_calendar.us_phase): regular, pre, post,
+    overnight or None (weekend). Holidays are not known here: on one nothing trades and the stream simply
+    gets no ticks."""
+    return market_calendar.us_phase(now)
 
 
 def us_key(exchange: str, symbol: str, now: datetime | None = None) -> str:

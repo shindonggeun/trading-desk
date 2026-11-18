@@ -19,7 +19,7 @@ from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from zoneinfo import ZoneInfo
 
-from . import horizons, patterns, recent, sr_major, sr_zones, trend, volume_profile
+from . import horizons, market_calendar, patterns, recent, sr_major, sr_zones, trend, volume_profile
 
 DAILY_BARS = 200
 WEEKLY_BARS = 156          # three years
@@ -428,10 +428,7 @@ def live_note(live: dict | None, atr: float | None = None) -> str | None:
 def _local_day(at: str, ticker: str) -> date:
     """The market's own date of a bar. Korean bars open at local midnight, which is 15:00 UTC the
     day before; US bars (midnight New York = 04:00/05:00 UTC) already carry their own date."""
-    stamp = datetime.fromisoformat(at)
-    if ticker.upper().endswith((".KS", ".KQ")):
-        stamp += timedelta(hours=9)
-    return stamp.date()
+    return market_calendar.bar_day(at, ticker.upper().endswith((".KS", ".KQ")), naive_is_utc=True)
 
 
 def _until(daily: list[dict], weekly: list[dict], ticker: str,

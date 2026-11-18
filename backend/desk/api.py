@@ -2821,8 +2821,11 @@ def _notify_routes(app: FastAPI, engine, settings: Settings) -> None:
         if moment - last_test["at"] < NOTIFY_TEST_GAP_SEC:
             raise HTTPException(429, "one test every few seconds", headers={"Retry-After": "5"})
         last_test["at"] = moment
-        error = await asyncio.to_thread(notify.test, name, {
-            "title": "트레이딩 데스크", "body": "시험 알림입니다.", "url": "/#/settings"})
+        try:
+            error = await asyncio.to_thread(notify.test, name, {
+                "title": "트레이딩 데스크", "body": "시험 알림입니다.", "url": "/#/settings"})
+        except nc.ChannelError as exc:         # the worker busy past the wait: it may still go later
+            error = str(exc)
         return {"ok": error is None, "error": error}
 
     @app.post("/api/notify/kakao/connect")
@@ -2847,6 +2850,8 @@ def _notify_routes(app: FastAPI, engine, settings: Settings) -> None:
             await asyncio.to_thread(notify.run, lambda: kakao.connect(body.code))
         except nc.ChannelError as exc:
             log.warning("kakao connect failed: %s", exc)
+            if str(exc) == "timeout":           # still running on the worker: it may yet connect
+                raise HTTPException(504, "kakao is slow - check the channel again in a minute") from None
             raise HTTPException(502, f"kakao refused: {exc}") from None
 
     @app.delete("/api/notify/kakao", status_code=204)

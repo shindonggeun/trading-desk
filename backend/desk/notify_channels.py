@@ -31,6 +31,7 @@ from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.engine import Engine
 
 from .db import notify_channels, now
+from .otp import OtpUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -170,14 +171,14 @@ class ChannelStore:
         return dict(row)
 
     def _upsert(self, channel: str, values: dict) -> None:
-        values = {**values, "updated_at": now()}
+        """Insert the row, or (another thread made it first) write the same values over it."""
+        values = {"enabled": False, "kinds": {}, "needs_reconnect": False, **values, "updated_at": now()}
         dialect = self.engine.dialect.name
-        ins = (postgresql.insert if dialect == "postgresql" else sqlite.insert)(notify_channels)
-        stmt = ins.values(channel=channel, enabled=values.pop("enabled", False), kinds=values.pop("kinds", {}),
-                          needs_reconnect=values.pop("needs_reconnect", False), **values)
-        keep = {k: stmt.excluded[k] for k in ("updated_at", *values)}
+        stmt = (postgresql.insert if dialect == "postgresql" else sqlite.insert)(notify_channels).values(
+            channel=channel, **values)
         with self.engine.begin() as conn:
-            conn.execute(stmt.on_conflict_do_update(index_elements=["channel"], set_=keep))
+            conn.execute(stmt.on_conflict_do_update(index_elements=["channel"],
+                                                    set_={k: stmt.excluded[k] for k in values}))
 
     def set_prefs(self, channel: str, enabled: bool | None = None, kinds: dict | None = None) -> dict:
         cur = self.get(channel)
@@ -198,15 +199,17 @@ class ChannelStore:
         return json.loads(self.box.open(sealed)) if sealed else None
 
     def save_tokens(self, channel: str, tokens: dict, access_expires_at: datetime,
-                    refresh_expires_at: datetime | None) -> None:
+                    refresh_expires_at: datetime | None, enable: bool = False) -> None:
+        """Seal and keep the tokens; ``enable`` (a new connection, not a refresh) turns the channel on."""
         cur = self.get(channel)
         values = {"secret": self.box.seal(json.dumps(tokens)), "access_expires_at": access_expires_at,
-                  "refresh_expires_at": refresh_expires_at or cur["refresh_expires_at"], "needs_reconnect": False}
+                  "refresh_expires_at": refresh_expires_at or cur["refresh_expires_at"], "needs_reconnect": False,
+                  **({"enabled": True} if enable else {})}
         with self.engine.begin() as conn:
             hit = conn.execute(update(notify_channels).where(notify_channels.c.channel == channel)
                                .values(updated_at=now(), **values))
         if not hit.rowcount:
-            self._upsert(channel, {**values, "enabled": True, "kinds": {}})
+            self._upsert(channel, {**values, "enabled": enable, "kinds": cur["kinds"] or {}})
 
     def mark_reconnect(self, channel: str) -> None:
         with self.engine.begin() as conn:
@@ -265,18 +268,19 @@ class Kakao:
             raise ChannelError(f"kakao token {got.get('error') or resp.status_code}")
         return got
 
-    def _keep(self, got: dict, refresh_token: str | None = None) -> dict:
+    def _keep(self, got: dict, refresh_token: str | None = None, enable: bool = False) -> dict:
         at = self._clock()
         tokens = {"access_token": got["access_token"], "refresh_token": got.get("refresh_token") or refresh_token}
         refresh_end = (at + timedelta(seconds=int(got["refresh_token_expires_in"]))
                        if got.get("refresh_token_expires_in") else None)
-        self.store.save_tokens(self.name, tokens, at + timedelta(seconds=int(got.get("expires_in") or 0)), refresh_end)
+        self.store.save_tokens(self.name, tokens, at + timedelta(seconds=int(got.get("expires_in") or 0)),
+                               refresh_end, enable)
         return tokens
 
     def connect(self, code: str) -> None:
-        """The OAuth callback's code -> sealed tokens; the channel turned on."""
+        """The OAuth callback's code -> sealed tokens; the channel turned on (a reconnect too)."""
         self._keep(self._token_call({"grant_type": "authorization_code", "redirect_uri": self.redirect_uri,
-                                     "code": code}))
+                                     "code": code}), enable=True)
 
     def _refresh(self, tokens: dict) -> dict:
         try:
@@ -287,17 +291,32 @@ class Kakao:
             raise
         return self._keep(got, tokens.get("refresh_token"))
 
+    def _tokens(self) -> dict | None:
+        """The stored tokens; a DESK_NOTIFY_KEY that no longer opens them (rotated) asks to reconnect."""
+        try:
+            return self.store.tokens(self.name)
+        except OtpUnavailable:
+            self.store.mark_reconnect(self.name)
+            raise ChannelError("kakao key mismatch") from None
+
     def status(self) -> dict:
         row = self.store.get(self.name)
         refresh_end = _aware(row["refresh_expires_at"])
         soon = refresh_end is not None and refresh_end - self._clock() < RECONNECT_AHEAD
-        return {"connected": bool(row["secret"]), "needs_reconnect": bool(row["needs_reconnect"]) or soon,
+        unreadable = False
+        if row["secret"] and not row["needs_reconnect"]:
+            try:
+                self.store.tokens(self.name)
+            except OtpUnavailable:
+                unreadable = True
+        return {"connected": bool(row["secret"]),
+                "needs_reconnect": bool(row["needs_reconnect"]) or soon or unreadable,
                 "refresh_expires_at": refresh_end.isoformat(timespec="seconds") if refresh_end else None}
 
     def send(self, payload: dict) -> None:
         if not self.configured:
             raise ChannelError("not configured")
-        tokens = self.store.tokens(self.name)
+        tokens = self._tokens()
         if not tokens:
             raise ChannelError("not connected")
         expires = _aware(self.store.get(self.name)["access_expires_at"])

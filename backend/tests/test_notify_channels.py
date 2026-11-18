@@ -214,8 +214,8 @@ OWNER, OTHER, PASSWORD = "owner@local", "other@local", "correct horse battery st
 
 
 def _app(db_url, **env):
-    settings = Settings(database_url=db_url, fake_runs=True, fake_delay=0, public_url="https://desk.test",
-                        telegram_bot_token=TOKEN, telegram_chat_id=CHAT, **env)
+    env = {"public_url": "https://desk.test", "telegram_bot_token": TOKEN, "telegram_chat_id": CHAT, **env}
+    settings = Settings(database_url=db_url, fake_runs=True, fake_delay=0, **env)
     app = create_app(settings, runner=make_fake_runner(0))
     engine = make_engine(db_url)
     auth = Auth(engine, timedelta(hours=1), timedelta(hours=1))
@@ -278,3 +278,71 @@ def test_kakao_connect_and_callback_bind_the_state_to_the_owner_once(db_url, mon
         assert codes == ["c"]
         assert client.post("/api/notify/kakao/callback", json={"code": "c", "state": params["state"]}).status_code == 400
         assert client.delete("/api/notify/kakao").status_code == 204
+
+
+def test_the_app_starts_with_no_channel_keys_or_a_bad_notify_key_and_only_that_channel_is_off(db_url, caplog):
+    """The compose keys are optional (${KEY:-}): a deploy before the owner fills them must still start."""
+    for env, telegram_on in (({"telegram_bot_token": "", "telegram_chat_id": ""}, False),
+                             ({"kakao_rest_key": "rest-key", "kakao_client_secret": "client-secret",
+                               "notify_key": "not-a-fernet-key"}, True)):
+        app = _app(db_url, **env)
+        with TestClient(app, base_url="https://testserver") as client:
+            assert client.get("/api/health").status_code == 200
+            _login(client, OWNER)
+            chans = {c["id"]: c for c in client.get("/api/notify/channels").json()["channels"]}
+            assert chans["kakao"]["configured"] is False and chans["telegram"]["configured"] is telegram_on
+            assert client.post("/api/notify/kakao/connect").status_code == 503
+            if not telegram_on:
+                assert client.post("/api/notify/channels/telegram/test").json() == {"ok": False, "error": "not configured"}
+        migrate(db_url)
+        with make_engine(db_url).begin() as conn:            # the next round makes the same accounts again
+            conn.exec_driver_sql("DELETE FROM sessions")
+            conn.exec_driver_sql("DELETE FROM users")
+    assert "not-a-fernet-key" not in caplog.text and "DESK_NOTIFY_KEY is not a valid Fernet key" in caplog.text
+
+
+def test_reconnecting_turns_kakao_back_on_and_a_rotated_key_asks_to_reconnect(db_url):
+    engine, store = _store(db_url)
+    http = _Http((200, _tokens()), (200, _tokens(access="acc-9")))
+    kakao = _kakao(store, http)
+    store.set_prefs("kakao", None, {"flow": False})          # a switch changed before the first connection
+    kakao.connect("c")
+    assert store.get("kakao")["enabled"] is True and store.get("kakao")["kinds"] == {"flow": False}
+    store.forget("kakao")
+    kakao.connect("c2")
+    assert store.get("kakao")["enabled"] is True
+    rotated = nc.Kakao("rest-key", "client-secret", "https://desk.test/kakao-callback.html",
+                       nc.ChannelStore(engine, otp.SecretBox(otp.new_key(), "DESK_NOTIFY_KEY")), clock=lambda: NOW)
+    assert rotated.status()["needs_reconnect"] is True and rotated.status()["connected"] is True
+    with pytest.raises(nc.ChannelError, match="kakao key mismatch"):
+        rotated.send(ALERT)
+    assert store.get("kakao")["needs_reconnect"] is True
+    engine.dispose()
+
+
+def test_an_upsert_that_loses_the_race_still_writes_its_values(db_url):
+    engine, store = _store(db_url)
+    store._upsert("kakao", {"enabled": False})
+    store._upsert("kakao", {"enabled": True, "kinds": {"flow": False}})
+    assert store.get("kakao")["enabled"] is True and store.get("kakao")["kinds"] == {"flow": False}
+    engine.dispose()
+
+
+def test_after_shutdown_nothing_is_queued_and_a_slow_test_send_answers(db_url, monkeypatch):
+    engine, store = _store(db_url)
+    ch = _Channel("telegram")
+    store.set_prefs("telegram", True)
+    notify.install([ch], store)
+    notify.shutdown()
+    notify.send(None, "flow", payload=ALERT)
+    assert notify._pool is None and ch.got == []
+    with pytest.raises(nc.ChannelError, match="shut down"):
+        notify.run(lambda: None)
+    notify.install([ch], store)
+    monkeypatch.setattr(notify, "TEST_TIMEOUT_SEC", 0.05)
+    slow = _Channel("kakao")
+    slow.send = lambda payload: __import__("time").sleep(0.3)
+    notify.install([ch, slow], store)
+    with pytest.raises(nc.ChannelError, match="timeout"):
+        notify.test("kakao", ALERT)
+    engine.dispose()

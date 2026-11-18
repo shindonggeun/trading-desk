@@ -1634,9 +1634,9 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
         detach.push(() => m.detach());
       }
       const t = p.targets;
-      if (t) {
+      if (t && t.basis !== "omitted") {      // #662 omitted: 목표선 없음(카드에 이유)
         for (const [v, label, c] of [[t.up, "위 목표", css("--long")], [t.down, "아래 목표", css("--short")]] as const) {
-          if (!(v > 0)) continue;
+          if (v == null || !(v > 0)) continue;
           const line = drawn!.series.createPriceLine({ price: v, title: `${label} ${price(v)}`, color: withAlpha(c, 0.85),
             lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true });
           detach.push(() => drawn!.series.removePriceLine(line));

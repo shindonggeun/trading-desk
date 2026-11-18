@@ -663,8 +663,10 @@ export interface ChartPattern {
   /** #629 흔히 방향이 나오는 구간(마지막 봉 뒤 bars_ahead 칸) — passed 면 이미 지났다 */
   breakout_window?: { from: string; to: string; bars_ahead: [number, number]; share: [number, number];
     basis: "measured" | "textbook"; passed: boolean } | null;
-  /** #629 위 · 아래로 깼을 때의 목표(패턴 높이만큼), reach_pct 는 과거 도달 비율 */
-  targets?: { up: number; down: number; height_pct: number; reach_pct: number | null; basis: string } | null;
+  /** #629 위 · 아래로 깼을 때의 목표, reach_pct 는 과거 도달 비율. #662 basis: measured_move(패턴 높이) ·
+   *  recent_swing(시작 높이가 너무 넓어 최근 폭으로 — reach_pct null) · omitted(목표 없음 — up/down null, omitted 에 이유) */
+  targets?: { up: number | null; down: number | null; height_pct: number | null; reach_pct: number | null;
+    basis: "measured_move" | "recent_swing" | "omitted" | string; omitted?: string | null } | null;
   /** #629 어느 쪽 확률 — small_sample(n<30)이면 "표본 적음", verdict 가 edge 가 아니면 방향 근거 약함 */
   odds?: { up_pct: number; down_pct: number; none_pct: number | null; n: number; prior: unknown; small_sample: boolean;
     false_break_pct: number | null; verdict: string; edge_pct: number | null } | null;

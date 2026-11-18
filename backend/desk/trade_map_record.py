@@ -49,6 +49,8 @@ def lookup(regime: str | None, scenarios: list[dict], table: dict | None = None)
         if not regime or not rows:
             continue
         where = REGIME_KO.get(regime, regime)
+        if len({s["kind"] for s in scenarios if s["side"] == side}) < 2:
+            continue                # one scenario only (no strong level near): nothing to compare, not a thin sample
         ok = {k: r for k, r in rows.items() if r.get("n", 0) >= MIN_N and r.get("avg_r") is not None}
         if len(ok) < 2:
             notes.append(f"{SIDE_KO[side]}: {where}에서 비교할 만큼 과거 표본이 쌓이지 않았어요")

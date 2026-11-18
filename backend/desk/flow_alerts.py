@@ -16,7 +16,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from . import notify
+from . import alert_tone, notify
 from .db import flow_alerts_sent, now
 
 log = logging.getLogger(__name__)
@@ -57,8 +57,11 @@ class FlowAlerts:
                     or turn.get("kind") not in KINDS:
                 continue
             at = str(turn["t"])
+            # #641 a buy turn is good news, a sell turn (buying turned to selling) a warning
+            shape = {"kind": "flow_turn", "rule": turn["kind"], "who": "foreign", "severity": "caution"}
+            tone = alert_tone.tone(shape)
             row = {"trade_date": day, "market": turn["market"], "kind": turn["kind"], "turned_at": at,
-                   "value": turn.get("value"), "text": text(turn)}
+                   "value": turn.get("value"), "text": alert_tone.headline(shape, text(turn))}
             try:
                 with self.engine.begin() as conn:
                     last = self._last(conn, day, turn["market"])
@@ -67,10 +70,10 @@ class FlowAlerts:
                     conn.execute(insert(flow_alerts_sent).values(created_at=now(), **row))
             except IntegrityError:            # another pass recorded it first (the transaction rolled back)
                 continue
-            out.append(row)
-            notify.send(self.pusher, "flow", f"flow_{turn['market']}", payload={    # #579 the one exit
+            out.append({**row, "tone": tone})
+            notify.send(self.pusher, "flow", f"flow_{turn['market']}", f"tone_{tone}", payload={   # #579 the one exit
                 "title": "외국인 수급 전향", "body": row["text"], "tag": f"flow-{turn['market']}",
-                "url": ALERT_URL, "market": turn["market"], "kind": turn["kind"]})
+                "url": ALERT_URL, "market": turn["market"], "kind": turn["kind"], "tone": tone})
         return out
 
     def after_snapshot(self, intraday, day: date | None = None) -> list[dict]:

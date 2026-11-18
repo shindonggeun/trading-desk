@@ -64,8 +64,8 @@ def test_markets_are_separate_and_text_reads(db_url):
     alerts = flow_alerts.FlowAlerts(engine, None)
     got = alerts.dispatch([_turn("10:32", "sell_turn"), _turn("10:33", "sell_turn", "kospi", -1200)], "2026-11-13")
     assert [r["market"] for r in got] == ["futures", "kospi"]
-    assert got[0]["text"] == "외인 선물 순매도 전향 · 10:32 · 누적 -620계약"
-    assert got[1]["text"] == "외인 코스피 현물 순매도 전향 · 10:33 · 누적 -1,200억"
+    assert got[0]["text"] == "🔴 경고 · 외인 선물 순매도 전향 · 10:32 · 누적 -620계약\n외인 매수에서 매도로 돌아섬 — 하락 압력 경계"
+    assert got[1]["text"].startswith("🔴 경고 · 외인 코스피 현물 순매도 전향 · 10:33 · 누적 -1,200억\n")
     engine.dispose()
 
 

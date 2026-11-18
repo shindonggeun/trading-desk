@@ -79,8 +79,12 @@ def test_dispatch_records_once_and_pushes_only_caution_and_strong(db_url):
     to = [(c[0].rsplit("/", 1)[1], json.loads(c[1])["kind"]) for c in sent.calls]
     assert to == [("abc", "flow_shift"), ("nonq", "flow_shift"), ("abc", "nq_alert")]
     payload = json.loads(sent.calls[0][1])
-    assert payload["body"] == "🔵 기관 코스피 현물 매도 확대 · 10:42 · 최근 30분 −1,250억 (직전 30분 −310억)"
+    # #641 the tone's mark in place of the dot, and one line of reading
+    assert payload["body"] == ("🟠 주의 · 기관 코스피 현물 매도 확대 · 10:42 · 최근 30분 −1,250억 (직전 30분 −310억)\n"
+                               "기관 매도 확대 — 지수에 부담")
     assert payload["title"] == "수급 흐름 변화" and payload["severity"] == "caution" and payload["url"] == "/#/market"
+    assert payload["tone"] == "caution" and json.loads(sent.calls[2][1])["tone"] == "warning"      # the NQ=F slump
+    assert [r["tone"] for r in got] == ["caution", "neutral", "warning"]
     assert [a["rule"] for a in alerts.list(DAY)] == ["sell_grow", "buy_shrink", "nq_drop"]
     engine.dispose()
 
@@ -149,5 +153,7 @@ def test_the_timeline_needs_a_session_and_merges_the_turns(db_url):
         assert body["date"] == "2026-11-13"
         assert [(a["kind"], a["rule"], a["who"]) for a in body["items"]] == [
             ("nq_alert", "nq_drop", "all"), ("flow_turn", "sell_turn", "foreign"), ("flow_shift", "sell_grow", "institution")]
-        assert body["items"][1]["text"] == "외인 선물 순매도 전향 · 10:32 · 누적 -620계약"
+        assert body["items"][1]["text"] == "🔴 경고 · 외인 선물 순매도 전향 · 10:32 · 누적 -620계약\n외인 매수에서 매도로 돌아섬 — 하락 압력 경계"
+        assert [a["tone"] for a in body["items"]] == ["warning", "warning", "caution"]     # #641 beside the severity
+        assert [a["severity"] for a in body["items"]] == ["caution", "caution", "caution"]
         assert client.get("/api/alerts/today").json()["items"] == []

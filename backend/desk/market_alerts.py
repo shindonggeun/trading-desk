@@ -8,11 +8,16 @@ What gets through (``admit``, read against what the day already holds):
 - ``REPEAT_MIN`` between two of the same rule and investor (the same direction again is not news);
 - ``COOLDOWN_MIN`` between two pushed alerts of a kind on the same market, whoever the investor (the
   futures' foreign and institution mostly take each other's other side: one alert, not a mirrored pair);
-- ``DAILY_MAX`` pushed alerts a day per kind, past it only strong ones and turns, ``STRONG_EXTRA`` more.
+- ``DAILY_MAX`` pushed alerts a day per kind, past it only strong ones, turns and warnings (#641),
+  ``STRONG_EXTRA`` more.
 A turn skips the two waits: the dead band and hold of desk.flow_intraday already keep it rare, and it
 matters most. Info alerts go on the timeline (``GET /api/alerts/today``) but are not pushed: they have
 their own DAILY_MAX, and they never hold back a pushed one (nor the other way round). Alerts of the
 same moment are judged strongest first.
+
+#641 each alert also has a ``tone`` (desk.alert_tone: positive · neutral · caution · warning, by
+direction - the severity is the size): its text starts with the tone's mark and ends with one line of
+reading, and it is pushed under its kind and ``tone_<tone>``.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from . import flow_shift, notify, nq_watch
+from . import alert_tone, flow_shift, notify, nq_watch
 from .db import market_alerts, now
 from .futures_flow import KST
 
@@ -78,11 +83,13 @@ def admit(alert: dict, day: list[dict], before: list[dict] = ()) -> bool:
     count = sum(1 for a in day if a["kind"] == alert["kind"] and (a["severity"] in PUSHED) == pushed)
     if count < DAILY_MAX:
         return True
-    return pushed and (alert["severity"] == "strong" or turn) and count < DAILY_MAX + STRONG_EXTRA
+    urgent = alert["severity"] == "strong" or turn or alert_tone.tone(alert) == "warning"
+    return pushed and urgent and count < DAILY_MAX + STRONG_EXTRA
 
 
 def text(alert: dict) -> str:
-    return nq_watch.text(alert) if alert["kind"] == "nq_alert" else flow_shift.text(alert)
+    """The stored and pushed text: the tone's mark, the rule's words, one line of reading (#641)."""
+    return alert_tone.headline(alert, nq_watch.text(alert) if alert["kind"] == "nq_alert" else flow_shift.text(alert))
 
 
 class MarketAlerts:
@@ -105,7 +112,8 @@ class MarketAlerts:
         rank = {"strong": 0, "caution": 1, "info": 2}
         for alert in sorted(alerts, key=lambda a: (datetime.fromisoformat(a["t"]), rank[a["severity"]])):
             day = datetime.fromisoformat(alert["t"]).astimezone(KST).date().isoformat()
-            row = {**alert, "trade_date": day, "text": text(alert), "pushed": alert["severity"] in PUSHED}
+            row = {**alert, "trade_date": day, "text": text(alert), "pushed": alert["severity"] in PUSHED,
+                   "tone": alert_tone.tone(alert)}
             try:
                 with self.engine.begin() as conn:
                     before = (self.list_in(conn, (date.fromisoformat(day) - timedelta(days=1)).isoformat())
@@ -120,10 +128,10 @@ class MarketAlerts:
                 continue
             out.append(row)
             if row["pushed"]:
-                notify.send(self.pusher, alert["kind"], payload={
+                notify.send(self.pusher, alert["kind"], f"tone_{row['tone']}", payload={
                     "title": TITLE[alert["kind"]], "body": row["text"], "tag": f"{alert['kind']}-{alert['market']}",
                     "url": ALERT_URL, "kind": alert["kind"], "rule": alert["rule"], "market": alert["market"],
-                    "severity": alert["severity"]})
+                    "severity": alert["severity"], "tone": row["tone"]})
         return out
 
     @staticmethod

@@ -15,8 +15,10 @@ CASES = [
     ("buy_grow", "foreign", "info", "neutral"),
     ("sell_grow", "foreign", "caution", "caution"), ("sell_grow", "institution", "strong", "warning"),
     ("sell_grow", "foreign", "info", "neutral"),
-    ("buy_shrink", "foreign", "caution", "caution"), ("buy_shrink", "institution", "info", "neutral"),
-    ("sell_shrink", "foreign", "caution", "positive"), ("sell_shrink", "institution", "caution", "positive"),
+    # a shrink is always "info" by size (desk.flow_shift._pace) - its direction is the news
+    ("buy_shrink", "foreign", "info", "caution"), ("buy_shrink", "institution", "info", "caution"),
+    ("sell_shrink", "foreign", "info", "positive"), ("sell_shrink", "institution", "info", "positive"),
+    ("buy_shrink", "individual", "info", "neutral"),
     ("open_sell_reversal", "foreign", "caution", "positive"), ("open_buy_reversal", "institution", "caution", "warning"),
     ("sell_grow", "individual", "strong", "neutral"),
 ]
@@ -64,3 +66,28 @@ def test_past_the_daily_cap_a_warning_still_goes_through():
 
 def test_the_channels_and_devices_can_turn_a_tone_off():
     assert set(at.KINDS) <= set(push.KINDS)
+
+
+def test_flow_shift_gives_shrinks_info_so_the_tone_does_not_lean_on_severity():
+    import inspect
+
+    from desk import flow_shift
+
+    src = inspect.getsource(flow_shift._pace)
+    assert '_alert("buy_shrink", market, who, at, recent, prev, "info")' in src
+    assert '_alert("sell_shrink", market, who, at, recent, prev, "info")' in src
+
+
+def test_a_resubscribe_that_leaves_out_a_tone_keeps_it(db_url):
+    from tests.test_push import _store_with_sub
+
+    engine = _store_with_sub(db_url)                                   # the owner, one device subscribed
+    store = push.PushStore(engine)
+    sub = store.for_kind("flow")[0]
+    url, keys, user = sub["endpoint"], sub["keys"], sub["user_id"]
+    store.subscribe(user, url, keys, "폰", {"tone_positive": False})
+    got = store.subscribe(user, url, keys, "폰", {"flow_kospi": False})     # a page that knows no tone switch
+    assert got["kinds"]["tone_positive"] is False and got["kinds"]["flow_kospi"] is False
+    assert got["kinds"]["tone_warning"] is True and got["kinds"]["flow"] is True
+    assert store.subscribe(user, url, keys, "폰", {"tone_positive": True})["kinds"]["tone_positive"] is True
+    engine.dispose()

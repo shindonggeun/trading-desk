@@ -84,7 +84,7 @@ def test_dispatch_records_once_and_pushes_only_caution_and_strong(db_url):
                                "기관 매도 확대 — 지수에 부담")
     assert payload["title"] == "수급 흐름 변화" and payload["severity"] == "caution" and payload["url"] == "/#/market"
     assert payload["tone"] == "caution" and json.loads(sent.calls[2][1])["tone"] == "warning"      # the NQ=F slump
-    assert [r["tone"] for r in got] == ["caution", "neutral", "warning"]
+    assert [r["tone"] for r in got] == ["caution", "caution", "warning"]    # a buy shrink (info by size): caution
     assert [a["rule"] for a in alerts.list(DAY)] == ["sell_grow", "buy_shrink", "nq_drop"]
     engine.dispose()
 

@@ -9,7 +9,8 @@ moves are ``neutral``):
 - ``caution`` 주의: selling that grows, buying that shrinks; NQ=F off its session high.
 - ``warning`` 경고: a sell turn or a buy-then-sell opening reversal (buying turned to selling), strong
   selling growth, an NQ=F slump.
-- ``neutral`` 참고: the individual, and the small (``info``) moves.
+- ``neutral`` 참고: the individual, and the other small (``info``) moves. A shrink is always ``info`` by
+  size (desk.flow_shift), yet its direction is the news: it reads by its rule, not as small.
 
 It is worked out from what each alert already stores (kind, rule, investor, severity), so the alerts of
 any day get it - nothing new is stored. The pushed text starts with the tone's mark and ends with one
@@ -37,7 +38,13 @@ def tone(alert: dict) -> str:
     kind, rule, severity = alert.get("kind"), alert.get("rule"), alert.get("severity")
     if kind == "nq_alert":
         return "caution" if rule == "nq_from_high" and severity != "strong" else "warning"
-    if alert.get("who") == "individual" or severity == "info":
+    if alert.get("who") == "individual":
+        return "neutral"
+    if rule == "sell_shrink":
+        return "positive"
+    if rule == "buy_shrink":
+        return "caution"
+    if severity == "info":
         return "neutral"
     if rule in POSITIVE:
         return "positive"
@@ -45,8 +52,6 @@ def tone(alert: dict) -> str:
         return "warning"
     if rule == "sell_grow":
         return "warning" if severity == "strong" else "caution"
-    if rule == "buy_shrink":
-        return "caution"
     return "neutral"
 
 

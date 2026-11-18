@@ -63,13 +63,14 @@ WEEKDAY_KO = "월화수목금토일"
 
 # ---------------------------------------------------------------- language (#567)
 
+_HANGUL = re.compile(r"[ᄀ-ᇿ㄰-㆏가-힣]")
 _KANA = re.compile(r"[぀-ヿㇰ-ㇿｦ-ﾟ]")
 _HAN = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 
 
 def foreign(text: str | None) -> str | None:
     """"ja" / "zh" when ``text`` is not Korean, else None: desk.language.foreign (#567) once it is
-    merged; until then the same idea in short - any kana, or more than two Chinese characters."""
+    merged; until then its whole-text rule (#583 thresholds)."""
     try:
         from desk import language  # type: ignore[attr-defined]
         return language.foreign(text)
@@ -77,9 +78,13 @@ def foreign(text: str | None) -> str | None:
         pass
     if not text:
         return None
-    if _KANA.search(text):
+    hangul, kana, han = len(_HANGUL.findall(text)), len(_KANA.findall(text)), len(_HAN.findall(text))
+    letters = hangul + kana + han
+    if letters < 8:                  # too little to tell (a quoted name, a hanja word)
+        return None
+    if kana >= 5 and kana >= 0.1 * letters:
         return "ja"
-    return "zh" if len(_HAN.findall(text)) > 2 else None
+    return "zh" if han >= 8 and han >= 0.5 * letters else None
 
 
 # ---------------------------------------------------------------- inputs
@@ -136,7 +141,8 @@ async def collect(src: Sources, now: datetime | None = None) -> dict:
     raw["bars"] = dict(zip(symbols, bars, strict=True))
     raw["fear"] = await guard("fear", src.fear()) if src.fear else None
     raw["flow"] = {m: (await guard(f"flow {m}", src.flow(m)) if src.flow else None) for m in FLOW_MARKETS}
-    months = sorted({kst.strftime("%Y-%m"), (kst + timedelta(days=SCHEDULE_DAYS)).strftime("%Y-%m")})
+    months = sorted({(kst - timedelta(days=5)).strftime("%Y-%m"), kst.strftime("%Y-%m"),
+                     (kst + timedelta(days=SCHEDULE_DAYS)).strftime("%Y-%m")})
     raw["months"] = [m for m in [await guard(f"calendar {mo}", asyncio.to_thread(src.month, mo)) if src.month else None
                                  for mo in months] if m]
     raw["macro"] = await guard("macro", asyncio.to_thread(src.macro)) if src.macro else None
@@ -163,6 +169,17 @@ def _close_change(bars, today: date) -> dict | None:
         return None
     last, prev = rows[-1].close, rows[-2].close
     return {"close": explain.fmt(last), "change": _pct((last / prev - 1) * 100), "_move": last / prev - 1}
+
+
+def _same_session(fut, index) -> list:
+    """Futures bars up to the US index's last session: from 18:00 ET (07:00 KST in US summer time) Yahoo
+    already has the new evening session as the last bar - near flat, and not the night the brief is about."""
+    rows = [b for b in fut or [] if getattr(b, "close", None)]
+    last = [b for b in index or [] if getattr(b, "close", None)]
+    if not rows or not last:
+        return rows
+    end = datetime.fromisoformat(last[-1].at).astimezone(ET).date()
+    return [b for b in rows if datetime.fromisoformat(b.at).astimezone(ET).date() <= end]
 
 
 def _flow_of(got: dict | None) -> dict | None:
@@ -193,12 +210,13 @@ def _events(raw: dict, now: datetime) -> tuple[list[dict], list[dict]]:
     for x in raw.get("extra") or []:
         try:
             day = date.fromisoformat(x["date"])
-            hm = time.fromisoformat(x.get("time_kst") or "09:00")
+            hm = time.fromisoformat(x["time_kst"]) if x.get("time_kst") else None
         except (KeyError, TypeError, ValueError):
             continue
-        at = datetime.combine(day, hm, KST)
+        at = datetime.combine(day, hm or time(9, 0), KST)
         events.append({"label": str(x.get("label") or "")[:60], "market": x.get("market") or "kr", "importance": 2,
-                       "at": at.astimezone(UTC).isoformat(), "at_kst": at.isoformat(), "kind": "manual"})
+                       "at": at.astimezone(UTC).isoformat(), "at_kst": at.isoformat(), "kind": "manual",
+                       "no_time": hm is None})
     seen, done, ahead = set(), [], []
     for e in sorted(events, key=lambda e: e.get("at") or ""):
         try:
@@ -209,20 +227,29 @@ def _events(raw: dict, now: datetime) -> tuple[list[dict], list[dict]]:
         if key in seen or not e.get("label"):
             continue
         seen.add(key)
-        item = {"when": _when_ko(e), "label": e["label"], "market": e.get("market"), "importance": e.get("importance", 1)}
+        when = _when_ko(e)
+        if e.get("no_time"):
+            when = when.split(" ")[0]
+        item = {"when": when, "label": e["label"], "market": e.get("market"), "importance": e.get("importance", 1),
+                "_at": at.isoformat()}
         if now - timedelta(hours=18) <= at <= now:
             done.append(item)
         elif now < at <= now + timedelta(days=SCHEDULE_DAYS):
             ahead.append(item)
-    ahead.sort(key=lambda i: -(i["importance"] or 0))      # the market movers first, then by time (stable)
-    return done[:LIST_MAX], sorted(ahead[:LIST_MAX + 2], key=lambda i: i["when"] and i["when"].split(" ")[0])
+    # the market movers first when there are too many, then shown in time order
+    keep = sorted(ahead, key=lambda i: -(i["importance"] or 0))[:LIST_MAX + 2]
+    return done[:LIST_MAX], sorted(keep, key=lambda i: i["_at"])
 
 
 def _earnings(raw: dict, now: datetime) -> tuple[list[dict], list[dict]]:
     """(reported on the last US day, due on the next one): name, ticker, timing and the EPS estimate.
     The calendar holds estimates, never the results - the brief must not say how a report came out."""
-    us_day = now.astimezone(ET).date()
     days = {d["date"]: d for m in raw.get("months") or [] for d in m.get("days") or []}
+    us_day = now.astimezone(ET).date()
+    for _ in range(6):
+        if days.get(us_day.isoformat(), {}).get("us", {}).get("open", us_day.weekday() < 5):
+            break
+        us_day -= timedelta(days=1)
     nxt = us_day + timedelta(days=1)
     for _ in range(6):
         if days.get(nxt.isoformat(), {}).get("us", {}).get("open", True):
@@ -256,7 +283,8 @@ def bundle(raw: dict, now: datetime | None = None) -> dict:
     today = now.astimezone(KST).date()
     bars = raw.get("bars") or {}
     us = {name: c for s, name in US_INDEXES if (c := _close_change(bars.get(s), today))}
-    fut = {name: c for s, name in US_FUTURES if (c := _close_change(bars.get(s), today))}
+    fut = {name: c for s, name in US_FUTURES
+           if (c := _close_change(_same_session(bars.get(s), bars.get("^GSPC")), today))}
     kr = {name: c for s, name in KR_INDEXES if (c := _close_change(bars.get(s), today))}
     flow = {m: f for m in FLOW_MARKETS if (f := _flow_of((raw.get("flow") or {}).get(m)))}
     fear = []
@@ -302,7 +330,7 @@ def rules(b: dict) -> dict:
     else:
         title = "간밤 미국 시장 숫자를 받지 못했어요 — 일정 위주로 보세요"
     numbers = [f"{n} {c['close']} ({c['change']})" for n, c in us.items()]
-    numbers += [f"{n} {c['change']} (뉴욕 17시 기준)" for n, c in fut.items()]
+    numbers += [f"{n} {c['change']} (전일 종가 대비 · 지금까지)" for n, c in fut.items()]
     numbers += [f"{g['name']} {g['value']}" + (f" (어제 {g['prev_day']})" if g.get("prev_day") else "")
                 for g in b["fear"]]
     kr_parts = []
@@ -366,12 +394,52 @@ def prompt(b: dict, draft: dict) -> str:
             f"초안: {json.dumps(texts, ensure_ascii=False)}")
 
 
-def _ok(text, allowed: set[str], limit: int) -> str | None:
-    good = explain.clean(text, allowed, limit=limit)
+_SIGNED = re.compile(r"(?<![\d.,/:])[+-]?\d[\d,]*(?:\.\d+)?%?")
+_DATETIME = re.compile(r"\d{4}-\d{2}-\d{2}(?:T[\d:.+]*)?|\d{1,2}/\d{1,2}|\d{1,2}:\d{2}")
+
+
+def _num(token: str) -> str:
+    t = token.replace(",", "")
+    if "." in t and not t.endswith("%"):
+        t = t.rstrip("0").rstrip(".")
+    return t
+
+
+def allowed_numbers(b: dict) -> tuple[set[str], set[str]]:
+    """(numbers, dates and times) the brief may use: from the public bundle's values (not its ``date``
+    key - "2026" or "18" is no number of the market) and the desk's own draft. A sign is part of a number:
+    the model may not turn +1.20% into -1.20%."""
+    pub = {k: v for k, v in _public(b).items() if k != "date"}
+    text = json.dumps(pub, ensure_ascii=False) + json.dumps(rules(b), ensure_ascii=False)
+    dts = set(_DATETIME.findall(text))
+    return {_num(t) for t in _SIGNED.findall(_DATETIME.sub(" ", text))}, dts
+
+
+def _sentence_ok(sentence: str, allowed: set[str], dts: set[str]) -> bool:
+    if any(d not in dts for d in _DATETIME.findall(sentence)):
+        return False
+    for tok in _SIGNED.findall(_DATETIME.sub(" ", sentence)):
+        t = _num(tok)
+        if t[0] in "+-":
+            if t not in allowed and not (t[0] == "+" and t[1:] in allowed):
+                return False
+        elif t not in allowed and "+" + t not in allowed and "-" + t not in allowed:
+            return False             # unsigned: the size must be the bundle's (the words carry the side)
+    return True
+
+
+def _ok(text, allowed: tuple[set[str], set[str]], limit: int) -> str | None:
+    """The text with every sentence carrying a number, date or time the bundle has not dropped; None if
+    nothing is left or it is not Korean."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    keep = [s.strip() for s in explain._SENTENCE.split(text.strip()[:limit])
+            if s.strip() and _sentence_ok(s.strip(), *allowed)]
+    good = " ".join(keep)
     return good if good and not foreign(good) else None
 
 
-def merge(draft: dict, answer: dict | None, allowed: set[str]) -> dict:
+def merge(draft: dict, answer: dict | None, allowed: tuple[set[str], set[str]]) -> dict:
     """The model's text field by field where every number is the bundle's and it is Korean; the draft elsewhere."""
     out = json.loads(json.dumps(draft))
     if not answer:
@@ -402,7 +470,7 @@ def write(b: dict, model: Callable[[str], str] | None = None) -> dict:
     if model is not None:
         try:
             answer = explain._json(model(prompt(b, draft)))
-            out = merge(draft, answer, explain.allowed_numbers(_public(b), {k: draft[k] for k in FIELDS}))
+            out = merge(draft, answer, allowed_numbers(b))
         except Exception as exc:  # timeout, no login, an odd answer: the desk's wording
             if runner.rate_limited(exc):
                 raise
@@ -418,7 +486,15 @@ def parse_at(text: str | None) -> time | None:
     """``DESK_MORNING_BRIEF_AT`` "HH:MM" (KST); empty or "off" turns the automatic brief off."""
     if not text or text.strip().lower() in ("off", "0", "false"):
         return None
-    return time.fromisoformat(text.strip())
+    try:
+        at = time.fromisoformat(text.strip())
+    except ValueError:
+        log.warning("DESK_MORNING_BRIEF_AT %r is not HH:MM: the automatic morning brief is off", text)
+        return None
+    if at >= LATE_CUTOFF:
+        log.warning("DESK_MORNING_BRIEF_AT %s is past %s: the automatic morning brief is off", at, LATE_CUTOFF)
+        return None
+    return at
 
 
 def due_after(last_day: date | None, at: time, now: datetime) -> datetime:

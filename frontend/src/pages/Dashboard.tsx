@@ -288,6 +288,11 @@ export default function Dashboard() {
     return cols;
   });
   const colOf = (id: SectionId): Col => balanced[id] ?? COLUMN[id];
+  // 한 열의 구역: 그 열 본래 구역들(저장된 순서) 다음에 다른 열에서 옮겨 온 구역 — 왼쪽은 늘 시장 · 지수부터(#636 후속)
+  const columnIds = (col: Col): SectionId[] => {
+    const here = prefs.order.filter((id) => !TOP_SECTIONS.includes(id) && colOf(id) === col);
+    return [...here.filter((id) => COLUMN[id] === col), ...here.filter((id) => COLUMN[id] !== col)];
+  };
   const toggled = (list: SectionId[], id: SectionId) => (list.includes(id) ? list.filter((c) => c !== id) : [...list, id]);
   const isOpen = (id: SectionId) => (layout === "phone" ? prefs.mobileOpen.includes(id) : !prefs.closed.includes(id));
   const flip = (id: SectionId) =>
@@ -296,7 +301,7 @@ export default function Dashboard() {
   // 넓은 화면: 맨 위 한 줄(아침 시황 · 오늘 방향)은 그 둘끼리, 나머지는 같은 열 안에서
   const peers = (id: SectionId) => (layout !== "wide" ? prefs.order
     : TOP_SECTIONS.includes(id) ? prefs.order.filter((s) => TOP_SECTIONS.includes(s))
-    : prefs.order.filter((s) => !TOP_SECTIONS.includes(s) && colOf(s) === colOf(id)));
+    : columnIds(colOf(id)));
   const move = (id: SectionId, by: -1 | 1) => {
     const line = peers(id);
     const other = line[line.indexOf(id) + by];
@@ -517,7 +522,7 @@ export default function Dashboard() {
           <div className="dash-columns">
             {([0, 1, 2] as const).map((col) => (
               <div key={col} className="dash-col">
-                {prefs.order.filter((id) => !TOP_SECTIONS.includes(id) && colOf(id) === col).map(renderSection)}
+                {columnIds(col).map(renderSection)}
               </div>
             ))}
           </div>

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { price } from "../format";
-import type { Plan, TradeMap as Map, TradeStep, VolumeProfile } from "../types";
+import type { Plan, TradeMap as Map, TradeScenario, TradeStep, VolumeProfile } from "../types";
 
 type Side = "long" | "short";
 
@@ -138,6 +138,41 @@ function Ladder({ side, steps, live, vp }: { side: Side; steps: TradeStep[]; liv
   );
 }
 
+const KIND = { breakout: "돌파 확인 진입", support: "지지 근처 진입" } as const;
+const KIND_SHORT = { breakout: "이탈 확인 진입", support: "저항 근처 진입" } as const;
+const HOW = { now: "지금", limit: "지정가", stop: "도달 시" } as const;
+
+/** #652 진입 시나리오 비교: 방향마다 돌파 확인과 지지(저항) 근처 진입을 한 줄씩 — 손익비 낮으면 흐리게. */
+function Scenarios({ list, note }: { list: TradeScenario[]; note: string | null }) {
+  return (
+    <div className="tm-scenarios">
+      <h4>진입 시나리오 비교</h4>
+      <ul className="small">
+        {list.map((s) => {
+          const kind = s.side === "long" ? KIND[s.kind] : KIND_SHORT[s.kind];
+          const rec = s.record;
+          return (
+            <li key={`${s.side}-${s.kind}`} className={s.low_rr ? "tm-sc-low" : undefined}>
+              <b>{s.side === "long" ? "롱" : "숏"} · {kind}</b>{" "}
+              {HOW[s.entry_type]} {price(s.entry)}
+              {s.distance_pct != null && s.entry_type !== "now" && ` (지금보다 ${s.distance_pct > 0 ? "+" : ""}${s.distance_pct}%)`}
+              {" "}· 손절 {price(s.stop)} (−{s.stop_pct}%, {s.stop_atr} ATR)
+              {s.targets.map((t, i) => ` · ${i + 1}차 ${price(t.price)} 손익비 ${t.rr}`).join("")}
+              {s.low_rr && " — 손익비 낮음"}
+              {s.basis && <span className="muted"> · 근거 {s.basis}{s.level != null ? ` ${price(s.level)}` : ""}</span>}
+              {rec && rec.n > 0 && (
+                <span className="muted"> · 이 레짐 과거 {rec.n}번 승률 {Math.round(rec.win_rate * 100)}% · 평균 {rec.avg_r >= 0 ? "+" : ""}{rec.avg_r.toFixed(2)}R</span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {note && <p className="small">{note}</p>}
+      <p className="muted small">진입 근거가 깨지는 곳에 손절을 둔 계획 계산입니다. 추천이나 예측이 아닙니다.</p>
+    </div>
+  );
+}
+
 /**
  * 요약 탭의 매매 지도(#107): 진입 → 1차 / 2차 목표 → 되돌림 때 볼 지지 → 손절을 가격 순서로 보이고,
  * 단계마다 할 일(일부 익절 · 손절 올리기 · 보유 연장 · 축소 · 전량 손절)을 문장으로. 숫자는 서버 계산값.
@@ -176,6 +211,7 @@ export default function TradeMap({ plan, ticker }: { plan: Plan; ticker: string 
           </div>
         ))}
       </div>
+      {!!tm.scenarios?.length && <Scenarios list={tm.scenarios} note={tm.regime_note ?? null} />}
       <p className="muted small">
         {ticker} 가격 기준 — 계획 값, 지지 · 저항 구역{tm.volume_profile ? ", 매물대" : ""}로 계산한 지도입니다(ATR {price(tm.atr)}).
         {!tm.levels && " 이 분석에는 지지 · 저항 기록이 없어 ATR 배수로 채운 칸이 있습니다."}

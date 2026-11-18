@@ -151,6 +151,37 @@ export interface TradeMap {
   atr: number;
   volume_profile: boolean;
   levels: boolean;
+  /** #652 롱 · 숏마다 돌파 확인 진입과 지지(저항) 근처 진입 — 손절은 진입 근거가 깨지는 곳(최대 3 ATR) */
+  scenarios?: TradeScenario[];
+  regime?: string | null;
+  /** 이 레짐에서 과거 어느 진입이 나았나 한 줄(표본 · 나쁘면 그대로) */
+  regime_note?: string | null;
+}
+
+export interface TradeScenarioRecord {
+  n: number;
+  win_rate: number;
+  avg_r: number;
+  median_r?: number;
+  max_dd_r?: number;
+}
+
+export interface TradeScenario {
+  side: "long" | "short";
+  kind: "breakout" | "support";
+  entry: number;
+  entry_type: "now" | "limit" | "stop";
+  stop: number;
+  stop_atr: number;
+  stop_pct: number;
+  targets: { price: number; rr: number; basis: string | null }[];
+  rr: number | null;
+  low_rr: boolean;
+  distance_pct: number | null;
+  level: number | null;
+  basis: string | null;
+  strength?: number | null;
+  record?: TradeScenarioRecord | null;
 }
 
 /** #115 거시 · 정책 뉴스 흐름(backend desk/macro_news.py, GET /api/macro/brief). */

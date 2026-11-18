@@ -138,7 +138,7 @@ GAP_FILL_MAX = 4          # #577: background reads of the gap odds at once (the 
 OFF_HOURS_FRESH_SEC = 600.0
 # #250: a broker quote off hours counts as a trade only this far (as a fraction) off the last close
 OFF_HOURS_MOVE = 0.0001
-FIRST_TICK_WAIT_SEC = 2.0
+FIRST_TICK_WAIT_SEC = 0.4      # #643 a short wait: the prewarm subscribes the favorites ahead, the next poll fills in
 FIRST_TICK_POLL_SEC = 0.25
 FIRST_TICK_RETRY_SEC = 600.0     # a ticker the board waited for is not waited for again before this
 KST = timezone(timedelta(hours=9))   # Toss dates (order history from/to) are KST
@@ -903,6 +903,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             if fear_gauges is not None:
                 jobs["fear"] = lambda: fear_gauges.get(ahead)
             jobs["board"] = lambda: _warm_board(prewarm.LIVE_AHEAD_SEC)
+            # #643 the dashboard's bottom-zone card: the main indices and the favorites (1 h cache)
+            jobs["bottoms"] = lambda: asyncio.to_thread(
+                lambda: bottoms.warm(["^KS11", "^NDX", "^SOX", *favorites.tickers(prewarm.FAVORITES_MAX)], ahead))
             return jobs
 
         def prewarm_then() -> dict[str, prewarm.Job]:
@@ -912,7 +915,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         async def _warm_board(ahead: float) -> int:
             # the quote board is the favorites: the first FAVORITES_MAX of them, while their market trades
-            return await estimator.warm(await asyncio.to_thread(favorites.tickers, prewarm.FAVORITES_MAX), ahead)
+            tickers = await asyncio.to_thread(favorites.tickers, prewarm.FAVORITES_MAX)
+            # #643 off US hours the board waited for each new US ticker's first KIS trade (up to seconds):
+            # ask the stream for them now, so the dashboard's first look finds them subscribed
+            stream = getattr(prices, "stream", None)
+            if stream is not None and kis_stream.us_session() in ("pre", "post", "overnight"):
+                for t in tickers:
+                    if kis_stream.market_of(t) == "US":
+                        stream.want(t)
+            return await estimator.warm(tickers, ahead)
 
         async def _warm_playbooks(ahead: float) -> int:
             # the default horizon's live playbooks of the first favorites, one at a time (prices merges asks)

@@ -466,10 +466,11 @@ class Zones:
                 return leverage_of(t) is not None
         self._leveraged = leveraged
 
-    def bars(self, ticker: str) -> list[dict]:
+    def bars(self, ticker: str, ahead: float = 0.0) -> list[dict]:
+        """The weekly bars, cached ``ttl``; ``ahead`` (the prewarm, #643) reads again one that expires that soon."""
         with self._lock:
             hit = self._rows.get(ticker)
-        if hit and self._clock() - hit[0] < self.ttl:
+        if hit and self._clock() - hit[0] < self.ttl - ahead:
             return hit[1]
         got = [{"at": b.at, "open": b.open, "high": b.high, "low": b.low, "close": b.close}
                for b in self._candles(ticker, "1w", HISTORY_WEEKS) if b.close]
@@ -479,6 +480,19 @@ class Zones:
             while len(self._rows) > self._max:
                 self._rows.pop(next(iter(self._rows)))
         return got
+
+    def warm(self, tickers: list[str], ahead: float = 0.0) -> int:
+        """#643 the dashboard's zones (the main indices and the favorites) read before a page asks: the
+        first ask after the hour no longer waits on Yahoo's weekly bars. How many were read; one failing
+        does not stop the others."""
+        done = 0
+        for t in dict.fromkeys(tickers):
+            try:
+                self.bars(t, ahead)
+                done += 1
+            except Exception as exc:  # noqa: BLE001 - that ticker only
+                log.info("prewarm bottom zone %s failed: %s", t, type(exc).__name__)
+        return done
 
     def one(self, ticker: str, price: float | None = None, source: str | None = None,
             at: str | None = None) -> dict:

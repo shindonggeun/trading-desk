@@ -362,7 +362,7 @@ def _next_line(price: float, channels: list[dict], below: bool) -> tuple[str, fl
 
 
 def _empty(tf: str, usable: list[dict]) -> dict:
-    return {"timeframe": tf, "channels": [], "trendlines": [], "events": [], "atr": None,
+    return {"timeframe": tf, "channels": [], "trendlines": [], "events": [], "patterns": [], "atr": None,
             "reference_price": round(usable[-1]["close"], 2) if usable else None,
             "as_of": usable[-1]["at"] if usable else None, "note": NOTE}
 
@@ -401,5 +401,14 @@ def lines(bars: list[dict], tf: str, rates: dict | None = None, live: bool = Fal
         if ch["broke_at"]:
             events.append({"at": ch["broke_at"], "kind": "channel_break", "line_id": ch["id"], "text": ch["explain"]})
     events.sort(key=lambda e: e["at"])
-    return {"timeframe": tf, "channels": channels, "trendlines": trends, "events": events,
+    # #629 the converging pattern (desk.patterns) on the same finished bars, the state read on the price now
+    from . import patterns
+    from .sr import _atr
+
+    try:                                # the ATR the pattern record was measured with (desk.patterns_bt)
+        found, found_error = patterns.find(done, k, _atr(done) or a, tf, reference), None
+    except Exception as exc:  # noqa: BLE001 - the lines stand without the pattern
+        found, found_error = [], type(exc).__name__
+    return {"timeframe": tf, "channels": channels, "trendlines": trends, "events": events, "patterns": found,
+            "patterns_error": found_error,
             "atr": round(a, 4), "reference_price": round(reference, 2), "as_of": usable[-1]["at"], "note": NOTE}

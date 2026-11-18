@@ -11,6 +11,15 @@ How often each kind broke which way, and how far the move went, is measured on p
 ``desk.patterns_bt`` and read from ``data/pattern_stats.json``; without a measurement a pattern
 says so (``stats: None``) - a drawing is not evidence.
 
+#629 each pattern also says when a side is usually chosen and how far a break usually carries:
+``breakout_window`` (where between the pattern's start and its apex the measured breaks of this
+timeframe and kind came - their middle half - else the textbook 50-80%, as bar times that follow the
+bars' own trading hours, holidays not known), ``apex_at``, ``targets`` (the pattern's starting height
+added at the break: the measured move, with how often it was reached), ``odds`` (the measured up /
+down / no-break shares - by the trend before when there are enough cases - the false breaks, and
+whether the held-out cases differed from the same prices shuffled) and a plain ``explain``. Past
+shares, not a forecast.
+
 Arithmetic on price history, not a forecast.
 """
 
@@ -19,6 +28,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .trend import BREAK_ATR, TOUCH_ATR, _round, _swing_idx
@@ -37,6 +47,16 @@ KIND_KO = {"symmetric": "대칭 삼각", "ascending": "상승 삼각", "descendi
 # the textbook break: a symmetric triangle continues the trend before it (decided per pattern)
 EXPECTED = {"ascending": "up", "descending": "down", "rising_wedge": "down", "falling_wedge": "up"}
 STATS_PATH = Path(__file__).parent / "data" / "pattern_stats.json"
+WINDOW_DEFAULT = (0.5, 0.8)  # the textbook share of start -> apex where breaks come, without a measurement
+MIN_ODDS_N = 30            # fewer measured cases: "표본 적음"
+SLOT_DAYS = 28             # the next bars' times follow the weekdays and clock times of this many past days
+KST = timezone(timedelta(hours=9))
+TF_KO = {"1m": "1분봉", "5m": "5분봉", "15m": "15분봉", "30m": "30분봉", "60m": "1시간봉", "120m": "2시간봉",
+         "240m": "4시간봉", "1d": "일봉", "1w": "주봉", "1M": "월봉"}
+SHAPE_KO = {"symmetric": "고점은 낮아지고 저점은 높아지는 중", "ascending": "고점은 비슷하고 저점은 높아지는 중",
+            "descending": "고점은 낮아지고 저점은 비슷한 중",
+            "rising_wedge": "고점 · 저점이 함께 오르지만 폭이 좁아지는 중",
+            "falling_wedge": "고점 · 저점이 함께 내리지만 폭이 좁아지는 중"}
 _stats_cache: dict | None = None
 
 
@@ -126,7 +146,9 @@ def best(bars: list[dict], k: int, atr: float):
 def find(bars: list[dict], k: int, atr: float, timeframe: str = "1d", price: float | None = None) -> list[dict]:
     """The best converging pattern over the last LOOKBACK bars (oldest first), as a list (empty
     or one). ``atr`` is these bars' ATR; ``price`` (live) decides the state instead of the last
-    close, as desk.trend does for its lines."""
+    close, as desk.trend does for its lines. The future bar times read all of ``bars`` (their
+    weekdays and hours), not only the last LOOKBACK."""
+    every = bars
     bars = bars[-LOOKBACK:]
     got = best(bars, k, atr)
     if not got:
@@ -146,15 +168,165 @@ def find(bars: list[dict], k: int, atr: float, timeframe: str = "1d", price: flo
                 "touches": [bars[x]["at"] for x in line.touches],
                 "slope_pct_per_bar": round((math.exp(line.slope) - 1) * 100, 3)}
 
-    return [{
+    stats = stats_for(timeframe, kind)
+    out = {
         "kind": kind, "label": KIND_KO[kind], "timeframe": timeframe, "state": state,
         "expected": expected,
         "upper": side(up), "lower": side(low),
         "apex": {"bars_ahead": round(apex - last, 1), "price": _round(math.exp(up.at(apex)))},
         "width_pct": round((math.exp(up.at(last) - low.at(last)) - 1) * 100, 2),
         "narrowed": round((up.at(last) - low.at(last)) / (up.at(start) - low.at(start)), 2),
-        "stats": stats_for(timeframe, kind),
-    }]
+        "stats": stats,
+    }
+    out.update(outlook(bars, up, low, start, apex, timeframe, stats, _prior_trend(bars, start), state, every))
+    out["explain"] = explain(out)
+    return [out]
+
+
+def future_times(bars: list[dict], count: int, daily: bool = False) -> list[str]:
+    """The open times of the next ``count`` bars after ``bars`` (oldest first), following the bars'
+    own rhythm: the clock times seen on each weekday in the last SLOT_DAYS days (a session's hours,
+    a market's weekend; not its holidays). A weekday's older days that opened at another clock time
+    than its latest one (a daylight-saving change, the times being UTC) are left out; a Monday to
+    Friday not seen at all (too short a history) takes the clock times of the others.
+    ``daily``: one bar a day at the last bar's clock time."""
+    if not bars or count <= 0:
+        return []
+    times = [datetime.fromisoformat(b["at"]) for b in bars]
+    last = times[-1]
+    zone = last.tzinfo
+    days: dict = {}
+    for t in times:
+        t = t.astimezone(zone)
+        if last - t <= timedelta(days=SLOT_DAYS):
+            days.setdefault(t.date(), []).append(t.timetz())
+    slots: dict[int, list] = {}
+    if daily:
+        for d in days:
+            slots[d.weekday()] = [last.timetz()]
+    else:
+        opens: dict[int, object] = {}
+        for d in sorted(days, reverse=True):               # the latest day of each weekday sets its open
+            first = min(days[d], key=lambda c: (c.hour, c.minute))
+            if opens.setdefault(d.weekday(), first) != first:
+                continue                                   # another regime (before a clock change)
+            for clock in days[d]:
+                if clock not in slots.setdefault(d.weekday(), []):
+                    slots[d.weekday()].append(clock)
+        seen = [w for w in range(5) if slots.get(w)]
+        if seen and len(seen) < 5 and len(days) < 7:       # a short history: the unseen weekdays alike
+            union = sorted({c for w in seen for c in slots[w]}, key=lambda c: (c.hour, c.minute))
+            for w in range(5):
+                slots.setdefault(w, list(union))
+    out: list[str] = []
+    day = last.date()
+    for _ in range(count * 8 + 400):                   # days: enough even for one bar a week
+        for clock in sorted(slots.get(day.weekday(), []), key=lambda c: (c.hour, c.minute)):
+            at = datetime.combine(day, clock)
+            if at > last:
+                out.append(at.isoformat(timespec="seconds"))
+                if len(out) == count:
+                    return out
+        day += timedelta(days=1)
+    return out
+
+
+def outlook(bars: list[dict], up: _Line, low: _Line, start: int, apex: float, timeframe: str,
+            stats: dict | None, prior: str, state: str = "converging", every: list[dict] | None = None) -> dict:
+    """#629 when a side is usually chosen, how far a break usually carries and the measured odds.
+    ``every``: the bars the future times are read from (more than the pattern's)."""
+    last = len(bars) - 1
+    whole = apex - start
+    stats = stats or {}
+    measured = stats.get("frac_q25") is not None and stats.get("frac_q75") is not None
+    f0, f1 = (stats["frac_q25"], stats["frac_q75"]) if measured else WINDOW_DEFAULT
+    x0, x1 = start + f0 * whole, start + f1 * whole
+    ahead_apex = max(1, math.ceil(apex - last))
+    # a month is no fixed count of days: no bar times for 1M
+    times = [] if timeframe == "1M" else future_times(every or bars, ahead_apex, daily=timeframe in ("1d", "1w"))
+    lo = max(1, math.ceil(x0 - last))
+    hi = max(lo, math.ceil(x1 - last))
+
+    def when(n: int) -> str | None:
+        return times[min(n, len(times)) - 1] if times else None
+
+    window = {"from": when(lo), "to": when(hi), "bars_ahead": [lo, hi], "share": [round(f0, 2), round(f1, 2)],
+              "basis": "measured" if measured else "textbook", "passed": x1 <= last}
+    # the measured move: the height at the start added where a break is likeliest (the window's middle)
+    height = up.at(start) - low.at(start)
+    # (a pattern already broken: at the break, the last bars - as desk.patterns_bt measures the reach)
+    xb = last if state != "converging" else min(max((x0 + x1) / 2, last), apex)
+    targets = {"up": _round(math.exp(up.at(xb) + height)), "down": _round(math.exp(low.at(xb) - height)),
+               "height_pct": round((math.exp(height) - 1) * 100, 2), "reach_pct": stats.get("reach_pct"),
+               "basis": "measured_move"}
+    odds = None
+    if stats:
+        by = (stats.get("by_prior") or {}).get(prior)
+        use = by if by and (by.get("n") or 0) >= MIN_ODDS_N else stats
+        n = use.get("n") or 0
+        odds = {"up_pct": use.get("up_pct"), "down_pct": use.get("down_pct"), "none_pct": use.get("none_pct"),
+                "n": n, "prior": prior if use is by else None, "small_sample": n < MIN_ODDS_N,
+                "false_break_pct": stats.get("false_break_pct"), "verdict": stats.get("verdict"),
+                "edge_pct": stats.get("edge_pct")}
+    return {"apex_at": times[ahead_apex - 1] if len(times) >= ahead_apex else None, "breakout_window": window,
+            "targets": targets, "odds": odds}
+
+
+def _clock(at: str | None, timeframe: str) -> str:
+    """A bar time in KST as the timeframe reads it: a day, an hour, or an hour and minute."""
+    if not at:
+        return "?"
+    t = datetime.fromisoformat(at).astimezone(KST)
+    if timeframe in ("1d", "1w", "1M"):
+        return t.strftime("%m-%d")
+    return t.strftime("%m-%d %H시") if timeframe in ("60m", "120m", "240m") else t.strftime("%m-%d %H:%M")
+
+
+def _span(a: str | None, b: str | None, timeframe: str) -> str:
+    """"11-18 18시~22시", "11-18 18시~11-19 02시", or one time ("11-18 18시 무렵")."""
+    x, y = _clock(a, timeframe), _clock(b, timeframe)
+    if x == y:
+        return f"{x} 무렵"
+    if x[:5] == y[:5] and len(x) > 5:
+        return f"{x}~{y[6:]}"
+    return f"{x}~{y}"
+
+
+def _fmt(price: float) -> str:
+    return f"{price:,.0f}" if price >= 1000 else f"{price:,.2f}"
+
+
+def explain(p: dict) -> str:
+    """One plain sentence (#629): the shape, when a side is usually chosen, the targets, the record."""
+    tf = TF_KO.get(p["timeframe"], p["timeframe"])
+    name = p["label"] + ("수렴" if "wedge" not in p["kind"] else "")
+    head = f"{tf} {name} — {SHAPE_KO[p['kind']]}."
+    t, w, o = p["targets"], p["breakout_window"], p.get("odds")
+    if p["state"] == "broke_up":
+        middle = f" 이미 위로 깼어요 — 처음 높이만큼 가면 {_fmt(t['up'])} 근처."
+    elif p["state"] == "broke_down":
+        middle = f" 이미 아래로 깼어요 — 처음 높이만큼 가면 {_fmt(t['down'])} 근처."
+    else:
+        basis = "보통" if w["basis"] == "measured" else "교과서로는"
+        if w["passed"]:
+            when = " 흔히 방향이 나오는 구간은 지났고 꼭짓점이 가까워요."
+        else:
+            when = f" {basis} 꼭짓점 전 {_span(w['from'], w['to'], p['timeframe'])}에 방향이 나와요."
+        middle = f"{when} 위로 깨면 {_fmt(t['up'])}, 아래로 깨면 {_fmt(t['down'])} 근처."
+    if t.get("reach_pct") is not None:
+        middle += f" 과거 그 목표까지 간 비율 {t['reach_pct']:.0f}%."
+    if o and o.get("up_pct") is not None:
+        small = ", 표본 적음" if o["small_sample"] else ""
+        record = f" 과거 위 {o['up_pct']:.0f}% · 아래 {o['down_pct']:.0f}%(표본 {o['n']}{small})"
+        if o.get("prior"):
+            record = record.replace("과거 위", f"과거 앞선 {'상승' if o['prior'] == 'up' else '하락'} 추세에서 위", 1)
+        record += {"edge": "", "unstable": " — 과거 구간마다 결과가 달라 방향 근거는 약해요",
+                   "unmeasured": " — 가격을 섞은 기준과의 비교는 아직 없어요"}.get(
+            o.get("verdict"), " — 가격을 무작위로 섞어도 비슷해서 방향 근거는 약해요")
+        record += "."
+    else:
+        record = " 과거 통계는 아직 없어요."
+    return head + middle + record + " 예측 아님."
 
 
 def stats_for(timeframe: str, kind: str) -> dict | None:

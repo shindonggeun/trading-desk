@@ -3,6 +3,10 @@ the first time it is seen still converging, follow its two lines forward and rec
 the close broke first, how far the move went in the next bars, and whether it fell back inside
 (a false break). Split by date into train (first 70%) and held-out, per timeframe and kind.
 
+#629 also: where between the pattern's start and its apex the break came (``frac``: its quartiles
+make the breakout window desk.patterns shows), whether the measured move - the starting height added
+at the break - was reached within REACH_BARS (``reach``), and the shares by the trend before.
+
     python -m desk.patterns_bt [--out desk/data/pattern_stats.json]
 
 Writes the table desk.patterns reads (``stats``). Yahoo bars, no key.
@@ -15,6 +19,7 @@ import json
 import math
 import random
 import sys
+import time
 import zlib
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -25,11 +30,17 @@ from .sr import _atr
 
 TICKERS = ("SOXL", "TQQQ", "NVDA", "QQQ", "SPY", "IWM", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA",
            "AMD", "AVGO", "MU", "005930.KS", "000660.KS", "035420.KS", "005380.KS", "035720.KS")
-# timeframe -> (swing k as the horizons use it, bars to fetch, plan every N bars)
-FRAMES = {"1d": (3, 2600, 5), "1w": (2, 700, 2), "60m": (3, 3400, 7)}
+# #629 the patterns are also measured on the index futures (projection_bt / sr_major_bt keep TICKERS)
+PATTERN_TICKERS = (*TICKERS, "NQ=F", "ES=F")
+# timeframe -> (swing k as the horizons use it, bars to fetch, plan every N bars). #629 the intraday
+# frames: Yahoo keeps 5m / 15m about 60 days, 60m (and the 240m folded from it) about two years
+FRAMES = {"1d": (3, 2600, 5), "1w": (2, 700, 2), "60m": (3, 3400, 7), "5m": (3, 16000, 12),
+          "15m": (3, 5400, 8), "240m": (2, 1500, 3)}
 FORWARD_MAX = 60           # bars a pattern is followed for a break
 MOVE_BARS = 10             # bars after the break the move is measured over
 FALSE_BARS = 5             # a close back inside within this many bars = a false break
+FETCH_GAP_SEC = 1.0        # between two Yahoo reads
+REACH_BARS = 30            # the measured move counts as reached within this many bars of the break
 TRAIN_SHARE = 0.7
 MIN_N = 20                 # fewer instances than this: no stats (weak evidence)
 # The break side is mostly geometry (the line closing in faster is met first): the same walk on each
@@ -78,6 +89,8 @@ def instances(bars: list[dict], timeframe: str, k: int, step: int, ticker: str =
         expected = patterns.EXPECTED.get(kind) or patterns._prior_trend(window, start)
         horizon = min(int(apex - last) + 5, FORWARD_MAX)
         direction, at = None, None
+        prior = patterns._prior_trend(window, start)
+        height = up.at(start) - low.at(start)
         for x in range(t + 1, min(t + 1 + horizon, len(bars))):
             local = x - offset
             if local >= apex:                          # past the apex the lines have crossed: no break
@@ -91,7 +104,8 @@ def instances(bars: list[dict], timeframe: str, k: int, step: int, ticker: str =
                 break
         busy_until = at if at is not None else t + horizon
         row = {"ticker": ticker, "at": window[-1]["at"][:10], "kind": kind, "timeframe": timeframe,
-               "expected": expected, "direction": direction, "move_atr": None, "false_break": None}
+               "expected": expected, "direction": direction, "move_atr": None, "false_break": None,
+               "prior": prior, "frac": None, "reach": None}
         if direction and atr:
             sign = 1 if direction == "up" else -1
             if at + MOVE_BARS < len(bars):
@@ -100,22 +114,49 @@ def instances(bars: list[dict], timeframe: str, k: int, step: int, ticker: str =
             line = up if direction == "up" else low
             row["false_break"] = any(sign * (math.log(c) - line.at(x - offset)) < 0
                                      for x, c in zip(range(at + 1, at + 1 + len(back)), back, strict=True))
+            row["frac"] = round((at - offset - start) / (apex - start), 3)
+            goal = line.at(at - offset) + sign * height             # the starting height added at the break
+            ahead = bars[at + 1: at + 1 + REACH_BARS]
+            hit = any(sign * (math.log(b["high"] if sign > 0 else b["low"]) - goal) >= 0 for b in ahead)
+            row["reach"] = True if hit else (False if len(ahead) == REACH_BARS else None)   # None: too recent
         out.append(row)
     return out
 
 
-def summarize(rows: list[dict]) -> dict | None:
+def _quantile(xs: list[float], q: float) -> float | None:
+    if not xs:
+        return None
+    xs = sorted(xs)
+    pos = q * (len(xs) - 1)
+    lo = int(pos)
+    return round(xs[lo] + (xs[min(lo + 1, len(xs) - 1)] - xs[lo]) * (pos - lo), 3)
+
+
+def summarize(rows: list[dict], detail: bool = True) -> dict | None:
     if len(rows) < MIN_N:
         return None
     broke = [r for r in rows if r["direction"]]
     moves = [r["move_atr"] for r in broke if r["move_atr"] is not None]
     pct = lambda part, whole: round(100 * part / whole, 1) if whole else None
-    return {"n": len(rows), "up_pct": pct(sum(r["direction"] == "up" for r in rows), len(rows)),
-            "down_pct": pct(sum(r["direction"] == "down" for r in rows), len(rows)),
-            "none_pct": pct(len(rows) - len(broke), len(rows)),
-            "expected_pct": pct(sum(r["direction"] == r["expected"] for r in broke), len(broke)),
-            "false_break_pct": pct(sum(bool(r["false_break"]) for r in broke), len(broke)),
-            "move_atr_avg": round(sum(moves) / len(moves), 2) if moves else None}
+    out = {"n": len(rows), "up_pct": pct(sum(r["direction"] == "up" for r in rows), len(rows)),
+           "down_pct": pct(sum(r["direction"] == "down" for r in rows), len(rows)),
+           "none_pct": pct(len(rows) - len(broke), len(rows)),
+           "expected_pct": pct(sum(r["direction"] == r["expected"] for r in broke), len(broke)),
+           "false_break_pct": pct(sum(bool(r["false_break"]) for r in broke), len(broke)),
+           "move_atr_avg": round(sum(moves) / len(moves), 2) if moves else None}
+    if detail:
+        fracs = [r["frac"] for r in broke if r.get("frac") is not None]
+        reached = [r["reach"] for r in broke if r.get("reach") is not None]
+        out.update({"frac_q25": _quantile(fracs, 0.25), "frac_q50": _quantile(fracs, 0.5),
+                    "frac_q75": _quantile(fracs, 0.75), "reach_pct": pct(sum(reached), len(reached)),
+                    "reach_n": len(reached)})
+        by = {}
+        for prior in ("up", "down"):
+            got = summarize([r for r in rows if r.get("prior") == prior], detail=False)
+            if got:
+                by[prior] = {k: got[k] for k in ("n", "up_pct", "down_pct", "none_pct")}
+        out["by_prior"] = by
+    return out
 
 
 def _verdict(s: dict, null: dict | None) -> dict:
@@ -152,15 +193,18 @@ def table(rows: list[dict], null_rows: list[dict] | None = None) -> dict:
     return out
 
 
-def run(tickers=TICKERS, frames=FRAMES, progress=print) -> dict:
+def run(tickers=PATTERN_TICKERS, frames=FRAMES, progress=print) -> dict:
     from .prices import yahoo_candles
 
     rows, null_rows = [], []
     for timeframe, (k, count, step) in frames.items():
         for ticker in tickers:
+            time.sleep(FETCH_GAP_SEC)                  # a polite gap between Yahoo reads
             try:
                 bars = [asdict(b) for b in yahoo_candles(ticker, timeframe, count)]
             except Exception as exc:  # noqa: BLE001 - one ticker failing leaves the others
+                if "429" in str(exc) or "Too Many" in str(exc):
+                    raise RuntimeError(f"Yahoo rate limit at {ticker} {timeframe}: stopped") from None
                 progress(f"{ticker} {timeframe}: skipped - {type(exc).__name__}: {exc}")
                 continue
             got = instances(bars, timeframe, k, step, ticker)
@@ -172,7 +216,9 @@ def run(tickers=TICKERS, frames=FRAMES, progress=print) -> dict:
             "frames": {tf: {"k": k, "bars": c, "step": s} for tf, (k, c, s) in frames.items()},
             "method": f"first sighting while converging; break = close beyond a line by {patterns.BREAK_ATR} ATR "
                       f"within apex+5 bars (max {FORWARD_MAX}); move over {MOVE_BARS} bars in ATR; false break = "
-                      f"a close back inside within {FALSE_BARS} bars; train = first {int(TRAIN_SHARE * 100)}% by date; "
+                      f"a close back inside within {FALSE_BARS} bars; frac = the break's place between the start and "
+                      f"the apex; reach = the starting height added at the break touched within {REACH_BARS} bars; "
+                      f"train = first {int(TRAIN_SHARE * 100)}% by date; "
                       f"null = the same walk on each ticker's returns shuffled ({SHUFFLES}x); edge = held-out "
                       f"expected-way share minus the null's, {EDGE_PCT} points or more to count",
             "kinds": table(rows, null_rows)}

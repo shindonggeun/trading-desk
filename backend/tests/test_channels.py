@@ -219,6 +219,7 @@ def test_api_lines(db_url):
         assert client.get("/api/lines?ticker=NQ=F&tf=3h").status_code == 422
         body = client.get("/api/lines?ticker=NQ=F&tf=1h").json()
         assert body["interval"] == "60m" and body["channels"][0]["direction"] == "down"
+        assert isinstance(body["patterns"], list)                           # #629 the pattern on the same bars
         assert body["channels"][0]["hit_rate"]["lower"]["n"] > 0           # the shipped NQ=F table
         assert body["backtest"]["timeframes"]["60m"]["steps"] > 0
         five = client.get("/api/lines?tf=5m").json()

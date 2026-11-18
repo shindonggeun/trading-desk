@@ -27,7 +27,7 @@ export function progressText(p: ChartPattern, last: number | null): string | nul
   const t = p.targets;
   if (!t || last == null || !(last > 0) || p.state === "converging") return null;
   const target = p.state === "broke_up" ? t.up : t.down;
-  if (!(target > 0)) return null;
+  if (target == null || !(target > 0)) return null;
   const left = ((target - last) / last) * 100;
   const reached = p.state === "broke_up" ? last >= target : last <= target;
   const side = p.state === "broke_up" ? "위로 이탈" : "아래로 이탈";
@@ -65,15 +65,22 @@ export default function PatternCard({ p, last, sameTf, onClose }: { p: ChartPatt
             {o.false_break_pct != null && (<><dt>거짓 돌파</dt><dd>{o.false_break_pct}% — 깼다가 되돌아온 비율</dd></>)}
           </>
         )}
-        {t && (
+        {t && (t.basis === "omitted" || (t.up == null && t.down == null) ? (
+          <>
+            <dt>목표</dt>
+            <dd className="muted">{t.omitted || "목표를 내지 않았어요"}</dd>
+          </>
+        ) : (
           <>
             <dt>목표</dt>
             <dd>
-              <span className="up">위 {price(t.up)}</span> · <span className="down">아래 {price(t.down)}</span>
-              <span className="muted"> (패턴 높이 {t.height_pct}%{t.reach_pct != null ? ` · 과거 ${t.reach_pct}% 가 도달` : ""})</span>
+              {t.up != null && <span className="up">위 {price(t.up)}</span>}{t.up != null && t.down != null && " · "}
+              {t.down != null && <span className="down">아래 {price(t.down)}</span>}
+              <span className="muted"> ({t.basis === "recent_swing" ? "시작 폭이 너무 넓어 최근 폭으로 잡음" : `패턴 높이 ${t.height_pct}%`}
+                {t.reach_pct != null ? ` · 과거 ${t.reach_pct}% 가 도달` : ""})</span>
             </dd>
           </>
-        )}
+        ))}
       </dl>
       <p className="muted small">과거 비율을 적은 것이고 예측이 아니에요.</p>
     </section>

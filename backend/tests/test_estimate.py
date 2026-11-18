@@ -787,12 +787,56 @@ def test_the_board_is_warmed_ahead_and_a_ticker_without_a_contract_is_left_alone
     yahoo.install(monkeypatch, clock)
     est = BinanceEstimator(http=httpx.AsyncClient(base_url="https://fapi.test", transport=httpx.MockTransport(FakeBinance())),
                            daily_closes=estimate.yahoo_daily_closes, now=lambda: SATURDAY_KST_10AM, clock=clock)
-    assert asyncio.run(est.warm(["NVDA", "NOCONTRACT"], ahead=estimate.CLOSES_TTL_SEC)) == 1
+
+    def warm(names, ahead):
+        return asyncio.run(est.warm(names, ahead=ahead, open_only=False))
+
+    assert warm(["NVDA", "NOCONTRACT"], estimate.CLOSES_TTL_SEC) == 1
     assert yahoo.calls == 1                              # the ticker without a contract is not read
     clock.t += 100
     assert asyncio.run(est.estimate("NVDA")) is not None and yahoo.calls == 1    # a page: still in date
-    assert asyncio.run(est.warm(["NVDA"], ahead=0)) == 1 and yahoo.calls == 1    # nothing about to expire
-    assert asyncio.run(est.warm(["NVDA"], ahead=estimate.CLOSES_TTL_SEC - 50)) == 1 and yahoo.calls == 2
+    assert warm(["NVDA"], 0) == 1 and yahoo.calls == 1    # nothing about to expire
+    assert warm(["NVDA"], estimate.CLOSES_TTL_SEC - 50) == 1 and yahoo.calls == 2
     yahoo.empty = "raise"                                # a failure warms nothing and raises nothing
     clock.t += estimate.CLOSES_TTL_SEC
-    assert isinstance(asyncio.run(est.warm(["NVDA"], ahead=estimate.CLOSES_TTL_SEC)), int)
+    assert isinstance(warm(["NVDA"], estimate.CLOSES_TTL_SEC), int)
+
+
+def test_a_closed_market_is_never_warmed_and_an_open_one_once_a_pass(monkeypatch):
+    """#536 review: Saturday, two passes ask Yahoo nothing; open, LIVE_AHEAD_SEC reads each ticker once a
+    pass (an hour of 240 s passes = 15 asks a ticker) and a page between passes asks nothing."""
+    from desk import estimate, prewarm
+
+    yahoo, clock = _FlakyYahoo(CLOSES["NVDA"]), Clock()
+    yahoo.install(monkeypatch, clock)
+    est = BinanceEstimator(http=httpx.AsyncClient(base_url="https://fapi.test", transport=httpx.MockTransport(FakeBinance())),
+                           daily_closes=estimate.yahoo_daily_closes, now=lambda: SATURDAY_KST_10AM, clock=clock)
+    for _ in range(2):
+        assert asyncio.run(est.warm(["NVDA"], ahead=prewarm.LIVE_AHEAD_SEC)) == 0
+        clock.t += prewarm.INTERVAL_SEC
+    assert yahoo.calls == 0
+    passes = int(3600 // prewarm.INTERVAL_SEC)
+    for _ in range(passes):
+        asyncio.run(est.warm(["NVDA"], ahead=prewarm.LIVE_AHEAD_SEC, open_only=False))
+        clock.t += 10                                    # a page right after the pass: in date, no ask
+        asyncio.run(est.estimate("NVDA"))
+        clock.t += prewarm.INTERVAL_SEC - 10
+    assert yahoo.calls == passes == 15
+    # a value read by the last pass is stale for the next one, and still in date for the pages in between
+    assert estimate.CLOSES_TTL_SEC - prewarm.LIVE_AHEAD_SEC <= prewarm.INTERVAL_SEC < estimate.CLOSES_TTL_SEC
+
+
+@pytest.mark.parametrize(("ticker", "at", "soon"), [
+    ("005930.KS", datetime(2026, 11, 18, 8, 40), True),    # KST: 20 minutes before the open
+    ("005930.KS", datetime(2026, 11, 18, 15, 40), False),  # after the close
+    ("005930.KS", datetime(2026, 11, 21, 10, 0), False),   # Saturday
+    ("NVDA", datetime(2026, 11, 18, 23, 5), True),         # KST 23:05 = New York 09:05
+    ("NVDA", datetime(2026, 11, 19, 7, 0), False),         # New York 17:00
+    ("CL=F", datetime(2026, 11, 23, 7, 50), True),         # KST Monday 07:50 = New York Sunday 17:50, opens 18:00
+])
+def test_trading_soon_is_the_open_market_or_its_last_half_hour_before(ticker, at, soon):
+    from zoneinfo import ZoneInfo
+
+    from desk import estimate
+
+    assert estimate.trading_soon(ticker, at.replace(tzinfo=ZoneInfo("Asia/Seoul"))) is soon

@@ -73,7 +73,7 @@ from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
 from .broker import kis_stream, make_broker
 from .consensus import fake_summariser, llm_summariser
 from .db import make_engine, migrate, now
-from .estimate import CANDLE_INTERVALS, BinanceEstimator, naver_overtime
+from .estimate import CANDLE_INTERVALS, BinanceEstimator, naver_overtime, trading_soon
 from .favorites import Conflict, Favorites, TooMany
 from .futures_flow import KST as futures_kst
 from .futures_flow import FuturesFlow, futures_open
@@ -725,22 +725,24 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 jobs["risk_kr"] = lambda: asyncio.to_thread(risk_cache.series, True, ahead)
             if fear_gauges is not None:
                 jobs["fear"] = lambda: fear_gauges.get(ahead)
-            jobs["board"] = lambda: _warm_board(ahead)
+            jobs["board"] = lambda: _warm_board(prewarm.LIVE_AHEAD_SEC)
             return jobs
 
         def prewarm_then() -> dict[str, prewarm.Job]:
             # after the shared jobs: a playbook computed before the selling score is warm would be cached
             # without its #146 gate until the next pass
-            return {"playbooks": lambda: _warm_playbooks(prewarm.AHEAD_SEC)}
+            return {"playbooks": lambda: _warm_playbooks(prewarm.LIVE_AHEAD_SEC)}
 
         async def _warm_board(ahead: float) -> int:
-            # the quote board is the favorites (FavoritesPanel asks for all of them at once)
-            return await estimator.warm(await asyncio.to_thread(favorites.tickers, MAX_BOARD), ahead)
+            # the quote board is the favorites: the first FAVORITES_MAX of them, while their market trades
+            return await estimator.warm(await asyncio.to_thread(favorites.tickers, prewarm.FAVORITES_MAX), ahead)
 
         async def _warm_playbooks(ahead: float) -> int:
             # the default horizon's live playbooks of the first favorites, one at a time (prices merges asks)
-            done = 0
+            done, now = 0, datetime.now(UTC)
             for ticker in await asyncio.to_thread(favorites.tickers, prewarm.FAVORITES_MAX):
+                if not trading_soon(ticker, now):           # closed: its levels and price stand still
+                    continue
                 try:
                     await playbook_live.current(prices, ticker, risk=risk, ahead=ahead)
                     done += 1

@@ -12,6 +12,10 @@ back as that item's ``error`` (the others are still served).
   KOSPI200 is 2001 there, matching KIS' own samples). Yahoo has no ^VKOSPI. Without KIS keys it stays
   ``value: null`` with the reason. The bands are the VIX ones: VKOSPI runs on the same scale (annualised
   30-day implied volatility of the index options, long-run median near the VIX's).
+  When KIS is missing or fails, an estimate stands in (#486): KOSPI200's 20-session realised volatility
+  (annualised %, read on KODEX 200 069500.KS - Yahoo keeps no ^KS200 history) times ESTIMATE_SCALE,
+  named "VKOSPI(추정)" with the method as its source and ``estimated`` listing the estimated fields.
+  A KIS answer missing the day or week before gets those two from the estimate, listed the same way.
 - Crypto Fear & Greed: alternative.me (0-100, daily).
 """
 
@@ -19,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -42,6 +47,16 @@ KIS_INDEX_DAILY_TR = "FHPUP02120000"
 VKOSPI_CODE = "0503"
 NO_SOURCE = "한국투자증권 키가 없어 VKOSPI 를 받지 않음(야후에는 ^VKOSPI 가 없음)"
 FAIL_TTL_SEC = 120.0
+# #486 the stand-in when KIS gives no VKOSPI: KOSPI200's realised volatility. KODEX 200 tracks KOSPI200
+# (Yahoo's ^KS200 has one bar, no history). ESTIMATE_SCALE: the VKOSPI KIS gave in production on
+# 2026-11-17 / the day before / a week before (53.81 · 52.64 · 58.19) over this estimate on those days
+# (58.22 · 58.57 · 65.67) is 0.92 · 0.90 · 0.89. That is a stormy market; in a calm one the implied
+# volatility usually sits above the realised, so the estimate then reads low - it is named an estimate.
+ESTIMATE_SYMBOL = "069500.KS"
+ESTIMATE_DAYS = 20
+ESTIMATE_SCALE = 0.9
+ESTIMATE_NAME = "VKOSPI(추정)"
+ESTIMATE_SOURCE = f"추정: KODEX 200 {ESTIMATE_DAYS}거래일 실현 변동성(연율 %) × {ESTIMATE_SCALE}"
 
 BANDS = ("extreme_fear", "fear", "neutral", "greed", "extreme_greed")
 BAND_KO = {"extreme_fear": "극단적 공포", "fear": "공포", "neutral": "중립", "greed": "탐욕",
@@ -145,10 +160,51 @@ async def vkospi_kis(rest, today: str | None = None) -> dict:
     return parse_vkospi(body)
 
 
+def _realised(closes: list[float], end: int) -> float | None:
+    """Annualised % volatility of the ESTIMATE_DAYS daily log returns ending at ``closes[end]``."""
+    if end < ESTIMATE_DAYS or end >= len(closes):
+        return None
+    rets = [math.log(closes[i] / closes[i - 1]) for i in range(end - ESTIMATE_DAYS + 1, end + 1)]
+    mean = sum(rets) / len(rets)
+    var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+    return math.sqrt(var * 252) * 100 * ESTIMATE_SCALE
+
+
+def vkospi_estimate(candles: Callable, why: str | None = None) -> dict:
+    """The stand-in VKOSPI (#486) from ``candles`` (desk.prices): now, the session before and five
+    before, like the KIS item; ``why`` (the reason KIS gave none) rides along as ``fallback_reason``."""
+    bars = [b for b in candles(ESTIMATE_SYMBOL, "1d", ESTIMATE_DAYS + 20) if b.close and b.close > 0]
+    closes = [b.close for b in bars]
+    last = len(closes) - 1
+    now = _realised(closes, last)
+    if now is None:
+        raise ValueError(f"too few {ESTIMATE_SYMBOL} bars for an estimate ({len(closes)})")
+    as_of = datetime.fromisoformat(bars[-1].at).astimezone(KST).date().isoformat()
+    item = _item("vkospi", ESTIMATE_NAME, ESTIMATE_SOURCE, now, _realised(closes, last - 1),
+                 _realised(closes, last - 5), as_of)
+    item["estimated"] = ["value", "prev_day", "prev_week"]
+    if why:
+        item["fallback_reason"] = why
+    return item
+
+
+def fill_missing(item: dict, estimate: dict) -> dict:
+    """A KIS item missing the day or week before takes them from the estimate, listed in ``estimated``."""
+    missing = [k for k in ("prev_day", "prev_week") if item.get(k) is None and estimate.get(k) is not None]
+    if not missing:
+        return item
+    return {**item, **{k: estimate[k] for k in missing}, "estimated": missing}
+
+
 def _get_json(url: str, get: Callable[..., httpx.Response], **params) -> dict:
     response = get(url, params=params or None, headers=HEADERS, timeout=TIMEOUT_SEC)
     response.raise_for_status()
     return response.json()
+
+
+def _worse(item: dict) -> bool:
+    """A failed item, or one whose value is only an estimate (#486): a real value still in date beats it."""
+    return bool(item.get("error")) or "value" in (item.get("estimated") or [])
 
 
 ORDER = ("vix", "cnn", "vkospi", "crypto")
@@ -169,6 +225,7 @@ class Fear:
             "vkospi": vkospi,
             "crypto": lambda: parse_crypto(_get_json(CRYPTO_URL, get, limit=8)),
         }
+        self._candles = candles
         self._clock = clock
         self._kis = kis or (lambda: None)        # #486 desk.futures_flow.KisRest, read when asked
         self._cache: dict[str, tuple[float, dict]] = {}
@@ -182,19 +239,35 @@ class Fear:
             name, source = NAMES[key]
             return _item(key, name, source, error=f"{type(exc).__name__}: {str(exc)[:80]}"), FAIL_TTL_SEC
 
+    async def _estimate(self, why: str | None = None) -> dict | None:
+        try:
+            return await asyncio.to_thread(vkospi_estimate, self._candles, why)
+        except Exception as exc:  # noqa: BLE001 - no estimate either: the item says why KIS gave none
+            log.info("fear: vkospi estimate failed: %s", type(exc).__name__)
+            return None
+
     async def _vkospi(self) -> tuple[dict, float]:
+        """KIS first; without KIS keys, or when KIS fails, the estimate (#486) - after a failure only
+        for FAIL_TTL_SEC, so KIS is asked again soon. Without an estimate either, the reason."""
         rest = self._kis()
         if rest is None:
-            return vkospi(), TTL_SEC["vkospi"]
+            est = await self._estimate(NO_SOURCE)
+            return (est, TTL_SEC["vkospi"]) if est else (vkospi(), TTL_SEC["vkospi"])
         try:
-            return await vkospi_kis(rest), TTL_SEC["vkospi"]
+            item = await vkospi_kis(rest)
         except Exception as exc:  # noqa: BLE001 - KIS down leaves the other gauges; KisError carries codes only
             log.info("fear: vkospi failed: %s", type(exc).__name__)
             from .futures_flow import KisError
 
             # KisError carries tr_id · HTTP · KIS code only; anything else shows its class name only
             why = f"KisError: {str(exc)[:80]}" if isinstance(exc, KisError) else type(exc).__name__
-            return _item("vkospi", "VKOSPI", "한국투자증권", error=why), FAIL_TTL_SEC
+            est = await self._estimate(f"한국투자증권 VKOSPI 를 받지 못함({why})")
+            return (est or _item("vkospi", "VKOSPI", "한국투자증권", error=why)), FAIL_TTL_SEC
+        if item["prev_day"] is None or item["prev_week"] is None:
+            est = await self._estimate()
+            if est:
+                item = fill_missing(item, est)
+        return item, TTL_SEC["vkospi"]
 
     async def get(self, ahead: float = 0.0) -> dict:
         """``ahead`` (#536, the prewarm loop): refetch the sources that expire within that many seconds.
@@ -210,7 +283,7 @@ class Fear:
                                              for k in stale))
                 for k, (item, ttl) in zip(stale, got, strict=True):
                     old = self._cache.get(k)
-                    if item.get("error") and old and not old[1].get("error") and old[0] > now:
+                    if _worse(item) and old and not _worse(old[1]) and old[0] > now:
                         continue                 # #536: a failed refetch-ahead keeps the gauge still in date
                     self._cache[k] = (now + ttl, item)
             return {"items": [self._cache[k][1] for k in ORDER]}

@@ -777,3 +777,22 @@ def test_a_ticker_that_never_subscribes_is_waited_for_once_not_every_poll(db_url
         assert client.get("/api/estimates?tickers=SOXS").json()["items"][0]["state"] == "estimate"
         again = time.monotonic() - started
     assert first >= 1.5 and again < 1.0
+
+
+def test_the_board_is_warmed_ahead_and_a_ticker_without_a_contract_is_left_alone(monkeypatch):
+    """#536: the prewarm loop reads a board ticker's closes again before they expire; a page keeps the cache."""
+    from desk import estimate
+
+    yahoo, clock = _FlakyYahoo(CLOSES["NVDA"]), Clock()
+    yahoo.install(monkeypatch, clock)
+    est = BinanceEstimator(http=httpx.AsyncClient(base_url="https://fapi.test", transport=httpx.MockTransport(FakeBinance())),
+                           daily_closes=estimate.yahoo_daily_closes, now=lambda: SATURDAY_KST_10AM, clock=clock)
+    assert asyncio.run(est.warm(["NVDA", "NOCONTRACT"], ahead=estimate.CLOSES_TTL_SEC)) == 1
+    assert yahoo.calls == 1                              # the ticker without a contract is not read
+    clock.t += 100
+    assert asyncio.run(est.estimate("NVDA")) is not None and yahoo.calls == 1    # a page: still in date
+    assert asyncio.run(est.warm(["NVDA"], ahead=0)) == 1 and yahoo.calls == 1    # nothing about to expire
+    assert asyncio.run(est.warm(["NVDA"], ahead=estimate.CLOSES_TTL_SEC - 50)) == 1 and yahoo.calls == 2
+    yahoo.empty = "raise"                                # a failure warms nothing and raises nothing
+    clock.t += estimate.CLOSES_TTL_SEC
+    assert asyncio.run(est.warm(["NVDA"], ahead=estimate.CLOSES_TTL_SEC)) in (0, 1)

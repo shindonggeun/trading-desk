@@ -127,3 +127,28 @@ def test_the_cache_expires_with_the_horizon_ttl(monkeypatch):
     assert asyncio.run(playbook_live.current(_source(), "NVDA", "swing", clock=lambda: t[0])) is first
     t[0] += 1000
     assert asyncio.run(playbook_live.current(_source(), "NVDA", "swing", clock=lambda: t[0])) is not first
+
+
+def test_a_fresh_playbook_is_read_without_the_lock_and_ahead_computes_it_again(monkeypatch):
+    """#536: a page never waits for the prewarm loop's refresh; the loop recomputes what would expire."""
+    import asyncio
+
+    playbook_live._CACHE.clear()
+    playbook_live._LOCKS.clear()
+    bars = _crash()
+    monkeypatch.setattr(playbook_live, "support_resistance",
+                        lambda *a, **k: asyncio.sleep(0, result=_crash_sr(bars[-1]["close"])))
+    t = [1000.0]
+    first = asyncio.run(playbook_live.current(_source(), "NVDA", "swing", clock=lambda: t[0]))
+
+    async def page_while_refreshing():
+        async with playbook_live._LOCKS[("NVDA", "swing", None)]:     # the loop holds the lock
+            return await asyncio.wait_for(playbook_live.current(_source(), "NVDA", "swing", clock=lambda: t[0]), 1)
+
+    assert asyncio.run(page_while_refreshing()) is first
+    t[0] += 10
+    ttl = playbook_live.horizons.get("swing").sr_ttl_sec
+    assert asyncio.run(playbook_live.current(_source(), "NVDA", "swing", clock=lambda: t[0], ahead=ttl - 20)) is first
+    again = asyncio.run(playbook_live.current(_source(), "NVDA", "swing", clock=lambda: t[0], ahead=ttl))
+    assert again is not first
+    assert asyncio.run(playbook_live.current(_source(), "NVDA", "swing", clock=lambda: t[0])) is again

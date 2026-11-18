@@ -271,6 +271,6 @@ def test_the_apps_prewarm_jobs_all_run(db_url, monkeypatch):
     with _client(db_url, source, fake_runs=False) as client:
         app = client.app
         took = asyncio.run(prewarm.warm(app.state.prewarm_jobs()))
-        assert set(took) == {"tips", "trend", "weekly", "halving", "risk_us", "risk_kr", "fear"}
+        assert set(took) == {"tips", "trend", "weekly", "halving", "risk_us", "risk_kr", "fear", "board", "playbooks"}
         assert all(v.endswith("ms") for v in took.values()), took
         assert app.state.prewarm_tickers() == []

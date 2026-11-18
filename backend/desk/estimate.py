@@ -145,8 +145,9 @@ class YahooEmpty(ValueError):
     without a finished bar."""
 
 
-def yahoo_daily_closes(ticker: str) -> list[tuple[date, float]]:
-    """Daily closes, oldest first, cached a few minutes (a board polls every 15 s).
+def yahoo_daily_closes(ticker: str, ahead: float = 0.0) -> list[tuple[date, float]]:
+    """Daily closes, oldest first, cached a few minutes (a board polls every 15 s). #536 ``ahead`` (the
+    prewarm loop): rows that would expire within that many seconds are read again now.
 
     Yahoo's daily bars have two gaps the anchor cannot live with: the newest US bar often
     carries a NaN close for hours after the bell, and a futures contract's newest bar keeps
@@ -160,7 +161,7 @@ def yahoo_daily_closes(ticker: str) -> list[tuple[date, float]]:
     hit = _CLOSES.get(ticker)
     now = _wall()
     mono = _clock()
-    if hit and mono - hit[0] < CLOSES_TTL_SEC:
+    if hit and mono - hit[0] < CLOSES_TTL_SEC - ahead:
         # rows read before today's close still hold an intraday price for today: read again
         today_close = session.close_moment(now.astimezone(session.zone).date())
         if not (hit[2] < today_close <= now):
@@ -478,6 +479,25 @@ class BinanceEstimator:
             raise
         self._remember(ticker, result)
         return result
+
+    async def warm(self, tickers: list[str], ahead: float = 0.0, parallel: int = 4) -> int:
+        """#536 the quote board's first look, paid before a page asks: the contract list, each ticker's daily
+        closes read again before they expire (``ahead``) and its close-time mark. Tickers without a contract
+        are left alone; one failing does not stop the others. How many were warmed."""
+        gate = asyncio.Semaphore(parallel)
+
+        async def one(ticker: str) -> bool:
+            async with gate:
+                if await self.resolve(ticker) is None:
+                    return False
+                if self._daily_closes is yahoo_daily_closes:        # an injected source keeps its own cache
+                    await asyncio.to_thread(yahoo_daily_closes, ticker.upper(), ahead)
+                self._cache.pop(ticker.upper(), None)               # so the estimate below reads the new rows
+                await self.estimate(ticker)
+                return True
+
+        got = await asyncio.gather(*(one(t) for t in tickers), return_exceptions=True)
+        return sum(1 for g in got if g is True)
 
     def _remember(self, ticker: str, value: object) -> None:
         if len(self._cache) >= CACHE_MAX:

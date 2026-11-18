@@ -117,7 +117,7 @@ BOTTOM_NOTE_SEC = 4.0
 BOTTOM_QUOTE_SEC = 2.0   # #310: the price the bottom-zone ladder is cut at, per lookup
 TREND_WAIT_SEC = 8.0     # #460: /api/tips waits this long for the indices' trend, then answers without it
 GAPS_TTL_SEC = 300.0     # #465: a ticker's unfilled gaps are kept as long as its swing levels (desk.horizons sr_ttl_sec)
-GAP_WARN_WAIT_SEC = 8.0   # #577: the entry summary does not wait longer for the gap odds
+GAP_FILL_MAX = 4          # #577: background reads of the gap odds at once (the entry summary never waits for one)
 # #257: US pre / after / overnight trades on the board - a last trade this fresh still counts as live
 # (thin ETFs trade minutes apart off hours), and a newly watched ticker waits this long for its first
 OFF_HOURS_FRESH_SEC = 600.0
@@ -491,6 +491,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     def gap_events():
         return events_calendar.CACHE.events()
+
+    gap_tasks: set[asyncio.Task] = set()   # background reads for the entry summary (#577)
     estimator = estimator or BinanceEstimator(overtime=naver_overtime)   # #283: KRX after-hours, live only
     # #271: Binance futures traders' long / short split, on the estimate's own contract mapping
     longshort = longshort or LongShort(lambda ticker: estimator.resolve(ticker))   # read when asked (test fakes)
@@ -908,6 +910,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             prewarm_task.cancel()
         pictures.stop.set()              # a report being drawn takes no next picture
         for task in list(report_tasks):  # a manual report still being written
+            task.cancel()
+        for task in list(gap_tasks):   # #577 a gap read still running
             task.cancel()
         for task in list(brief_tasks):   # a manual brief still being written
             task.cancel()
@@ -2050,17 +2054,38 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except Exception as exc:  # noqa: BLE001 - no bars, too few, or a source down
             log.warning("entry now for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no entry for {ticker}") from None
-        # #577: an entry beyond an open gap may be pulled back to it - the field is added, None without one
+        # #577: an entry beyond an open gap may be pulled back to it - the field is added, None without one.
+        # Only from the cache: a ticker not read yet is filled in the background (eight years of bars) and
+        # this answer goes out without it - the entry summary never waits for the gap odds (#536)
         side = (got.get("best") or {}).get("side") if isinstance(got, dict) else None
         warning = None
         if side and not settings.fake_runs:
-            try:
-                rep = await asyncio.wait_for(asyncio.to_thread(gap_fill.read, gap_fetch, ticker, gap_events),
-                                             GAP_WARN_WAIT_SEC)
+            rep = gap_fill.cached(ticker)
+            if rep is not None:
                 warning = gap_fill.entry_warning(rep, side)
-            except Exception as exc:  # noqa: BLE001 - incl. timeout: the entry stands without it
-                log.info("gap warning for %s skipped: %s", ticker, type(exc).__name__)
+            else:
+                fill_gaps_later(ticker)
         return {**got, "gap_warning": warning} if isinstance(got, dict) else got
+
+    gap_filling: set[str] = set()
+
+    def fill_gaps_later(ticker: str) -> None:
+        """#577 one background read per ticker at a time; a failure only logs."""
+        if ticker in gap_filling or len(gap_filling) >= GAP_FILL_MAX:
+            return
+        gap_filling.add(ticker)
+
+        async def fill():
+            try:
+                await asyncio.to_thread(gap_fill.read, gap_fetch, ticker, gap_events)
+            except Exception as exc:  # noqa: BLE001 - asked again on the next entry summary
+                log.info("gap odds for %s failed: %s", ticker, type(exc).__name__)
+            finally:
+                gap_filling.discard(ticker)
+
+        task = asyncio.create_task(fill())
+        gap_tasks.add(task)
+        task.add_done_callback(gap_tasks.discard)
 
     @app.get("/api/estimate")
     async def estimate(ticker: str):

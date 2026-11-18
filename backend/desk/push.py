@@ -23,7 +23,9 @@ log = logging.getLogger(__name__)
 # #571 "morning_brief" the morning brief.
 # #579 "flow_shift" the investors' flow shifts, "nq_alert" the NQ=F selling alarms (desk.market_alerts).
 KINDS = ("flow", "flow_futures", "flow_kospi", "flow_kosdaq", "morning_brief", "flow_shift", "nq_alert", "day_call",
-         "line_signal")
+         "line_signal",
+         # #641 the alerts' tone (desk.alert_tone): a channel or a device can turn one off, e.g. only warnings
+         "tone_positive", "tone_neutral", "tone_caution", "tone_warning")
 MAX_PER_USER = 10
 # The server only ever POSTs to the browsers' push services - never a host a caller names (SSRF).
 PUSH_HOSTS = ("fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com")

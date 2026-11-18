@@ -41,8 +41,11 @@ def test_each_turn_is_pushed_once_and_a_turn_back_pushes_again(alerts):
     back = alerts.dispatch([_turn("10:20", "buy_turn"), _turn("11:15", "buy_turn", value=300)], day)
     assert [r["turned_at"][11:16] for r in back] == ["11:15"]               # one before the last sent is old news
     kinds, payload = alerts.pusher.sent[-1]
-    assert kinds == ("flow", "flow_futures") and payload["url"] == fa.ALERT_URL and payload["tag"] == "flow-futures"
-    assert payload["body"] == "외인 선물 순매수 전향 · 11:15 · 누적 +300계약"
+    # #641 a buy turn is good news: its tone is one more kind a channel can turn off
+    assert kinds == ("flow", "flow_futures", "tone_positive") and payload["url"] == fa.ALERT_URL
+    assert payload["tag"] == "flow-futures" and payload["tone"] == "positive"
+    assert payload["body"] == "🟢 호재 · 외인 선물 순매수 전향 · 11:15 · 누적 +300계약\n외인 매수 유입 — 지수에 우호적"
+    assert [r["tone"] for r in first + back] == ["warning", "positive"]
     assert [r["kind"] for r in alerts.list(day)] == ["sell_turn", "buy_turn"] and alerts.list("2026-11-19") == []
 
 

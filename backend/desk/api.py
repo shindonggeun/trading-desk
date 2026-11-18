@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import (
+    alert_tone,
     backtest_reports,
     bottom_zone,
     calibration,
@@ -2865,6 +2866,11 @@ class PushKindsIn(BaseModel):
     nq_alert: bool = True           # #579 the NQ=F selling alarms
     day_call: bool = True           # #572 each market's first direction call of the day
     line_signal: bool = True        # #613 channel / trendline signals (the watch itself is off until set)
+    # #641 the flow / NQ=F alerts by tone (desk.alert_tone)
+    tone_positive: bool = True
+    tone_neutral: bool = True
+    tone_caution: bool = True
+    tone_warning: bool = True
 
 
 class PushSubscriptionIn(BaseModel):
@@ -2947,6 +2953,8 @@ def _push_routes(app: FastAPI, engine, settings: Settings) -> None:
                   "who": "foreign", "severity": "caution", "t": a["t"], "value": a["value"], "prev": None,
                   "text": a["text"], "pushed": True} for a in app.state.flow_alerts.list(day)]
         items = turns + app.state.market_alerts.list(day)
+        for a in items:     # #641 the direction beside the size, worked out from what each one stores
+            a["tone"] = alert_tone.tone(a)
         items.sort(key=lambda a: datetime.fromisoformat(a["t"]))
         return {"date": day, "items": items}
 

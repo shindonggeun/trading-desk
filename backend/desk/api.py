@@ -726,8 +726,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             if fear_gauges is not None:
                 jobs["fear"] = lambda: fear_gauges.get(ahead)
             jobs["board"] = lambda: _warm_board(ahead)
-            jobs["playbooks"] = lambda: _warm_playbooks(ahead)
             return jobs
+
+        def prewarm_then() -> dict[str, prewarm.Job]:
+            # after the shared jobs: a playbook computed before the selling score is warm would be cached
+            # without its #146 gate until the next pass
+            return {"playbooks": lambda: _warm_playbooks(prewarm.AHEAD_SEC)}
 
         async def _warm_board(ahead: float) -> int:
             # the quote board is the favorites (FavoritesPanel asks for all of them at once)
@@ -749,8 +753,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             return [t for t in favorites.tickers(prewarm.FAVORITES_MAX * 4) if positioning.is_us_ticker(t)]
 
         app.state.prewarm_jobs, app.state.prewarm_tickers = prewarm_jobs, prewarm_tickers   # tests run them once
+        app.state.prewarm_then = prewarm_then
         # the same switch as the news flow: off in tests and scripted runs
-        prewarm_task = (asyncio.create_task(prewarm.run(prewarm_jobs, prewarm_tickers, _positioning))
+        prewarm_task = (asyncio.create_task(prewarm.run(prewarm_jobs, prewarm_tickers, _positioning, then=prewarm_then))
                         if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
         report_task = (asyncio.create_task(write_reports())
                        if settings.report_every_days > 0 and not settings.fake_runs else None)

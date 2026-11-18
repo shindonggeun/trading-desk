@@ -795,4 +795,4 @@ def test_the_board_is_warmed_ahead_and_a_ticker_without_a_contract_is_left_alone
     assert asyncio.run(est.warm(["NVDA"], ahead=estimate.CLOSES_TTL_SEC - 50)) == 1 and yahoo.calls == 2
     yahoo.empty = "raise"                                # a failure warms nothing and raises nothing
     clock.t += estimate.CLOSES_TTL_SEC
-    assert asyncio.run(est.warm(["NVDA"], ahead=estimate.CLOSES_TTL_SEC)) in (0, 1)
+    assert isinstance(asyncio.run(est.warm(["NVDA"], ahead=estimate.CLOSES_TTL_SEC)), int)

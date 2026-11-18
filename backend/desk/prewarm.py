@@ -46,13 +46,18 @@ async def warm(jobs: dict[str, Job]) -> dict[str, str]:
 
 async def run(jobs: Callable[[], dict[str, Job]], tickers: Callable[[], list[str]],
               ticker_job: Callable[[str], Awaitable[object]], interval: float = INTERVAL_SEC,
-              first_delay: float = FIRST_DELAY_SEC, sleep=asyncio.sleep) -> None:
-    """The loop: the shared jobs, then each of ``tickers()`` (at most FAVORITES_MAX) through ``ticker_job``."""
+              first_delay: float = FIRST_DELAY_SEC, sleep=asyncio.sleep,
+              then: Callable[[], dict[str, Job]] | None = None) -> None:
+    """The loop: the shared jobs, then the ``then`` jobs (ones that read the shared caches - the playbooks read
+    the market's selling score, which a cold start has not got yet), then each of ``tickers()`` (at most
+    FAVORITES_MAX) through ``ticker_job``."""
     await sleep(first_delay)
     while True:
         start = time.monotonic()
         try:
             took = await warm(jobs())
+            if then is not None:
+                took.update(await warm(then()))
             log.info("prewarm: %s", " ".join(f"{k}={v}" for k, v in took.items()))
             for ticker in (await asyncio.to_thread(tickers))[:FAVORITES_MAX]:   # a DB read: off the loop
                 try:

@@ -26,6 +26,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
+from . import freshness
 from .market_flow import KST, _ttl_until_open
 
 log = logging.getLogger(__name__)
@@ -321,14 +322,21 @@ class FuturesFlow:
         """The cached view; ``fresh`` fetches now (the #254 snapshots: no pre-open or 30 s old value)."""
         async with self._lock:
             if not fresh and self._cache and self._clock() - self._cache[0] < self._cache[1]:
-                return self._cache[2]
+                return self._with_freshness(self._cache[2], self._cache[1])
             value, ok = await self._fetch()
             now = self._now()
             # any failed part (price, investors) is retried soon; the derivatives session sets the rest
             ttl = (CACHE_FAIL_SEC if not ok else CACHE_OPEN_SEC if futures_open(now)
                    else _ttl_until_open(now, CACHE_CLOSED_SEC))
             self._cache = (self._clock(), ttl, value)
-            return value
+            return self._with_freshness(value, ttl)
+
+    def _with_freshness(self, value: dict, ttl: float) -> dict:
+        """#645 the answer's age and delay: KIS' investor figures carry no time of their own, so the delay
+        is the age plus their measured update interval (desk.freshness.PUBLISH_SEC)."""
+        now = self._now()
+        return {**value, "freshness": freshness.stamp(value.get("fetched_at"), now, ttl, live=futures_open(now),
+                                                      source="kis_futures_investors")}
 
     async def _fetch(self) -> tuple[dict, bool]:
         now = self._now()

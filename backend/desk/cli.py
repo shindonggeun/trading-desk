@@ -433,6 +433,34 @@ def _krx(engine, args, key: str) -> int:
     return 1 if failed else 0
 
 
+def _lead_lag(engine, args) -> int:
+    """#645: do the intraday flows and the basis lead the index? From the stored minute snapshots
+    (futures_snapshots, the last KEEP_INTRADAY_DAYS days) - run on the server, reads only."""
+    from sqlalchemy import select
+
+    from . import lead_lag
+    from .db import futures_snapshots
+
+    first = (now() - timedelta(days=args.days)).date().isoformat()
+    with engine.connect() as conn:
+        rows = [dict(r) for r in conn.execute(select(futures_snapshots).where(futures_snapshots.c.trade_date >= first)
+                                              .order_by(futures_snapshots.c.at)).mappings()]
+    rep = lead_lag.report(rows)
+    print(f"{rep['days']} day(s) {rep['from']} ~ {rep['to']}, |t| >= {rep['t_min']}, at least {rep['min_days']} days")
+    for col, c in rep["cadence"].items():
+        print(f"  update  {col:24} {c}")
+    for r in rep["rows"]:
+        print(f"  {r['bucket_min']:>2}m {r['target']:8} {r['indicator']:20} {r['verdict']:6} n={r['samples']:5} "
+              f"days={r['days']:3} lead {r['lead']['corr']} (t {r['lead']['t']}) sync {r['sync']['corr']} "
+              f"(t {r['sync']['t']}) lag {r['lag']['corr']} (t {r['lag']['t']}) hit {r['hit_rate']} "
+              f"vs momentum {r['momentum_hit_rate']}")
+    if args.out:
+        with open(args.out, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(rep, f, ensure_ascii=False, indent=1)
+            f.write("\n")
+    return 0
+
+
 def _unfinished(url: str) -> int:
     """#431 no migration here: it runs inside the live container, and only reads."""
     from .store import Store
@@ -570,6 +598,11 @@ def main(argv: list[str] | None = None) -> int:
                          "the server's schedule)")
     kx.add_argument("--refetch-empty", action="store_true",
                     help="also ask again the open days stored with no rows")
+    lg = sub.add_parser("lead-lag", help=(
+        "#645 do the intraday investor flows and the futures basis lead KOSPI200 (and its futures)? From the "
+        "stored minute snapshots - run on the server (reads only); prints the table and each value's update interval"))
+    lg.add_argument("--days", type=int, default=90, help="calendar days back (the server keeps 60 of minutes)")
+    lg.add_argument("--out", default=None, help="write the full JSON report here")
     sub.add_parser("unfinished", help=(
         "queued / running runs: the count on the first line, then one line each (#431; scripts/deploy.sh "
         "asks this inside the backend container before it restarts it)"))
@@ -625,6 +658,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "krx":
         try:
             return _krx(engine, args, settings.krx_api_key)
+        finally:
+            engine.dispose()
+    if args.command == "lead-lag":
+        _utf8_out()
+        try:
+            return _lead_lag(engine, args)
         finally:
             engine.dispose()
     if args.command == "timing":

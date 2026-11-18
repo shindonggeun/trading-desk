@@ -271,6 +271,34 @@ def test_the_apps_prewarm_jobs_all_run(db_url, monkeypatch):
     with _client(db_url, source, fake_runs=False) as client:
         app = client.app
         took = asyncio.run(prewarm.warm(app.state.prewarm_jobs()))
-        assert set(took) == {"tips", "trend", "weekly", "halving", "risk_us", "risk_kr", "fear", "board", "playbooks"}
+        assert set(took) == {"tips", "trend", "weekly", "halving", "risk_us", "risk_kr", "fear", "board"}
+        then = asyncio.run(prewarm.warm(app.state.prewarm_then()))
+        assert set(then) == {"playbooks"} and then["playbooks"].endswith("ms"), then
         assert all(v.endswith("ms") for v in took.values()), took
         assert app.state.prewarm_tickers() == []
+
+
+def test_the_then_jobs_start_after_the_shared_jobs_have_finished():
+    """#536 review: the playbooks read the selling score, so they are warmed only once its cache is."""
+    order: list[str] = []
+
+    async def risk():
+        await asyncio.sleep(0.05)
+        order.append("risk done")
+
+    async def playbooks():
+        order.append("playbooks start")
+
+    async def sleep(_sec):
+        if order:                                        # after the first pass
+            raise asyncio.CancelledError
+
+    async def go():
+        try:
+            await prewarm.run(lambda: {"risk": risk}, list, lambda _t: asyncio.sleep(0),
+                              first_delay=0, sleep=sleep, then=lambda: {"playbooks": playbooks})
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(go())
+    assert order == ["risk done", "playbooks start"]

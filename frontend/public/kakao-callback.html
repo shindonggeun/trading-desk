@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>카카오 연결</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;background:#fff;color:#222}@media (prefers-color-scheme:dark){body{background:#111;color:#eee}}</style>
+</head>
+<body>
+<p>카카오톡 연결을 마무리하는 중…</p>
+<script>
+// #580 Kakao OAuth comes back here (a top-level cross-site navigation carries no SameSite=Strict cookie).
+// This page, now on the desk's own origin, hands the code and state to the API with the session cookie,
+// wipes them from the address bar and history first, then returns to the settings screen.
+(function () {
+  var q = new URLSearchParams(location.search);
+  var code = q.get("code"), state = q.get("state");
+  history.replaceState(null, "", location.pathname);
+  function done(ok) { location.replace("/#/settings?kakao=" + (ok ? "ok" : "fail")); }
+  if (!code || !state || q.get("error")) { done(false); return; }
+  fetch("/api/notify/kakao/callback", {
+    method: "POST", credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: code, state: state })
+  }).then(function (r) { done(r.ok); }, function () { done(false); });
+})();
+</script>
+</body>
+</html>

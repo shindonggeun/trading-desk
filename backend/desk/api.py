@@ -5,10 +5,12 @@ Every route needs a login session except the two in OPEN_PATHS. See docs/securit
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
+import secrets
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
@@ -48,6 +50,7 @@ from . import (
     market_calendar,
     morning_brief,
     news_digest,
+    notify,
     nq_watch,
     oscillator,
     otp,
@@ -456,7 +459,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             brief_desk.generating = False
         log.info("morning brief %s (%s, %s)", saved["id"], saved["source"], trigger)
         try:                             # a push problem never loses the brief
-            await asyncio.to_thread(app.state.pusher.broadcast, "morning_brief", payload={
+            await asyncio.to_thread(notify.send, app.state.pusher, "morning_brief", payload={   # #580 every channel
                 "title": "아침 시황 · " + (saved.get("title") or ""), "body": (saved.get("numbers") or [""])[0],
                 "tag": "morning_brief", "url": f"/#/briefs/morning?date={saved['date']}"})
         except Exception as exc:  # noqa: BLE001
@@ -886,6 +889,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if kis:
             log.info("kis stream on")
         yield
+        notify.shutdown()                # #580 the channels' queued sends go with the process
         if kis:
             kis.cancel()
             with suppress(asyncio.CancelledError):
@@ -2647,6 +2651,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return out
 
     _push_routes(app, engine, settings)
+    _notify_routes(app, engine, settings)
     # outermost (added last): the session check and every other middleware count in the time
     app.add_middleware(req_timing.TimingMiddleware, timings=timings)
     return app
@@ -2751,6 +2756,128 @@ def _push_routes(app: FastAPI, engine, settings: Settings) -> None:
         items = turns + app.state.market_alerts.list(day)
         items.sort(key=lambda a: datetime.fromisoformat(a["t"]))
         return {"date": day, "items": items}
+
+
+class NotifyChannelIn(BaseModel):
+    enabled: bool | None = None
+    kinds: dict[str, bool] | None = None
+
+
+class KakaoCallbackIn(BaseModel):
+    code: str = Field(min_length=1, max_length=512)
+    state: str = Field(min_length=1, max_length=128)
+
+
+NOTIFY_LABELS = {"telegram": "텔레그램", "kakao": "카카오톡"}
+KAKAO_STATE_TTL_SEC = 600
+NOTIFY_TEST_GAP_SEC = 5.0
+
+
+def _notify_routes(app: FastAPI, engine, settings: Settings) -> None:
+    """#580 Telegram · KakaoTalk beside web push (desk.notify_channels), sent through desk.notify.
+
+    One set of channels for the desk (the alerts go to every account's devices, as web push does), so
+    only the owner - the first account - changes them, tests them or connects Kakao; others read.
+    Kakao's OAuth comes back to the static /kakao-callback.html, which POSTs the code and state here: the
+    callback keeps the session and the Origin check (no open path). A state is 32 random bytes, kept
+    hashed in this process for 10 minutes, for the account that asked, once (one worker process)."""
+    from sqlalchemy import func, select
+
+    from . import notify_channels as nc
+    from . import otp, push
+    from .db import users
+
+    nc.install_log_filter()
+    store = nc.ChannelStore(engine, otp.SecretBox(settings.notify_key, "DESK_NOTIFY_KEY"))
+    if store.box.error:
+        log.error("%s", store.box.error)
+    base = settings.public_url if settings.public_url.startswith("https://") else ""
+    telegram = nc.Telegram(settings.telegram_bot_token, settings.telegram_chat_id, base)
+    kakao = nc.Kakao(settings.kakao_rest_key, settings.kakao_client_secret,
+                     f"{base}/kakao-callback.html" if base else "", store, base)
+    notify.install([telegram, kakao], store)
+    app.state.notify_store = store
+    states: dict[str, tuple[int, float]] = {}
+    last_test = {"at": 0.0}
+
+    def owner_id() -> int | None:
+        with engine.connect() as conn:
+            return conn.execute(select(func.min(users.c.id))).scalar()
+
+    def must_own(request: Request) -> None:
+        if request.state.user.id != owner_id():
+            raise HTTPException(403, "only the desk's owner changes the alert channels")
+
+    def view(name: str) -> dict:
+        ch, row = notify.channel(name), store.get(name)
+        out = {"id": name, "label": NOTIFY_LABELS[name], "configured": ch.configured, "enabled": bool(row["enabled"]),
+               "kinds": {k: bool((row["kinds"] or {}).get(k, True)) for k in push.KINDS},
+               "connected": ch.configured, "needs_reconnect": False, "refresh_expires_at": None}
+        if name == "kakao":
+            out.update(kakao.status())
+            out["connected"] = out["connected"] and ch.configured
+        return out
+
+    def known(name: str) -> str:
+        if name not in NOTIFY_LABELS:
+            raise HTTPException(404, "no such channel")
+        return name
+
+    @app.get("/api/notify/channels")
+    def notify_channels_list(request: Request):
+        return {"kinds": list(push.KINDS), "can_edit": request.state.user.id == owner_id(),
+                "channels": [view(n) for n in NOTIFY_LABELS]}
+
+    @app.put("/api/notify/channels/{name}")
+    def notify_channel_set(name: str, body: NotifyChannelIn, request: Request):
+        must_own(request)
+        known(name)
+        unknown = sorted(set(body.kinds or {}) - set(push.KINDS))
+        if unknown:
+            raise HTTPException(422, f"unknown kinds: {', '.join(unknown)}")
+        store.set_prefs(name, body.enabled, body.kinds)
+        return view(name)
+
+    @app.post("/api/notify/channels/{name}/test")
+    async def notify_channel_test(name: str, request: Request):
+        must_own(request)
+        known(name)
+        moment = time.monotonic()
+        if moment - last_test["at"] < NOTIFY_TEST_GAP_SEC:
+            raise HTTPException(429, "one test every few seconds", headers={"Retry-After": "5"})
+        last_test["at"] = moment
+        error = await asyncio.to_thread(notify.test, name, {
+            "title": "트레이딩 데스크", "body": "시험 알림입니다.", "url": "/#/settings"})
+        return {"ok": error is None, "error": error}
+
+    @app.post("/api/notify/kakao/connect")
+    def kakao_connect(request: Request):
+        must_own(request)
+        if not kakao.configured:
+            raise HTTPException(503, "kakao is not set up on the server")
+        moment = time.monotonic()
+        for key in [k for k, (_, at) in states.items() if moment - at > KAKAO_STATE_TTL_SEC]:
+            states.pop(key, None)
+        state = secrets.token_urlsafe(32)
+        states[hashlib.sha256(state.encode()).hexdigest()] = (request.state.user.id, moment)
+        return {"url": kakao.authorize_url(state)}
+
+    @app.post("/api/notify/kakao/callback", status_code=204)
+    async def kakao_callback(body: KakaoCallbackIn, request: Request):
+        must_own(request)
+        got = states.pop(hashlib.sha256(body.state.encode()).hexdigest(), None)
+        if got is None or got[0] != request.state.user.id or time.monotonic() - got[1] > KAKAO_STATE_TTL_SEC:
+            raise HTTPException(400, "the connect request expired - start again")
+        try:
+            await asyncio.to_thread(notify.run, lambda: kakao.connect(body.code))
+        except nc.ChannelError as exc:
+            log.warning("kakao connect failed: %s", exc)
+            raise HTTPException(502, f"kakao refused: {exc}") from None
+
+    @app.delete("/api/notify/kakao", status_code=204)
+    def kakao_disconnect(request: Request):
+        must_own(request)
+        store.forget("kakao")
 
 
 def _client_ip(request: Request) -> str:

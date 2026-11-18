@@ -29,6 +29,7 @@ import json
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from itertools import pairwise
 from pathlib import Path
 
 from .trend import BREAK_ATR, TOUCH_ATR, _round, _swing_idx
@@ -213,11 +214,10 @@ def future_times(bars: list[dict], count: int, daily: bool = False) -> list[str]
             for clock in days[d]:
                 if clock not in slots.setdefault(d.weekday(), []):
                     slots[d.weekday()].append(clock)
-        seen = [w for w in range(5) if slots.get(w)]
-        if seen and len(seen) < 5 and len(days) < 7:       # a short history: the unseen weekdays alike
-            union = sorted({c for w in seen for c in slots[w]}, key=lambda c: (c.hour, c.minute))
-            for w in range(5):
-                slots.setdefault(w, list(union))
+        if len(days) < 7:                                  # a short history (1-minute bars: a few hours)
+            union = _fill(sorted({c for cs in slots.values() for c in cs}, key=lambda c: (c.hour, c.minute)), times)
+            for w in {*range(5), *slots}:                  # the clock times between those seen, on every
+                slots[w] = list(union)                     # weekday seen and Monday to Friday
     out: list[str] = []
     day = last.date()
     for _ in range(count * 8 + 400):                   # days: enough even for one bar a week
@@ -229,6 +229,23 @@ def future_times(bars: list[dict], count: int, daily: bool = False) -> list[str]
                     return out
         day += timedelta(days=1)
     return out
+
+
+def _fill(clocks: list, times: list[datetime]) -> list:
+    """The clock times from the first to the last of ``clocks`` at the bars' usual step (the most
+    common gap within a day): a session's hours not all seen yet - its rest today, say."""
+    gaps = [b - a for a, b in pairwise(times) if timedelta(0) < b - a < timedelta(hours=12)]
+    if not gaps or not clocks:
+        return clocks
+    step = max(set(gaps), key=gaps.count)
+    first, end = clocks[0], clocks[-1]
+    day = datetime(2000, 1, 3)
+    at, stop = datetime.combine(day, first), datetime.combine(day, end)
+    out = []
+    while at <= stop and len(out) < 2000:
+        out.append(at.timetz().replace(tzinfo=first.tzinfo))
+        at += step
+    return sorted({*out, *clocks}, key=lambda c: (c.hour, c.minute))
 
 
 def outlook(bars: list[dict], up: _Line, low: _Line, start: int, apex: float, timeframe: str,

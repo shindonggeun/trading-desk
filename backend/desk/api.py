@@ -90,6 +90,8 @@ from .futures_flow import make as make_kis_rest
 from .futures_flow import off_reason as futures_off
 from .futures_flow import prompt_note as futures_note
 from .futures_history import FuturesHistory, closing_window, interval_min, seconds_to_next
+from .futures_oi import FUT_API, OPT_API, FuturesOi
+from .futures_oi import MAX_DAYS as OI_MAX_DAYS
 from .indicators import normalize as normalize_indicators
 from .leverage_analyst import fake_analyst, llm_analyst
 from .longshort import LongShort
@@ -346,6 +348,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     engine = make_engine(settings.database_url)
     store = Store(engine)
     futures_history = FuturesHistory(engine)    # #254
+    futures_oi = FuturesOi(engine)              # #603 KRX open interest · basis · put/call per day
     auth = Auth(engine, timedelta(hours=settings.session_max_hours), timedelta(hours=settings.session_idle_hours))
     throttle = LoginThrottle()
     otp_box = otp.SecretBox(settings.otp_key)
@@ -836,14 +839,30 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.exception("day call scoring failed")
                 await asyncio.sleep(day_calls.TICK_SEC)
 
+        oi_pending = {"due": False}
+
+        def derive_futures_oi():
+            # #603: the collected days again (the catch-up window and the day before it), then KRX vs
+            # the KIS closing snapshots of the same days - a gap is a warning in the log only
+            last = krx.kst_today(datetime.now(UTC)) - timedelta(days=1)
+            written = futures_oi.derive(last - timedelta(days=krx.CATCH_UP_DAYS + 1), last)
+            log.info("futures oi: %d day(s) derived", written)
+            futures_oi.check(futures_history.daily(krx.CATCH_UP_DAYS))
+
         async def collect_krx():
             # #601: every TICK_SEC - each service's missing business days of the last two weeks, once KRX
             # has published them (08:30 KST the next business day); a refused service waits 6 h
             while True:
                 try:
-                    for result in await asyncio.wait_for(asyncio.to_thread(krx_desk.run), 600):
+                    results = await asyncio.wait_for(asyncio.to_thread(krx_desk.run), 600)
+                    for result in results:
                         log.info("krx %s: %s day(s), %s row(s), stopped %s", result["api"], result["stored"],
                                  result["rows"], result["stopped"])
+                    if any(r["api"] in (FUT_API, OPT_API) and r["stored"] for r in results):
+                        oi_pending["due"] = True
+                    if oi_pending["due"]:            # also again after a failed derive, on the next pass
+                        await asyncio.to_thread(derive_futures_oi)
+                        oi_pending["due"] = False
                 except Exception:  # a failed pass must not stop the next one
                     log.exception("krx collect failed")
                 await asyncio.sleep(krx.TICK_SEC)
@@ -1542,6 +1561,18 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return {"supported": getattr(futures, "rest", None) is not None,
                 "interval_min": interval_min(settings.futures_snapshot_min),
                 "days": rows}
+
+    @app.get("/api/market/futures/oi-history")
+    async def market_futures_oi_history(days: int = 250):
+        """#603: KOSPI200 futures open interest (front month and every quarterly contract), basis and the
+        monthly options' put/call open interest · ATM IV per business day from KRX, newest first.
+        ``reason`` when there is none yet: no_key (DESK_KRX_API_KEY unset) or no_history."""
+        if not 1 <= days <= OI_MAX_DAYS:
+            raise HTTPException(422, f"days 는 1 ~ {OI_MAX_DAYS}")
+        items = await asyncio.to_thread(futures_oi.history, days)
+        reason = None if items else ("no_key" if not settings.krx_api_key else "no_history")
+        return {"items": items, "source": "krx", "last_date": items[0]["date"] if items else None,
+                "reason": reason}
 
     @app.get("/api/market/flow/intraday")
     async def market_flow_intraday(date: str | None = None, bucket: int = 5):

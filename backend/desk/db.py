@@ -329,6 +329,27 @@ krx_days = Table(
     Column("fetched_at", Timestamp, nullable=False),
 )
 
+# #603 KOSPI200 futures open interest · basis · options put/call per day, derived from krx_daily (desk.futures_oi)
+futures_oi_daily = Table(
+    "futures_oi_daily", metadata,
+    Column("trade_date", Date, primary_key=True),
+    Column("code", String(32), nullable=False),                   # KRX ISU_CD of the front month
+    Column("expiry", Date, nullable=False),                       # the front month's last trading day
+    Column("close", Float),
+    Column("settle", Float),
+    Column("spot", Float),                                        # KOSPI200
+    Column("basis", Float),                                       # close - KOSPI200
+    Column("oi", Float),                                          # front month open interest (contracts)
+    Column("oi_change", Float),                                   # vs the same contract the previous business day
+    Column("oi_total", Float),                                    # every quarterly contract
+    Column("oi_total_change", Float),
+    Column("rolling", Boolean, nullable=False),
+    Column("pc_oi_ratio", Float),                                 # monthly options, put / call open interest
+    Column("atm_iv", Float),
+    Column("atm_iv_expiry", Date),
+    Column("computed_at", Timestamp, nullable=False),
+)
+
 # #527 the paper account's settings: one row (id 1) for the desk; version + 1 on every save
 paper_settings = Table(
     "paper_settings", metadata,

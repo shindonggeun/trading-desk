@@ -17,6 +17,8 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
+from . import language
+
 LEVER_TIMEOUT_SEC = 180.0
 DECISION_CHARS = 6000
 # A day's true range averages ~1.6 sigma for a random walk (a little more with gaps); rough is enough.
@@ -127,7 +129,8 @@ def build_prompt(ctx: LeverContext) -> str:
         f"- If the {b} decision is Hold, give Hold with the long and short trigger levels on {p}.",
         *_pair_rules(ctx, p, b),
         "",
-        f"## Output (answer in {ctx.language or 'English'}; keep these English labels exactly, numbers in {p} prices)",
+        f"## Output (keep these English labels exactly, numbers in {p} prices)",
+        f"- {language.directive(ctx.language)}",   # #567
         "**Rating**: one of Buy / Overweight / Hold / Underweight / Sell",
         "**Entry Price**: <number>",
         "**Stop Loss**: <number>",

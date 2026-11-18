@@ -29,7 +29,7 @@ import statistics
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, is_dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from . import underlying as under
@@ -59,6 +59,9 @@ WATCH = ("NQ=F", "ES=F", "KOSPI200F")      # the tips' and prewarm's instruments
 ALIASES = {"KOSPI200F": ("069500.KS", "코스피200 선물(야후에 선물 이력이 없어 KODEX 200 일봉으로 계산)")}
 EXTRA_LEVERAGED = {"KORU": ("EWY", 3.0)}   # Direxion MSCI Korea 3x - EWY tracks the same index
 NAMES = {"NQ=F": "나스닥100 선물", "ES=F": "S&P500 선물", "KOSPI200F": "코스피200 선물"}
+# CME futures trade round the clock but for 17:00-18:00 ET: their daily gaps are mostly the weekend's
+FUTURES_NOTE = ("CME 선물은 평일 17:00~18:00(뉴욕) 한 시간만 쉬어 일봉 갭이 작고 드물다 — 표의 갭은 대부분 주말 · 휴장 뒤 갭이다. "
+                "실적 · 지표 반응은 쉬지 않고 거래되는 세션 안에서 움직여 갭으로 잡히지 않는다")
 
 Bars = list[dict]
 Fetch = Callable[[str], Bars]                 # ticker -> daily bars, oldest first
@@ -123,6 +126,17 @@ def _cause(day: date, prev_day: date, events: dict[date, str]) -> str:
     return "other"
 
 
+def _session_day(day: date, prev_day: date) -> date:
+    """#568: Yahoo dates a futures session opened at 18:00 New York with the day before until midnight, so
+    the newest bar can carry the previous bar's date - it is the next weekday's session."""
+    if day > prev_day:
+        return day
+    day = prev_day + timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return day
+
+
 def _size(atr_multiple: float) -> str:
     return next(name for name, lo, hi in SIZES if lo <= atr_multiple < hi)
 
@@ -149,7 +163,8 @@ def measure(bars: Bars, ticker: str, events: dict[date, str] | None = None) -> l
             if (bars[j]["low"] <= level) if up else (bars[j]["high"] >= level):
                 filled = j - i + 1
                 break
-        day, prev_day = _local_day(bar["at"], ticker), _local_day(prev["at"], ticker)
+        prev_day = _local_day(prev["at"], ticker)
+        day = _session_day(_local_day(bar["at"], ticker), prev_day)
         out.append({
             "index": i, "day": day.isoformat(), "direction": "up" if up else "down",
             "fill_price": round(level, 4), "open": round(bar["open"], 4),
@@ -220,6 +235,8 @@ def basis_of(ticker: str) -> dict:
     if t in ALIASES:
         sym, note = ALIASES[t]
         return {"ticker": t, "symbol": sym, "leverage": None, "note": note}
+    if t.endswith("=F"):
+        return {"ticker": t, "symbol": t, "leverage": None, "note": FUTURES_NOTE}
     lever = under.leverage_of(t)
     found = (lever[0], lever[1]) if lever else EXTRA_LEVERAGED.get(t)
     if found:

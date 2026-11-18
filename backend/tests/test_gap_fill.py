@@ -147,3 +147,18 @@ def test_the_api_answers_the_odds(db_url, monkeypatch):
         if entry.status_code == 200:
             assert entry.json()["gap_warning"] is None
     gap_fill._CACHE.clear()
+
+
+def test_a_futures_session_dated_the_day_before_is_the_next_weekdays():
+    """#568: after 18:00 New York the new session's bar carries the previous date until midnight."""
+    assert gap_fill._session_day(date(2026, 11, 17), date(2026, 11, 17)) == date(2026, 11, 18)
+    assert gap_fill._session_day(date(2026, 11, 13), date(2026, 11, 13)) == date(2026, 11, 16)   # Friday -> Monday
+    assert gap_fill._session_day(date(2026, 11, 18), date(2026, 11, 17)) == date(2026, 11, 18)
+    bars = series()
+    bars[-1] = {**bars[-1], "at": bars[-2]["at"], "open": 101.0, "high": 101.2, "low": 100.8}   # dated like the one before
+    last = gap_fill.measure(bars, "NQ=F")[-1]
+    assert last["day"] == "2026-05-22" and last["cause"] == "other"   # Thursday's date: Friday's session
+
+
+def test_futures_say_their_daily_gaps_are_mostly_the_weekends():
+    assert "주말 · 휴장 뒤" in gap_fill.basis_of("NQ=F")["note"] and gap_fill.basis_of("SPY")["note"] is None

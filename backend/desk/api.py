@@ -583,7 +583,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     calendar = live.Calendar(broker)     # market holidays for the live stream, cached per market
     # #653 the analysis chart's last bar carried on with the price now (short cache, one fetch per key)
     chart_live = live_bars.LiveBars(prices, estimator, lambda t: sessions.session(calendar, t),
-                                    watch=lambda t: live.watch(prices, t))
+                                    watch=lambda t: live.watch(prices, t),
+                                    off_hours=lambda t, s, c: _chart_off_hours(t, s, c))   # defined below
     if runner is None:
         runner = make_fake_runner(settings.fake_delay) if settings.fake_runs else run_tradingagents
 
@@ -1844,10 +1845,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     @app.get("/api/candles/live")
     async def candles_live(ticker: str, interval: str = "1d"):
         """#653 the chart's last bar with the price now, for a page polling every few seconds: ``bar`` (the
-        last bar carried on - ``state`` updated - or a new one - appended; ``price_only`` when the price is
-        an estimate in a real bar's bucket), ``price`` and its ``source`` (kis · toss · yahoo · nxt ·
-        binance-estimate, ``estimated``), ``session``, ``delay_sec`` (the price's age) and the series'
-        own source. Cached LiveBars.TTL_SEC per ticker and interval (desk.live_bars)."""
+        last bar carried on - ``state`` updated - or a new one - appended; ``price_only`` when nothing
+        trades and there is no estimate (``live`` false), an estimate falls in a real bar's bucket, or the
+        price is older than the bar), ``price`` and its ``source`` (kis · toss · yahoo · nxt · krx-overtime ·
+        binance-estimate, ``estimated``), ``session``, ``delay_sec`` (the price's age, plus Yahoo's own lag)
+        and the series' own source. The board's off-hours rules (#250 · #283). Cached LiveBars.TTL_SEC per
+        ticker and interval (desk.live_bars)."""
         try:
             ticker, _ = resolve_ticker(ticker)
             if interval not in INTERVALS:
@@ -2388,6 +2391,23 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except Exception as exc:  # noqa: BLE001 - Naver down: the estimate stands
             log.info("KRX after-hours trade for %s failed: %s", ticker, exc)
             return None
+
+    async def _chart_off_hours(ticker: str, session: str, close: float | None) -> dict | None:
+        """#653 the off-hours trade the quote board takes (#250 · #283) for a chart's last bar, or None:
+        KRX - NXT, then (after the close) the KRX's own after-hours auction; US - a KIS trade, then a Toss
+        price that has moved off the close."""
+        market = kis_stream.market_of(ticker)
+        if market == "KR" and session in ("pre", "post"):
+            if (nxt := await _nxt_today(ticker)) is not None:
+                return {"price": nxt[0], "source": "nxt", "at": nxt[1].isoformat(timespec="seconds")}
+            if session == "post" and (ot := await _krx_overtime(ticker)) is not None:
+                return {"price": ot.price, "source": "krx-overtime", "at": ot.traded_at.isoformat(timespec="seconds")}
+        if market == "US" and session in ("pre", "post", "overnight"):
+            if (tick := _off_hours_trade(ticker)) is not None:
+                return {"price": tick.price, "source": "kis", "at": tick.received_at}
+            if (q := await _toss_off_hours(ticker, close)) is not None:
+                return {"price": q.price, "source": "toss", "at": q.fetched_at}
+        return None
 
     async def _toss_off_hours(ticker: str, close: float | None):
         """#250: a US ticker's broker (Toss) quote off hours, taken only when it differs from the last

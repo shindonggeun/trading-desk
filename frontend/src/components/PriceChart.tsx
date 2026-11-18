@@ -935,7 +935,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       }
     }
     // 오른쪽 축의 가까운 라벨은 하나로(좌표는 그려진 뒤에 나온다)
-    const stopLabels = keepAxisLabelsApart(drawn.chart, series, labelled);
+    const stopLabels = keepAxisLabelsApart(drawn.chart, series, labelled, 16, () => drawn.alive.current);
     const near = planLines.map(([v]) => v).filter((v): v is number => v != null && Math.abs(v - lastClose) / lastClose <= AUTOSCALE_MAX_GAP);
     series.applyOptions({
       autoscaleInfoProvider: (base: () => { priceRange: { minValue: number; maxValue: number } } | null) => {
@@ -1549,6 +1549,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     if (!drawn) return;
     const { chart, series } = drawn;
     const onMove = (param: MouseEventParams<Time>) => {
+      if (!drawn.alive.current) return;          // #585 지운 차트의 시리즈는 좌표를 묻지 않는다
       const pt = param.point;
       // y 는 패널 기준 좌표다 — RSI 패널 위에서는 찾지 않는다.
       if (!pt || (param.paneIndex ?? 0) !== 0) return setHover(null);

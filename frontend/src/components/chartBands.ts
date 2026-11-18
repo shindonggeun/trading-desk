@@ -330,12 +330,16 @@ export function planBands(plan: Plan | null, from: Time | null, colors: { loss: 
  * 오른쪽 축의 가까운 라벨은 하나로 — 위 라벨에 이름(값이 다르면 "진입 8.03" 처럼 제 가격까지)을 합치고 아래 것은 축 라벨을 끈다. 좌표는 줌 · 이동 · 새 봉 ·
  * 늦게 온 데이터로 바뀌니, 원래 제목 · 표시를 기억해 두고 보는 범위 · 크기가 바뀔 때와 1초마다 다시 계산한다
  * (바뀐 것만 적용 — 같은 값이면 다시 그리지 않는다). 돌려준 함수로 멈춘다(차트가 살아 있을 때만 구독을 푼다).
+ * #585 `alive` 가 false 면(차트를 지웠는데 이 효과의 정리가 아직 안 돌았을 때 — 봉이 바뀌어 차트를 새로 만들 때 한 번의 렌더 동안)
+ * 예약된 다시 계산은 아무것도 건드리지 않는다. 지운 시리즈 · 선을 읽으면 "Object is disposed" 가 난다.
  */
-export function keepAxisLabelsApart(chart: IChartApi, series: ISeriesApi<SeriesType>, lines: IPriceLine[], minGapPx = 16) {
+export function keepAxisLabelsApart(chart: IChartApi, series: ISeriesApi<SeriesType>, lines: IPriceLine[], minGapPx = 16,
+  alive: () => boolean = () => true) {
   const original = lines.map((line) => ({ line, title: line.options().title, visible: line.options().axisLabelVisible }));
   let frame = 0;
   const run = () => {
     frame = 0;
+    if (!alive()) return;
     const want = new Map(original.map((o) => [o.line, { title: o.title, visible: o.visible }]));
     const placed = original
       .filter((o) => o.visible)
@@ -361,7 +365,7 @@ export function keepAxisLabelsApart(chart: IChartApi, series: ISeriesApi<SeriesT
     }
   };
   const schedule = () => {
-    if (!frame) frame = requestAnimationFrame(run);
+    if (!frame && alive()) frame = requestAnimationFrame(run);
   };
   schedule();
   const scale = chart.timeScale();

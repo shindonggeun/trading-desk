@@ -225,7 +225,7 @@ def _yahoo_rows(ticker: str, session: Session) -> list[tuple[date, float]]:
     return rows
 
 
-FUTURES = Session(ZoneInfo("America/New_York"), clock_time(18, 0), clock_time(17, 0), futures=True)
+FUTURES = Session(market_calendar.ET, market_calendar.CME_OPENS, market_calendar.CME_CLOSES, futures=True)
 
 
 def session_of(ticker: str) -> Session:
@@ -238,9 +238,10 @@ def session_of(ticker: str) -> Session:
 def futures_open(now: datetime) -> bool:
     ny = now.astimezone(FUTURES.zone)
     day, hour = ny.weekday(), ny.hour
-    if day == 5 or (day == 6 and hour < 18) or (day == 4 and hour >= 17):
+    opens, closes = market_calendar.CME_OPENS.hour, market_calendar.CME_CLOSES.hour
+    if day == 5 or (day == 6 and hour < opens) or (day == 4 and hour >= closes):
         return False
-    return hour != 17
+    return hour != closes                 # the daily break, 17:00-18:00 New York
 
 
 WARM_LEAD = timedelta(minutes=30)     # #536: a market about to open is warmed this early

@@ -41,7 +41,6 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -80,7 +79,6 @@ _EXCHANGES = {
 # KIS' day-market (overnight session) codes of each US exchange
 _DAY_MARKETS = {"NAS": "BAQ", "NYS": "BAY", "AMS": "BAA"}
 _REGULAR_MARKETS = {v: k for k, v in _DAY_MARKETS.items()}
-_NEW_YORK = ZoneInfo("America/New_York")
 _US_SYMBOL = re.compile(r"[A-Z]{1,5}")
 _KR_CODE = re.compile(r"[0-9A-Z]{6}")
 

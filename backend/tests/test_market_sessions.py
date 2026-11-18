@@ -140,3 +140,17 @@ def test_the_old_call_sites_agree():
     assert krx.ready_at(date(2026, 11, 13)) == _kst(2026, 11, 16, 8, 30)   # Friday's rows on Monday
     assert dc.kr_late_open(date(2026, 11, 19)) and not dc.kr_late_open(date(2026, 11, 18))
     assert dc.CSAT_DAYS is mc.CSAT_DAYS
+
+
+def test_the_kospi200_futures_sessions_follow_krx_holidays_not_nyse():
+    from desk import futures_quote as fq
+
+    thanksgiving = datetime(2026, 11, 26, 10, 0, tzinfo=KST)            # NYSE closed, KRX open
+    assert fq.futures_session(thanksgiving)["now"] == "day"
+    chuseok = datetime(2026, 9, 25, 10, 0, tzinfo=KST)                  # KRX closed (추석), NYSE open
+    assert fq.futures_session(chuseok)["now"] == "closed"
+
+
+@pytest.mark.parametrize(("at", "phase"), [(_et(2026, 11, 16, 19, 59), "post"), (_et(2026, 11, 16, 20, 0), "overnight")])
+def test_the_us_post_session_ends_at_20(at, phase):
+    assert mc.us_phase(at) == phase

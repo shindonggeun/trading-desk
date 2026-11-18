@@ -55,7 +55,7 @@ def last_session(kind: str, now: datetime, is_open=market_calendar.is_open) -> d
     start_t, end_t, plus = SESSIONS[kind]
     for back in range(LOOKBACK_DAYS + 1):
         d = local.date() - timedelta(days=back)
-        if not is_open("KR", d):
+        if not is_open("kr", d):       # KRX holidays (market_calendar keys are lower case)
             continue
         start = datetime.combine(d, start_t, KST)
         if start <= local:

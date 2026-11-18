@@ -23,21 +23,24 @@ from .notify_channels import ChannelError
 log = logging.getLogger(__name__)
 
 QUEUE_MAX = 50
-TEST_TIMEOUT_SEC = 60.0
+# a test send waits for the worst case: Kakao's refresh + memo + a 401's refresh and memo again, each
+# up to TRIES x 10 s with its back-off (desk.notify_channels)
+TEST_TIMEOUT_SEC = 150.0
 
 _lock = threading.Lock()
 _channels: dict = {}                 # name -> channel (desk.notify_channels.Telegram / Kakao)
 _store = None                        # desk.notify_channels.ChannelStore
 _pool: ThreadPoolExecutor | None = None
+_closed = False                      # after shutdown: nothing new is queued (until the next install)
 _slots = threading.BoundedSemaphore(QUEUE_MAX)
 
 
 def install(channels: list, store) -> None:
     """The app's channels (configured or not: ``test`` reports which) and their settings store."""
-    global _channels, _store
+    global _channels, _store, _closed
     shutdown()
     with _lock:
-        _channels, _store = {c.name: c for c in channels}, store
+        _channels, _store, _closed = {c.name: c for c in channels}, store, False
 
 
 def channel(name: str):
@@ -47,16 +50,19 @@ def channel(name: str):
 def _executor() -> ThreadPoolExecutor:
     global _pool
     with _lock:
+        if _closed:
+            raise RuntimeError("notify is shut down")
         if _pool is None:
             _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="notify")
         return _pool
 
 
 def shutdown() -> None:
-    """Stop the worker; sends still queued are dropped (the app's lifespan end)."""
-    global _pool
+    """Stop the worker; sends still queued are dropped, and none is taken after (the app's lifespan end:
+    a judging thread finishing meanwhile must not start a new worker the interpreter would wait for)."""
+    global _pool, _closed
     with _lock:
-        pool, _pool = _pool, None
+        pool, _pool, _closed = _pool, None, True
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
 
@@ -108,11 +114,14 @@ def send(pusher, *kinds: str, payload: dict) -> int:
     return sent
 
 
-def run(fn, timeout: float = TEST_TIMEOUT_SEC):
+def run(fn, timeout: float | None = None):
     """``fn()`` on the channels' worker (a test send, Kakao's connect: never beside a refresh); its result."""
-    future = _executor().submit(fn)
     try:
-        return future.result(timeout=timeout)
+        future = _executor().submit(fn)
+    except RuntimeError:
+        raise ChannelError("shut down") from None
+    try:
+        return future.result(timeout=TEST_TIMEOUT_SEC if timeout is None else timeout)
     except FutureTimeout:
         future.cancel()
         raise ChannelError("timeout") from None

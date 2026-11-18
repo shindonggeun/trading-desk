@@ -74,3 +74,13 @@ def earnings_cache_in_tmp(monkeypatch, tmp_path):
     monkeypatch.setattr(macro_news, "CACHE_FILE", tmp_path / "macro_news.json")   # #428: the macro snapshot too
     # #338: a Nasdaq failure asks Yahoo's calendar - never the network in a test (nothing stands in)
     monkeypatch.setattr(earnings, "_yahoo_calendar", lambda first, last: {})
+
+
+@pytest.fixture(autouse=True)
+def notify_channels_reset():
+    """#580 desk.notify keeps the app's channels module-wide: never let one test's channels (a configured
+    Telegram with real httpx) reach the next."""
+    yield
+    from desk import notify
+
+    notify.install([], None)

@@ -101,12 +101,14 @@ def yahoo_quote(ticker: str) -> tuple[float, str | None]:
     return float(price), info.get("currency")
 
 
-def _yahoo_period(interval: str, count: int) -> str:
+def _yahoo_period(interval: str, count: int, ticker: str = "") -> str:
     if interval == "1m":
         return "5d"                       # Yahoo keeps 1-minute bars for about a week
     if interval in _MINUTES:
-        # ~6.5 trading hours a day, 5 trading days in 7, plus room for holidays.
-        days = math.ceil(count * _MINUTES[interval] / 390 * 7 / 5 * 1.3) + 5
+        # ~6.5 trading hours a day, 5 trading days in 7, plus room for holidays. #579 CME futures
+        # trade ~23 hours: read on a stock's day, NQ=F's 2,000 5-minute bars fetched 52 days, not ~2 weeks.
+        session = 1380 if ticker.upper().endswith("=F") else 390
+        days = math.ceil(count * _MINUTES[interval] / session * 7 / 5 * 1.3) + 5
         return f"{min(days, HISTORY_LIMIT_DAYS[interval] - 1)}d"
     if interval == "1w":
         return f"{count * 7 + 14}d"
@@ -120,7 +122,7 @@ def _yahoo_period(interval: str, count: int) -> str:
 def yahoo_candles(ticker: str, interval: str, count: int) -> list[Bar]:
     import yfinance as yf
 
-    frame = yf.Ticker(ticker).history(period=_yahoo_period(interval, count),
+    frame = yf.Ticker(ticker).history(period=_yahoo_period(interval, count, ticker),
                                       interval=_YAHOO_INTERVAL[interval], auto_adjust=False)
     frame = frame.dropna(subset=["Open", "High", "Low", "Close"])
     # The index is in the exchange's own time zone, so .date() is the trading day there.

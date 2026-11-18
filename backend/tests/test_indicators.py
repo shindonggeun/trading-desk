@@ -83,6 +83,8 @@ def test_yahoo_periods_stay_inside_its_intraday_limits():
     assert _yahoo_period("5m", 5000) == f"{HISTORY_LIMIT_DAYS['5m'] - 1}d"
     assert _yahoo_period("240m", 2000) == f"{HISTORY_LIMIT_DAYS['240m'] - 1}d"
     assert _yahoo_period("15m", 10) == "6d"
+    assert _yahoo_period("5m", 2000) == "52d"                  # a stock's 6.5 hours a day
+    assert _yahoo_period("5m", 1500, "NQ=F") == "15d"          # #579 futures trade ~23 hours
     assert _yahoo_period("1y", 10) == "max"
     assert _yahoo_period("1M", 12) == f"{12 * 31 + 62}d"
 

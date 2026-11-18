@@ -3,13 +3,16 @@ kept in ``market_alerts`` and pushed through desk.notify.
 
 What gets through (``admit``, read against what the day already holds):
 - the same moment of the same rule is kept once (judging the same snapshots again sends nothing twice);
-- ``ONCE_A_DAY`` rules once a day per market and investor;
-- ``COOLDOWN_MIN`` between two alerts of a kind on the same market, whoever the investor (the futures'
-  foreign and institution mostly take each other's other side: one alert, not a mirrored pair), and
-  ``REPEAT_MIN`` between two of the same rule and investor (the same direction again is not news) - a turn skips both: the dead band
-  and hold of desk.flow_intraday already keep it rare, and it matters most;
-- ``DAILY_MAX`` a day per kind; past it only strong ones, ``STRONG_EXTRA`` more.
-Info alerts go on the timeline (``GET /api/alerts/today``) but are not pushed.
+- ``ONCE_A_DAY`` rules once a day per market and investor - NQ=F's once per CME session (18:00 ET to
+  17:00 ET runs over the KST midnight, in New York's regular hours), the KST day before included;
+- ``REPEAT_MIN`` between two of the same rule and investor (the same direction again is not news);
+- ``COOLDOWN_MIN`` between two pushed alerts of a kind on the same market, whoever the investor (the
+  futures' foreign and institution mostly take each other's other side: one alert, not a mirrored pair);
+- ``DAILY_MAX`` pushed alerts a day per kind, past it only strong ones and turns, ``STRONG_EXTRA`` more.
+A turn skips the two waits: the dead band and hold of desk.flow_intraday already keep it rare, and it
+matters most. Info alerts go on the timeline (``GET /api/alerts/today``) but are not pushed: they have
+their own DAILY_MAX, and they never hold back a pushed one (nor the other way round). Alerts of the
+same moment are judged strongest first.
 """
 
 from __future__ import annotations
@@ -39,27 +42,43 @@ ALERT_URL = "/#/market"
 TITLE = {"flow_shift": "수급 흐름 변화", "nq_alert": "나스닥 선물 이상 징후"}
 
 
-def admit(alert: dict, day: list[dict]) -> bool:
-    """Whether ``alert`` goes through, given the day's alerts so far (any order)."""
+def _session(alert: dict) -> str:
+    return nq_watch.session_of(datetime.fromisoformat(alert["t"])).isoformat()
+
+
+def admit(alert: dict, day: list[dict], before: list[dict] = ()) -> bool:
+    """Whether ``alert`` goes through, given the day's alerts so far (any order) and, for NQ=F's
+    once-a-session rule, the KST day before's."""
     market = [a for a in day if a["kind"] == alert["kind"] and a["market"] == alert["market"]]
     same = [a for a in market if a["who"] == alert["who"]]
     if any(a["rule"] == alert["rule"] and a["t"] == alert["t"] for a in same):
         return False
-    if alert["rule"] in ONCE_A_DAY and any(a["rule"] == alert["rule"] for a in same):
-        return False
-    if alert["rule"] not in NO_COOLDOWN:
+    if alert["rule"] in ONCE_A_DAY:
+        if alert["kind"] == "nq_alert":
+            earlier = [a for a in [*day, *before] if a["kind"] == "nq_alert" and a["rule"] == alert["rule"]]
+            if any(_session(a) == _session(alert) for a in earlier):
+                return False
+        elif any(a["rule"] == alert["rule"] for a in same):
+            return False
+    pushed = alert["severity"] in PUSHED
+    turn = alert["rule"] in NO_COOLDOWN
+    if not turn:
         at = datetime.fromisoformat(alert["t"])
         for a in market:
             if a["rule"] in NO_COOLDOWN:
                 continue
-            repeat = a["rule"] == alert["rule"] and a["who"] == alert["who"]
-            gap = timedelta(minutes=REPEAT_MIN if repeat else COOLDOWN_MIN)
-            if abs(at - datetime.fromisoformat(a["t"])) < gap:
+            if a["rule"] == alert["rule"] and a["who"] == alert["who"]:
+                gap = REPEAT_MIN
+            elif pushed and a["severity"] in PUSHED:
+                gap = COOLDOWN_MIN
+            else:
+                continue
+            if abs(at - datetime.fromisoformat(a["t"])) < timedelta(minutes=gap):
                 return False
-    count = sum(1 for a in day if a["kind"] == alert["kind"])
+    count = sum(1 for a in day if a["kind"] == alert["kind"] and (a["severity"] in PUSHED) == pushed)
     if count < DAILY_MAX:
         return True
-    return alert["severity"] == "strong" and count < DAILY_MAX + STRONG_EXTRA
+    return pushed and (alert["severity"] == "strong" or turn) and count < DAILY_MAX + STRONG_EXTRA
 
 
 def text(alert: dict) -> str:
@@ -83,12 +102,15 @@ class MarketAlerts:
     def dispatch(self, alerts: list[dict]) -> list[dict]:
         """Record (and push the caution / strong ones of) the alerts that get through; those."""
         out = []
-        for alert in sorted(alerts, key=lambda a: a["t"]):
+        rank = {"strong": 0, "caution": 1, "info": 2}
+        for alert in sorted(alerts, key=lambda a: (datetime.fromisoformat(a["t"]), rank[a["severity"]])):
             day = datetime.fromisoformat(alert["t"]).astimezone(KST).date().isoformat()
             row = {**alert, "trade_date": day, "text": text(alert), "pushed": alert["severity"] in PUSHED}
             try:
                 with self.engine.begin() as conn:
-                    if not admit(alert, self.list_in(conn, day)):
+                    before = (self.list_in(conn, (date.fromisoformat(day) - timedelta(days=1)).isoformat())
+                              if alert["kind"] == "nq_alert" else [])
+                    if not admit(alert, self.list_in(conn, day), before):
                         continue
                     conn.execute(insert(market_alerts).values(
                         trade_date=day, kind=alert["kind"], rule=alert["rule"], market=alert["market"],

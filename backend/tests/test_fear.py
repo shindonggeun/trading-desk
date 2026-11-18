@@ -131,3 +131,88 @@ def test_vkospi_comes_from_kis_when_its_keys_are_there_and_stays_apart_when_it_f
     none = fear.Fear(candles=lambda s, i, n: _bars([20]), get=_get({fear.CNN_URL: CNN, fear.CRYPTO_URL: CRYPTO}))
     vk = {x["key"]: x for x in asyncio.run(none.get())["items"]}["vkospi"]
     assert vk["value"] is None and "키가 없어" in vk["error"]
+
+
+# #486 the estimate when KIS gives no VKOSPI: KODEX 200's realised volatility × ESTIMATE_SCALE
+def _kodex(n=40, swing=0.01):
+    """Closes up and down ``swing`` in turn, dated at the Seoul close (06:30 UTC)."""
+    from datetime import date, timedelta
+
+    closes, c = [], 30000.0
+    for i in range(n):
+        c *= (1 + swing) if i % 2 else (1 - swing)
+        closes.append(c)
+    return [SimpleNamespace(at=f"{date(2026, 10, 1) + timedelta(days=i)}T06:30:00+00:00", close=x)
+            for i, x in enumerate(closes)]
+
+
+def _expected(bars, end):
+    import math
+    import statistics
+
+    c = [b.close for b in bars]
+    rets = [math.log(c[i] / c[i - 1]) for i in range(end - fear.ESTIMATE_DAYS + 1, end + 1)]
+    return round(statistics.stdev(rets) * math.sqrt(252) * 100 * fear.ESTIMATE_SCALE, 2)
+
+
+def test_the_estimate_is_kodex_200s_realised_volatility_named_an_estimate():
+    bars, asked = _kodex(), []
+
+    def candles(symbol, interval, count):
+        asked.append((symbol, interval))
+        return bars
+
+    v = fear.vkospi_estimate(candles, "왜")
+    assert asked == [(fear.ESTIMATE_SYMBOL, "1d")]
+    assert v["value"] == _expected(bars, 39) and v["prev_day"] == _expected(bars, 38) and v["prev_week"] == _expected(bars, 34)
+    assert v["name"] == "VKOSPI(추정)" and "실현 변동성" in v["source"] and v["fallback_reason"] == "왜"
+    assert v["estimated"] == ["value", "prev_day", "prev_week"] and "error" not in v
+    assert v["as_of"] == "2026-11-09" and v["band"] == fear.band_of("vkospi", v["value"])
+    calm = fear.vkospi_estimate(lambda s, i, n: _kodex(swing=0.002))
+    assert calm["value"] < v["value"] and "fallback_reason" not in calm
+    with pytest.raises(ValueError):
+        fear.vkospi_estimate(lambda s, i, n: _kodex(fear.ESTIMATE_DAYS))   # 19 returns: no 20-session window
+
+
+def test_without_kis_or_when_it_fails_the_gauge_shows_the_estimate_and_asks_kis_again_soon():
+    from desk.futures_flow import KisError
+
+    routes = {fear.CNN_URL: CNN, fear.CRYPTO_URL: CRYPTO}
+    none = fear.Fear(candles=lambda s, i, n: _kodex(), get=_get(routes))
+    vk = {x["key"]: x for x in asyncio.run(none.get())["items"]}["vkospi"]
+    assert vk["name"] == "VKOSPI(추정)" and vk["value"] > 0 and vk["fallback_reason"] == fear.NO_SOURCE
+
+    now, kis = [0.0], FakeKis(error=KisError("FHPUP02120000: HTTP 500 EGW00201"))
+    down = fear.Fear(candles=lambda s, i, n: _kodex(), get=_get(routes), clock=lambda: now[0], kis=lambda: kis)
+    vk = {x["key"]: x for x in asyncio.run(down.get())["items"]}["vkospi"]
+    assert vk["name"] == "VKOSPI(추정)" and "error" not in vk and "KisError" in vk["fallback_reason"]
+    now[0] = fear.FAIL_TTL_SEC + 1
+    kis.error = None
+    kis.body = KIS_BODY
+    vk = {x["key"]: x for x in asyncio.run(down.get())["items"]}["vkospi"]
+    assert len(kis.calls) == 2 and vk["name"] == "VKOSPI" and vk["value"] == 24.51 and "estimated" not in vk
+
+
+def test_a_kis_answer_without_the_week_before_takes_it_from_the_estimate():
+    short = {**KIS_BODY, "output2": KIS_BODY["output2"][:3]}
+    f = fear.Fear(candles=lambda s, i, n: _kodex(), get=_get({fear.CNN_URL: CNN, fear.CRYPTO_URL: CRYPTO}),
+                  kis=lambda: FakeKis(short))
+    vk = {x["key"]: x for x in asyncio.run(f.get())["items"]}["vkospi"]
+    assert (vk["value"], vk["prev_day"], vk["name"]) == (24.51, 22.1, "VKOSPI")      # KIS' own
+    assert vk["prev_week"] == _expected(_kodex(), 34) and vk["estimated"] == ["prev_week"]
+    full = fear.Fear(candles=lambda s, i, n: _kodex(), get=_get({fear.CNN_URL: CNN, fear.CRYPTO_URL: CRYPTO}),
+                     kis=lambda: FakeKis(KIS_BODY))
+    assert "estimated" not in {x["key"]: x for x in asyncio.run(full.get())["items"]}["vkospi"]
+
+
+def test_a_refetch_ahead_that_only_gets_the_estimate_keeps_kis_value_in_date():
+    from desk.futures_flow import KisError
+
+    now, kis = [0.0], FakeKis(KIS_BODY)
+    f = fear.Fear(candles=lambda s, i, n: _kodex(), get=_get({fear.CNN_URL: CNN, fear.CRYPTO_URL: CRYPTO}),
+                  clock=lambda: now[0], kis=lambda: kis)
+    asyncio.run(f.get())
+    kis.error = KisError("FHPUP02120000: HTTP 500 EGW00201")
+    now[0] = fear.TTL_SEC["vkospi"] - 30                  # due within the prewarm's lead, still in date
+    vk = {x["key"]: x for x in asyncio.run(f.get(ahead=60))["items"]}["vkospi"]
+    assert vk["name"] == "VKOSPI" and vk["value"] == 24.51 and len(kis.calls) == 2

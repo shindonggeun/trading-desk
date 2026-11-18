@@ -176,3 +176,12 @@ def test_the_cli_reads_the_stored_snapshots(db_url, monkeypatch, capsys, tmp_pat
     assert cli.main(["lead-lag", "--days", "4000", "--out", str(out)]) == 0
     text = capsys.readouterr().out
     assert "3 day(s)" in text and "foreign_futures" in text and out.exists()
+
+
+def test_a_t_on_float_noise_is_none():
+    # #671 the momentum baseline against itself: corr 1 every day, a spread of float noise - not t 1.6e16
+    from desk.lead_lag import _mean_se, _t
+
+    m, se = _mean_se([1.0, 1.0 - 1e-16, 1.0, 1.0 + 2e-16])
+    assert _t(m, se) is None
+    assert round(_t(*_mean_se([0.1, 0.3, 0.2])), 2) == 3.46

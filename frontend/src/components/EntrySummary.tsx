@@ -1,5 +1,5 @@
 import { price } from "../format";
-import type { EntryCandidate, EntryNow } from "../types";
+import type { EntryCandidate, EntryNow, GapWarning } from "../types";
 import { pctText } from "./chartEntry";
 
 /**
@@ -49,6 +49,7 @@ export default function EntrySummary({ entry, failed, fromRun, elapsed = null }:
         </p>
       )}
       {today && <p className="muted">{today}</p>}
+      {entry.gap_warning && <GapWarningLine w={entry.gap_warning} />}
       {fromRun && <p className="muted">차트의 진입 · 손절 · 목표선은 분석 당시 값, 색 띠는 지금 기준입니다.</p>}
       {failed && <p className="muted">갱신하지 못해 마지막으로 받은 값입니다.</p>}
       <details>
@@ -76,4 +77,13 @@ function line(k: EntryCandidate): string {
   const t1 = k.targets[0];
   const now = k.from_now_pct != null ? ` (지금 ${pctText(k.from_now_pct)})` : "";
   return `${zone}${now} · 손절 ${price(k.stop)} · 목표 ${t1 ? price(t1.price) : "—"}`;
+}
+
+/** #578 진입 방향에 맞서는 열린 갭 — "갭 위 매수 — 메워지면 약 −X%" (#577 서버 문장 그대로, 표본 적음 표시) */
+function GapWarningLine({ w }: { w: GapWarning }) {
+  return (
+    <p className="entry-gap" title={`메움 가격 ${w.fill_price}${w.product_fill_price != null ? ` (이 상품 약 ${w.product_fill_price})` : ""} · 20거래일 안 메움 ${w.p20 == null ? "–" : Math.round(w.p20 * 100) + "%"} — 과거 빈도`}>
+      <span aria-hidden="true">⚠ </span>{w.text}{w.few ? " · 표본 적음" : ""}
+    </p>
+  );
 }

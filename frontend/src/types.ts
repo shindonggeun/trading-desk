@@ -1540,6 +1540,64 @@ export interface TipsView {
   trend?: TrendRow[];
   guide?: Partial<Record<TrendState, TrendGuide>>;
   trend_error?: string | null;
+  /** #577 선물(NQ=F · ES=F · 코스피200)의 가장 가까운 열린 갭 한 줄 — 캐시에 있을 때만 */
+  gaps?: TipGapLine[];
+}
+
+/** #577 GET /api/gaps — 세션 갭(전 세션 종가 → 새 세션 시가)의 메움 확률. 과거 빈도, 예측 아님 */
+export interface GapOdds {
+  n: number;
+  p1: number | null; p3: number | null; p5: number | null; p20: number | null;
+  median_sessions: number | null;
+  filled_share: number | null;
+  /** 표본 30 미만 */
+  few: boolean;
+}
+export interface OpenGap {
+  day: string;
+  direction: "up" | "down";
+  fill_price: number;
+  open: number;
+  gap_pct: number;
+  atr_multiple: number;
+  size: "small" | "mid" | "large";
+  cause: "fomc" | "macro" | "earnings" | "weekend" | "other";
+  trend: "up" | "down" | "mixed" | null;
+  open_sessions: number;
+  to_fill_pct: number;
+  /** 같은 방향 · 크기의 갭이 이만큼 열려 있었을 때 그 뒤 메워진 비율 */
+  odds: GapOdds;
+  /** 레버리지 상품: 기초 갭이 메워질 때 이 상품의 대략 가격 · 등락 */
+  product_fill_price?: number;
+  product_move_pct?: number;
+}
+export interface GapReport {
+  ticker: string;
+  name: string | null;
+  basis: { ticker: string; symbol: string; leverage: number | null; note: string | null };
+  as_of: string;
+  last_close: number;
+  since: string;
+  gaps_counted: number;
+  open: OpenGap[];
+  table: {
+    all: GapOdds;
+    direction: Record<"up" | "down", GapOdds>;
+    size: Record<"small" | "mid" | "large", GapOdds>;
+    cause: Record<OpenGap["cause"], GapOdds>;
+    trend: Record<"up" | "down" | "mixed", GapOdds>;
+    direction_size: Record<string, GapOdds>;
+  };
+  calendar_from: string | null;
+}
+export interface TipGapLine {
+  ticker: string; name: string | null; text: string; direction: "up" | "down"; fill_price: number;
+  p5: number | null; p20: number | null; n: number; few: boolean;
+}
+/** #577 진입 요약: 진입 방향에 맞서는 열린 갭(메워지면 이만큼 되밀릴 수 있다) */
+export interface GapWarning {
+  direction: "up" | "down"; fill_price: number; move_pct: number; product_fill_price: number | null;
+  p5: number | null; p20: number | null; n: number; few: boolean; text: string;
 }
 
 /** #460 지수 대세 국면 · 초보용 지침 */
@@ -1655,6 +1713,8 @@ export interface EntryNow {
   bottom: { stage: string; stage_ko: string; score: number } | null;
   as_of: string | null;
   basis: string;
+  /** #577 처음 보는 종목은 첫 응답에 없다(서버가 뒤에서 채운다) */
+  gap_warning?: GapWarning | null;
 }
 
 // #360 오늘 장중 현물 · 선물 수급(#359 GET /api/market/flow/intraday). 값이 없으면 null.

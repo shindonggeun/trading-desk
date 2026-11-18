@@ -31,6 +31,9 @@ import { loadMaOn, MA_PERIODS, type MaOn, type MaPeriod, PANE_TEXT, type PaneId,
 import { levelsContradict } from "../listLevels";
 import { ALL_ON, devExample, KIND_KO, loadTrendFilter, passes, saveTrendFilter, SCALE_KO, STATUS_KO, trendKey, trendLabel, trendWidth, type TrendFilter } from "../trendLines";
 import TrendLineCard from "./TrendLineCard";
+import GapOddsCard from "./GapOddsCard";
+import { oddsLabel } from "../gapOdds";
+import type { GapReport, OpenGap } from "../types";
 import type { BottomZone, ChartPattern, FibLevel, Fibonacci, OutlookPeriodId, Plan, Positioning, Projection, RunOutlook, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
 import { clipPath, ConeShade, directionLabel, OUTLOOK_PERIODS, outlookCone } from "./chartOutlook";
@@ -64,7 +67,7 @@ const SHOW_LABEL: Record<keyof Show, string> = {
   opt: "옵션 벽 · 맥스 페인",
   bz: "인생 타점 줍줍",
   entry: "지금 타점(최적)",
-  gaps: "안 메운 갭",
+  gaps: "안 메운 갭 · 메움 확률",
   stoch: "스토캐스틱", bb: "볼린저밴드(20)", osc: "과열 · 침체 표시",
   ma: "이동평균(5 · 20 · 60 · 120)",
 };
@@ -393,6 +396,10 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
   const [fills, setFills] = useState<ReviewRow[]>([]);
   // #334 체결 표에서 고른 체결(filled_at) — 그 봉의 마커를 크게
   const [pickedFill, setPickedFill] = useState<string | null>(null);
+  // #578 세션 갭 메움 확률(#577 GET /api/gaps) — 띠 이름표와 띠를 누르면 여는 카드
+  const [gapRep, setGapRep] = useState<GapReport | null>(null);
+  const [gapPick, setGapPick] = useState<OpenGap | null>(null);
+  const closeGap = useCallback(() => setGapPick(null), []);
   const [failed, setFailed] = useState(false);
   // #206 과열 · 침체 판정(일봉 · 주봉만 — 분봉 · 월 · 년봉은 일봉 판정을 배지로만)
   const [osc, setOsc] = useState<OscillatorView | null>(null);
@@ -717,6 +724,17 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     };
   }, [wantSr, mode, nowSr, ticker, show.gaps]);
 
+  useEffect(() => {
+    setGapRep(null);
+    setGapPick(null);
+    if (!show.gaps) return;
+    let live = true;
+    api.gaps(ticker).then((r) => live && setGapRep(r), () => {});   // 없으면 기존 #465 갭 띠만
+    return () => {
+      live = false;
+    };
+  }, [ticker, show.gaps]);
+
   // RSI 를 켜고 끄면 다시 받는다(서버가 30초 캐시) — RSI 는 봉과 같은 응답에 실린다.
   useEffect(() => {
     let live = true;
@@ -1040,8 +1058,27 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
       const k = d == null ? null : rows.find((r) => r.day === d)?.key ?? null;
       return k == null ? null : time(k);
     };
+    // #578 세션 갭(전 세션 종가 → 새 세션 시가) — 이 종목 자신의 갭이면 띠 + 메움 확률 이름표, 레버리지 상품이면 기초 갭의 환산 메움 가격 표시
+    const own = !!gapRep && gapRep.basis.leverage == null && gapRep.basis.symbol === gapRep.ticker;
+    const sessionGaps = show.gaps && gapRep ? gapRep.open.filter((g) => Math.abs(g.to_fill_pct) <= 30) : [];
+    const sessionBands = own
+      ? sessionGaps.map((g) => ({
+          top: Math.max(g.fill_price, g.open), bottom: Math.min(g.fill_price, g.open),
+          fill: withAlpha(gapColor, 0.16), edge: withAlpha(gapColor, 0.7),
+          label: `세션 갭 · ${oddsLabel(g.odds)}`, labelColor: gapColor, from: gapFrom(g.day),
+        }))
+      : [];
+    const productMarks = !own
+      ? sessionGaps.filter((g) => g.product_fill_price != null).map((g) => ({
+          price: g.product_fill_price as number, color: withAlpha(gapColor, 0.9),
+          label: `기초 갭 메움≈ · ${oddsLabel(g.odds)}`,
+        }))
+      : [];
+    // 같은 날 · 같은 방향의 일봉 갭(#465)은 세션 갭 띠와 겹치니 세션 갭 쪽만 그린다
+    const sameDay = new Set(own ? sessionGaps.map((g) => `${g.day}|${g.direction}`) : []);
     const gapBands = show.gaps
-      ? (nowSr?.gaps ?? []).filter((g) => Math.abs(g.distance_pct) <= 30).slice(0, 4).map((g) => ({
+      ? (nowSr?.gaps ?? []).filter((g) => Math.abs(g.distance_pct) <= 30)
+        .filter((g) => !(g.timeframe === "1d" && sameDay.has(`${g.formed_at}|${g.direction}`))).slice(0, 4).map((g) => ({
           top: g.top, bottom: g.bottom, fill: withAlpha(gapColor, 0.12), edge: withAlpha(gapColor, 0.5),
           label: `${g.timeframe === "1w" ? "주봉" : "일봉"} 갭 · 메움 ${price(g.fill_price)}`, labelColor: gapColor, from: gapFrom(g.formed_at),
         }))
@@ -1054,9 +1091,11 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         ...srBands(srShown, srSource?.atr, { support: css("--sr-support", "#2bb3a3"), resistance: css("--sr-resistance", "#b58cf0") }, price),
         ...buyZones.bands,
         ...gapBands,
+        ...sessionBands,
       ],
       [
         ...buyZones.marks,
+        ...productMarks,
         ...(fib?.levels ?? []).filter((lv) => Number.isFinite(lv.price)).map((lv) => ({ price: lv.price, color: withAlpha(muted, 0.85), label: String(lv.ratio) })),
         ...profile.marks,
         ...book.marks,
@@ -1066,7 +1105,27 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     return () => {
       if (drawn.alive.current) series.detachPrimitive(bands);
     };
-  }, [drawn, srShown, srSource, plan, fib, vp, show.levels, show.pb, tradeDate, show.gaps, nowSr]);
+  }, [drawn, srShown, srSource, plan, fib, vp, show.levels, show.pb, tradeDate, show.gaps, nowSr, gapRep]);
+
+  // #578 세션 갭 띠 안을 누르면 그 갭의 메움 확률 카드 — 띠 밖을 누르면 닫는다(추세선 · 계획선 클릭은 그대로)
+  useEffect(() => {
+    if (!drawn || !gapRep || !show.gaps || gapRep.basis.leverage != null || gapRep.basis.symbol !== gapRep.ticker) return;
+    const { chart, series } = drawn;
+    const gaps = gapRep.open;
+    const onClick = (param: MouseEventParams<Time>) => {
+      if (!drawn.alive.current) return;
+      const pt = param.point;
+      if (!pt || (param.paneIndex ?? 0) !== 0) return;
+      const p = series.coordinateToPrice(pt.y);
+      if (p == null) return;
+      const hit = gaps.find((g) => p >= Math.min(g.fill_price, g.open) && p <= Math.max(g.fill_price, g.open));
+      setGapPick(hit ?? null);
+    };
+    chart.subscribeClick(onClick);
+    return () => {
+      if (drawn.alive.current) chart.unsubscribeClick(onClick);
+    };
+  }, [drawn, gapRep, show.gaps]);
 
   // #531 누른 자리에서 가장 가까운(10px 안) 추세선 — 계획선 클릭(#466)과 추세선 클릭이 같은 자리면 가까운 쪽만 반응하게 둘이 같이 쓴다
   const nearestTrend = useCallback((param: MouseEventParams<Time>): { line: Trendline; d: number } | null => {
@@ -1844,6 +1903,7 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
         </div>
       )}
       {!onTrendPick && pickedLine && <TrendLineCard line={pickedLine} when={when} onClose={() => pickTrend(null)} />}
+      {gapPick && gapRep && <GapOddsCard rep={gapRep} gap={gapPick} onClose={closeGap} />}
       {((show.fills && fills.length > 0) || rsiOn || stochOn || (drawn && LOG_SCALE.has(interval))) && (
         <p className="muted small price-chart-legend">
           {[

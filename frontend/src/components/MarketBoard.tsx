@@ -4,7 +4,8 @@ import { price } from "../format";
 import {
   type BoardMode, loadMarkets, loadMode, loadOpen, MARKETS_CHANGED, type MarketSymbol, saveMode, saveOpen,
 } from "../markets";
-import type { Estimate, SupportResistance } from "../types";
+import { chipText, gapTitle, nearest } from "../gapOdds";
+import type { Estimate, GapReport, SupportResistance } from "../types";
 import DeepRunConfirm from "./DeepRunConfirm";
 import FearIndexStrip from "./FearIndexStrip";
 import { TrendStrip } from "./TrendChips";
@@ -153,6 +154,17 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
   const [markets, setMarkets] = useState<MarketSymbol[]>(loadMarkets);
   const [picked, setPicked] = useState<MarketSymbol | null>(null);
   const tiles = useTiles(markets, mode, open);
+  // #578 선물 칸의 열린 갭 칩 — 서버가 30분 캐시 · 미리 데움(NQ=F · ES=F)
+  const [gapOf, setGapOf] = useState<Record<string, GapReport>>({});
+  const futures = markets.filter((m) => m.ticker.endsWith("=F")).map((m) => m.ticker).join(",");
+  useEffect(() => {
+    if (!open || !futures) return;
+    let alive = true;
+    for (const t of futures.split(",")) {
+      api.gaps(t).then((r) => alive && setGapOf((g) => ({ ...g, [t]: r })), () => {});
+    }
+    return () => { alive = false; };
+  }, [open, futures]);
 
   useEffect(() => {
     const reload = () => setMarkets(loadMarkets());
@@ -244,6 +256,14 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
                 )}
                 {/* #464 타일은 이름 · 값 · 등락 · 미니 차트만 — 지지 · 저항은 눌렀을 때 아래 확인 칸에 */}
                 {t?.error && <span className="small error">시세를 못 읽었습니다</span>}
+                {(() => {
+                  const g = nearest(gapOf[m.ticker]);
+                  return g ? (
+                    <span className={`mb-gap small ${g.direction === "up" ? "mb-gap-up" : "mb-gap-down"}`} title={gapTitle(gapOf[m.ticker], g)}>
+                      {chipText(g)} · 5일 {g.odds.p5 == null ? "–" : `${Math.round(g.odds.p5 * 100)}%`}{g.odds.few ? "(표본 적음)" : ""}
+                    </span>
+                  ) : null;
+                })()}
               </a>
               <button type="button" className="link small mb-deep" onClick={() => setPicked(m)}
                 aria-controls="mb-confirm" aria-expanded={picked?.ticker === m.ticker}

@@ -254,3 +254,25 @@ def test_the_api_cuts_the_ladder_at_the_quote(db_url, monkeypatch):
         assert any(s["status"] == "passed" for s in body["ladder"])
         down = client.get("/api/bottom-zone", params={"ticker": "DOWN"}).json()
         assert down["price_source"] in ("daily_close", "weekly_close")       # the quote failed
+
+
+def test_the_prewarm_reads_the_dashboards_zones_before_they_expire():
+    """#643 the dashboard's first ask after the hour does not wait on Yahoo's weekly bars."""
+    asked, now = [], [0.0]
+
+    def candles(symbol, interval, count):
+        asked.append(symbol)
+        if symbol == "BAD":
+            raise RuntimeError("Yahoo down")
+        return []
+
+    zones = bz.Zones(candles=candles, ttl_sec=3600, clock=lambda: now[0])
+    assert zones.warm(["^KS11", "^NDX", "^KS11", "BAD"]) == 2               # once each, one failing alone
+    assert asked == ["^KS11", "^NDX", "BAD"]
+    now[0] = 3000
+    zones.warm(["^KS11"], ahead=300)                                       # fresh for 600 s more: kept
+    assert asked.count("^KS11") == 1
+    zones.warm(["^KS11"], ahead=900)                                       # expiring within 900 s: read again
+    assert asked.count("^KS11") == 2
+    zones.bars("^NDX")                                                     # a page's own ask uses the cache
+    assert asked.count("^NDX") == 1

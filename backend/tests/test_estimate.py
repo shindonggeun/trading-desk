@@ -757,8 +757,11 @@ def test_a_ticker_that_never_subscribes_is_waited_for_once_not_every_poll(db_url
     """#257 review: a stream that is down (or a refused ticker) must not slow every board poll."""
     import time
 
+    from desk import api as api_mod
     from desk import live
     from desk.broker import kis_stream
+
+    monkeypatch.setattr(api_mod, "FIRST_TICK_WAIT_SEC", 2.0)   # #643 shortened it; the once-only rule is the point
 
     async def closed(_cal, ticker, now=None):
         return False

@@ -319,3 +319,11 @@ def test_ties_go_to_the_long_side_in_the_service_and_the_backtest():
     m = dct.metrics(P, rs, np.full(5, 0.2))
     assert m["direction_hit_rate"] == 1.0 and m["stage_hit_rate"] == 1.0 and m["called_long_share"] == 1.0
     assert dct.metrics(P, [{**rs[0], "z": 0.0}], np.full(5, 0.2)) == {"n": 1}   # nothing moved: no rates
+
+
+def test_a_close_to_close_answer_needs_yesterdays_bar():
+    day = date(2024, 6, 12)
+    gap = {**SERIES, "^KS11": [b for b in SERIES["^KS11"] if dc.session_day("^KS11", b) != date(2024, 6, 11)]}
+    assert dc.label("kr", day, gap, "cc") is None                    # the close before is two days old
+    assert dc.label("kr", day, gap, "oc") is not None
+    assert dc.previous_session("kr", date(2024, 6, 7)) == date(2024, 6, 5)   # 현충일 (6/6) is skipped

@@ -351,6 +351,23 @@ def _day_call(args) -> int:
     return 0
 
 
+def _day_call_backfill(engine, args) -> int:
+    """#572: the sessions after the committed model's training, as if called at each cutoff, scored."""
+    from . import day_calls
+    from .prices import yahoo_candles
+
+    desk = day_calls.DayCalls(engine, yahoo_candles)
+    # hourly futures far enough back for the hold-out (about 24 bars a day)
+    series = day_calls.fetch_series(yahoo_candles, hourly_bars=24 * (args.days + 15))
+    for market in (("kr", "us") if args.market == "all" else (args.market,)):
+        if not desk.models.get(market):
+            print(f"{market}: no committed model", file=sys.stderr)
+            continue
+        made = desk.backfill(market, series, args.days)
+        print(f"{market}: {made} calls backfilled")
+    return 0
+
+
 def _unfinished(url: str) -> int:
     """#431 no migration here: it runs inside the live container, and only reads."""
     from .store import Store
@@ -438,7 +455,10 @@ def main(argv: list[str] | None = None) -> int:
     dcp = sub.add_parser("day-call", help=(
         "#572 today's direction call: fit the model on Yahoo daily bars before the hold-out and score the "
         "hold-out once; writes model_<market>.json and report_<market>.json"))
-    dcp.add_argument("action", choices=("backtest",))
+    dcp.add_argument("action", choices=("backtest", "backfill"),
+                     help="backtest: fit and score (no database); backfill: the committed model's hold-out "
+                          "sessions re-made as of each cutoff into the database (source backfill), scored")
+    dcp.add_argument("--days", type=int, default=90, help="backfill: how many calendar days back (default 90)")
     dcp.add_argument("--market", choices=("kr", "us", "all"), default="all")
     dcp.add_argument("--from", dest="start", default=None, help="first session to use, YYYY-MM-DD")
     dcp.add_argument("--holdout-days", type=int, default=None, help="calendar days held out (default 90)")
@@ -493,7 +513,7 @@ def main(argv: list[str] | None = None) -> int:
         return _entry_backtest(args)
     if args.command == "weekly-lines":
         return _weekly_lines(args)
-    if args.command == "day-call":
+    if args.command == "day-call" and args.action == "backtest":
         _utf8_out()
         return _day_call(args)
     if args.command == "flow-history":
@@ -518,6 +538,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     engine = make_engine(settings.database_url)
+    if args.command == "day-call":           # backfill: the hold-out sessions into this database
+        _utf8_out()
+        try:
+            return _day_call_backfill(engine, args)
+        finally:
+            engine.dispose()
     if args.command == "timing":
         return _timing(engine, args.last)
     if args.command == "rescore":

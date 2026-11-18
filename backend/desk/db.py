@@ -279,6 +279,35 @@ morning_briefs = Table(
     Index("ix_morning_briefs_created_at", "created_at"),
 )
 
+# #572 today's direction calls: one row a market, session, round and call, made in the round's window
+# (never late) and scored after the close
+day_calls = Table(
+    "day_calls", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("market", String(4), nullable=False),                   # kr | us
+    Column("trade_date", Date, nullable=False),                    # the session's local date
+    Column("round", Integer, nullable=False),                      # 1 | 2
+    Column("call", String(16), nullable=False),                    # prev_close | open
+    Column("model", String(24), nullable=False),                   # the model used (prev_close_plain: no futures)
+    Column("model_version", String(40), nullable=False),
+    Column("source", String(8), nullable=False),                   # live | backfill
+    Column("called_at", Timestamp, nullable=False),
+    Column("cutoff_at", Timestamp, nullable=False),
+    Column("stage", String(16), nullable=False),
+    Column("verdict", String(8), nullable=False),                  # long | short | hold
+    Column("probs", Json, nullable=False),                         # stage -> % (one decimal, sum 100.0)
+    Column("reasons", Json, nullable=False),
+    Column("edges_pct", Json, nullable=False),
+    Column("features", Json, nullable=False),
+    Column("outcome", Json),                                       # desk.day_call.score after the close
+    Column("hit_direction", Boolean),                              # None: a hold, or nothing moved
+    Column("hit_stage", Boolean),
+    Column("brier", Float),
+    Column("scored_at", Timestamp),
+    UniqueConstraint("market", "trade_date", "round", "call", name="uq_day_calls_call"),
+    Index("ix_day_calls_trade_date", "trade_date"),
+)
+
 # #527 the paper account's settings: one row (id 1) for the desk; version + 1 on every save
 paper_settings = Table(
     "paper_settings", metadata,

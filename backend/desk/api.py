@@ -30,6 +30,7 @@ from . import (
     calibration,
     chat,
     credit,
+    day_calls,
     earnings,
     earnings_preview,
     entry_now,
@@ -470,6 +471,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     broker = make_broker(settings)
     kis_feed = kis_stream.make(settings) if prices is None else None   # tests bring their own prices
     prices = prices or PriceSource(broker, stream=kis_feed)
+    # #572 today's direction calls: made in their windows from Yahoo bars; scripted runs fetch nothing
+    day_desk = day_calls.DayCalls(engine, None if settings.fake_runs else (lambda *a: prices._yahoo_candles(*a)))
     # #462: VIX · CNN / crypto Fear & Greed · VKOSPI, cached per source (fakes stay offline in tests)
     fear_gauges = (fear.Fear(candles=lambda *a: prices._yahoo_candles(*a),   # read when asked, as risk does
                              kis=lambda: getattr(futures, "rest", None))         # #486 VKOSPI via the futures KIS client
@@ -801,6 +804,23 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     failures += 1
                     await asyncio.sleep(reports.RETRY_SEC * 2 ** min(failures - 1, 4))
 
+        async def make_day_calls():
+            # #572: every TICK_SEC - a round inside its window gets its calls (both markets), the closed
+            # sessions get scored; each market's first call of the day is pushed (kind day_call)
+            while True:
+                try:
+                    made = await asyncio.wait_for(asyncio.to_thread(day_desk.run), 180)
+                    for row in made:
+                        if row["round"] == 1 and row["call"] == "prev_close":
+                            await asyncio.to_thread(notify.send, app.state.pusher, "day_call", payload={
+                                "title": f"오늘 {'국장' if row['market'] == 'kr' else '미장'} 방향",
+                                "body": day_calls.push_text(row),
+                                "tag": f"day_call-{row['market']}", "url": "/#/day-call", "kind": "day_call"})
+                    await asyncio.wait_for(asyncio.to_thread(day_desk.score), 180)
+                except Exception:  # a failed pass must not stop the next one
+                    log.exception("day calls failed")
+                await asyncio.sleep(day_calls.TICK_SEC)
+
         async def write_briefs():
             # #571: at DESK_MORNING_BRIEF_AT on Korean trading days; while a run holds the ChatGPT slot it
             # tries again every few minutes, and past DESK_AFTER_SEC it goes out in the desk's own words
@@ -876,6 +896,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         prewarm_task = (asyncio.create_task(prewarm.run(prewarm_jobs, prewarm_tickers, _positioning, then=prewarm_then))
                         if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
         brief_task = asyncio.create_task(write_briefs()) if brief_desk.at is not None else None
+        day_calls.bind(day_desk)          # desk.day_call.today_call (#571) reads this app's calls
+        day_call_task = asyncio.create_task(make_day_calls()) if day_desk.candles is not None else None
         report_task = (asyncio.create_task(write_reports())
                        if settings.report_every_days > 0 and not settings.fake_runs else None)
         funds_task = (asyncio.create_task(refresh_funds())
@@ -910,6 +932,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             report_task.cancel()
         if brief_task:
             brief_task.cancel()
+        if day_call_task:
+            day_call_task.cancel()
+        day_calls.bind(None)
         if prewarm_task:
             prewarm_task.cancel()
         pictures.stop.set()              # a report being drawn takes no next picture
@@ -1403,6 +1428,24 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         """#155: Korean margin loans (신용융자), investor deposits (투자자예탁금), their ratio (빚투 비율)
         with its 1-year percentile, and forced sales (KOFIA, refreshed in the background)."""
         return credit.CACHE.view(min(max(days, 7), 400))
+
+    def _day_market(market: str) -> str:
+        if market not in day_calls.dc.MARKETS:
+            raise HTTPException(422, "market must be kr or us")
+        return market
+
+    @app.get("/api/day-call")
+    def day_call_today(market: str = "kr"):
+        """#572: the market's latest session calls (prev_close and open) with their records."""
+        return day_desk.view(_day_market(market))
+
+    @app.get("/api/day-call/history")
+    def day_call_history(market: str = "kr", days: int = day_calls.RECORD_DAYS):
+        return day_desk.history(_day_market(market), min(max(days, 1), 365))
+
+    @app.get("/api/day-call/stats")
+    def day_call_stats(market: str = "kr", days: int = day_calls.RECORD_DAYS):
+        return day_desk.stats(_day_market(market), min(max(days, 1), 365))
 
     @app.get("/api/market/fear")
     async def market_fear():
@@ -2672,6 +2715,7 @@ class PushKindsIn(BaseModel):
     morning_brief: bool = True      # #571 the 07:00 morning brief
     flow_shift: bool = True         # #579 the investors' flow shifts (desk.market_alerts)
     nq_alert: bool = True           # #579 the NQ=F selling alarms
+    day_call: bool = True           # #572 each market's first direction call of the day
 
 
 class PushSubscriptionIn(BaseModel):

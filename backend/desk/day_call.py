@@ -315,6 +315,16 @@ def features(market: str, round_: int, day: date, series: dict[str, Sequence],
 LABELS = ("oc", "cc")      # open -> close (the call), or the previous close -> close (the gap included)
 
 
+def previous_session(market: str, day: date) -> date:
+    """The market's trading day before ``day`` (desk.market_calendar)."""
+    d = day - timedelta(days=1)
+    for _ in range(15):
+        if market_calendar.is_open(MARKETS[market].calendar, d):
+            return d
+        d -= timedelta(days=1)
+    return d
+
+
 def label(market: str, day: date, series: dict[str, Sequence], kind: str = "oc",
           now: datetime | None = None) -> dict | None:
     """The session's answer: from the open (``kind`` "oc") or the previous close ("cc") to the close,
@@ -330,6 +340,8 @@ def label(market: str, day: date, series: dict[str, Sequence], kind: str = "oc",
     before = [x for x in bars[max(0, i - ATR_WINDOW - 1):i] if x.close]
     a = atr(before)
     b = bars[i]
+    if kind == "cc" and (not before or session_day(m.target, before[-1]) != previous_session(market, day)):
+        return None          # a session missing from the bars: the close before is not "yesterday's"
     start = b.open if kind == "oc" else (before[-1].close if before else None)
     if not a or not start or not b.close:
         return None
@@ -484,6 +496,8 @@ def call(model_file: dict, market: str, round_: int, day: date, series: dict[str
 
 
 def today_call() -> dict | None:
-    """#571's line of today's calls. Stored calls arrive with PR-B (#572: the day_calls table and its
-    scheduler); until then there is nothing to say."""
-    return None
+    """#571's line of today's calls (desk.day_calls, bound by the app): each market's latest
+    prev_close call, None before any call or on a failure."""
+    from . import day_calls
+
+    return day_calls.today()

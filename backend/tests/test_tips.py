@@ -124,6 +124,7 @@ def test_the_tips_api(db_url, monkeypatch):
     with _client(db_url) as client:
         out = client.get("/api/tips").json()
         assert out["regime"]["rates"] == "hiking" and len(out["tips"]) == len(tips.TIPS)
+        assert out["etf_flow"] == [] and out["ktb"] is None            # #605 no KRX rows stored: said as nothing
         assert [t["id"] for t in client.get("/api/tips?ticker=gdx").json()["tips"]] == ["gold-miners-tightening"]
         assert client.get("/api/tips?ticker=../x").status_code == 422
 

@@ -2752,3 +2752,24 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .mini-tools { display: flex; gap: 2px; flex-shrink: 0; }
 .mini-tools button { background: none; border: 0; color: var(--muted); padding: 2px 4px; cursor: pointer; font: inherit; }
 .mini-tools button:hover, .mini-tools button[aria-pressed="true"] { color: var(--text); }
+/* #616 띠는 넘치면 두 줄까지 감싸고, ⚙ 로 고치는 동안은 창 안에서 스크롤 */
+.mini-strip .mini-items { flex-wrap: wrap; row-gap: 0; max-height: calc(100vh - 8px); align-content: center; }
+.mini.mini-edit { align-items: flex-start; overflow-y: auto; }
+.mini-editor-panel { flex: 1; min-width: 0; }
+.mini-edit-title { margin: 2px 0 6px; font-size: 1em; }
+.mini-editor { display: grid; gap: 8px; }
+.mini-editor-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.mini-editor-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; gap: 4px; align-items: center; }
+.mini-editor-list input { min-width: 0; }
+.mini-editor-list button { padding: 2px 8px; }
+.mini-editor-ticker { min-width: 4.5em; text-align: right; font-variant-numeric: tabular-nums; }
+.mini-editor-presets { display: flex; flex-wrap: wrap; gap: 4px; }
+.mini-editor-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.mini-editor-add > :first-child { flex: 1 1 12em; min-width: 0; }
+.mini-editor-add input { min-width: 0; flex: 1 1 6em; }
+.mini-editor-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.mini .mini-editor { gap: 6px; }
+.mini .mini-editor input { padding: 2px 6px; font: inherit; min-height: 0; height: auto; border-radius: 4px; }
+.mini .mini-editor-list { gap: 2px; }
+.mini .mini-editor-list button, .mini .mini-editor-add button { padding: 1px 6px; font: inherit; min-height: 0; }
+.mini .mini-editor .chip { padding: 1px 6px; font-size: .9em; }

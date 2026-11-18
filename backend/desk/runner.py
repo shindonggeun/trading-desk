@@ -834,7 +834,10 @@ class RunManager:
             summary = parse_consensus(text, final_state, subject, plan, price, position)
             if self._korean_run(request):   # #567
                 summary, kind, status = await self._guard(
-                    lambda: language.fix_summary(summary, self.translator), (summary, None, "mismatch"))
+                    lambda: language.fix_summary(summary, self.translator), (summary, "?", "timeout"))
+                if status == "timeout":   # the fix ran out of time: say what the text is, or nothing if Korean
+                    kind = language.foreign(render_consensus(summary))
+                    status = "mismatch" if kind else "ok"
                 self._language_note(run_id, "consensus", kind, status)
         except Exception as exc:  # noqa: BLE001 - incl. timeout and unreadable JSON
             log.warning("consensus failed for %s: %s", request.ticker, exc)

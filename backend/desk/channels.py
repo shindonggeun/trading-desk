@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from itertools import pairwise
 
 from . import trend
@@ -64,6 +64,17 @@ TL_PER_KIND = 1
 HORIZON = {"5m": 12, "15m": 8, "60m": 8, "120m": 6, "240m": 6, "1d": 5}
 
 NOTE = "선은 지난 가격으로 그은 산수예요 — 앞날 예측도, 매수 · 매도 추천도 아니에요."
+
+
+def is_live(bars: list[dict], tf: str, now: datetime | None = None) -> bool:
+    """Whether the last bar still trades: its start plus its length is ahead of ``now``; a folded
+    2h / 4h bar (GROUPED) always counts as trading - it may run past its length."""
+    if not bars:
+        return False
+    if tf in GROUPED:
+        return True
+    end = datetime.fromisoformat(bars[-1]["at"]) + timedelta(minutes=MINUTES[tf])
+    return end > (now or datetime.now(UTC))
 
 
 def atr(bars: list[dict], n: int = ATR_N) -> float | None:

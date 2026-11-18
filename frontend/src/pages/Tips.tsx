@@ -93,6 +93,20 @@ export default function Tips({ query }: { query: URLSearchParams }) {
     <main className="page tips-page">
       <h2>국면별 매매 팁</h2>
       <TrendCard trend={view.trend ?? []} guide={view.guide ?? {}} error={view.trend_error ?? null} />
+      {(view.gaps?.length ?? 0) > 0 && (
+        <section className="card tip-gaps" aria-label="선물 열린 갭">
+          <h3>선물 열린 갭 — 메움 확률</h3>
+          <ul className="small">
+            {view.gaps!.map((g) => (
+              <li key={g.ticker}>
+                <a href={`#/chart/${encodeURIComponent(g.ticker === "KOSPI200F" ? "069500.KS" : g.ticker)}?interval=1d`}>{g.text}</a>
+                {g.few ? <span className="muted"> · 표본 적음</span> : null}
+              </li>
+            ))}
+          </ul>
+          <p className="muted small">세션 갭(전 세션 종가 → 새 세션 시가)이 과거에 며칠 안에 메워졌는지의 빈도입니다. 예측이 아닙니다.</p>
+        </section>
+      )}
       <section className="card tip-regime" aria-label="지금 국면" data-tour="tip-regime">
         <div><span className="muted small">기준금리 방향</span><strong>{g.rates ? RATES_KO[g.rates] : "—"}</strong>
           <span className="muted small">13주물 3개월 {signed(v.bill_3m_change_pp, "%p")}</span></div>

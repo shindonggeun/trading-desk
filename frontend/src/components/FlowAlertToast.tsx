@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type FlowAlert, type MarketAlert, type PushKinds } from "../api";
+import { alertKey, useTodayAlerts } from "../alertsFeed";
+import { api, type FlowAlert, type PushKinds } from "../api";
 
 /** #362 앱 안 토스트 — 장중에 수급 전향 목록(/api/alerts/flow)을 폴링해 새로 온 것만 화면 위에 띄운다.
  * 푸시가 꺼진 기기 · 지원하지 않는 브라우저에서도 앱을 열어 두면 볼 수 있게. */
@@ -77,7 +78,6 @@ export function inFlowHours(now = new Date()): boolean {
 
 const keyOf = (a: FlowAlert) => `${a.trade_date}|${a.market}|${a.kind}|${a.t}`;
 
-const shiftKey = (a: MarketAlert) => `${a.kind}|${a.rule}|${a.market}|${a.who}|${a.t}`;
 /** 토스트 한 건 — 수급 전향(#361) 또는 #579 알림(푸시로 나간 것) */
 type Toast = { key: string; text: string; tone: "buy" | "sell" | "warn" };
 type Shown = Toast & { until: number };
@@ -86,34 +86,31 @@ export default function FlowAlertToast() {
   const [shown, setShown] = useState<Shown[]>([]);
   const seen = useRef<Set<string> | null>(null); // 처음 읽은 목록은 이미 지난 것 — 토스트 없이 기준으로
   const seenShift = useRef<Set<string> | null>(null);
+  // #606 #579 알림(수급 흐름 변화 · 나스닥 선물)은 공유 피드(alertsFeed: 60초 · 화면이 숨으면 쉼)에서 받는다 —
+  // 대시보드의 알림 띠 · 타임라인과 같은 요청 하나를 나눠 써 /api/alerts/today 를 따로 읽지 않는다
+  const { data: day } = useTodayAlerts();
+  useEffect(() => {
+    if (!day) return;
+    const extra = loadExtraKinds();
+    const pushed = day.items.filter((a) => a.pushed && a.kind !== "flow_turn");
+    if (seenShift.current === null) {   // 처음 받은 목록은 이미 지난 것 — 토스트 없이 기준으로
+      seenShift.current = new Set(pushed.map(alertKey));
+      return;
+    }
+    const fresh = pushed.filter((a) => !seenShift.current!.has(alertKey(a)));
+    fresh.forEach((a) => seenShift.current!.add(alertKey(a)));
+    const wanted = fresh.filter((a) => (a.kind === "flow_shift" ? extra.flow_shift : extra.nq_alert));
+    if (wanted.length) {
+      const until = Date.now() + SHOW_MS;
+      setShown((s) => [...wanted.map((a): Shown => ({ key: alertKey(a), text: a.text, tone: "warn", until })), ...s]
+        .slice(0, MAX_SHOWN));
+    }
+  }, [day]);
 
   useEffect(() => {
     let alive = true;
     let timer: number | undefined;
     const tick = async () => {
-      const extra = loadExtraKinds();
-      // #581 나스닥 선물 알림은 장 밖(밤)에도 온다 — 그 종류를 켰으면 화면이 보이는 동안 늘 읽는다
-      if ((inFlowHours() || extra.nq_alert) && document.visibilityState === "visible") {
-        try {
-          const day = await api.alertsToday();
-          if (!alive) return;
-          const pushed = day.items.filter((a) => a.pushed && a.kind !== "flow_turn");
-          if (seenShift.current === null) {
-            seenShift.current = new Set(pushed.map(shiftKey));
-          } else {
-            const fresh = pushed.filter((a) => !seenShift.current!.has(shiftKey(a)));
-            fresh.forEach((a) => seenShift.current!.add(shiftKey(a)));
-            const wanted = fresh.filter((a) => (a.kind === "flow_shift" ? extra.flow_shift : extra.nq_alert));
-            if (wanted.length) {
-              const until = Date.now() + SHOW_MS;
-              setShown((s) => [...wanted.map((a): Shown => ({ key: shiftKey(a), text: a.text, tone: "warn", until })), ...s]
-                .slice(0, MAX_SHOWN));
-            }
-          }
-        } catch {
-          /* /api/alerts/today 가 없거나 잠깐 안 되면 수급 전향만 */
-        }
-      }
       if (inFlowHours() && document.visibilityState === "visible") {
         try {
           const { items } = await api.flowAlerts();

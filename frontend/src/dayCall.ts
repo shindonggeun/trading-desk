@@ -47,3 +47,6 @@ export function verdictText(c: Pick<DayCallEntry, "verdict">): { mark: string; t
 export function scoredOutcome(o: DayCallOutcome | DayCallUnscorable | null | undefined): DayCallOutcome | null {
   return o && !o.unscorable ? o : null;
 }
+
+/** #606 실제 판정이 한 회차에 이만큼 쌓이면 카드의 적중 기록이 검증 구간에서 실제 판정으로 바뀐다(backend day_calls.LIVE_RECORD_MIN) */
+export const LIVE_RECORD_MIN = 30;

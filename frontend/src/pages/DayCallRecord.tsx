@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import { fakeDayCallHistory, fakeDayCallStats } from "../briefsFake";
-import { DAY_CALL_KINDS, KIND_KO, MARKET_INDEX, MARKET_KO, percent, rate, scoredOutcome, STAGE_KO, STAGE_MARK, verdictText } from "../dayCall";
-import type { DayCallHistory, DayCallHistoryItem, DayCallKind, DayCallMarket, DayCallStage, DayCallStats } from "../types";
+import { DAY_CALL_KINDS, KIND_KO, LIVE_RECORD_MIN, MARKET_INDEX, MARKET_KO, percent, rate, scoredOutcome, STAGE_KO, STAGE_MARK, verdictText } from "../dayCall";
+import type { DayCallCallStats, DayCallHistory, DayCallHistoryItem, DayCallKind, DayCallMarket, DayCallStage, DayCallStats } from "../types";
 
 const is404 = (e: unknown) => e instanceof ApiError && e.status === 404;
 const DAYS = 90;
@@ -28,6 +28,33 @@ function Mark({ it }: { it: DayCallHistoryItem }) {
 }
 
 /** #573 오늘 방향(#572) 적중 기록 — 두 판정(전일 종가 대비 · 시가 대비)마다 적중률 · 기준선 · 표본 수 · 단계별 · 보정 표 · 날짜별 */
+/** #606 이 숫자의 기준 — 여기는 지난 days 일의 1 · 2차 · 두 출처를 합친 것, 오늘 방향 카드는 그 회차 하나(실제 판정이 30번 쌓이기 전에는 검증 구간)다.
+ *  카드와 같은 규칙으로 회차별 숫자를 같이 적어 두 화면의 숫자가 왜 다른지 바로 맞춰 볼 수 있게 한다. */
+function Basis({ st, days, holdoutFrom }: { st: DayCallCallStats; days: number; holdoutFrom: string | null }) {
+  const live = st.by_source?.live?.n ?? 0;
+  const backfill = st.by_source?.backfill?.n ?? 0;
+  const rounds = Object.keys(st.by_round ?? {}).sort().flatMap((k) => {
+    const rr = st.by_round[k];
+    const useLive = (rr.live?.n ?? 0) >= LIVE_RECORD_MIN;
+    const part = useLive ? rr.live : rr.backfill;
+    return part?.n ? [{ k, n: part.n, rate: part.direction_hit_rate ?? null, basis: useLive ? "실제 판정" : "검증 구간" }] : [];
+  });
+  return (
+    <div className="daycall-basis-note small muted">
+      <p>
+        위 숫자는 지난 {days}일의 1 · 2차를 합친 {st.n}번이에요(검증 구간 {backfill}번 · 실제 판정 {live}번).
+        {" "}검증 구간은 모델 학습에 쓰지 않은 날{holdoutFrom ? `(${holdoutFrom} 이후)` : ""}을 그날 그 시각 기준으로 다시 판정해 채점한 것이고, 실제 판정은 그날 실제로 낸 판정이에요.
+      </p>
+      <p>
+        오늘 방향 카드의 적중은 그 회차 하나만 세고, 그 회차의 실제 판정이 {LIVE_RECORD_MIN}번 쌓이기 전에는 검증 구간 숫자예요
+        {rounds.length > 0 && <> — 지금 카드 기준: {rounds.map((r, i) => (
+          <span key={r.k}>{i > 0 ? " · " : ""}{r.k}차 {r.n}번 적중 {rate(r.rate)}(<span className="daycall-basis">{r.basis}</span>)</span>
+        ))}</>}.
+      </p>
+    </div>
+  );
+}
+
 export default function DayCallRecord() {
   const [market, setMarket] = useState<DayCallMarket>("kr");
   const [kind, setKind] = useState<DayCallKind>("prev_close");
@@ -97,6 +124,7 @@ export default function DayCallRecord() {
             <div><dt>Brier 점수</dt><dd>{st.brier == null ? "—" : st.brier.toFixed(2)}<span className="muted small"> (0~2, 낮을수록 좋음)</span></dd></div>
           </dl>
         )}
+        {st && <Basis st={st} days={stats?.days ?? 90} holdoutFrom={stats?.backtest?.holdout_from ?? null} />}
         {b && (b.follow_yesterday || b.climatology) && (
           <p className="muted small">
             다른 비교 기준 — 전날 방향을 따라갔다면 {rate(b.follow_yesterday?.direction_hit_rate)}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { api, type Candles } from "../api";
 import { price } from "../format";
 import {
@@ -89,21 +89,52 @@ function SrLine({ sr, last }: { sr: Tile["sr"]; last: number | null }) {
   );
 }
 
-function useTiles(markets: MarketSymbol[], mode: BoardMode, enabled: boolean): Record<string, Tile> {
+const EXTRAS_AFTER_MS = 2_500;
+
+/** #644 화면(+200px)에 한 번이라도 들어온 타일의 종목 — 아래로 접혀 안 보이는 타일은 묻지 않는다 */
+function useSeenTickers(grid: RefObject<HTMLDivElement>, enabled: boolean, key: string): Set<string> {
+  const [seen, setSeen] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    const box = grid.current;
+    if (!enabled || !box) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setSeen(new Set(key.split(",")));
+      return;
+    }
+    const io = new IntersectionObserver((entries) => {
+      const fresh = entries.filter((e) => e.isIntersecting).map((e) => (e.target as HTMLElement).dataset.ticker ?? "").filter(Boolean);
+      if (fresh.length) setSeen((cur) => (fresh.every((t) => cur.has(t)) ? cur : new Set([...cur, ...fresh])));
+    }, { rootMargin: "200px 0px" });
+    box.querySelectorAll<HTMLElement>("[data-ticker]").forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, [grid, enabled, key]);
+  return seen;
+}
+
+function useTiles(all: MarketSymbol[], mode: BoardMode, enabled: boolean, seen: Set<string>): Record<string, Tile> {
   const [tiles, setTiles] = useState<Record<string, Tile>>({});
+  const markets = all.filter((m) => seen.has(m.ticker));
   const key = markets.map((m) => m.ticker).join(",");
+  const priced = useRef<{ mode: BoardMode; tickers: Set<string> }>({ mode, tickers: new Set() });
+  // 결과는 훅이 살아 있는 동안 받는다 — 새 타일이 보여 effect 가 다시 돌아도 앞서 보낸 요청의 답을 버리지 않게(#644)
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
   useEffect(() => {
     if (!enabled) return;
-    let alive = true;
+    const asOf = mode;          // 모드를 바꾼 뒤 늦게 온 옛 모드의 봉은 버린다
     const set = (ticker: string, patch: Partial<Tile>) =>
-      alive &&
+      mounted.current && priced.current.mode === asOf &&
       setTiles((cur) => ({
         ...cur,
         [ticker]: { ...EMPTY, ...cur[ticker], ...patch },
       }));
-    const loadPrices = () => {
+    // 새로 보인 타일만 바로, 이미 받은 타일은 다음 주기에(주기 · 모드가 바뀌면 다시 전부)
+    if (priced.current.mode !== mode) priced.current = { mode, tickers: new Set() };
+    const loadPrices = (onlyNew = false) => {
       if (document.hidden) return;
       for (const { ticker } of markets) {
+        if (onlyNew && priced.current.tickers.has(ticker)) continue;
+        priced.current.tickers.add(ticker);
         const daily = api.candles(ticker, "1d", BARS["1d"]);
         const chart = mode === "1d" ? daily : api.candles(ticker, "5m", BARS["5m"]);
         Promise.all([daily, chart]).then(
@@ -112,33 +143,41 @@ function useTiles(markets: MarketSymbol[], mode: BoardMode, enabled: boolean): R
         );
       }
     };
-    loadPrices();
-    const timer = setInterval(loadPrices, REFRESH_MS);
-    document.addEventListener("visibilitychange", loadPrices);
+    loadPrices(true);
+    const every = () => loadPrices();
+    const timer = setInterval(every, REFRESH_MS);
+    document.addEventListener("visibilitychange", every);
     return () => {
-      alive = false;
       clearInterval(timer);
-      document.removeEventListener("visibilitychange", loadPrices);
+      document.removeEventListener("visibilitychange", every);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, mode, enabled]);
 
-  // 지지 · 저항 · 추정가는 차트 주기와 상관없이 목록이 바뀔 때 한 번 — 서버가 캐시한다
+  // 지지 · 저항 · 추정가는 차트 주기와 상관없이 타일마다 한 번 — 서버가 캐시한다
+  const asked = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
     const set = (ticker: string, patch: Partial<Tile>) =>
-      alive && setTiles((cur) => ({ ...cur, [ticker]: { ...EMPTY, ...cur[ticker], ...patch } }));
-    for (const { ticker } of markets) {
-      api.levels(ticker).then((sr) => set(ticker, { sr }), () => {});
-      if (!NO_ESTIMATE.test(ticker))
-        api.estimate(ticker).then(
-          (e) => set(ticker, { est: e.supported && (e.market_state === "closed" || e.market_state === "nxt") ? e : null }),
-          () => {},
-        );
-    }
+      mounted.current && setTiles((cur) => ({ ...cur, [ticker]: { ...EMPTY, ...cur[ticker], ...patch } }));
+    // #644 타일 아래 한 줄(지지 · 저항 · 장외 추정)은 시세보다 덜 급하다 — 첫 화면이 그려진 뒤 조금 있다가
+    const go = () => {
+      for (const { ticker } of markets) {
+        if (!alive || asked.current.has(ticker)) continue;
+        asked.current.add(ticker);
+        api.levels(ticker).then((sr) => set(ticker, { sr }), () => {});
+        if (!NO_ESTIMATE.test(ticker))
+          api.estimate(ticker).then(
+            (e) => set(ticker, { est: e.supported && (e.market_state === "closed" || e.market_state === "nxt") ? e : null }),
+            () => {},
+          );
+      }
+    };
+    const wait = window.setTimeout(go, asked.current.size ? 0 : EXTRAS_AFTER_MS);
     return () => {
       alive = false;
+      window.clearTimeout(wait);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, enabled]);
@@ -153,7 +192,9 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
   const [mode, setMode] = useState<BoardMode>(loadMode);
   const [markets, setMarkets] = useState<MarketSymbol[]>(loadMarkets);
   const [picked, setPicked] = useState<MarketSymbol | null>(null);
-  const tiles = useTiles(markets, mode, open);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const seen = useSeenTickers(gridRef, open, markets.map((m) => m.ticker).join(","));
+  const tiles = useTiles(markets, mode, open, seen);
   // #578 선물 칸의 열린 갭 칩 — 서버가 30분 캐시 · 미리 데움(NQ=F · ES=F)
   const [gapOf, setGapOf] = useState<Record<string, GapReport>>({});
   const futures = markets.filter((m) => m.ticker.endsWith("=F")).map((m) => m.ticker).join(",");
@@ -224,12 +265,12 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
         <p className="muted small">표시할 종목이 없습니다. 설정에서 추가하세요.</p>
       )}
       {open && markets.length > 0 && (
-        <div className="mb-grid">
+        <div className="mb-grid" ref={gridRef}>
           {markets.map((m) => {
             const t = tiles[m.ticker];
             const up = (t?.change ?? 0) >= 0;
             return (
-              <div key={m.ticker} className="mb-cell">
+              <div key={m.ticker} className="mb-cell" data-ticker={m.ticker}>
               <a className={`mb-tile${picked?.ticker === m.ticker ? " mb-tile-on" : ""}`} href={chartHref(m)}
                 title={`${m.name} 차트 분석 열기(지지 · 저항 · 추세선 · 보조지표)`}>
                 <span className="mb-name">

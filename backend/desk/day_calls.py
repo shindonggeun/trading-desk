@@ -31,6 +31,8 @@ WINDOWS = {("kr", 1): (time(7, 30), time(8, 0)), ("kr", 2): (time(9, 30), time(1
            ("us", 1): (time(9, 0), time(9, 30)), ("us", 2): (time(10, 0), time(10, 30))}
 SCORE_AFTER = timedelta(minutes=30)
 GIVE_UP_AFTER = timedelta(days=2)    # a call Yahoo still has no answer for is marked unscorable
+RETRY_EVERY = timedelta(minutes=10)  # a round tried already waits this long before the next fetch
+SHARE_FOR = timedelta(minutes=1)     # bars fetched within this are reused (the calls, then the scoring)
 SCORE_EVERY = timedelta(minutes=30)
 TICK_SEC = 120
 DAILY_BARS = 300
@@ -85,6 +87,8 @@ class DayCalls:
         self.reports = reports if reports is not None else {m: _load_report(m) for m in dc.MARKETS}
         self.clock = clock
         self._scored_try: datetime | None = None
+        self._tried: dict[tuple[str, int, date], datetime] = {}
+        self._fetched: tuple[datetime, dict] | None = None
 
     # ------------------------------------------------------------------ making calls
 
@@ -141,15 +145,30 @@ class DayCalls:
         return made
 
     def run(self, now: datetime | None = None) -> list[dict]:
-        """One pass: the due rounds' calls (one fetch for all of them). The rows made."""
-        due = self.due(now)
+        """One pass: the due rounds' calls (one fetch for all of them). The rows made. A round tried
+        already (some call said NoData: a bar not out yet, Yahoo refusing) waits RETRY_EVERY before
+        the next try - a window would otherwise fetch every symbol every TICK_SEC."""
+        now = now or self.clock()
+        due = [d for d in self.due(now)
+               if not (last := self._tried.get(d)) or now - last >= RETRY_EVERY]
         if not due or self.candles is None:
             return []
-        series = fetch_series(self.candles)
+        series = self._series(now)
         made = []
-        for market, round_, day in due:
-            made += self.make(market, round_, day, series)
+        for key in due:
+            self._tried[key] = now
+            made += self.make(*key, series)
+        if len(self._tried) > 64:            # days gone by
+            self._tried = {k: v for k, v in self._tried.items() if now - v < timedelta(days=1)}
         return made
+
+    def _series(self, now: datetime) -> dict:
+        """The bars, fetched once for a pass: the scoring right after the calls reuses them."""
+        if self._fetched and now - self._fetched[0] < SHARE_FOR:
+            return self._fetched[1]
+        series = fetch_series(self.candles)
+        self._fetched = (now, series)
+        return series
 
     # ------------------------------------------------------------------ scoring
 
@@ -168,7 +187,7 @@ class DayCalls:
         if series is None:
             if self.candles is None:
                 return 0
-            series = fetch_series(self.candles)
+            series = self._series(now)
         done = 0
         for r in ready:
             kind = "oc" if r["call"] == "open" else "cc"

@@ -45,6 +45,7 @@ from . import (
     live,
     macro_news,
     market_calendar,
+    morning_brief,
     news_digest,
     oscillator,
     otp,
@@ -407,6 +408,51 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except Exception as exc:  # noqa: BLE001
             log.warning("report push failed: %s", exc)
         return "made"
+    # #571 the morning brief (made-up numbers with scripted runs: no network, no model)
+    brief_desk = morning_brief.Briefs(engine, None if settings.fake_runs else morning_brief.parse_at(settings.morning_brief_at))
+    brief_tasks: set[asyncio.Task] = set()
+
+    def brief_sources() -> morning_brief.Sources:
+        if settings.fake_runs:
+            return morning_brief.fake_sources()
+        return morning_brief.Sources(
+            candles=lambda *a: prices._yahoo_candles(*a),
+            fear=fear_gauges.get if fear_gauges is not None else None,
+            flow=lambda m: flow.get(m, "1d", 5),
+            month=market_calendar.month_view,
+            macro=lambda: macro_news.CACHE.brief(None),
+            day_call=morning_brief.day_call_source(),
+            extra=morning_brief.hand_kept)
+
+    async def make_brief(trigger: str, desk_only: bool = False, taken: bool = False) -> str:
+        """One brief (#571): ``made`` or ``busy`` (one being written, or - automatic only - no free ChatGPT
+        slot: try later). ``desk_only`` writes it in the desk's words without the model (still on time)."""
+        if not taken:
+            if brief_desk.generating:
+                return "busy"
+            brief_desk.generating = True
+        try:
+            raw = await morning_brief.collect(brief_sources())          # the fetches, without the slot
+            b = morning_brief.bundle(raw)
+            if settings.fake_runs or desk_only:
+                out = await asyncio.to_thread(morning_brief.write, b, None)
+            else:
+                async with app.state.manager.spare_slot() as free:     # the slot only around the one model call
+                    if not free and trigger == "auto":
+                        return "busy"
+                    out = await asyncio.to_thread(morning_brief.write, b, projection.llm_note if free else None)
+            model = None if out["source"] == "rules" else os.getenv("TRADINGAGENTS_QUICK_THINK_LLM") or "quick"
+            saved = await asyncio.to_thread(brief_desk.save, out, morning_brief._public(b), model, trigger)
+        finally:
+            brief_desk.generating = False
+        log.info("morning brief %s (%s, %s)", saved["id"], saved["source"], trigger)
+        try:                             # a push problem never loses the brief
+            await asyncio.to_thread(app.state.pusher.broadcast, "morning_brief", payload={
+                "title": "아침 시황 · " + (saved.get("title") or ""), "body": (saved.get("numbers") or [""])[0],
+                "tag": "morning_brief", "url": f"/#/briefs/morning?date={saved['date']}"})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("morning brief push failed: %s", type(exc).__name__)
+        return "made"
     sectors = Sectors(engine)
     hub = Hub()
     broker = make_broker(settings)
@@ -714,6 +760,30 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     failures += 1
                     await asyncio.sleep(reports.RETRY_SEC * 2 ** min(failures - 1, 4))
 
+        async def write_briefs():
+            # #571: at DESK_MORNING_BRIEF_AT on Korean trading days; while a run holds the ChatGPT slot it
+            # tries again every few minutes, and past DESK_AFTER_SEC it goes out in the desk's own words
+            failures = 0
+            while True:
+                due = brief_desk.next_due()
+                wait = (due - datetime.now(UTC)).total_seconds()
+                if wait > 0:
+                    await asyncio.sleep(min(wait, 3600))
+                    continue
+                late = -wait >= morning_brief.DESK_AFTER_SEC
+                try:
+                    got = await make_brief("auto", desk_only=late)
+                except Exception:  # a failed pass must not stop the next one
+                    log.exception("morning brief failed")
+                    got = "failed"
+                if got == "made":
+                    failures = 0
+                elif got == "busy":
+                    await asyncio.sleep(morning_brief.RETRY_SEC)
+                else:
+                    failures += 1
+                    await asyncio.sleep(morning_brief.RETRY_SEC * 2 ** min(failures - 1, 3))
+
         def prewarm_jobs() -> dict[str, prewarm.Job]:
             # #536: the dashboard's shared data, refetched before it expires (desk.prewarm)
             ahead = prewarm.AHEAD_SEC
@@ -762,6 +832,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         # the same switch as the news flow: off in tests and scripted runs
         prewarm_task = (asyncio.create_task(prewarm.run(prewarm_jobs, prewarm_tickers, _positioning, then=prewarm_then))
                         if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
+        brief_task = asyncio.create_task(write_briefs()) if brief_desk.at is not None else None
         report_task = (asyncio.create_task(write_reports())
                        if settings.report_every_days > 0 and not settings.fake_runs else None)
         funds_task = (asyncio.create_task(refresh_funds())
@@ -791,10 +862,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             funds_task.cancel()
         if report_task:
             report_task.cancel()
+        if brief_task:
+            brief_task.cancel()
         if prewarm_task:
             prewarm_task.cancel()
         pictures.stop.set()              # a report being drawn takes no next picture
         for task in list(report_tasks):  # a manual report still being written
+            task.cancel()
+        for task in list(brief_tasks):   # a manual brief still being written
             task.cancel()
         if credit_task:
             credit_task.cancel()
@@ -1133,6 +1208,49 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         task = asyncio.create_task(work())
         report_tasks.add(task)
         task.add_done_callback(report_tasks.discard)
+        return {"generating": True}
+
+    # #571 the morning market brief
+    @app.get("/api/briefs/morning")
+    def morning_brief_of(date: str | None = None):
+        """The newest brief (of ``date`` YYYY-MM-DD, Korean day, when given); ``generating`` while one is written."""
+        day = None
+        if date is not None:
+            try:
+                day = datetime.strptime(date, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(422, "date must be YYYY-MM-DD") from None
+        got = brief_desk.latest(day)
+        if got is None:
+            raise HTTPException(404, "아직 아침 시황이 없어요")
+        due = brief_desk.next_due()
+        return {**got, "generating": brief_desk.generating, "next_due": morning_brief._iso(due)}
+
+    @app.get("/api/briefs/morning/list")
+    def morning_brief_list(limit: int = 20):
+        """The briefs newest first (id, date, title, source, trigger)."""
+        return {"items": brief_desk.list(limit), "generating": brief_desk.generating}
+
+    @app.post("/api/briefs/morning/run", status_code=202)
+    async def morning_brief_run():
+        """Write one now in the background (one at a time, MANUAL_PER_DAY a Korean day - the plan's quota):
+        poll ``GET /api/briefs/morning`` for ``generating``."""
+        if brief_desk.generating:
+            raise HTTPException(409, "이미 만드는 중이에요")
+        today = datetime.now(market_calendar.KST).date()
+        if await asyncio.to_thread(brief_desk.count, today, "manual") >= morning_brief.MANUAL_PER_DAY:
+            raise HTTPException(429, f"오늘은 직접 만들기를 {morning_brief.MANUAL_PER_DAY}번 다 썼어요. 내일 다시 할 수 있어요")
+
+        async def work():
+            try:
+                await make_brief("manual", taken=True)
+            except Exception:  # logged; the page sees generating go false
+                log.exception("manual morning brief failed")
+
+        brief_desk.generating = True      # taken now: a second click right away gets 409
+        task = asyncio.create_task(work())
+        brief_tasks.add(task)
+        task.add_done_callback(brief_tasks.discard)
         return {"generating": True}
 
     @app.get("/api/runs/{run_id}/events")
@@ -2435,6 +2553,7 @@ class PushKindsIn(BaseModel):
     flow_futures: bool = True
     flow_kospi: bool = True
     flow_kosdaq: bool = True
+    morning_brief: bool = True      # #571 the 07:00 morning brief
 
 
 class PushSubscriptionIn(BaseModel):

@@ -1,0 +1,4 @@
+{
+  "_comment": "#571 the morning brief's schedule items no source gives (a large IPO, a one-off event). Kept by hand: {\"date\": \"YYYY-MM-DD\", \"label\": \"한국어 이름\", \"market\": \"us|kr\", \"time_kst\": \"HH:MM\" or null}. Past items are ignored.",
+  "events": []
+}

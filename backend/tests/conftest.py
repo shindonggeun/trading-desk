@@ -9,6 +9,7 @@ import pytest
 # fake_runs=False; tests never do.
 os.environ.setdefault("DESK_MACRO_INTERVAL_SEC", "0")
 os.environ.setdefault("DESK_REPORT_EVERY_DAYS", "0")      # #495: no automatic report in tests
+os.environ.setdefault("DESK_MORNING_BRIEF_AT", "off")    # #571: no automatic morning brief in tests
 # a developer's .env must not open a KIS websocket from the tests
 os.environ["DESK_KIS_APP_KEY"] = ""
 os.environ["DESK_KIS_APP_SECRET"] = ""

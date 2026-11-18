@@ -10,6 +10,7 @@ from pathlib import Path
 from sqlalchemy import (
     JSON,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -227,6 +228,21 @@ reports = Table(
     Column("source", String(8), nullable=False),                  # ai | rules
     Column("body", Json, nullable=False),                         # the whole report (#495 contract)
     Index("ix_reports_created_at", "created_at"),
+)
+
+# #571 the morning market briefs: one or more a Korean day (the automatic one at 07:00, manual reruns)
+morning_briefs = Table(
+    "morning_briefs", metadata,
+    Column("id", String(32), primary_key=True),
+    Column("day", Date, nullable=False),                          # the Korean date it is for
+    Column("created_at", Timestamp, nullable=False),
+    Column("source", String(8), nullable=False),                  # ai | rules
+    Column("model", String(64)),                                  # the model that reworded it (None: the desk's)
+    Column("trigger", String(8), nullable=False),                 # auto | manual
+    Column("body", Json, nullable=False),                         # the brief (#571 contract)
+    Column("inputs", Json, nullable=False),                       # the numbers it was written from
+    Index("ix_morning_briefs_day", "day"),
+    Index("ix_morning_briefs_created_at", "created_at"),
 )
 
 # #527 the paper account's settings: one row (id 1) for the desk; version + 1 on every save

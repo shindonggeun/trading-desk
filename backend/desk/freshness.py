@@ -4,9 +4,10 @@
   the cache, up to ``cache_sec`` old).
 - ``source_updated_at``: the source's own time for the figures, when it gives one (Toss' investor flow
   carries one); ``source_delay_sec`` is then now minus that time - the real delay on screen.
-- A source without a time of its own (KIS' intraday investor figures) adds its measured update interval
-  (``PUBLISH_SEC``: ``python -m desk.cli lead-lag`` reports each stored value's median time between
-  changes on the server's snapshots - docs/lead-lag.md); until measured it is None and so is the delay.
+- A source without a time of its own (KIS' intraday investor figures) adds half its measured update
+  interval (``PUBLISH_SEC``: ``python -m desk.cli lead-lag`` reports each stored value's median time between
+  changes on the server's snapshots - docs/lead-lag.md): an approximation, at the snapshots' one-minute
+  resolution, that cannot see the source's own publishing lag. Until measured it is None and so is the delay.
 
 ``label`` is the screens' one line ("약 3분 지연"); outside the session the figures are the day's last
 and no delay is stated.
@@ -54,10 +55,12 @@ def stamp(fetched_at: str | datetime | None, now: datetime, cache_sec: float, *,
     fetched, source_time = _parse(fetched_at), _parse(source_at)
     age = max(0.0, (now - fetched).total_seconds()) if fetched else None
     publish = PUBLISH_SEC.get(source) if source else None
-    if source_time is not None:
+    if not live:                       # outside the session the figures are the day's last: no delay to state
+        delay = None
+    elif source_time is not None:
         delay = max(0.0, (now - source_time).total_seconds())
     elif age is not None and publish is not None:
-        delay = age + publish
+        delay = age + publish / 2      # a source updated every P seconds is P/2 old on average
     else:
         delay = None
     return {"fetched_at": _iso(fetched), "age_sec": None if age is None else round(age), "cache_sec": round(cache_sec),

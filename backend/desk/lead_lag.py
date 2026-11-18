@@ -20,11 +20,14 @@ momentum (the target's own last bucket return) - an indicator worth watching for
 the next bucket's direction better than it. Correlations are taken per day and averaged; their spread
 across days gives the standard error (a day's minutes are not independent, its days roughly are).
 
-Verdict per indicator, target and bucket: **선행** when the lead correlation is at least T_MIN standard
-errors from 0 and its direction hit rate (read the way the correlation points: a contrarian signal calls
-the other way) beats momentum's (its better way: continuation or reversal); else **동행** when the same-bucket one is;
-else **후행** when the one with the bucket before is (the flow follows the price); else **관계 없음**;
-**표본 부족** under MIN_DAYS days. Arithmetic on stored history, not a forecast.
+Verdict per indicator, target and bucket (MIN_DAYS days at least, else **표본 부족**): **선행** when the
+signal's correlation with the next bucket's return **net of the price's own last two moves** (the residual
+of fwd on now and prior) is at least T_MIN standard errors from 0 - a flow that only moves with the price
+would otherwise look leading whenever returns mean-revert; else **동행** or **후행**, the stronger of the
+same-bucket and the bucket-before correlations past T_MIN (with autocorrelated returns each leaks into the
+other); else **관계 없음**. The basis against KOSPI200 (read as price - basis) is **정의상 연동**, not judged.
+Hit rates (the lead correlation's way, and momentum's better way) are reported on the same buckets, not
+used in the verdict. Arithmetic on stored history, not a forecast.
 
 ``cadence`` measures how often each stored value actually changes between snapshots (the source's real
 update interval, at the snapshots' one-minute resolution) - the delay the screens state.
@@ -38,13 +41,15 @@ from datetime import UTC, date, datetime, time, timedelta
 from itertools import pairwise
 from statistics import median
 
+import numpy as np
+
 from . import market_calendar
 
 KST = market_calendar.KST
 SESSION = (time(9, 0), time(15, 20))     # regular trading, the closing auction (15:20-15:30) left out
 BUCKETS = (5, 15)                        # minutes
 STALE_SEC = 150                          # a grid value older than this is missing (a gap in the snapshots)
-MIN_DAYS = 10
+MIN_DAYS = 20                            # a day-mean t on fewer days calls too much by chance
 T_MIN = 3.0                              # |t| for a verdict: 7 indicators x 2 targets x 2 buckets x 3 tests (~84) at 2.0 would call several by chance
 
 # indicator -> the snapshot column it reads (desk.db.futures_snapshots); "basis" is market_basis
@@ -64,6 +69,8 @@ INDICATOR_KO = {
     "basis": "선물 베이시스", "momentum": "가격 모멘텀(기준선)",
 }
 TARGETS = ("futures", "kospi200")
+# KOSPI200 is read as price - basis, so the basis is inside its own target: a link by definition, not a finding
+TIED = {("basis", "kospi200")}
 TARGET_KO = {"futures": "코스피200 선물", "kospi200": "코스피200 지수"}
 
 
@@ -88,7 +95,7 @@ def grid(rows: Sequence[dict], day: date, bucket: int) -> list[tuple[datetime, d
     """The day's grid times every ``bucket`` minutes over SESSION with the snapshot as of each (None
     when the last one before it is older than STALE_SEC). ``rows`` oldest first."""
     times = [_at(r) for r in rows]
-    start = datetime.combine(day, SESSION[0], KST)
+    start = datetime.combine(day, market_calendar.hours("kr", day)[0], KST)       # 10:00 on a late open
     end = datetime.combine(day, SESSION[1], KST)
     out, i, t = [], -1, start
     while t <= end:
@@ -164,9 +171,22 @@ def _t(m: float | None, se: float | None) -> float | None:
     return None if m is None or not se else m / se
 
 
+def _partial(sig: Sequence[float], fwd: Sequence[float], moves: Sequence[Sequence[float]]) -> float | None:
+    """The correlation of ``sig`` with what of ``fwd`` the price's own recent moves do not explain (fwd's
+    least-squares residual on ``moves``: the last bucket's and the one before's return): information about
+    the next bucket beyond the price itself."""
+    n = len(fwd)
+    if n < 5:
+        return None
+    x = np.column_stack([np.ones(n), *[np.asarray(m, dtype=float) for m in moves]])
+    y = np.asarray(fwd, dtype=float)
+    coef, *_ = np.linalg.lstsq(x, y, rcond=None)
+    return _corr(sig, list(y - x @ coef))
+
+
 def measure(days: dict[date, Sequence[dict]], indicator: str, target: str, bucket: int) -> dict:
     """One indicator against one target at one bucket, over ``days`` (date -> that day's snapshots)."""
-    per_day = {"lead": [], "sync": [], "lag": []}
+    per_day = {"lead": [], "sync": [], "lag": [], "lead_net": []}
     hits = [0, 0]
     base = [0, 0]
     n = 0
@@ -180,10 +200,15 @@ def measure(days: dict[date, Sequence[dict]], indicator: str, target: str, bucke
             c = _corr(sig, [s[idx] for s in got])
             if c is not None:
                 per_day[key].append(c)
-        h, m = _hits((s[0], s[1]) for s in got)
+        c = _partial(sig, [s[1] for s in got], ([s[2] for s in got], [s[3] for s in got]))
+        if c is not None:
+            per_day["lead_net"].append(c)
+        # both hit rates on the same buckets: the indicator moved, and so did the target next
+        same = [s for s in got if s[0] != 0 and s[1] != 0 and s[4] != 0]
+        h, m = _hits((s[0], s[1]) for s in same)
         hits[0] += h
         hits[1] += m
-        h, m = _hits((s[4], s[1]) for s in got)
+        h, m = _hits((s[4], s[1]) for s in same)
         base[0] += h
         base[1] += m
     out = {"indicator": indicator, "target": target, "bucket_min": bucket, "samples": n,
@@ -198,12 +223,17 @@ def measure(days: dict[date, Sequence[dict]], indicator: str, target: str, bucke
     raw = hits[0] / hits[1] if hits[1] else None
     out["hit_rate"] = None if raw is None else round(raw if (lead or 0) >= 0 else 1 - raw, 3)
     out["hit_side"] = "same" if (lead or 0) >= 0 else "opposite"
+    out["hit_n"] = hits[1]
     out["momentum_hit_rate"] = round(max(base[0], base[1] - base[0]) / base[1], 3) if base[1] else None
     out["verdict"] = verdict(out)
     return out
 
 
 def verdict(r: dict) -> str:
+    if r["indicator"] == "momentum":
+        return "기준선"
+    if (r["indicator"], r["target"]) in TIED:
+        return "정의상 연동"
     if r["days"] < MIN_DAYS:
         return "표본 부족"
 
@@ -211,16 +241,14 @@ def verdict(r: dict) -> str:
         t = r[key]["t"]
         return t is not None and abs(t) >= T_MIN
 
-    if r["indicator"] == "momentum":
-        return "기준선"
-    beats = r["hit_rate"] is not None and r["momentum_hit_rate"] is not None and r["hit_rate"] > r["momentum_hit_rate"]
-    if strong("lead") and beats:
+    # leading means telling the next bucket beyond what the price's own last move tells: a flow that only
+    # moves with the price would otherwise look "leading" whenever returns mean-revert (#645 review)
+    if strong("lead_net"):
         return "선행"
-    if strong("sync"):
-        return "동행"
-    if strong("lag"):
-        return "후행"
-    return "관계 없음"
+    # with autocorrelated returns a lagging flow also correlates with the same bucket (and the other way
+    # round): the stronger of the two says which it is
+    both = [(abs(r[k]["t"]), name) for k, name in (("sync", "동행"), ("lag", "후행")) if strong(k)]
+    return max(both)[1] if both else "관계 없음"
 
 
 def by_day(rows: Iterable[dict]) -> dict[date, list[dict]]:
@@ -260,8 +288,11 @@ def cadence(days: dict[date, Sequence[dict]]) -> dict[str, dict]:
     return out
 
 
+MIN_ROWS_A_DAY = 30      # a day thinned to its last snapshot (older than KEEP_INTRADAY_DAYS) is no day here
+
+
 def report(rows: Iterable[dict]) -> dict:
-    days = by_day(rows)
+    days = {d: r for d, r in by_day(rows).items() if len(r) >= MIN_ROWS_A_DAY}
     return {"days": len(days), "from": min(days).isoformat() if days else None,
             "to": max(days).isoformat() if days else None, "session": [t.isoformat("minutes") for t in SESSION],
             "t_min": T_MIN, "min_days": MIN_DAYS, "cadence": cadence(days), "rows": table(days)}

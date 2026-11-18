@@ -147,7 +147,8 @@ class MarketFlow:
         latest = (value.get("records") or [None])[0] or {}
         # #645 how old the figures are: Toss stamps today's record with its own update time
         fresh = freshness.stamp(value.get("fetched_at"), now, cached[1], live=market_open(now),
-                                source_at=latest.get("updated_at") if latest.get("in_progress") else None,
+                                source_at=(latest.get("updated_at") if interval == "1d"
+                                           and latest.get("date") == now.astimezone(KST).date().isoformat() else None),
                                 source="toss_investors")
         return {**value, "records": value["records"][:count], "freshness": fresh}
 

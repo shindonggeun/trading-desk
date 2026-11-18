@@ -63,6 +63,8 @@ def test_pop_clear_now_and_bad_arguments():
     c.put("b", 2, now=50.0)                                         # a caller's own clock
     assert c.get("b", now=59.0) == 2 and c.get("b", now=60.0) is None
     c.put("c", 3)
+    c.put("short", 4, ttl=1)
+    assert c.values(now=5.0) == [3]                                 # unexpired only, a copy
     c.clear()
     assert len(c) == 0
     with pytest.raises(ValueError):

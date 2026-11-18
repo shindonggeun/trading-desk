@@ -10,7 +10,7 @@ or ``0`` not to keep them at all).
   gone - the prewarm reads it again before it does), else ``default``.
 - ``entry(key)``: ``(age, value)`` of an unexpired entry - for a caller that judges freshness itself
   (one long-lived entry read as fresh for a short while and as a fallback after).
-- ``put(key, value, ttl=)``, ``pop``, ``clear``, ``len``.
+- ``put(key, value, ttl=)``, ``pop``, ``clear``, ``len``, ``values()`` (a snapshot of the unexpired values).
 
 The clock is ``time.monotonic`` unless given; any call takes ``now=`` too, for a caller whose clock is
 its own (tests). Thread-safe: one lock around each call.
@@ -83,6 +83,12 @@ class TTLCache(Generic[K, V]):
         with self._lock:
             hit = self._items.pop(key, None)
         return default if hit is None else hit[2]
+
+    def values(self, *, now: float | None = None) -> list[V]:
+        """The unexpired values, oldest first - a copy, for a look (tests, status), never to change."""
+        t = self._now(now)
+        with self._lock:
+            return [v[2] for v in self._items.values() if t < v[1]]
 
     def clear(self) -> None:
         with self._lock:

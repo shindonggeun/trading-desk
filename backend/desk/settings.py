@@ -88,7 +88,7 @@ class Settings:
     broker: str = field(default_factory=lambda: os.getenv("DESK_BROKER", "mock").lower())
     toss_client_id: str = field(default_factory=lambda: os.getenv("TOSS_CLIENT_ID", ""))
     toss_client_secret: str = field(default_factory=lambda: os.getenv("TOSS_CLIENT_SECRET", ""), repr=False)
-    toss_account_seq: str = field(default_factory=lambda: os.getenv("TOSS_ACCOUNT_SEQ", ""))
+    toss_account_seq: str = field(default_factory=lambda: os.getenv("TOSS_ACCOUNT_SEQ", ""), repr=False)   # account info
     # KIS Open API (desk.broker.kis_stream): real-time trades over its websocket. Empty = off.
     kis_app_key: str = field(default_factory=lambda: os.getenv("DESK_KIS_APP_KEY", ""), repr=False)
     kis_app_secret: str = field(default_factory=lambda: os.getenv("DESK_KIS_APP_SECRET", ""), repr=False)

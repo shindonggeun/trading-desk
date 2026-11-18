@@ -396,6 +396,14 @@ def _krx(engine, args, key: str) -> int:
             print(f"{api}  {len(mine)} day(s)  {min(days)} ~ {max(days)}  {sum(n for _, n in mine)} row(s)  "
                   f"{empty_open} open day(s) with no rows (--refetch-empty asks them again)")
         return 0
+    if args.action == "derive":
+        # #603: futures_oi_daily again from the stored KRX rows (no KRX call, no key needed)
+        from .futures_oi import FuturesOi
+
+        first = date.fromisoformat(args.start)
+        last = date.fromisoformat(args.end) if args.end else krx.kst_today(now()) - timedelta(days=1)
+        print(f"futures_oi_daily: {FuturesOi(engine).derive(first, last)} day(s) written ({first} ~ {last})")
+        return 0
     desk = krx.KrxDaily(engine, krx.Client(key))
     if not desk.client.enabled:
         print("DESK_KRX_API_KEY 가 비어 있다 — 서버 .env.runtime 에 넣고 컨테이너 안에서 돌린다", file=sys.stderr)
@@ -552,7 +560,8 @@ def main(argv: list[str] | None = None) -> int:
     kx = sub.add_parser("krx", help=(
         "#601 KRX OPEN API end-of-day history into krx_daily (needs DESK_KRX_API_KEY and each service's approval; "
         "run on the server; days already stored are skipped)"))
-    kx.add_argument("action", choices=("backfill", "status"))
+    kx.add_argument("action", choices=("backfill", "status", "derive"),
+                    help="derive: #603 futures_oi_daily from the stored fut/opt rows (--from, --to)")
     kx.add_argument("--api", default="all", help="a service id (desk.krx.APIS, e.g. kospi_dd_trd) or all (default)")
     kx.add_argument("--from", dest="start", default="2015-01-01", help="first basDd, YYYY-MM-DD (default 2015-01-01)")
     kx.add_argument("--to", dest="end", default=None, help="last basDd, YYYY-MM-DD (default yesterday KST)")

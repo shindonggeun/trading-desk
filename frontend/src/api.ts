@@ -406,6 +406,10 @@ export const api = {
     call<{ ok: boolean; error: string | null }>(`/api/notify/channels/${id}/test`, { method: "POST" }),
   kakaoConnect: () => call<{ url: string }>("/api/notify/kakao/connect", { method: "POST" }),
   kakaoDisconnect: () => call<void>("/api/notify/kakao", { method: "DELETE" }),
+  /** #614 차트 선 알림(#613) 감시 설정 · 최근 보낸 선 알림 */
+  lineWatch: () => call<LineWatch>("/api/notify/line-watch"),
+  saveLineWatch: (body: Partial<Pick<LineWatch, "enabled" | "tickers" | "timeframes" | "events">>) =>
+    call<LineWatch>("/api/notify/line-watch", { method: "PUT", body: JSON.stringify(body) }),
 };
 
 /** #361 구독 알림 종류 — flow 는 전체 스위치, 나머지는 그 시장의 전향만(빠진 키는 서버가 켜짐으로) */
@@ -418,6 +422,7 @@ export interface PushKinds {
   day_call?: boolean;        // #573 오늘 방향(#572)
   flow_shift?: boolean;      // #581 수급 흐름 변화(#579)
   nq_alert?: boolean;        // #581 나스닥 선물 이상 징후(#579)
+  line_signal?: boolean;     // #614 차트 선 닿음 · 이탈(#613)
 }
 
 /** #581 알림 타임라인 한 건(GET /api/alerts/today) — flow_turn 은 #361 의 수급 전향 */
@@ -635,3 +640,28 @@ export interface StatusJob {
 }
 export interface StatusCooldown { name: string; label: string; until: string | null; left_sec: number }
 export interface DeskStatus { now: string; jobs: StatusJob[]; cooldowns: StatusCooldown[] }
+
+/** #614 차트 선 알림(#613 GET · PUT /api/notify/line-watch) — 감시는 주인이 켜기 전까지 꺼짐 */
+export type LineWatchEvent = "touch" | "break" | "retest";
+export interface LineSignal {
+  trade_date: string;        // KST 날짜
+  ticker: string;
+  timeframe: string;         // 5m · 15m · 60m · 120m · 240m
+  event: LineWatchEvent;
+  rule: string;
+  line_id: string;
+  at: string;                // 그 봉 시각(ISO)
+  price: number;
+  line_price: number;
+  text: string;              // "제목\n본문"
+}
+export interface LineWatch {
+  enabled: boolean;
+  tickers: string[];
+  timeframes: string[];
+  events: Partial<Record<LineWatchEvent, boolean>>;
+  can_edit: boolean;
+  allowed: { timeframes: string[]; events: LineWatchEvent[]; max_tickers: number };
+  limits: { cooldown_min: number; cooldown_bars: number; daily_max: number; per_ticker_max: number };
+  recent: LineSignal[];
+}

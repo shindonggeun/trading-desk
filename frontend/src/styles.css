@@ -2836,3 +2836,16 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   .src-time { grid-column: 1 / -1; }
   #status { scroll-margin-top: 120px; }   /* 휴대폰 상단바(두 줄, 고정) 아래로 */
 }
+
+/* #614 차트 선 알림 설정 · 타임라인의 선 알림 */
+.line-watch h3 { margin: 12px 0 6px; }
+.line-watch-on { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
+.line-watch-tickers { list-style: none; margin: 0; padding: 0; }
+.line-watch-tickers .chip { gap: 4px; }
+.chip-x { background: none; border: 0; padding: 0 2px; color: var(--muted); font: inherit; cursor: pointer; }
+.chip-x:hover:not(:disabled) { color: var(--text); }
+.line-watch-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+.line-watch-add > :first-child { flex: 1 1 14em; min-width: 0; }
+.line-watch-warn { margin: 6px 0 0; color: var(--warn); }
+.line-watch-recent { margin: 0; padding-left: 1.1em; display: grid; gap: 4px; }
+.alert-sev.line-sev { background: var(--surface-3); color: var(--text); }

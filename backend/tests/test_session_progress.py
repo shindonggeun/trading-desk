@@ -88,6 +88,11 @@ def test_cme_futures_are_read_on_new_yorks_regular_hours_within_their_day():
     (["2026-11-17T05:00:00+00:00"], datetime(2026, 11, 17, 22, 30, tzinfo=UTC), None),
     # from Wednesday's open a bar still dated Tuesday is not Wednesday's: the regular hours need their own bar
     (["2026-11-17T05:00:00+00:00"], datetime(2026, 11, 18, 15, 0, tzinfo=UTC), None),
+    (["2026-11-17T05:00:00+00:00"], datetime(2026, 11, 18, 14, 29, tzinfo=UTC), 0.0),      # Wed 09:29 ET
+    (["2026-11-17T05:00:00+00:00"], datetime(2026, 11, 18, 14, 30, tzinfo=UTC), None),     # Wed 09:30 ET
+    # the Sunday clocks fall back (2026-11-01): the evening's bar at midnight EDT (04:00Z) or EST (05:00Z)
+    (["2026-11-01T04:00:00+00:00"], datetime(2026, 11, 1, 23, 30, tzinfo=UTC), 0.0),
+    (["2026-11-01T05:00:00+00:00"], datetime(2026, 11, 1, 23, 30, tzinfo=UTC), 0.0),
     # Friday evening and the weekend: no session
     (["2026-11-20T05:00:00+00:00"], datetime(2026, 11, 20, 23, 30, tzinfo=UTC), None),
     (["2026-11-20T05:00:00+00:00"], datetime(2026, 11, 22, 3, 0, tzinfo=UTC), None),

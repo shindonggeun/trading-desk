@@ -1107,26 +1107,6 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     };
   }, [drawn, srShown, srSource, plan, fib, vp, show.levels, show.pb, tradeDate, show.gaps, nowSr, gapRep]);
 
-  // #578 세션 갭 띠 안을 누르면 그 갭의 메움 확률 카드 — 띠 밖을 누르면 닫는다(추세선 · 계획선 클릭은 그대로)
-  useEffect(() => {
-    if (!drawn || !gapRep || !show.gaps || gapRep.basis.leverage != null || gapRep.basis.symbol !== gapRep.ticker) return;
-    const { chart, series } = drawn;
-    const gaps = gapRep.open;
-    const onClick = (param: MouseEventParams<Time>) => {
-      if (!drawn.alive.current) return;
-      const pt = param.point;
-      if (!pt || (param.paneIndex ?? 0) !== 0) return;
-      const p = series.coordinateToPrice(pt.y);
-      if (p == null) return;
-      const hit = gaps.find((g) => p >= Math.min(g.fill_price, g.open) && p <= Math.max(g.fill_price, g.open));
-      setGapPick(hit ?? null);
-    };
-    chart.subscribeClick(onClick);
-    return () => {
-      if (drawn.alive.current) chart.unsubscribeClick(onClick);
-    };
-  }, [drawn, gapRep, show.gaps]);
-
   // #531 누른 자리에서 가장 가까운(10px 안) 추세선 — 계획선 클릭(#466)과 추세선 클릭이 같은 자리면 가까운 쪽만 반응하게 둘이 같이 쓴다
   const nearestTrend = useCallback((param: MouseEventParams<Time>): { line: Trendline; d: number } | null => {
     const pt = param.point;
@@ -1142,6 +1122,30 @@ export default function PriceChart({ ticker, tradeDate, plan, title, extraLines,
     }
     return best;
   }, [drawn, trendDrawn]);
+
+  // #578 세션 갭 띠 안을 누르면 그 갭의 메움 확률 카드 — 띠 밖을 누르면 닫는다. 그린 띠(지금에서 30% 안, 갭이 생긴 봉부터 오른쪽)만
+  // 반응하고, 추세선 가까이를 누른 것은 추세선 카드(#531)에 맡긴다
+  useEffect(() => {
+    if (!drawn || !gapRep || !show.gaps || gapRep.basis.leverage != null || gapRep.basis.symbol !== gapRep.ticker) return;
+    const { chart, series, rows } = drawn;
+    const gaps = gapRep.open.filter((g) => Math.abs(g.to_fill_pct) <= 30);
+    const onClick = (param: MouseEventParams<Time>) => {
+      if (!drawn.alive.current) return;
+      const pt = param.point;
+      if (!pt || (param.paneIndex ?? 0) !== 0 || rows.length === 0) return;
+      if (nearestTrend(param)) return;
+      const p = series.coordinateToPrice(pt.y);
+      const at = chart.timeScale().coordinateToLogical(pt.x);   // 오른쪽 빈 칸(미래)도 마지막 봉으로
+      if (p == null || at == null) return;
+      const day = rows[Math.min(rows.length - 1, Math.max(0, Math.round(at)))].day;
+      const hit = gaps.find((g) => day >= g.day && p >= Math.min(g.fill_price, g.open) && p <= Math.max(g.fill_price, g.open));
+      setGapPick(hit ?? null);
+    };
+    chart.subscribeClick(onClick);
+    return () => {
+      if (drawn.alive.current) chart.unsubscribeClick(onClick);
+    };
+  }, [drawn, gapRep, show.gaps, nearestTrend]);
   // 누를 수 있는 계획선 가격(#466 과 같은 규칙) — 추세선 클릭이 더 가까운 계획선에 양보할 때 쓴다
   const planLinePrices = useMemo(() => (!onLineClick || !show.levels ? [] : [
     ...(levelsContradict(plan) ? [] : [plan?.entry_price, plan?.stop_loss, plan?.price_target]),

@@ -84,9 +84,9 @@ def test_a_hold_plan_gets_both_trigger_maps_with_computed_stops():
     assert [m["side"] for m in maps] == ["long", "short"] and all(m["origin"] == "trigger" for m in maps)
     long = dict(_roles(maps[0]))
     assert long["entry"] == 104.0 and long["target1"] == 110.0
-    assert long["stop"] == 92.5   # past the second guard (93) by a quarter ATR
+    assert long["stop"] == 103.0  # #652 half an ATR back under the level it broke (104), not two supports down
     short = dict(_roles(maps[1]))
-    assert short["target1"] == 93.0 and short["stop"] == 110.5   # past the second guard above (110)
+    assert short["target1"] == 93.0 and short["stop"] == 98.0    # half an ATR back over the broken 97
 
 
 def test_without_levels_the_map_is_filled_from_atr():

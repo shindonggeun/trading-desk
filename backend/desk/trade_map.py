@@ -10,7 +10,7 @@ trigger. Missing levels are filled with ATR multiples and say so.
 
 from __future__ import annotations
 
-from . import volume_profile
+from . import trade_map_record, volume_profile
 
 MIN_GAP_ATR = 0.3       # a level closer than this to the entry is the entry's own zone
 MERGE_ATR = 0.5         # levels this close are one zone
@@ -19,6 +19,17 @@ STOP_FILL_ATR = 1.5
 BEYOND_ATR = 0.25       # a computed stop sits this far past the last guard
 STRONG = 3.0            # sr strength from which a target counts as a heavy wall
 FALLBACK_ATR_PCT = 0.02
+# #652 the two entry scenarios per side
+SUPPORT_STRENGTH = 2.0  # an sr level this strong (or a thick volume node) is a support worth entering at
+SUPPORT_REACH_ATR = 4.0  # a support further than this from the price is no "near" entry
+AT_ZONE_ATR = 1.0       # within this above a support's top the price is already at it: the entry is now
+ZONE_ENTRY_ATR = 0.25   # else a limit this far above the support zone's top
+SUPPORT_STOP_ATR = 0.5  # a support entry's stop: this far past the support zone's far edge
+BREAKOUT_STOP_ATR = 0.5  # a breakout's stop: this far back under the level it broke
+BROKEN_REACH_ATR = 1.5  # the broken level is looked for this far behind a breakout entry
+BREAKOUT_ATR = 0.25     # without a trigger, a breakout enters this far past the nearest resistance
+MAX_STOP_ATR = 3.0      # no computed stop further than this from its entry (the plan's own stop aside)
+LOW_RR = 1.5
 
 
 def _round(price: float) -> float:
@@ -105,10 +116,14 @@ def side_map(side: str, entry: float, stop: float | None, target: float | None, 
     if stop is not None:
         stop_zone = {"source": "plan", "sources": ["plan"], "strength": None, "basis": "계획 손절가"}
         p_stop = stop
+    elif origin == "trigger":
+        # #652 a breakout fails when the price falls back under the level it broke - not two supports down
+        stop_zone, p_stop = _breakout_stop(cands, entry, atr, sign)
     else:
         stop_zone = None
         last = guards[1] if len(guards) > 1 else guards[0] if guards else None
         p_stop = (last["price"] - sign * BEYOND_ATR * atr) if last else entry - sign * STOP_FILL_ATR * atr
+        p_stop = _clamp_stop(entry, p_stop, atr, sign)
     # only the guards between the entry and the stop matter; past the stop the position is gone
     guards = [g for g in guards if sign * (g["price"] - p_stop) > 0][:2]
 
@@ -133,6 +148,102 @@ def side_map(side: str, entry: float, stop: float | None, target: float | None, 
     ]
     steps.sort(key=lambda s: -s["price"])   # always highest price first
     return {"side": side, "origin": origin, "steps": steps, "ignored": ignored}
+
+
+def _clamp_stop(entry: float, stop: float, atr: float, sign: int) -> float:
+    """A computed stop no further than MAX_STOP_ATR from its entry."""
+    return entry - sign * min(sign * (entry - stop), MAX_STOP_ATR * atr)
+
+
+def _breakout_stop(cands: list[dict], entry: float, atr: float, sign: int) -> tuple[dict | None, float]:
+    """A breakout's stop: BREAKOUT_STOP_ATR back under the level it broke - the furthest-back level within
+    BROKEN_REACH_ATR behind the entry (the broken zone's far edge), else the entry itself."""
+    broken = [c for c in cands if c["source"] != "plan" and 0 <= sign * (entry - c["price"]) <= BROKEN_REACH_ATR * atr]
+    level = min(broken, key=lambda c: sign * c["price"]) if broken else None
+    base = level["price"] if level else entry
+    zone = None
+    if level:
+        what = level["basis"] or "지지 · 저항"
+        zone = {"source": level["source"], "sources": [level["source"]], "strength": level["strength"],
+                "basis": f"돌파한 레벨({what}) 아래"}
+    stop = base - sign * BREAKOUT_STOP_ATR * atr
+    if sign * (entry - stop) < BREAKOUT_STOP_ATR * atr:         # at least half an ATR of room
+        stop = entry - sign * BREAKOUT_STOP_ATR * atr
+    return zone, _clamp_stop(entry, stop, atr, sign)
+
+
+def _strong(c: dict) -> bool:
+    return (c["source"] == "sr" and (c["strength"] or 0) >= SUPPORT_STRENGTH) or \
+        (c["source"] == "volume" and c["basis"] == "매물대")
+
+
+def _targets(cands: list[dict], entry: float, atr: float, sign: int, risk: float) -> list[dict]:
+    """The first two zones ahead of the entry (ATR steps when the chart has none), with their reward/risk."""
+    ahead = [c for c in cands if sign * (c["price"] - entry) > MIN_GAP_ATR * atr]
+    zones = _zones(ahead, atr, sign > 0)[:2]
+    prices = [z["price"] for z in zones]
+    bases = [z["basis"] for z in zones]
+    while len(prices) < 2:
+        prices.append((prices[-1] if prices else entry) + sign * FILL_ATR * atr)
+        bases.append("ATR 2배 간격(그 너머 레벨 없음)")
+    return [{"price": _round(p), "rr": round(abs(p - entry) / risk, 2), "basis": b}
+            for p, b in zip(prices, bases, strict=True) if p > 0]
+
+
+def _scenario(side: str, kind: str, entry: float, entry_type: str, stop: float, level: dict | None,
+              cands: list[dict], ref: float, atr: float) -> dict | None:
+    sign = 1 if side == "long" else -1
+    risk = abs(entry - stop)
+    if risk <= 0 or entry <= 0 or stop <= 0:
+        return None
+    targets = _targets(cands, entry, atr, sign, risk)
+    rr = targets[0]["rr"] if targets else None
+    return {"side": side, "kind": kind, "entry": _round(entry), "entry_type": entry_type, "stop": _round(stop),
+            "stop_atr": round(risk / atr, 2), "stop_pct": round(risk / entry * 100, 1),
+            "targets": targets, "rr": rr, "low_rr": rr is None or rr < LOW_RR,
+            "distance_pct": round((entry / ref - 1) * 100, 2) if ref else None,
+            "level": _round(level["price"]) if level else None, "basis": (level or {}).get("basis")}
+
+
+def scenarios(sr: dict | None, ref: float, atr: float, side: str, trigger: float | None = None) -> list[dict]:
+    """#652 two ways into ``side``: a **breakout** past the nearest resistance (support for a short) - the
+    trigger when the plan has one - its stop back under the broken level; and a **support** entry at the
+    nearest strong support (resistance) within SUPPORT_REACH_ATR, its stop past that zone's far edge. Every
+    stop at most MAX_STOP_ATR from its entry. Plan arithmetic on the chart's levels, not a forecast."""
+    sign = 1 if side == "long" else -1
+    cands = _candidates(sr, None)
+    out = []
+    entry = trigger
+    if entry is None:
+        ahead = [c for c in cands if c["source"] == "sr" and 0 < sign * (c["price"] - ref) <= SUPPORT_REACH_ATR * atr]
+        if ahead:
+            nearest = min(ahead, key=lambda c: sign * c["price"])
+            entry = nearest["price"] + sign * BREAKOUT_ATR * atr
+    if entry is not None:
+        zone, stop = _breakout_stop(cands, entry, atr, sign)
+        broken = {"price": stop + sign * BREAKOUT_STOP_ATR * atr, "basis": (zone or {}).get("basis")}
+        sc = _scenario(side, "breakout", entry, "stop", stop, broken, cands, ref, atr)
+        if sc:
+            out.append(sc)
+    # support (resistance for a short): the nearest strong one on the far side of the price, or the price in it
+    near = [c for c in cands
+            if _strong(c) and 0 <= sign * (ref - c["price"]) <= SUPPORT_REACH_ATR * atr]
+    if near:
+        top = max(near, key=lambda c: sign * c["price"])            # the one nearest the price
+        zone = [c for c in cands if c["source"] != "plan" and abs(c["price"] - top["price"]) <= MERGE_ATR * atr]
+        edge = max(zone, key=lambda c: sign * c["price"])["price"]  # the zone's near edge (its top for a long)
+        far = min(zone, key=lambda c: sign * c["price"])["price"]   # its far edge
+        if sign * (ref - edge) <= AT_ZONE_ATR * atr:
+            entry, how = ref, "now"
+        else:
+            entry, how = edge + sign * ZONE_ENTRY_ATR * atr, "limit"
+        stop = _clamp_stop(entry, far - sign * SUPPORT_STOP_ATR * atr, atr, sign)
+        basis = " · ".join(dict.fromkeys(c["basis"] for c in zone if c["basis"])) or None
+        sc = _scenario(side, "support", entry, how, stop, {"price": top["price"], "basis": basis}, cands, ref, atr)
+        if sc:
+            sc["strength"] = max((c["strength"] or 0) for c in zone) or None
+            out.append(sc)
+    return out
 
 
 def build(plan: dict, sr: dict | None) -> dict | None:
@@ -160,5 +271,18 @@ def build(plan: dict, sr: dict | None) -> dict | None:
     if not maps:
         return None
     vp = (sr or {}).get("volume_profile")
+    # #652 the entry scenarios for the plan's side (both when it holds), with their past record by regime
+    regime = ((plan.get("playbooks") or {}).get("regime") or {}).get("id")
+    sides = [side] if side and entry is not None else \
+        [s_ for s_ in ("long", "short") if plan.get(f"{s_}_trigger") is not None] or \
+        ([bias] if bias in ("long", "short") else [])
+    found = []
+    for s_ in sides:
+        trigger = plan.get(f"{s_}_trigger")
+        if side and entry is not None:
+            trigger = entry if plan.get("entry_type") == "stop" else None
+        found += scenarios(sr, ref, atr, s_, trigger) if ref else []
+    record = trade_map_record.lookup(regime, found)
     return {"maps": maps, "reference_price": _round(ref) if ref else None, "atr": _round(atr),
-            "volume_profile": bool(vp), "levels": bool((sr or {}).get("levels"))}
+            "volume_profile": bool(vp), "levels": bool((sr or {}).get("levels")),
+            "scenarios": found, "regime": regime, **record}

@@ -2809,3 +2809,30 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .fav-more { display: none; }
 .dash-columns .fav-more { display: inline-block; margin-top: 6px; }
 .dash-columns .fav-panel:not(.fav-all) .fav-grid > .fav-cell:nth-child(n + 9) { display: none; }
+
+/* #624 데이터 원천 상태 — 상태는 기호 + 글자(색만으로 구분하지 않음) */
+.st-ok { color: var(--ok); }
+.st-warn { color: var(--warn); }
+.st-bad { color: var(--danger); }
+.st-muted { color: var(--muted); }
+.src-list, .src-sub, .src-cool { list-style: none; margin: 0; padding: 0; }
+.src-list { display: grid; gap: 2px; margin-top: 8px; }
+.src-row { display: grid; grid-template-columns: minmax(0, 1.6fr) 5.5em minmax(0, 1.4fr); gap: 2px 12px; align-items: baseline;
+  padding: 6px 0; border-bottom: 1px solid var(--border); }
+.src-name { min-width: 0; overflow-wrap: anywhere; }
+.src-part .src-name { padding-left: 1em; }
+.src-state { font-weight: 650; white-space: nowrap; }
+.src-off { opacity: .7; }
+.src-error { grid-column: 1 / -1; color: var(--danger); overflow-wrap: anywhere; }
+.src-cool-title { margin: 14px 0 4px; font-size: 1em; }
+.src-off-list { margin-top: 8px; }
+.src-off-list summary { cursor: pointer; }
+#status { scroll-margin-top: 72px; }
+.src-cool { display: grid; gap: 4px; }
+.topbar-status { display: inline-flex; align-items: center; gap: 2px; font-size: var(--fs-s); text-decoration: none; padding: 2px 4px; }
+.topbar-status-n { font-weight: 700; }
+@media (max-width: 480px) {
+  .src-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .src-time { grid-column: 1 / -1; }
+  #status { scroll-margin-top: 120px; }   /* 휴대폰 상단바(두 줄, 고정) 아래로 */
+}

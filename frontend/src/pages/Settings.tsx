@@ -7,6 +7,7 @@ import TourSettings from "../components/TourSettings";
 import PaperSettings from "../components/PaperSettings";
 import PushSettings from "../components/PushSettings";
 import MiniSettings from "../components/MiniSettings";
+import SourceStatus from "../components/SourceStatus";
 
 type Step =
   | { kind: "idle" }
@@ -223,6 +224,8 @@ export default function Settings() {
       <PushSettings />
       <MiniSettings />
       <MarketListEditor />
+      {/* #624 데이터 원천 상태 — 상단바 점(#/settings?status)이 여기로 */}
+      <SourceStatus />
     </div>
   );
 }

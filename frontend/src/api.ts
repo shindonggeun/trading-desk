@@ -1,3 +1,4 @@
+import type { DayCall, DayCallHistory, DayCallMarket, DayCallStats, MorningBrief, MorningBriefList } from "./types";
 import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, PaperEquity, PaperSettings, PaperSettingsPatch, PaperSummary, PaperTrades, RunExplain, TipsView } from "./types";
 import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, ReportDetail, ReportList, Halving, FundBrief, FundChanges, FundDetail, FearIndex, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
 
@@ -373,6 +374,16 @@ export const api = {
     }),
   pushUnsubscribe: (endpoint: string) =>
     call<void>("/api/push/subscriptions", { method: "DELETE", body: JSON.stringify({ endpoint }) }),
+  // #573 아침 시황(#571) — 아직 없으면 404
+  morningBrief: (date?: string) =>
+    call<MorningBrief>(`/api/briefs/morning${date ? `?date=${encodeURIComponent(date)}` : ""}`),
+  morningBriefs: (limit = 20) => call<MorningBriefList>(`/api/briefs/morning/list?limit=${limit}`),
+  // #573 오늘 방향(#572) — 아직 판정이 없으면 200 + null
+  dayCall: () => call<DayCall | null>("/api/day-call"),
+  dayCallHistory: (market: DayCallMarket, days = 90) =>
+    call<DayCallHistory>(`/api/day-call/history?market=${market}&days=${days}`),
+  dayCallStats: (market: DayCallMarket, days = 90) =>
+    call<DayCallStats>(`/api/day-call/stats?market=${market}&days=${days}`),
   pushTest: () => call<{ sent: number }>("/api/push/test", { method: "POST" }),
   /** #362 오늘(또는 date) 보낸 수급 전향 알림 — 앱 안 토스트가 폴링한다 */
   flowAlerts: (date?: string) =>
@@ -385,6 +396,8 @@ export interface PushKinds {
   flow_futures: boolean;
   flow_kospi: boolean;
   flow_kosdaq: boolean;
+  morning_brief?: boolean;   // #573 아침 시황(#571)
+  day_call?: boolean;        // #573 오늘 방향(#572)
 }
 
 /** #361 수급 전향 한 건 */

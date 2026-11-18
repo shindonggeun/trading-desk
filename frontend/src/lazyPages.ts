@@ -13,6 +13,8 @@ const load = {
   ChartView: () => import("./pages/ChartView"),
   Settings: () => import("./pages/Settings"),
   Paper: () => import("./pages/Paper"),
+  DayCallRecord: () => import("./pages/DayCallRecord"),
+  MorningBriefPage: () => import("./pages/MorningBriefPage"),
   Backtest: () => import("./pages/Backtest"),
   WeeklyMap: () => import("./pages/WeeklyMap"),
   FuturesView: () => import("./pages/FuturesView"),
@@ -33,6 +35,8 @@ export const History = lazy(load.History);
 export const ChartView = lazy(load.ChartView);
 export const Settings = lazy(load.Settings);
 export const Paper = lazy(load.Paper);
+export const DayCallRecord = lazy(load.DayCallRecord);
+export const MorningBriefPage = lazy(load.MorningBriefPage);
 export const Backtest = lazy(load.Backtest);
 export const WeeklyMap = lazy(load.WeeklyMap);
 export const FuturesView = lazy(load.FuturesView);
@@ -59,6 +63,8 @@ const ROUTES: [RegExp, keyof typeof load][] = [
   [/^#\/reports/, "Reports"],
   [/^#\/halving/, "Halving"],
   [/^#\/paper/, "Paper"],
+  [/^#\/day-call/, "DayCallRecord"],
+  [/^#\/briefs\/morning/, "MorningBriefPage"],
   [/^#\/futures/, "FuturesView"],
   [/^#\/weekly/, "WeeklyMap"],
   [/^#\/backtest/, "Backtest"],

@@ -55,6 +55,13 @@ HOURLY = ("ES=F@60m", "NQ=F@60m")
 FLOW = "flow:KOSPI"         # desk.flow_history rows {day: {investor: net KRW}}: a day's row is final that evening
 FLOW_WINDOW = 20
 EXTRAS = ("flow", "night")  # optional feature groups: investor flow (KR), overnight futures (both)
+# The calls shown side by side (#572, the user's choice after the hold-out comparison): name -> (answer,
+# feature groups). prev_close: today's close against yesterday's with the overnight futures - the one
+# with an edge; prev_close_plain stands in when the hourly futures are missing (a Korean Monday morning:
+# no futures over the weekend); open: open -> close, "판단 보류" under HOLD_MARGIN.
+CALLS = {"prev_close": ("cc", ("night",)), "prev_close_plain": ("cc", ()), "open": ("oc", ())}
+CALL_KO = {"prev_close": "전일 종가 대비", "open": "시가 대비"}
+HOLD_MARGIN = 10.0          # %p between P(long) and P(short) an open -> close call needs; under it, 판단 보류
 
 
 @dataclass(frozen=True)
@@ -436,18 +443,44 @@ def load_model(market: str, root: Path = DATA) -> dict | None:
         return None
 
 
-def call(model_file: dict, market: str, round_: int, day: date, series: dict[str, Sequence]) -> dict:
-    """One call: the stage probabilities (%), the top stage, the reasons and the day's edges in %."""
-    model = model_file["rounds"][str(round_)]
-    x, meta = features(market, round_, day, series, model.get("extras") or ())
+def verdict(probs: dict[str, float], hold_margin: float | None) -> str:
+    """long / short, or "hold" (판단 보류) when the two sides are within ``hold_margin`` %p."""
+    up = probs["strong_long"] + probs["weak_long"]
+    down = probs["strong_short"] + probs["weak_short"]
+    if hold_margin is not None and abs(up - down) < hold_margin:
+        return "hold"
+    return direction(probs)
+
+
+def call(model_file: dict, market: str, round_: int, day: date, series: dict[str, Sequence],
+         name: str = "prev_close") -> dict:
+    """One call (``name`` in CALLS): the stage probabilities (%), the top stage, the verdict, the reasons
+    and the day's edges in %. prev_close falls back to prev_close_plain when the hourly futures are
+    missing (``fallback`` says so)."""
+    calls = model_file["calls"]
+    used = name
+    model = calls[name]["rounds"][str(round_)]
+    try:
+        x, meta = features(market, round_, day, series, model.get("extras") or ())
+    except NoData:
+        if name != "prev_close":
+            raise
+        used = "prev_close_plain"
+        model = calls[used]["rounds"][str(round_)]
+        x, meta = features(market, round_, day, series, model.get("extras") or ())
     probs = percent(raw_probs(model, x))
     stage = top_stage(probs)
     flat, strong = model["edges"]
-    return {"market": market, "date": day.isoformat(), "round": round_, "round_label": ROUND_KO[round_],
-            "cutoff_at": meta["cutoff"].isoformat(), "stage": stage, "label": LABEL_KO[stage],
-            "direction": direction(probs), "probs": {s: probs[s] for s in DISPLAY_ORDER},
+    base = "open" if name == "open" else "prev_close"
+    return {"market": market, "date": day.isoformat(), "call": base, "call_label": CALL_KO[base],
+            "measured_from": "open" if model["label"] == "oc" else "prev_close",
+            "round": round_, "round_label": ROUND_KO[round_], "cutoff_at": meta["cutoff"].isoformat(),
+            "stage": stage, "label": LABEL_KO[stage], "direction": direction(probs),
+            "verdict": verdict(probs, HOLD_MARGIN if base == "open" else None),
+            "probs": {s: probs[s] for s in DISPLAY_ORDER},
             "edges_pct": {"flat": round(flat * meta["atr_pct"], 2), "strong": round(strong * meta["atr_pct"], 2)},
-            "reasons": reasons(model, x), "model_version": model_file["version"], "features": x}
+            "reasons": reasons(model, x), "model_version": model_file["version"],
+            "fallback": used != name, "features": x}
 
 
 def today_call() -> dict | None:

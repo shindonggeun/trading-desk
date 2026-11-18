@@ -1,7 +1,18 @@
 # 오늘 장 방향 판정 (day call, #572)
 
-평일마다 오늘 국장(KOSPI)과 미장(S&P 500)의 **시가 → 종가** 방향을 5단계 확률로 판정하고, 장이 끝나면 채점한다.
+평일마다 오늘 국장(KOSPI)과 미장(S&P 500)의 방향을 5단계 확률로 판정하고, 장이 끝나면 채점한다.
 확률은 숫자 모델에서만 나온다. LLM 은 쓰지 않는다.
+
+**두 판정을 나란히 낸다**(사용자 결정, 2026-11-18). 각각 자기 적중 기록 · 기준선 · 표본 수와 함께 보인다.
+
+| key | 이름 | 정답 | 특징 | 검증 90일 결과 |
+|---|---|---|---|---|
+| `prev_close` | 전일 종가 대비 | 전일 종가 → 종가 | 일봉 + 야간 선물 | US 1차 방향 76%(항상 숏 57%), Brier skill +0.17. 2차는 이미 찍힌 갭 몫이 크다 |
+| `open` | 시가 대비 | 시가 → 종가 | 일봉 | 기준선 대비 우위 없음. 롱 · 숏 확률 차 10%p 미만이면 **판단 보류** |
+
+- `prev_close` 는 야간 선물 60분봉이 없을 때(KR 월요일 1차 등) `prev_close_plain`(선물 없는 모델)으로 대신한다.
+- 판정 정의는 같은 검증 구간의 변형 비교를 보고 골랐다. 그래서 숫자가 조금 낙관적일 수 있다.
+- 야간 선물 모델은 학습이 1.4~1.8년뿐이다. 이 두 가지는 리포트 `notes` 와 stats 응답 `note` 에 늘 싣는다.
 
 - 코드: `backend/desk/day_call.py`(특징 · 추론 · 채점, 순수 파이썬)와 `backend/desk/day_call_train.py`(학습 · 백테스트, numpy, 로컬에서만 돌린다)
 - 커밋하는 결과물: `backend/desk/data/day_call/model_<kr|us>.json`(서버가 읽는 모델)과 `report_<kr|us>.json`(검증 숫자)
@@ -55,7 +66,16 @@
 | US | 같은 날 코스피 등락, 달러인덱스 변화 |
 | 2차 | 오늘 시가 갭(ATR 단위) |
 
-투자자별 수급(flow-history)은 서버에만 있다. GDELT 뉴스 톤은 이 PC 에 기록이 거의 없다. 그래서 두 묶음은 이번 백테스트에 넣지 않았다(`report.not_run`).
+선택 묶음(`extras`):
+
+| 묶음 | 특징 | 비고 |
+|---|---|---|
+| `night` | ES · NQ 선물의 직전 세션 마감 → 판정 시각 변화(60분봉, ATR 단위) | KR 1차는 미장과 밤 선물, US 1차는 프리마켓. 야후 60분봉이 약 2년뿐이다 |
+| `flow` | 코스피 외국인 · 기관 전일 · 5일 순매수(20일 평균 크기 대비) | `desk.flow_history` 파일. 수집은 서버에서 한다(`--flow-dir`) |
+
+- `flow` 는 비교 표(`variants`)에서 더해지는 것이 거의 없어, 판정 모델에는 넣지 않았다.
+- GDELT 뉴스 톤은 이 PC 에 기록이 거의 없어 넣지 않았다(`report.not_run`).
+- 리포트의 `variants` 는 정답(oc · cc) × 묶음 × 경계(±0.3/1 · ±0.25/0.75 · 분포 맞춤)를 같은 검증 구간에서 비교한 표다.
 
 ## 모델
 
@@ -72,8 +92,13 @@
 
 ```bash
 cd backend
-PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli day-call backtest --market all --out-dir desk/data/day_call
+PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli day-call backtest --market all --out-dir desk/data/day_call \
+  --flow-dir <flow-history 디렉터리>      # 없으면 비교 표에서 flow 변형만 빠진다
 ```
+
+- 장중에 돌려도 진행 중인 세션은 정답에 들어가지 않는다.
+- 다만 야후의 일봉 · 60분봉은 받는 시각마다 끝이 달라져 모델 버전이 바뀐다.
+- 그래서 커밋하는 모델은 두 장이 모두 끝난 시각(KST 06:30~08:00 이나 16:00~22:00)에 만드는 것이 깔끔하다.
 
 `report.code` 는 `day_call.py` · `day_call_train.py` 의 지문이다. 코드를 바꾸면 다시 만든다.
 

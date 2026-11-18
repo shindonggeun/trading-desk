@@ -205,7 +205,9 @@ def quick(monkeypatch):
 
 def test_the_backtest_holds_out_the_last_90_days_and_the_server_reads_the_same_numbers(quick):
     model, report = dct.backtest("kr", SERIES)
-    r1 = report["rounds"]["1"]
+    assert set(model["calls"]) == set(dc.CALLS) == set(report["calls"]) and set(report["notes"]) >= {"selection", "night"}
+    assert model["calls"]["prev_close"]["label"] == "cc" and model["calls"]["prev_close"]["extras"] == ["night"]
+    r1 = report["calls"]["open"]["rounds"]["1"]
     hold = r1["holdout"]
     assert hold["n"] > 50 and r1["train"]["to"] < report["holdout_from"] <= hold["from"]
     assert set(hold["baselines"]) == {"always_long", "always_short", "follow_yesterday", "climatology"}
@@ -223,9 +225,10 @@ def test_the_backtest_holds_out_the_last_90_days_and_the_server_reads_the_same_n
     assert balanced and balanced[0]["stage_share"][2] == pytest.approx(0.2, abs=0.03)   # flat ~20% of training
     assert sum(s["actual"] for s in hold["per_stage"]) == hold["n"] and hold["calibration"]
     assert [s["stage"] for s in hold["per_stage"]] == list(dc.DISPLAY_ORDER)
-    m = model["rounds"]["1"]
+    m = model["calls"]["open"]["rounds"]["1"]
     assert m["trained_through"] == r1["train"]["to"] and model["version"].startswith("dc-")
-    assert "gap" in model["rounds"]["2"]["features"] and "gap" not in m["features"]
+    assert "gap" in model["calls"]["open"]["rounds"]["2"]["features"] and "gap" not in m["features"]
+    assert "es_night" in model["calls"]["prev_close"]["rounds"]["1"]["features"]
     # the pure-Python reader gives the numpy model's probabilities
     rows = dct.rows("kr", 1, SERIES)[-5:]
     clim = np.array(m["climatology"])
@@ -241,6 +244,15 @@ def test_a_call_from_the_committed_model_has_the_contract_shape(quick, tmp_path)
     (tmp_path / "model_us.json").write_text(json.dumps(model), encoding="utf-8")
     loaded = dc.load_model("us", tmp_path)
     c = dc.call(loaded, "us", 2, date(2025, 9, 3), SERIES)
+    assert c["call"] == "prev_close" and c["measured_from"] == "prev_close" and not c["fallback"]
+    assert c["verdict"] == c["direction"]                                # no hold on the prev-close call
+    o = dc.call(loaded, "us", 2, date(2025, 9, 3), SERIES, "open")
+    up = o["probs"]["strong_long"] + o["probs"]["weak_long"]
+    down = o["probs"]["strong_short"] + o["probs"]["weak_short"]
+    assert o["measured_from"] == "open" and o["verdict"] == ("hold" if abs(up - down) < dc.HOLD_MARGIN else o["direction"])
+    # no hourly futures (a Korean Monday morning): the plain model stands in and says so
+    bare = dc.call(loaded, "us", 2, date(2025, 9, 3), {**SERIES, "ES=F@60m": []})
+    assert bare["fallback"] and "es_night" not in bare["features"]
     assert list(c["probs"]) == list(dc.DISPLAY_ORDER) and round(sum(c["probs"].values()), 1) == 100.0
     assert c["label"] == dc.LABEL_KO[c["stage"]] and c["round_label"] == "2차" and c["direction"] in ("long", "short")
     assert len(c["reasons"]) == 5 and {r["effect"] for r in c["reasons"]} <= {"long", "short", "volatile", "calm"}
@@ -276,7 +288,8 @@ def test_the_held_out_sessions_choose_nothing(quick):
                                   if dc.session_day("^GSPC", b) >= start else b
                                   for i, b in enumerate(SERIES["^GSPC"])]}
     again, other = dct.backtest("us", moved, compare=False)
-    assert again["rounds"] == model["rounds"] and other["rounds"]["1"]["holdout"] != report["rounds"]["1"]["holdout"]
+    assert again["calls"] == model["calls"]
+    assert other["calls"]["open"]["rounds"]["1"]["holdout"] != report["calls"]["open"]["rounds"]["1"]["holdout"]
 
 
 def test_no_second_call_on_a_ten_oclock_opening():

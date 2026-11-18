@@ -276,7 +276,7 @@ def _version(models: dict) -> str:
         return v
 
     blob = json.dumps(rounded(models), sort_keys=True).encode()
-    through = min(m["trained_through"] for m in models.values())
+    through = min(r["trained_through"] for c in models.values() for r in c["rounds"].values())
     return f"dc-{through.replace('-', '')}-{hashlib.sha256(blob).hexdigest()[:8]}"
 
 
@@ -352,23 +352,34 @@ def _compact(rep: dict) -> dict:
             "stage_share": rep["train"]["stage_share"], **{k: h[k] for k in keep if k in h}}
 
 
+NOTES = {
+    "selection": "판정 정의(전일 종가 대비 + 야간 선물)는 같은 검증 90일의 변형 비교를 보고 골랐다 — 숫자가 조금 낙관적일 수 있다",
+    "night": "야간 선물 특징은 야후 60분봉이 약 2년뿐이라 학습이 1.4~1.8년이다",
+    "gap": "2차의 전일 종가 대비 적중에는 이미 찍힌 시가 갭 몫이 크다",
+}
+
+
 def backtest(market: str, series: dict[str, Sequence], holdout_days: int = HOLDOUT_DAYS,
              start: date | None = None, progress: Callable[[str], None] | None = None, *,
-             kind: str = "oc", extras: Sequence[str] = (), compare: bool = True) -> tuple[dict, dict]:
-    """The model file (both rounds, the chosen label and feature groups, fitted before the hold-out)
-    and the report for ``market``; ``compare`` adds every variant scored on the same hold-out."""
+             calls: dict[str, tuple[str, tuple[str, ...]]] | None = None,
+             compare: bool = True) -> tuple[dict, dict]:
+    """The model file and the report for ``market``: every call in ``calls`` (default dc.CALLS: name ->
+    answer kind and feature groups) for both rounds, fitted before the hold-out and scored on it;
+    ``compare`` adds every variant scored on the same hold-out."""
     say = progress or (lambda _msg: None)
+    calls = calls or dc.CALLS
     holdout_from = holdout_start(market, series, holdout_days)
-    models, report_rounds, table = {}, {}, []
+    files, reports, table = {}, {}, []
+    for name, (kind, extras) in calls.items():
+        files[name] = {"label": kind, "extras": list(extras), "rounds": {}}
+        reports[name] = {"label": kind, "extras": list(extras), "rounds": {}}
+        for round_ in sorted(dc.MARKETS[market].rounds):
+            say(f"{market} {name} round {round_}: {kind} {list(extras)}")
+            model, rep = fit_round(market, round_, series, holdout_from, kind=kind, extras=extras, start=start)
+            files[name]["rounds"][str(round_)] = model
+            reports[name]["rounds"][str(round_)] = rep
     for round_ in sorted(dc.MARKETS[market].rounds):
-        say(f"{market} round {round_}: {kind} {list(extras)}")
-        model, rep = fit_round(market, round_, series, holdout_from, kind=kind, extras=extras, start=start)
-        models[str(round_)] = model
-        report_rounds[str(round_)] = rep
         for v in variants(market) if compare else ():
-            if v["edges"] is None and v["kind"] == kind and tuple(v["extras"]) == tuple(extras):
-                table.append({"round": round_, **_compact(rep)})
-                continue
             if "flow" in v["extras"] and dc.FLOW not in series:
                 continue
             try:
@@ -380,14 +391,14 @@ def backtest(market: str, series: dict[str, Sequence], holdout_days: int = HOLDO
             say(f"  {v['kind']} {list(v['extras'])} edges={other['edges']}: dir "
                 f"{other['holdout'].get('direction_hit_rate')} brier skill {other['holdout'].get('brier_skill')}")
             table.append({"round": round_, **_compact(other)})
-    version = _version(models)
-    model_file = {"version": version, "market": market, "format": VERSION, "code": code_hash(), "rounds": models}
+    version = _version(files)
+    model_file = {"version": version, "market": market, "format": VERSION, "code": code_hash(), "calls": files}
     not_run = {"news": "GDELT 뉴스 톤 기록이 이 PC 에 거의 없어(2개 파일) 넣지 않음",
                "live_only": "KIS 야간선물 · 선물 수급 · VKOSPI · 커뮤니티는 과거 기록이 없어 모델 밖(context)"}
     if dc.FLOW not in series and market == "kr":
         not_run["flow"] = "투자자별 수급 파일(--flow-dir)을 주지 않아 넣지 않음"
     report = {"version": version, "market": market, "target": dc.MARKETS[market].target, "commit": _commit(),
               "code": code_hash(), "holdout_days": holdout_days, "holdout_from": holdout_from.isoformat(),
-              "label": kind, "extras": list(extras), "edges": list(dc.EDGES), "rounds": report_rounds,
-              "variants": table, "not_run": not_run}
+              "edges": list(dc.EDGES), "hold_margin": dc.HOLD_MARGIN, "calls": reports, "variants": table,
+              "notes": NOTES, "not_run": not_run}
     return model_file, report

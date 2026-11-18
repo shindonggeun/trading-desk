@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { api } from "../api";
 import type { CreditView } from "../types";
 import { CreditSummary } from "./PositioningView";
+import { usePoll } from "../poll";
 
 const REFRESH_MS = 30 * 60_000;   // 금융투자협회는 하루 한 번(다음 영업일) 올린다
 
@@ -30,13 +31,11 @@ function Trend({ c }: { c: CreditView }) {
 /** 대시보드 "빚투 · 예탁금"(#158): 신용융자 잔고 · 투자자예탁금 · 빚투 비율과 1년 위치, 1년 추이 선. */
 export default function CreditPanel() {
   const [c, setC] = useState<CreditView | null | undefined>(undefined);
-  useEffect(() => {
-    let alive = true;
-    const load = () => api.credit(365).then((v) => alive && setC(v), () => alive && setC((cur) => cur ?? null));
-    load();
-    const t = window.setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
-    return () => { alive = false; window.clearInterval(t); };
-  }, []);
+  // #626 30분마다(가려진 탭은 쉰다). 실패하면 앞서 받은 값을 둔다
+  usePoll("credit:365", () => api.credit(365), REFRESH_MS, {
+    onData: (v) => setC(v),
+    onError: () => setC((cur) => cur ?? null),
+  });
   return (
     <section className="card credit-panel" aria-label="빚투 · 예탁금">
       <CreditSummary c={c} />

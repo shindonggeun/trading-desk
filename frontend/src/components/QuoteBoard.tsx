@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { askedOf, byAsked } from "../ticker";
 import { price, time } from "../format";
 import type { BoardItem } from "../types";
 import { LongShortBar, LongShortToggle, useLongShort, useLongShortShown } from "./LongShortBar";
 import { boardBadge, boardBadgeClass, boardReason, quoteSourceShort } from "../korean";
+import { usePoll } from "../poll";
 
 export type BoardTicker = { ticker: string; name?: string };
 
@@ -128,27 +129,15 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
   const [lsShown, flipLs] = useLongShortShown();
   const ls = useLongShort(tickers, lsShown);
 
-  useEffect(() => {
-    if (!tickers.length) return;
-    let alive = true;
-    const load = () => {
-      if (document.hidden) return Promise.resolve();   // 탭이 가려져 있으면 쉰다
-      return api.board(tickers)
-        .then((r) => {
-          if (!alive) return;
-          setItems((cur) => ({ ...cur, ...byAsked(tickers, r.items) }));
-          for (const it of r.items) if (it.price != null) onPriceRef.current?.(askedOf(tickers, it.ticker), it.price);
-          setFailedAt(null);
-        })
-        .catch(() => alive && setFailedAt(new Date().toISOString()));
-    };
-    load();
-    const t = window.setInterval(load, POLL_MS);
-    return () => {
-      alive = false;
-      window.clearInterval(t);
-    };
-  }, [key]); // tickers is derived from key
+  // #626 15초마다(가려진 탭은 쉰다) — 같은 종목 묶음이면 즐겨찾기 · 섹터 화면과 요청 하나를 함께 쓴다
+  usePoll(tickers.length ? `board:${key}` : null, () => api.board(tickers), POLL_MS, {
+    onData: (r) => {
+      setItems((cur) => ({ ...cur, ...byAsked(tickers, r.items) }));
+      for (const it of r.items) if (it.price != null) onPriceRef.current?.(askedOf(tickers, it.ticker), it.price);
+      setFailedAt(null);
+    },
+    onError: () => setFailedAt(new Date().toISOString()),
+  });
 
   const flipBundle = () => {
     save(OPEN_KEY, !bundleOpen);

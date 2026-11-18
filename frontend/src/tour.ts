@@ -5,6 +5,7 @@
  * - 본 투어 · "다시 보지 않기"는 이 브라우저에 기억(localStorage, try/catch).
  */
 import { markSeen, onRoute, type TourId, type TourResult } from "./tourState";
+import { every } from "./poll";
 
 interface Step {
   /** 앞에서부터 처음 보이는 요소를 쓴다 */
@@ -117,10 +118,10 @@ export async function startTour(id: TourId): Promise<TourResult> {
       shownAny = true;
       const done = await new Promise<boolean>((resolve) => {
         let completed = false;
-        let watch = 0;
+        let stopWatch = () => {};
         // driver.js 는 말풍선이 뜨는 중(첫 애니메이션)에 Esc · 바깥 누르기로 닫히면 onDestroyed 를 부르지 않는다 —
         // 그러면 투어가 "도는 중"에 갇혀 ? 버튼이 아무것도 안 한다(#491). 꺼졌는지를 따로 보아 끝낸다
-        const settle = () => { window.clearInterval(watch); resolve(completed); };
+        const settle = () => { stopWatch(); resolve(completed); };
         const d = driver({
           steps: steps.map(({ s, el }) => ({
             element: el!,
@@ -143,7 +144,7 @@ export async function startTour(id: TourId): Promise<TourResult> {
           onDestroyed: settle,
         });
         d.drive();
-        watch = window.setInterval(() => { if (!d.isActive()) settle(); }, 400);
+        stopWatch = every(() => { if (!d.isActive()) settle(); }, 400);
       });
       if (!done) break; // 건너뛰기 · Esc 로 닫으면 다음 묶음도 하지 않는다
     }

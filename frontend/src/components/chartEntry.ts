@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { entryNow } from "../api";
 import type { EntryCandidate, EntryNow } from "../types";
 import { type Band, PriceBands, withAlpha } from "./chartBands";
+import { usePoll } from "../poll";
 
 /** 서버가 지평(horizon)의 TTL 동안 같은 값을 준다 — 1분마다 다시 묻는다(실시간 가격으로 상태가 바뀐다) */
 const REFRESH_MS = 60_000;
@@ -19,21 +20,12 @@ export function useEntryNow(ticker: string, on: boolean): { entry: EntryNow | nu
   useEffect(() => {
     setEntry(null);
     setFailed(false);
-    if (!on) return;
-    let alive = true;
-    let seq = 0;                       // a slow answer never overwrites a newer one
-    const load = () => {
-      if (document.hidden) return;     // a hidden tab does not poll
-      const mine = ++seq;
-      entryNow(ticker).then(
-        (e) => { if (alive && mine === seq) { setEntry(e); setFailed(false); } },
-        () => { if (alive && mine === seq) setFailed(true); },
-      );
-    };
-    load();
-    const timer = window.setInterval(load, REFRESH_MS);
-    return () => { alive = false; window.clearInterval(timer); };
   }, [ticker, on]);
+  // #626 1분마다(가려진 탭은 쉰다) — 늦게 온 이전 종목 응답은 훅이 버린다
+  usePoll(on ? `entry-now:${ticker}` : null, () => entryNow(ticker), REFRESH_MS, {
+    onData: (e) => { setEntry(e); setFailed(false); },
+    onError: () => setFailed(true),
+  });
   return { entry, failed };
 }
 

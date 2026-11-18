@@ -5,6 +5,7 @@ import type { FlowInterval, FlowMarket, FlowRecord, FlowSide, InstitutionKind, I
 import FuturesFlowView from "./FuturesFlowView";
 // #644 오늘 장중(차트 라이브러리 160KB)은 그 탭을 열 때만 받는다 — 대시보드 첫 화면은 현물 탭이라 차트가 없다
 const IntradayFlowView = lazy(() => import("./IntradayFlowView"));
+import { usePoll } from "../poll";
 
 // 메인 화면 "시장 수급"(#78): 코스피 · 코스닥에서 개인 · 외국인 · 기관 · 기타법인이 얼마를 사고팔았는지.
 // 막대 색은 극성(순매수 빨강 · 순매도 파랑, 한국식), 추이 선 색은 주체(외국인 · 기관 · 개인) —
@@ -236,7 +237,6 @@ export default function MarketFlowPanel() {
   const [prefs, setPrefs] = useState(loadPrefs);
   const [data, setData] = useState<MarketFlow | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
-  const seq = useRef(0);
   const liveRef = useRef(true); // 최신 기록이 아직 바뀔 수 있나(잠정)
 
   const update = (patch: Partial<Prefs>) => setPrefs((p) => {
@@ -261,49 +261,30 @@ export default function MarketFlowPanel() {
 
   const spotMarket: FlowMarket | null = prefs.market === "FUTURES" || prefs.market === "INTRADAY" ? null : prefs.market;
 
+  // #626 잠정(장중) 1분 · 확정 5분(가려진 탭은 쉰다). 선물 탭은 FuturesFlowView 가 따로 부른다.
+  // 늦게 온 이전 시장 · 단위 응답은 훅이 버린다(key 가 바뀌면 그 구독을 떠난다)
+  const [refreshMs, setRefreshMs] = useState(REFRESH_LIVE_MS);
   useEffect(() => {
-    if (!spotMarket) return; // 선물 탭은 FuturesFlowView 가 따로 부른다
-    let alive = true;          // 탭 · 시장을 바꾼 뒤 늦게 온 응답이 타이머를 다시 만들지 않게
-    let timer: number | undefined;
-    const load = () => {
-      const mine = ++seq.current;
-      api.marketFlow(spotMarket, prefs.interval, COUNT)
-        .then((d) => {
-          if (!alive || mine !== seq.current) return; // 늦게 온 이전 시장 · 단위 · 탭 응답
-          // 서버가 실패를 error 로 주면 마지막 값을 그대로 두고 알림만
-          if (d.error && d.records.length === 0) setFailed(d.error);
-          else {
-            setData(d);
-            setFailed(null);
-            const live = !!d.records[0]?.provisional;
-            if (live !== liveRef.current) {
-              liveRef.current = live;
-              schedule(); // 주기 다시 맞추기
-            }
-          }
-        })
-        .catch((e) => alive && mine === seq.current && setFailed(e instanceof Error ? e.message : "불러오지 못했습니다."));
-    };
-    const visible = () => document.visibilityState === "visible";
-    const schedule = () => {
-      window.clearInterval(timer);
-      timer = window.setInterval(() => visible() && load(), liveRef.current ? REFRESH_LIVE_MS : REFRESH_IDLE_MS);
-    };
-    const onVisible = () => {
-      if (visible()) load(); // 다시 보면 바로 갱신
-    };
+    if (!spotMarket) return;
     setData((d) => (d && d.market === prefs.market && d.interval === prefs.interval ? d : null));
     setFailed(null); // 이전 시장 · 단위의 오류를 새 선택에 남기지 않는다
-    load();
-    schedule();
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      alive = false;
-      seq.current++;
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
   }, [spotMarket, prefs.interval]);
+  usePoll(spotMarket ? `market-flow:${spotMarket}:${prefs.interval}:${COUNT}` : null, () => api.marketFlow(spotMarket!, prefs.interval, COUNT), refreshMs, {
+    onData: (d) => {
+      // 서버가 실패를 error 로 주면 마지막 값을 그대로 두고 알림만
+      if (d.error && d.records.length === 0) setFailed(d.error);
+      else {
+        setData(d);
+        setFailed(null);
+        const live = !!d.records[0]?.provisional;
+        if (live !== liveRef.current) {
+          liveRef.current = live;
+          setRefreshMs(live ? REFRESH_LIVE_MS : REFRESH_IDLE_MS);
+        }
+      }
+    },
+    onError: (e) => setFailed(e instanceof Error ? e.message : "불러오지 못했습니다."),
+  });
 
   const latest = data?.records[0];
   const max = latest ? Math.max(...INVESTORS.map((i) => Math.abs(latest.investors[i.key]?.net ?? 0)), 1) : 1;

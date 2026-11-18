@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { api } from "../api";
 import { price } from "../format";
 import type { FearItem } from "../types";
 import { useTrend } from "../marketTrend";
 import { TrendSummaryItems } from "./TrendChips";
 import { useHalving, WHERE_DAYS_SHORT } from "../halving";
+import { usePoll } from "../poll";
 
 // #464 휴대폰 대시보드 맨 위 요약 줄: 지수 등락 3개 + 공포지수 2개. 구역은 접힌 머리글로 시작하니
 // 펼치지 않아도 시장 분위기를 한 줄로 본다. 실패한 항목은 조용히 뺀다(아래 구역에서 자세히 본다).
@@ -28,39 +29,28 @@ export default function DashSummary() {
   const hvNow = hv?.current ?? null;
   const hvWhere = hv?.ranges.now.days_since_halving ?? null;
 
-  useEffect(() => {
-    let alive = true;
-    // 한 번 실패해도 앞서 받은 값을 둔다(종목별로 새 값만 덮어쓴다). 뒤에 숨은 탭에서는 받지 않는다.
-    const load = () => {
-      if (document.hidden) return;
-      Promise.all(INDICES.map((m) => api.candles(m.ticker, "1d", 5)
-        .then((c): Quote | null => {
-          const bars = c.bars;
-          if (!bars.length) return null;
-          const last = bars[bars.length - 1].close;
-          const prev = bars.length > 1 ? bars[bars.length - 2].close : null;
-          return { ...m, last, change: prev ? ((last - prev) / prev) * 100 : null };
-        })
-        .catch(() => null)))
-        .then((qs) => {
-          if (!alive) return;
-          setQuotes((prev) => INDICES.flatMap((m) => {
-            const q = qs.find((x) => x?.ticker === m.ticker) ?? prev.find((x) => x.ticker === m.ticker);
-            return q ? [q] : [];
-          }));
-        });
-      api.marketFear()
-        .then((d) => {
-          if (!alive) return;
-          const items = FEAR_KEYS.flatMap((k) => d.items.filter((i) => i.key === k && i.value != null));
-          if (items.length) setFear(items);
-        })
-        .catch(() => { /* 앞서 받은 공포지수를 둔다 */ });
-    };
-    load();
-    const t = window.setInterval(load, REFRESH_MS);
-    return () => { alive = false; window.clearInterval(t); };
-  }, []);
+  // #626 1분마다(가려진 탭은 쉰다). 한 번 실패해도 앞서 받은 값을 둔다(종목별로 새 값만 덮어쓴다)
+  usePoll("dash-summary:indices", () => Promise.all(INDICES.map((m) => api.candles(m.ticker, "1d", 5)
+    .then((c): Quote | null => {
+      const bars = c.bars;
+      if (!bars.length) return null;
+      const last = bars[bars.length - 1].close;
+      const prev = bars.length > 1 ? bars[bars.length - 2].close : null;
+      return { ...m, last, change: prev ? ((last - prev) / prev) * 100 : null };
+    })
+    .catch(() => null))), REFRESH_MS, {
+    onData: (qs) => setQuotes((prev) => INDICES.flatMap((m) => {
+      const q = qs.find((x) => x?.ticker === m.ticker) ?? prev.find((x) => x.ticker === m.ticker);
+      return q ? [q] : [];
+    })),
+  });
+  // 공포지수는 대시보드 공포지수 띠(FearIndexStrip)와 같은 요청 하나를 함께 쓴다. 실패하면 앞서 받은 값을 둔다
+  usePoll("market-fear", () => api.marketFear(), REFRESH_MS, {
+    onData: (d) => {
+      const items = FEAR_KEYS.flatMap((k) => d.items.filter((i) => i.key === k && i.value != null));
+      if (items.length) setFear(items);
+    },
+  });
 
   if (!quotes.length && !fear.length && !trend.length && !hvNow) return null;
   return (

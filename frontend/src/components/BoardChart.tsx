@@ -5,6 +5,7 @@ import { price } from "../format";
 import { crosshairTime } from "./chartFormat";
 import type { EstimatedCandles } from "../types";
 import { css, useColorScheme } from "../chartColors";
+import { usePoll } from "../poll";
 
 // 분봉 시각은 한국 시각으로(LiveChart · PriceChart 와 같은 방식)
 const KST_SEC = 9 * 3600;
@@ -139,17 +140,19 @@ function BoardChartInner({ ticker, name, mark }: { ticker: string; name?: string
     } catch {
       /* 그대로 */
     }
-    let alive = true;
-    let line: ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null = null;
-    const load = async () => {
+  }, [interval]);
+  // #626 실제 봉 · 장외 추정 봉을 1분마다(가려진 탭에서는 쉰다). 기준 종가 선은 다시 받을 때마다 바꿔 끼운다
+  const lineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
+  usePoll(`board-chart:${ticker}:${interval}`, () => {
+    const spec = REAL[interval];
+    return Promise.allSettled([
+      api.candles(ticker, spec.iv, spec.count),
+      ESTIMATED.has(interval) ? api.estimateCandles(ticker, interval) : Promise.reject(new Error("no estimate")),
+    ]);
+  }, REFRESH_MS, {
+    onData: ([realRes, estRes]) => {
       const c = ref.current;
       if (!c) return;
-      const spec = REAL[interval];
-      const [realRes, estRes] = await Promise.allSettled([
-        api.candles(ticker, spec.iv, spec.count),
-        ESTIMATED.has(interval) ? api.estimateCandles(ticker, interval) : Promise.reject(new Error("no estimate")),
-      ]);
-      if (!alive || ref.current !== c) return;
       let real: Bar[] = [];
       if (realRes.status === "fulfilled") {
         real = clean((realRes.value as Candles).bars.map((b) => ({ time: toTime(b.at), open: b.open, high: b.high, low: b.low, close: b.close })));
@@ -164,23 +167,22 @@ function BoardChartInner({ ticker, name, mark }: { ticker: string; name?: string
         : [];
       c.real.setData(real);
       c.est.setData(est);
-      if (line) c.real.removePriceLine(line);
-      line = estData && est.length
+      if (lineRef.current) c.real.removePriceLine(lineRef.current);
+      lineRef.current = estData && est.length
         ? c.real.createPriceLine({ price: estData.close, title: "기준 종가", color: css("--muted"), lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true })
         : null;
       setInfo({ est: est.length ? estData : null, real: real.length, failed: realRes.status === "rejected" && !est.length });
-    };
-    load();
+    },
+  });
+  useEffect(() => {
     // 처음 그릴 때만 화면에 맞춘다
     const fit = window.setTimeout(() => ref.current?.chart.timeScale().fitContent(), 400);
-    const t = window.setInterval(load, REFRESH_MS);
     return () => {
-      alive = false;
       window.clearTimeout(fit);
-      window.clearInterval(t);
       // 주기를 바꿀 때 이전 기준 종가 선을 지운다(차트는 종목이 바뀔 때만 새로 만든다)
       const c = ref.current;
-      if (c && line) c.real.removePriceLine(line);
+      if (c && lineRef.current) c.real.removePriceLine(lineRef.current);
+      lineRef.current = null;
     };
   }, [ticker, interval]);
 

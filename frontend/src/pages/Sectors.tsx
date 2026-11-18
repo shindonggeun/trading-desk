@@ -9,6 +9,7 @@ import PositioningView, { CreditSummary, positioningBadges } from "../components
 import { price, time } from "../format";
 import { byAsked, sameTicker } from "../ticker";
 import type { BoardItem, CreditView, DeskConfig, Positioning, Run, Sector } from "../types";
+import { usePoll } from "../poll";
 
 const QUOTE_MS = 15_000;
 const POSITIONING_MS = 15 * 60_000;
@@ -237,46 +238,21 @@ export default function Sectors() {
   const key = tickers.join(",");
 
   // 시세: 15초마다(가려진 탭은 쉰다)
-  useEffect(() => {
-    if (!key) return;
-    let alive = true;
-    const tick = () => {
-      if (document.hidden) return;
-      api.board(key.split(",")).then((r) => {
-        if (!alive) return;
-        setItems((cur) => ({ ...cur, ...byAsked(key.split(","), r.items) }));
-        setUpdated(new Date().toISOString());
-      }).catch(() => {});
-    };
-    tick();
-    const t = window.setInterval(tick, QUOTE_MS);
-    const onShow = () => { if (!document.hidden) tick(); };   // 가려진 동안 건너뛴 차례를 바로 채운다
-    document.addEventListener("visibilitychange", onShow);
-    return () => { alive = false; window.clearInterval(t); document.removeEventListener("visibilitychange", onShow); };
-  }, [key]);
+  // #626 15초마다(가려진 탭은 쉰다) — 같은 종목 묶음이면 시세판 · 즐겨찾기와 요청 하나를 함께 쓴다
+  usePoll(key ? `board:${key}` : null, () => api.board(key.split(",")), QUOTE_MS, {
+    onData: (r) => {
+      setItems((cur) => ({ ...cur, ...byAsked(key.split(","), r.items) }));
+      setUpdated(new Date().toISOString());
+    },
+  });
 
   // 공매도 · 옵션: 미국 종목만, 15분마다
-  useEffect(() => {
-    const us = key.split(",").filter((t) => US.test(t));
-    if (!us.length) return;
-    let alive = true;
-    let missed = false;
-    const tick = () => {
-      if (document.hidden) {
-        missed = true;
-        return;
-      }
-      missed = false;
-      api.positioningBatch(us).then((r) => {
-        if (alive) setPos((cur) => ({ ...cur, ...byAsked(us, r.items) }));
-      }).catch(() => alive && setPos((cur) => ({ ...cur, ...Object.fromEntries(us.filter((t) => !(t in cur)).map((t) => [t, null])) })));
-    };
-    tick();
-    const t = window.setInterval(tick, POSITIONING_MS);
-    const onShow = () => { if (!document.hidden && missed) tick(); };
-    document.addEventListener("visibilitychange", onShow);
-    return () => { alive = false; window.clearInterval(t); document.removeEventListener("visibilitychange", onShow); };
-  }, [key]);
+  // #626 미국 종목 포지셔닝은 15분마다(가려진 탭은 쉬고, 다시 보이면 건너뛴 차례를 바로)
+  const usKey = key.split(",").filter((t) => US.test(t)).join(",");
+  usePoll(usKey ? `positioning:${usKey}` : null, () => api.positioningBatch(usKey.split(",")), POSITIONING_MS, {
+    onData: (r) => setPos((cur) => ({ ...cur, ...byAsked(usKey.split(","), r.items) })),
+    onError: () => setPos((cur) => ({ ...cur, ...Object.fromEntries(usKey.split(",").filter((t) => !(t in cur)).map((t) => [t, null])) })),
+  });
 
   const korean = tickers.some(isKorean);
   useEffect(() => {

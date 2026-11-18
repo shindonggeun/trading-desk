@@ -5,6 +5,7 @@ import { BIAS, HORIZON, OPINION, OUTCOME, RATING, term } from "../korean";
 import { listLevels } from "../listLevels";
 import type { Plan, Run, RunPage } from "../types";
 import { BiasBadge, RatingText } from "./PlanCard";
+import { usePoll } from "../poll";
 
 /** #387 판단 칸에서 같은 말을 거듭 쓰지 않는다 — "보유 · 관망" 등급이면 "관망" 배지 · 의견 이름은 뺀다. */
 const ratingKo = (plan: Plan) => term(RATING, plan.rating)?.ko ?? "";
@@ -70,10 +71,9 @@ export default function RunsCard() {
 
   useEffect(() => {
     setError(null);
-    load();
-    const timer = setInterval(load, 5000); // 진행 중인 행이 저절로 채워진다
-    return () => clearInterval(timer);
-  }, [page, load]);
+  }, [page]);
+  // #626 진행 중인 행이 저절로 채워지게 5초마다(가려진 탭은 쉰다)
+  usePoll(`runs-card:${page}`, load, 5000);
 
   async function remove(r: Run) {
     const name = r.options.name ? `${r.options.name}(${r.ticker})` : r.ticker;

@@ -116,8 +116,23 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli day-call backtest --mark
 
 검증 90일은 약 60세션이다(KR 59 · US 63). 방향 적중률의 표준오차는 약 ±6%p 이고, 55% 는 우연과 구분되지 않는다. 기준선은 항상 롱만이 아니라 **항상 숏**과도 같이 본다. 하락장 검증 구간에서는 숏 쪽으로 기운 모델이 항상 롱을 쉽게 이기기 때문이다(`called_long_share`).
 
-## 다음 (PR-B)
+## 운영 (`desk/day_calls.py`, Alembic 0017 `day_calls`)
 
-- Alembic 0017 `day_calls`(down 0016_market_alerts, #579). 머지 순서가 바뀌면 번호를 다시 맞춘다.
-- 앱 안 스케줄러: 회차 창 안에서만 판정하고, 놓친 회차는 `missed` 로 센다. 장 마감 뒤 채점한다.
-- API 3개와 `today_call()` 실제 구현, 검증 90일 백필(`source=backfill`)
+- **판정**: 앱 안 루프가 2분마다 돈다. 각 시장의 개장일에 회차 창 안이면 두 판정을 만든다. 전일 종가 대비 · 시가 대비를 한 번 받은 봉으로 만든다.
+- **창**: KR 07:30~08:00 · 09:30~11:00 KST, US 09:00~09:30 · 10:00~10:30 ET.
+  - 창이 지나면 만들지 않는다(늦은 판정은 누수다). 놓친 회차는 stats 의 `missed` 다.
+  - 재시작해도 같은 회차를 두 번 넣지 않는다(시장 · 세션 · 회차 · 판정 유일).
+  - 10시 개장일(첫 거래일 · 수능)에는 KR 2차를 내지 않는다.
+- **채점**: 마감 30분 뒤부터 30분마다 다시 시도한다(US 조기 폐장일은 13:00 ET 기준). 판단 보류는 방향 적중이 없고(`hit_direction` null), 단계와 Brier 는 센다.
+- **알림**: 시장마다 그날 1차 전일 종가 대비 판정 때 푸시를 보낸다(kind `day_call`, `/#/day-call`). 사용자 알림 설정에서 끈다.
+- **기록**: 판정 옆 `record` 는 그 회차의 최근 90일 저장 판정 기준이다. 실시간 판정이 30개 미만이면 `basis: backtest`(백필) 다.
+- **#571 아침 시황**: `today_call()` 이 시장마다 가장 최근 전일 종가 대비 판정의 한 줄을 준다.
+- **스크립트 실행(`DESK_FAKE_RUNS`)**: 아무것도 받지 않고 루프도 돌지 않는다. 저장된 판정만 보인다.
+
+**배포 뒤 한 번**: 검증 구간(모델 학습 뒤 세션)을 판정 시각 기준으로 다시 만들어 넣고 채점한다(`source=backfill`).
+
+```bash
+ssh -t homelab-backend-server docker exec -it trading-desk-backend-prod python -m desk.cli day-call backfill --days 90
+```
+
+모델을 다시 만들면(`day-call backtest`) 새 학습 뒤 세션만 백필 대상이다. 백필은 학습한 세션은 넣지 않는다.

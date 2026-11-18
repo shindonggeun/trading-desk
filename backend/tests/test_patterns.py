@@ -1,5 +1,6 @@
 """#297: converging patterns (triangles, wedges) from swing highs and lows."""
 
+import math
 from datetime import date, timedelta
 
 from desk import patterns
@@ -160,3 +161,143 @@ def test_add_patterns_reads_the_weekly_bars_and_keeps_a_failure_to_itself(monkey
     monkeypatch.setattr(sr.patterns, "find", boom)
     sr.add_patterns(result, bars, [], horizons.get("swing"))
     assert result["patterns"] == [] and result["patterns_error"] == "ValueError: x"
+
+
+# #629 when a side is usually chosen, the measured move and the odds
+
+def _sym(n=120):
+    return _zigzag(lambda i: 120 - 0.12 * i, lambda i: 90 + 0.12 * i, n)
+
+
+def _intraday(days=10):
+    """5-minute bars of a US session, 14:30-20:55 UTC, Monday to Friday."""
+    from datetime import UTC, datetime
+
+    out, d = [], datetime(2026, 11, 2, tzinfo=UTC)          # a Monday
+    while len(out) < days * 78:
+        if d.weekday() < 5:
+            for m in range(78):
+                t = d.replace(hour=14, minute=30) + timedelta(minutes=5 * m)
+                out.append({"at": t.isoformat(), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1})
+        d += timedelta(days=1)
+    return out
+
+
+def test_future_bar_times_follow_the_bars_own_hours_and_weekends():
+    bars = _intraday()
+    assert bars[-1]["at"] == "2026-11-13T20:55:00+00:00"                     # a Friday's last bar
+    nxt = patterns.future_times(bars, 80)
+    assert nxt[0] == "2026-11-16T14:30:00+00:00"                             # Monday's open, the weekend skipped
+    assert nxt[77] == "2026-11-16T20:55:00+00:00" and nxt[78] == "2026-11-17T14:30:00+00:00"
+    days = _sym(30)                                                          # every calendar day, 05:00 UTC
+    assert patterns.future_times(days, 2, daily=True) == ["2026-01-31T05:00:00+00:00", "2026-02-01T05:00:00+00:00"]
+    weekdays = [b for b in _sym(60) if date.fromisoformat(b["at"][:10]).weekday() < 5]
+    assert all(date.fromisoformat(t[:10]).weekday() < 5 for t in patterns.future_times(weekdays, 10, daily=True))
+
+
+def test_a_converging_pattern_says_when_how_far_and_how_sure(monkeypatch):
+    monkeypatch.setattr(patterns, "_stats_cache", {})
+    p = _find(_sym(70))[0]                                             # the apex ~55 bars ahead: the window ahead
+    w, t = p["breakout_window"], p["targets"]
+    assert w["basis"] == "textbook" and w["share"] == [0.5, 0.8] and p["odds"] is None and not w["passed"]
+    assert w["bars_ahead"][0] <= w["bars_ahead"][1] <= math.ceil(p["apex"]["bars_ahead"])
+    assert w["from"] <= w["to"] <= p["apex_at"]
+    assert t["up"] > p["upper"]["to"]["price"] > p["lower"]["to"]["price"] > t["down"]
+    assert t["height_pct"] > 0 and t["reach_pct"] is None
+    assert p["explain"].startswith("일봉 대칭 삼각수렴 — 고점은 낮아지고 저점은 높아지는 중. 교과서로는 꼭짓점 전 ")
+    assert "과거 통계는 아직 없어요." in p["explain"] and p["explain"].endswith("예측 아님.")
+
+    stats = {"n": 41, "up_pct": 58.0, "down_pct": 42.0, "none_pct": 0.0, "false_break_pct": 30.0,
+             "verdict": "no_edge", "edge_pct": 1.0, "frac_q25": 0.6, "frac_q75": 0.7, "reach_pct": 47.0,
+             "by_prior": {"up": {"n": 12, "up_pct": 70.0, "down_pct": 30.0, "none_pct": 0.0}}}
+    monkeypatch.setattr(patterns, "_stats_cache", {"kinds": {"1d:symmetric": stats}})
+    p = _find(_sym(70))[0]
+    assert p["breakout_window"]["basis"] == "measured" and p["breakout_window"]["share"] == [0.6, 0.7]
+    o = p["odds"]
+    assert (o["up_pct"], o["down_pct"], o["n"], o["small_sample"], o["prior"]) == (58.0, 42.0, 41, False, None)
+    assert "보통 꼭짓점 전" in p["explain"] and "과거 위 58% · 아래 42%(표본 41)" in p["explain"]
+    assert "방향 근거는 약해요" in p["explain"] and "목표까지 간 비율 47%" in p["explain"]
+    by = {**stats, "by_prior": {"up": {"n": 35, "up_pct": 70.0, "down_pct": 30.0, "none_pct": 0.0},
+                                "down": {"n": 35, "up_pct": 40.0, "down_pct": 60.0, "none_pct": 0.0}}}
+    monkeypatch.setattr(patterns, "_stats_cache", {"kinds": {"1d:symmetric": {**by, "n": 20, "verdict": "edge"}}})
+    p = _find(_sym())[0]
+    prior = patterns._prior_trend(_sym(), 0)
+    assert p["odds"]["prior"] in (None, "up", "down") and p["odds"]["n"] in (20, 35)
+    if p["odds"]["prior"] is None:                                     # no trend before the pattern start
+        assert p["odds"]["small_sample"] and "표본 적음" in p["explain"] and prior in ("none", "up", "down")
+    assert "방향 근거는 약해요" not in p["explain"]
+    passed = _find(_sym())[0]                                          # near the apex: the window is behind it
+    assert passed["breakout_window"]["passed"] and "흔히 방향이 나오는 구간은 지났고" in passed["explain"]
+
+
+def test_a_broken_pattern_names_its_target_at_the_break():
+    bars = _sym()
+    for b in bars[-2:]:
+        b.update(close=125.0, high=125.5, open=124.0)
+    p = patterns.find(bars, K, 1.0)[0]
+    assert p["state"] == "broke_up"
+    assert "이미 위로 깼어요" in p["explain"] and f"{p['targets']['up']:,.2f}" in p["explain"]
+    # the target is the starting height added at the last bars (the break), as patterns_bt measures the reach
+    up_now, low_now = p["upper"]["to"]["price"], p["lower"]["to"]["price"]
+    assert p["targets"]["up"] > up_now and p["targets"]["down"] < low_now
+
+
+def test_the_future_times_read_every_bar_given_not_only_the_pattern(monkeypatch):
+    bars = _zigzag(lambda i: 120 - 0.06 * i, lambda i: 90 + 0.06 * i, 200)
+    seen = []
+    real = patterns.future_times
+    monkeypatch.setattr(patterns, "future_times", lambda b, n, daily=False: seen.append(len(b)) or real(b, n, daily))
+    got = patterns.find(bars, K, 1.0)
+    assert got and seen == [200]                                       # not the LOOKBACK (150) the lines use
+
+
+def _hours(days, first_hour):
+    """60m bars of a US session (7 a day) on the given days, opening at first_hour:30 UTC."""
+    from datetime import UTC, datetime
+
+    return [{"at": datetime(d.year, d.month, d.day, first_hour + h, 30, tzinfo=UTC).isoformat()}
+            for d in days for h in range(7)]
+
+
+def test_a_clock_change_leaves_the_old_hours_out_and_a_short_history_fills_the_weekdays():
+    edt = [date(2026, 10, d) for d in (26, 27, 28, 29, 30)]
+    est = [date(2026, 11, d) for d in (2, 3, 4, 5, 6)]
+    nxt = patterns.future_times(_hours(edt, 13) + _hours(est, 14), 8)
+    assert nxt[0] == "2026-11-09T14:30:00+00:00" and nxt[6] == "2026-11-09T20:30:00+00:00"
+    assert nxt[7] == "2026-11-10T14:30:00+00:00"                       # 7 a day, no 13:30 left over
+    two = _hours([date(2026, 11, 10), date(2026, 11, 11)], 14)         # only a Tuesday and a Wednesday
+    assert patterns.future_times(two, 1) == ["2026-11-12T14:30:00+00:00"]   # Thursday, not next Tuesday
+
+
+def test_the_odds_by_the_trend_before_and_the_verdict_said_as_measured(monkeypatch):
+    base = {"n": 41, "up_pct": 58.0, "down_pct": 42.0, "none_pct": 0.0, "false_break_pct": 30.0,
+            "verdict": "edge", "edge_pct": 9.0,
+            "by_prior": {"up": {"n": 35, "up_pct": 70.0, "down_pct": 30.0, "none_pct": 0.0}}}
+    monkeypatch.setattr(patterns, "_prior_trend", lambda bars, start, n=20: "up")
+    monkeypatch.setattr(patterns, "_stats_cache", {"kinds": {"1d:symmetric": base}})
+    p = _find(_sym(70))[0]
+    assert (p["odds"]["prior"], p["odds"]["up_pct"], p["odds"]["n"]) == ("up", 70.0, 35)
+    assert "과거 앞선 상승 추세에서 위 70% · 아래 30%(표본 35)." in p["explain"]
+    for verdict, said in (("unstable", "과거 구간마다 결과가 달라"), ("unmeasured", "비교는 아직 없어요"),
+                          ("no_edge", "무작위로 섞어도 비슷해서")):
+        monkeypatch.setattr(patterns, "_stats_cache", {"kinds": {"1d:symmetric": {**base, "verdict": verdict}}})
+        assert said in _find(_sym(70))[0]["explain"]
+
+
+def test_the_backtest_records_where_the_break_came_and_whether_the_move_was_reached(monkeypatch):
+    from desk import patterns_bt
+
+    monkeypatch.setattr(patterns_bt, "MIN_N", 4)
+
+    bars = _zigzag(lambda i: 120.0, lambda i: 90 * 1.002 ** i, 160)
+    for i, b in enumerate(bars[100:], start=100):       # a run steep enough to carry past the starting height
+        c = 121.0 + (i - 100) * 2.0
+        b.update(open=c, high=c + 0.3, low=c - 0.3, close=c)
+    r = patterns_bt.instances(bars, "1d", K, 5, "T")[0]
+    assert 0 < r["frac"] <= 1.05 and r["prior"] in ("up", "down", "none")
+    assert r["reach"] is True                                          # the run carried past the starting height
+    rows = [{**r, "at": f"2024-01-{d:02d}", "frac": 0.4 + d / 100, "reach": d % 2 == 0,
+             "prior": "up" if d < 15 else "down"} for d in range(1, 31)]
+    s = patterns_bt.summarize(rows)
+    assert s["frac_q25"] < s["frac_q50"] < s["frac_q75"] and s["reach_pct"] == 50.0 and s["reach_n"] == 30
+    assert set(s["by_prior"]) == {"up", "down"} and s["by_prior"]["up"]["n"] == 14

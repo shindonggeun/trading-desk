@@ -330,3 +330,30 @@ def test_a_second_click_while_one_is_written_is_409(db_url, monkeypatch):
             assert time.monotonic() < deadline, "the brief was not written"
             time.sleep(0.05)
         assert len(listed["items"]) == 1
+
+
+def test_a_direction_word_against_the_bundles_sign_is_dropped():
+    # #584 review: the size alone passed with the opposite word beside it
+    b = _bundle(candles=lambda s, i, n: _bars({**CLOSES, "^IXIC": [22000.0, 21736.0]}[s]))    # 나스닥 -1.20%
+    check = mb.allowed_numbers(b)
+    assert b["us"]["나스닥"]["change"] == "-1.20%"
+    assert mb._ok("나스닥이 1.20% 올랐어요.", check, 200) is None
+    assert mb._ok("나스닥이 1.20% 상승 마감했어요.", check, 200) is None
+    assert mb._ok("나스닥이 1.20% 내렸어요.", check, 200) == "나스닥이 1.20% 내렸어요."
+    assert mb._ok("나스닥은 -1.20% 하락했어요.", check, 200)
+    # 외국인 -1,234억 = net selling
+    assert mb._ok("외국인이 코스피를 1,234억 순매수했어요.", check, 200) is None
+    assert mb._ok("외국인은 1,234억 매수 우위였어요.", check, 200) is None
+    assert mb._ok("외국인이 1,234억 순매도했어요.", check, 200) == "외국인이 1,234억 순매도했어요."
+    # two numbers in one sentence: each is judged by its own clause
+    assert mb._ok("나스닥은 1.20% 내렸고 필라델피아 반도체는 2.50% 올랐어요.", check, 200)
+    assert mb._ok("나스닥은 1.20% 올랐고 필라델피아 반도체는 2.50% 내렸어요.", check, 200) is None
+
+
+def test_a_number_beside_a_subject_must_be_that_subjects():
+    check = mb.allowed_numbers(_bundle())
+    assert mb._ok("S&P500 이 +0.75% 올랐어요.", check, 200)                 # its own change
+    assert mb._ok("S&P500 이 +1.20% 올랐어요.", check, 200) is None         # 나스닥's change on S&P500
+    assert mb._ok("기관은 1,234억 순매도했어요.", check, 200) is None          # 외국인's number on 기관
+    assert mb._ok("나스닥100 선물은 0.30% 밀렸어요.", check, 200)            # the name's own digits are no number
+    assert mb._ok("VIX 는 17.2 로 어제 18.1 보다 낮아요.", check, 200)

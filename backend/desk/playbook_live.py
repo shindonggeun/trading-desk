@@ -133,10 +133,20 @@ async def _triggers(prices, ticker: str, out: dict, frame: horizons.Horizon, liv
 
 
 async def current(prices, ticker: str, horizon: str | None = None, run_id: str | None = None,
-                  run_pb: dict | None = None, clock=time.monotonic, risk=None) -> dict:
-    """Both playbooks now; with ``run_pb`` (an analysis' playbooks) its levels stay."""
+                  run_pb: dict | None = None, clock=time.monotonic, risk=None, ahead: float = 0.0) -> dict:
+    """Both playbooks now; with ``run_pb`` (an analysis' playbooks) its levels stay.
+
+    #536 ``ahead`` (the prewarm loop): a value that would expire within that many seconds is computed again
+    now. A page (``ahead`` 0) reads a fresh value without the lock, so it never waits for that refresh."""
     h = horizons.get(horizon)
     key = (ticker, h.id, run_id)
+    cached = _CACHE.get(key)
+    if cached and ahead <= 0:
+        at, value = cached
+        if isinstance(value, Exception) and clock() - at < FAIL_TTL_SEC:
+            raise value
+        if not isinstance(value, Exception) and clock() - at < h.sr_ttl_sec:
+            return value
     if len(_LOCKS) > 512:              # forget locks of keys no longer cached
         for stale in [k for k in _LOCKS if k not in _CACHE and not _LOCKS[k].locked()]:
             del _LOCKS[stale]
@@ -147,7 +157,7 @@ async def current(prices, ticker: str, horizon: str | None = None, run_id: str |
             at, value = cached
             if isinstance(value, Exception) and clock() - at < FAIL_TTL_SEC:
                 raise value
-            if not isinstance(value, Exception) and clock() - at < h.sr_ttl_sec:
+            if not isinstance(value, Exception) and clock() - at < h.sr_ttl_sec - ahead:
                 return value
         try:
             out, live = await asyncio.wait_for(_compute(prices, ticker, h, run_pb, risk), TIMEOUT_SEC)

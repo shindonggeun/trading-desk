@@ -725,7 +725,24 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 jobs["risk_kr"] = lambda: asyncio.to_thread(risk_cache.series, True, ahead)
             if fear_gauges is not None:
                 jobs["fear"] = lambda: fear_gauges.get(ahead)
+            jobs["board"] = lambda: _warm_board(ahead)
+            jobs["playbooks"] = lambda: _warm_playbooks(ahead)
             return jobs
+
+        async def _warm_board(ahead: float) -> int:
+            # the quote board is the favorites (FavoritesPanel asks for all of them at once)
+            return await estimator.warm(await asyncio.to_thread(favorites.tickers, MAX_BOARD), ahead)
+
+        async def _warm_playbooks(ahead: float) -> int:
+            # the default horizon's live playbooks of the first favorites, one at a time (prices merges asks)
+            done = 0
+            for ticker in await asyncio.to_thread(favorites.tickers, prewarm.FAVORITES_MAX):
+                try:
+                    await playbook_live.current(prices, ticker, risk=risk, ahead=ahead)
+                    done += 1
+                except Exception as exc:  # noqa: BLE001 - that ticker only (its failure is cached briefly)
+                    log.info("prewarm playbooks %s failed: %s", ticker, type(exc).__name__)
+            return done
 
         def prewarm_tickers() -> list[str]:
             # the favorites' US tickers (positioning has nothing for the others; a few more are read for that)

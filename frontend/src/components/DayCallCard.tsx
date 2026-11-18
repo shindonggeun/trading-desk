@@ -69,7 +69,7 @@ function CallBlock({ c, kind }: { c: DayCallEntry | null | undefined; kind: "pre
       {out && (
         <p className="small">
           <span className="muted">결과</span> {out.label} ({out.return_pct > 0 ? "+" : ""}{out.return_pct.toFixed(2)}%) ·{" "}
-          {out.hit_direction == null ? <span className="muted">보류라 방향 표시 안 함</span>
+          {out.hit_direction == null ? <span className="muted">{c.verdict === "hold" ? "보류라 방향 표시 안 함" : "시가 = 종가라 방향 채점 안 함"}</span>
             : out.hit_direction ? <span className="daycall-hit">✓ 방향 맞음</span> : <span className="daycall-miss">✗ 방향 틀림</span>}
         </p>
       )}

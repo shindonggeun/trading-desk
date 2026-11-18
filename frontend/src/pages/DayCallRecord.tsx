@@ -23,7 +23,7 @@ function Mark({ it }: { it: DayCallHistoryItem }) {
   const out = scoredOutcome(it.outcome);
   const ok = out?.hit_direction;
   if (!out) return <span className="muted">—</span>;
-  if (ok == null) return <span className="muted">보류</span>;
+  if (ok == null) return <span className="muted">{it.verdict === "hold" ? "보류" : "보합(채점 안 함)"}</span>;
   return ok ? <span className="daycall-hit">✓ 맞음</span> : <span className="daycall-miss">✗ 틀림</span>;
 }
 

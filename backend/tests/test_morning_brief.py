@@ -357,3 +357,23 @@ def test_a_number_beside_a_subject_must_be_that_subjects():
     assert mb._ok("기관은 1,234억 순매도했어요.", check, 200) is None          # 외국인's number on 기관
     assert mb._ok("나스닥100 선물은 0.30% 밀렸어요.", check, 200)            # the name's own digits are no number
     assert mb._ok("VIX 는 17.2 로 어제 18.1 보다 낮아요.", check, 200)
+
+
+@pytest.mark.parametrize("sentence", [
+    "코스피가 0.42% 떨어졌어요.", "코스피가 0.42% 급락했어요.",         # 코스피 +0.42%
+    "나스닥이 1.20% 뛰었어요.", "나스닥이 1.20% 급등했어요.", "나스닥 1.20%↑",   # 나스닥 -1.20%
+    "나스닥이 1.20% 치솟았어요.", "코스피가 0.42% 주저앉았어요.", "코스피 0.42%▼",
+])
+def test_the_common_direction_verbs_and_arrows_are_checked_too(sentence):
+    # #587 review: 떨어졌어요 · 급락 · 뛰었어요 · 급등 · ↑ were not in the lists
+    b = _bundle(candles=lambda s, i, n: _bars({**CLOSES, "^IXIC": [22000.0, 21736.0]}[s]))
+    assert b["kr"]["코스피"]["change"] == "+0.42%" and b["us"]["나스닥"]["change"] == "-1.20%"
+    assert mb._ok(sentence, mb.allowed_numbers(b), 200) is None
+
+
+def test_the_same_verbs_pass_when_they_agree():
+    b = _bundle(candles=lambda s, i, n: _bars({**CLOSES, "^IXIC": [22000.0, 21736.0]}[s]))
+    check = mb.allowed_numbers(b)
+    for sentence in ("나스닥이 1.20% 떨어졌어요.", "코스피가 0.42% 뛰었어요.", "나스닥 1.20%↓",
+                     "나스닥은 하락폭을 줄여 -1.20%로 마감했어요.", "외국인 순매도 규모가 줄어 1,234억에 그쳤어요."):
+        assert mb._ok(sentence, check, 200) == sentence, sentence

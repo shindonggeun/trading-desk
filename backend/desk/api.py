@@ -2131,6 +2131,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     gaps = await asyncio.to_thread(line_basis.gaps, bars, weeks, bars[-1]["close"], ticker)
                 except Exception as exc:  # noqa: BLE001 - the read stands without the gaps
                     gaps_error = type(exc).__name__
+                    keep = min(keep, CHART_READ_MIN_SEC * 4)
                 if weeks is None:
                     gaps_error = gaps_error or "no weekly bars"
             try:

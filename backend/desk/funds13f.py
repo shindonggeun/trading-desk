@@ -12,7 +12,11 @@ quarter. For each fund in ``FUNDS`` (CIKs checked on EDGAR, 2026-11-17) this rea
   13F-NT for 2026Q2-Q3 naming its parent by CIK. A cover that names the manager only by name and 13F file
   number (Oaktree 2026Q3 → Brookfield Corp, #599) is followed through the fund's ``reporters`` (file
   number → CIK, checked on EDGAR); when that manager's table mixes many advisers' positions, only the
-  rows tagged with the fund's own sequence number (its cover's included managers) are read.
+  rows tagged with the fund's own sequence number (its cover's included managers) are read - the fund's
+  own 13F file number only, never a sibling adviser's: for Oaktree, Oaktree Capital Management (028-05050,
+  Brookfield's sequence 7) and not Oaktree Fund Advisors (028-21340, sequence 8), the same scope as
+  Oaktree's own 13F-HRs up to 2026Q2 (#607). ``reported_by.scope`` says so on the page. Such a table is
+  cached under ``SHARE_RULE``: a change to the rule reads it again.
 - The information table XML of each filing (``www.sec.gov/Archives/edgar/data/<cik>/<accession>/``),
   merged per CUSIP and option side. Values are dollars for filings made from 2023-01-03 (SEC's 2023
   amendment), thousands before.
@@ -63,10 +67,12 @@ class Reporter:
     """A manager that reports a fund's holdings in its own 13F-HR (the fund files a 13F-NT naming it).
     #599: SEC has no JSON lookup from a 13F file number to a CIK and a name search is ambiguous
     (Brookfield has many filers), so the ones a cover names without a CIK are written down here.
-    ``own_rows``: its table holds other advisers' positions too - only the fund's own rows are read."""
+    ``own_rows``: its table holds other advisers' positions too - only the fund's own rows are read.
+    ``scope``: what those rows are, said with ``reported_by``."""
     file_number: str
     cik: str
     own_rows: bool = False
+    scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,9 +90,12 @@ FUNDS = (
     Fund("bridgewater", "브리지워터", "레이 달리오", "0001350694"),
     Fund("citadel", "시타델 어드바이저스", "켄 그리핀", "0001423053"),
     # 2026Q3 13F-NT: Brookfield Corp (028-14349, CIK 0001001085, EDGAR 2026-11-18) reports Oaktree's
-    # positions - sequence 7 among the eight advisers of its combination report
+    # positions - sequence 7 among the eight advisers of its combination report. Sequence 8 (Oaktree Fund
+    # Advisors, 028-21340) is left out: Oaktree's own 13F-HRs never included it
     Fund("oaktree", "오크트리 캐피털", "하워드 막스", "0000949509",
-         reporters=(Reporter("028-14349", "0001001085", own_rows=True),)),
+         reporters=(Reporter("028-14349", "0001001085", own_rows=True,
+                             scope="Oaktree Capital Management 몫만 — Oaktree Fund Advisors 는 빼서 "
+                                   "오크트리가 직접 낸 13F 와 같은 범위"),)),
 )
 BY_ID = {f.id: f for f in FUNDS}
 
@@ -119,6 +128,7 @@ WINDOW_EVERY_SEC = 3 * 3600
 DAILY_SEC = 24 * 3600
 RETRY_SEC = 30 * 60          # a failed pass is tried again this soon (not for a reason that will not change)
 LASTING = ("운용사를 찾지 못했습니다", "몫을 가려낼 수 없습니다")   # ... such as these: until a new filing
+SHARE_RULE = 1               # how a fund's rows are picked from a reporter's table (#607): change it → read again
 FAIL_TTL_SEC = 10 * 60       # a document that failed is not asked again before this
 KEEP_TABLES = 16             # tables kept in memory (5 funds x the latest two quarters, and a few more)
 KEEP_VIEWS = 12
@@ -626,7 +636,7 @@ class Funds:
         number) just that fund's rows of a combination report, kept apart from the whole table - an
         amendment (``strict`` False) with none of them adds nothing."""
         acc = filing["accession"]
-        key = acc if only is None else f"{acc}-for-{only[0]}"
+        key = acc if only is None else f"{acc}-for-{only[0]}-r{SHARE_RULE}"
         if key in self._tables:
             self._tables.move_to_end(key)
             return self._tables[key]
@@ -706,7 +716,8 @@ class Funds:
         except Exception as exc:
             self._remember_fail(key, exc)
             raise
-        return rows, {"name": their_name, "cik": their_cik, "own_rows": own_rows}
+        scope = next((r.scope for r in reporters if r.cik == their_cik), None) if own_rows else None
+        return rows, {"name": their_name, "cik": their_cik, "own_rows": own_rows, "scope": scope}
 
     # --- tickers
     def _map(self, holdings: list[dict], budget: int, search_budget: int = 0) -> None:

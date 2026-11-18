@@ -49,8 +49,9 @@ const isItem = (v: unknown): v is LayoutItem => {
   return !!o && typeof o.i === "string" && [o.x, o.y, o.w, o.h].every((n) => Number.isFinite(n));
 };
 
-/** 저장한 배치(손상값은 버림). 없는 구역은 빼고, 새로 생긴 구역은 맨 아래에 4칸 폭으로 붙인다. */
-export function loadBand(band: Band, known: string[]): BandLayout | null {
+/** 저장한 배치(손상값은 버림). 없는 구역은 빼고, 새로 생긴 구역은 맨 아래에 4칸 폭으로 붙인다.
+ * #573 `top` 에 든 새 구역은 맨 위 한 줄에 놓고(첫 구역이 넓게) 나머지를 그만큼 아래로 민다. */
+export function loadBand(band: Band, known: string[], top: string[] = []): BandLayout | null {
   const cur = read()[band];
   const b = cur ?? read(KEY_V1)[band];
   if (!b || !Array.isArray(b.items)) return null;
@@ -66,6 +67,16 @@ export function loadBand(band: Band, known: string[]): BandLayout | null {
     }));
   const hidden = Array.isArray(b.hidden) ? b.hidden.filter((h) => known.includes(h)) : [];
   const fixed = !v1 && Array.isArray(b.fixed) ? b.fixed.filter((f) => typeof f === "string" && items.some((it) => it.i === f)) : [];
+  const missingTop = top.filter((k) => known.includes(k) && !items.some((it) => it.i === k) && !hidden.includes(k));
+  if (missingTop.length) {
+    items.forEach((it) => { it.y += DEFAULT_H; });
+    let x = 0;
+    missingTop.forEach((k, n) => {
+      const w = n === 0 ? GRID_COLS - MIN_W * (missingTop.length - 1) : MIN_W;
+      items.unshift({ i: k, x, y: 0, w, h: DEFAULT_H });
+      x += w;
+    });
+  }
   const bottom = items.reduce((m, it) => Math.max(m, it.y + it.h), 0);
   const missing = known.filter((k) => !items.some((it) => it.i === k) && !hidden.includes(k));
   missing.forEach((k, n) => items.push({ i: k, x: (n % 3) * 4, y: bottom + Math.floor(n / 3) * DEFAULT_H, w: 4, h: DEFAULT_H }));

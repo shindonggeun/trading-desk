@@ -33,9 +33,34 @@ export function saveToastMarkets(m: ToastMarkets) {
   }
 }
 
-/** 시장 토글 → 푸시 구독 종류(#361): 하나라도 켜져 있으면 전체 스위치(flow)도 켬 */
-export function pushKindsOf(m: ToastMarkets): PushKinds {
-  return { flow: m.futures || m.kospi || m.kosdaq, flow_futures: m.futures, flow_kospi: m.kospi, flow_kosdaq: m.kosdaq };
+/** #573 수급 전향 말고 받을 알림 종류 — 아침 시황(#571) · 오늘 방향(#572). 이 브라우저에 기억하고 기본은 켬 */
+export type ExtraKinds = { morning_brief: boolean; day_call: boolean };
+export const EXTRA_KINDS: { key: keyof ExtraKinds; label: string; note: string }[] = [
+  { key: "morning_brief", label: "아침 시황", note: "평일 오전 7시쯤" },
+  { key: "day_call", label: "오늘 방향", note: "국장 · 미장 판정이 나올 때" },
+];
+const EXTRA_KEY = "desk.pushKinds.extra";
+
+export function loadExtraKinds(): ExtraKinds {
+  try {
+    const raw = JSON.parse(localStorage.getItem(EXTRA_KEY) ?? "{}");
+    return { morning_brief: raw.morning_brief !== false, day_call: raw.day_call !== false };
+  } catch {
+    return { morning_brief: true, day_call: true };
+  }
+}
+
+export function saveExtraKinds(k: ExtraKinds) {
+  try {
+    localStorage.setItem(EXTRA_KEY, JSON.stringify(k));
+  } catch {
+    /* 저장 못 해도 이번 화면에서는 그대로 */
+  }
+}
+
+/** 시장 토글 → 푸시 구독 종류(#361): 하나라도 켜져 있으면 전체 스위치(flow)도 켬. #573 아침 시황 · 오늘 방향도 같이 */
+export function pushKindsOf(m: ToastMarkets, extra: ExtraKinds = loadExtraKinds()): PushKinds {
+  return { flow: m.futures || m.kospi || m.kosdaq, flow_futures: m.futures, flow_kospi: m.kospi, flow_kosdaq: m.kosdaq, ...extra };
 }
 
 /** 장중(평일 08:45–15:45 KST)인가 — 선물이 08:45 에 열리고 현물 장후 15:45 까지 */

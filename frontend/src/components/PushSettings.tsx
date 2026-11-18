@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import { disablePush, enablePush, isIOS, isStandalone, pushState, STATE_TEXT, updateKinds, type PushState } from "../push";
-import { loadToastMarkets, pushKindsOf, saveToastMarkets, TOAST_MARKETS, type ToastMarkets } from "./FlowAlertToast";
+import {
+  EXTRA_KINDS, loadExtraKinds, loadToastMarkets, pushKindsOf, saveExtraKinds, saveToastMarkets, TOAST_MARKETS, type ExtraKinds, type ToastMarkets,
+} from "./FlowAlertToast";
 
 /** #362 설정의 "알림" 칸 — 이 기기 푸시 켜기 · 끄기, 시험 알림, 앱 안 토스트에 보일 시장. */
 export default function PushSettings() {
@@ -9,6 +11,7 @@ export default function PushSettings() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [markets, setMarkets] = useState<ToastMarkets>(loadToastMarkets);
+  const [extra, setExtra] = useState<ExtraKinds>(loadExtraKinds);
 
   useEffect(() => {
     let alive = true;
@@ -35,13 +38,21 @@ export default function PushSettings() {
     setMarkets(next);
     saveToastMarkets(next);
     // 이 기기가 푸시를 받는 중이면 서버의 알림 종류(#361)도 같이
-    if (state === "on") run(() => updateKinds(pushKindsOf(next)), "이 기기의 알림 시장을 바꿨습니다.");
+    if (state === "on") run(() => updateKinds(pushKindsOf(next, extra)), "이 기기의 알림 시장을 바꿨습니다.");
+  };
+
+  // #573 아침 시황 · 오늘 방향 — 푸시로만 온다(앱 안 토스트 없음)
+  const toggleExtra = (key: keyof ExtraKinds) => {
+    const next = { ...extra, [key]: !extra[key] };
+    setExtra(next);
+    saveExtraKinds(next);
+    if (state === "on") run(() => updateKinds(pushKindsOf(markets, next)), "이 기기의 알림 종류를 바꿨습니다.");
   };
 
   return (
     <section className="card settings-card push-settings">
       <h2>알림</h2>
-      <p className="muted">외국인 수급이 순매수 · 순매도로 돌아서면(전향) 알려 드립니다.</p>
+      <p className="muted">외국인 수급이 순매수 · 순매도로 돌아서면(전향), 아침 시황이 나오면, 오늘 방향 판정이 나오면 알려 드립니다.</p>
 
       <div className="settings-row">
         <span>이 기기 푸시</span>
@@ -57,7 +68,7 @@ export default function PushSettings() {
 
       <div className="settings-actions">
         {state === "off" && (
-          <button type="button" disabled={busy} onClick={() => run(() => enablePush(pushKindsOf(markets)), "이 기기에서 알림을 받습니다.")}>
+          <button type="button" disabled={busy} onClick={() => run(() => enablePush(pushKindsOf(markets, extra)), "이 기기에서 알림을 받습니다.")}>
             이 기기 알림 켜기
           </button>
         )}
@@ -84,6 +95,18 @@ export default function PushSettings() {
             disabled={busy} onClick={() => toggleMarket(key)}>
             <span aria-hidden="true" className="push-mark">{markets[key] ? "✓" : "＋"}</span>{label}
             <span className="sr-only">{markets[key] ? " 받음" : " 안 받음"}</span>
+          </button>
+        ))}
+      </div>
+
+      <h3>그 밖의 알림</h3>
+      <p className="muted small">✓ 표시가 받는 알림입니다. 이 기기의 푸시에만 적용됩니다.</p>
+      <div className="push-markets">
+        {EXTRA_KINDS.map(({ key, label, note }) => (
+          <button key={key} type="button" className={`chip ${extra[key] ? "chip-on" : ""}`} aria-pressed={extra[key]}
+            disabled={busy} onClick={() => toggleExtra(key)} title={note}>
+            <span aria-hidden="true" className="push-mark">{extra[key] ? "✓" : "＋"}</span>{label}
+            <span className="sr-only">{extra[key] ? " 받음" : " 안 받음"} — {note}</span>
           </button>
         ))}
       </div>

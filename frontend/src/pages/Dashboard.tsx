@@ -11,6 +11,8 @@ import SectorNews from "../components/SectorNews";
 import NewRunForm from "../components/NewRunForm";
 import PlanStatsCard from "../components/PlanStatsCard";
 import PaperCard from "../components/PaperCard";
+import MorningBriefCard from "../components/MorningBriefCard";
+import DayCallCard from "../components/DayCallCard";
 import PortfolioPanel from "../components/PortfolioPanel";
 import RecentRuns from "../components/RecentRuns";
 import WeeklyMapBrief from "../components/WeeklyMapBrief";
@@ -109,9 +111,12 @@ function RegimePanel() {
   );
 }
 
-type SectionId = "macro" | "sectornews" | "favorites" | "market" | "kfutures" | "agenda" | "weekly" | "bottom" | "halving" | "portfolio" | "recent" | "stats" | "paper" | "flow" | "credit" | "regime";
+type SectionId = "morning" | "daycall" | "macro" | "sectornews" | "favorites" | "market" | "kfutures" | "agenda" | "weekly" | "bottom" | "halving" | "portfolio" | "recent" | "stats" | "paper" | "flow" | "credit" | "regime";
 /** 구역 — 순서는 이슈 #100 의 기본값. wide 는 넓은 화면에서 한 줄을 다 쓴다. */
 const SECTIONS: Record<SectionId, { title: string; wide?: boolean; render: () => ReactNode }> = {
+  // #573 아침 시황(#571) · 오늘 방향(#572) — 맨 위, 휴대폰 첫 화면에서도 펼친 채로
+  morning: { title: "아침 시황", wide: true, render: () => <MorningBriefCard /> },
+  daycall: { title: "오늘 방향", render: () => <DayCallCard /> },
   macro: { title: "오늘의 거시 · 정책 브리핑", wide: true, render: () => <MacroBrief /> },
   // #245 섹터 · 인물 이슈(#244) — 브리핑 바로 아래
   sectornews: { title: "섹터 이슈", wide: true, render: () => <SectorNews /> },
@@ -141,7 +146,7 @@ const BASE_ORDER = Object.keys(SECTIONS) as SectionId[];
 // 열 안의 순서는 저장된 순서를 따르고, ↑↓ 는 같은 열 안의 이웃과 바꾼다.
 const COLUMN: Record<SectionId, 0 | 1 | 2> = {
   market: 0, kfutures: 0, weekly: 0, regime: 0, credit: 0,
-  favorites: 1, macro: 1, sectornews: 1, agenda: 1, recent: 1, bottom: 1,
+  morning: 1, daycall: 1, favorites: 1, macro: 1, sectornews: 1, agenda: 1, recent: 1, bottom: 1,
   flow: 2, portfolio: 2, stats: 2, halving: 2, paper: 2,
 };
 type Layout = "wide" | "normal" | "phone";
@@ -180,7 +185,10 @@ function useBand(layout: Layout): Band | null {
 // #464 휴대폰은 접힌 머리글로 시작하고, 펼친 구역(mobileOpen)을 데스크톱 접힘(closed)과 따로 기억한다.
 const PREFS_KEY = "desk.dashboard.v1";
 // rev 464: 넓은 화면 오른쪽 열에서 시장 수급을 내 투자 · 적중률 위로(한 번만 — 그 뒤 사용자가 옮긴 순서는 그대로)
-const PREFS_REV = 464;
+// rev 573: 아침 시황 · 오늘 방향을 휴대폰에서 펼친 채로 시작(한 번만 — 그 뒤 접으면 그대로)
+const FLOW_REV = 464;
+const PREFS_REV = 573;
+const TOP_SECTIONS: SectionId[] = ["morning", "daycall"];
 type Prefs = { order: SectionId[]; closed: SectionId[]; mobileOpen: SectionId[]; rev?: number };
 function flowFirstInColumn(order: SectionId[]): SectionId[] {
   const rest: SectionId[] = order.filter((s) => s !== "flow");
@@ -203,11 +211,12 @@ function loadPrefs(): Prefs {
       if (!order.includes(id)) order.splice(Math.min(i, order.length), 0, id);
     });
     const closed = Array.isArray(raw.closed) ? raw.closed.filter(known) : [];
-    const mobileOpen = Array.isArray(raw.mobileOpen) ? raw.mobileOpen.filter(known) : [];
     const rev = typeof raw.rev === "number" ? raw.rev : 0;
-    return { order: rev >= PREFS_REV ? order : flowFirstInColumn(order), closed, mobileOpen, rev: PREFS_REV };
+    const saved_open: SectionId[] = Array.isArray(raw.mobileOpen) ? raw.mobileOpen.filter(known) : [];
+    const mobileOpen = rev >= PREFS_REV ? saved_open : [...new Set([...TOP_SECTIONS, ...saved_open])];
+    return { order: rev >= FLOW_REV ? order : flowFirstInColumn(order), closed, mobileOpen, rev: PREFS_REV };
   } catch {
-    return { order: DEFAULT_ORDER, closed: [], mobileOpen: [], rev: PREFS_REV };
+    return { order: DEFAULT_ORDER, closed: [], mobileOpen: [...TOP_SECTIONS], rev: PREFS_REV };
   }
 }
 function savePrefs(prefs: Prefs) {
@@ -256,7 +265,7 @@ export default function Dashboard() {
     // #487 저장 배치에서 시장 수급을 숨겨 두었으면 다시 보이게(맨 아래) — 알림 클릭이 아무 일도 안 하지 않게
     const revealInGrid = () => {
       if (!/[?&]flow=intraday(?:&|$)/.test(window.location.hash)) return;
-      for (const b of ["wide", "mid"] as const) if (unhideSection(b, "flow")) setSaved((cur) => (cur && bandSeen.current === b ? loadBand(b, DEFAULT_ORDER) : cur));
+      for (const b of ["wide", "mid"] as const) if (unhideSection(b, "flow")) setSaved((cur) => (cur && bandSeen.current === b ? loadBand(b, DEFAULT_ORDER, TOP_SECTIONS) : cur));
     };
     revealInGrid();
     window.addEventListener("hashchange", revealInGrid);
@@ -290,7 +299,7 @@ export default function Dashboard() {
   // #487 배치 편집 — 저장한 격자 배치가 있으면 보기 모드도 격자로, 없으면 예전 흐름(#464) 그대로
   const band = useBand(layout);
   // 저장 배치는 첫 렌더부터 읽는다 — 예전 흐름으로 한 번 그렸다가 격자로 바꾸면 구역이 두 번 마운트돼 요청이 두 번 나가고 깜빡인다
-  const [saved, setSaved] = useState<BandLayout | null>(() => (band ? loadBand(band, DEFAULT_ORDER) : null));
+  const [saved, setSaved] = useState<BandLayout | null>(() => (band ? loadBand(band, DEFAULT_ORDER, TOP_SECTIONS) : null));
   const [draft, setDraft] = useState<BandLayout | null>(null);
   const [said, setSaid] = useState("");
   const flowRef = useRef<HTMLDivElement>(null);
@@ -311,7 +320,7 @@ export default function Dashboard() {
     if (bandSeen.current === band) return;
     bandSeen.current = band;
     setDraft((d) => { if (d) setSaid("화면 폭이 바뀌어 배치 편집을 취소했습니다"); return null; });
-    setSaved(band ? loadBand(band, DEFAULT_ORDER) : null);
+    setSaved(band ? loadBand(band, DEFAULT_ORDER, TOP_SECTIONS) : null);
   }, [band]);
   const grid = band ? draft ?? saved : null;
   const startEdit = () => {

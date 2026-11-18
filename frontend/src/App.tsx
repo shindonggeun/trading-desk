@@ -8,7 +8,7 @@ import ChunkFailed from "./components/ChunkFailed";
 import { activeNav, NAV, navigation } from "./nav";
 // #537 대시보드 밖 화면은 갈 때 받는다(메뉴에 올리면 미리)
 import {
-  Backtest, CalendarView, Charts, ChartView, Chat, FuturesView, Funds, Halving, History, Live, Paper, prefetchRoute,
+  Backtest, CalendarView, Charts, ChartView, Chat, DayCallRecord, FuturesView, Funds, Halving, History, Live, MorningBriefPage, Paper, prefetchRoute,
   Reports, Review, RunView, Sectors, Settings, Tips, WeeklyMap,
 } from "./lazyPages";
 import ChatWidget from "./components/ChatWidget";
@@ -98,6 +98,8 @@ export default function App() {
   const reportsMatch = route.match(/^#\/reports(?:\/([\w-]+))?(?:\?.*)?$/);   // #496 초보자 리포트(알림 url /#/reports/{id})
   const halvingMatch = route.match(/^#\/halving(?:\?.*)?$/);   // #515 비트코인 반감기 사이클
   const onPaper = route === "#/paper" || route.startsWith("#/paper?");   // #528 모의 투자
+  const onDayCall = route === "#/day-call" || route.startsWith("#/day-call?");   // #573 오늘 방향 적중 기록
+  const morningMatch = route.match(/^#\/briefs\/morning(?:\?(.*))?$/);   // #573 아침 시황(알림 url, #571)
   const futuresMatch = route.match(/^#\/futures(?:\?(.*))?$/);   // #444 코스피200 선물 시세
   // 큰 차트(#97): #/chart/<티커>?run=…&interval=…
   const chartMatch = route.match(/^#\/chart\/([^?]+)(?:\?(.*))?$/);
@@ -205,6 +207,10 @@ export default function App() {
         <Halving />
       ) : onPaper ? (
         <Paper />
+      ) : onDayCall ? (
+        <DayCallRecord />
+      ) : morningMatch ? (
+        <MorningBriefPage query={new URLSearchParams(morningMatch[1] ?? "")} />
       ) : futuresMatch ? (
         <FuturesView query={new URLSearchParams(futuresMatch[1] ?? "")} />
       ) : weeklyMatch ? (

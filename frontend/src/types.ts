@@ -2032,3 +2032,67 @@ export interface PaperTrades {
   counts: { closed: number; open: number; waiting: number; skipped: number };
   items: PaperTrade[];
 }
+
+
+// #573 아침 시황(#571) — 계약: #571 issuecomment-6966263436. 시각은 UTC ISO, date 는 한국 날짜
+export type BriefSource = "ai" | "rules";
+export type BriefTrigger = "auto" | "manual";
+export interface MorningBrief {
+  id: string;
+  date: string;
+  created_at: string;
+  trigger: BriefTrigger;
+  source: BriefSource;
+  model: string | null;
+  title: string;
+  numbers: string[];
+  kr_flow: string | null;
+  done: string[];
+  pending: string[];
+  schedule: string[];
+  good: string[];
+  bad: string[];
+  closing: string | null;
+  day_call: string | null;
+  missing: string[];
+  fallback?: string | null;
+  version: number;
+  generating: boolean;
+  next_due: string | null;
+}
+export interface MorningBriefItem { id: string; date: string; created_at: string; title: string; source: BriefSource; trigger: BriefTrigger }
+export interface MorningBriefList { items: MorningBriefItem[]; generating: boolean }
+
+// #573 오늘 방향(#572) — 잠정 모양(34 의 계약 확정 뒤 맞춘다). 확률은 0~1, 다섯 단계 합 1
+export type DayCallMarket = "kr" | "us";
+export type DayCallLabel = "strong_long" | "long" | "flat" | "short" | "strong_short";
+export type DayCallProbs = Record<DayCallLabel, number>;
+export interface DayCallSide {
+  label: DayCallLabel;
+  probs: DayCallProbs;
+  round: number | null;      // 1차 · 2차
+  at: string | null;         // 판정 시각(UTC ISO)
+  reasons: string[];         // 근거 상위 5개
+}
+export interface DayCall { date: string; kr: DayCallSide | null; us: DayCallSide | null; line: string | null }
+export interface DayCallHistoryItem {
+  date: string;
+  round: number | null;
+  label: DayCallLabel;
+  probs: DayCallProbs;
+  actual: DayCallLabel | null;    // 장 마감 전 · 채점 전이면 null
+  actual_pct: number | null;      // 시가 → 종가 등락률(%)
+  hit: boolean | null;            // 방향(롱 · 숏 · 보합) 맞춤
+  exact: boolean | null;          // 다섯 단계까지 맞춤
+}
+export interface DayCallHistory { market: DayCallMarket; days: number; items: DayCallHistoryItem[] }
+export interface DayCallStats {
+  market: DayCallMarket;
+  days: number;
+  n: number;
+  hit_rate: number | null;
+  exact_rate: number | null;
+  brier: number | null;
+  by_label: { label: DayCallLabel; n: number; hit_rate: number | null }[];
+  calibration: { lo: number; hi: number; n: number; predicted: number; actual: number | null }[];
+}

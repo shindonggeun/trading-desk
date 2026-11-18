@@ -14,6 +14,8 @@ import { useLatestReport } from "../latestReport";
 
 const MAX = 10;                 // 즐겨찾기 앞 10종목만 — 종목마다 플레이북 · 예상도를 부른다
 const REFRESH_MS = 5 * 60_000;
+// #644 종목마다 플레이북 · 예상도(최대 20개 요청)는 첫 화면이 그려진 뒤에 — 첫 방문 요청이 몰려 위 띠 · 카드가 늦던 것
+const PER_TICKER_AFTER_MS = 2_500;
 const LS_JUMP = 5;              // 롱 비율 24시간 변화 %p 이상이면 급변
 const EARN_DAYS = 3;
 
@@ -77,15 +79,23 @@ export default function TodayStrip() {
     const tickers = key.split(",");
     let alive = true;
     let timer = 0;
+    let first = true;
     const load = async () => {
+      // 종목별 요청은 처음엔 잠깐 뒤에 — 그사이 시세 · 롱숏 · 일정으로 먼저 그린다
+      const later = first;
+      first = false;
+      const perP = (async () => {
+        if (later) await new Promise((r) => window.setTimeout(r, PER_TICKER_AFTER_MS));
+        if (!alive) return [];
+        return Promise.allSettled(tickers.map((t) => Promise.allSettled([api.playbooksFor(t), api.projection(t, "swing")])));
+      })();
       const today = kstDay();
       const month = today.slice(0, 7);
       const months = dayDiff(today, `${nextMonth(month)}-01`) <= EARN_DAYS ? [month, nextMonth(month)] : [month];
-      const [board, ls, cal, ...per] = await Promise.allSettled([
+      const [board, ls, cal] = await Promise.allSettled([
         api.board(tickers),
         api.longShort(tickers),
         Promise.all(months.map((m) => api.marketMonth(m))),
-        ...tickers.map((t) => Promise.allSettled([api.playbooksFor(t), api.projection(t, "swing")])),
       ]);
       if (!alive) return;
       const quotes: Record<string, BoardItem> = {};
@@ -100,6 +110,7 @@ export default function TodayStrip() {
           for (const r of d.earnings) if (tickers.includes(r.ticker) && !earn[r.ticker]) earn[r.ticker] = left === 0 ? "오늘 실적" : `실적 D-${left}`;
         }
       }
+      const build = (per: PromiseSettledResult<unknown>[]) => {
       const out: Record<string, Reason[]> = {};
       tickers.forEach((t, i) => {
         const reasons: Reason[] = [];
@@ -116,7 +127,12 @@ export default function TodayStrip() {
         if (l) reasons.push(l);
         if (reasons.length) out[t] = reasons;
       });
-      setFound(out);
+      return out;
+      };
+      if (later) setFound(build([]));
+      const per = await perP;
+      if (!alive) return;
+      setFound(build(per));
       timer = window.setTimeout(load, REFRESH_MS);
     };
     load();

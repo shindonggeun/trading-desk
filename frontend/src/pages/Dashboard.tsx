@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { Layout as GridLayoutItems } from "react-grid-layout";
 import { api } from "../api";
-import { balanceColumns, CLOSED_PX, loadColumns, loadHeights, saveColumns, saveHeights, type Col } from "../dashBalance";
+import { balanceColumns, CLOSED_PX, loadColumns, loadHeights, saveColumns, saveHeights, TYPICAL_PX, type Col } from "../dashBalance";
 import FavoritesPanel from "../components/FavoritesPanel";
 import FuturesQuoteCard from "../components/FuturesQuoteCard";
 import CreditPanel from "../components/CreditPanel";
@@ -534,6 +534,12 @@ export default function Dashboard() {
     </main>
   );
 
+  // #644 넓은 화면 3열의 자리표시 높이: 이 브라우저에서 잰 높이(없으면 운영 보통 높이)에서 머리글을 뺀 만큼
+  function waitPx(id: SectionId): number | undefined {
+    const h = heightsSeen.current[id] ?? TYPICAL_PX[id];
+    return h ? Math.max(120, h - 40) : undefined;
+  }
+
   function renderSection(id: SectionId) {
     const s = SECTIONS[id];
     const open = isOpen(id);
@@ -577,7 +583,8 @@ export default function Dashboard() {
             <div className="dash-body-inner" ref={inGrid ? auto.register(id) : undefined}>
               {/* #537 화면 밖 구역은 보일 때 그리고(그 전엔 API 도 안 부른다), 코드가 따로인 구역은 받는 동안 안내 */}
               {/* #362 알림(#/?flow=intraday)이 연 수급 구역은 화면 밖이어도 바로 그려 "오늘 장중" 탭 · 스크롤이 일어나게 */}
-              <WhenVisible eager={id === "flow" && /[?&]flow=intraday(?:&|$)/.test(window.location.hash)}>
+              <WhenVisible eager={id === "flow" && /[?&]flow=intraday(?:&|$)/.test(window.location.hash)}
+                placeholderPx={layout === "wide" && !inGrid ? waitPx(id) : undefined}>
                 <SectionBoundary fallback={<ChunkFailed />}>
                   <Suspense fallback={<p className="muted small">불러오는 중…</p>}>{s.render()}</Suspense>
                 </SectionBoundary>

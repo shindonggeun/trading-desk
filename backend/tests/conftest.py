@@ -13,6 +13,7 @@ os.environ.setdefault("DESK_MORNING_BRIEF_AT", "off")    # #571: no automatic mo
 # a developer's .env must not open a KIS websocket from the tests
 os.environ["DESK_KIS_APP_KEY"] = ""
 os.environ["DESK_KIS_APP_SECRET"] = ""
+os.environ["DESK_KRX_API_KEY"] = ""                       # #601 nor call KRX with a real key
 from sqlalchemy import text
 
 from desk.db import make_engine, metadata

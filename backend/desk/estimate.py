@@ -241,6 +241,24 @@ def futures_open(now: datetime) -> bool:
     return hour != 17
 
 
+WARM_LEAD = timedelta(minutes=30)     # #536: a market about to open is warmed this early
+
+
+def trading_soon(ticker: str, now: datetime, lead: timedelta = WARM_LEAD) -> bool:
+    """#536: the ticker's market is open now or opens within ``lead`` (weekdays and the special hours here;
+    holidays are not known, so a holiday is warmed like a weekday). Closed, its daily closes do not change -
+    the prewarm loop leaves them alone."""
+    session = session_of(ticker)
+    if session.futures:
+        return futures_open(now) or futures_open(now + lead)
+    local = now.astimezone(session.zone)
+    if local.weekday() >= 5:
+        return False
+    opens, closes = session.hours(local.date())
+    start = datetime.combine(local.date(), opens, session.zone) - lead
+    return start <= local < datetime.combine(local.date(), closes, session.zone)
+
+
 def _round(price: float) -> float:
     return float(round(price)) if price >= 1000 else round(price, 2)
 
@@ -480,13 +498,16 @@ class BinanceEstimator:
         self._remember(ticker, result)
         return result
 
-    async def warm(self, tickers: list[str], ahead: float = 0.0, parallel: int = 4) -> int:
+    async def warm(self, tickers: list[str], ahead: float = 0.0, parallel: int = 4, open_only: bool = True) -> int:
         """#536 the quote board's first look, paid before a page asks: the contract list, each ticker's daily
-        closes read again before they expire (``ahead``) and its close-time mark. Tickers without a contract
-        are left alone; one failing does not stop the others. How many were warmed."""
+        closes read again before they expire (``ahead``) and its close-time mark - only while its market is
+        open or about to open (``open_only``; closed, nothing is asked). Tickers without a contract are left
+        alone; one failing does not stop the others. How many were warmed."""
         gate = asyncio.Semaphore(parallel)
 
         async def one(ticker: str) -> bool:
+            if open_only and not trading_soon(ticker, self._now()):
+                return False
             async with gate:
                 if await self.resolve(ticker) is None:
                     return False

@@ -24,6 +24,10 @@ log = logging.getLogger(__name__)
 INTERVAL_SEC = 240.0
 AHEAD_SEC = INTERVAL_SEC + 60.0     # what expires before the next pass (with room for a slow pass)
 FAVORITES_MAX = 8                   # favorites' tickers warmed per pass
+# #536 review: the board's closes and the playbooks live 300 s (desk.estimate CLOSES_TTL_SEC, the swing
+# horizon's sr_ttl_sec) - AHEAD_SEC would call every value stale. A third of that: refreshed once a pass while
+# their market is open (a value read in the last pass is 240 s old), never while it is closed.
+LIVE_AHEAD_SEC = 100.0
 FIRST_DELAY_SEC = 5.0               # let the app finish starting before the first pass
 
 Job = Callable[[], Awaitable[object]]

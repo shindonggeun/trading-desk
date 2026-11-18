@@ -269,6 +269,19 @@ def test_a_clock_change_leaves_the_old_hours_out_and_a_short_history_fills_the_w
     assert patterns.future_times(two, 1) == ["2026-11-12T14:30:00+00:00"]   # Thursday, not next Tuesday
 
 
+
+def test_a_few_hours_of_one_minute_bars_carry_on_the_same_day():
+    from datetime import UTC, datetime
+
+    tue = [datetime(2026, 11, 17, 20, 10, tzinfo=UTC) + timedelta(minutes=m) for m in range(50)]     # 20:10-20:59
+    wed = [datetime(2026, 11, 18, 14, 30, tzinfo=UTC) + timedelta(minutes=m) for m in range(150)]    # 14:30-16:59
+    bars = [{"at": t.isoformat()} for t in tue + wed]
+    nxt = patterns.future_times(bars, 3)
+    assert nxt == ["2026-11-18T17:00:00+00:00", "2026-11-18T17:01:00+00:00", "2026-11-18T17:02:00+00:00"]
+    later = patterns.future_times(bars, 241)                            # 17:00-20:59 (240), then Thursday's open
+    assert later[239] == "2026-11-18T20:59:00+00:00" and later[240] == "2026-11-19T14:30:00+00:00"
+
+
 def test_the_odds_by_the_trend_before_and_the_verdict_said_as_measured(monkeypatch):
     base = {"n": 41, "up_pct": 58.0, "down_pct": 42.0, "none_pct": 0.0, "false_break_pct": 30.0,
             "verdict": "edge", "edge_pct": 9.0,

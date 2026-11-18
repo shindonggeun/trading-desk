@@ -50,6 +50,10 @@ EXPECTED = {"ascending": "up", "descending": "down", "rising_wedge": "down", "fa
 STATS_PATH = Path(__file__).parent / "data" / "pattern_stats.json"
 WINDOW_DEFAULT = (0.5, 0.8)  # the textbook share of start -> apex where breaks come, without a measurement
 MIN_ODDS_N = 30            # fewer measured cases: "표본 적음"
+# a starting height past either is no target (a pattern that began in a big swing, e.g. 005930 1d at 94%):
+# the width at the last touch stands in, and if that is too wide as well the targets are left out
+MAX_HEIGHT_ATR = 8.0
+MAX_HEIGHT_PCT = 60.0
 SLOT_DAYS = 28             # the next bars' times follow the weekdays and clock times of this many past days
 KST = timezone(timedelta(hours=9))
 TF_KO = {"1m": "1분봉", "5m": "5분봉", "15m": "15분봉", "30m": "30분봉", "60m": "1시간봉", "120m": "2시간봉",
@@ -179,7 +183,8 @@ def find(bars: list[dict], k: int, atr: float, timeframe: str = "1d", price: flo
         "narrowed": round((up.at(last) - low.at(last)) / (up.at(start) - low.at(start)), 2),
         "stats": stats,
     }
-    out.update(outlook(bars, up, low, start, apex, timeframe, stats, _prior_trend(bars, start), state, every))
+    out.update(outlook(bars, up, low, start, apex, timeframe, stats, _prior_trend(bars, start), state, every,
+                       unit))
     out["explain"] = explain(out)
     return [out]
 
@@ -249,7 +254,8 @@ def _fill(clocks: list, times: list[datetime]) -> list:
 
 
 def outlook(bars: list[dict], up: _Line, low: _Line, start: int, apex: float, timeframe: str,
-            stats: dict | None, prior: str, state: str = "converging", every: list[dict] | None = None) -> dict:
+            stats: dict | None, prior: str, state: str = "converging", every: list[dict] | None = None,
+            unit: float | None = None) -> dict:
     """#629 when a side is usually chosen, how far a break usually carries and the measured odds.
     ``every``: the bars the future times are read from (more than the pattern's)."""
     last = len(bars) - 1
@@ -273,9 +279,7 @@ def outlook(bars: list[dict], up: _Line, low: _Line, start: int, apex: float, ti
     height = up.at(start) - low.at(start)
     # (a pattern already broken: at the break, the last bars - as desk.patterns_bt measures the reach)
     xb = last if state != "converging" else min(max((x0 + x1) / 2, last), apex)
-    targets = {"up": _round(math.exp(up.at(xb) + height)), "down": _round(math.exp(low.at(xb) - height)),
-               "height_pct": round((math.exp(height) - 1) * 100, 2), "reach_pct": stats.get("reach_pct"),
-               "basis": "measured_move"}
+    targets = _targets(up, low, start, xb, height, unit, stats.get("reach_pct"))
     odds = None
     if stats:
         by = (stats.get("by_prior") or {}).get(prior)
@@ -287,6 +291,30 @@ def outlook(bars: list[dict], up: _Line, low: _Line, start: int, apex: float, ti
                 "edge_pct": stats.get("edge_pct")}
     return {"apex_at": times[ahead_apex - 1] if len(times) >= ahead_apex else None, "breakout_window": window,
             "targets": targets, "odds": odds}
+
+
+def _too_wide(height: float, unit: float | None) -> bool:
+    return (math.exp(height) - 1) * 100 > MAX_HEIGHT_PCT or bool(unit and height > MAX_HEIGHT_ATR * unit)
+
+
+def _targets(up: _Line, low: _Line, start: int, xb: float, height: float, unit: float | None,
+             reach: float | None) -> dict:
+    """The measured move from ``xb``; a starting height too wide (MAX_HEIGHT_PCT / MAX_HEIGHT_ATR) gives
+    way to the width at the last touch (``basis`` recent_swing - the measured reach then no longer
+    applies), and with that too wide the targets are left out with the reason."""
+    def at(h: float, basis: str, reached: float | None) -> dict:
+        return {"up": _round(math.exp(up.at(xb) + h)), "down": _round(math.exp(low.at(xb) - h)),
+                "height_pct": round((math.exp(h) - 1) * 100, 2), "reach_pct": reached, "basis": basis}
+
+    if not _too_wide(height, unit):
+        return at(height, "measured_move", reach)
+    touch = max([*up.touches, *low.touches, start])
+    recent = up.at(touch) - low.at(touch)
+    if recent > 0 and not _too_wide(recent, unit):
+        return at(recent, "recent_swing", None)
+    return {"up": None, "down": None, "height_pct": round((math.exp(height) - 1) * 100, 2), "reach_pct": None,
+            "basis": "omitted",
+            "omitted": f"패턴 처음 높이가 {(math.exp(height) - 1) * 100:.0f}% 로 너무 넓어 목표는 생략했어요"}
 
 
 def _clock(at: str | None, timeframe: str) -> str:
@@ -319,17 +347,27 @@ def explain(p: dict) -> str:
     name = p["label"] + ("수렴" if "wedge" not in p["kind"] else "")
     head = f"{tf} {name} — {SHAPE_KO[p['kind']]}."
     t, w, o = p["targets"], p["breakout_window"], p.get("odds")
-    if p["state"] == "broke_up":
-        middle = f" 이미 위로 깼어요 — 처음 높이만큼 가면 {_fmt(t['up'])} 근처."
+    how = "최근 폭만큼" if t["basis"] == "recent_swing" else "처음 높이만큼"
+    if t["basis"] == "omitted":
+        middle = (f" 이미 {'위' if p['state'] == 'broke_up' else '아래'}로 깼어요." if p["state"] != "converging"
+                  else "") + f" {t['omitted']}."
+        if p["state"] == "converging":
+            w = p["breakout_window"]
+            basis = "보통" if w["basis"] == "measured" else "교과서로는"
+            middle = (" 흔히 방향이 나오는 구간은 지났고 꼭짓점이 가까워요." if w["passed"] else
+                      f" {basis} 꼭짓점 전 {_span(w['from'], w['to'], p['timeframe'])}에 방향이 나와요.") + middle
+    elif p["state"] == "broke_up":
+        middle = f" 이미 위로 깼어요 — {how} 가면 {_fmt(t['up'])} 근처."
     elif p["state"] == "broke_down":
-        middle = f" 이미 아래로 깼어요 — 처음 높이만큼 가면 {_fmt(t['down'])} 근처."
+        middle = f" 이미 아래로 깼어요 — {how} 가면 {_fmt(t['down'])} 근처."
     else:
         basis = "보통" if w["basis"] == "measured" else "교과서로는"
         if w["passed"]:
             when = " 흔히 방향이 나오는 구간은 지났고 꼭짓점이 가까워요."
         else:
             when = f" {basis} 꼭짓점 전 {_span(w['from'], w['to'], p['timeframe'])}에 방향이 나와요."
-        middle = f"{when} 위로 깨면 {_fmt(t['up'])}, 아래로 깨면 {_fmt(t['down'])} 근처."
+        middle = f"{when} 위로 깨면 {_fmt(t['up'])}, 아래로 깨면 {_fmt(t['down'])} 근처" + (
+            "(처음 높이가 너무 넓어 최근 폭 기준)." if t["basis"] == "recent_swing" else ".")
     if t.get("reach_pct") is not None:
         middle += f" 과거 그 목표까지 간 비율 {t['reach_pct']:.0f}%."
     if o and o.get("up_pct") is not None:

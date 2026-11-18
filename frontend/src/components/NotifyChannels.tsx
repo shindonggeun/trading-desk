@@ -13,6 +13,7 @@ const PLACEHOLDER: { id: NotifyChannelId; label: string }[] = [{ id: "telegram",
 const TEST_ERROR: Record<string, string> = {
   "not configured": "서버에 이 채널 설정이 없습니다",
   "not connected": "아직 연결하지 않았습니다",
+  timeout: "응답이 늦어 끊었습니다(150초)",
 };
 
 function kakaoReturn(): "ok" | "fail" | null {
@@ -33,7 +34,14 @@ export default function NotifyChannels() {
   useEffect(() => {
     let alive = true;
     api.notifyChannels()
-      .then((d) => alive && setData(d))
+      .then((d) => {
+        if (!alive) return;
+        setData(d);
+        // #580: 카카오 콜백이 늦으면(504) 실패로 돌아오지만 연결은 이미 됐을 수 있다 — 목록이 말하는 쪽으로
+        if (kakaoReturn() === "fail" && d.channels.some((c) => c.id === "kakao" && c.connected && !c.needs_reconnect)) {
+          setNotice("카카오톡을 연결했습니다(응답이 늦어 실패로 보였습니다).");
+        }
+      })
       .catch((e) => {
         if (!alive) return;
         if (e instanceof ApiError && e.status === 404) setMissing(true);
@@ -51,7 +59,7 @@ export default function NotifyChannels() {
       if (said) setNotice(said);
     } catch (e) {
       setNotice(e instanceof ApiError
-        ? (e.status === 429 ? "잠시 뒤에 다시 보내 주세요(5초에 한 번)." : e.status === 403 ? "소유자 계정만 바꿀 수 있습니다." : `실패 — ${e.message}`)
+        ? (e.status === 429 ? "잠시 뒤에 다시 보내 주세요(시험 보내기는 채널 모두 합쳐 5초에 한 번)." : e.status === 403 ? "소유자 계정만 바꿀 수 있습니다." : `실패 — ${e.message}`)
         : "실패 — 잠시 뒤 다시 해 주세요");
     } finally {
       setBusy(null);

@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { alertKey, hhmm } from "../alertsFeed";
 import { api, Unauthorized, type MarketAlert } from "../api";
+import MiniTickerEditor from "../components/MiniTickerEditor";
 import { krwShort, price } from "../format";
-import { loadMiniPrefs, saveMiniPrefs, type MiniPrefs } from "../miniWindow";
-import type { BoardItem, Favorite } from "../types";
+import { loadMiniPrefs, MINI_FUTURES, saveMiniPrefs, useMiniItems, type MiniPrefs } from "../miniWindow";
+import { byAsked } from "../ticker";
+import type { BoardItem } from "../types";
 
 const QUOTE_MS = 15_000;          // 시세판과 같은 주기
 const FLOW_MS = 60_000;
-const FAV_MS = 5 * 60_000;
 const NEW_ALERT_MS = 20_000;      // 새 알림을 굵게 두는 시간(깜빡이지 않는다)
-const MAX_QUOTES = 12;
-const STRIP_MAX_H = 140;          // 이 높이 아래면 한 줄 띠, 위면 세로 카드
+const STRIP_MAX_H = 140;          // 이 높이 아래면 띠, 위면 세로 카드
+const EDIT_SIZE = { width: 420, height: 520 };   // ⚙ 로 종목을 고치는 동안 잠깐 키우는 크기
 
 type Flow = { foreign: number | null; inst: number | null; provisional: boolean } | null;
+/** 한 종목의 시세 — 시세판(/api/estimates) 또는 코스피200 선물(/api/market/futures/quote) */
+type Quote = { price: number | null; change_pct: number | null; estimate?: boolean; stale?: boolean };
 
 function Mark({ v }: { v: number | null | undefined }) {
   if (v == null || v === 0) return <span aria-hidden="true" className="mini-mark">■</span>;
@@ -21,67 +24,85 @@ function Mark({ v }: { v: number | null | undefined }) {
 
 const signed = (v: number | null | undefined) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(2)}%`);
 const tone = (v: number | null | undefined) => (v == null || v === 0 ? "" : v > 0 ? "up" : "down");
+const fromBoard = (it: BoardItem): Quote => ({ price: it.price ?? null, change_pct: it.change_pct ?? null, estimate: it.state === "estimate" });
 
 /**
- * #582 회사에서 조용히 띄워 두는 작은 창(#/mini · Document PiP) — 즐겨찾기 시세 · 외인/기관 수급 한 줄 · 오늘 마지막 알림.
- * 창이 낮으면 한 줄 띠, 높으면 세로 카드. 조용한 모드는 회색조 · ▲▼ 기호, 글자 크기 3단계(이 브라우저에 기억).
- * 오늘 방향(#572)은 API 가 나오면 붙인다.
+ * #582 회사에서 조용히 띄워 두는 작은 창(#/mini · Document PiP) — 고른 종목 시세 · 외인/기관 수급 한 줄 · 오늘 마지막 알림.
+ * #616 종목은 작은 창 전용 목록(기본 10종)을 한글 이름으로 보이고, 설정 또는 창 안 ⚙ 에서 고친다.
+ * 창이 낮으면 띠(넘치면 두 줄까지), 높으면 세로 카드. 조용한 모드는 회색조 · ▲▼ 기호, 글자 크기 3단계(이 브라우저에 기억).
  */
 export default function MiniWindow({ pip = false }: { pip?: boolean }) {
   const [prefs, setPrefs] = useState<MiniPrefs>(loadMiniPrefs);
-  const [favs, setFavs] = useState<Favorite[] | null>(null);
-  const [quotes, setQuotes] = useState<Record<string, BoardItem>>({});
+  const [items, setItems] = useMiniItems();
+  const [quotes, setQuotes] = useState<Record<string, Quote>>({});
   const [flow, setFlow] = useState<Flow>(null);
   const [alert, setAlert] = useState<MarketAlert | null>(null);
   const [fresh, setFresh] = useState(false);
   const [login, setLogin] = useState(false);
   const [strip, setStrip] = useState(true);
+  const [editing, setEditing] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const lastSeen = useRef<string | null>(null);
+  const before = useRef<{ width: number; height: number } | null>(null);
 
   const update = (next: MiniPrefs) => { setPrefs(next); saveMiniPrefs(next); };
   const fail = useCallback((e: unknown) => { if (e instanceof Unauthorized) setLogin(true); }, []);
+  const ok = useCallback(() => setLogin(false), []);   // 데스크 탭에서 다시 로그인하면 다음 요청이 성공해 안내를 내린다
+  const view = () => root.current?.ownerDocument.defaultView ?? window;   // PiP 안에서 전역 window 는 원래 탭이다
 
-  // 배치: 이 창(PiP 면 그 창)의 높이로 — 전역 window 는 PiP 안에서 원래 탭이다
+  // 배치: 이 창(PiP 면 그 창)의 높이로
   useEffect(() => {
-    const el = root.current;
-    if (!el) return;
-    const view = el.ownerDocument.defaultView ?? window;
-    const apply = () => setStrip(view.innerHeight < STRIP_MAX_H);
+    const v = view();
+    const apply = () => setStrip(v.innerHeight < STRIP_MAX_H);
     apply();
-    view.addEventListener("resize", apply);
-    return () => view.removeEventListener("resize", apply);
+    v.addEventListener("resize", apply);
+    return () => v.removeEventListener("resize", apply);
   }, []);
 
+  const boardKey = items.filter((it) => it.ticker !== MINI_FUTURES).map((it) => it.ticker).join(",");
+  const wantFutures = items.some((it) => it.ticker === MINI_FUTURES);
   useEffect(() => {
+    if (!boardKey) return;
     let alive = true;
-    const load = () => api.favorites().then((f) => { if (alive) { setFavs(f); setLogin(false); } }).catch(fail);
-    load();
-    const id = window.setInterval(load, FAV_MS);
-    return () => { alive = false; window.clearInterval(id); };
-  }, [fail]);
-
-  const tickers = (favs ?? []).slice(0, MAX_QUOTES).map((f) => f.ticker);
-  const key = tickers.join(",");
-  useEffect(() => {
-    if (!key) return;
-    let alive = true;
-    const load = () => api.board(key.split(",")).then((r) => {
-      if (alive) setQuotes(Object.fromEntries(r.items.map((it) => [it.ticker, it])));
+    const asked = boardKey.split(",");
+    const load = () => api.board(asked).then((r) => {
+      if (!alive) return;
+      ok();
+      // 맨 국내 코드(005930)를 물으면 서버는 005930.KS 로 답한다 — 물은 티커로 다시 읽는다
+      const got = byAsked(asked, r.items);
+      setQuotes((q) => ({ ...q, ...Object.fromEntries(Object.entries(got).map(([k, it]) => [k, fromBoard(it)])) }));
     }).catch(fail);
     load();
     const id = window.setInterval(load, QUOTE_MS);
     return () => { alive = false; window.clearInterval(id); };
-  }, [key, fail]);
+  }, [boardKey, fail, ok]);
+
+  useEffect(() => {
+    if (!wantFutures) return;
+    let alive = true;
+    const load = () => api.futuresQuote().then((f) => {
+      if (!alive) return;
+      ok();
+      const q: Quote = f.supported && f.price != null
+        ? { price: f.price, change_pct: f.change_pct ?? null, stale: f.stale }
+        : { price: null, change_pct: null };
+      setQuotes((all) => ({ ...all, [MINI_FUTURES]: q }));
+    }).catch(fail);
+    load();
+    const id = window.setInterval(load, QUOTE_MS);
+    return () => { alive = false; window.clearInterval(id); };
+  }, [wantFutures, fail, ok]);
 
   useEffect(() => {
     let alive = true;
     const loadFlow = () => api.marketFlow("KOSPI", "1d", 1).then((f) => {
       const r = f.records[0];
+      if (alive) ok();
       if (alive) setFlow(r ? { foreign: r.investors.foreigner?.net ?? null, inst: r.investors.institution?.net ?? null, provisional: r.provisional } : null);
     }).catch(fail);
     const loadAlert = () => api.alertsToday().then((a) => {
       if (!alive) return;
+      ok();
       const last = a.items[a.items.length - 1] ?? null;
       setAlert(last);
       const k = last ? alertKey(last) : "";
@@ -93,7 +114,7 @@ export default function MiniWindow({ pip = false }: { pip?: boolean }) {
     const f = window.setInterval(loadFlow, FLOW_MS);
     const a = window.setInterval(loadAlert, QUOTE_MS);
     return () => { alive = false; window.clearInterval(f); window.clearInterval(a); };
-  }, [fail]);
+  }, [fail, ok]);
 
   useEffect(() => {
     if (!fresh) return;
@@ -102,29 +123,47 @@ export default function MiniWindow({ pip = false }: { pip?: boolean }) {
   }, [fresh]);
 
   const openDesk = () => {
-    const view = root.current?.ownerDocument.defaultView ?? window;
-    view.open(`${location.origin}${location.pathname}#/`, "_blank", "noopener");
+    view().open(`${location.origin}${location.pathname}#/`, "_blank", "noopener");
+  };
+  // ⚙: 띠 크기에서는 고칠 칸이 안 보여 창을 잠깐 키우고, 다 고치면 원래 크기로(PiP · 팝업 모두 사용자 동작 안에서만 된다)
+  const toggleEdit = () => {
+    const v = view();
+    if (!editing) {
+      before.current = { width: v.outerWidth, height: v.outerHeight };
+      if (v.innerHeight < EDIT_SIZE.height) {
+        try { v.resizeTo(Math.max(v.outerWidth, EDIT_SIZE.width), EDIT_SIZE.height); } catch { /* 크기를 못 바꾸면 그 안에서 스크롤 */ }
+      }
+    } else if (before.current) {
+      try { v.resizeTo(before.current.width, before.current.height); } catch { /* 그대로 둔다 */ }
+      before.current = null;
+    }
+    setEditing(!editing);
   };
   const sizes: MiniPrefs["size"][] = ["s", "m", "l"];
   const nextSize = sizes[(sizes.indexOf(prefs.size) + 1) % sizes.length];
-  const nameOf = (t: string) => favs?.find((f) => f.ticker === t)?.name;
+  const layout = editing ? "edit" : strip ? "strip" : "card";
 
   return (
-    <div ref={root} className={`mini mini-${strip ? "strip" : "card"} mini-size-${prefs.size}${prefs.quiet ? " mini-quiet" : ""}${pip ? " mini-pip" : ""}`}>
+    <div ref={root} className={`mini mini-${layout} mini-size-${prefs.size}${prefs.quiet ? " mini-quiet" : ""}${pip ? " mini-pip" : ""}`}>
       {login ? (
         <p className="mini-login">세션이 끝났어요 — <button type="button" className="link" onClick={openDesk}>데스크에서 다시 로그인</button></p>
+      ) : editing ? (
+        <section className="mini-editor-panel" aria-label="작은 창 종목 고치기">
+          <h2 className="mini-edit-title">작은 창 종목</h2>
+          <MiniTickerEditor items={items} onChange={setItems} search={false} />
+        </section>
       ) : (
         <ul className="mini-items" aria-label="작은 창 시세">
-          {favs === null ? <li className="mini-muted">불러오는 중…</li>
-            : tickers.length === 0 ? <li className="mini-muted">즐겨찾기가 없어요</li>
-            : tickers.map((t) => {
-              const q = quotes[t];
+          {items.length === 0 ? <li className="mini-muted">종목이 없어요 — ⚙ 에서 더해 주세요</li>
+            : items.map((it) => {
+              const q = quotes[it.ticker];
               return (
-                <li key={t} className="mini-quote" title={nameOf(t) ?? t}>
-                  <span className="mini-name">{t.replace(/\.(KS|KQ)$/, "")}</span>{" "}
+                <li key={it.ticker} className="mini-quote" title={it.ticker === MINI_FUTURES ? `${it.name} · 근월물` : `${it.name} · ${it.ticker}`}>
+                  <span className="mini-name">{it.name}</span>{" "}
                   <span className="mini-price">{q?.price != null ? price(q.price) : "—"}</span>{" "}
                   <span className={`mini-chg ${tone(q?.change_pct)}`}><Mark v={q?.change_pct} />{signed(q?.change_pct)}</span>
-                  {q?.state === "estimate" && <span className="mini-muted"> 추정</span>}
+                  {q?.estimate && <span className="mini-muted"> 추정</span>}
+                  {q?.stale && <span className="mini-muted"> 지연</span>}
                 </li>
               );
             })}
@@ -143,6 +182,9 @@ export default function MiniWindow({ pip = false }: { pip?: boolean }) {
         </ul>
       )}
       <div className="mini-tools">
+        <button type="button" aria-pressed={editing} title={editing ? "다 고쳤어요" : "종목 고치기"} onClick={toggleEdit}>
+          {editing ? "✓" : "⚙"}<span className="sr-only">{editing ? " 종목 고치기 끝" : " 종목 고치기"}</span>
+        </button>
         <button type="button" aria-pressed={prefs.quiet} title="조용한 모드 — 회색조 · 기호만" onClick={() => update({ ...prefs, quiet: !prefs.quiet })}>
           {prefs.quiet ? "◐" : "●"}<span className="sr-only"> 조용한 모드</span>
         </button>

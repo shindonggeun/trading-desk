@@ -116,7 +116,8 @@ def test_the_cache_keeps_a_day_and_retries_a_failure_soon():
         if len(calls) == 1:
             raise TimeoutError
         return _history()
-    cache = hv.Cache(fetch, clock=lambda: t[0])
+    # #574: "today" is the history's last day, not the real date (941 days held only on 2026-11-17)
+    cache = hv.Cache(fetch, clock=lambda: t[0], today=lambda: _history()[-1][0])
     assert cache.get() is None and cache.error == "TimeoutError"
     t[0] += hv.FAIL_TTL_SEC + 1
     assert cache.get()["current"]["days_since_halving"] == 941

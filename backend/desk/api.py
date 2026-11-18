@@ -47,6 +47,7 @@ from . import (
     market_calendar,
     morning_brief,
     news_digest,
+    nq_watch,
     oscillator,
     otp,
     outcome,
@@ -708,6 +709,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                             await asyncio.to_thread(app.state.flow_alerts.after_snapshot, futures_history.intraday)
                         except Exception as exc:  # noqa: BLE001
                             log.warning("flow turn alerts failed: %s", exc)
+                        try:                     # #579 the flow shifts, the same way
+                            await asyncio.to_thread(app.state.market_alerts.after_snapshot, futures_history)
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning("flow shift alerts failed: %s", exc)
                         if closing_window(moment):
                             closed_on = today_kst
                     today = datetime.now(UTC).date()
@@ -720,10 +725,25 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.exception("futures snapshot failed")
                 await asyncio.sleep(seconds_to_next(datetime.now(UTC), every))
 
+        async def watch_nq():
+            # #579 NQ=F selling alarms (desk.nq_watch) on Yahoo's 5-minute bars while CME trades -
+            # just after each bar closes on the 5-minute grid, so every finished bar is judged once
+            while True:
+                try:
+                    if nq_watch.cme_open(datetime.now(UTC)):
+                        got = await prices.candles(nq_watch.TICKER, "5m", nq_watch.BARS)
+                        await asyncio.to_thread(app.state.market_alerts.nq_pass, got["bars"])
+                except Exception:  # a failed pass must not stop the next one
+                    log.exception("NQ alarms failed")
+                await asyncio.sleep(nq_watch.seconds_to_next(datetime.now(UTC)))
+
         refresher = asyncio.create_task(keep_listing_fresh())
         futures_task = (asyncio.create_task(snapshot_futures())
                         if interval_min(settings.futures_snapshot_min) > 0
                         and getattr(futures, "rest", None) is not None else None)
+        # the same switch as the news flow: off in tests and scripted runs
+        nq_task = (asyncio.create_task(watch_nq())
+                   if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
         # the same switch as the news flow: off in tests and scripted runs
         credit_task = (asyncio.create_task(refresh_credit())
                        if settings.macro_interval_sec > 0 and not settings.fake_runs else None)
@@ -859,6 +879,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         refresher.cancel()
         if futures_task:
             futures_task.cancel()
+        if nq_task:
+            nq_task.cancel()
         if macro:
             macro.cancel()
         if calendar_task:
@@ -2565,6 +2587,8 @@ class PushKindsIn(BaseModel):
     flow_kospi: bool = True
     flow_kosdaq: bool = True
     morning_brief: bool = True      # #571 the 07:00 morning brief
+    flow_shift: bool = True         # #579 the investors' flow shifts (desk.market_alerts)
+    nq_alert: bool = True           # #579 the NQ=F selling alarms
 
 
 class PushSubscriptionIn(BaseModel):
@@ -2594,12 +2618,13 @@ class PushEndpointIn(BaseModel):
 
 def _push_routes(app: FastAPI, engine, settings: Settings) -> None:
     """Subscriptions are the caller's own only. ``app.state.pusher`` is read per request (tests swap it)."""
-    from . import flow_alerts, push
+    from . import flow_alerts, market_alerts, push
 
     store = push.PushStore(engine)
     app.state.pusher = push.Pusher(store, settings.vapid_public_key, settings.vapid_private_key,
                                    settings.vapid_subject)
     app.state.flow_alerts = flow_alerts.FlowAlerts(engine, app.state.pusher)
+    app.state.market_alerts = market_alerts.MarketAlerts(engine, app.state.pusher)
 
     @app.get("/api/push/key")
     def push_key():
@@ -2634,6 +2659,20 @@ def _push_routes(app: FastAPI, engine, settings: Settings) -> None:
             raise HTTPException(422, "date: YYYY-MM-DD")
         day = date or datetime.now(futures_kst).date().isoformat()
         return {"date": day, "items": app.state.flow_alerts.list(day)}
+
+    @app.get("/api/alerts/today")
+    def alerts_today(date: str | None = None):
+        """#579 the day's alert timeline (KST, default today), oldest first: the foreign turns (#361) and
+        the flow shifts / NQ=F alarms (desk.market_alerts) in one shape."""
+        if date is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            raise HTTPException(422, "date: YYYY-MM-DD")
+        day = date or datetime.now(futures_kst).date().isoformat()
+        turns = [{"trade_date": a["trade_date"], "kind": "flow_turn", "rule": a["kind"], "market": a["market"],
+                  "who": "foreign", "severity": "caution", "t": a["t"], "value": a["value"], "prev": None,
+                  "text": a["text"], "pushed": True} for a in app.state.flow_alerts.list(day)]
+        items = turns + app.state.market_alerts.list(day)
+        items.sort(key=lambda a: datetime.fromisoformat(a["t"]))
+        return {"date": day, "items": items}
 
 
 def _client_ip(request: Request) -> str:

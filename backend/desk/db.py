@@ -308,6 +308,28 @@ day_calls = Table(
     Index("ix_day_calls_trade_date", "trade_date"),
 )
 
+# #601 KRX OPEN API end-of-day rows (desk.krx): one per service · business day · row code, as KRX sent it
+krx_daily = Table(
+    "krx_daily", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("api", String(32), nullable=False),                     # e.g. kospi_dd_trd
+    Column("bas_dd", Date, nullable=False),                        # KRX's basDd
+    Column("code", String(64), nullable=False),                    # IDX_NM or ISU_CD (desk.krx.APIS)
+    Column("payload", Json, nullable=False),                       # the OutBlock_1 row, strings untouched
+    Column("fetched_at", Timestamp, nullable=False),
+    UniqueConstraint("api", "bas_dd", "code", name="uq_krx_daily_row"),
+    Index("ix_krx_daily_api_day", "api", "bas_dd"),
+)
+
+# #601 each service · day already asked (rows 0: closed or no data), so a backfill rerun skips it
+krx_days = Table(
+    "krx_days", metadata,
+    Column("api", String(32), primary_key=True),
+    Column("bas_dd", Date, primary_key=True),
+    Column("rows", Integer, nullable=False),
+    Column("fetched_at", Timestamp, nullable=False),
+)
+
 # #527 the paper account's settings: one row (id 1) for the desk; version + 1 on every save
 paper_settings = Table(
     "paper_settings", metadata,

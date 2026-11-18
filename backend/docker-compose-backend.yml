@@ -59,6 +59,8 @@ x-backend-environment: &backend_environment
   DESK_KIS_APP_SECRET: ${DESK_KIS_APP_SECRET:-}
   DESK_KIS_WS_URL: ${DESK_KIS_WS_URL:-}
   DESK_KIS_REST_URL: ${DESK_KIS_REST_URL:-}
+  # #601 KRX OPEN API 인증키(일별 이력 수집). 비면 수집이 꺼진다(값은 서버 .env.runtime 에만)
+  DESK_KRX_API_KEY: ${DESK_KRX_API_KEY:-}
   DESK_KOSDAQ_SYMBOLS: ${DESK_KOSDAQ_SYMBOLS:-}
   # 내 투자 패널 SSE 갱신 주기(초, 2~60). 시세 · 환율은 서버에서 ~10초 캐시를 공유한다
   DESK_PORTFOLIO_STREAM_SEC: ${DESK_PORTFOLIO_STREAM_SEC:-5}

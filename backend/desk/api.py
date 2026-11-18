@@ -44,6 +44,7 @@ from . import (
     gap_fill,
     halving,
     horizons,
+    krx,
     language,
     line_basis,
     live,
@@ -475,6 +476,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # with the same switch as the news flow and the prewarm: scripted runs and tests fetch nothing
     day_desk = day_calls.DayCalls(engine, None if settings.fake_runs or settings.macro_interval_sec <= 0
                                   else (lambda *a: prices._yahoo_candles(*a)))
+    # #601 KRX OPEN API end-of-day history: only with a key, and off in scripted runs and tests
+    krx_desk = (krx.KrxDaily(engine, krx.Client(settings.krx_api_key))
+                if settings.krx_api_key and not settings.fake_runs and settings.macro_interval_sec > 0 else None)
     # #462: VIX · CNN / crypto Fear & Greed · VKOSPI, cached per source (fakes stay offline in tests)
     fear_gauges = (fear.Fear(candles=lambda *a: prices._yahoo_candles(*a),   # read when asked, as risk does
                              kis=lambda: getattr(futures, "rest", None))         # #486 VKOSPI via the futures KIS client
@@ -831,6 +835,18 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.exception("day call scoring failed")
                 await asyncio.sleep(day_calls.TICK_SEC)
 
+        async def collect_krx():
+            # #601: every TICK_SEC - each service's missing business days of the last two weeks, once KRX
+            # has published them (08:30 KST the next business day); a refused service waits 6 h
+            while True:
+                try:
+                    for result in await asyncio.wait_for(asyncio.to_thread(krx_desk.run), 600):
+                        log.info("krx %s: %s day(s), %s row(s), stopped %s", result["api"], result["stored"],
+                                 result["rows"], result["stopped"])
+                except Exception:  # a failed pass must not stop the next one
+                    log.exception("krx collect failed")
+                await asyncio.sleep(krx.TICK_SEC)
+
         async def write_briefs():
             # #571: at DESK_MORNING_BRIEF_AT on Korean trading days; while a run holds the ChatGPT slot it
             # tries again every few minutes, and past DESK_AFTER_SEC it goes out in the desk's own words
@@ -908,6 +924,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         brief_task = asyncio.create_task(write_briefs()) if brief_desk.at is not None else None
         day_calls.bind(day_desk)          # desk.day_call.today_call (#571) reads this app's calls
         day_call_task = asyncio.create_task(make_day_calls()) if day_desk.candles is not None else None
+        krx_task = asyncio.create_task(collect_krx()) if krx_desk is not None else None
         report_task = (asyncio.create_task(write_reports())
                        if settings.report_every_days > 0 and not settings.fake_runs else None)
         funds_task = (asyncio.create_task(refresh_funds())
@@ -944,6 +961,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             brief_task.cancel()
         if day_call_task:
             day_call_task.cancel()
+        if krx_task:
+            krx_task.cancel()
         day_calls.bind(None)
         if prewarm_task:
             prewarm_task.cancel()

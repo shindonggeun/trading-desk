@@ -435,7 +435,8 @@ def _krx(engine, args, key: str) -> int:
 
 def _lead_lag(engine, args) -> int:
     """#645: do the intraday flows and the basis lead the index? From the stored minute snapshots
-    (futures_snapshots, the last KEEP_INTRADAY_DAYS days) - run on the server, reads only."""
+    (futures_snapshots, the last KEEP_INTRADAY_DAYS days) - run on the server; it reads only (the usual
+    migrate before it is a no-op on a database at head)."""
     from sqlalchemy import select
 
     from . import lead_lag
@@ -601,7 +602,7 @@ def main(argv: list[str] | None = None) -> int:
     lg = sub.add_parser("lead-lag", help=(
         "#645 do the intraday investor flows and the futures basis lead KOSPI200 (and its futures)? From the "
         "stored minute snapshots - run on the server (reads only); prints the table and each value's update interval"))
-    lg.add_argument("--days", type=int, default=90, help="calendar days back (the server keeps 60 of minutes)")
+    lg.add_argument("--days", type=int, default=60, help="calendar days back (default 60: the server keeps 60 of minutes)")
     lg.add_argument("--out", default=None, help="write the full JSON report here")
     sub.add_parser("unfinished", help=(
         "queued / running runs: the count on the first line, then one line each (#431; scripts/deploy.sh "

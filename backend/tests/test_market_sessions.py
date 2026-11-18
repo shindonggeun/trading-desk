@@ -154,3 +154,38 @@ def test_the_kospi200_futures_sessions_follow_krx_holidays_not_nyse():
 @pytest.mark.parametrize(("at", "phase"), [(_et(2026, 11, 16, 19, 59), "post"), (_et(2026, 11, 16, 20, 0), "overnight")])
 def test_the_us_post_session_ends_at_20(at, phase):
     assert mc.us_phase(at) == phase
+
+
+# #640 review: the rules now hold for every year the estimator reads (it kept a hand list before) -
+# checked against the NYSE's own record: an early close is on July 3 / December 24 / the day after
+# Thanksgiving only when that day itself trades; no early close the day before an observed holiday
+@pytest.mark.parametrize(("day", "close"), [
+    (date(2015, 7, 2), time(16)),     # July 4 a Saturday: the 3rd is the holiday, no half day on the 2nd
+    (date(2020, 7, 2), time(16)),
+    (date(2027, 7, 2), time(16)),     # July 4 a Sunday: the 5th is the holiday, the 2nd is a full day
+    (date(2019, 7, 3), time(13)),
+    (date(2024, 7, 3), time(13)),
+    (date(2025, 7, 3), time(13)),
+    (date(2021, 12, 23), time(16)),   # Christmas a Saturday: the 24th is the holiday, the 23rd a full day
+    (date(2022, 12, 23), time(16)),   # December 24 a Saturday: no half day at all
+    (date(2019, 12, 24), time(13)),
+    (date(2027, 11, 26), time(13)),
+])
+def test_nyse_half_days_by_rule_in_other_years(day, close):
+    assert mc.hours("us", day)[1] == close and estimate.US.hours(day)[1] == close
+
+
+def test_closed_days_and_the_first_krx_day_in_other_years():
+    assert not mc.is_open("us", date(2027, 12, 24)) and not mc.is_open("us", date(2027, 7, 5))
+    assert mc.hours("kr", date(2028, 1, 3)) == (time(10), time(15, 30))       # the year's first KRX session
+    assert estimate.KRX.hours(date(2028, 1, 4)) == (time(9), time(15, 30))
+
+
+@pytest.mark.parametrize(("at", "start", "trade_day"), [
+    (datetime(2026, 11, 1, 23, 0, tzinfo=UTC), _et(2026, 11, 1, 18), date(2026, 11, 2)),     # Sun 18:00 EST, DST over
+    (datetime(2026, 11, 2, 22, 59, tzinfo=UTC), _et(2026, 11, 1, 18), date(2026, 11, 3)),    # Mon 17:59 EST
+    (datetime(2026, 11, 2, 23, 0, tzinfo=UTC), _et(2026, 11, 2, 18), date(2026, 11, 3)),     # Mon 18:00 EST
+    (datetime(2026, 10, 29, 22, 0, tzinfo=UTC), _et(2026, 10, 29, 18), date(2026, 10, 30)),  # Thu 18:00 EDT
+])
+def test_the_cme_rollover_on_the_day_summer_time_ends(at, start, trade_day):
+    assert mc.cme_session_start(at) == start and mc.cme_trade_day(at) == trade_day

@@ -61,7 +61,8 @@ export default function MorningBriefCard({ date: wanted, open = false }: { date?
   if (state === "failed") return <p className="muted small">아침 시황을 불러오지 못했어요. 잠시 뒤 다시 열어 주세요.</p>;
   if (state === "none" || !brief) {
     return (
-      <div className="morning-brief">
+      // #618 비었을 때는 한 줄 — 넓은 화면 맨 위 줄은 이 표시(morning-brief-empty)로 오늘 방향에 폭을 넘긴다
+      <div className="morning-brief morning-brief-empty">
         <p className="muted small">{date ? `${date} 아침 시황이 없어요.` : "아직 아침 시황이 없어요. 평일 오전 7시쯤 만들어져요."}</p>
         {picker}
       </div>

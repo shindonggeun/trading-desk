@@ -2646,6 +2646,21 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   .daycall-table .col-prob { display: none; }
 }
 .daycall-effect { white-space: nowrap; font-weight: 600; }
+/* #618 압축형 확률(한 줄 막대 + 단계별 숫자) — 넓은 화면 맨 위 줄에서만, 다른 곳은 다섯 줄 막대 그대로 */
+.daycall-strip { display: none; }
+.dash-top .daycall-bars, .dash-grid-wide .daycall-bars { display: none; }
+.dash-top .daycall-strip, .dash-grid-wide .daycall-strip { display: grid; gap: 4px; }
+.daycall-strip-bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--surface-2); gap: 1px; }
+.daycall-seg { display: block; min-width: 0; }
+.daycall-seg.is-call { box-shadow: inset 0 0 0 2px var(--text); }
+.daycall-seg.daycall-strong_long { background: var(--dc-sl); }
+.daycall-seg.daycall-weak_long { background: var(--dc-l); }
+.daycall-seg.daycall-flat { background: var(--dc-f); }
+.daycall-seg.daycall-weak_short { background: var(--dc-s); }
+.daycall-seg.daycall-strong_short { background: var(--dc-ss); }
+.daycall-strip-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 8px;
+  font-size: var(--fs-s); font-variant-numeric: tabular-nums; color: var(--muted); }
+.daycall-strip-legend .is-call { color: var(--text); font-weight: 700; }
 /* #573 판정 두 개(전일 종가 대비 · 시가 대비) 나란히 — 좁으면 위아래 */
 .daycall-calls { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
 .daycall-call { display: grid; gap: 6px; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-s); }
@@ -2664,7 +2679,13 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 
 /* #573 넓은 화면 기본 배치: 아침 시황 · 오늘 방향을 3열 위 한 줄로 */
 .dash-wide-flow { display: grid; gap: 14px; min-width: 0; }
-.dash-top { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+/* #618 아침 시황 1 : 오늘 방향 2 — 오늘 방향의 두 판정이 나란히 서고, 아침 시황 아래가 비지 않게. 아침 시황이 비었으면(한 줄)
+   두 구역이 위아래로 한 줄씩 다 쓴다. 하나만 있으면 한 줄을 다 */
+.dash-top { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.dash-top > [data-section="daycall"] { grid-column: span 2; }
+.dash-top > :only-child, .dash-top:has(.morning-brief-empty) > * { grid-column: 1 / -1; }
+.dash-top:has(.morning-brief-empty) > [data-section="morning"] .dash-head { margin-bottom: 2px; }
+.dash-top .morning-brief-empty p { margin: 0; }
 .dash-top:empty { display: none; }
 .dash-top > * { min-width: 0; grid-column: auto; }   /* 넓은 구역(dash-wide)이어도 이 줄에서는 나란히 */
 .daycall-session { margin: 0 0 6px; }

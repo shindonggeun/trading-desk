@@ -59,6 +59,29 @@ export function RecordLine({ r, roundLabel }: { r: DayCallRecord | undefined; ro
   );
 }
 
+/** #618 넓은 화면 맨 위 줄의 압축형 — 다섯 단계를 한 줄 막대로, 아래에 단계 기호 · 확률을 글자로(가장 큰 단계는 굵게 · ◀).
+ *  다섯 줄 막대(ProbBars)와 같이 그려 두고 CSS 가 자리에 맞는 쪽만 보인다 */
+export function ProbStrip({ probs, stage }: { probs: DayCallProbs; stage: DayCallStage }) {
+  return (
+    <div className="daycall-strip">
+      <span className="daycall-strip-bar" aria-hidden="true">
+        {DAY_CALL_STAGES.map((s) => (
+          <span key={s} className={`daycall-seg daycall-${s}${s === stage ? " is-call" : ""}`}
+            style={{ flexGrow: Math.max(0, probs[s] ?? 0) }} />
+        ))}
+      </span>
+      <ol className="daycall-strip-legend">
+        {DAY_CALL_STAGES.map((s) => (
+          <li key={s} className={s === stage ? "is-call" : undefined}>
+            <span aria-hidden="true">{STAGE_MARK[s]} </span><span className="sr-only">{STAGE_KO[s]} </span>{percent(probs[s], 0)}
+            {s === stage && <span className="daycall-pick"><span aria-hidden="true"> ◀</span><span className="sr-only"> 가장 큼</span></span>}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 function CallBlock({ c, kind }: { c: DayCallEntry | null | undefined; kind: "prev_close" | "open" }) {
   if (!c) {
     return (
@@ -80,6 +103,7 @@ function CallBlock({ c, kind }: { c: DayCallEntry | null | undefined; kind: "pre
       {c.verdict === "hold" && <p className="small muted">롱 · 숏 확률 차가 10%p 안이라 방향을 고르지 않았어요.</p>}
       {c.fallback && <p className="small muted">야간 선물이 없어 선물 없이 낸 판정이에요.</p>}
       <ProbBars probs={c.probs} stage={c.stage} />
+      <ProbStrip probs={c.probs} stage={c.stage} />
       <RecordLine r={c.record} roundLabel={c.round_label} />
       {c.outcome?.unscorable && <p className="small muted">결과 채점 불가 — 지수 자료가 오지 않았어요.</p>}
       {out && (

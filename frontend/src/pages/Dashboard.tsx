@@ -145,10 +145,11 @@ const BASE_ORDER = Object.keys(SECTIONS) as SectionId[];
 
 // #464 넓은 화면(≥1280px) 3열: 왼쪽 시장 · 지수 · 공포 · 선물, 가운데 즐겨찾기 · 오늘 볼 것, 오른쪽 수급 · 내 투자.
 // 열 안의 순서는 저장된 순서를 따르고, ↑↓ 는 같은 열 안의 이웃과 바꾼다.
+// #618 아침 시황 · 오늘 방향이 맨 위 줄로 간 뒤 가운데 열이 짧아 아래가 비었다 — 레짐 · 빚투(왼쪽) · 반감기(오른쪽)를 가운데로
 const COLUMN: Record<SectionId, 0 | 1 | 2> = {
-  market: 0, kfutures: 0, weekly: 0, regime: 0, credit: 0,
-  morning: 1, daycall: 1, favorites: 1, macro: 1, sectornews: 1, agenda: 1, recent: 1, bottom: 1,
-  flow: 2, portfolio: 2, stats: 2, halving: 2, paper: 2,
+  market: 0, kfutures: 0, weekly: 0,
+  morning: 1, daycall: 1, favorites: 1, macro: 1, sectornews: 1, agenda: 1, recent: 1, bottom: 1, regime: 1, credit: 1, halving: 1,
+  flow: 2, portfolio: 2, stats: 2, paper: 2,
 };
 type Layout = "wide" | "normal" | "phone";
 const WIDE_Q = "(min-width: 1280px)";
@@ -334,11 +335,15 @@ export default function Dashboard() {
     // 높이는 모두 자동(#519)이라 잰 높이는 내용을 다시 잴 때까지의 첫 짐작 — 접힌 구역 · 아직 불러오는 중인 구역은 보통 높이로
     const measured = (flowRef.current ? measureLayout(flowRef.current, prefs.order) : [])
       .map((it) => ({ ...it, h: prefs.closed.includes(it.i as SectionId) || it.h <= HEAD_ROWS ? DEFAULT_H : it.h }));
-    // #573 맨 위 한 줄은 넓게(8칸) · 좁게(4칸) 그대로, 나머지는 3열(4칸씩)
+    // #618 맨 위 한 줄: 아침 시황 4칸 · 오늘 방향 8칸(두 판정을 나란히) — 화면과 같게, 하나뿐이면 한 줄을 다. 나머지는 3열(4칸씩)
     const topOrder = prefs.order.filter((s) => TOP_SECTIONS.includes(s));
+    const TOP_W: Record<string, number> = { morning: 4, daycall: 8 };
     const items = band === "wide" ? measured.map((it) => {
       const t = topOrder.indexOf(it.i as SectionId);
-      if (t >= 0) return { ...it, y: 0, x: t === 0 ? 0 : GRID_COLS - MIN_W, w: t === 0 && topOrder.length > 1 ? GRID_COLS - MIN_W : t === 0 ? GRID_COLS : MIN_W };
+      if (t >= 0) {
+        const w = topOrder.length > 1 ? TOP_W[it.i] : GRID_COLS;
+        return { ...it, y: 0, x: t === 0 ? 0 : GRID_COLS - w, w };
+      }
       return { ...it, x: COLUMN[it.i as SectionId] * 4, w: 4 };
     }) : measured;
     setDraft({ items, hidden: [], fixed: [] });

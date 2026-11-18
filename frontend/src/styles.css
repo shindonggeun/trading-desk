@@ -2646,3 +2646,12 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   .daycall-table .col-prob { display: none; }
 }
 .daycall-effect { white-space: nowrap; font-weight: 600; }
+/* #573 판정 두 개(전일 종가 대비 · 시가 대비) 나란히 — 좁으면 위아래 */
+.daycall-calls { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+.daycall-call { display: grid; gap: 6px; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-s); }
+.daycall-call-title { margin: 0; font-size: var(--fs-s); font-weight: 700; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.daycall-hold { color: var(--muted); }
+.daycall-record { margin: 0; }
+.daycall-reasons summary { cursor: pointer; }
+.daycall-page-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.daycall-notes { margin: 6px 0 0; padding-left: 1.1em; display: grid; gap: 2px; }

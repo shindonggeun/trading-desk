@@ -1,4 +1,4 @@
-import type { DayCallMarket, DayCallStage } from "./types";
+import type { DayCallEntry, DayCallKind, DayCallMarket, DayCallStage } from "./types";
 
 /** #573 오늘 방향(#572) — 단계 순서 · 기호 · 이름(한국식 색: 롱 빨강 · 숏 파랑 · 약보합 회색). 색만으로 구분하지 않게 기호를 같이 쓴다. */
 export const DAY_CALL_STAGES: DayCallStage[] = ["strong_long", "weak_long", "flat", "weak_short", "strong_short"];
@@ -31,4 +31,14 @@ export function kstStamp(iso: string | null | undefined): string {
   const t = new Date(ms + 9 * 3600_000);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${t.getUTCMonth() + 1}/${t.getUTCDate()} ${p(t.getUTCHours())}:${p(t.getUTCMinutes())}`;
+}
+
+/** 두 판정 — 전일 종가 대비(야간 선물 포함, 기준선 대비 우위) 먼저 */
+export const DAY_CALL_KINDS: DayCallKind[] = ["prev_close", "open"];
+export const KIND_KO: Record<DayCallKind, string> = { prev_close: "전일 종가 대비", open: "시가 대비" };
+
+/** 판정의 결론 — 롱 · 숏 · 판단 보류(기호 + 글자) */
+export function verdictText(c: Pick<DayCallEntry, "verdict">): { mark: string; text: string; cls: string } {
+  if (c.verdict === "hold") return { mark: "■", text: "판단 보류", cls: "daycall-hold" };
+  return c.verdict === "long" ? { mark: "▲", text: "롱 우세", cls: "up" } : { mark: "▼", text: "숏 우세", cls: "down" };
 }

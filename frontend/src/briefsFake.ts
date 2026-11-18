@@ -1,5 +1,5 @@
-import type { DayCallEntry, DayCallHistory, DayCallHistoryItem, DayCallMarket, DayCallProbs, DayCallStage, DayCallStats, DayCallToday, MorningBrief, MorningBriefList } from "./types";
-import { DAY_CALL_STAGES, STAGE_KO } from "./dayCall";
+import type { DayCallCallStats, DayCallEntry, DayCallHistory, DayCallHistoryItem, DayCallKind, DayCallMarket, DayCallProbs, DayCallStage, DayCallStats, DayCallToday, MorningBrief, MorningBriefList } from "./types";
+import { DAY_CALL_KINDS, DAY_CALL_STAGES, KIND_KO, STAGE_KO } from "./dayCall";
 
 /**
  * #573 개발 모드에서만 — 아침 시황(#571) · 오늘 방향(#572) API 가 아직 없을 때(404) 계약 모양의 예시로 화면을 그린다.
@@ -41,81 +41,104 @@ export function fakeMorningBriefs(): MorningBriefList {
 const probs = (p: number[]): DayCallProbs => ({ strong_long: p[0], weak_long: p[1], flat: p[2], weak_short: p[3], strong_short: p[4] });
 const STAGES = DAY_CALL_STAGES.map((key) => ({ key, label: STAGE_KO[key] }));
 const top = (pr: DayCallProbs): DayCallStage => DAY_CALL_STAGES.reduce((a, b) => (pr[b] > pr[a] ? b : a));
-const direction = (pr: DayCallProbs): "long" | "short" => (pr.strong_long + pr.weak_long >= pr.weak_short + pr.strong_short ? "long" : "short");
-
-function entry(market: DayCallMarket, day: string, round: number, pr: DayCallProbs, scored: boolean, i = 0): DayCallEntry {
-  const stage = top(pr);
-  const reasons: DayCallEntry["reasons"] = market === "kr"
-    ? [
-      { key: "us_prev_ret", label: "전일 S&P500", value: "+0.9%", effect: "long", weight: 0.31, text: "전일 S&P500 +0.9% 상승" },
-      { key: "sox_prev_ret", label: "전일 반도체 지수", value: "+2.1%", effect: "long", weight: 0.22, text: "반도체 지수 +2.1% — 대형 반도체에 우호적" },
-      { key: "usdkrw", label: "원/달러", value: "1,385원(-4원)", effect: "long", weight: 0.12, text: "원화 강세로 외국인 수급 부담이 줄었어요" },
-      { key: "vix", label: "VIX", value: "17.2", effect: "calm", weight: 0.09, text: "변동성 지수가 낮아 큰 흔들림 가능성은 작아요" },
-      { key: "foreign_futures", label: "외국인 선물(전일)", value: "-3,200계약", effect: "short", weight: 0.08, text: "전일 외국인 선물 순매도는 부담" },
-    ]
-    : [
-      { key: "nq_pre", label: "나스닥100 선물", value: "-0.3%", effect: "short", weight: 0.24, text: "프리마켓 선물이 약보합" },
-      { key: "fomc_minutes", label: "FOMC 의사록", value: "오늘 14:00 ET", effect: "volatile", weight: 0.18, text: "의사록 발표로 오후 변동성이 커질 수 있어요" },
-      { key: "vix", label: "VIX", value: "17.2", effect: "calm", weight: 0.11, text: "VIX 17 — 평소 수준" },
-      { key: "us10y", label: "미 10년물", value: "4.42%(+3bp)", effect: "short", weight: 0.09, text: "금리 소폭 상승은 성장주에 부담" },
-      { key: "nvda_ah", label: "엔비디아 시간외", value: "+3.4%", effect: "long", weight: 0.08, text: "실적 호조로 반도체 쪽은 강할 수 있어요" },
-    ];
-  const actual = DAY_CALL_STAGES[Math.floor(seeded(i + 7) * 5)];
-  const sideOf = (s: DayCallStage) => (s.endsWith("long") ? 1 : s.endsWith("short") ? -1 : 0);
-  return {
-    round, round_label: `${round}차`, called_at: `${day}T${market === "kr" ? (round === 1 ? "22:30" : "00:30") : round === 1 ? "14:00" : "15:00"}:10+00:00`,
-    stage, label: STAGE_KO[stage], direction: direction(pr), probs: pr, edges_pct: { flat: 0.38, strong: 1.27 }, reasons,
-    context: [{ key: "night_futures", label: "야간선물", value: "+0.4%", in_model: false }],
-    model_version: "dc-예시", source: i > 20 ? "backfill" : "live",
-    outcome: scored ? {
-      stage: actual, label: STAGE_KO[actual], open: 2710.5, close: 2713.1, return_pct: Math.round((seeded(i + 3) * 3 - 1.5) * 100) / 100,
-      ret_atr: 0.08, hit_direction: sideOf(actual) === (direction(pr) === "long" ? 1 : -1), hit_stage: actual === stage, brier: 0.71,
-      scored_at: `${day}T07:30:00+00:00`,
-    } : null,
-  };
-}
+const NOTE = [
+  "판정 정의는 같은 검증 90일의 변형 비교를 보고 골라 숫자가 조금 낙관적일 수 있다",
+  "야간 선물 특징은 학습이 1.4~1.8년이다",
+  "2차의 전일 종가 대비 적중에는 이미 찍힌 시가 갭 몫이 크다",
+];
 
 function seeded(i: number) {
   const x = Math.sin(i * 12.9898) * 43758.5453;
   return x - Math.floor(x);
 }
 
+function entry(market: DayCallMarket, kind: DayCallKind, day: string, round: number, pr: DayCallProbs, scored: boolean, i = 0): DayCallEntry {
+  const stage = top(pr);
+  const longP = pr.strong_long + pr.weak_long;
+  const shortP = pr.weak_short + pr.strong_short;
+  const direction = longP >= shortP ? "long" : "short";
+  const verdict = kind === "open" && Math.abs(longP - shortP) < 10 ? "hold" : direction;
+  const reasons: DayCallEntry["reasons"] = kind === "prev_close"
+    ? [
+      { key: "nq_overnight", label: "야간 나스닥100 선물", value: market === "kr" ? "+0.6%" : "-0.3%", effect: market === "kr" ? "long" : "short", weight: 0.34, text: market === "kr" ? "간밤 나스닥100 선물 +0.6%" : "프리마켓 선물이 약보합" },
+      { key: "us_prev_ret", label: "전일 S&P500", value: "+0.9%", effect: "long", weight: 0.22, text: "전일 S&P500 +0.9% 상승" },
+      { key: "vix", label: "VIX", value: "17.2", effect: "calm", weight: 0.1, text: "변동성 지수가 평소 수준" },
+      { key: "usdkrw", label: "원/달러", value: "1,385원(-4원)", effect: "long", weight: 0.08, text: "원화 강세" },
+      { key: "foreign_futures", label: "외국인 선물(전일)", value: "-3,200계약", effect: "short", weight: 0.07, text: "전일 외국인 선물 순매도는 부담" },
+    ]
+    : [
+      { key: "prev_ret", label: "전일 등락", value: "+0.4%", effect: "long", weight: 0.2, text: "전일 지수 +0.4%" },
+      { key: "atr", label: "변동폭(ATR)", value: "1.1%", effect: "volatile", weight: 0.15, text: "평소보다 조금 큰 변동폭" },
+      { key: "ma20", label: "20일선", value: "위", effect: "long", weight: 0.1, text: "지수가 20일선 위" },
+    ];
+  const actual = DAY_CALL_STAGES[Math.floor(seeded(i + 7) * 5)];
+  const sideOf = (st: DayCallStage) => (st.endsWith("long") ? "long" : st.endsWith("short") ? "short" : "flat");
+  return {
+    call: kind, call_label: KIND_KO[kind], measured_from: kind, fallback: kind === "prev_close" && market === "kr" && i % 9 === 4,
+    round, round_label: `${round}차`, called_at: `${day}T${market === "kr" ? (round === 1 ? "22:30" : "00:30") : round === 1 ? "14:00" : "15:00"}:10+00:00`,
+    stage, label: STAGE_KO[stage], direction, verdict, probs: pr, edges_pct: { flat: 0.38, strong: 1.27 }, reasons,
+    context: [{ key: "night_futures", label: "야간선물", value: "+0.4%", in_model: false }],
+    model_version: "dc-예시", source: i > 20 ? "backfill" : "live",
+    outcome: scored ? {
+      stage: actual, label: STAGE_KO[actual], open: 2710.5, close: 2713.1, return_pct: Math.round((seeded(i + 3) * 3 - 1.5) * 100) / 100,
+      ret_atr: 0.08, hit_direction: verdict === "hold" ? null : sideOf(actual) === direction, hit_stage: actual === stage, brier: 0.71,
+      scored_at: `${day}T07:30:00+00:00`,
+    } : null,
+    record: kind === "prev_close"
+      ? { n: market === "kr" ? 56 : 63, direction_hit_rate: market === "kr" ? 0.661 : 0.762, always_long: market === "kr" ? 0.464 : 0.429,
+        always_short: market === "kr" ? 0.536 : 0.571, brier_skill: market === "kr" ? 0.167 : 0.165, basis: "backtest" }
+      : { n: market === "kr" ? 29 : 63, direction_hit_rate: market === "kr" ? 0.655 : 0.46, always_long: market === "kr" ? 0.379 : 0.476,
+        always_short: market === "kr" ? 0.621 : 0.524, brier_skill: market === "kr" ? 0.023 : -0.009, basis: "backtest" },
+  };
+}
+
 export function fakeDayCall(market: DayCallMarket): DayCallToday {
   const today = kstToday();
-  const pr = market === "kr" ? probs([8.1, 34.2, 31.0, 21.3, 5.4]) : probs([6.0, 24.0, 38.0, 22.0, 10.0]);
-  const call = entry(market, market === "kr" ? today : shift(today, -1), market === "kr" ? 2 : 1, pr, false);
-  return { market, date: today, stages: STAGES, call, rounds: [call] };
+  const day = market === "kr" ? today : shift(today, -1);
+  const round = market === "kr" ? 2 : 1;
+  const prev = entry(market, "prev_close", day, round, market === "kr" ? probs([8.1, 34.2, 31.0, 21.3, 5.4]) : probs([5.2, 20.1, 33.0, 29.4, 12.3]), false);
+  const open = entry(market, "open", day, round, market === "kr" ? probs([6.0, 26.0, 38.0, 22.0, 8.0]) : probs([10.4, 30.1, 30.2, 22.0, 7.3]), false);
+  return { market, date: today, stages: STAGES, calls: { prev_close: prev, open }, rounds: { prev_close: [prev], open: [open] }, note: NOTE };
 }
 
 export function fakeDayCallHistory(market: DayCallMarket, days = 90): DayCallHistory {
   const today = kstToday();
   const items: DayCallHistoryItem[] = [];
-  for (let i = 0; i < Math.min(days, 60); i++) {
+  for (let i = 0; i < Math.min(days, 45); i++) {
     const day = shift(today, -i);
     const wd = new Date(`${day}T00:00:00Z`).getUTCDay();
     if (wd === 0 || wd === 6) continue;
-    const r = seeded(i + (market === "us" ? 100 : 0));
-    const pr = probs([10 + r * 10, 30 - r * 10, 25 + r * 5, 25 - r * 5, 10].map((x) => Math.round(x * 10) / 10));
-    items.push({ date: day, ...entry(market, day, 2, pr, i > 0, i) });
+    for (const kind of DAY_CALL_KINDS) {
+      const r = seeded(i + (market === "us" ? 100 : 0) + (kind === "open" ? 50 : 0));
+      const pr = probs([10 + r * 10, 30 - r * 10, 25 + r * 5, 25 - r * 5, 10].map((x) => Math.round(x * 10) / 10));
+      items.push({ date: day, ...entry(market, kind, day, 2, pr, i > 0, i) });
+    }
   }
   return { market, days, items };
 }
 
 export function fakeDayCallStats(market: DayCallMarket, days = 90): DayCallStats {
-  const scored = fakeDayCallHistory(market, days).items.filter((it) => it.outcome);
+  const all = fakeDayCallHistory(market, days).items.filter((it) => it.outcome);
   const ratio = (xs: boolean[]) => (xs.length ? xs.filter(Boolean).length / xs.length : null);
-  return {
-    market, days, n: scored.length, missed: 1,
-    direction_hit_rate: ratio(scored.map((h) => h.outcome!.hit_direction)), stage_hit_rate: ratio(scored.map((h) => h.outcome!.hit_stage)), brier: 0.74,
-    baselines: { always_long: { direction_hit_rate: 0.52 }, follow_yesterday: { direction_hit_rate: 0.49 }, climatology: { brier: 0.75 } },
-    per_stage: DAY_CALL_STAGES.map((stage) => {
-      const called = scored.filter((h) => h.stage === stage);
-      return { stage, label: STAGE_KO[stage], called: called.length, called_hit: called.filter((h) => h.outcome!.hit_stage).length,
-        actual: scored.filter((h) => h.outcome!.stage === stage).length };
-    }),
-    calibration: Array.from({ length: 10 }, (_, k) => ({ lo: k * 10, hi: k * 10 + 10, n: [60, 48, 52, 40, 22, 9, 3, 1, 0, 0][k],
-      mean_prob: k < 8 ? k * 10 + 5.3 : null, actual_rate: k < 7 ? [7.7, 14.2, 23.0, 36.1, 41.0, 52.2, 66.7][k] : null })),
-    by_round: { "1": { n: 20, direction_hit_rate: 0.52, stage_hit_rate: 0.35, brier: 0.75 }, "2": { n: scored.length, direction_hit_rate: 0.55, stage_hit_rate: 0.37, brier: 0.73 } },
-    by_source: { live: { n: 8 }, backfill: { n: scored.length - 8 } },
+  const one = (kind: DayCallKind): DayCallCallStats => {
+    const scored = all.filter((h) => h.call === kind);
+    const decided = scored.filter((h) => h.outcome!.hit_direction !== null);
+    return {
+      n: scored.length, missed: 1,
+      direction_hit_rate: ratio(decided.map((h) => !!h.outcome!.hit_direction)), stage_hit_rate: ratio(scored.map((h) => h.outcome!.hit_stage)),
+      brier: kind === "prev_close" ? 0.62 : 0.74,
+      baselines: { always_long: { direction_hit_rate: 0.43 }, always_short: { direction_hit_rate: 0.57 }, follow_yesterday: { direction_hit_rate: 0.49 }, climatology: { brier: 0.75 } },
+      per_stage: DAY_CALL_STAGES.map((stage) => {
+        const called = scored.filter((h) => h.stage === stage);
+        return { stage, label: STAGE_KO[stage], called: called.length, called_hit: called.filter((h) => h.outcome!.hit_stage).length,
+          actual: scored.filter((h) => h.outcome!.stage === stage).length };
+      }),
+      calibration: Array.from({ length: 10 }, (_, k) => ({ lo: k * 10, hi: k * 10 + 10, n: [60, 48, 52, 40, 22, 9, 3, 1, 0, 0][k],
+        mean_prob: k < 8 ? k * 10 + 5.3 : null, actual_rate: k < 7 ? [7.7, 14.2, 23.0, 36.1, 41.0, 52.2, 66.7][k] : null })),
+      by_round: { "1": { n: 20, direction_hit_rate: 0.52 }, "2": { n: scored.length, direction_hit_rate: 0.55 } },
+      by_source: { live: { n: 8 }, backfill: { n: scored.length - 8 } },
+      ...(kind === "open" ? { hold_rate: scored.length ? 1 - decided.length / scored.length : null, called: { n: decided.length, direction_hit_rate: ratio(decided.map((h) => !!h.outcome!.hit_direction)) } } : {}),
+    };
   };
+  return { market, days, calls: { prev_close: one("prev_close"), open: one("open") }, note: NOTE };
 }

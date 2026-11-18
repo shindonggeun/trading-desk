@@ -154,3 +154,29 @@ def test_krx_cooldowns_name_the_quota_and_a_refused_service():
     got = {n: u for n, _, u in desk.cooldowns(at)}
     assert got["krx_quota"] == datetime(2026, 11, 19, 0, 0, tzinfo=krx.KST)
     assert got["krx_refused_opt_bydd_trd"] == at + timedelta(hours=5)
+
+
+def test_a_pass_that_returns_no_wait_keeps_the_loop_on_the_retry_interval(caplog):
+    """#628: a step returning None (or nan, or text) used to end its loop at float(None)."""
+    answers = [None, float("nan"), "soon", None, 0.0]
+    calls = []
+
+    async def step():
+        calls.append(1)
+        return answers[min(len(calls) - 1, len(answers) - 1)]
+
+    async def main():
+        jobs = Jobs()
+        jobs.add("odd", "이상한 대기", "test")
+        task = jobs.spawn("odd", jobs.run_forever("odd", step, retry=0.0))
+        await _until(lambda: len(calls) >= 6)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return jobs
+
+    with caplog.at_level(logging.WARNING):
+        jobs = asyncio.run(main())
+    j = jobs.get("odd")
+    assert j.runs >= 6 and j.errors == 0 and j.ended == "cancelled"
+    assert caplog.text.count("odd: a pass returned no wait") == 1          # warned once, not every pass

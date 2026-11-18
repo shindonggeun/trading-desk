@@ -132,6 +132,19 @@ def test_features_use_only_days_before_the_call(engine):
     assert f["date"] == "2026-12-08"                          # not the 9th's own row (published on the 10th)
     assert f["oi_total_change"] is not None and f["oi_total_change_z"] is not None
     assert oi.features_before(days[0]) is None
+    # a 07:30 KST call on the 9th: the 8th's row comes up at 08:30, so the 7th's (the latest published)
+    early = datetime(2026, 12, 8, 22, 30, tzinfo=UTC)
+    assert oi.features_before(date(2026, 12, 9), early)["date"] == "2026-12-07"
+    late = datetime(2026, 12, 9, 0, 30, tzinfo=UTC)                      # 09:30 KST: the 8th is out
+    assert oi.features_before(date(2026, 12, 9), late)["date"] == "2026-12-08"
+
+
+def test_rows_in_another_name_format_are_reported(engine, caplog):
+    d = date(2026, 12, 9)
+    _store(engine, "fut_bydd_trd", d, [{**fut(d, "202612", 150_000), "ISU_NM": "KOSPI200 F DEC26"}])
+    with caplog.at_level(logging.WARNING, logger="desk.futures_oi"):
+        assert futures_oi.FuturesOi(engine, clock=lambda: AT).derive(d, d) == 0
+    assert "no KOSPI200 rows read on 1 day(s)" in caplog.text
 
 
 def test_kis_and_krx_are_compared_for_the_same_contract_only(engine, caplog):

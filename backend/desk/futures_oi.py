@@ -19,8 +19,9 @@ for a year's line on every request. The rows are derived again (idempotent) afte
 - Options: the monthly KOSPI200 options only (no weeklies, no minis). ``pc_oi_ratio`` = put / call
   open interest over every listed month; ``atm_iv`` = the mean implied volatility of the call and put
   at the strike nearest the index, from the nearest month with at least ROLL_DAYS business days left.
-- ``features_before(day)`` hands the direction call (#572) only rows dated before ``day`` - KRX
-  publishes D's rows the next business day, so D's own values are not known on D.
+- ``features_before(day, at)`` hands the direction call (#572) only rows dated before ``day`` and
+  published by ``at`` - KRX puts D's rows up at 08:30 KST the next business day (desk.krx.ready_at), so
+  a 07:30 call sees D-2's row, not D-1's. Training and the live call read the same thing.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ from sqlalchemy.engine import Engine
 
 from . import market_calendar
 from .db import futures_oi_daily, krx_daily, now
-from .krx import num, open_days
+from .krx import num, open_days, ready_at
 
 log = logging.getLogger(__name__)
 
@@ -232,6 +233,11 @@ class FuturesOi:
                 raw.append(payload)
         if raw:
             out[day] = parse(raw)
+        # rows that are there but none of them read: KRX's names differ from what this module expects
+        unread = sorted(d for d, rows in out.items() if not rows)
+        if unread:
+            log.warning("krx %s: no KOSPI200 rows read on %d day(s) with rows (%s ~ %s) - check PROD_NM / ISU_NM "
+                        "(docs/krx.md)", api, len(unread), unread[0], unread[-1])
         return out
 
     def derive(self, first: date, last: date) -> int:
@@ -263,13 +269,17 @@ class FuturesOi:
                                 .limit(days)).mappings().all()
         return [_point(r) for r in rows]
 
-    def features_before(self, day: date) -> dict | None:
-        """For the direction call on ``day``: the latest row dated before it, with each value's z-score
-        against the FEATURE_WINDOW rows before that one. None without a row before ``day``."""
+    def features_before(self, day: date, at: datetime | None = None) -> dict | None:
+        """For the direction call on ``day`` made at ``at``: the latest row dated before ``day`` that KRX had
+        published by ``at`` (ready_at), with each value's z-score against the FEATURE_WINDOW rows before
+        that one. Without ``at``, every row before ``day``. None without such a row."""
         with self.engine.connect() as conn:
             rows = conn.execute(select(futures_oi_daily).where(futures_oi_daily.c.trade_date < day)
                                 .order_by(futures_oi_daily.c.trade_date.desc())
-                                .limit(FEATURE_WINDOW + 1)).mappings().all()
+                                .limit(FEATURE_WINDOW + 4)).mappings().all()
+        if at is not None:
+            rows = [r for r in rows if ready_at(r["trade_date"]) <= at]
+        rows = rows[:FEATURE_WINDOW + 1]
         if not rows:
             return None
         last, past = rows[0], rows[1:]

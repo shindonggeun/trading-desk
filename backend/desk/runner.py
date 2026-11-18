@@ -790,7 +790,9 @@ class RunManager:
     async def _guard(self, fix: Callable[[], Any], fallback: Any) -> Any:
         """A desk.language fix in a thread with a backstop; the fallback (left as it was) on timeout."""
         try:
-            return await asyncio.wait_for(asyncio.to_thread(fix), language.TRANSLATE_TIMEOUT_SEC * 2 + 30)
+            # the fix starts no call after BUDGET_SEC; the one in flight has its own timeout
+            return await asyncio.wait_for(asyncio.to_thread(fix),
+                                          language.BUDGET_SEC + language.TRANSLATE_TIMEOUT_SEC + 30)
         except Exception as exc:  # noqa: BLE001 - incl. timeout: the text stays as the model wrote it
             log.warning("language guard failed: %s", type(exc).__name__)
             return fallback

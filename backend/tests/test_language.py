@@ -108,7 +108,7 @@ def test_only_the_foreign_lines_are_translated_and_the_plan_reads_the_same():
     None,
     Translator(edit=lambda out: [line.replace("33.73", "33.7") for line in out]),   # lost a number
     Translator(edit=lambda out: out[:-1]),                                            # one line short
-    Translator(edit=lambda out: [line.replace("관망", "様子見です") for line in out]),     # still Japanese
+    Translator(edit=lambda out: [next(iter(KO_FOR)), *out[1:]]),                       # still Japanese
     Translator(table={}),                                                             # the call fails
 ])
 def test_a_translation_that_is_off_leaves_the_original_marked(translate):
@@ -116,6 +116,38 @@ def test_a_translation_that_is_off_leaves_the_original_marked(translate):
     fixed, report = language.fix_state(state, translate)
     assert fixed == state
     assert report == {"fixed": [], "mismatch": ["final_trade_decision"], "kind": "ja"}
+
+
+def test_one_japanese_line_in_a_long_korean_text_is_caught_and_only_it_is_translated():
+    body = "\n".join(f"- {i}번째 근거: 20일선 위에서 거래량이 평균 대비 1.{i}배로 늘었고 외국인 순매수가 이어졌다." for i in range(30))
+    text = f"**Rating**: Hold\n\n**Executive Summary**: 最終判断はHoldで、KORUの方向性を急いで決めず様子見。\n{body}"
+    assert language.foreign(body) is None and language.foreign(text) == "ja"
+    t = Translator()
+    fixed, report = language.fix_state({"final_trade_decision": text}, t)
+    assert report["fixed"] == ["final_trade_decision"] and len(t.asked[0][0]) == 1
+    assert fixed["final_trade_decision"].endswith(body)
+    # a Korean report's hanja table row is not a foreign text
+    assert language.foreign("## 재무 요약\n이번 분기 실적은 시장 기대를 웃돌았고 이익률도 개선됐다.\n| 항목 | 값 |\n|---|---|\n"
+                            "| 前年比 | +12% |\n| 營業利益率 | 31% |") is None
+
+
+def test_no_translation_call_starts_after_the_budget():
+    t = Translator()
+    fixed, kind, status = language.fix_text(DECISION_JA, t, deadline=0.0)
+    assert (fixed, kind, status) == (DECISION_JA, "ja", "mismatch") and t.asked == []
+
+
+def test_kept_holds_the_numbers_in_order_and_the_labels_rating_words_in_any_case():
+    assert not language.kept("Holder Exit: 55.2 (現在 58.1)", "Holder Exit: 58.1 (현재 55.2)")
+    assert not language.kept("**Action**: buy — 押し目で", "**Action**: 매수 — 눌림에서")
+    assert not language.kept("Exit by: 金曜の引けまで", "청산 기한: 금요일 마감까지")
+    assert language.kept("Exit by: 金曜の引けまで", "Exit by: 금요일 마감까지")
+
+
+def test_the_trader_action_verb_must_stay():
+    state = {"trader_investment_plan": "**Action**: buy — 押し目で分割\n\n**Entry Price**: 7.31"}
+    assert language.same_plan(state, "trader_investment_plan", "**Action**: buy — 눌림에서 분할\n\n**Entry Price**: 7.31")
+    assert not language.same_plan(state, "trader_investment_plan", "**Action**: 매수 — 눌림에서\n\n**Entry Price**: 7.31")
 
 
 def test_a_translation_that_moves_a_level_is_rejected():

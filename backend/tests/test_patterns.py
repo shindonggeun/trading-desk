@@ -197,13 +197,13 @@ def test_future_bar_times_follow_the_bars_own_hours_and_weekends():
 
 def test_a_converging_pattern_says_when_how_far_and_how_sure(monkeypatch):
     monkeypatch.setattr(patterns, "_stats_cache", {})
-    p = _find(_sym(70))[0]                                             # the apex ~55 bars ahead: the window ahead
+    p = patterns.find(_sym(70), K, 4.0)[0]          # the apex ~55 bars ahead; a 30-point height is ~7.5 ATR of 4
     w, t = p["breakout_window"], p["targets"]
     assert w["basis"] == "textbook" and w["share"] == [0.5, 0.8] and p["odds"] is None and not w["passed"]
     assert w["bars_ahead"][0] <= w["bars_ahead"][1] <= math.ceil(p["apex"]["bars_ahead"])
     assert w["from"] <= w["to"] <= p["apex_at"]
     assert t["up"] > p["upper"]["to"]["price"] > p["lower"]["to"]["price"] > t["down"]
-    assert t["height_pct"] > 0 and t["reach_pct"] is None
+    assert t["height_pct"] > 0 and t["reach_pct"] is None and t["basis"] == "measured_move"
     assert p["explain"].startswith("일봉 대칭 삼각수렴 — 고점은 낮아지고 저점은 높아지는 중. 교과서로는 꼭짓점 전 ")
     assert "과거 통계는 아직 없어요." in p["explain"] and p["explain"].endswith("예측 아님.")
 
@@ -211,7 +211,7 @@ def test_a_converging_pattern_says_when_how_far_and_how_sure(monkeypatch):
              "verdict": "no_edge", "edge_pct": 1.0, "frac_q25": 0.6, "frac_q75": 0.7, "reach_pct": 47.0,
              "by_prior": {"up": {"n": 12, "up_pct": 70.0, "down_pct": 30.0, "none_pct": 0.0}}}
     monkeypatch.setattr(patterns, "_stats_cache", {"kinds": {"1d:symmetric": stats}})
-    p = _find(_sym(70))[0]
+    p = patterns.find(_sym(70), K, 4.0)[0]
     assert p["breakout_window"]["basis"] == "measured" and p["breakout_window"]["share"] == [0.6, 0.7]
     o = p["odds"]
     assert (o["up_pct"], o["down_pct"], o["n"], o["small_sample"], o["prior"]) == (58.0, 42.0, 41, False, None)
@@ -314,3 +314,21 @@ def test_the_backtest_records_where_the_break_came_and_whether_the_move_was_reac
     s = patterns_bt.summarize(rows)
     assert s["frac_q25"] < s["frac_q50"] < s["frac_q75"] and s["reach_pct"] == 50.0 and s["reach_n"] == 30
     assert set(s["by_prior"]) == {"up", "down"} and s["by_prior"]["up"]["n"] == 14
+
+
+def test_a_starting_height_too_wide_gives_way_to_the_recent_width_or_no_target(monkeypatch):
+    """(#629 follow-up) 005930 1d began in a 94% swing: targets 431k / 91k. Past MAX_HEIGHT_ATR (or
+    MAX_HEIGHT_PCT) the width at the last touch stands in; too wide as well, the targets are left out."""
+    monkeypatch.setattr(patterns, "_stats_cache", {"kinds": {"1d:symmetric": {"n": 40, "reach_pct": 30.0}}})
+    p = patterns.find(_sym(70), K, 2.5)[0]                    # a 30-point height is ~12 ATR of 2.5
+    t = p["targets"]
+    assert t["basis"] == "recent_swing" and t["reach_pct"] is None   # the measured reach was for the full height
+    full = 1 + t["height_pct"] / 100                          # the starting height it stands in for
+    assert p["upper"]["to"]["price"] < t["up"] < p["upper"]["to"]["price"] * full
+    assert p["lower"]["to"]["price"] / full < t["down"] < p["lower"]["to"]["price"]
+    assert "최근 폭 기준" in p["explain"] and "목표까지 간 비율" not in p["explain"]
+    monkeypatch.setattr(patterns, "MAX_HEIGHT_ATR", 0.5)      # the recent width too wide as well
+    p = patterns.find(_sym(70), K, 2.5)[0]
+    assert (p["targets"]["up"], p["targets"]["down"], p["targets"]["basis"]) == (None, None, "omitted")
+    assert "너무 넓어 목표는 생략했어요." in p["explain"] and "꼭짓점 전" in p["explain"]
+    assert p["explain"].endswith("예측 아님.")

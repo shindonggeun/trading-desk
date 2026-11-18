@@ -10,7 +10,7 @@ last finished bar:
   (New York clock) on the days before: the cash open's bar always trades many times the pre-market's.
 - ``nq_drop15``: the same on the 15-minute return (three bars), when the 5-minute one did not fire.
 - ``nq_from_high`` (장중 고점 대비): the close ``FROM_HIGH_PCT`` or more under the session's high
-  (the CME day from 18:00 ET); once a day (desk.market_alerts).
+  (the CME day from 18:00 ET); once a session (desk.market_alerts).
 
 Returns across a gap (the 17:00-18:00 ET break, a weekend, a missing bar) are left out of the samples.
 CME hours: Sunday 18:00 ET to Friday 17:00 ET without the daily 17:00-18:00 break (holidays are
@@ -27,7 +27,7 @@ from .futures_flow import KST
 from .session_progress import FUTURES_CLOSES, FUTURES_OPENS
 
 TICKER = "NQ=F"
-BARS = 2000                      # Yahoo 5-minute bars fetched a pass: about a week of the CME's 23 hours
+BARS = 1500                      # Yahoo 5-minute bars a pass: about five CME days (desk.prices asks ~15 days)
 BAR = timedelta(minutes=5)
 SETTLE_SEC = 20                  # after a bar's end, for Yahoo to have it
 LOW_QUANTILE = 0.02
@@ -84,6 +84,12 @@ def _session_start(at: datetime) -> datetime:
     local = at.astimezone(US.zone)
     start = datetime.combine(local.date(), FUTURES_OPENS, US.zone)
     return start if local >= start else start - timedelta(days=1)
+
+
+def session_of(at: datetime):
+    """The New York date the CME session holding ``at`` opened on (18:00 ET); an alert's time is its
+    bar's end, so a minute back is the bar's own session."""
+    return _session_start(at - timedelta(minutes=1)).date()
 
 
 def _alert(rule: str, at: datetime, value: float, limit: float | None, severity: str, **extra) -> dict:

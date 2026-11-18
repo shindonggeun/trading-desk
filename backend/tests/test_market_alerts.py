@@ -36,6 +36,34 @@ def test_admit_keeps_one_per_moment_cools_down_a_market_and_caps_the_day():
     assert not market_alerts.admit(_shift("15:10", market="kosdaq", severity="strong"), fuller)
 
 
+def test_info_never_holds_back_a_pushed_alert_and_turns_go_past_the_cap():
+    info = [_shift("10:40", "buy_shrink", who="foreign", severity="info")]
+    assert market_alerts.admit(_shift("10:42"), info)                                   # an info blocks nothing
+    assert market_alerts.admit(_shift("10:45", "buy_shrink", who="institution", severity="info"), [_shift("10:42")])
+    assert not market_alerts.admit(_shift("11:00", "buy_shrink", who="foreign", severity="info"), info)  # repeat
+    infos = [_shift(f"{9 + i}:00", "buy_shrink", market=f"m{i}", severity="info") for i in range(market_alerts.DAILY_MAX)]
+    assert market_alerts.admit(_shift("15:00", market="kosdaq"), infos)                 # info has its own cap
+    assert not market_alerts.admit(_shift("15:00", "buy_shrink", market="kosdaq", severity="info"), infos)
+    full = [_shift(f"{9 + i}:00", market=f"m{i}") for i in range(market_alerts.DAILY_MAX)]
+    assert market_alerts.admit(_shift("15:00", "sell_turn", market="kosdaq"), full)
+
+
+def test_nq_from_high_is_once_a_cme_session_across_the_kst_midnight():
+    nq = (lambda t: {**_shift("00:00", "nq_from_high", "nq", "all", kind="nq_alert"), "t": t})
+    first = nq("2026-11-17T23:55:00+09:00")              # 09:55 ET Tuesday: the session that opened Monday 18:00
+    assert not market_alerts.admit(nq("2026-11-18T00:05:00+09:00"), [], [first])
+    assert market_alerts.admit(nq("2026-11-18T08:10:00+09:00"), [], [first])           # 18:10 ET: the next session
+    assert market_alerts.admit(nq("2026-11-18T00:05:00+09:00"), [], [])
+
+
+def test_the_same_moment_is_judged_strongest_first(db_url):
+    engine = _store_with_sub(db_url)
+    alerts = market_alerts.MarketAlerts(engine)
+    got = alerts.dispatch([_shift("10:42", "buy_grow", who="foreign"), _shift("10:42", severity="strong")])
+    assert [(r["who"], r["severity"]) for r in got] == [("institution", "strong")]     # the caution waits 20 min
+    engine.dispose()
+
+
 def test_dispatch_records_once_and_pushes_only_caution_and_strong(db_url):
     engine = _store_with_sub(db_url)
     store = push.PushStore(engine)

@@ -223,3 +223,39 @@ def test_the_times_read_back_in_utc(desk):
     desk.run(_kst(DAY, 7, 40))
     item = desk.history("kr", 30, _kst(DAY, 9))["items"][0]
     assert datetime.fromisoformat(item["cutoff_at"]) == _kst(DAY, 7, 30)
+
+
+def test_a_round_that_cannot_be_called_yet_is_tried_every_ten_minutes_not_every_tick(desk):
+    asked = []
+
+    def empty(symbol, interval, count):              # Yahoo refusing: every call says NoData
+        asked.append(symbol)
+        return []
+
+    desk.candles = empty
+    per_fetch = len(dc.SYMBOLS) + len(dc.HOURLY)
+    assert desk.run(_kst(DAY, 7, 32)) == [] and len(asked) == per_fetch
+    for minute in (34, 36, 38, 40):                  # the loop's ticks inside the retry interval
+        desk.run(_kst(DAY, 7, minute))
+    assert len(asked) == per_fetch
+    desk.run(_kst(DAY, 7, 43))                       # ten minutes on: one more fetch
+    assert len(asked) == 2 * per_fetch
+    desk.candles = _candles
+    assert desk.run(_kst(DAY, 7, 50)) == []          # still inside the interval: waits
+    assert len(desk.run(_kst(DAY, 7, 54))) == 2      # then the bars are there
+
+
+def test_the_scoring_right_after_the_calls_reuses_their_bars(desk):
+    asked = []
+
+    def counting(symbol, interval, count):
+        asked.append(symbol)
+        return _candles(symbol, interval, count)
+
+    desk.candles = counting
+    desk.run(_kst(DAY, 7, 40))
+    desk.score(_kst(DAY, 7, 40, ) + timedelta(seconds=30))     # nothing ready: no fetch either
+    n = len(asked)
+    desk.run(_et(DAY, 10, 5))                                    # the US round 2, then the Korean scoring
+    desk.score(_et(DAY, 10, 5) + timedelta(seconds=20))
+    assert len(asked) == n + len(dc.SYMBOLS) + len(dc.HOURLY)    # one fetch for both

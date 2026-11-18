@@ -54,5 +54,8 @@ def test_nothing_in_the_example_or_the_compose_is_left_over():
 
 def test_a_cli_only_key_is_never_kept_in_a_file_and_secrets_have_no_example_value():
     assert not CLI_ONLY & (set(_example()) | _compose_env())
-    filled = {k: v for k, v in _example().items() if SECRET.search(k) and v.strip()}
+    text = (ROOT / ".env.example").read_text(encoding="utf-8")
+    every = dict(re.findall(r"^([A-Z][A-Z0-9_]+)=(.*)$", text, re.MULTILINE))   # TOSS_ · OPENAI_ · FRED_ too
+    assert set(_example()) <= set(every)
+    filled = {k: v for k, v in every.items() if SECRET.search(k) and v.strip()}
     assert filled == {}, "a secret-looking key carries a value in .env.example"

@@ -181,7 +181,7 @@ def test_the_levels_endpoint_keeps_the_gaps_takes_the_runs_horizon_and_leaves_th
         client.get("/api/levels?ticker=NVDA")
         client.get("/api/levels?ticker=NVDA")
         assert calls == ["NVDA"]                                   # found once, kept GAPS_TTL_SEC
-        assert all("gaps" not in v[1] and "explain" not in v[1] for v in sr._CACHE.values())
+        assert all("gaps" not in v and "explain" not in v for v in sr._CACHE.values())   # #628 TTLCache: the values themselves
         run_id = client.post("/api/runs", json={"ticker": "NVDA", "horizon": "swing"}).json()["id"]
         _wait_done(client, run_id)
         assert client.get(f"/api/levels?ticker=NVDA&run={run_id}").status_code == 200

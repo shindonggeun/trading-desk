@@ -8,7 +8,7 @@ import pytest
 from desk import settings as st
 from desk.settings import Settings
 
-SECRET_FIELD = re.compile(r"key|secret|token|password|chat_id|database_url")
+SECRET_FIELD = re.compile(r"key|secret|token|password|chat_id|database_url|account")
 
 
 @pytest.mark.parametrize(("raw", "default", "want"), [

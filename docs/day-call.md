@@ -118,6 +118,6 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli day-call backtest --mark
 
 ## 다음 (PR-B)
 
-- Alembic 0016 `day_calls`(down 0015_morning_briefs)
+- Alembic 0017 `day_calls`(down 0016_market_alerts, #579). 머지 순서가 바뀌면 번호를 다시 맞춘다.
 - 앱 안 스케줄러: 회차 창 안에서만 판정하고, 놓친 회차는 `missed` 로 센다. 장 마감 뒤 채점한다.
 - API 3개와 `today_call()` 실제 구현, 검증 90일 백필(`source=backfill`)

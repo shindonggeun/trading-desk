@@ -370,50 +370,59 @@ def _day_call_backfill(engine, args) -> int:
 
 def _krx(engine, args, key: str) -> int:
     """#601: KRX OPEN API end-of-day rows into krx_daily. Days already stored are skipped (rerun-safe);
-    stops at --max-calls, a refused service (the key or its approval) or KRX's daily quota."""
+    stops at --max-calls, a refused service (the key or its approval), repeated errors or KRX's daily quota.
+    Exit 1 when a service was refused, failed or hit the quota."""
     from datetime import date
 
+    from sqlalchemy import select
+
     from . import krx
+    from .db import krx_days
 
     if args.api != "all" and args.api not in krx.APIS:
         print(f"unknown --api {args.api}: {', '.join(krx.APIS)}", file=sys.stderr)
         return 2
-    desk = krx.KrxDaily(engine, krx.Client(key))
     apis = list(krx.APIS) if args.api == "all" else [args.api]
     if args.action == "status":
-        from sqlalchemy import func, select
-
-        from .db import krx_days
         with engine.connect() as conn:
-            q = (select(krx_days.c.api, func.count(), func.min(krx_days.c.bas_dd), func.max(krx_days.c.bas_dd),
-                        func.sum(krx_days.c.rows)).group_by(krx_days.c.api).order_by(krx_days.c.api))
-            for api, days, first, last, rows in conn.execute(q):
-                print(f"{api}  {days} day(s)  {first} ~ {last}  {rows} row(s)")
+            got = conn.execute(select(krx_days.c.api, krx_days.c.bas_dd, krx_days.c.rows)
+                               .where(krx_days.c.api.in_(apis))).all()
+        for api in apis:
+            mine = [(d, n) for a, d, n in got if a == api]
+            if not mine:
+                continue
+            days = [d for d, _ in mine]
+            empty_open = sum(1 for d, n in mine if n == 0 and krx.market_calendar.is_open("kr", d))
+            print(f"{api}  {len(mine)} day(s)  {min(days)} ~ {max(days)}  {sum(n for _, n in mine)} row(s)  "
+                  f"{empty_open} open day(s) with no rows (--refetch-empty asks them again)")
         return 0
+    desk = krx.KrxDaily(engine, krx.Client(key))
     if not desk.client.enabled:
         print("DESK_KRX_API_KEY 가 비어 있다 — 서버 .env.runtime 에 넣고 컨테이너 안에서 돌린다", file=sys.stderr)
         return 2
     at = now()
     first = date.fromisoformat(args.start)
     last = date.fromisoformat(args.end) if args.end else krx.kst_today(at) - timedelta(days=1)
-    left = args.max_calls
+    left, failed = args.max_calls, False
     for api in apis:
-        days = desk.missing(api, first, last, at)
+        days = desk.missing(api, first, last, at, refetch_empty=args.refetch_empty)
         print(f"{api}: {len(days)} day(s) to fetch")
         for i in range(0, len(days), 100):
             if left <= 0:
                 print("--max-calls 를 다 썼다 — 다시 돌리면 남은 날부터 받는다")
-                return 0
+                return 1 if failed else 0
             r = desk.collect(api, days[i:i + 100], at, max_calls=left)
             left -= r["calls"]
+            failed = failed or r["failed"] > 0
             print(f"  {days[i]} ~: {r['stored']} day(s) stored, {r['rows']} row(s), {r['empty']} empty, "
-                  f"{r['later']} later, {r['calls']} call(s)")
+                  f"{r['later']} later, {r['failed']} failed, {r['dropped']} dropped, {r['calls']} call(s)")
             if r["stopped"] in ("refused", "quota", "error"):
+                failed = True
                 print(f"  stopped: {r['stopped']} (로그 참고) — 다시 돌리면 남은 날부터 받는다", file=sys.stderr)
                 if r["stopped"] == "quota":
                     return 1
                 break
-    return 0
+    return 1 if failed else 0
 
 
 def _unfinished(url: str) -> int:
@@ -548,7 +557,10 @@ def main(argv: list[str] | None = None) -> int:
     kx.add_argument("--from", dest="start", default="2015-01-01", help="first basDd, YYYY-MM-DD (default 2015-01-01)")
     kx.add_argument("--to", dest="end", default=None, help="last basDd, YYYY-MM-DD (default yesterday KST)")
     kx.add_argument("--max-calls", type=int, default=3000,
-                    help="most KRX calls this run (default 3000; the key's quota is 10,000 a day)")
+                    help="most KRX calls this run (default 3000; the key's quota is 10,000 a day, shared with "
+                         "the server's schedule)")
+    kx.add_argument("--refetch-empty", action="store_true",
+                    help="also ask again the open days stored with no rows")
     sub.add_parser("unfinished", help=(
         "queued / running runs: the count on the first line, then one line each (#431; scripts/deploy.sh "
         "asks this inside the backend container before it restarts it)"))

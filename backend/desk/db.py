@@ -317,8 +317,7 @@ krx_daily = Table(
     Column("code", String(64), nullable=False),                    # IDX_NM or ISU_CD (desk.krx.APIS)
     Column("payload", Json, nullable=False),                       # the OutBlock_1 row, strings untouched
     Column("fetched_at", Timestamp, nullable=False),
-    UniqueConstraint("api", "bas_dd", "code", name="uq_krx_daily_row"),
-    Index("ix_krx_daily_api_day", "api", "bas_dd"),
+    UniqueConstraint("api", "bas_dd", "code", name="uq_krx_daily_row"),   # also the (api, day) lookup
 )
 
 # #601 each service · day already asked (rows 0: closed or no data), so a backfill rerun skips it

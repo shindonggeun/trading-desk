@@ -193,3 +193,96 @@ def test_backfill_from_the_cli_is_rerun_safe(engine, monkeypatch, db_url, capsys
                      "2026-11-17", "--max-calls", "1"]) == 0
     assert len(fake.calls) == 6
     assert KEY not in capsys.readouterr().out
+
+
+def test_krx_error_text_and_odd_keys_stay_out_of_the_logs(engine, caplog):
+    echo = {"respCode": "500", "respMsg": f"bad request {KEY.upper()} {KEY[:8]}"}
+    with pytest.raises(krx.KrxError) as exc:
+        _client(Krx({"kospi_dd_trd": echo})).fetch("kospi_dd_trd", TUE)
+    assert str(exc.value).endswith("respCode 500") and KEY[:8] not in str(exc.value)
+    fake = Krx()
+    odd = krx.Client("키-not-ascii", transport=httpx.MockTransport(fake))
+    assert not odd.enabled
+    assert krx.KrxDaily(engine, odd).run(WED_0900) == [] and fake.calls == []
+    assert "키" not in caplog.text
+
+
+def test_a_pass_still_running_is_not_started_twice(engine):
+    desk = krx.KrxDaily(engine, _client(Krx()), clock=lambda: WED_0900)
+    with desk._running:                                      # the previous pass, past its timeout
+        assert desk.run() == []
+    assert desk.run()                                        # free again
+
+
+def test_futures_rows_of_two_sessions_both_stay_and_true_repeats_are_counted(engine):
+    row = {"BAS_DD": "20261117", "ISU_CD": "KR4101WC0006", "ISU_NM": "코스피200 F 202612", "TDD_CLSPRC": "553.10",
+           "ACC_OPNINT_QTY": "251,330"}
+    body = {"OutBlock_1": [{**row, "MKT_NM": "정규"}, {**row, "MKT_NM": "야간", "TDD_CLSPRC": "551.95"},
+                           {**row, "MKT_NM": "정규"}, {"ISU_NM": "코드 없음"}]}
+    desk = krx.KrxDaily(engine, _client(Krx({"fut_bydd_trd": body})), clock=lambda: WED_0900)
+    out = desk.collect("fut_bydd_trd", [TUE])
+    assert out["rows"] == 2 and out["dropped"] == 2
+    assert sorted(r["MKT_NM"] for r in desk.rows("fut_bydd_trd", TUE)) == ["야간", "정규"]
+
+
+def test_a_day_that_fails_is_skipped_not_a_wall(engine):
+    bad = {("kospi_dd_trd", "20261112"): {"OutBlock_1": [], "OutBlock_2": []}}   # two blocks: an error
+    fake = Krx(bad)
+    desk = krx.KrxDaily(engine, _client(fake), clock=lambda: WED_0900, apis=("kospi_dd_trd",))
+    out = desk.run()[0]
+    assert out["failed"] == 1 and out["stopped"] is None and out["stored"] == 10
+    n = len(fake.calls)
+    assert desk.run(WED_0900 + timedelta(hours=1)) == [] and len(fake.calls) == n   # waits LATER_EVERY
+    fake.answers = {}
+    assert desk.run(WED_0900 + krx.LATER_EVERY)[0]["stored"] == 1
+    down = Krx(status=503)
+    stop = krx.KrxDaily(engine, _client(down), apis=("kosdaq_dd_trd",)).collect(
+        "kosdaq_dd_trd", [date(2026, 11, d) for d in (9, 10, 11, 12, 13)], WED_0900)
+    assert stop["stopped"] == "error" and stop["failed"] == krx.MAX_ERRORS and len(down.calls) == krx.MAX_ERRORS
+
+
+def test_http_403_is_a_refusal_and_the_quota_comes_back_after_midnight_kst():
+    with pytest.raises(krx.Refused):
+        _client(Krx(status=403)).fetch("kospi_dd_trd", TUE)
+    clock = [WED_0900]
+    fake = Krx(status=429)
+    client = _client(fake, clock=lambda: clock[0])
+    with pytest.raises(krx.QuotaExceeded):
+        client.fetch("kospi_dd_trd", TUE)
+    clock[0] = datetime(2026, 11, 18, 14, 59, tzinfo=UTC)               # 23:59 KST: still spent
+    with pytest.raises(krx.QuotaExceeded):
+        client.fetch("kospi_dd_trd", TUE)
+    assert len(fake.calls) == 1
+    fake.status = 200
+    clock[0] = datetime(2026, 11, 18, 15, 0, tzinfo=UTC)                # 00:00 KST
+    assert client.fetch("kospi_dd_trd", TUE) and client.spent() == 1
+
+
+def test_an_empty_open_day_turns_closed_after_seven_days_and_can_be_asked_again(engine, monkeypatch, db_url, capsys):
+    desk = krx.KrxDaily(engine, _client(Krx({"kospi_dd_trd": _fixture("closed_day")})), clock=lambda: WED_0900)
+    out = desk.collect("kospi_dd_trd", [date(2026, 11, 11), date(2026, 11, 12)])       # 7 and 6 days back
+    assert out["empty"] == 1 and out["later"] == 1
+    assert desk.missing("kospi_dd_trd", date(2026, 11, 11), date(2026, 11, 11), WED_0900) == []
+    assert desk.missing("kospi_dd_trd", date(2026, 11, 11), date(2026, 11, 11), WED_0900,
+                        refetch_empty=True) == [date(2026, 11, 11)]
+    monkeypatch.setenv("DESK_DATABASE_URL", db_url)
+    assert cli.main(["krx", "status"]) == 0
+    assert "1 open day(s) with no rows" in capsys.readouterr().out
+
+
+def test_the_cli_says_so_when_a_service_is_refused(engine, monkeypatch, db_url):
+    fake = Krx({"kospi_dd_trd": _fixture("refused")})
+    real = krx.Client
+    monkeypatch.setattr(krx, "Client", lambda key, **kw: real(key, transport=httpx.MockTransport(fake),
+                                                             sleep=lambda s: None))
+    monkeypatch.setenv("DESK_DATABASE_URL", db_url)
+    monkeypatch.setenv("DESK_KRX_API_KEY", KEY)
+    assert cli.main(["krx", "backfill", "--api", "kospi_dd_trd", "--from", "2026-11-09", "--to", "2026-11-13"]) == 1
+    assert len(fake.calls) == 1
+
+
+def test_the_vkospi_row_of_the_derivatives_indices(engine):
+    desk = krx.KrxDaily(engine, _client(Krx()), clock=lambda: WED_0900)
+    assert desk.collect("drvprod_dd_trd", [TUE])["rows"] == 2
+    vkospi = [r for r in desk.rows("drvprod_dd_trd", TUE) if r["IDX_NM"].replace(" ", "") == "코스피200변동성지수"]
+    assert len(vkospi) == 1 and krx.num(vkospi[0]["CLSPRC_IDX"]) == 24.18

@@ -34,7 +34,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name="pk_krx_daily"),
         sa.UniqueConstraint("api", "bas_dd", "code", name="uq_krx_daily_row"),
     )
-    op.create_index("ix_krx_daily_api_day", "krx_daily", ["api", "bas_dd"])
     op.create_table(
         "krx_days",
         sa.Column("api", sa.String(length=32), nullable=False),
@@ -47,5 +46,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("krx_days")
-    op.drop_index("ix_krx_daily_api_day", table_name="krx_daily")
     op.drop_table("krx_daily")

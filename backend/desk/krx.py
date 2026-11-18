@@ -18,6 +18,7 @@ Without a key nothing here runs. KRX's terms allow internal display only (no red
 from __future__ import annotations
 
 import logging
+import threading
 import time as _time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from sqlalchemy import and_, delete, insert, select
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 
 from . import market_calendar
 from .db import krx_daily, krx_days
@@ -44,7 +46,8 @@ MIN_GAP_SEC = 0.3                 # between two calls
 CATCH_UP_DAYS = 14                # the schedule fills missing days this far back (a server that was down)
 EMPTY_AFTER_DAYS = 7              # an open day still empty this long after is taken as having no rows
 REFUSED_FOR = timedelta(hours=6)  # a service the key may not use is not asked again for this long
-LATER_EVERY = timedelta(hours=3)  # a recent open day that came back empty is asked again after this
+LATER_EVERY = timedelta(hours=3)  # a recent open day that came back empty, or failed, is asked again after this
+MAX_ERRORS = 3                    # failed days in a row that end a service's pass
 TICK_SEC = 15 * 60
 EARLIEST = date(2010, 1, 4)       # the first basDd KRX serves for these services
 
@@ -62,10 +65,11 @@ APIS: dict[str, Api] = {
     "kospi_dd_trd": Api("idx", "KOSPI 시리즈 일별시세정보", ("IDX_NM",)),
     "kosdaq_dd_trd": Api("idx", "KOSDAQ 시리즈 일별시세정보", ("IDX_NM",)),
     "drvprod_dd_trd": Api("idx", "파생상품지수 시세정보", ("IDX_NM",)),
-    "fut_bydd_trd": Api("drv", "선물 일별매매정보(주식선물 외)", ("ISU_CD",)),
+    # MKT_NM (the session, e.g. regular / night) can repeat an ISU_CD within a day
+    "fut_bydd_trd": Api("drv", "선물 일별매매정보(주식선물 외)", ("ISU_CD", "MKT_NM")),
     "opt_bydd_trd": Api("drv", "옵션 일별매매정보(주식옵션 외)", ("ISU_CD",)),
     "etf_bydd_trd": Api("etp", "ETF 일별매매정보", ("ISU_CD",)),
-    "kts_bydd_trd": Api("bon", "국채전문유통시장 일별매매정보", ("ISU_CD",)),
+    "kts_bydd_trd": Api("bon", "국채전문유통시장 일별매매정보", ("ISU_CD", "MKT_NM")),
 }
 
 
@@ -118,7 +122,9 @@ def open_days(first: date, last: date) -> list[date]:
 
 
 def row_code(api: str, row: dict) -> str:
-    return "|".join(str(row.get(f) or "").strip() for f in APIS[api].code)[:64]
+    """The row's name within its day; "" when the first code field (the id itself) is missing."""
+    parts = [str(row.get(f) or "").strip() for f in APIS[api].code]
+    return "|".join(parts)[:64] if parts[0] else ""
 
 
 class Client:
@@ -127,7 +133,12 @@ class Client:
     def __init__(self, key: str, transport: httpx.BaseTransport | None = None,
                  clock: Callable[[], datetime] = db_now, sleep: Callable[[float], None] = _time.sleep,
                  budget: int = DAILY_BUDGET):
-        self._key = key.strip()
+        key = key.strip()
+        # a header value must be printable ASCII; anything else would fail inside httpx with an error that
+        # quotes a character of the key, so such a key turns the collector off instead
+        self._key = key if key.isascii() and key.isprintable() else ""
+        if key and not self._key:
+            log.warning("DESK_KRX_API_KEY is not printable ASCII - KRX collection off")
         self._transport = transport
         self._clock = clock
         self._sleep = sleep
@@ -162,7 +173,7 @@ class Client:
             with httpx.Client(transport=self._transport, timeout=TIMEOUT_SEC, follow_redirects=False) as client:
                 res = client.get(url, params={"basDd": day.strftime("%Y%m%d")},
                                  headers={"AUTH_KEY": self._key, "Accept": "application/json"})
-        except httpx.HTTPError as exc:     # no chaining: the request object carries the header
+        except Exception as exc:  # noqa: BLE001 - no chaining: the request object carries the header
             raise KrxError(f"KRX {api} {day}: {type(exc).__name__}") from None
         if res.status_code == 429:
             self._quota_day = today
@@ -181,18 +192,15 @@ class Client:
         if not isinstance(body, dict):
             raise KrxError(f"KRX {api} {day}: unexpected {type(body).__name__}")
         code = str(body.get("respCode") or "").strip()
-        if code:
-            msg = self._redact(str(body.get("respMsg") or ""))[:120]
+        if code:                           # respMsg stays out: server text could echo the key in any form
             if code == "401":
-                raise Refused(f"KRX {api} {day}: 401 {msg} (key or service approval)")
-            raise KrxError(f"KRX {api} {day}: {self._redact(code)[:16]} {msg}")
+                raise Refused(f"KRX {api} {day}: respCode 401 (key or service approval)")
+            safe = code if code.isalnum() and len(code) <= 8 and code not in self._key else "?"
+            raise KrxError(f"KRX {api} {day}: respCode {safe}")
         blocks = [v for k, v in body.items() if k.startswith("OutBlock_") and isinstance(v, list)]
         if len(blocks) != 1 or not all(isinstance(r, dict) for r in blocks[0]):
             raise KrxError(f"KRX {api} {day}: no single OutBlock list")
         return blocks[0]
-
-    def _redact(self, text: str) -> str:
-        return text.replace(self._key, "<key>") if self._key else text
 
 
 class KrxDaily:
@@ -207,26 +215,36 @@ class KrxDaily:
         self.apis = tuple(apis)
         self._refused: dict[str, datetime] = {}
         self._later: dict[tuple[str, date], datetime] = {}
+        self._running = threading.Lock()   # a pass past the loop's timeout must not overlap the next one
 
-    def done(self, api: str, first: date, last: date) -> set[date]:
+    def done(self, api: str, first: date, last: date, with_rows_only: bool = False) -> set[date]:
+        q = select(krx_days.c.bas_dd).where(and_(
+            krx_days.c.api == api, krx_days.c.bas_dd >= first, krx_days.c.bas_dd <= last))
+        if with_rows_only:
+            q = q.where(krx_days.c.rows > 0)
         with self.engine.connect() as conn:
-            got = conn.execute(select(krx_days.c.bas_dd).where(and_(
-                krx_days.c.api == api, krx_days.c.bas_dd >= first, krx_days.c.bas_dd <= last))).scalars()
-            return set(got)
+            return set(conn.execute(q).scalars())
 
-    def missing(self, api: str, first: date, last: date, at: datetime) -> list[date]:
-        """Open days in [first, last] not stored yet whose rows KRX has published by `at`."""
-        have = self.done(api, first, last)
+    def missing(self, api: str, first: date, last: date, at: datetime, refetch_empty: bool = False) -> list[date]:
+        """Open days in [first, last] not stored yet whose rows KRX has published by `at` (refetch_empty:
+        also the open days stored with no rows)."""
+        have = self.done(api, first, last, with_rows_only=refetch_empty)
         return [d for d in open_days(max(first, EARLIEST), last) if d not in have and ready_at(d) <= at]
 
-    def store(self, api: str, day: date, rows: Iterable[dict], at: datetime | None = None) -> int:
-        """Replace the day's rows for api; returns how many were kept. A duplicate code keeps the first."""
+    def store(self, api: str, day: date, rows: Iterable[dict], at: datetime | None = None) -> tuple[int, int]:
+        """Replace the day's rows for api; returns (kept, dropped). A row without a code, or repeating one
+        already kept, is dropped and logged - APIS names the fields that should make each row unique."""
         at = at or self.clock()
         seen: dict[str, dict] = {}
+        dropped = 0
         for row in rows:
             code = row_code(api, row)
             if code and code not in seen:
                 seen[code] = row
+            else:
+                dropped += 1
+        if dropped:
+            log.warning("krx %s %s: %d row(s) without a code or with a repeated one dropped", api, day, dropped)
         with self.engine.begin() as conn:
             conn.execute(delete(krx_daily).where(and_(krx_daily.c.api == api, krx_daily.c.bas_dd == day)))
             conn.execute(delete(krx_days).where(and_(krx_days.c.api == api, krx_days.c.bas_dd == day)))
@@ -235,14 +253,17 @@ class KrxDaily:
                     {"api": api, "bas_dd": day, "code": code, "payload": row, "fetched_at": at}
                     for code, row in seen.items()])
             conn.execute(insert(krx_days).values(api=api, bas_dd=day, rows=len(seen), fetched_at=at))
-        return len(seen)
+        return len(seen), dropped
 
     def collect(self, api: str, days: Iterable[date], at: datetime | None = None,
                 max_calls: int | None = None) -> dict:
-        """Fetch and store each day in turn. Stops at a refusal or the quota; an open day that comes back
-        empty while still recent is left for later (KRX may not have published it yet)."""
+        """Fetch and store each day in turn. A refusal or the quota stops; a failed day is skipped (asked
+        again after LATER_EVERY) and MAX_ERRORS in a row stop; an open day that comes back empty while
+        still recent is left for later (KRX may not have published it yet)."""
         at = at or self.clock()
-        out = {"api": api, "stored": 0, "rows": 0, "empty": 0, "later": 0, "calls": 0, "stopped": None}
+        out = {"api": api, "stored": 0, "rows": 0, "dropped": 0, "empty": 0, "later": 0, "failed": 0,
+               "calls": 0, "stopped": None}
+        errors = 0
         for day in days:
             if max_calls is not None and out["calls"] >= max_calls:
                 out["stopped"] = "max_calls"
@@ -260,24 +281,41 @@ class KrxDaily:
                 log.warning("%s", exc)
                 break
             except KrxError as exc:
-                out["stopped"] = "error"
                 log.warning("%s", exc)
-                break
+                self._later[(api, day)] = at
+                out["failed"] += 1
+                errors += 1
+                if errors >= MAX_ERRORS:
+                    out["stopped"] = "error"
+                    break
+                continue
+            errors = 0
             if not rows and (kst_today(at) - day).days < EMPTY_AFTER_DAYS:
                 self._later[(api, day)] = at
                 out["later"] += 1
                 continue
-            n = self.store(api, day, rows, at)
+            try:
+                kept, dropped = self.store(api, day, rows, at)
+            except IntegrityError:          # the same day stored at the same moment elsewhere (CLI + schedule)
+                log.warning("krx %s %s: stored concurrently elsewhere", api, day)
+                continue
             out["stored"] += 1
-            out["rows"] += n
-            out["empty"] += n == 0
+            out["rows"] += kept
+            out["dropped"] += dropped
+            out["empty"] += kept == 0
         return out
 
     def run(self, at: datetime | None = None) -> list[dict]:
         """The schedule's pass: every service's missing days of the last CATCH_UP_DAYS, once published."""
         at = at or self.clock()
-        if not self.client.enabled:
+        if not self.client.enabled or not self._running.acquire(blocking=False):
             return []
+        try:
+            return self._run(at)
+        finally:
+            self._running.release()
+
+    def _run(self, at: datetime) -> list[dict]:
         last = kst_today(at) - timedelta(days=1)
         first = last - timedelta(days=CATCH_UP_DAYS)
         results = []

@@ -1,0 +1,4 @@
+{"OutBlock_1": [
+  {"BAS_DD": "20261117", "IDX_CLSS": "선물지수", "IDX_NM": "코스피 200 선물지수", "CLSPRC_IDX": "1,402.33", "CMPPREVDD_IDX": "-7.81", "FLUC_RT": "-0.55", "OPNPRC_IDX": "1,409.10", "HGPRC_IDX": "1,412.66", "LWPRC_IDX": "1,398.02"},
+  {"BAS_DD": "20261117", "IDX_CLSS": "변동성지수", "IDX_NM": "코스피 200 변동성지수", "CLSPRC_IDX": "24.18", "CMPPREVDD_IDX": "1.07", "FLUC_RT": "4.63", "OPNPRC_IDX": "23.40", "HGPRC_IDX": "24.95", "LWPRC_IDX": "23.11"}
+]}

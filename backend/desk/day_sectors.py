@@ -1,0 +1,525 @@
+"""Today's strong and weak sectors, Korea and the US apart (#620).
+
+Each market has a sector table (``SECTORS``): a representative ETF per sector and the market's own
+benchmark ETF (KODEX 200 / SPY), and a link to the other market's matching sector (US semiconductors
+SOXX ↔ KODEX 반도체). A sector's day is its **excess return** - its close-to-close return minus the
+benchmark's the same session, on **adjusted** closes (``yahoo_adjusted``: a distribution's ex-date drop is
+no underperformance).
+
+For a target session D the picks use only sessions finished before D's open:
+
+- Korea (D in KST): its own sectors' sessions before D, and the linked US sectors' sessions dated before D
+  (the US day D-1 closes at 06:00 KST on D - 05:00 in US summer time).
+- US (D in ET): its own sectors' sessions before D, and the linked Korean sectors' session on D itself
+  (Korea's D closes at 01:30 ET, before the US open) - or the one before when Korea was closed on D.
+
+Features per sector and day (excess returns, in %): own last session (``own_1d``), last 5 and 20 sessions
+(``own_5d`` · ``own_20d``), and the linked sector's last session and 5 sessions (``link_1d`` ·
+``link_5d``; 0 without a link). One pooled logistic regression per market (standardized features, a
+small ridge) gives each sector the probability that it beats the benchmark on D. The top three and the
+bottom three are the picks; the reasons are the features that pushed the probability most, said with
+their numbers - no model writes them.
+
+Nothing is stored: every input is a finished daily bar, so a past day's picks are recomputed the same
+way, and the record is the last ``HOLDOUT_DAYS`` sessions picked by a model fit only on the sessions
+before them: the top three's hit rate (beat the market), the bottom three's (lagged it), the daily rank
+correlation (Spearman) of probability against excess return, against the baseline "follow yesterday's
+strong sectors" (rank by ``own_1d``). Today's picks use a model fit on every finished session. After the
+close (``SCORE_AFTER`` past ``session_close`` - 16:30 KST on a CSAT day) today's picks are scored the same
+way. Until the next session's picks can be made (its inputs not in, or a linked session still on - Yahoo's
+daily bar of a session in progress moves), the view shows the last session's picks and score.
+
+Flow by industry (KIS has none for sectors), the news themes' tone and the earnings calendar are not
+in the model: they have no stored history to fit or check it on.
+"""
+
+from __future__ import annotations
+
+import bisect
+import logging
+import math
+import threading
+import time as _time
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta
+from itertools import pairwise
+from zoneinfo import ZoneInfo
+
+import numpy as np
+
+from . import market_calendar
+from .day_call import CSAT_DAYS
+
+log = logging.getLogger(__name__)
+
+KST = ZoneInfo("Asia/Seoul")
+ET = ZoneInfo("America/New_York")
+HISTORY_BARS = 2400          # about ten years of daily bars per ETF
+HOLDOUT_DAYS = 90            # sessions in the record, picked by a model that never saw them
+PICKS = 3
+RIDGE = 1.0
+MIN_ROWS = 500               # fewer training rows than this: no model
+SCORE_AFTER = timedelta(minutes=30)
+CACHE_TTL_SEC = 30 * 60
+NOT_READY_TTL_SEC = 2 * 60   # a view still waiting for a session is asked again this soon
+FEATURES = ("own_1d", "own_5d", "own_20d", "link_1d", "link_5d")
+
+
+@dataclass(frozen=True)
+class Sector:
+    id: str
+    name: str
+    ticker: str
+    link: str | None = None          # the other market's sector id
+
+
+@dataclass(frozen=True)
+class Market:
+    id: str
+    name: str
+    tz: ZoneInfo
+    close: time                      # the regular session's close, local time
+    benchmark: str
+    sectors: tuple[Sector, ...]
+
+
+# ETFs checked on Yahoo 2026-11-18 (daily history from 2016-12 unless noted)
+KR = Market("kr", "국장", KST, time(15, 30), "069500.KS", (
+    Sector("semis", "반도체", "091160.KS", "semis"),             # KODEX 반도체
+    Sector("battery", "2차전지", "305720.KS", "lithium"),         # KODEX 2차전지산업 (2018-09)
+    Sector("bio", "바이오", "244580.KS", "biotech"),              # KODEX 바이오
+    Sector("auto", "자동차", "091180.KS", "discretionary"),       # KODEX 자동차
+    Sector("bank", "은행", "091170.KS", "financials"),            # KODEX 은행
+    Sector("broker", "증권", "102970.KS", "financials"),          # KODEX 증권
+    Sector("steel", "철강", "117680.KS", "materials"),            # KODEX 철강
+    Sector("chem", "에너지화학", "117460.KS", "energy"),           # KODEX 에너지화학
+    Sector("build", "건설", "117700.KS", "industrials"),          # KODEX 건설
+    Sector("heavy", "조선 · 중공업", "139230.KS", "industrials"),  # TIGER 200 중공업
+    Sector("defense", "방산", "449450.KS", "defense"),            # PLUS K방산 (2023-01)
+    Sector("internet", "인터넷", "365000.KS", "comm"),            # TIGER 인터넷TOP10 (2020-10)
+    Sector("software", "소프트웨어", "157490.KS", "tech"),         # TIGER 소프트웨어
+))
+US = Market("us", "미장", ET, time(16, 0), "SPY", (
+    Sector("semis", "반도체", "SOXX", "semis"),
+    Sector("tech", "기술", "XLK", "software"),
+    Sector("comm", "커뮤니케이션", "XLC", "internet"),
+    Sector("discretionary", "경기소비재", "XLY", "auto"),
+    Sector("staples", "필수소비재", "XLP"),
+    Sector("energy", "에너지", "XLE", "chem"),
+    Sector("financials", "금융", "XLF", "bank"),
+    Sector("health", "헬스케어", "XLV", "bio"),
+    Sector("biotech", "바이오", "XBI", "bio"),
+    Sector("industrials", "산업재", "XLI", "heavy"),
+    Sector("materials", "소재", "XLB", "steel"),
+    Sector("utilities", "유틸리티", "XLU"),
+    Sector("realestate", "리츠", "XLRE"),
+    Sector("lithium", "2차전지 · 리튬", "LIT", "battery"),
+    Sector("defense", "방산", "ITA", "defense"),
+))
+MARKETS = {"kr": KR, "us": US}
+
+
+def other(m: Market) -> Market:
+    return US if m.id == "kr" else KR
+
+
+def session_close(m: Market, day: date) -> datetime:
+    """When the market's session of ``day`` ends: KRX closes an hour late on the CSAT day."""
+    close = time(16, 30) if m.id == "kr" and day in CSAT_DAYS else m.close
+    return datetime.combine(day, close, m.tz)
+
+
+def yahoo_adjusted(ticker: str, interval: str, count: int) -> list:
+    """Daily bars with closes adjusted for distributions and splits (desk.prices reads them unadjusted)."""
+    import yfinance as yf
+
+    from .broker.base import Bar
+    from .prices import _yahoo_period
+
+    frame = yf.Ticker(ticker).history(period=_yahoo_period(interval, count, ticker), interval="1d", auto_adjust=True)
+    frame = frame.dropna(subset=["Open", "High", "Low", "Close"])
+    bars = [Bar(at=i.to_pydatetime().astimezone(ZoneInfo("UTC")).isoformat(timespec="seconds"), open=float(r["Open"]),
+                high=float(r["High"]), low=float(r["Low"]), close=float(r["Close"]), volume=0.0)
+            for i, r in frame.iterrows()]
+    return bars[-count:]
+
+
+def symbols(m: Market) -> list[str]:
+    """Every ticker a market's picks read: its benchmark and sectors, and the other market's."""
+    o = other(m)
+    return [m.benchmark, *(s.ticker for s in m.sectors), o.benchmark, *(s.ticker for s in o.sectors)]
+
+
+# ---------------------------------------------------------------- series
+
+class Excess:
+    """One ticker's excess return (%) per session over its market's benchmark, sessions in order."""
+
+    def __init__(self, bars, bench_bars, tz: ZoneInfo, upto: date | None = None) -> None:
+        own = _closes(bars, tz, upto)
+        ref = _closes(bench_bars, tz, upto)
+        days = sorted(set(own) & set(ref))
+        self.days: list[date] = []
+        self.values: list[float] = []
+        for prev, day in pairwise(days):
+            a0, a1, b0, b1 = own[prev], own[day], ref[prev], ref[day]
+            if a0 > 0 and b0 > 0:
+                self.days.append(day)
+                self.values.append(((a1 / a0) - (b1 / b0)) * 100)
+
+    def at(self, day: date) -> float | None:
+        i = bisect.bisect_left(self.days, day)
+        return self.values[i] if i < len(self.days) and self.days[i] == day else None
+
+    def before(self, day: date, n: int, inclusive: bool = False) -> tuple[list[float], date | None]:
+        """The last n values before day (or up to it, ``inclusive``) and the latest one's date."""
+        i = bisect.bisect_right(self.days, day) if inclusive else bisect.bisect_left(self.days, day)
+        vals = self.values[max(0, i - n):i]
+        return vals, (self.days[i - 1] if i else None)
+
+
+def _closes(bars, tz: ZoneInfo, upto: date | None) -> dict[date, float]:
+    out = {}
+    for b in bars or []:
+        c = getattr(b, "close", None)
+        if not c or (isinstance(c, float) and math.isnan(c)):
+            continue
+        d = datetime.fromisoformat(b.at).astimezone(tz).date()
+        if upto is None or d <= upto:
+            out[d] = float(c)
+    return out
+
+
+@dataclass
+class Data:
+    """A market's excess series: its sectors' (by id), and the other market's (by id) for the links."""
+    market: Market
+    own: dict[str, Excess]
+    link: dict[str, Excess]
+    bench_days: list[date]
+
+
+def build(m: Market, bars: dict[str, list], upto: date | None = None) -> Data:
+    """``bars`` ticker → daily bars (oldest first). ``upto``: drop sessions after this local day (tests)."""
+    o = other(m)
+    own = {s.id: Excess(bars.get(s.ticker), bars.get(m.benchmark), m.tz, upto) for s in m.sectors}
+    link = {s.id: Excess(bars.get(s.ticker), bars.get(o.benchmark), o.tz, None) for s in o.sectors}
+    days = sorted(_closes(bars.get(m.benchmark), m.tz, upto))
+    return Data(m, own, link, days)
+
+
+def features(data: Data, sector: Sector, day: date) -> dict | None:
+    """The features of a sector for session ``day`` from sessions finished before its open; None when
+    its own history is too short."""
+    own = data.own[sector.id]
+    vals, _ = own.before(day, 20)
+    if len(vals) < 20:
+        return None
+    f = {"own_1d": vals[-1], "own_5d": sum(vals[-5:]), "own_20d": sum(vals), "link_1d": 0.0, "link_5d": 0.0,
+         "link_day": None}
+    if sector.link and sector.link in data.link:
+        # Korea's D reads the US sessions dated before D; the US's D reads Korea's D (closed before the US open)
+        lv, last = data.link[sector.link].before(day, 5, inclusive=data.market.id == "us")
+        if lv:
+            f.update(link_1d=lv[-1], link_5d=sum(lv), link_day=last)
+    return f
+
+
+# ---------------------------------------------------------------- the model
+
+@dataclass
+class Model:
+    mean: np.ndarray
+    std: np.ndarray
+    w: np.ndarray                    # intercept first
+    rows: int
+    until: date | None
+
+    def prob(self, f: dict) -> float:
+        z = (np.array([f[k] for k in FEATURES]) - self.mean) / self.std
+        return float(1 / (1 + math.exp(-(self.w[0] + z @ self.w[1:]))))
+
+    def pushes(self, f: dict) -> dict[str, float]:
+        """Each feature's push on the log-odds."""
+        z = (np.array([f[k] for k in FEATURES]) - self.mean) / self.std
+        return {k: float(self.w[i + 1] * z[i]) for i, k in enumerate(FEATURES)}
+
+
+def fit(x: np.ndarray, y: np.ndarray, ridge: float = RIDGE, until: date | None = None) -> Model:
+    """Logistic regression by Newton steps (IRLS) with an L2 penalty on the slopes."""
+    mean, std = x.mean(axis=0), x.std(axis=0)
+    std[std == 0] = 1.0
+    z = np.hstack([np.ones((len(x), 1)), (x - mean) / std])
+    w = np.zeros(z.shape[1])
+    pen = np.eye(z.shape[1]) * ridge
+    pen[0, 0] = 0.0
+    for _ in range(25):
+        p = 1 / (1 + np.exp(-(z @ w)))
+        grad = z.T @ (y - p) - pen @ w
+        hess = (z * (p * (1 - p))[:, None]).T @ z + pen
+        step = np.linalg.solve(hess, grad)
+        w += step
+        if np.abs(step).max() < 1e-8:
+            break
+    return Model(mean, std, w, len(x), until)
+
+
+def rows(data: Data, days: list[date]) -> tuple[np.ndarray, np.ndarray]:
+    """Training rows: every sector on every given session that has its features and its outcome."""
+    xs, ys = [], []
+    for day in days:
+        for s in data.market.sectors:
+            f = features(data, s, day)
+            out = data.own[s.id].at(day)
+            if f is None or out is None or out == 0:
+                continue
+            xs.append([f[k] for k in FEATURES])
+            ys.append(1.0 if out > 0 else 0.0)
+    return np.array(xs, dtype=float).reshape(-1, len(FEATURES)), np.array(ys)
+
+
+def train(data: Data, before: date) -> Model | None:
+    x, y = rows(data, [d for d in data.bench_days if d < before])
+    if len(y) < MIN_ROWS:
+        return None
+    return fit(x, y, until=max(d for d in data.bench_days if d < before))
+
+
+# ---------------------------------------------------------------- picks and record
+
+def picks(data: Data, model: Model, day: date) -> list[dict]:
+    """Every sector with features on ``day``, most likely to beat the market first."""
+    out = []
+    for s in data.market.sectors:
+        f = features(data, s, day)
+        if f is None:
+            continue
+        out.append({"id": s.id, "name": s.name, "ticker": s.ticker, "prob": round(model.prob(f), 4),
+                    "_f": f, "_push": model.pushes(f), "excess_pct": _round(data.own[s.id].at(day))})
+    out.sort(key=lambda r: (-r["prob"], r["id"]))
+    return out
+
+
+def _round(x: float | None) -> float | None:
+    return None if x is None else round(x, 2)
+
+
+def _spearman(a: list[float], b: list[float]) -> float | None:
+    if len(a) < 3:
+        return None
+    ra, rb = _ranks(a), _ranks(b)
+    if np.std(ra) == 0 or np.std(rb) == 0:
+        return None
+    return float(np.corrcoef(ra, rb)[0, 1])
+
+
+def _ranks(v: list[float]) -> np.ndarray:
+    order = np.argsort(v, kind="stable")
+    r = np.empty(len(v))
+    r[order] = np.arange(len(v))
+    return r
+
+
+def day_score(rows_: list[dict], key: str = "prob") -> dict | None:
+    """One session's picks against its excess returns: top three's hits (beat the market), bottom
+    three's (lagged it), the rank correlation; None when a session lacks enough outcomes."""
+    done = [r for r in rows_ if r["excess_pct"] is not None]
+    if len(done) < 2 * PICKS:
+        return None
+    done.sort(key=lambda r: (-r[key], r["id"]))
+    top, bottom = done[:PICKS], done[-PICKS:]
+    return {"top_hits": sum(r["excess_pct"] > 0 for r in top), "bottom_hits": sum(r["excess_pct"] < 0 for r in bottom),
+            "top_excess": round(sum(r["excess_pct"] for r in top) / PICKS, 3),
+            "bottom_excess": round(sum(r["excess_pct"] for r in bottom) / PICKS, 3),
+            "rank_ic": _spearman([r[key] for r in done], [r["excess_pct"] for r in done])}
+
+
+def record(data: Data, end: date, days: int = HOLDOUT_DAYS) -> dict:
+    """The last ``days`` finished sessions before ``end``, picked by a model fit on the sessions before
+    them, against following yesterday's strong sectors."""
+    past = [d for d in data.bench_days if d < end][-days:]
+    if not past:
+        return {"days": 0}
+    model = train(data, past[0])
+    if model is None:
+        return {"days": 0}
+    model_days, base_days, daily = [], [], []
+    for d in past:
+        got = picks(data, model, d)
+        for r in got:
+            r["base"] = r["_f"]["own_1d"]
+        s, b = day_score(got), day_score(got, "base")
+        if s is None or b is None:
+            continue
+        model_days.append(s)
+        base_days.append(b)
+        daily.append({"date": d.isoformat(), "top": [r["id"] for r in got[:PICKS]], **s})
+    return {"days": len(model_days), "from": past[0].isoformat(), "to": past[-1].isoformat(),
+            "trained_until": model.until.isoformat() if model.until else None,
+            **_summary(model_days), "baseline": _summary(base_days), "daily": daily}
+
+
+def _summary(days: list[dict]) -> dict:
+    if not days:
+        return {"top3_hit": None, "bottom3_hit": None, "rank_ic": None, "top3_excess": None}
+    ics = [d["rank_ic"] for d in days if d["rank_ic"] is not None]
+    n = len(days) * PICKS
+    return {"top3_hit": round(sum(d["top_hits"] for d in days) / n, 3),
+            "bottom3_hit": round(sum(d["bottom_hits"] for d in days) / n, 3),
+            "rank_ic": round(sum(ics) / len(ics), 3) if ics else None,
+            "top3_excess": round(sum(d["top_excess"] for d in days) / len(days), 3)}
+
+
+# ---------------------------------------------------------------- reasons
+
+def _signed(x: float) -> str:
+    return f"{x:+.1f}%"
+
+
+def reasons(m: Market, row: dict, up: bool) -> list[str]:
+    """The features that pushed the probability the pick's way, most first, with their numbers."""
+    f, push = row["_f"], row["_push"]
+    sector = next(s for s in m.sectors if s.id == row["id"])
+    link = next((s for s in other(m).sectors if s.id == sector.link), None) if sector.link else None
+    words = {
+        "own_1d": f"직전 거래일 시장 대비 {_signed(f['own_1d'])}",
+        "own_5d": f"최근 5거래일 시장 대비 {_signed(f['own_5d'])}",
+        "own_20d": f"최근 20거래일 시장 대비 {_signed(f['own_20d'])}",
+    }
+    if link is not None and f.get("link_day"):
+        where = "미장" if m.id == "kr" else "국장"
+        words["link_1d"] = f"{where} {link.name}({link.ticker}) {f['link_day'].month}/{f['link_day'].day} 시장 대비 {_signed(f['link_1d'])}"
+        words["link_5d"] = f"{where} {link.name} 최근 5거래일 시장 대비 {_signed(f['link_5d'])}"
+    sign = 1 if up else -1
+    ranked = sorted((k for k in words if push[k] * sign > 0), key=lambda k: -push[k] * sign)
+    # a number pushing against its own sign (a fall read as strength) is the model's reversal
+    return [words[k] + (" — 되돌림 쪽" if f[k] * sign < 0 else "") for k in ranked[:3]]
+
+
+# ---------------------------------------------------------------- the target session and the view
+
+def target(m: Market, now: datetime) -> date:
+    """The session the picks are for: today when the market opens today, else the next open day."""
+    d = now.astimezone(m.tz).date()
+    while not market_calendar.is_open(m.id, d):
+        d += timedelta(days=1)
+    return d
+
+
+def _prev_open(market_id: str, day: date) -> date:
+    d = day - timedelta(days=1)
+    while not market_calendar.is_open(market_id, d):
+        d -= timedelta(days=1)
+    return d
+
+
+def ready(data: Data, day: date, now: datetime) -> bool:
+    """Every session the picks need is in and over (SCORE_AFTER past its close - Yahoo's daily bar of a
+    session in progress moves): the market's last one before ``day`` and the linked one. Korea's next
+    day turns at midnight KST while the US session is still on; the US's at midnight ET, before Korea's
+    close."""
+    m, o = data.market, other(data.market)
+    if _prev_open(m.id, day) not in data.bench_days:
+        return False
+    # Korea's D: the US session before D · the US's D: Korea's D when it opened, else the one before
+    need = day if m.id == "us" and market_calendar.is_open(o.id, day) else _prev_open(o.id, day)
+    if now < session_close(o, need) + SCORE_AFTER:
+        return False
+    return any(need in e.days for e in data.link.values())
+
+
+NOTE = "판정 시각 전에 끝난 일봉만 씁니다. 확률은 시장(벤치마크 ETF) 대비 강할 확률이고 예측이 아닙니다."
+
+
+def view(m: Market, bars: dict[str, list], now: datetime) -> dict:
+    """The picks for the target session, their reasons, the record, and the score once the day is over;
+    the last session's (scored) while the target's inputs are not all in and over."""
+    day = target(m, now)
+    data = build(m, bars)
+    base = {"market": m.id, "name": m.name, "date": day.isoformat(), "target": day.isoformat(), "ready": False,
+            "top": [], "bottom": [], "sectors": [], "record": {"days": 0}, "result": None, "model": None, "note": NOTE}
+    if ready(data, day, now):
+        return _view(m, data, day, now, base)
+    prev = _prev_open(m.id, day)
+    if prev in data.bench_days and ready(data, prev, now):
+        v = _view(m, data, prev, now, {**base, "date": prev.isoformat()})
+        if v["ready"]:
+            v["note"] = (f"{day.month}/{day.day} 판정은 필요한 일봉(직전 세션 · 연결 시장)이 마감된 뒤 나옵니다 — "
+                         f"지금은 직전 세션({prev.month}/{prev.day})의 판정과 채점입니다. " + NOTE)
+            return v
+    base["note"] = "필요한 일봉(직전 세션 · 연결 시장)이 아직 들어오지 않았습니다 — 잠시 뒤 다시 보세요."
+    return base
+
+
+def _view(m: Market, data: Data, day: date, now: datetime, base: dict) -> dict:
+    model = train(data, day)
+    if model is None:
+        return base
+    got = picks(data, model, day)
+    closed = now >= session_close(m, day) + SCORE_AFTER
+    for r in got:
+        r["reasons"] = []
+        if not closed:
+            r["excess_pct"] = None          # a session in progress is no outcome
+    for r in got[:PICKS]:
+        r["reasons"] = reasons(m, r, up=True)
+    for r in got[-PICKS:]:
+        r["reasons"] = reasons(m, r, up=False)
+    public = [{k: v for k, v in r.items() if not k.startswith("_")} for r in got]
+    base.update(ready=True, sectors=public, top=public[:PICKS], bottom=public[::-1][:PICKS],
+                record=record(data, day), result=day_score(got) if closed else None,
+                model={"rows": model.rows, "trained_until": model.until.isoformat() if model.until else None,
+                       "features": list(FEATURES), "weights": {k: round(float(model.w[i + 1]), 4)
+                                                               for i, k in enumerate(FEATURES)}})
+    return base
+
+
+def brief_line(v: dict) -> tuple[str, str] | None:
+    """The morning brief's two phrases (strong, weak) - None when the picks are not ready."""
+    if not v or not v.get("ready") or not v["top"]:
+        return None
+    strong = " · ".join(f"{r['name']} {round(r['prob'] * 100)}%" for r in v["top"])
+    weak = " · ".join(f"{r['name']} {round(r['prob'] * 100)}%" for r in v["bottom"])
+    return (f"오늘 {v['name']}에서 시장보다 강할 확률이 높은 섹터: {strong}",
+            f"오늘 {v['name']}에서 시장보다 약할 확률이 높은 섹터(강할 확률): {weak}")
+
+
+# ---------------------------------------------------------------- the cache
+
+class Cache:
+    """Each market's view, rebuilt from the bars at most every CACHE_TTL_SEC; one build at a time."""
+
+    def __init__(self, ttl: float = CACHE_TTL_SEC, clock=_time.monotonic) -> None:
+        self.ttl, self.clock = ttl, clock
+        self._views: dict[str, tuple[float, str, dict]] = {}   # market → (expires at, target session, view)
+        self._lock = threading.Lock()
+
+    def cached(self, market: str, now: datetime, ahead: float = 0) -> dict | None:
+        hit = self._views.get(market)
+        if hit and self.clock() < hit[0] - ahead and hit[1] == target(MARKETS[market], now).isoformat():
+            return hit[2]
+        return None
+
+    def read(self, market: str, candles: Callable[[str, str, int], list], now: datetime | None = None,
+             ahead: float = 0) -> dict:
+        """The market's view, fetching the bars when the cached one is old (``ahead``: this many seconds
+        before it is) or for another session."""
+        now = now or datetime.now(KST)
+        if (v := self.cached(market, now, ahead)) is not None:
+            return v
+        with self._lock:
+            if (v := self.cached(market, now, ahead)) is not None:
+                return v
+            m = MARKETS[market]
+            bars = {}
+            for t in symbols(m):
+                try:
+                    bars[t] = candles(t, "1d", HISTORY_BARS)
+                except Exception as exc:  # noqa: BLE001 - one ETF down leaves the rest
+                    log.info("day sectors: %s failed: %s", t, type(exc).__name__)
+            v = view(m, bars, now)
+            # a view not on its target yet (waiting, or the last session's) is asked again soon
+            ttl = self.ttl if v["ready"] and v["date"] == v["target"] else min(self.ttl, NOT_READY_TTL_SEC)
+            self._views[market] = (self.clock() + ttl, v["target"], v)
+            return v

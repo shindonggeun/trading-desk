@@ -471,8 +471,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     broker = make_broker(settings)
     kis_feed = kis_stream.make(settings) if prices is None else None   # tests bring their own prices
     prices = prices or PriceSource(broker, stream=kis_feed)
-    # #572 today's direction calls: made in their windows from Yahoo bars; scripted runs fetch nothing
-    day_desk = day_calls.DayCalls(engine, None if settings.fake_runs else (lambda *a: prices._yahoo_candles(*a)))
+    # #572 today's direction calls: made in their windows from Yahoo bars. Off (stored calls still served)
+    # with the same switch as the news flow and the prewarm: scripted runs and tests fetch nothing
+    day_desk = day_calls.DayCalls(engine, None if settings.fake_runs or settings.macro_interval_sec <= 0
+                                  else (lambda *a: prices._yahoo_candles(*a)))
     # #462: VIX · CNN / crypto Fear & Greed · VKOSPI, cached per source (fakes stay offline in tests)
     fear_gauges = (fear.Fear(candles=lambda *a: prices._yahoo_candles(*a),   # read when asked, as risk does
                              kis=lambda: getattr(futures, "rest", None))         # #486 VKOSPI via the futures KIS client
@@ -808,17 +810,25 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             # #572: every TICK_SEC - a round inside its window gets its calls (both markets), the closed
             # sessions get scored; each market's first call of the day is pushed (kind day_call)
             while True:
+                made = []
                 try:
                     made = await asyncio.wait_for(asyncio.to_thread(day_desk.run), 180)
-                    for row in made:
-                        if row["round"] == 1 and row["call"] == "prev_close":
-                            await asyncio.to_thread(notify.send, app.state.pusher, "day_call", payload={
-                                "title": f"오늘 {'국장' if row['market'] == 'kr' else '미장'} 방향",
-                                "body": day_calls.push_text(row),
-                                "tag": f"day_call-{row['market']}", "url": "/#/day-call", "kind": "day_call"})
-                    await asyncio.wait_for(asyncio.to_thread(day_desk.score), 180)
                 except Exception:  # a failed pass must not stop the next one
                     log.exception("day calls failed")
+                for row in made:
+                    if row["round"] != 1 or row["call"] != "prev_close":
+                        continue
+                    try:                     # a failed push loses only itself
+                        await asyncio.to_thread(notify.send, app.state.pusher, "day_call", payload={
+                            "title": f"오늘 {'국장' if row['market'] == 'kr' else '미장'} 방향",
+                            "body": day_calls.push_text(row),
+                            "tag": f"day_call-{row['market']}", "url": "/#/day-call", "kind": "day_call"})
+                    except Exception:
+                        log.exception("day call push failed")
+                try:
+                    await asyncio.wait_for(asyncio.to_thread(day_desk.score), 180)
+                except Exception:
+                    log.exception("day call scoring failed")
                 await asyncio.sleep(day_calls.TICK_SEC)
 
         async def write_briefs():

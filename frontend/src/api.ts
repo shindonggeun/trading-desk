@@ -1,4 +1,4 @@
-import type { GapReport } from "./types";
+import type { GapReport, LinesReport, LineTf } from "./types";
 import type { DayCallHistory, DayCallMarket, DayCallStats, DayCallToday, MorningBrief, MorningBriefList } from "./types";
 import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, PaperEquity, PaperSettings, PaperSettingsPatch, PaperSummary, PaperTrades, RunExplain, TipsView } from "./types";
 import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, ReportDetail, ReportList, Halving, FundBrief, FundChanges, FundDetail, FearIndex, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
@@ -368,6 +368,8 @@ export const api = {
   /** #332 금리 · 달러 국면과 매매 팁(#330) */
   /** #577 세션 갭 메움 확률(서버 30분 캐시) */
   gaps: (ticker: string) => call<GapReport>(`/api/gaps?ticker=${encodeURIComponent(ticker)}`),
+  /** #612 평행 채널 · 짧은 추세선(#611) — 5m · 15m · 60m · 240m · 1d */
+  lines: (ticker: string, tf: LineTf) => call<LinesReport>(`/api/lines?ticker=${encodeURIComponent(ticker)}&tf=${tf}`),
   tips: (ticker?: string) => call<TipsView>(`/api/tips${ticker ? `?ticker=${encodeURIComponent(ticker)}` : ""}`),
   /** #362 웹 푸시(#361): 서버 공개키 · 이 기기 구독 · 시험 알림 */
   pushKey: () => call<{ enabled: boolean; public_key: string | null }>("/api/push/key"),

@@ -401,6 +401,7 @@ class RunManager:
                  credit: Callable[[], str | None] | None = None,
                  futures: Callable[[], Awaitable[str | None]] | None = None,
                  oscillator: Callable[[str], Awaitable[str | None]] | None = None,
+                 gaps: Callable[[str], Awaitable[str | None]] | None = None,
                  weekly: Callable[[str], Awaitable[str | None]] | None = None,
                  risk: Callable[[str, str | None], dict | None] | None = None,
                  outlook: Callable[[str, str, float | None, dict | None], Awaitable[dict | None]] | None = None,
@@ -425,6 +426,9 @@ class RunManager:
         # #203: RSI / Stochastic extremes and what followed them (desk.oscillator.note_for) on the run's
         # own instrument (a product's underlying) - same day only, the latest bars are today's
         self.oscillator = oscillator
+        # #577: the open session gaps and how often gaps like them filled (desk.gap_fill.note_for) - the
+        # owner's ticker (a product reads its underlying's gaps, in both prices), same day only
+        self.gaps = gaps
         # #202: the weekly map of the index behind a leveraged / sector ticker (desk.weekly_map), same day
         self.weekly = weekly
         # #115: the world news-flow note (desk.macro_news.prompt_note) - None leaves it out
@@ -954,6 +958,8 @@ class RunManager:
                 if self.oscillator and same_day:
                     notes["oscillator"] = asyncio.ensure_future(
                         _quiet("oscillator", self.oscillator(base or request.ticker)))
+                if self.gaps and same_day:
+                    notes["gaps"] = asyncio.ensure_future(_quiet("gaps", self.gaps(request.ticker)))
                 if self.weekly and same_day:
                     notes["weekly"] = asyncio.ensure_future(_quiet("weekly", self.weekly(request.ticker)))
                 if self.tips and same_day:     # #330: the run's own ticker (a leveraged product is in a tip)
@@ -970,9 +976,9 @@ class RunManager:
                 if late:
                     log.info("run %s %s: starting without %s (horizon %s)", run_id, request.ticker,
                              ", ".join(late), horizon.id)
-                related, filings_note, positioning_note, futures_note, oscillator_note, weekly_note = (
+                related, filings_note, positioning_note, futures_note, oscillator_note, weekly_note, gaps_note = (
                     notes[name].result() if name in notes and notes[name].done() else None
-                    for name in ("related", "filings", "positioning", "futures", "oscillator", "weekly"))
+                    for name in ("related", "filings", "positioning", "futures", "oscillator", "weekly", "gaps"))
                 # The run's own instrument: the underlying for a leveraged product.
                 main_live, main_sr = (start_u, sr_u) if lever else (start, sr)
                 lever_note = under.prompt_note(request.ticker, *lever) if lever else None
@@ -995,6 +1001,7 @@ class RunManager:
                                                      lever_note,
                                                      related_note(related), macro_note, calendar_note, credit_note,
                                                      futures_note, weekly_note, filings_note, positioning_note, oscillator_note,
+                                                     gaps_note,
                                                      # the score stands for the agents with or without playbooks
                                                      risk_regime.prompt_note(market))
                                    if part) or None

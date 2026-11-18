@@ -168,7 +168,8 @@ def _mean_se(vals: list[float]) -> tuple[float | None, float | None]:
 
 
 def _t(m: float | None, se: float | None) -> float | None:
-    return None if m is None or not se else m / se
+    # an indicator against itself (momentum's sync) is 1 every day: its spread is float noise, not a t
+    return None if m is None or not se or se < 1e-9 * max(1.0, abs(m)) else m / se
 
 
 def _partial(sig: Sequence[float], fwd: Sequence[float], moves: Sequence[Sequence[float]]) -> float | None:

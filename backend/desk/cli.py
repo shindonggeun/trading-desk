@@ -450,10 +450,13 @@ def _lead_lag(engine, args) -> int:
     print(f"{rep['days']} day(s) {rep['from']} ~ {rep['to']}, |t| >= {rep['t_min']}, at least {rep['min_days']} days")
     for col, c in rep["cadence"].items():
         print(f"  update  {col:24} {c}")
+    def _v(x):                  # None (no t: one day, or the momentum baseline against itself) reads as —
+        return "—" if x is None else x
+
     for r in rep["rows"]:
         print(f"  {r['bucket_min']:>2}m {r['target']:8} {r['indicator']:20} {r['verdict']:6} n={r['samples']:5} "
-              f"days={r['days']:3} lead {r['lead']['corr']} (t {r['lead']['t']}) sync {r['sync']['corr']} "
-              f"(t {r['sync']['t']}) lag {r['lag']['corr']} (t {r['lag']['t']}) hit {r['hit_rate']} "
+              f"days={r['days']:3} lead {_v(r['lead']['corr'])} (t {_v(r['lead']['t'])}) sync {_v(r['sync']['corr'])} "
+              f"(t {_v(r['sync']['t'])}) lag {_v(r['lag']['corr'])} (t {_v(r['lag']['t'])}) hit {r['hit_rate']} "
               f"vs momentum {r['momentum_hit_rate']}")
     if args.out:
         with open(args.out, "w", encoding="utf-8", newline="\n") as f:

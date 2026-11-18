@@ -20,11 +20,11 @@ clock in charge, as desk.live does.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from datetime import time as clock_time
 from zoneinfo import ZoneInfo
 
-from . import live
+from . import live, market_calendar
 from .broker import kis_stream
 
 SESSIONS = ("pre", "regular", "post", "overnight", "closed")
@@ -51,10 +51,7 @@ def kr_clock(now: datetime) -> str:
 
 def us_trading_day(session: str, now: datetime) -> date:
     """The New York trading day a US off-hours session belongs to (overnight after 20:00 is the next)."""
-    ny = now.astimezone(NEW_YORK)
-    if session == "overnight" and ny.time() >= clock_time(20):
-        return ny.date() + timedelta(days=1)
-    return ny.date()
+    return market_calendar.us_phase_day(session, now)
 
 
 async def _trading(calendar, market: str, day: date) -> bool:

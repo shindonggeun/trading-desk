@@ -23,7 +23,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
-from . import horizons
+from . import horizons, market_calendar
 from .prices import HISTORY_LIMIT_DAYS
 
 log = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ def _sessions(bars: list[dict]) -> list[int]:
 
 def session_open(ticker: str) -> timedelta:
     """How long after its local midnight a market opens; daily bars are stamped at that midnight."""
-    return timedelta(hours=9) if ticker.upper().endswith((".KS", ".KQ")) else timedelta(hours=9, minutes=30)
+    return market_calendar.daily_open_offset("kr" if ticker.upper().endswith((".KS", ".KQ")) else "us")
 
 
 def _levels_make_sense(direction: int, entry: float, stop: float, target: float) -> bool:

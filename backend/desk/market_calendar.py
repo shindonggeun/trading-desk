@@ -75,6 +75,143 @@ def us_early_close(d: date) -> str | None:
     return None
 
 
+# ------------------------------------------------------------------ sessions (#625)
+# The one place for the markets' clocks: local dates, trading days, the regular sessions' open and close
+# (KRX's late opens, the NYSE's early closes), the US off-hours phases and CME Globex's day. Every other
+# module asks here instead of building a market time from an offset.
+
+ZONES = {"kr": KST, "us": ET}
+KR_OPEN = time(9, 0)
+KR_LATE_OPEN = time(10, 0)           # the year's first trading day and the CSAT day open an hour late ...
+KR_CSAT_CLOSE = time(16, 30)         # ... and the CSAT day also closes an hour late (the first day does not)
+US_OPEN = time(9, 30)
+US_PRE_OPEN = time(4, 0)             # the US off-hours phases KIS streams: pre 04:00-09:30, post 16:00-20:00,
+US_POST_CLOSE = time(20, 0)          # overnight 20:00-04:00 (Sunday night to Friday morning)
+CME_OPENS = time(18, 0)              # CME Globex: the session dated D runs 18:00 ET on D-1 ...
+CME_CLOSES = time(17, 0)             # ... to 17:00 ET on D (equity index futures; a holiday is not modelled)
+# CSAT days (Ministry of Education; 2017 was put off a week by the Pohang earthquake, 2020 by COVID-19):
+# KRX opens at 10:00 and closes at 16:30 - add each year's when it is announced.
+CSAT_DAYS = {date(2017, 11, 23), date(2018, 11, 15), date(2019, 11, 14), date(2020, 12, 3), date(2021, 11, 18),
+             date(2022, 11, 17), date(2023, 11, 16), date(2024, 11, 14), date(2025, 11, 13), date(2026, 11, 19)}
+
+
+def local_today(market: str, at: datetime | None = None) -> date:
+    """The market's own date at ``at`` (default now): Korea's or New York's calendar day."""
+    return (at or datetime.now(UTC)).astimezone(ZONES[market]).date()
+
+
+def previous_open(market: str, day: date, limit: int = 15) -> date:
+    """The market's trading day before ``day`` (at most ``limit`` days back)."""
+    d = day - timedelta(days=1)
+    for _ in range(limit):
+        if is_open(market, d):
+            return d
+        d -= timedelta(days=1)
+    return d
+
+
+def next_open(market: str, day: date) -> date:
+    """The market's trading day after ``day``."""
+    d = day + timedelta(days=1)
+    while not is_open(market, d):
+        d += timedelta(days=1)
+    return d
+
+
+def next_weekday(day: date) -> date:
+    """The weekday after ``day`` - CME's sessions run on US holidays too, so only weekends are skipped."""
+    d = day + timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d
+
+
+def kr_late_open(day: date) -> bool:
+    """A KRX session that opens at 10:00: the year's first one, or the CSAT day."""
+    if day in CSAT_DAYS:
+        return True
+    first = date(day.year, 1, 1)
+    while not is_open("kr", first):
+        first += timedelta(days=1)
+    return day == first
+
+
+def hours(market: str, day: date, early_close: bool = True) -> tuple[time, time]:
+    """The regular session's local open and close on ``day``. ``early_close`` False keeps a US half day
+    at 16:00 (a daily bar is read as closed at 16:00 either way)."""
+    if market == "kr":
+        return (KR_LATE_OPEN if kr_late_open(day) else KR_OPEN), (KR_CSAT_CLOSE if day in CSAT_DAYS else KR_CLOSE)
+    return US_OPEN, (US_EARLY if early_close and us_early_close(day) else US_CLOSE)
+
+
+def session_bounds(market: str, day: date, early_close: bool = True) -> tuple[datetime, datetime]:
+    """The regular session's open and close on ``day`` as aware times."""
+    opens, closes = hours(market, day, early_close)
+    zone = ZONES[market]
+    return datetime.combine(day, opens, zone), datetime.combine(day, closes, zone)
+
+
+def session_close(market: str, day: date, early_close: bool = True) -> datetime:
+    return session_bounds(market, day, early_close)[1]
+
+
+def daily_open_offset(market: str) -> timedelta:
+    """How long after its local midnight a market's regular session opens (a daily bar is stamped at
+    that midnight) - the ordinary day's open."""
+    t = KR_OPEN if market == "kr" else US_OPEN
+    return timedelta(hours=t.hour, minutes=t.minute)
+
+
+def bar_day(at: str, korean: bool, naive_is_utc: bool = False) -> date:
+    """The market's own date of a daily bar stamped ``at``: a Korean bar opens at local midnight, 15:00
+    UTC the day before; a US bar (midnight New York, 04:00/05:00 UTC) already carries its date in UTC. A
+    Korean stamp without a zone is read as is, or as UTC with ``naive_is_utc``."""
+    stamp = datetime.fromisoformat(at)
+    if not korean:
+        return stamp.astimezone(UTC).date() if stamp.tzinfo is not None else stamp.date()
+    if stamp.tzinfo is None:
+        return (stamp.replace(tzinfo=UTC).astimezone(KST) if naive_is_utc else stamp).date()
+    return stamp.astimezone(KST).date()
+
+
+def us_phase(at: datetime | None = None) -> str | None:
+    """The US equity session by the New York clock: regular (09:30-16:00), pre (04:00-09:30), post
+    (16:00-20:00), overnight (20:00-04:00, Sunday night to Friday morning) or None (weekend). Holidays are
+    not known here: on one nothing trades."""
+    ny = (at or datetime.now(UTC)).astimezone(ET)
+    t, day = ny.time(), ny.weekday()
+    if t >= US_POST_CLOSE:
+        return "overnight" if day in (6, 0, 1, 2, 3) else None
+    if t < US_PRE_OPEN:
+        return "overnight" if day in (0, 1, 2, 3, 4) else None
+    if day >= 5:
+        return None
+    if t < US_OPEN:
+        return "pre"
+    return "regular" if t < US_CLOSE else "post"
+
+
+def us_phase_day(phase: str, at: datetime) -> date:
+    """The New York trading day a US phase belongs to (overnight after 20:00 is the next)."""
+    ny = at.astimezone(ET)
+    if phase == "overnight" and ny.time() >= US_POST_CLOSE:
+        return ny.date() + timedelta(days=1)
+    return ny.date()
+
+
+def cme_session_start(at: datetime) -> datetime:
+    """When the CME session holding ``at`` opened: 18:00 New York, that evening or the one before."""
+    local = at.astimezone(ET)
+    start = datetime.combine(local.date(), CME_OPENS, ET)
+    return start if local >= start else start - timedelta(days=1)
+
+
+def cme_trade_day(at: datetime) -> date:
+    """The date of the CME session trading at ``at``: after 17:00 New York it is the next day's."""
+    local = at.astimezone(ET)
+    return local.date() if local.time() < CME_CLOSES else local.date() + timedelta(days=1)
+
+
 def _nth(year: int, month: int, weekday: int, n: int) -> date:
     d = date(year, month, 1)
     d += timedelta(days=(weekday - d.weekday()) % 7)

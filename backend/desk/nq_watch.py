@@ -22,6 +22,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from statistics import median
 
+from . import market_calendar
 from .estimate import US
 from .futures_flow import KST
 from .session_progress import FUTURES_CLOSES, FUTURES_OPENS
@@ -81,9 +82,7 @@ def _volume_times(done: list[dict]) -> float | None:
 
 
 def _session_start(at: datetime) -> datetime:
-    local = at.astimezone(US.zone)
-    start = datetime.combine(local.date(), FUTURES_OPENS, US.zone)
-    return start if local >= start else start - timedelta(days=1)
+    return market_calendar.cme_session_start(at)
 
 
 def session_of(at: datetime):

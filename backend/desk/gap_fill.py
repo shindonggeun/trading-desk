@@ -29,9 +29,10 @@ import statistics
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, is_dataclass
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
+from . import market_calendar
 from . import underlying as under
 from .sr import _local_day
 
@@ -129,12 +130,7 @@ def _cause(day: date, prev_day: date, events: dict[date, str]) -> str:
 def _session_day(day: date, prev_day: date) -> date:
     """#568: Yahoo dates a futures session opened at 18:00 New York with the day before until midnight, so
     the newest bar can carry the previous bar's date - it is the next weekday's session."""
-    if day > prev_day:
-        return day
-    day = prev_day + timedelta(days=1)
-    while day.weekday() >= 5:
-        day += timedelta(days=1)
-    return day
+    return day if day > prev_day else market_calendar.next_weekday(prev_day)
 
 
 def _size(atr_multiple: float) -> str:

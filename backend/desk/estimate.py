@@ -57,6 +57,8 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from . import market_calendar
+
 log = logging.getLogger(__name__)
 
 BINANCE_URL = "https://fapi.binance.com"
@@ -106,23 +108,23 @@ class Session:
     special: dict[date, tuple[clock_time, clock_time]] = field(default_factory=dict)
     # CME Globex: Sunday 18:00 to Friday 17:00 New York, an hour's break each day at 17:00
     futures: bool = False
+    # #625 desk.market_calendar's market ("kr" / "us"): its rules give the late opens and the early
+    # closes (CSAT, the year's first KRX day, the NYSE half days); ``special`` still overrides a day
+    market: str | None = None
 
     def hours(self, day: date) -> tuple[clock_time, clock_time]:
-        return self.special.get(day, (self.opens, self.closes))
+        if day in self.special:
+            return self.special[day]
+        if self.market:
+            return market_calendar.hours(self.market, day)
+        return self.opens, self.closes
 
     def close_moment(self, day: date) -> datetime:
         return datetime.combine(day, self.hours(day)[1], self.zone)
 
 
-KRX = Session(ZoneInfo("Asia/Seoul"), clock_time(9, 0), clock_time(15, 30), {
-    date(2026, 11, 19): (clock_time(10, 0), clock_time(16, 30)),   # 수능일: 한 시간 늦게 열고 닫는다
-    date(2027, 1, 4): (clock_time(10, 0), clock_time(15, 30)),     # 새해 첫 거래일: 10시 개장
-})
-US = Session(ZoneInfo("America/New_York"), clock_time(9, 30), clock_time(16, 0), {
-    date(2026, 11, 27): (clock_time(9, 30), clock_time(13, 0)),    # 추수감사절 다음 날
-    date(2026, 12, 24): (clock_time(9, 30), clock_time(13, 0)),    # 크리스마스 이브
-    date(2027, 11, 26): (clock_time(9, 30), clock_time(13, 0)),    # 추수감사절 다음 날
-})
+KRX = Session(market_calendar.KST, market_calendar.KR_OPEN, market_calendar.KR_CLOSE, market="kr")
+US = Session(market_calendar.ET, market_calendar.US_OPEN, market_calendar.US_CLOSE, market="us")
 
 # (session date, close) pairs, oldest first, from daily bars.
 DailyCloses = Callable[[str], list[tuple[date, float]]]

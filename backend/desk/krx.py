@@ -101,15 +101,12 @@ def num(value: object) -> float | None:
 
 
 def kst_today(at: datetime) -> date:
-    return at.astimezone(KST).date()
+    return market_calendar.local_today("kr", at)
 
 
 def ready_at(day: date) -> datetime:
     """When day's rows can be read: READY_AT on the next KR business day."""
-    nxt = day + timedelta(days=1)
-    while not market_calendar.is_open("kr", nxt):
-        nxt += timedelta(days=1)
-    return datetime.combine(nxt, READY_AT, KST)
+    return datetime.combine(market_calendar.next_open("kr", day), READY_AT, KST)
 
 
 def open_days(first: date, last: date) -> list[date]:

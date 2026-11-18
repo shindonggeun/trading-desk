@@ -16,6 +16,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
+from . import notify
 from .db import flow_alerts_sent, now
 
 log = logging.getLogger(__name__)
@@ -67,13 +68,9 @@ class FlowAlerts:
             except IntegrityError:            # another pass recorded it first (the transaction rolled back)
                 continue
             out.append(row)
-            if self.pusher is not None:
-                try:
-                    self.pusher.broadcast("flow", f"flow_{turn['market']}", payload={
-                        "title": "외국인 수급 전향", "body": row["text"], "tag": f"flow-{turn['market']}",
-                        "url": ALERT_URL, "market": turn["market"], "kind": turn["kind"]})
-                except Exception as exc:  # noqa: BLE001 - a push never stops recording
-                    log.warning("flow push failed: %s", exc)
+            notify.send(self.pusher, "flow", f"flow_{turn['market']}", payload={    # #579 the one exit
+                "title": "외국인 수급 전향", "body": row["text"], "tag": f"flow-{turn['market']}",
+                "url": ALERT_URL, "market": turn["market"], "kind": turn["kind"]})
         return out
 
     def after_snapshot(self, intraday, day: date | None = None) -> list[dict]:

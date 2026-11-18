@@ -9,6 +9,7 @@ from pathlib import Path
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Column,
     Date,
     DateTime,
@@ -217,6 +218,26 @@ flow_alerts_sent = Table(
     Column("created_at", Timestamp, nullable=False),
     UniqueConstraint("trade_date", "market", "kind", "turned_at", name="uq_flow_alerts_sent_turn"),
     Index("ix_flow_alerts_sent_trade_date", "trade_date"),
+)
+
+# #579 investor flow shifts and NQ=F alarms (desk.market_alerts): the day's timeline and its push record
+market_alerts = Table(
+    "market_alerts", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("trade_date", String(10), nullable=False),             # KST date of the alert
+    Column("kind", String(16), nullable=False),                   # flow_shift | nq_alert
+    Column("rule", String(24), nullable=False),                   # sell_grow | turn ... | nq_drop ...
+    Column("market", String(16), nullable=False),                 # kospi | kosdaq | futures | nq
+    Column("who", String(16), nullable=False),                    # foreign | institution | individual | all
+    Column("severity", String(8), nullable=False),                # info | caution | strong
+    Column("at", String(32), nullable=False),                     # the moment judged (ISO, KST)
+    Column("value", Float),
+    Column("prev", Float),
+    Column("text", String(300), nullable=False),
+    Column("pushed", Boolean, nullable=False),
+    Column("created_at", Timestamp, nullable=False),
+    UniqueConstraint("trade_date", "kind", "rule", "market", "who", "at", name="uq_market_alerts_moment"),
+    Index("ix_market_alerts_trade_date", "trade_date"),
 )
 
 reports = Table(

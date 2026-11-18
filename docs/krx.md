@@ -100,4 +100,6 @@ VKOSPI 이력(`drvprod_dd_trd`) · 선물 미결제(`fut_bydd_trd`) · 방향 �
   - 같은 날의 한투 마감 스냅숏과 대조해, 미결제 차이가 max(1%, 300계약)를 넘거나 베이시스 차이가 0.5pt 를 넘으면 WARNING 로그를 남긴다.
   - 백필 뒤에는 `python -m desk.cli krx derive --from 2015-01-01` 을 돌린다(키가 필요 없다).
 - **API**: `GET /api/market/futures/oi-history?days=250`(세션 필요, 1~1000일, 최신이 앞). 비면 `reason` 이 `no_key` 또는 `no_history` 다.
-- **방향 판정 특징**: `FuturesOi.features_before(day)` 는 `day` 이전 행과 20일 z-score 만 준다. D 일 값은 D+1 아침에 올라오므로 같은 날 값은 쓰지 않는다.
+- **방향 판정 특징**: `FuturesOi.features_before(day, at)` 는 `day` 이전 행 가운데 판정 시각 `at` 까지 KRX 에 올라온 것(`krx.ready_at`, D+1 08:30 KST)과 20일 z-score 만 준다.
+  - 그래서 07:30 1차 판정은 D-2 행을 본다. 학습과 운영이 같은 값을 본다.
+  - 이름 형식이 달라 그날 행을 하나도 읽지 못하면 WARNING 로그를 남긴다.

@@ -423,6 +423,10 @@ export interface PushKinds {
   flow_shift?: boolean;      // #581 수급 흐름 변화(#579)
   nq_alert?: boolean;        // #581 나스닥 선물 이상 징후(#579)
   line_signal?: boolean;     // #614 차트 선 닿음 · 이탈(#613)
+  tone_positive?: boolean;   // #642 수급 알림의 뜻(#641) — 끈 tone 은 이 기기로 보내지 않는다
+  tone_neutral?: boolean;
+  tone_caution?: boolean;
+  tone_warning?: boolean;
 }
 
 /** #581 알림 타임라인 한 건(GET /api/alerts/today) — flow_turn 은 #361 의 수급 전향 */
@@ -433,12 +437,16 @@ export interface MarketAlert {
   market: "kospi" | "kosdaq" | "futures" | "nq";
   who: "foreign" | "institution" | "individual" | "all";
   severity: "info" | "caution" | "strong";
+  /** #642 지수에 어떤 뜻인지(#641) — 크기(severity)와 따로. 예전 서버 · 예전 알림에는 없다 */
+  tone?: AlertTone;
   t: string;               // ISO (KST 오프셋)
   value: number | null;
   prev: number | null;
   text: string;            // 서버가 만든 한국어 한 줄
   pushed: boolean;         // 푸시로 나간 것(info 는 타임라인에만)
 }
+/** #641 호재 · 참고 · 주의 · 경고 */
+export type AlertTone = "positive" | "neutral" | "caution" | "warning";
 export interface MarketAlertsDay {
   date: string;
   items: MarketAlert[];

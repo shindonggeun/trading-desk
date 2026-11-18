@@ -5,7 +5,7 @@ import {
 } from "lightweight-charts";
 import { crosshairTime, ticksClearOfLabels } from "./chartFormat";
 import { api, ApiError, type MarketAlert } from "../api";
-import { hhmm as alertTime, SEVERITY_LABEL, useTodayAlerts } from "../alertsFeed";
+import { badgeOf, hhmm as alertTime, useTodayAlerts } from "../alertsFeed";
 import AlertTimeline from "./AlertTimeline";
 import type { IntradayBucket, IntradayFlow, IntradayFuturesBar, IntradaySpotBar, IntradayTurn } from "../types";
 import { css, useColorScheme } from "../chartColors";
@@ -172,15 +172,17 @@ function drawPane(el: HTMLElement, date: string, bucketMin: number, pane: Pane):
   }
   // #581 수급 흐름 알림: 막대(격자 전체가 있는 시리즈) 위에, 알림 시각을 봉 격자로 내려 붙인다
   const warn = css("--warn");
+  const toneColor = { positive: css("--ok"), neutral: css("--muted"), caution: warn, warning: css("--danger") };
   const am: SeriesMarker<Time>[] = pane.alerts.map((a): SeriesMarker<Time> => {
     const t = kstTime(a.t) as number;
     const snapped = (open + Math.floor((t - open) / step) * step) as UTCTimestamp;
     return {
       time: Math.min(Math.max(snapped, open), close) as UTCTimestamp,
       position: "aboveBar",
-      shape: a.severity === "strong" ? "square" : "circle",
-      color: a.severity === "info" ? css("--muted") : warn,
-      text: narrow ? SEVERITY_LABEL[a.severity] : `${alertTime(a.t)} ${SEVERITY_LABEL[a.severity]}`,
+      // #642 tone(#641)이 있으면 그 뜻으로: 호재 초록 · 참고 회색 · 주의 주황 · 경고 진한 빨강 네모(글자 · 기호도 같이)
+      shape: a.tone === "warning" || (!a.tone && a.severity === "strong") ? "square" : "circle",
+      color: a.tone ? toneColor[a.tone] : a.severity === "info" ? css("--muted") : warn,
+      text: narrow ? `${badgeOf(a).mark}${badgeOf(a).label}` : `${alertTime(a.t)} ${badgeOf(a).mark}${badgeOf(a).label}`,
     };
   }).sort((a, b) => (a.time as number) - (b.time as number));
   if (am.length) createSeriesMarkers(bars, am);

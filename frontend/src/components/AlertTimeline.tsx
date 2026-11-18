@@ -1,13 +1,14 @@
 import { type ReactNode, useMemo, useState } from "react";
 import type { LineSignal, MarketAlert } from "../api";
-import { alertKey, hhmm, KIND_LABEL, SEVERITY_LABEL, sideOf, useTodayAlerts } from "../alertsFeed";
+import { alertKey, alertLines, badgeOf, hhmm, isWarning, KIND_LABEL, sideOf, useTodayAlerts } from "../alertsFeed";
 import { chartHref, kstHhmm, signalTime, LINE_TF_KO, signalKey, splitText, useTodayLineSignals } from "../lineSignals";
 
 /** #581 오늘 알림 타임라인 — 수급 전향 · 수급 흐름 변화 · 나스닥 선물 이상 징후를 시각 순서로.
  *  색만으로 구분하지 않게 강도는 글자(참고 · 주의 · 강함), 방향은 ▲▼ 로 함께 쓴다. */
-type Filter = "all" | MarketAlert["kind"] | "line_signal";
+type Filter = "all" | "warning" | MarketAlert["kind"] | "line_signal";
 const FILTERS: { key: Filter; label: string }[] = [
   { key: "all", label: "전체" },
+  { key: "warning", label: "⚠ 경고만" },
   { key: "flow_turn", label: KIND_LABEL.flow_turn },
   { key: "flow_shift", label: KIND_LABEL.flow_shift },
   { key: "nq_alert", label: KIND_LABEL.nq_alert },
@@ -32,15 +33,18 @@ export function LineRow({ s }: { s: LineSignal }) {
 
 export function AlertRow({ a }: { a: MarketAlert }) {
   const side = sideOf(a);
+  const b = badgeOf(a);
+  const { head, reading } = alertLines(a.text);
   return (
-    <li className={`alert-row sev-${a.severity}`}>
+    <li className={`alert-row ${b.cls}`}>
       <time className="alert-time" dateTime={a.t}>{hhmm(a.t)}</time>
-      <span className={`alert-sev sev-${a.severity}`}>{SEVERITY_LABEL[a.severity]}</span>
+      <span className={`alert-sev ${b.cls}`}>{b.mark && <span aria-hidden="true">{b.mark} </span>}{b.label}</span>
       <span className="alert-kind muted small">{KIND_LABEL[a.kind]}</span>
       <span className="alert-text">
         {side && <span className={side === "up" ? "up" : "down"} aria-hidden="true">{side === "up" ? "▲ " : "▼ "}</span>}
-        {a.text.replace(/^[🔴🟠🟡🟢⚪]\s*/u, "")}
+        {head}
         {!a.pushed && <span className="muted small"> · 푸시 안 함</span>}
+        {reading && <span className="alert-reading muted small">{reading}</span>}
       </span>
     </li>
   );
@@ -53,7 +57,7 @@ export default function AlertTimeline() {
   const items = useMemo(() => {
     const all = data?.items ?? [];
     const rows: { t: number; key: string; node: ReactNode }[] = [
-      ...(filter === "all" ? all : all.filter((a) => a.kind === filter)).map((a) => ({ t: Date.parse(a.t), key: alertKey(a), node: <AlertRow key={alertKey(a)} a={a} /> })),
+      ...(filter === "all" ? all : filter === "warning" ? all.filter(isWarning) : all.filter((a) => a.kind === filter)).map((a) => ({ t: Date.parse(a.t), key: alertKey(a), node: <AlertRow key={alertKey(a)} a={a} /> })),
       ...(filter === "all" || filter === "line_signal" ? lines : []).map((s) => ({ t: signalTime(s), key: signalKey(s), node: <LineRow key={signalKey(s)} s={s} /> })),
     ];
     return rows.sort((a, b) => b.t - a.t);   // 최근 것이 위
@@ -73,7 +77,7 @@ export default function AlertTimeline() {
       {!data && !error && <p className="muted small">불러오는 중…</p>}
       {data && !items.length && <p className="muted small">{filter === "all" ? "오늘은 아직 알림이 없습니다." : "이 종류의 알림이 오늘은 없습니다."}</p>}
       {items.length > 0 && <ol className="alert-list">{items.map((r) => r.node)}</ol>}
-      <p className="muted small">"참고" 는 화면에만 남고 푸시로 보내지 않습니다. 받을 알림 종류는 설정 → 알림에서 고릅니다.</p>
+      <p className="muted small">◎ 호재 · · 참고 · ! 주의 · ⚠ 경고는 지수에 어떤 뜻인지예요(크기와 따로). 작은 참고 알림은 화면에만 남고 푸시로 보내지 않습니다. 받을 알림 종류 · 등급은 설정 → 알림에서 고릅니다.</p>
     </section>
   );
 }

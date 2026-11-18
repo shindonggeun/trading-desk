@@ -2849,3 +2849,18 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .line-watch-warn { margin: 6px 0 0; color: var(--warn); }
 .line-watch-recent { margin: 0; padding-left: 1.1em; display: grid; gap: 4px; }
 .alert-sev.line-sev { background: var(--surface-3); color: var(--text); }
+
+/* #642 알림의 뜻(#641 tone) — 색만이 아니라 이름표 글자 · 기호(◎ · ! ⚠)와 같이. 호재는 오름 빨강과 겹치지 않게 초록 */
+.alert-sev.tone-positive { color: var(--ok); }
+.alert-sev.tone-neutral { color: var(--muted); }
+.alert-sev.tone-caution { color: var(--warn); }
+.alert-sev.tone-warning { color: var(--danger); font-weight: 700; background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.alert-row.tone-warning { box-shadow: inset 3px 0 0 var(--danger); }
+.alert-row.tone-caution { box-shadow: inset 3px 0 0 var(--warn); }
+.alert-row.tone-positive { box-shadow: inset 3px 0 0 var(--ok); }
+.alert-reading { display: block; margin-top: 1px; }
+.mini-tone { font-weight: 600; }
+.mini-tone.tone-positive { color: var(--ok); }
+.mini-tone.tone-caution { color: var(--warn); }
+.mini-tone.tone-warning { color: var(--danger); }
+.mini-tone.tone-neutral, .mini-tone.sev-info { color: var(--muted); }

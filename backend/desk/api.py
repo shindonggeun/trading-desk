@@ -38,6 +38,7 @@ from . import (
     flow_intraday,
     funds13f,
     futures_quote,
+    gap_fill,
     halving,
     horizons,
     language,
@@ -115,6 +116,7 @@ BOTTOM_NOTE_SEC = 4.0
 BOTTOM_QUOTE_SEC = 2.0   # #310: the price the bottom-zone ladder is cut at, per lookup
 TREND_WAIT_SEC = 8.0     # #460: /api/tips waits this long for the indices' trend, then answers without it
 GAPS_TTL_SEC = 300.0     # #465: a ticker's unfilled gaps are kept as long as its swing levels (desk.horizons sr_ttl_sec)
+GAP_WARN_WAIT_SEC = 8.0   # #577: the entry summary does not wait longer for the gap odds
 # #257: US pre / after / overnight trades on the board - a last trade this fresh still counts as live
 # (thin ETFs trade minutes apart off hours), and a newly watched ticker waits this long for its first
 OFF_HOURS_FRESH_SEC = 600.0
@@ -483,6 +485,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # #203: years of Yahoo bars for the RSI / Stochastic extremes and what followed them
     # (read when called: a test's price source may have no Yahoo at all)
     oscillator_fetch = oscillator.yahoo_fetch(lambda *args: prices._yahoo_candles(*args))
+    # #577 the session gaps' fill odds: about eight years of daily bars, the macro calendar for the causes
+    gap_fetch = gap_fill.yahoo_fetch(lambda *args: prices._yahoo_candles(*args))
+
+    def gap_events():
+        return events_calendar.CACHE.events()
     estimator = estimator or BinanceEstimator(overtime=naver_overtime)   # #283: KRX after-hours, live only
     # #271: Binance futures traders' long / short split, on the estimate's own contract mapping
     longshort = longshort or LongShort(lambda ticker: estimator.resolve(ticker))   # read when asked (test fakes)
@@ -587,6 +594,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        # #203: overbought / oversold and its record (same-day runs)
                                        oscillator=None if settings.fake_runs else (
                                            lambda ticker: oscillator.note_for(oscillator_fetch, ticker)),
+                                       # #577: open session gaps and their past fill odds (same day)
+                                       gaps=None if settings.fake_runs else (
+                                           lambda ticker: gap_fill.note_for(gap_fetch, ticker, gap_events)),
                                        # #202: the index map behind a leveraged / sector ticker (same day)
                                        weekly=None if settings.fake_runs else _weekly_note,
                                        risk=risk,
@@ -797,6 +807,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 "trend": lambda: asyncio.to_thread(trend_cache.view, ahead),
                 "weekly": lambda: asyncio.to_thread(weekly.all, ahead),
                 "halving": lambda: asyncio.to_thread(halving_cache.get, ahead),
+                # #577: the tips page's gap lines read only what is cached
+                "gaps": lambda: asyncio.gather(*(asyncio.to_thread(gap_fill.read, gap_fetch, t, gap_events,
+                                                                   ahead=ahead) for t in gap_fill.WATCH)),
             }
             if risk_cache is not None:
                 jobs["risk_us"] = lambda: asyncio.to_thread(risk_cache.series, False, ahead)
@@ -1914,7 +1927,36 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(503, "rate / dollar series unavailable")
         error = (None if trend else "지수 일봉을 불러오는 중입니다 — 잠시 뒤 다시 확인하세요" if trend is None
                  else "지수 일봉을 받지 못해 대세 국면을 판정하지 못했습니다")
-        return {**out, "trend": trend or [], "guide": primary_trend.guide(), "trend_error": error}
+        return {**out, "trend": trend or [], "guide": primary_trend.guide(), "trend_error": error,
+                "gaps": gap_lines(gap_fill.WATCH)}
+
+    def gap_lines(tickers) -> list[dict]:
+        """#577 the tips' gap lines: each ticker's nearest open gap, from the cache only (prewarmed)."""
+        rows = []
+        for t in tickers:
+            rep = gap_fill.cached(t)
+            if rep and rep["open"]:
+                g = rep["open"][0]
+                rows.append({"ticker": rep["ticker"], "name": rep.get("name"), "text": gap_fill.line_ko(rep, g),
+                             "direction": g["direction"], "fill_price": g["fill_price"], "p5": g["odds"]["p5"],
+                             "p20": g["odds"]["p20"], "n": g["odds"]["n"], "few": g["odds"]["few"]})
+        return rows
+
+    @app.get("/api/gaps")
+    async def gaps_view(ticker: str):
+        """#577 the session gaps' fill odds (desk.gap_fill): the open gaps - fill price, size, cause, how
+        long open, the odds of gaps like it still open that long - and the table by direction, size,
+        cause and trend (1 / 3 / 5 / 20 sessions, median, sample). KOSPI200F reads KODEX 200; a
+        leveraged product its underlying, with the fill in its own price too. Past counts, not a forecast."""
+        try:
+            ticker = clean_ticker(ticker)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        try:
+            return await asyncio.to_thread(gap_fill.read, gap_fetch, ticker, gap_events)
+        except Exception as exc:  # noqa: BLE001 - no bars, too few, or a source down
+            log.warning("gaps for %s failed: %s", ticker, exc)
+            raise HTTPException(503, f"no gap odds for {ticker}") from None
 
     @app.get("/api/projection")
     async def projection_view(ticker: str, horizon: str | None = None):
@@ -1982,10 +2024,21 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         try:
-            return await entry_now.entry_now(prices, ticker, horizon, risk=risk, bottoms=bottoms)
+            got = await entry_now.entry_now(prices, ticker, horizon, risk=risk, bottoms=bottoms)
         except Exception as exc:  # noqa: BLE001 - no bars, too few, or a source down
             log.warning("entry now for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no entry for {ticker}") from None
+        # #577: an entry beyond an open gap may be pulled back to it - the field is added, None without one
+        side = (got.get("best") or {}).get("side") if isinstance(got, dict) else None
+        warning = None
+        if side and not settings.fake_runs:
+            try:
+                rep = await asyncio.wait_for(asyncio.to_thread(gap_fill.read, gap_fetch, ticker, gap_events),
+                                             GAP_WARN_WAIT_SEC)
+                warning = gap_fill.entry_warning(rep, side)
+            except Exception as exc:  # noqa: BLE001 - incl. timeout: the entry stands without it
+                log.info("gap warning for %s skipped: %s", ticker, type(exc).__name__)
+        return {**got, "gap_warning": warning} if isinstance(got, dict) else got
 
     @app.get("/api/estimate")
     async def estimate(ticker: str):

@@ -405,41 +405,94 @@ def _num(token: str) -> str:
     return t
 
 
-def allowed_numbers(b: dict) -> tuple[set[str], set[str]]:
-    """(numbers, dates and times) the brief may use: from the public bundle's values (not its ``date``
-    key - "2026" or "18" is no number of the market) and the desk's own draft. A sign is part of a number:
-    the model may not turn +1.20% into -1.20%."""
+UP_WORDS = ("올랐", "올라", "오른", "오르", "상승", "강세", "반등", "순매수", "매수 우위", "사들", "샀", "플러스")
+DOWN_WORDS = ("내렸", "내려", "내린", "내리", "하락", "약세", "밀렸", "밀려", "순매도", "매도 우위", "팔았", "팔아",
+              "빠졌", "빠지", "마이너스")
+
+
+@dataclass
+class Check:
+    """What a model sentence may say (#571 review): the bundle's numbers with their signs, its dates and
+    times, and per subject (나스닥, 외국인 ...) the values that belong to it. A number must be one of the
+    bundle's; written next to a subject it must be that subject's; a sign or a direction word beside it
+    (올랐 / 순매도 ...) must agree with the bundle's sign."""
+    numbers: set[str]
+    dts: set[str]
+    subjects: dict[str, set[str]]
+
+    def __post_init__(self) -> None:
+        names = sorted(self.subjects, key=len, reverse=True)
+        self._names = re.compile("|".join(re.escape(n) for n in names)) if names else None
+
+    def sentence_ok(self, sentence: str) -> bool:
+        if any(d not in self.dts for d in _DATETIME.findall(sentence)):
+            return False
+        text = _DATETIME.sub(" ", sentence)
+        marks: list[tuple[int, str]] = []               # (position, subject) - names masked so "S&P500" is no 500
+        if self._names is not None:
+            def mask(m: re.Match) -> str:
+                marks.append((m.start(), m.group(0)))
+                return "\ue000" * len(m.group(0))
+            text = self._names.sub(mask, text)
+        toks = list(_SIGNED.finditer(text))
+        for i, m in enumerate(toks):
+            t = _num(m.group(0))
+            size = t.lstrip("+-")
+            subject = next((name for pos, name in reversed(marks) if pos < m.start()), None)
+            pool = self.subjects.get(subject) if subject else None
+            cands = {v for v in (pool if pool else self.numbers) if v.lstrip("+-") == size}
+            if not cands:
+                return False                            # not the bundle's, or not this subject's
+            if t[0] in "+-" and t not in cands and not (t[0] == "+" and size in cands):
+                return False                            # a flipped sign
+            lo = toks[i - 1].end() if i else 0
+            hi = toks[i + 1].start() if i + 1 < len(toks) else len(text)
+            clause = text[lo:hi]
+            up, down = any(w in clause for w in UP_WORDS), any(w in clause for w in DOWN_WORDS)
+            signs = {v[0] for v in cands if v[0] in "+-"}
+            if signs and up != down and signs == {"-" if up else "+"}:
+                return False                            # "1.20% 올랐어요" for -1.20%
+        return True
+
+
+def _subjects(b: dict) -> dict[str, set[str]]:
+    out: dict[str, set[str]] = {}
+
+    def add(name: str, *values) -> None:
+        out.setdefault(name, set()).update(_num(v) for v in values if v)
+    for group in ("us", "kr", "futures"):
+        for name, c in (b.get(group) or {}).items():
+            add(name, c.get("close"), c.get("change"))
+    for g in b.get("fear") or []:
+        add(g["name"], g.get("value"), g.get("prev_day"))
+    for f in (b.get("flow") or {}).values():
+        for who, v in f["net"].items():
+            add(who, v.rstrip("억"))
+    return out
+
+
+def allowed_numbers(b: dict) -> Check:
+    """What the brief may say: the public bundle's values (not its ``date`` key - "2026" or "18" is no
+    number of the market) and the desk's own draft; dates and times on their own; the subjects' values."""
     pub = {k: v for k, v in _public(b).items() if k != "date"}
     text = json.dumps(pub, ensure_ascii=False) + json.dumps(rules(b), ensure_ascii=False)
-    dts = set(_DATETIME.findall(text))
-    return {_num(t) for t in _SIGNED.findall(_DATETIME.sub(" ", text))}, dts
+    subjects = _subjects(b)
+    for name in subjects:                               # a name's own digits (S&P500, 나스닥100) are no number
+        text = text.replace(name, " ")
+    return Check({_num(t) for t in _SIGNED.findall(_DATETIME.sub(" ", text))}, set(_DATETIME.findall(text)), subjects)
 
 
-def _sentence_ok(sentence: str, allowed: set[str], dts: set[str]) -> bool:
-    if any(d not in dts for d in _DATETIME.findall(sentence)):
-        return False
-    for tok in _SIGNED.findall(_DATETIME.sub(" ", sentence)):
-        t = _num(tok)
-        if t[0] in "+-":
-            if t not in allowed and not (t[0] == "+" and t[1:] in allowed):
-                return False
-        elif t not in allowed and "+" + t not in allowed and "-" + t not in allowed:
-            return False             # unsigned: the size must be the bundle's (the words carry the side)
-    return True
-
-
-def _ok(text, allowed: tuple[set[str], set[str]], limit: int) -> str | None:
-    """The text with every sentence carrying a number, date or time the bundle has not dropped; None if
-    nothing is left or it is not Korean."""
+def _ok(text, allowed: Check, limit: int) -> str | None:
+    """The text with every sentence that says a number, date or time the bundle does not (or with the
+    wrong sign or direction, or on the wrong subject) dropped; None if nothing is left or it is not Korean."""
     if not isinstance(text, str) or not text.strip():
         return None
-    keep = [s.strip() for s in explain._SENTENCE.split(text.strip()[:limit])
-            if s.strip() and _sentence_ok(s.strip(), *allowed)]
+    keep = [s.strip() for s in explain._SENTENCE.split(text.strip()[:limit]) if s.strip() and allowed.sentence_ok(s.strip())]
     good = " ".join(keep)
     return good if good and not foreign(good) else None
 
 
-def merge(draft: dict, answer: dict | None, allowed: tuple[set[str], set[str]]) -> dict:
+def merge(draft: dict, answer: dict | None, allowed: Check) -> dict:
     """The model's text field by field where every number is the bundle's and it is Korean; the draft elsewhere."""
     out = json.loads(json.dumps(draft))
     if not answer:

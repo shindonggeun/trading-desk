@@ -22,7 +22,8 @@ log = logging.getLogger(__name__)
 # "flow" switches every foreign-flow turn; flow_<market> one market of it (#362: a toggle per market).
 # #571 "morning_brief" the morning brief.
 # #579 "flow_shift" the investors' flow shifts, "nq_alert" the NQ=F selling alarms (desk.market_alerts).
-KINDS = ("flow", "flow_futures", "flow_kospi", "flow_kosdaq", "morning_brief", "flow_shift", "nq_alert", "day_call")
+KINDS = ("flow", "flow_futures", "flow_kospi", "flow_kosdaq", "morning_brief", "flow_shift", "nq_alert", "day_call",
+         "line_signal")
 MAX_PER_USER = 10
 # The server only ever POSTs to the browsers' push services - never a host a caller names (SSRF).
 PUSH_HOSTS = ("fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com")

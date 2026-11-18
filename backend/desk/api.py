@@ -50,6 +50,7 @@ from . import (
     krx_etp,
     language,
     line_basis,
+    line_signals,
     lines_bt,
     live,
     macro_news,
@@ -600,6 +601,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         ("listing", "종목 목록", "토스", None),
         ("futures_snapshot", "코스피200 선물 수급 스냅숏", "한투(KIS)", None),
         ("nq_watch", "나스닥 선물 이상 징후", "야후", None),
+        ("line_signals", "채널 · 추세선 신호", "야후 · 토스", None),
         ("credit", "빚투 · 예탁금", "금융투자협회(KOFIA)", None),
         ("news", "뉴스 흐름", "GDELT · 구글 뉴스", None),
         ("macro_news", "거시 · 정책 뉴스", "GDELT · 구글 뉴스", "news"),
@@ -773,6 +775,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 await asyncio.to_thread(app.state.market_alerts.nq_pass, got["bars"])
             return nq_watch.seconds_to_next(datetime.now(UTC))
 
+        async def watch_lines() -> float:
+            # #613 channel / trendline signals on the watched tickers, each just after its bar closes
+            await line_signals.run_pass(app.state.line_watch, prices, app.state.pusher)
+            return line_signals.TICK_SEC
+
         async def refresh_funds() -> float:
             # #483: the funds' filings every few hours around the 45-day deadline, else daily
             ok = await asyncio.to_thread(funds.refresh)
@@ -940,6 +947,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
               and getattr(futures, "rest", None) is not None,
               snapshot_futures, lambda: seconds_to_next(datetime.now(UTC), futures_every), "futures snapshot failed")
         start("nq_watch", feeds_on, watch_nq, lambda: nq_watch.seconds_to_next(datetime.now(UTC)), "NQ alarms failed")
+        start("line_signals", feeds_on, watch_lines, line_signals.TICK_SEC, "line signals failed")
         start("credit", feeds_on, refresh_credit, CREDIT_RETRY_SEC, "KOFIA credit refresh failed")
         if feeds_on:
             # #428: the pass saved before a restart answers until the first one here finishes
@@ -2019,7 +2027,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     @app.get("/api/lines")
     async def chart_lines(ticker: str = "NQ=F", tf: str = "5m"):
         """#611 parallel channels and short trendlines on one timeframe (desk.channels), each line with
-        its past hit rate where desk.lines_bt has run for the ticker. ``tf``: 5m · 15m · 1h · 4h · 1d
+        its past hit rate where desk.lines_bt has run for the ticker. ``tf``: 5m · 15m · 1h · 2h · 4h · 1d
         (or the chart's 60m · 240m). Recomputed only when a new bar comes in."""
         try:
             ticker = clean_ticker(ticker)
@@ -2037,8 +2045,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         key = (ticker, interval)
         memo = lines_memo.get(key)
         # the last bar still trading is not judged a break (it may close back): see desk.channels
-        live = bool(bars) and (datetime.fromisoformat(bars[-1]["at"])
-                               + timedelta(minutes=channels.MINUTES[interval])) > datetime.now(UTC)
+        live = bool(bars) and (interval in channels.GROUPED or (datetime.fromisoformat(bars[-1]["at"])
+                               + timedelta(minutes=channels.MINUTES[interval])) > datetime.now(UTC))
         stamp = (bars[-1]["at"], round(bars[-1]["close"] * 1e4), live) if bars else ("", 0, False)
         if memo is None or memo[:3] != stamp:
             found = await asyncio.to_thread(channels.lines, bars, interval, lines_bt.rates(ticker, interval), live)
@@ -2856,6 +2864,7 @@ class PushKindsIn(BaseModel):
     flow_shift: bool = True         # #579 the investors' flow shifts (desk.market_alerts)
     nq_alert: bool = True           # #579 the NQ=F selling alarms
     day_call: bool = True           # #572 each market's first direction call of the day
+    line_signal: bool = True        # #613 channel / trendline signals (the watch itself is off until set)
 
 
 class PushSubscriptionIn(BaseModel):
@@ -2947,6 +2956,14 @@ class NotifyChannelIn(BaseModel):
     kinds: dict[str, bool] | None = None
 
 
+class LineWatchIn(BaseModel):
+    """#613 the channel / trendline signal watch (desk.line_signals)."""
+    enabled: bool = False
+    tickers: list[str] = Field(default_factory=list, max_length=line_signals.MAX_TICKERS)
+    timeframes: list[str] = Field(default_factory=list, max_length=len(line_signals.TIMEFRAMES))
+    events: dict[str, bool] = Field(default_factory=dict, max_length=len(line_signals.EVENTS))
+
+
 class KakaoCallbackIn(BaseModel):
     code: str = Field(min_length=1, max_length=512)
     state: str = Field(min_length=1, max_length=128)
@@ -3036,6 +3053,34 @@ def _notify_routes(app: FastAPI, engine, settings: Settings) -> None:
         except nc.ChannelError as exc:         # the worker busy past the wait: it may still go later
             error = str(exc)
         return {"ok": error is None, "error": error}
+
+    watch = line_signals.LineWatch(engine)
+    app.state.line_watch = watch
+
+    def watch_view(request: Request) -> dict:
+        return {**watch.settings(), "can_edit": request.state.user.id == owner_id(),
+                "allowed": {"timeframes": list(line_signals.TIMEFRAMES), "events": list(line_signals.EVENTS),
+                            "max_tickers": line_signals.MAX_TICKERS},
+                "limits": {"cooldown_min": line_signals.COOLDOWN_MIN, "cooldown_bars": line_signals.COOLDOWN_BARS,
+                           "daily_max": line_signals.DAILY_MAX, "per_ticker_max": line_signals.PER_TICKER_MAX},
+                "recent": watch.recent()}
+
+    @app.get("/api/notify/line-watch")
+    def line_watch_get(request: Request):
+        """#613 the watch (off until the owner turns it on), its limits and the signals sent lately."""
+        return watch_view(request)
+
+    @app.put("/api/notify/line-watch")
+    def line_watch_set(body: LineWatchIn, request: Request):
+        must_own(request)
+        try:
+            given = body.model_dump(exclude_unset=True)     # what is left out keeps its value
+            if "tickers" in given:
+                given["tickers"] = [clean_ticker(t) for t in body.tickers]
+            watch.save(given)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return watch_view(request)
 
     @app.post("/api/notify/kakao/connect")
     def kakao_connect(request: Request):

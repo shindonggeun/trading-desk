@@ -29,12 +29,15 @@ from itertools import pairwise
 from . import trend
 
 # the chart's intervals (desk.prices) and the issue's names for them
-TF_ALIASES = {"5m": "5m", "15m": "15m", "1h": "60m", "60m": "60m", "4h": "240m", "240m": "240m", "1d": "1d"}
-TIMEFRAMES = ("5m", "15m", "60m", "240m", "1d")
-BARS = {"5m": 400, "15m": 400, "60m": 500, "240m": 300, "1d": 300}       # bars read per timeframe
-SWING_K = {"5m": 3, "15m": 3, "60m": 3, "240m": 2, "1d": 3}             # bars each side of a swing
-MINUTES = {"5m": 5, "15m": 15, "60m": 60, "240m": 240, "1d": 24 * 60}   # one bar
-TF_KO = {"5m": "5분봉", "15m": "15분봉", "60m": "1시간봉", "240m": "4시간봉", "1d": "일봉"}
+TF_ALIASES = {"5m": "5m", "15m": "15m", "1h": "60m", "60m": "60m", "2h": "120m", "120m": "120m", "4h": "240m",
+              "240m": "240m", "1d": "1d"}
+TIMEFRAMES = ("5m", "15m", "60m", "120m", "240m", "1d")
+BARS = {"5m": 400, "15m": 400, "60m": 500, "120m": 400, "240m": 300, "1d": 300}       # bars read per timeframe
+SWING_K = {"5m": 3, "15m": 3, "60m": 3, "120m": 3, "240m": 2, "1d": 3}             # bars each side of a swing
+# desk.prices folds these from 60m bars by the exchange day: the last fold may run past its length
+GROUPED = frozenset({"120m", "240m"})
+MINUTES = {"5m": 5, "15m": 15, "60m": 60, "120m": 120, "240m": 240, "1d": 24 * 60}   # one bar
+TF_KO = {"5m": "5분봉", "15m": "15분봉", "60m": "1시간봉", "120m": "2시간봉", "240m": "4시간봉", "1d": "일봉"}
 KST = timezone(timedelta(hours=9))
 
 ATR_N = 14
@@ -58,7 +61,7 @@ KEEP_BROKEN = 24           # a trendline broken within this many bars is still s
 MAX_DISTANCE_ATR = 6.0     # an unbroken trendline further from the price than this is not shown
 TL_PER_KIND = 1
 # bars after a touch or a break the backtest watches (desk.lines_bt); a break this recent is "fresh"
-HORIZON = {"5m": 12, "15m": 8, "60m": 8, "240m": 6, "1d": 5}
+HORIZON = {"5m": 12, "15m": 8, "60m": 8, "120m": 6, "240m": 6, "1d": 5}
 
 NOTE = "선은 지난 가격으로 그은 산수예요 — 앞날 예측도, 매수 · 매도 추천도 아니에요."
 

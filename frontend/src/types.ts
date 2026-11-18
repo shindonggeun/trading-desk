@@ -2063,36 +2063,71 @@ export interface MorningBrief {
 export interface MorningBriefItem { id: string; date: string; created_at: string; title: string; source: BriefSource; trigger: BriefTrigger }
 export interface MorningBriefList { items: MorningBriefItem[]; generating: boolean }
 
-// #573 오늘 방향(#572) — 잠정 모양(34 의 계약 확정 뒤 맞춘다). 확률은 0~1, 다섯 단계 합 1
+// #573 오늘 방향(#572) — 계약: #572 issuecomment-6966479748. 확률은 % (소수 1자리, 다섯 단계 합 100), 비율은 0~1
 export type DayCallMarket = "kr" | "us";
-export type DayCallLabel = "strong_long" | "long" | "flat" | "short" | "strong_short";
-export type DayCallProbs = Record<DayCallLabel, number>;
-export interface DayCallSide {
-  label: DayCallLabel;
-  probs: DayCallProbs;
-  round: number | null;      // 1차 · 2차
-  at: string | null;         // 판정 시각(UTC ISO)
-  reasons: string[];         // 근거 상위 5개
+export type DayCallStage = "strong_long" | "weak_long" | "flat" | "weak_short" | "strong_short";
+export type DayCallProbs = Record<DayCallStage, number>;
+export interface DayCallReason {
+  key: string;
+  label: string;
+  value: string;
+  effect: "long" | "short" | "volatile" | "calm";
+  weight: number;
+  text: string;
 }
-export interface DayCall { date: string; kr: DayCallSide | null; us: DayCallSide | null; line: string | null }
-export interface DayCallHistoryItem {
+export interface DayCallOutcome {
+  stage: DayCallStage;
+  label: string;
+  open: number;
+  close: number;
+  return_pct: number;
+  ret_atr: number;
+  hit_direction: boolean;
+  hit_stage: boolean;
+  brier: number;
+  scored_at: string;
+}
+export interface DayCallEntry {
+  round: number;
+  round_label: string;
+  called_at: string;
+  cutoff_at?: string;
+  stage: DayCallStage;
+  label: string;
+  direction: "long" | "short";
+  probs: DayCallProbs;
+  edges_pct?: { flat: number; strong: number };
+  reasons?: DayCallReason[];
+  context?: { key: string; label: string; value: string; in_model: boolean }[];
+  model_version?: string;
+  source: "live" | "backfill";
+  outcome: DayCallOutcome | null;
+}
+export interface DayCallToday {
+  market: DayCallMarket;
   date: string;
-  round: number | null;
-  label: DayCallLabel;
-  probs: DayCallProbs;
-  actual: DayCallLabel | null;    // 장 마감 전 · 채점 전이면 null
-  actual_pct: number | null;      // 시가 → 종가 등락률(%)
-  hit: boolean | null;            // 방향(롱 · 숏 · 보합) 맞춤
-  exact: boolean | null;          // 다섯 단계까지 맞춤
+  stages: { key: DayCallStage; label: string }[];
+  call: DayCallEntry | null;
+  rounds: DayCallEntry[];
 }
+export interface DayCallHistoryItem extends DayCallEntry { date: string }
 export interface DayCallHistory { market: DayCallMarket; days: number; items: DayCallHistoryItem[] }
+export interface DayCallRates { n?: number; direction_hit_rate?: number | null; stage_hit_rate?: number | null; brier?: number | null }
 export interface DayCallStats {
   market: DayCallMarket;
   days: number;
   n: number;
-  hit_rate: number | null;
-  exact_rate: number | null;
+  missed: number;
+  direction_hit_rate: number | null;
+  stage_hit_rate: number | null;
   brier: number | null;
-  by_label: { label: DayCallLabel; n: number; hit_rate: number | null }[];
-  calibration: { lo: number; hi: number; n: number; predicted: number; actual: number | null }[];
+  baselines: {
+    always_long?: { direction_hit_rate: number | null };
+    follow_yesterday?: { direction_hit_rate: number | null };
+    climatology?: { brier: number | null };
+  };
+  per_stage: { stage: DayCallStage; label: string; called: number; called_hit: number; actual: number }[];
+  calibration: { lo: number; hi: number; n: number; mean_prob: number | null; actual_rate: number | null }[];
+  by_round: Record<string, DayCallRates>;
+  by_source: Record<string, DayCallRates>;
 }

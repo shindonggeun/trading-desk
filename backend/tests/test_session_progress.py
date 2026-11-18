@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from desk import playbook, session_progress
+from desk import playbook, session_progress, setup_filter
 
 PRE = datetime(2026, 11, 16, 12, 2, tzinfo=UTC)          # 21:02 KST = 07:02 New York (EST), pre-market
 
@@ -74,6 +74,30 @@ def test_cme_futures_are_read_on_new_yorks_regular_hours_within_their_day():
     assert session_progress.elapsed("NQ=F", fri, datetime(2026, 11, 21, 15, tzinfo=UTC)) is None
     early = [{"at": "2026-11-27T05:00:00+00:00"}]
     assert session_progress.elapsed("NQ=F", early, datetime(2026, 11, 27, 16, 15, tzinfo=UTC)) == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(("bars", "now", "want"), [
+    # #568 Yahoo at 20:03 ET Tuesday: Wednesday's session (3.7만 contracts so far) is the bar dated Tuesday
+    (["2026-11-16T05:00:00+00:00", "2026-11-17T05:00:00+00:00"], datetime(2026, 11, 18, 1, 3, tzinfo=UTC), 0.0),
+    # just after 18:00 ET, and past midnight New York before the open
+    (["2026-11-17T05:00:00+00:00"], datetime(2026, 11, 17, 23, 1, tzinfo=UTC), 0.0),
+    (["2026-11-17T05:00:00+00:00"], datetime(2026, 11, 18, 9, 0, tzinfo=UTC), 0.0),         # Wed 04:00 ET
+    # Sunday evening: Monday's session dated Sunday
+    (["2026-11-13T05:00:00+00:00", "2026-11-15T05:00:00+00:00"], datetime(2026, 11, 15, 23, 30, tzinfo=UTC), 0.0),
+    # 17:00-18:00 ET nothing trades: Tuesday's bar is finished
+    (["2026-11-17T05:00:00+00:00"], datetime(2026, 11, 17, 22, 30, tzinfo=UTC), None),
+    # from Wednesday's open a bar still dated Tuesday is not Wednesday's: the regular hours need their own bar
+    (["2026-11-17T05:00:00+00:00"], datetime(2026, 11, 18, 15, 0, tzinfo=UTC), None),
+    # Friday evening and the weekend: no session
+    (["2026-11-20T05:00:00+00:00"], datetime(2026, 11, 20, 23, 30, tzinfo=UTC), None),
+    (["2026-11-20T05:00:00+00:00"], datetime(2026, 11, 22, 3, 0, tzinfo=UTC), None),
+])
+def test_futures_evening_bar_dated_the_day_before_is_the_new_session(bars, now, want):
+    daily = [{"at": at, "volume": 36917} for at in bars]
+    assert session_progress.elapsed("ES=F", daily, now) == want
+    assert session_progress.elapsed("NQ=F", daily, now) == want
+    if want is not None:   # the night's few contracts are held back, not read as a 0.05x day
+        assert "판정에서 뺌" in setup_filter.volume_note(0.05, want)
 
 
 def test_crypto_runs_on_the_utc_day_and_indices_on_their_market():

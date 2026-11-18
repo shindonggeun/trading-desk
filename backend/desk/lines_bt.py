@@ -35,7 +35,7 @@ from . import channels
 OUT = Path(__file__).parent / "data" / "backtest" / "lines.json"
 HORIZON = channels.HORIZON
 BOUNCE_ATR = 1.0
-FETCH = {"5m": 16000, "15m": 6000, "60m": 12000, "240m": 3000, "1d": 6500}
+FETCH = {"5m": 16000, "15m": 6000, "60m": 12000, "120m": 6000, "240m": 3000, "1d": 6500}
 DEFAULT_TFS = ("5m", "60m", "1d")
 ROLES = ("channel_lower", "channel_upper", "trend_support", "trend_resistance")
 

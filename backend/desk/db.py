@@ -360,6 +360,34 @@ paper_settings = Table(
 )
 
 
+# #613 the channel / trendline signal watch (desk.line_signals): one row (id 1), off until the owner turns it on
+line_watch = Table(
+    "line_watch", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=False),
+    Column("body", Json, nullable=False),                         # enabled · tickers · timeframes · events
+    Column("updated_at", Timestamp, nullable=False),
+)
+
+# #613 the signals sent: the same line · signal on the same bar never twice; the day's count and cooldowns
+line_signals = Table(
+    "line_signals", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("trade_date", String(10), nullable=False),             # KST date of the bar
+    Column("ticker", String(32), nullable=False),
+    Column("timeframe", String(8), nullable=False),               # 5m | 15m | 60m | 120m | 240m
+    Column("event", String(8), nullable=False),                   # touch | break | retest
+    Column("rule", String(24), nullable=False),                   # touch_support | break_down | retest_up ...
+    Column("line_id", String(160), nullable=False),               # desk.channels' line id
+    Column("at", String(32), nullable=False),                     # the bar judged (ISO, UTC)
+    Column("price", Float, nullable=False),
+    Column("line_price", Float, nullable=False),
+    Column("text", String(600), nullable=False),
+    Column("created_at", Timestamp, nullable=False),
+    UniqueConstraint("ticker", "timeframe", "rule", "line_id", "at", name="uq_line_signals_bar"),
+    Index("ix_line_signals_trade_date", "trade_date"),
+)
+
+
 def now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 

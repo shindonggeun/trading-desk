@@ -216,7 +216,7 @@ def test_api_lines(db_url):
     with client:
         assert client.get("/api/lines?ticker=NQ=F&tf=1h").status_code == 401
         client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
-        assert client.get("/api/lines?ticker=NQ=F&tf=2h").status_code == 422
+        assert client.get("/api/lines?ticker=NQ=F&tf=3h").status_code == 422
         body = client.get("/api/lines?ticker=NQ=F&tf=1h").json()
         assert body["interval"] == "60m" and body["channels"][0]["direction"] == "down"
         assert body["channels"][0]["hit_rate"]["lower"]["n"] > 0           # the shipped NQ=F table

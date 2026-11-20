@@ -397,6 +397,11 @@ docker run --rm -it -p 127.0.0.1:1455:1455 -v trading-desk-tradingagents-home:/h
 
 api · collector · analyst(#688) 가 따로 뜨면 같은 수급 · 시세를 프로세스마다 다시 부른다. Redis 를 켜면 collector 가 읽은 값을 api 가 먼저 읽는다.
 **비워 두면 지금처럼 프로세스 메모리 캐시만** 쓴다(아무 키도 필수가 아니다). 넣는 것 · 넣지 않는 것은 [security.md](security.md) §5.2.
+**선행 조건: 백엔드가 api · collector · analyst 로 나뉘어 있을 것**(compose 의 `DESK_ROLE`). `all` 한 프로세스면 나눠 쓸 상대가 없어 이득이 없다.
+
+- 키 이름에 코드 지문(`desk/` 소스의 해시)이 들어간다. 배포하면 새 키로 시작하고 옛 빌드의 값은 TTL 까지 그냥 남았다 사라진다 — 값 모양이 바뀐 배포가 옛 값을 읽어 화면이 깨지는 일이 없다.
+- 운영 `DESK_REDIS_CACHE_KEY` 는 운영에만 쓴다. 개발 · 가짜 실행(`DESK_FAKE_RUNS`) 프로세스가 같은 Redis 를 가리켜도 키가 다르면 서로의 값을 보지도 덮지도 못한다.
+- Redis 가 응답하지 않을 때: 비동기 호출은 0.25초에서 끊고, 워커 스레드의 동기 호출(갭 · 오실레이터)은 Sentinel 3대를 차례로 물어 최대 1초 남짓이다. 그 뒤 30초는 건너뛴다.
 
 | 키 | 값 |
 |----|----|
@@ -408,7 +413,7 @@ api · collector · analyst(#688) 가 따로 뜨면 같은 수급 · 시세를 �
 
 | 공유 이름(`td:<이름>:…`) | 쓰는 쪽 → 읽는 쪽 | TTL |
 |------|------|-----|
-| `market_flow` · `futures_flow` | collector 스냅샷 잡(`fresh`) → api 카드. 실패한 읽기는 넣지 않는다 | 각 캐시 TTL |
+| `market_flow` · `futures_flow` | collector 스냅샷 잡(`fresh`) → api 카드. 실패한 읽기는 넣지 않는다 | 각 캐시 TTL, 최소 90초(1분 스냅샷 사이를 잇는다) |
 | `quote` | 먼저 읽은 프로세스 → 나머지 | 10초 |
 | `sr` · `gap_fill` · `oscillator` | 계산한 프로세스 → 나머지(메모리 → Redis 2단) | 각 캐시 TTL |
 

@@ -3,8 +3,10 @@ unreachable Redis leaves every cache working from memory as before."""
 
 import asyncio
 import json
+import logging
 import time
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import fakeredis
 import pytest
@@ -59,11 +61,12 @@ def test_keys_are_prefixed_always_expire_and_round_trip(redis):
 
 
 def test_a_value_json_would_change_stays_in_memory(redis, caplog):
+    caplog.set_level(logging.INFO, "desk.shared_cache")
     sc.put("ns", "tuple", {"pair": (1, 2)}, 10)       # a tuple comes back a list
     sc.put("ns", "nan", float("nan"), 10)             # not JSON
     sc.put("ns", "nothing", {"a": 1}, 0)              # ttl 0 = keep nothing
     assert redis.keys("*") == [] and sc.stats()["skipped"] == 2
-    assert sum("round-trip" in r.message for r in caplog.records) <= 1   # once per namespace
+    assert sum("round-trip" in r.message for r in caplog.records) == 1   # once per namespace
 
 
 def test_sync_calls_never_block_the_event_loop_thread(redis):
@@ -195,7 +198,7 @@ def test_the_futures_card_reads_what_the_snapshot_job_fetched(redis):
 
     snap, card = asyncio.run(go())
     assert collector_calls and not api_calls
-    assert {k: v for k, v in card.items() if k != "freshness"} == {k: v for k, v in snap.items() if k != "freshness"}
+    assert card == snap
 
 
 class _QuoteBroker(MockBroker):
@@ -258,7 +261,7 @@ def test_a_sealed_value_moved_to_another_key_or_replayed_is_a_miss(redis):
     sealed = redis.get(sc._key("quote", "AAPL"))
     redis.set(sc._key("quote", "NVDA"), sealed, px=60_000)                 # moved: names AAPL inside
     assert sc.get("quote", "NVDA") is None
-    stale = sc._box.encrypt(json.dumps({"k": "quote:MSFT", "v": {"p": 2}, "at": time.time() - 11,
+    stale = sc._box.encrypt(json.dumps({"k": sc._plain("quote", "MSFT"), "v": {"p": 2}, "at": time.time() - 11,
                                         "ttl": 10.0}).encode()).decode()
     redis.set(sc._key("quote", "MSFT"), stale, px=3_600_000)             # an old value with a long expiry
     assert sc.get("quote", "MSFT") is None
@@ -286,3 +289,84 @@ def test_a_shared_quote_must_be_for_the_ticker_with_a_real_price():
     for bad in ({**good, "ticker": "MSFT"}, {**good, "price": "abc"}, {**good, "price": 0}, {**good, "price": True},
                 {**good, "extra": 1}, [1, 2]):
         assert _shared_quote("AAPL", bad) is None
+
+
+def test_the_card_follows_what_is_left_of_the_shared_value_then_fetches_itself(redis, monkeypatch):
+    clock = [1000.0]
+    collector, api = CountingBroker(), CountingBroker()
+    card = MarketFlow(api, clock=lambda: clock[0], now=lambda: NOW)
+    real = time.time
+
+    async def go():
+        monkeypatch.setattr(sc, "time", SimpleNamespace(time=lambda: real() - 50, monotonic=time.monotonic))
+        await MarketFlow(collector, now=lambda: NOW).get("KOSPI", "1d", 5, fresh=True)   # written 50 s ago
+        kept = redis.pttl(redis.keys("td:market_flow:*")[0])
+        monkeypatch.setattr(sc, "time", time)
+        await card.get("KOSPI", "1d", 5)               # 90 - 50 = 40 s left: kept 40 s, not the card's 60
+        redis.flushall()
+        clock[0] += 39
+        await card.get("KOSPI", "1d", 5)
+        before = api.calls
+        clock[0] += 2
+        await card.get("KOSPI", "1d", 5)               # expired: its own read
+        return kept, before
+
+    kept, before = asyncio.run(go())
+    assert before == 0 and api.calls == 1
+    assert 60_000 < kept <= 90_000                      # shared past one snapshot gap, not only the card's 60 s
+
+
+def test_a_failed_futures_read_is_not_shared(redis):
+    from desk import futures_flow as ff
+
+    now = lambda: datetime(2026, 11, 6, 2, 0, tzinfo=UTC)
+    asyncio.run(ff.FuturesFlow(_rest([], token_status=500), None, now=now).get(fresh=True))
+    assert redis.keys("td:futures_flow:*") == []
+
+
+def test_another_build_never_reads_this_ones_values(redis, monkeypatch):
+    sc.put("osc", ("A", "1d"), {"r": 1}, 60)
+    monkeypatch.setattr(sc, "BUILD", "another-build")
+    assert sc.get("osc", ("A", "1d")) is None and sc.stats()["rejected"] == 0   # another name: a plain miss
+
+
+def test_a_slow_server_costs_at_most_the_timeout_on_the_loop():
+    class Slow:
+        def pipeline(self, transaction=False):
+            return self
+
+        def get(self, *_):
+            pass
+
+        pttl = get
+
+        async def execute(self):
+            await asyncio.sleep(5)
+
+        async def set(self, *args, **kwargs):
+            await asyncio.sleep(5)
+
+    sc.use(None, Slow())
+    try:
+        async def go():
+            started = time.monotonic()
+            got = await sc.aget("ns", "k")
+            return got, time.monotonic() - started
+        got, took = asyncio.run(go())
+        assert got is None and took < 1 and sc.stats()["errors"] == 1
+    finally:
+        sc.use(None, None)
+
+
+def test_broker_calls_are_counted_where_they_are_made():
+    from tests.test_toss_token import FakeToss, _broker
+
+    outbound.reset()
+    asyncio.run(_broker(FakeToss()).quote("NVDA"))
+    calls = []
+
+    async def kis():
+        await _rest(calls).get("/x", "TR", {})
+    asyncio.run(kis())
+    snap = outbound.snapshot()
+    assert snap["toss"] == 1 and snap["kis"] == 1

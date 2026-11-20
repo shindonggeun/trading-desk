@@ -1458,13 +1458,28 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             max_risk_rounds=body.max_risk_rounds,
         )
         run_id = request.app.state.manager.submit(run_request)
-        return store.get_run(run_id)
+        return with_queue([store.get_run(run_id)])[0]
+
+    def with_queue(items: list[dict]) -> list[dict]:
+        """#688 a queued run says where it stands: ``queue: {ahead, running, analyst}`` - how many queued runs an
+        analyst claims before it, how many run now, and (api role on PostgreSQL) whether an analyst holds the
+        queue ("up" | "down"; None under all or on SQLite). Other runs carry no ``queue``."""
+        if not any(r["status"] == "queued" for r in items):
+            return items
+        order, running = store.queue_view()
+        place = {run_id: i for i, run_id in enumerate(order)}
+        analyst = None
+        if settings.role == "api":
+            up = run_queue.held(engine)
+            analyst = None if up is None else ("up" if up else "down")
+        return [{**r, "queue": {"ahead": place.get(r["id"], 0), "running": running, "analyst": analyst}}
+                if r["status"] == "queued" else r for r in items]
 
     @app.get("/api/runs")
     def list_runs(page: int = 1, size: int = 20):
         # Clamp both: a huge page would overflow the OFFSET bigint and surface as a 500.
         page, size = min(max(page, 1), 100_000), min(max(size, 1), 100)
-        return {"items": store.list_runs(size, (page - 1) * size), "total": store.count_runs(),
+        return {"items": with_queue(store.list_runs(size, (page - 1) * size)), "total": store.count_runs(),
                 "page": page, "size": size}
 
     @app.delete("/api/runs/{run_id}", status_code=204)
@@ -1486,7 +1501,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if not run:
             raise HTTPException(404, "run not found")
         # #437: the look ahead frozen when the run ended (an ``outlook`` event), None before / without one
-        return {**run, "outlook": store.last_event_data(run_id, "outlook")}
+        return {**with_queue([run])[0], "outlook": store.last_event_data(run_id, "outlook")}
 
     explain_locks: dict[str, asyncio.Lock] = {}
 

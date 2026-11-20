@@ -27,6 +27,10 @@ process's memory:
 
 A run's events already cross processes on PostgreSQL (desk.run_events: ``pg_notify`` on write, the ``run_events``
 job listens where the streams are served), and runs from the api to the analyst (desk.run_queue).
+
+The ChatGPT sign-in (``chatgpt-auth.json`` on the shared ``tradingagents_home`` volume) is used by the api's chat
+and the analyst's runs alike. The library renews it under a file lock beside it and reads it again inside the lock,
+so two processes renew once (#766, tests/test_chatgpt_refresh.py) - on one host's local volume, as the same user.
 """
 
 from __future__ import annotations

@@ -8,7 +8,8 @@ minute and notifies on each, so no client of its own). Toss' daily record can si
 - The answer's first row is the running total: per class the buy / sell value (``*_shnu_tr_pbmn`` /
   ``*_seln_tr_pbmn``, million won) -> the same record shape as Toss' (KRW), marked ``source: "kis"``.
 - KIS gives no time of its own: ``updated_at`` is None (desk.market_flow watches when the figures change).
-- The market codes (KSP / 0001, KSQ / 1001) follow the futures pair (K2I / F001) on the same screen; every
+- Off (``ENABLED``, #711): the screen counts KRX regular-market stocks only, Toss more - see the note there.
+- The market codes (KSP / 0001, KSQ / 1001) are KIS' own example's (KOSPI) and its KOSDAQ pair; every
   answer is checked (``check``) so a wrong code, unit or day falls back to Toss instead of showing another
   market's or yesterday's figures. Running totals only grow and Toss' may sit 10-30 minutes behind, so
   against Toss' today record only a floor holds (RATIO_MIN); the ceiling is yesterday's whole day
@@ -22,6 +23,14 @@ from datetime import datetime, timedelta, timezone
 
 KST = timezone(timedelta(hours=9))
 
+# #711 OFF: KIS' [0403] covers a narrower market than Toss, so its figures never sit in Toss' row. The codes,
+# the unit and the answer's shape are right (KIS' own example asks KSP / 0001; million won; one running-total
+# row), but the screen has no exchange choice: KRX regular-market stocks only. Toss' record is wider - with
+# NXT, and on KOSPI the ETFs / ETNs too (all listed there). Live, 2026-11-20 11:10 KST, individual buy
+# KIS / Toss: KOSDAQ 1.42조 / 2.11조 = 0.67, KOSPI 2.30조 / 5.32조 = 0.43 (docs/lead-lag.md #711).
+# A 0.67 passed RATIO_MIN and a narrower figure sat on top of Toss' wider history. On again only with a
+# KIS source of Toss' scope (and a check against it near 1.0, not a floor of 0.5).
+ENABLED = False
 CODES = {"KOSPI": ("KSP", "0001"), "KOSDAQ": ("KSQ", "1001")}
 MN = 1_000_000                 # KIS values are in million won
 # Toss' classes (desk.broker.base.INVESTORS / INSTITUTION_KINDS) -> KIS column prefixes

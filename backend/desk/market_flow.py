@@ -28,6 +28,7 @@ the pre-open off-hours and NXT pre-market trades). It is cached as in the sessio
 during the pre-market and the session (desk.kis_spot_flow, ``source: "kis"`` on the record): Toss' history
 stays behind it, Toss' own today record is the fallback (KIS failing, empty or disagreeing), and with Toss
 failing the KIS record alone still shows (a short-lived answer carrying Toss' error).
+#711: off for now (``kis_spot_flow.ENABLED``) - KIS' screen counts a narrower market than Toss' record.
 """
 
 from __future__ import annotations
@@ -263,7 +264,8 @@ class MarketFlow:
         base = {"market": market, "interval": interval, "source": self.broker.name,
                 "fetched_at": now.astimezone(KST).isoformat(timespec="seconds")}
         today = now.astimezone(KST).date().isoformat()
-        use_kis = (interval == "1d" and self.kis is not None and self.broker.name != "mock"   # no real figures
+        use_kis = (kis_spot_flow.ENABLED and interval == "1d" and self.kis is not None    # #711 off: scope
+                   and self.broker.name != "mock"                                        # no real figures
                    and market in kis_spot_flow.CODES and kis_spot_flow.hours(now))          # over the sample
         flow, index, kis = await asyncio.gather(
             self.broker.investor_flow(market, interval, MAX_COUNT), self.broker.index_prices([market]),

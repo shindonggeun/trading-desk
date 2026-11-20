@@ -9,6 +9,7 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import timedelta
+from secrets import randbits
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,6 +22,13 @@ from desk.runner import make_fake_runner
 from desk.settings import Settings
 from desk.store import Store
 from tests.test_api import OWNER, PASSWORD, _client, _wait_done
+
+
+@pytest.fixture(autouse=True)
+def isolate_queue_lock(monkeypatch):
+    # xdist reuses each worker's database. A session from a previous test can outlive the table reset.
+    # Holders within this test still compete for the same PostgreSQL advisory lock.
+    monkeypatch.setattr(run_queue, "LOCK_KEY", randbits(63))
 
 
 @contextmanager
@@ -160,12 +168,15 @@ def test_a_run_ending_claims_the_next_at_once_and_a_stopped_queue_claims_nothing
     queue = run_queue.RunQueue(store, manager, run_queue.Holder(engine))
 
     async def scenario():
-        assert await queue.take() == 1
-        manager.slots = 2                             # the first run ended: room again
-        manager.on_free()                             # -> kick
-        while len(manager.started) < 2:
-            await asyncio.sleep(0.01)
-        await queue.close()
+        try:
+            assert await queue.take() == 1
+            manager.slots = 2                         # the first run ended: room again
+            manager.on_free()                         # -> kick
+            async with asyncio.timeout(10):
+                while len(manager.started) < 2:
+                    await asyncio.sleep(0.01)
+        finally:
+            await queue.close()
         manager.slots = 3
         assert await queue.take() == 0 and manager.on_free is None
 

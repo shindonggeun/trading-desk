@@ -2,9 +2,9 @@
  "version": "dr-20260821-5dcbb12b",
  "market": "kr",
  "call": "to_close",
- "code": "f880344e4664",
+ "code": "90df493b760d",
  "format": 1,
- "made_at": "2026-11-20T05:54:23+00:00",
+ "made_at": "2026-11-20T06:35:23+00:00",
  "holdout_from": "2026-08-23",
  "verdict": "no_edge",
  "edges": [
@@ -52,28 +52,28 @@
   ]
  },
  "holdout": {
-  "n": 340,
+  "n": 342,
   "from": "2026-08-24",
-  "to": "2026-11-18",
-  "direction_hit_rate": 0.529,
-  "called_long_share": 0.5,
+  "to": "2026-11-20",
+  "direction_hit_rate": 0.532,
+  "called_long_share": 0.497,
   "direction_ci95": [
-   0.476,
-   0.582
+   0.479,
+   0.585
   ],
-  "stage_hit_rate": 0.553,
-  "brier": 0.5958,
-  "log_loss": 1.071,
+  "stage_hit_rate": 0.558,
+  "brier": 0.5922,
+  "log_loss": 1.0656,
   "margins": [
    {
     "margin": 0.0,
     "coverage": 1.0,
-    "direction_hit_rate": 0.529
+    "direction_hit_rate": 0.532
    },
    {
     "margin": 0.05,
-    "coverage": 0.326,
-    "direction_hit_rate": 0.432
+    "coverage": 0.342,
+    "direction_hit_rate": 0.453
    },
    {
     "margin": 0.1,
@@ -93,20 +93,20 @@
   ],
   "baselines": {
    "always_long": {
-    "direction_hit_rate": 0.465
+    "direction_hit_rate": 0.462
    },
    "always_short": {
-    "direction_hit_rate": 0.535
+    "direction_hit_rate": 0.538
    },
    "climatology": {
-    "brier": 0.605,
-    "stage_hit_rate": 0.553
+    "brier": 0.6014,
+    "stage_hit_rate": 0.558
    },
    "follow_trend": {
-    "direction_hit_rate": 0.568
+    "direction_hit_rate": 0.573
    }
   },
-  "brier_skill": 0.0151,
+  "brier_skill": 0.0153,
   "per_stage": [
    {
     "stage": "strong_long",
@@ -125,16 +125,16 @@
    {
     "stage": "flat",
     "label": "약보합",
-    "called": 340,
-    "called_hit": 188,
-    "actual": 188
+    "called": 342,
+    "called_hit": 191,
+    "actual": 191
    },
    {
     "stage": "weak_short",
     "label": "약한 숏",
     "called": 0,
     "called_hit": 0,
-    "actual": 74
+    "actual": 73
    },
    {
     "stage": "strong_short",
@@ -148,23 +148,23 @@
    {
     "lo": 0,
     "hi": 10,
-    "n": 680,
+    "n": 684,
     "mean_prob": 2.0,
     "actual_rate": 0.9
    },
    {
     "lo": 10,
     "hi": 20,
-    "n": 245,
+    "n": 247,
     "mean_prob": 18.3,
-    "actual_rate": 20.8
+    "actual_rate": 20.6
    },
    {
     "lo": 20,
     "hi": 30,
-    "n": 435,
+    "n": 437,
     "mean_prob": 22.2,
-    "actual_rate": 21.8
+    "actual_rate": 21.5
    },
    {
     "lo": 40,
@@ -176,9 +176,9 @@
    {
     "lo": 50,
     "hi": 60,
-    "n": 302,
+    "n": 304,
     "mean_prob": 55.1,
-    "actual_rate": 58.6
+    "actual_rate": 59.2
    },
    {
     "lo": 60,
@@ -195,32 +195,32 @@
    "time": "10:00",
    "label": "3차 10:00",
    "holdout": {
-    "n": 56,
+    "n": 57,
     "from": "2026-08-24",
-    "to": "2026-11-18",
-    "direction_hit_rate": 0.589,
-    "called_long_share": 0.357,
+    "to": "2026-11-20",
+    "direction_hit_rate": 0.596,
+    "called_long_share": 0.351,
     "direction_ci95": [
-     0.46,
-     0.718
+     0.469,
+     0.724
     ],
-    "stage_hit_rate": 0.554,
-    "brier": 0.5934,
-    "log_loss": 1.0372,
+    "stage_hit_rate": 0.561,
+    "brier": 0.5885,
+    "log_loss": 1.03,
     "margins": [
      {
       "margin": 0.0,
       "coverage": 1.0,
-      "direction_hit_rate": 0.589
+      "direction_hit_rate": 0.596
      },
      {
       "margin": 0.05,
-      "coverage": 0.321,
-      "direction_hit_rate": 0.556
+      "coverage": 0.333,
+      "direction_hit_rate": 0.579
      },
      {
       "margin": 0.1,
-      "coverage": 0.054,
+      "coverage": 0.053,
       "direction_hit_rate": 0.333
      },
      {
@@ -236,20 +236,20 @@
     ],
     "baselines": {
      "always_long": {
-      "direction_hit_rate": 0.446
+      "direction_hit_rate": 0.439
      },
      "always_short": {
-      "direction_hit_rate": 0.554
+      "direction_hit_rate": 0.561
      },
      "climatology": {
-      "brier": 0.6022,
-      "stage_hit_rate": 0.554
+      "brier": 0.5973,
+      "stage_hit_rate": 0.561
      },
      "follow_trend": {
-      "direction_hit_rate": 0.589
+      "direction_hit_rate": 0.596
      }
     },
-    "brier_skill": 0.0145,
+    "brier_skill": 0.0146,
     "per_stage": [
      {
       "stage": "strong_long",
@@ -268,9 +268,9 @@
      {
       "stage": "flat",
       "label": "약보합",
-      "called": 56,
-      "called_hit": 31,
-      "actual": 31
+      "called": 57,
+      "called_hit": 32,
+      "actual": 32
      },
      {
       "stage": "weak_short",
@@ -291,23 +291,23 @@
      {
       "lo": 0,
       "hi": 10,
-      "n": 112,
+      "n": 114,
       "mean_prob": 2.0,
       "actual_rate": 0.0
      },
      {
       "lo": 10,
       "hi": 20,
-      "n": 48,
+      "n": 49,
       "mean_prob": 18.9,
-      "actual_rate": 20.8
+      "actual_rate": 20.4
      },
      {
       "lo": 20,
       "hi": 30,
-      "n": 64,
+      "n": 65,
       "mean_prob": 22.4,
-      "actual_rate": 23.4
+      "actual_rate": 23.1
      },
      {
       "lo": 40,
@@ -319,9 +319,9 @@
      {
       "lo": 50,
       "hi": 60,
-      "n": 50,
+      "n": 51,
       "mean_prob": 55.0,
-      "actual_rate": 58.0
+      "actual_rate": 58.8
      }
     ]
    },
@@ -331,32 +331,32 @@
    "time": "11:00",
    "label": "4차 11:00",
    "holdout": {
-    "n": 56,
+    "n": 57,
     "from": "2026-08-24",
-    "to": "2026-11-18",
-    "direction_hit_rate": 0.554,
-    "called_long_share": 0.375,
+    "to": "2026-11-20",
+    "direction_hit_rate": 0.561,
+    "called_long_share": 0.368,
     "direction_ci95": [
-     0.423,
-     0.684
+     0.433,
+     0.69
     ],
-    "stage_hit_rate": 0.518,
-    "brier": 0.6206,
-    "log_loss": 1.1129,
+    "stage_hit_rate": 0.526,
+    "brier": 0.6152,
+    "log_loss": 1.1042,
     "margins": [
      {
       "margin": 0.0,
       "coverage": 1.0,
-      "direction_hit_rate": 0.554
+      "direction_hit_rate": 0.561
      },
      {
       "margin": 0.05,
-      "coverage": 0.304,
-      "direction_hit_rate": 0.471
+      "coverage": 0.316,
+      "direction_hit_rate": 0.5
      },
      {
       "margin": 0.1,
-      "coverage": 0.054,
+      "coverage": 0.053,
       "direction_hit_rate": 0.0
      },
      {
@@ -372,20 +372,20 @@
     ],
     "baselines": {
      "always_long": {
-      "direction_hit_rate": 0.464
+      "direction_hit_rate": 0.456
      },
      "always_short": {
-      "direction_hit_rate": 0.536
+      "direction_hit_rate": 0.544
      },
      "climatology": {
-      "brier": 0.6245,
-      "stage_hit_rate": 0.518
+      "brier": 0.6192,
+      "stage_hit_rate": 0.526
      },
      "follow_trend": {
-      "direction_hit_rate": 0.589
+      "direction_hit_rate": 0.596
      }
     },
-    "brier_skill": 0.0062,
+    "brier_skill": 0.0065,
     "per_stage": [
      {
       "stage": "strong_long",
@@ -404,9 +404,9 @@
      {
       "stage": "flat",
       "label": "약보합",
-      "called": 56,
-      "called_hit": 29,
-      "actual": 29
+      "called": 57,
+      "called_hit": 30,
+      "actual": 30
      },
      {
       "stage": "weak_short",
@@ -427,23 +427,23 @@
      {
       "lo": 0,
       "hi": 10,
-      "n": 112,
+      "n": 114,
       "mean_prob": 2.1,
       "actual_rate": 0.9
      },
      {
       "lo": 10,
       "hi": 20,
-      "n": 36,
+      "n": 37,
       "mean_prob": 18.7,
-      "actual_rate": 27.8
+      "actual_rate": 27.0
      },
      {
       "lo": 20,
       "hi": 30,
-      "n": 76,
+      "n": 77,
       "mean_prob": 22.2,
-      "actual_rate": 21.1
+      "actual_rate": 20.8
      },
      {
       "lo": 40,
@@ -455,9 +455,9 @@
      {
       "lo": 50,
       "hi": 60,
-      "n": 49,
+      "n": 50,
       "mean_prob": 54.6,
-      "actual_rate": 55.1
+      "actual_rate": 56.0
      }
     ]
    },
@@ -469,16 +469,16 @@
    "holdout": {
     "n": 57,
     "from": "2026-08-24",
-    "to": "2026-11-18",
+    "to": "2026-11-20",
     "direction_hit_rate": 0.509,
     "called_long_share": 0.474,
     "direction_ci95": [
      0.379,
      0.639
     ],
-    "stage_hit_rate": 0.544,
-    "brier": 0.6026,
-    "log_loss": 1.0788,
+    "stage_hit_rate": 0.561,
+    "brier": 0.5908,
+    "log_loss": 1.0625,
     "margins": [
      {
       "margin": 0.0,
@@ -487,8 +487,8 @@
      },
      {
       "margin": 0.05,
-      "coverage": 0.281,
-      "direction_hit_rate": 0.438
+      "coverage": 0.298,
+      "direction_hit_rate": 0.471
      },
      {
       "margin": 0.1,
@@ -514,14 +514,14 @@
       "direction_hit_rate": 0.561
      },
      "climatology": {
-      "brier": 0.6166,
-      "stage_hit_rate": 0.544
+      "brier": 0.6049,
+      "stage_hit_rate": 0.561
      },
      "follow_trend": {
-      "direction_hit_rate": 0.614
+      "direction_hit_rate": 0.632
      }
     },
-    "brier_skill": 0.0227,
+    "brier_skill": 0.0233,
     "per_stage": [
      {
       "stage": "strong_long",
@@ -541,15 +541,15 @@
       "stage": "flat",
       "label": "약보합",
       "called": 57,
-      "called_hit": 31,
-      "actual": 31
+      "called_hit": 32,
+      "actual": 32
      },
      {
       "stage": "weak_short",
       "label": "약한 숏",
       "called": 0,
       "called_hit": 0,
-      "actual": 16
+      "actual": 15
      },
      {
       "stage": "strong_short",
@@ -579,7 +579,7 @@
       "hi": 30,
       "n": 77,
       "mean_prob": 22.1,
-      "actual_rate": 20.8
+      "actual_rate": 19.5
      },
      {
       "lo": 40,
@@ -592,8 +592,8 @@
       "lo": 50,
       "hi": 60,
       "n": 51,
-      "mean_prob": 54.9,
-      "actual_rate": 56.9
+      "mean_prob": 54.8,
+      "actual_rate": 58.8
      },
      {
       "lo": 60,
@@ -612,7 +612,7 @@
    "holdout": {
     "n": 57,
     "from": "2026-08-24",
-    "to": "2026-11-18",
+    "to": "2026-11-20",
     "direction_hit_rate": 0.544,
     "called_long_share": 0.526,
     "direction_ci95": [
@@ -620,8 +620,8 @@
      0.673
     ],
     "stage_hit_rate": 0.632,
-    "brier": 0.5498,
-    "log_loss": 1.0028,
+    "brier": 0.549,
+    "log_loss": 1.0013,
     "margins": [
      {
       "margin": 0.0,
@@ -630,8 +630,8 @@
      },
      {
       "margin": 0.05,
-      "coverage": 0.298,
-      "direction_hit_rate": 0.294
+      "coverage": 0.316,
+      "direction_hit_rate": 0.333
      },
      {
       "margin": 0.1,
@@ -664,7 +664,7 @@
       "direction_hit_rate": 0.544
      }
     },
-    "brier_skill": 0.0116,
+    "brier_skill": 0.0131,
     "per_stage": [
      {
       "stage": "strong_long",
@@ -748,7 +748,7 @@
    "holdout": {
     "n": 57,
     "from": "2026-08-24",
-    "to": "2026-11-18",
+    "to": "2026-11-20",
     "direction_hit_rate": 0.526,
     "called_long_share": 0.614,
     "direction_ci95": [
@@ -756,8 +756,8 @@
      0.656
     ],
     "stage_hit_rate": 0.561,
-    "brier": 0.5922,
-    "log_loss": 1.0958,
+    "brier": 0.5926,
+    "log_loss": 1.0964,
     "margins": [
      {
       "margin": 0.0,
@@ -766,8 +766,8 @@
      },
      {
       "margin": 0.05,
-      "coverage": 0.386,
-      "direction_hit_rate": 0.455
+      "coverage": 0.404,
+      "direction_hit_rate": 0.478
      },
      {
       "margin": 0.1,
@@ -800,7 +800,7 @@
       "direction_hit_rate": 0.596
      }
     },
-    "brier_skill": 0.0215,
+    "brier_skill": 0.0207,
     "per_stage": [
      {
       "stage": "strong_long",
@@ -857,7 +857,7 @@
       "lo": 20,
       "hi": 30,
       "n": 73,
-      "mean_prob": 22.1,
+      "mean_prob": 22.2,
       "actual_rate": 24.7
      },
      {
@@ -871,7 +871,7 @@
       "lo": 50,
       "hi": 60,
       "n": 50,
-      "mean_prob": 55.5,
+      "mean_prob": 55.4,
       "actual_rate": 60.0
      },
      {
@@ -891,7 +891,7 @@
    "holdout": {
     "n": 57,
     "from": "2026-08-24",
-    "to": "2026-11-18",
+    "to": "2026-11-20",
     "direction_hit_rate": 0.456,
     "called_long_share": 0.649,
     "direction_ci95": [
@@ -899,8 +899,8 @@
      0.585
     ],
     "stage_hit_rate": 0.509,
-    "brier": 0.6167,
-    "log_loss": 1.0989,
+    "brier": 0.617,
+    "log_loss": 1.0993,
     "margins": [
      {
       "margin": 0.0,
@@ -909,8 +909,8 @@
      },
      {
       "margin": 0.05,
-      "coverage": 0.368,
-      "direction_hit_rate": 0.381
+      "coverage": 0.386,
+      "direction_hit_rate": 0.364
      },
      {
       "margin": 0.1,
@@ -943,7 +943,7 @@
       "direction_hit_rate": 0.474
      }
     },
-    "brier_skill": 0.014,
+    "brier_skill": 0.0136,
     "per_stage": [
      {
       "stage": "strong_long",

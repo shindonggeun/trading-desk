@@ -86,6 +86,7 @@ from . import (
     review,
     risk_regime,
     roles,
+    run_events,
     sector_movers,
     sector_news,
     session_progress,
@@ -1130,6 +1131,19 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         kis = jobs.spawn("kis_stream", kis_feed.run()) if here("kis_stream") and kis_feed is not None else None
         if kis:
             log.info("kis stream on")
+        # #688 an event another process (the analyst) writes wakes this process's streams: PostgreSQL only
+        if here("run_events") and run_events.shared(engine):
+            def listening(up: bool, error: str | None) -> None:
+                job = jobs.get("run_events")
+                job.note = {"listening": up}
+                if up:
+                    job.ok(jobs.clock())
+                else:
+                    jobs.mark_error("run_events", error or "not listening")
+
+            # judged like a loop (starting -> fresh | error), not "running" whatever the connection does
+            jobs.get("run_events").looped = True
+            started.append(jobs.spawn("run_events", run_events.follow(hub, engine, listening)))
         yield
         notify.shutdown()                # #580 the channels' queued sends go with the process
         if kis:

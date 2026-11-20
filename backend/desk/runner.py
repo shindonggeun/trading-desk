@@ -288,7 +288,11 @@ def _background_note(read: Callable[[], str | None] | None, name: str) -> str | 
 
 class Hub:
     """Wakes SSE readers when a run gets a new event. Take ``listen()`` before reading
-    the store, so an event written in between still wakes the reader."""
+    the store, so an event written in between still wakes the reader. Loop thread only.
+
+    #688: on PostgreSQL an event written by another process (the analyst) wakes it too -
+    ``desk.run_events.follow`` calls ``notify`` for each ``pg_notify`` the store sends. This
+    process's own events then wake a reader twice (here and via the channel): one extra read."""
 
     def __init__(self) -> None:
         self._events: dict[str, asyncio.Event] = {}
@@ -299,6 +303,12 @@ class Hub:
     def notify(self, run_id: str) -> None:
         event = self._events.pop(run_id, None)
         if event is not None:
+            event.set()
+
+    def wake_all(self) -> None:
+        """Every open stream re-reads: notifications may have been missed (run_events reconnected)."""
+        waiting, self._events = self._events, {}
+        for event in waiting.values():
             event.set()
 
 

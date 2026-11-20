@@ -16,6 +16,7 @@ from sqlalchemy.engine import Engine, RowMapping
 
 from .db import aware, events, now, runs
 from .plan import with_sides
+from .run_events import CHANNEL, shared
 
 TERMINAL = ("done", "failed")
 
@@ -28,6 +29,12 @@ def iso(value: datetime | None) -> str | None:
 class Store:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
+        self._shared = shared(engine)    # #688 PostgreSQL: tell the other processes' streams (desk.run_events)
+
+    def _announce(self, conn, run_id: str) -> None:
+        """Inside the writing transaction: PostgreSQL delivers it at commit, after the row is visible."""
+        if self._shared:
+            conn.execute(select(func.pg_notify(CHANNEL, run_id)))
 
     # --- runs -----------------------------------------------------------------------
 
@@ -103,6 +110,7 @@ class Store:
         with self.engine.begin() as conn:
             conn.execute(delete(events).where(events.c.run_id.in_(finished)))
             if conn.execute(delete(runs).where(runs.c.id.in_(finished))).rowcount:
+                self._announce(conn, run_id)    # an open stream sees the run is gone and closes
                 return "deleted"
             exists = conn.execute(select(runs.c.id).where(runs.c.id == run_id)).first()
         return "active" if exists else "missing"
@@ -182,6 +190,7 @@ class Store:
                 "data": event.get("data"),
             }
             conn.execute(events.insert().values(**stored))
+            self._announce(conn, run_id)
         return {**stored, "ts": iso(stored["ts"])}
 
     def events_after(self, run_id: str, after: int = 0) -> list[dict]:

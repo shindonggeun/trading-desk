@@ -105,6 +105,7 @@ from . import (
 )
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
 from .broker import kis_stream, make_broker
+from .broker_issuer_lock import BrokerIssuerLock
 from .consensus import fake_summariser, llm_summariser
 from .db import make_engine, migrate, now
 from .estimate import CANDLE_INTERVALS, BinanceEstimator, naver_overtime, trading_soon
@@ -392,7 +393,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     engine = make_engine(settings.database_url)
     store = Store(engine)
     # #688 broker tokens shared by the desk's processes: issued only where DESK_ROLE is all | collector
-    tokens = TokenStore(engine, role=settings.role)
+    active_issuer: BrokerIssuerLock | None = None
+
+    def can_issue_broker_token() -> bool:
+        issuer = active_issuer
+        return issuer is not None and issuer.check()
+
+    tokens = TokenStore(engine, role=settings.role, can_issue=can_issue_broker_token)
     futures_history = FuturesHistory(engine)    # #254
     futures_oi = FuturesOi(engine)              # #603 KRX open interest · basis · put/call per day
     auth = Auth(engine, timedelta(hours=settings.session_max_hours), timedelta(hours=settings.session_idle_hours))
@@ -737,6 +744,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         token_owners = [o for o in (broker, token_rest) if callable(getattr(o, "keep_token", None))]
 
         async def keep_tokens() -> float:
+            if not await asyncio.to_thread(can_issue_broker_token):
+                raise RuntimeError("broker issuer lock lost")
             # #688 the minting process renews the shared broker tokens ahead of expiry and answers the
             # other processes' requests (desk.token_store); the KIS approval key only when one was asked for
             keeps = [(type(o).__name__, o.keep_token) for o in token_owners]
@@ -1225,8 +1234,27 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         await shared_cache.aclose()      # #689 after every task that reads or writes it has stopped
         engine.dispose()
 
+    @asynccontextmanager
+    async def issuer_lifespan(app: FastAPI):
+        nonlocal active_issuer
+        if not tokens.minter:
+            async with lifespan(app):
+                yield
+            return
+
+        issuer = BrokerIssuerLock(engine)
+        try:
+            if not await asyncio.to_thread(issuer.acquire):
+                raise RuntimeError("broker issuer lock unavailable")
+            active_issuer = issuer
+            async with lifespan(app):
+                yield
+        finally:
+            active_issuer = None
+            await asyncio.to_thread(issuer.release)
+
     docs = settings.enable_docs
-    app = FastAPI(title="Trading Desk", lifespan=lifespan, docs_url="/docs" if docs else None,
+    app = FastAPI(title="Trading Desk", lifespan=issuer_lifespan, docs_url="/docs" if docs else None,
                   redoc_url=None, openapi_url="/openapi.json" if docs else None)
     if settings.cors_origins:
         app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,

@@ -35,14 +35,16 @@ import GapOddsCard from "./GapOddsCard";
 import ChannelLineCard, { type LinePick } from "./ChannelLineCard";
 import { channelTitle, fakeLines, isLineTf, TF_KO, TREND_STATE_KO, CHANNEL_STATE_KO, trendTitle } from "../channelLines";
 import { oddsLabel } from "../gapOdds";
-import type { GapReport, LinesReport, LineTf, OpenGap } from "../types";
+import type { ChartRead, ChartReadRef, GapReport, LinesReport, LineTf, OpenGap } from "../types";
 import type { BottomZone, ChartPattern, FibLevel, Fibonacci, OutlookPeriodId, Plan, Positioning, Projection, RunOutlook, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
 import PatternCard, { patternKey } from "./PatternCard";
 import { clipPath, ConeShade, directionLabel, OUTLOOK_PERIODS, outlookCone } from "./chartOutlook";
 import { css, useColorScheme } from "../chartColors";
-import { usePoll } from "../poll";
+import { every, usePoll } from "../poll";
 import { delayText, LIVE_NOTE, liveLabel, liveMs, useInView } from "../liveBar";
+import ChartReadPanel from "./ChartReadPanel";
+import { beginnerLines, loadReadPrefs, marksOf, MARKS, type ReadPrefs, refIds, refKinds, saveReadPrefs } from "../chartRead";
 
 export type Interval = Exclude<CandleInterval, "1m">;
 const INTERVALS: { iv: Interval; label: string; count: number }[] = [
@@ -102,6 +104,20 @@ function applyPreset(show: Show, p: Exclude<Preset, "custom">): Show {
   return out;
 }
 const NEAR_LEVELS = 3;
+/**
+ * #672 초보 모드 — 가격 칸에는 설명에 나온 선만: 채널 · 짧은 추세선(설명에 나온 것만, beginnerLines) · 이동평균 20.
+ * 갭 · 삼각수렴은 설명에 나올 때만. 분석 타점선 · 내 체결 · 분석일은 그대로(그 화면의 주인공).
+ * RSI · 스토캐스틱 · 볼린저밴드는 고른 대로 둔다 — 봉과 같은 응답에 실려 바꾸면 차트를 새로 만들어야 해서,
+ * 켜고 끌 때마다 보던 자리가 풀리고 지운 차트에 예약된 그리기가 돈다.
+ */
+function beginnerShow(s: Show, kinds: Set<ChartReadRef["kind"]>): Show {
+  return { ...s, pb: false, sr: false, all: false, vp: false, trend: false, pattern: kinds.has("pattern"), proj: false, fib: false,
+    opt: false, osc: false, bz: false, entry: false, gaps: kinds.has("gap"), ma: true,
+    chan: kinds.has("channel"), ltrend: kinds.has("trendline") };
+}
+const BEGINNER_MA: MaOn = { 5: false, 20: true, 60: false, 120: false };
+/** 강조할 때 나머지 선을 흐리게 — 8자리 색(#rrggbbaa)은 알파를 갈아 끼운다 */
+const faded = (c: string) => withAlpha(/^#[0-9a-f]{8}$/i.test(c) ? c.slice(0, 7) : c, 0.18);
 /** RSI 패널 높이 — 낮은 화면(가로 모드 · 크게 보기)에서 가격 패널을 누르지 않게 차트 높이에 비례 */
 const rsiHeight = (h: number) => Math.round(Math.min(110, Math.max(56, h * 0.22)));
 
@@ -429,7 +445,7 @@ export interface ExtraLine {
  * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
  * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
  */
-function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, banner, onIntervalChange, highlight = null, outlook = null, planLabels, onLineClick, trendPick, onTrendPick }: {
+function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, banner, onIntervalChange, highlight = null, outlook = null, planLabels, onLineClick, trendPick, onTrendPick, readable = false, readOpen = false }: {
   ticker: string;
   tradeDate: string;
   plan: Plan | null;
@@ -465,6 +481,10 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   trendPick?: string | null;
   /** when: 그 선 값의 기준("지금" · "분석 당시") — 카드가 같은 기준으로 말하게 */
   onTrendPick?: (line: Trendline | null, when?: string) => void;
+  /** #632 · #672 '지금 이 차트 읽기' 칸(차트만 분석 /api/chart-read · 번호 표식 · 초보 모드)을 둔다 — 큰 차트 · 차트 탭 */
+  readable?: boolean;
+  /** 그 칸을 켜고 연다(#/chart/…?read=1 — 분석 결과의 "차트만 다시 보기") */
+  readOpen?: boolean;
 }) {
   const [outlookPrefs, setOutlookPrefs] = useState(loadOutlookPrefs);
   const pickOutlook = (next: Partial<OutlookPrefs>) => {
@@ -474,7 +494,42 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   };
   const [prefs] = useState(loadPrefs);
   const [interval, setBarInterval] = useState<Interval>(initialInterval ?? prefs.interval);
-  const [show, setShow] = useState<Show>(prefs.show);
+  const [showSaved, setShow] = useState<Show>(prefs.show);
+  // #632 · #672 지금 이 차트 읽기 — 칸 켜기 · 초보 모드(기본 켬)는 이 브라우저에 기억, 초보 모드면 설명에 나온 선만 남긴다
+  const [readPrefs, setReadPrefs] = useState<ReadPrefs>(() => {
+    const p = loadReadPrefs();
+    return readOpen ? { ...p, on: true } : p;
+  });
+  const pickRead = (next: Partial<ReadPrefs>) => setReadPrefs((cur) => {
+    const out = { ...cur, ...next };
+    saveReadPrefs(out);
+    return out;
+  });
+  const readOn = readable && readPrefs.on;
+  // 넓은 화면은 펼쳐 두고, 좁은 화면은 차트 위에 접어 둔다(번호 표식은 차트에 그대로)
+  const [readExpanded, setReadExpanded] = useState(() => readOpen || typeof window === "undefined" || !window.matchMedia
+    || window.matchMedia("(min-width: 1100px)").matches);
+  const [chartRead, setChartRead] = useState<ChartRead | null>(null);
+  const [readFailed, setReadFailed] = useState(false);
+  useEffect(() => {
+    setChartRead(null);
+    setReadFailed(false);
+  }, [ticker]);
+  // 서버가 가장 짧은 봉이 끝날 때까지 한 답을 캐시한다 — 1분마다 물어도 새로 계산하는 건 봉이 끝날 때뿐
+  usePoll(readOn ? `chart-read:${ticker}` : null, () => api.chartRead(ticker), 60_000, {
+    // 서버 캐시가 같은 답을 주면 그대로 — 초보 모드의 선을 1분마다 지우고 다시 그리지 않게
+    onData: (r) => { setChartRead((cur) => (cur && cur.ticker === r.ticker && cur.generated_at === r.generated_at ? cur : r)); setReadFailed(false); },
+    onError: () => setReadFailed(true),
+  });
+  const readFrame = useMemo(() => chartRead?.timeframes.find((f) => f.timeframe === interval && !f.error) ?? null, [chartRead, interval]);
+  const readMarks = useMemo(() => (readOn ? marksOf(readFrame) : []), [readOn, readFrame]);
+  const beginner = readOn && readPrefs.beginner && readMarks.length > 0;
+  const readKinds = useMemo(() => refKinds(readMarks), [readMarks]);
+  const show: Show = useMemo(() => (beginner ? beginnerShow(showSaved, readKinds) : showSaved), [beginner, showSaved, readKinds]);
+  const [readPick, setReadPick] = useState<number | null>(null);
+  // 번호가 다시 매겨지면(새 읽기 · 주기 · 종목) 고른 번호를 푼다 — 강조가 말없이 다른 선으로 옮겨 가지 않게
+  useEffect(() => setReadPick(null), [ticker, interval, readOn, readMarks]);
+  const readId = useId();
   const [preset, setPreset] = useState<Preset>(prefs.preset);
   const [custom, setCustom] = useState<Show>(prefs.custom);   // "직접" 으로 돌아오면 이 고름으로
   const [candles, setCandles] = useState<Candles | null>(null);
@@ -525,9 +580,11 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   }, [drawn]);
   const box = useRef<HTMLDivElement>(null);
   // #550 이동평균 선마다 켜고 끄기(브라우저에 기억) · 보조 칸 이름표 위치 · 펼친 설명
-  const [maOn, setMaOn] = useState<MaOn>(loadMaOn);
+  const [maOnSaved, setMaOn] = useState<MaOn>(loadMaOn);
+  const maOn: MaOn = beginner ? BEGINNER_MA : maOnSaved;
   const flipMa = (n: MaPeriod) => {
-    const next = { ...maOn, [n]: !maOn[n] };
+    const next = { ...maOnSaved, [n]: !maOn[n] };
+    if (beginner) pickRead({ beginner: false });
     setMaOn(next);
     saveMaOn(next);
   };
@@ -606,10 +663,12 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   const when = mode === "plan" ? "분석 당시" : "지금";
   const [trendDrawn, setTrendDrawn] = useState<{ line: Trendline; series: ISeriesApi<"Line">; base: string }[]>([]);
 
-  useEffect(() => savePrefs(interval, show, preset, custom), [interval, show, preset, custom]);
+  useEffect(() => savePrefs(interval, showSaved, preset, custom), [interval, showSaved, preset, custom]);
   useEffect(() => onIntervalChange?.(interval), [interval, onIntervalChange]);
   const toggle = (k: keyof Show) => {
-    const next = { ...show, [k]: !show[k] };
+    // 초보 모드에서 손으로 고르면 그 모드를 끄고 저장해 둔 고름에서 — 보이던 칸만 뒤집는다
+    const next = { ...showSaved, [k]: !show[k] };
+    if (beginner) pickRead({ beginner: false });
     setShow(next);
     if (OVERLAYS.includes(k)) {   // 손으로 고르면 그 고름이 "직접"
       setPreset("custom");
@@ -617,6 +676,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     }
   };
   const pickPreset = (p: Preset) => {
+    if (beginner) pickRead({ beginner: false });
     setPreset(p);
     setShow((s) => (p === "custom" ? { ...custom, rsi: s.rsi, stoch: s.stoch } : applyPreset(s, p)));
   };
@@ -861,11 +921,14 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     onData: (r) => setLinesRep(r),
     onError: (e) => { if (import.meta.env.DEV && e instanceof ApiError && e.status === 404) setLinesRep("fake"); },
   });
-  const lines: LinesReport | null = useMemo(() => {
+  const linesAll: LinesReport | null = useMemo(() => {
     if (linesRep !== "fake") return linesRep;
     if (!drawn || !isLineTf(drawn.interval)) return null;
     return fakeLines(drawn.rows.map((r) => r.bar), drawn.interval, ticker);
   }, [linesRep, drawn, ticker]);
+  const lines: LinesReport | null = useMemo(
+    () => (beginner && linesAll && linesAll.timeframe === interval ? beginnerLines(linesAll, readMarks) : linesAll),
+    [beginner, linesAll, readMarks, interval]);
 
   // RSI 를 켜고 끄면 다시 받는다(서버가 30초 캐시) — RSI 는 봉과 같은 응답에 실린다.
   useEffect(() => {
@@ -1537,6 +1600,105 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     };
   }, [drawn, lines, show.chan, show.ltrend]);
 
+  // #672 번호 표식 — 설명 칸의 ①… 을 차트 오른쪽 끝(마지막 봉 위) 그 가격 높이에. 확대 · 이동 · 크기 변화 때 다시 놓는다
+  const [markPos, setMarkPos] = useState<{ n: number; x: number; y: number }[]>([]);
+  useEffect(() => {
+    if (!drawn || readMarks.length === 0) {
+      setMarkPos([]);
+      return;
+    }
+    const { chart, series } = drawn;
+    let raf = 0;
+    const place = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        if (!drawn.alive.current) return;
+        const w = chart.timeScale().width();
+        const h = chart.panes()[0]?.getHeight() ?? 0;
+        const out: { n: number; x: number; y: number }[] = [];
+        for (const m of readMarks) {
+          const y = series.priceToCoordinate(m.level.price);
+          if (y == null || y < 8 || y > h - 8) continue;   // 축 범위 밖이면 설명 칸에만
+          const near = out.filter((o) => Math.abs(o.y - y) < 18).length;   // 가까운 번호끼리 겹치지 않게 왼쪽으로
+          out.push({ n: m.n, x: w - 16 - near * 22, y });
+        }
+        setMarkPos(out);
+      });
+    };
+    place();
+    const ts = chart.timeScale();
+    ts.subscribeVisibleLogicalRangeChange(place);
+    ts.subscribeSizeChange(place);
+    // 높이만 바뀌어도(설명 칸을 펼침 · 접음, 보조 칸) 가격 높이가 달라진다
+    const ro = typeof ResizeObserver === "undefined" || !box.current ? null : new ResizeObserver(place);
+    if (ro && box.current) ro.observe(box.current);
+    // 가격축만 바뀔 때(실시간 봉이 축을 넓힘 · 축을 위아래로 끎)는 알림이 없다 — 1초마다 첫 번호 높이만 견준다
+    let lastY = series.priceToCoordinate(readMarks[0].level.price);
+    const stopCheck = every(() => {
+      if (!drawn.alive.current) return;
+      const y = series.priceToCoordinate(readMarks[0].level.price);
+      if (y !== lastY) {
+        lastY = y;
+        place();
+      }
+    }, 1000);
+    return () => {
+      cancelAnimationFrame(raf);
+      stopCheck();
+      ro?.disconnect();
+      if (!drawn.alive.current) return;
+      ts.unsubscribeVisibleLogicalRangeChange(place);
+      ts.unsubscribeSizeChange(place);
+    };
+  }, [drawn, readMarks]);
+
+  // #672 번호를 누르면 그 가격에 굵은 강조선 + 그 채널 · 추세선은 굵게, 나머지 채널 · 추세선은 흐리게
+  useEffect(() => {
+    const m = readPick == null ? null : readMarks.find((x) => x.n === readPick);
+    if (!drawn || !m) return;
+    const { series } = drawn;
+    const ids = refIds(m.level);
+    const short = m.level.name.split(" · ")[0];
+    const line = series.createPriceLine({ price: m.level.price, title: `${MARKS[m.n]} ${short}`, color: css("--warn"), lineWidth: 2,
+      lineStyle: LineStyle.Solid, axisLabelVisible: true });
+    const restore: [ISeriesApi<"Line">, { color?: string; lineWidth?: 1 | 2 | 3 | 4 }][] = [];
+    for (const { pick, series: s } of lineDrawn) {
+      try {   // 선을 다시 그리는 사이(초보 모드 · 표시를 바꿈)엔 지운 선이 남아 있을 수 있다
+        const o = s.options();
+        if (ids.has(pick.id)) {
+          restore.push([s, { lineWidth: o.lineWidth }]);
+          s.applyOptions({ lineWidth: 3 });
+        } else {
+          restore.push([s, { color: o.color }]);
+          s.applyOptions({ color: faded(o.color) });
+        }
+      } catch {
+        /* 지운 선 */
+      }
+    }
+    return () => {
+      if (!drawn.alive.current) return;
+      series.removePriceLine(line);
+      for (const [s, o] of restore) {
+        try {
+          s.applyOptions(o);
+        } catch {
+          /* 그 사이 지운 선 */
+        }
+      }
+    };
+  }, [drawn, readPick, readMarks, lineDrawn]);
+  const pickMark = (n: number | null, from: "chart" | "panel") => {
+    setReadPick(n);
+    if (n == null) return;
+    if (from === "chart") {
+      setReadExpanded(true);
+      document.getElementById(`${readId}-${n}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    } else {
+      box.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  };
+
   // #612 채널 · 짧은 추세선 가까이(10px)를 누르면 그 선의 설명 카드, 선이 아닌 곳을 누르면 닫는다
   useEffect(() => {
     if (!drawn || lineDrawn.length === 0) return;
@@ -2011,6 +2173,12 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
             </button>
           ))}
         </div>
+        {readable && (
+          <button type="button" className={`chip chip-sub chart-read-toggle${readOn ? " chip-on" : ""}`} aria-pressed={readOn}
+            title="이 차트를 쉬운 말로 — 가까운 위 · 아래 선에 번호를 붙여 차트에도 같은 번호로" onClick={() => pickRead({ on: !readOn })}>
+            차트 읽기
+          </button>
+        )}
         <details ref={menu} className="chart-menu" data-tour="chart-menu">
           <summary>표시</summary>
           <div className="chart-menu-body" role="group" aria-label="차트 표시">
@@ -2063,6 +2231,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
           {drawn.intraday && <span className="muted small">분봉은 같은 개수의 봉 기준</span>}
         </div>
       )}
+      <div className={`chart-read-wrap${readOn ? " on" : ""}`}>
       <div className={`chart-and-fills${tableFills.length > 0 ? " has-fills" : ""}`}>
       {failed ? (
         <p className="muted small">시세를 불러오지 못했습니다.</p>
@@ -2078,6 +2247,17 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
         >
           {!candles && <p className="muted small">불러오는 중…</p>}
           <div ref={ohlc} className="chart-ohlc small" aria-hidden />
+          {markPos.map(({ n, x, y }) => {
+            const m = readMarks.find((r) => r.n === n);
+            if (!m) return null;
+            return (
+              <button key={n} type="button" className={`read-mark read-${m.side}${readPick === n ? " on" : readPick != null ? " dim" : ""}`}
+                style={{ left: x, top: y }} aria-pressed={readPick === n} title={`${m.level.name} ${price(m.level.price)}`}
+                aria-label={`${MARKS[n]} ${m.level.name} ${price(m.level.price)}`} onClick={() => pickMark(readPick === n ? null : n, "chart")}>
+                {MARKS[n]}
+              </button>
+            );
+          })}
           {drawn && (Object.keys(paneTops) as PaneId[]).map((id) => (
             <PaneTag key={id} id={id} top={paneTops[id] as number} rows={drawn.rows} open={paneHelp === id}
               bottomPane={id === "stoch" || (id === "rsi" && paneTops.stoch == null)}
@@ -2138,6 +2318,13 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
         </div>
       )}
       {tableFills.length > 0 && <FillsTable fills={tableFills} picked={pickedFill} onPick={pickFill} />}
+      </div>
+      {readOn && (
+        <ChartReadPanel read={chartRead} failed={readFailed} frame={readFrame} interval={interval}
+          onInterval={(tf) => setBarInterval(tf as Interval)} marks={readMarks} picked={readPick} onPick={(n) => pickMark(n, "panel")}
+          beginner={readPrefs.beginner} applied={beginner} onBeginner={(b) => pickRead({ beginner: b })} idPrefix={readId}
+          open={readExpanded} onToggle={setReadExpanded} />
+      )}
       </div>
       {plan && hasLevels && show.levels && (
         <p id={legendId} className="muted small price-chart-legend">

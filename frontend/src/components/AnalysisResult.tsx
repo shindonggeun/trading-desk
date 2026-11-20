@@ -102,6 +102,8 @@ function Chart({ ticker, tradeDate, plan, title, outlook = null, runId }: { tick
           <PriceChart ticker={ticker} tradeDate={tradeDate} plan={plan} title={title} extraLines={extra} lists={false}
             initialInterval={plan ? HORIZON_INTERVAL[plan.horizon ?? "swing"] ?? "1d" : undefined} highlight={picked} outlook={outlook}
             planLabels={labels} onLineClick={basis.length ? onLineClick : undefined}
+            // #632 분석 없이 지금 차트만 쉬운 말로 — 큰 차트에서 '지금 이 차트 읽기' 칸을 연다
+            banner={<p className="small chart-read-link"><a href={`#/chart/${encodeURIComponent(ticker)}?read=1`}>차트만 다시 보기 · 지금 이 차트 읽기</a></p>}
             {...(explain ? { trendPick: trend ? trendKey(trend.line) : null, onTrendPick } : {})} />
         </Suspense>
       </SectionBoundary>

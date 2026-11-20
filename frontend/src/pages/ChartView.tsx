@@ -83,6 +83,8 @@ export default function ChartView({ ticker, query }: { ticker: string; query: UR
           onClose={close}
           notice={failed ? "분석 기록을 찾지 못해 타점선 없이 보여 줍니다." : undefined}
           banner={banner}
+          readable
+          readOpen={query.get("read") === "1"}
         />
       </Suspense>
     </main>

@@ -225,7 +225,7 @@ export default function Charts({ query }: { query: URLSearchParams }) {
       {ticker ? (
         <Suspense fallback={<p className="muted">차트를 여는 중…</p>}>
           <PriceChart key={ticker} ticker={ticker} tradeDate={today()} plan={null} title={name ?? ticker}
-            initialInterval={iv} onIntervalChange={onInterval} extraLines={weeklyLines} />
+            initialInterval={iv} onIntervalChange={onInterval} extraLines={weeklyLines} readable />
         </Suspense>
       ) : (
         <section className="card charts-empty">

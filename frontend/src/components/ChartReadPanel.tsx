@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { price } from "../format";
 import { GLOSSARY } from "../glossary";
 import { distText, headline, MARKS, READ_NOTE, type ReadMark, refKinds, watchOf, whyOf } from "../chartRead";
@@ -37,8 +38,9 @@ const farText = (l: ChartReadLevel) => `${price(l.price)} ${l.name}(${distText(l
  * 한 줄 요약 → 위에서 막힐 수 있는 곳 → 아래에서 받쳐 줄 수 있는 곳 → 조심할 때 / 볼 때 → 먼 레벨(접힘) → 예측 · 추천 아님.
  * 번호(①…)를 누르면 차트에서 그 선을 강조하고 나머지 선은 흐리게. 시간봉 탭은 차트 주기와 같이 움직인다.
  */
-export default function ChartReadPanel({ read, failed, frame, interval, onInterval, marks, picked, onPick, beginner, applied, onBeginner, idPrefix, open, onToggle }: {
+export default function ChartReadPanel({ read, failed, frame, interval, onInterval, marks, picked, onPick, beginner, applied, onBeginner, idPrefix, open, onToggle, accumulation }: {
   read: ChartRead | null;
+  accumulation?: ReactNode;
   failed: boolean;
   frame: ChartReadFrame | null;
   interval: string;
@@ -95,6 +97,7 @@ export default function ChartReadPanel({ read, failed, frame, interval, onInterv
           <p className="muted small">이 주기는 설명이 없어요 — 5분 · 15분 · 1시간 · 4시간 · 일봉 중에서 골라 주세요.</p>
         )}
         {read && LINE_TFS.includes(interval as LineTf) && !frame && <p className="muted small">이 시간봉은 지금 읽지 못했어요.</p>}
+        {accumulation}
         {frame && (
           <>
             <p className="chart-read-head">{headline(frame)}</p>

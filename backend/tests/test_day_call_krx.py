@@ -174,3 +174,24 @@ def test_a_hit_that_flips_keeps_yahoos_answer_whatever_the_gap(desk):
     again = _rows(desk.engine)[(1, "prev_close")]["outcome"]
     assert again["answer_source"] == "krx" and again["raw_hit_direction"] != o["raw_hit_direction"]
     assert again["yahoo_answer"]["close"] == close
+
+
+def test_an_intraday_round_is_scored_again_on_krx_from_its_own_anchor(desk):
+    """#619's to_close rows are rechecked from their anchor, not as a previous-close call."""
+    from datetime import UTC, datetime
+
+    y = _yahoo(DAY)
+    anchor = (y.open + y.close) / 2
+    probs = {"strong_long": 5.0, "weak_long": 25.0, "flat": 40.0, "weak_short": 25.0, "strong_short": 5.0}
+    with desk.engine.begin() as conn:
+        conn.execute(insert(t).values(
+            market="kr", trade_date=DAY, round=6, call="to_close", model="to_close", model_version="dr-x",
+            source="live", called_at=datetime.now(UTC), cutoff_at=datetime.now(UTC), stage="flat", verdict="hold",
+            probs=probs, reasons=[], edges_pct={"flat": 0.1, "strong": 0.4}, features={"anchor": anchor}))
+    assert desk.score(_kst(DAY, 16, 5)) == 1
+    assert _rows(desk.engine)[(6, "to_close")]["outcome"]["open"] == pytest.approx(anchor)
+    _store_krx(desk.engine, DAY, _row(DAY, y.open, y.high, y.low * 0.98, y.low * 0.99))
+    assert desk.recheck_krx(_kst(DAY + timedelta(days=1), 8, 40)) == 1
+    again = _rows(desk.engine)[(6, "to_close")]["outcome"]
+    assert again["answer_source"] == "krx" and again["open"] == pytest.approx(anchor)
+    assert again["close"] == pytest.approx(y.low * 0.99, abs=0.006)

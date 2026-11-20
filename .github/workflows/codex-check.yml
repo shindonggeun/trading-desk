@@ -1,0 +1,42 @@
+name: codex-check
+
+# Claude 원본(CLAUDE.md · .claude/)과 Codex 생성본(AGENTS.md · .agents/ · .codex/agents/)의 어긋남을 잡는다.
+on:
+  pull_request:
+    paths:
+      - 'CLAUDE.md'
+      - 'AGENTS.md'
+      - '.claude/agents/**'
+      - '.claude/skills/**'
+      - '.agents/**'
+      - '.codex/**'
+      - 'scripts/*.py'
+      - '.github/workflows/codex-check.yml'
+  push:
+    branches: [develop]
+    paths:
+      - 'CLAUDE.md'
+      - 'AGENTS.md'
+      - '.claude/agents/**'
+      - '.claude/skills/**'
+      - '.agents/**'
+      - '.codex/**'
+      - 'scripts/*.py'
+      - '.github/workflows/codex-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Claude 원본 ↔ Codex 생성본 동기화 확인
+        run: python -B -X utf8 scripts/sync-agent-skills.py
+      - name: 스크립트 테스트
+        run: python -B -X utf8 -m unittest discover -s scripts -p "test_*.py"

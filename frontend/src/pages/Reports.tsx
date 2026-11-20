@@ -12,7 +12,7 @@ const fmtDay = (iso: string) => {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso.slice(0, 10) : d.toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric", weekday: "short" });
 };
-const KIND_KO = { index: "지수", favorite: "즐겨찾기" } as const;
+const KIND_KO: Record<string, string> = { index: "지수", favorite: "즐겨찾기", topic: "순환 주제", weekly: "주간", next_week: "다음 주" };
 // 개발 서버에서 #495 API 가 없으면(404) 예시로 화면을 본다 — 운영은 오류를 그대로
 const fakeable = (e: unknown) => import.meta.env.DEV && e instanceof ApiError && e.status === 404;
 

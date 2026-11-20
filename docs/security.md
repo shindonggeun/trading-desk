@@ -58,6 +58,14 @@ SSE(`EventSource`)도 쿠키로 인증된다. URL 에 토큰을 싣지 않는다
 `X-Forwarded-For` 를 그 한 값으로 **덮어쓴다**. 백엔드 uvicorn 은 `--proxy-headers` 로 그것을 클라이언트 주소로 쓴다.
 백엔드 포트는 호스트에 열지 않는다 — 열면 헤더 위조로 시도 제한을 우회할 수 있다.
 
+로그(#712): 컨테이너 로그는 파일 · 로그 수집기로 퍼지므로 로그인 이메일과 원본 IP 를 쓰지 않는다.
+
+- 앱(`desk.*`): 사용자는 `#<내부 id>`, IP 는 마지막 옥텟을 가린다(`log_setup.mask_ip`, `203.0.113.x` · IPv6 는 /48 + `::x`).
+- 백엔드 uvicorn 접근 로그 · 웹 컨테이너 nginx 접근 로그(`frontend/nginx.conf.template` 의 `desk_masked` 형식)도 같은 식으로 가린다.
+- DB 오류의 traceback 에 바인딩 값(이메일 · IP · 토큰 해시)이 찍히지 않게 엔진에 `hide_parameters=True` 를 준다.
+- 시도 제한(`LoginThrottle`)은 원본 IP 를 그대로 키로 쓴다 — 가린 값을 쓰면 /24 전체가 함께 잠긴다.
+- 차단에는 영향이 없다 — fail2ban 은 인그레스 nginx 접근 로그만 본다(Infra `nginx-trading-login`). 인그레스 로그는 가리지 않는다.
+
 ## 5. 비밀
 
 **운영 env 의 정본은 홈랩 Vault 다(#691)** — `kv/trading-desk/backend/prod/env`(백엔드), `kv/trading-desk/frontend/prod/env`(웹: 네트워크 · 바인드 · 포트).

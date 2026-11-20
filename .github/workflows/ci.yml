@@ -27,7 +27,8 @@ jobs:
       images: ${{ steps.f.outputs.images }}
       scripts: ${{ steps.f.outputs.scripts }}
     steps:
-      - uses: actions/checkout@v4
+      - if: github.event_name != 'pull_request'     # PR 은 API 로 파일 목록을 읽는다 — 체크아웃이 필요 없다
+        uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: f
         with:

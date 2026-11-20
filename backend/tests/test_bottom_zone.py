@@ -116,6 +116,7 @@ def test_api_answers_the_zone_and_the_note_joins_the_weekly_one(db_url):
     engine.dispose()
     with client:
         assert client.get("/api/bottom-zone", params={"ticker": "NVDA"}).status_code == 401
+        assert client.get("/api/batch/candles", params={"tickers": "NVDA"}).status_code == 401   # #705 closed like the rest
         client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
         body = client.get("/api/bottom-zone", params={"ticker": "nvda"}).json()
         assert body["ticker"] == "NVDA" and body["supported"] and body["stage"] == "bottom"
@@ -123,6 +124,20 @@ def test_api_answers_the_zone_and_the_note_joins_the_weekly_one(db_url):
         assert client.get("/api/bottom-zone", params={"ticker": "SOXL"}).json()["leveraged_note"]
         assert client.get("/api/bottom-zone", params={"ticker": "NEW"}).json()["supported"] is False
         assert client.get("/api/bottom-zone", params={"ticker": "A B"}).status_code == 422
+        # #705 many tickers in one call: the same answers keyed as asked, a bad one does not fail the rest
+        got = client.get("/api/batch/bottom-zone", params={"tickers": "nvda,SOXL,NEW,A B,nvda"}).json()
+        assert got["kind"] == "bottom-zone" and list(got["items"]) == ["nvda", "SOXL", "NEW", "A B"]
+        assert got["items"]["nvda"]["stage"] == "bottom" and got["items"]["SOXL"]["leveraged_note"]
+        assert got["items"]["NEW"]["supported"] is False and got["items"]["A B"]["error"] == 422
+        assert client.get("/api/batch/nope", params={"tickers": "NVDA"}).status_code == 404
+        assert client.get("/api/batch/bottom-zone", params={"tickers": ",".join(f"T{i}" for i in range(31))}).status_code == 422
+        assert client.get("/api/batch/bottom-zone", params={"tickers": " , "}).status_code == 422
+        # every kind reaches its own handler and its checks (no network: each answer is the handler's 422)
+        for kind, extra in (("candles", {"interval": "7m"}), ("estimate-candles", {"interval": "7m"}), ("levels", {"horizon": "nope"}),
+                            ("playbooks", {"horizon": "nope"}), ("projection", {"horizon": "nope"}), ("gaps", {})):
+            got = client.get(f"/api/batch/{kind}", params={"tickers": "A B", **extra}).json()
+            assert got["kind"] == kind and got["items"]["A B"]["error"] == 422, (kind, got)
+        assert client.get("/api/batch/candles", params={"tickers": "NVDA", "count": 501}).status_code == 422
     assert "Long-term bottom zone (NVDA" in zones.note_for("NVDA")
     assert zones.note_for("NEW") is None
 

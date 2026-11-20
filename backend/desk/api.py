@@ -133,6 +133,9 @@ POSITIONING_QUOTE_SEC = 5.0
 CREDIT_INTERVAL_SEC = 6 * 3600   # KOFIA posts the day's numbers the next business day (#155)
 CREDIT_RETRY_SEC = 15 * 60
 BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
+BATCH_PARALLEL = 4      # #705 /api/batch/{kind}: tickers worked on at once, for the whole app (as a browser asked before)
+BATCH_PARALLEL_BARS = 8  # bars (candles · estimate-candles) are light and cached: the market tiles draw sooner
+BATCH_MAX_COUNT = 500    # bars a ticker in one batch (the chart's own path allows more, one ticker at a time)
 FUNDS_TICKERS_MAX = 30   # #483 tickers per /api/funds/changes call (the favorites' badges)
 # #240: the bottom-zone line of the weekly note waits this long (the scalp budget is 5 s; the line is
 # skipped, not the weekly map, when a cold cache is slower)
@@ -2403,6 +2406,50 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except Exception as exc:  # noqa: BLE001 - no bars, too few, or a source down
             log.warning("live playbooks for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no playbooks for {ticker}") from None
+
+    # one gate a kind for the whole app: two pages batching at once do not double the load on the sources
+    batch_gates = {k: asyncio.Semaphore(BATCH_PARALLEL_BARS if k in ("candles", "estimate-candles") else BATCH_PARALLEL)
+                   for k in ("bottom-zone", "candles", "levels", "playbooks", "projection", "gaps", "estimate-candles")}
+
+    @app.get("/api/batch/{kind}")
+    async def batch(kind: str, tickers: str, horizon: str | None = None, interval: str | None = None, count: int = 120):
+        """#705 one call for a page that asked the same per-ticker path for many tickers (the dashboard's
+        first visit: bottom zones, the market tiles' bars, levels and futures gaps, the today strip's
+        playbooks and projections, the favourites' sparks - about 60 of its ~100 requests). ``kind``:
+        bottom-zone · candles · levels · playbooks · projection · gaps · estimate-candles; up to MAX_BOARD tickers, BATCH_PARALLEL at a time, each
+        answered by the same handler as its own path (same caches, same validation). ``items`` is keyed by
+        the ticker as asked; a ticker that fails is ``{"error": status, "detail": ...}`` and the others
+        still come - like /api/estimates."""
+        handlers = {
+            "bottom-zone": lambda t: bottom_zone_of(t),
+            "candles": lambda t: candles(t, interval=interval or "1d", count=count),
+            "levels": lambda t: levels(t, horizon=horizon),
+            "playbooks": lambda t: live_playbooks(ticker=t, horizon=horizon),
+            "projection": lambda t: projection_view(t, horizon=horizon),
+            "gaps": lambda t: gaps_view(t),
+            "estimate-candles": lambda t: estimate_candles(t, interval=interval or "5m"),   # the single path's default
+        }
+        fn = handlers.get(kind)
+        if fn is None:
+            raise HTTPException(404, f"kind must be one of {', '.join(handlers)}")
+        names = list(dict.fromkeys(t for t in (x.strip() for x in tickers.split(",")) if t))
+        if not names or len(names) > MAX_BOARD:
+            raise HTTPException(422, f"between 1 and {MAX_BOARD} tickers")
+        if not 1 <= count <= BATCH_MAX_COUNT:
+            raise HTTPException(422, f"count must be 1 to {BATCH_MAX_COUNT}")
+        gate = batch_gates[kind]
+
+        async def one(ticker: str) -> tuple[str, dict]:
+            async with gate:
+                try:
+                    return ticker, await fn(ticker)
+                except HTTPException as exc:
+                    return ticker, {"error": exc.status_code, "detail": exc.detail}
+                except Exception as exc:  # noqa: BLE001 - one ticker failing leaves the others
+                    log.warning("batch %s for %r failed: %s", kind, ticker[:24], type(exc).__name__)
+                    return ticker, {"error": 503, "detail": type(exc).__name__}
+
+        return {"kind": kind, "items": dict(await asyncio.gather(*(one(t) for t in names)))}
 
     @app.get("/api/entry-now")
     async def entry_now_of(ticker: str, horizon: str | None = None):

@@ -1552,6 +1552,9 @@ a.wmb-row:hover { border-color: var(--accent); }
 .fq-spark .fq-base { stroke: var(--muted); stroke-dasharray: 3 3; stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.7; }
 .fq-spark-empty { display: grid; place-items: center; height: 56px; }
 .fq-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.fq-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.fq-cell { display: grid; gap: 2px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; min-width: 0; }
+.fq-cell.fq-current { border-color: var(--muted); }
 .fv-card { display: grid; gap: 10px; min-width: 0; }
 .fv-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .fv-title { margin: 0; font-size: 1.1rem; flex: 1 1 100%; }

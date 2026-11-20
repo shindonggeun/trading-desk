@@ -74,6 +74,7 @@ export default function FuturesFlowView() {
 
   const p = data?.price;
   const inv = data?.investors;
+  const delayLabel = inv && !failed ? data?.freshness?.label : null;
   const max = inv ? Math.max(...CLASSES.map((c) => Math.abs(inv[c.key]?.net_contracts ?? 0)), 1) : 1;
   const split = data?.split;
   const tone = (v: number | null | undefined) => (v == null || v === 0 ? "" : v > 0 ? "up" : "down");
@@ -124,16 +125,19 @@ export default function FuturesFlowView() {
           )}
 
           {inv ? (
-            <ul className="flow-bars" aria-label="코스피200 선물 투자자별 순매수">
-              {CLASSES.map((c) => <Bar key={c.key} label={c.label} side={inv[c.key]} max={max} />)}
-            </ul>
+            <>
+              {delayLabel && <p className="flow-period small"><span className="pill flow-pill">{delayLabel}</span></p>}
+              <ul className="flow-bars" aria-label="코스피200 선물 투자자별 순매수">
+                {CLASSES.map((c) => <Bar key={c.key} label={c.label} side={inv[c.key]} max={max} />)}
+              </ul>
+            </>
           ) : (
             <p className="muted small">{data.investors_error ?? "투자자별 동향이 없습니다."}</p>
           )}
-          <p className="muted small flow-note">
-            오늘 장중 누적 순매수(계약, 금액은 {data.investors_unit.value}). 선물은 현물보다 먼저 방향을 거는 곳이라
-            외국인 선물 순매수 · 미결제약정 증감을 함께 봅니다. 출처 한국투자증권 · {data.fetched_at.slice(11, 16)} 기준
-          </p>
+          {inv && <p className="muted small flow-note">
+            장중 누적 순매수(계약, 금액은 {data.investors_unit.value}). 선물은 현물보다 먼저 방향을 거는 곳이라
+            외국인 선물 순매수 · 미결제약정 증감을 함께 봅니다. 출처 한국투자증권 · {data.fetched_at.slice(11, 16)} 확인
+          </p>}
         </>
       )}
       {/* #255 일자별(간결) · 장중(자세히) 기록 — 지금 시세를 못 받아도 기록은 보인다 */}

@@ -873,11 +873,21 @@ export interface Portfolio {
 
 export type FlowMarket = "KOSPI" | "KOSDAQ";
 
+/** #645 API 응답 시점의 원천 갱신·확인 시각과 표시용 지연. */
+interface FlowFreshness {
+  fetched_at: string | null;
+  source_updated_at: string | null;
+  source_delay_sec: number | null;
+  live: boolean;
+  label: string | null;
+}
+
 /** #160 GET /api/market/futures — 코스피200 근월물(desk/futures_flow.py). 실패 · 키 없음도 200 + supported/error */
 export interface FuturesInvestor { net_contracts: number | null; net_value_mn: number | null }
 export interface FuturesFlow {
   source: string;
   fetched_at: string;
+  freshness?: FlowFreshness;
   front: { code: string; expiry: string; days_left: number };
   market_open: boolean;
   supported: boolean;
@@ -943,8 +953,7 @@ export interface MarketFlow {
   /** #673 pre: 08:00~09:00 장 시작 전 거래가 들어간 값 · regular: 정규장 · closed. */
   session?: "pre" | "regular" | "closed";
   /** #645 원천 시각(source_updated_at = max(토스 updatedAt, changed_at)) · 확인 시각(fetched_at). */
-  freshness?: { fetched_at: string | null; source_updated_at: string | null; source_delay_sec: number | null;
-                live: boolean; label: string | null };
+  freshness?: FlowFreshness;
 }
 
 export interface RegimeSnapshot {

@@ -312,11 +312,12 @@ def cautions(sr: dict | None, sides: list[str]) -> list[dict]:
     out = []
     b = (sr or {}).get("bubble")
     if b and b.get("caution"):
-        out.append({"kind": "bubble", "stage": b["stage"], "label": b["label"], "text": b["explain"],
+        out.append({"kind": "bubble", "timeframe": "1w", "stage": b["stage"], "label": b["label"], "text": b["explain"],
                     "reference_only": b.get("reference_only", True)})
     for p in (sr or {}).get("hs") or []:
         against = ("long" if p["kind"] == "head_shoulders" else "short") in sides
         if against and p["state"] in ("forming", "broken", "retest"):
-            out.append({"kind": p["kind"], "state": p["state"], "label": p["label"], "text": p["explain"],
+            out.append({"kind": p["kind"], "timeframe": p["timeframe"], "state": p["state"], "label": p["label"],
+                        "text": p["explain"],
                         "reference_only": p.get("reference_only", True)})
     return out

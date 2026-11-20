@@ -34,7 +34,8 @@ SHOULDER_SHARE = 0.5       # the shoulders differ by at most this share of the h
 SHOULDER_MIN = 0.25        # each shoulder at least this share of the height beyond the neckline
 NECK_SLOPE = 0.5           # the neckline moves at most this share of the height between the shoulders
 TIME_RATIO = 3.0           # head-to-shoulder spans within this ratio of each other
-FALSE_BARS = 5             # a close back over the neckline this soon after the break: a false break
+FALSE_BARS = 5             # desk.hs_bt: a close back over the neckline (by BREAK_ATR) this soon after the break
+RETEST_AWAY_ATR = 1.0      # a retest: the price first went this far past the neckline, then came back to it
 STALE_SPANS = 1.0          # a break older than the pattern's own span is no longer shown
 MIN_ODDS_N = 30
 KIND_KO = {"head_shoulders": "헤드앤숄더", "inverse_head_shoulders": "역헤드앤숄더"}
@@ -134,10 +135,16 @@ def state_of(bars: list[dict], p: dict, price: float | None = None) -> tuple[str
     after = range(broke + 1, last + 1)
     if any(closes[x] > _neck(p, x) + tol for x in after):
         return "failed", broke
-    touch = TOUCH_ATR * p["unit"]
-    near = "high" if sign > 0 else "low"      # the bar's side toward the neckline after the break
-    if any(sign * math.log(bars[x][near]) >= _neck(p, x) - touch for x in after):
-        return "retest", broke
+    # a retest: after moving RETEST_AWAY_ATR past the neckline the price came back to it (the bar's side toward
+    # it within TOUCH_ATR) - a bar or two hugging the line right after the break is not one
+    touch, away_d = TOUCH_ATR * p["unit"], RETEST_AWAY_ATR * p["unit"]
+    near, far = ("high", "low") if sign > 0 else ("low", "high")
+    away = False
+    for x in after:
+        if away and sign * math.log(bars[x][near]) >= _neck(p, x) - touch:
+            return "retest", broke
+        if sign * math.log(bars[x][far]) <= _neck(p, x) - away_d:
+            away = True
     return "broken", broke
 
 
@@ -230,7 +237,8 @@ def explain(p: dict) -> str:
         small = ", 표본 적음" if o["small_sample"] else ""
         rec = (f" 과거 넥라인 쪽으로 깬 비율 {o['expected_pct']:.0f}%(표본 {o['n']}{small})"
                + (f", 목표 도달 {o['reach_pct']:.0f}%" if o.get("reach_pct") is not None else "")
-               + (f", 거짓 이탈 {o['false_break_pct']:.0f}%" if o.get("false_break_pct") is not None else "") + ".")
+               + (f", 이탈 뒤 {FALSE_BARS}봉 안에 되돌아온 비율 {o['false_break_pct']:.0f}%"
+                  if o.get("false_break_pct") is not None else "") + ".")
     else:
         rec = " 과거 통계는 아직 없어요."
     ref = f" {NO_EDGE_KO}." if p.get("reference_label") == NO_EDGE_KO else ""

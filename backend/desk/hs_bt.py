@@ -83,8 +83,8 @@ def _follow(bars: list[dict], p: dict, t: int, offset: int, atr: float, timefram
     if direction == expected:
         if at + MOVE_BARS < len(bars):
             row["move_atr"] = round(-sign * (bars[at + MOVE_BARS]["close"] - bars[at]["close"]) / atr, 2)
-        back = bars[at + 1: at + 1 + hs.FALSE_BARS]
-        row["false_break"] = any(sign * math.log(b["close"]) > hs._neck(p, x - offset)
+        back = bars[at + 1: at + 1 + hs.FALSE_BARS]          # as the live ``failed``: back over by BREAK_ATR
+        row["false_break"] = any(sign * math.log(b["close"]) > hs._neck(p, x - offset) + tol
                                  for x, b in enumerate(back, start=at + 1))
         goal = hs._neck(p, at - offset) - p["height"]
         ahead = bars[at + 1: at + 1 + REACH_BARS]
@@ -97,12 +97,27 @@ def table(rows: list[dict], null_rows: list[dict]) -> dict:
     """desk.patterns_bt's table (all, train / held-out, the shuffled baseline, the verdict) without the
     converging patterns' own rule columns."""
     out = patterns_bt.table(rows, null_rows)
+    # the false-break share over the breaks the textbook way only (patterns_bt counts every break): a break
+    # beyond the head has no neckline to fall back over
+    for key, v in out.items():
+        group = sorted((r for r in rows if f"{r['timeframe']}:{r['kind']}" == key), key=lambda r: r["at"])
+        cut = int(len(group) * patterns_bt.TRAIN_SHARE)
+        nulls = [r for r in null_rows if f"{r['timeframe']}:{r['kind']}" == key]
+        v["false_break_pct"] = _false_share(group)
+        for part, rs in (("train", group[:cut]), ("valid", group[cut:]), ("null", nulls)):
+            if v.get(part):
+                v[part]["false_break_pct"] = _false_share(rs)
     for v in out.values():
         for key in ("rules", "by_grade", "by_prior", "frac_q25", "frac_q50", "frac_q75", "late_pct", "pullback_pct",
                     "chase_n", "chase_win_pct", "chase_r_avg", "retest_n", "retest_win_pct", "retest_r_avg",
                     "reach1_pct", "extreme_reach_pct"):
             v.pop(key, None)
     return out
+
+
+def _false_share(rows: list[dict]) -> float | None:
+    got = [r["false_break"] for r in rows if r["direction"] == r["expected"] and r["false_break"] is not None]
+    return round(100 * sum(got) / len(got), 1) if got else None
 
 
 def run(tickers=patterns_bt.PATTERN_TICKERS, frames=FRAMES, progress=print) -> dict:
@@ -129,7 +144,8 @@ def run(tickers=patterns_bt.PATTERN_TICKERS, frames=FRAMES, progress=print) -> d
             "frames": {tf: {"k": k, "bars": c, "step": s} for tf, (k, c, s) in frames.items()},
             "method": f"first sighting with the right shoulder done and the neckline whole; break = a close through "
                       f"the neckline by {hs.BREAK_ATR} ATR (expected) or beyond the head (the other way) within "
-                      f"{FORWARD_MAX} bars; false break = a close back over the neckline within {hs.FALSE_BARS} bars; "
+                      f"{FORWARD_MAX} bars; false break = a close back over the neckline by {hs.BREAK_ATR} ATR within "
+                      f"{hs.FALSE_BARS} bars, over the textbook-way breaks only; "
                       f"reach = the head's height from the neckline at the break within {REACH_BARS} bars; "
                       f"null = the same walk on shuffled returns ({patterns_bt.SHUFFLES}x)",
             "kinds": table(rows, null_rows)}

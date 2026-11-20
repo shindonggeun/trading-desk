@@ -11,9 +11,9 @@ The model still runs once, for the run's horizon. Beside it, with no model:
 - ``instrument_class``: leverage · inverse (desk.related.LEVERAGED) · bond · defensive (lists here) ·
   general. The risk of a plan is the instrument's before it is anyone's taste: this replaces choosing a
   profile (#696).
-- ``horizon_fit``: the regime now (trend up / down, range, turning - desk.regime_live when there is one,
-  else ``classify`` here with the same shape) and so which horizons fit: a range back and forth between
-  its edges suits scalp and intraday, a trend short swing and swing.
+- ``horizon_fit``: the regime now (desk.regime_live, #694: trend up / down, range, turning - the daily read
+  first) and so which horizons fit: a range back and forth between its edges suits scalp and intraday, a
+  trend short swing and swing.
 
 Only for a run of today (the bars now); an older run gets ``horizons`` None and says why. Everything is
 bounded by TIMEOUT_SEC per piece; a piece that fails is an ``error`` on its horizon, never the run's.
@@ -24,9 +24,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from itertools import pairwise
 
-from . import channels, chart_read, entry_now, horizons
+from . import channels, chart_read, entry_now, horizons, regime_live
 from .sr import support_resistance
 from .underlying import leverage_of
 
@@ -45,7 +44,7 @@ DEFENSIVE = frozenset({"XLU", "XLP", "XLV", "VPU", "VDC", "KO", "PEP", "PG", "JN
                        "KMB", "GIS", "DUK", "SO", "NEE", "AEP", "VZ", "T", "MRK", "PFE", "ABBV", "MCD",
                        "017670.KS", "030200.KS", "033780.KS", "015760.KS", "097950.KS"})
 CLASS_KO = {"leverage": ("레버리지", "공격"), "inverse": ("인버스", "공격 · 하락 베팅"), "bond": ("채권 · 국채", "안전자산 대피"),
-            "defensive": ("경기방어", "방어"), "general": ("일반", "보통")}
+            "defensive": ("경기방어주", "방어"), "general": ("일반", "보통")}
 REGIME_KO = {"trend_up": "상승 추세", "trend_down": "하락 추세", "range": "박스권", "turning": "추세 전환 중",
              "unknown": "판정 불가"}
 FIT = {   # regime -> horizons that suit it best, then the ones that are fine; the rest are a poor fit
@@ -76,79 +75,12 @@ def instrument_class(ticker: str) -> dict:
             "multiple": lev[1] if lev else None, "underlying": lev[0] if lev else None}
 
 
-# ---------------------------------------------------------------- the regime (desk.regime_live's shape)
-
-def _adx(bars: list[dict], n: int = 14) -> float | None:
-    if len(bars) < 2 * n + 1:
-        return None
-    tr, pdm, mdm = [], [], []
-    for p, b in pairwise(bars):
-        up, down = b["high"] - p["high"], p["low"] - b["low"]
-        pdm.append(up if up > down and up > 0 else 0.0)
-        mdm.append(down if down > up and down > 0 else 0.0)
-        tr.append(max(b["high"] - b["low"], abs(b["high"] - p["close"]), abs(b["low"] - p["close"])))
-    atr, pd_, md = sum(tr[:n]), sum(pdm[:n]), sum(mdm[:n])
-    dxs = []
-    for i in range(n, len(tr)):
-        atr, pd_, md = atr - atr / n + tr[i], pd_ - pd_ / n + pdm[i], md - md / n + mdm[i]
-        if atr <= 0:
-            continue
-        pdi, mdi = 100 * pd_ / atr, 100 * md / atr
-        dxs.append(100 * abs(pdi - mdi) / (pdi + mdi) if pdi + mdi else 0.0)
-    if len(dxs) < n:
-        return None
-    adx = sum(dxs[:n]) / n
-    for dx in dxs[n:]:
-        adx = (adx * (n - 1) + dx) / n
-    return adx
-
-
-def classify(bars: list[dict], tf: str) -> dict:
-    """The regime of ``bars`` (oldest first): trend_up · trend_down (ADX 25+), range (ADX under 20 with a
-    box touched at both edges), turning, unknown - the shape of desk.regime_live.classify (#694), which
-    replaces this one when it is there."""
-    bars = [b for b in bars if b["low"] > 0 and b["close"] > 0 and b["high"] >= b["low"]]
-    out = {"regime": "unknown", "adx": None, "box": None, "basis": [], "as_of": bars[-1]["at"] if bars else None}
-    adx = _adx(bars)
-    if adx is None:
-        out["basis"].append("봉이 부족해요")
-        return out
-    out["adx"] = round(adx, 1)
-    last = bars[-40:]
-    hi, lo = max(b["high"] for b in last), min(b["low"] for b in last)
-    tr = sum(max(b["high"] - b["low"], abs(b["high"] - p["close"]), abs(b["low"] - p["close"]))
-             for p, b in zip(bars[-15:], bars[-14:], strict=False)) / 14
-    near = 0.5 * tr
-    box = {"high": round(hi, 4), "low": round(lo, 4), "touches_high": sum(b["high"] >= hi - near for b in last),
-           "touches_low": sum(b["low"] <= lo + near for b in last), "width_pct": round((hi / lo - 1) * 100, 2)}
-    move = bars[-1]["close"] / bars[-21]["close"] - 1 if len(bars) > 21 else 0.0
-    if adx >= 25:
-        out["regime"] = "trend_up" if move > 0 else "trend_down"
-        out["basis"].append(f"ADX {adx:.0f}(25 이상) · 20봉 {move * 100:+.1f}%")
-    elif adx < 20 and box["touches_high"] >= 2 and box["touches_low"] >= 2:
-        out["regime"], out["box"] = "range", box
-        out["basis"].append(f"ADX {adx:.0f}(20 미만) · 최근 40봉 상단 {box['touches_high']}번 · 하단 "
-                            f"{box['touches_low']}번 닿음(폭 {box['width_pct']}%)")
-    else:
-        out["regime"] = "turning"
-        out["basis"].append(f"ADX {adx:.0f} — 추세도 박스도 뚜렷하지 않아요")
-    return out
-
-
-def _classify():
-    try:
-        from .regime_live import classify as theirs  # #694, when merged
-        return theirs
-    except ImportError:
-        return classify
-
-
-def horizon_fit(frames: dict[str, dict], cls: dict, atr_pct: float | None) -> dict:
-    """Which horizons the regime now suits (the daily read first, else the hourly) and one sentence."""
-    lead = frames.get("1d") or {}
-    if lead.get("regime") in (None, "unknown"):
-        lead = frames.get("60m") or lead
-    regime = lead.get("regime") or "unknown"
+def horizon_fit(view: dict, cls: dict, atr_pct: float | None) -> dict:
+    """Which horizons the regime now suits (desk.regime_live.view: its regime, the daily read first) and one
+    sentence."""
+    frames = view.get("frames") or {}
+    regime = view.get("regime") or "unknown"
+    lead = next((f for f in (frames.get("1d"), frames.get("60m")) if f and f.get("regime") == regime), {})
     best, ok = FIT.get(regime, ((), ()))
     fit = {h: "good" if h in best else "ok" if h in ok else "poor" if best else "unknown" for h in ORDER}
     names = " · ".join(horizons.HORIZONS[h].label for h in best)
@@ -160,17 +92,19 @@ def horizon_fit(frames: dict[str, dict], cls: dict, atr_pct: float | None) -> di
         text = f"지금은 {REGIME_KO[regime]}(ADX {lead.get('adx')}) — 추세를 타는 {names} 쪽이 맞아요."
     elif regime == "turning":
         text = f"추세가 바뀌는 중이에요 — 짧게 확인하며 가는 {names} 쪽이 맞아요."
-    else:
-        text = "장세를 판정할 봉이 부족해요."
+    else:   # regime_live's unknown: no clear trend nor box (or no bars) - said, no horizon picked
+        text = f"장세가 뚜렷하지 않아요({view.get('summary') or '판단 보류'}) — 어느 기간이 맞는지 말하지 않아요."
     notes = []
     if cls["id"] in ("leverage", "inverse"):
         notes.append("레버리지 · 인버스는 오래 들수록 변동성 끌림(복리 손실)이 쌓여 짧은 기간이 유리해요")
     elif cls["id"] in ("bond", "defensive"):
-        notes.append(f"{cls['label']}은 움직임이 느려 짧은 기간은 손익비가 작아요")
+        notes.append(f"{'채권 · 국채 ETF 는' if cls['id'] == 'bond' else '경기방어주는'} 움직임이 느려 짧은 기간은 "
+                     "손익비가 작아요")
     if atr_pct is not None and atr_pct >= HIGH_VOL_PCT:
         notes.append(f"일봉 ATR {atr_pct:.1f}% — 변동성이 커서 스윙은 손절 폭이 넓어요")
     return {"regime": regime, "regime_ko": REGIME_KO.get(regime, regime), "best": list(best), "fit": fit,
             "sentence": " ".join([text, *[n + "." for n in notes]]), "basis": lead.get("basis") or [],
+            "summary": view.get("summary"),
             "frames": {tf: {k: f.get(k) for k in ("regime", "adx", "box", "as_of")} for tf, f in frames.items()},
             "atr_pct": round(atr_pct, 2) if atr_pct is not None else None,
             "record": None}      # per-horizon past R (#693) when it is measured
@@ -249,28 +183,63 @@ def _model(plan: dict) -> dict:
                                      "price_target", "long_trigger", "short_trigger", "valid_until")}
 
 
-async def build(prices, ticker: str, plan: dict, main: str, sr_main: dict | None, *, same_day: bool) -> dict:
-    """``plan``'s horizons · instrument_class · horizon_fit (a dict to merge into the plan)."""
+def fake(ticker: str, plan: dict, main: str) -> dict:
+    """A scripted run's four horizons (DESK_FAKE_RUNS runs offline): the same shape, numbers set around the
+    plan's entry so the page can be built without quota or market data - marked ``fake``."""
     cls = instrument_class(ticker)
+    price = plan.get("entry_price") or 100.0
+    up = plan.get("bias") != "short"
+    sign = 1 if up else -1
+    out = {}
+    for i, hid in enumerate(ORDER):
+        h = horizons.HORIZONS[hid]
+        atr = price * 0.004 * (i + 1) ** 1.5
+        first = round(price - sign * 0.5 * atr, 2)
+        stop = round(first - sign * h.stop_atr * atr, 2)
+        targets = [{"role": r, "price": round(first + sign * m * atr, 2), "rr": round(m / h.stop_atr, 2)}
+                   for r, m in (("t1", h.target_atr), ("t2", 1.6 * h.target_atr))]
+        out[hid] = {
+            "horizon": hid, "label": h.label, "holding": h.holding, "flat_by_close": h.flat_by_close,
+            "source": "map", "model": None, "atr": round(atr, 4), "errors": None,
+            "map": {"stand_aside": None, "regime": "range", "price_now": price, "atr": round(atr, 4),
+                    "side": "long" if up else "short", "side_ko": "롱" if up else "숏", "setup": "pullback",
+                    "kind": "limit", "kind_ko": "지정가", "zone": sorted([first, round(first + sign * 0.3 * atr, 2)]),
+                    "first": first, "avg_entry": first, "stop": stop, "stop_pct": round((stop / first - 1) * 100, 2),
+                    "targets": targets, "from_now_pct": round((first / price - 1) * 100, 2), "expected_r": None,
+                    "ev_r": None, "p_t1": None, "n": 0, "thin": True, "why": ["대본(가짜 실행) 예시 값"]},
+            "levels": {"support": [{"price": round(price - k * atr, 2), "strength": 3.0 - k, "basis": "대본 지지"}
+                                   for k in (1, 2)],
+                       "resistance": [{"price": round(price + k * atr, 2), "strength": 3.0 - k, "basis": "대본 저항"}
+                                      for k in (1, 2)]},
+            "chart": {"timeframe": CHART_TF[hid], "summary": f"{channels.TF_KO[CHART_TF[hid]]} — 대본 차트 읽기 예시.",
+                      "trend": "sideways", "above": [], "below": [], "patterns": []},
+        }
+    out[main]["model"] = _model(plan)
+    out[main]["source"] = "model"
+    view = {"regime": "range", "summary": "1시간봉 박스 · 일봉 박스(대본)",
+            "frames": {"1d": {"regime": "range", "adx": 16.0, "as_of": None, "basis": ["대본 예시"],
+                              "box": {"high": round(price * 1.06, 2), "low": round(price * 0.95, 2), "touches_high": 3,
+                                      "touches_low": 2, "width_pct": 11.58}}}}
+    fit = horizon_fit(view, cls, 3.0)
+    fit["errors"] = None
+    return {"instrument_class": cls, "horizons": out, "horizon_fit": fit, "horizons_note": None, "horizons_fake": True}
+
+
+async def build(prices, ticker: str, plan: dict, main: str, sr_main: dict | None, *, same_day: bool,
+                scripted: bool = False) -> dict:
+    """``plan``'s horizons · instrument_class · horizon_fit (a dict to merge into the plan). ``scripted``: a
+    fake run with no prices gets ``fake``'s."""
+    cls = instrument_class(ticker)
+    if prices is None and scripted:
+        return fake(ticker, plan, main)
     if prices is None or not same_day:
         why = "지난 날짜의 분석이라 지금 봉으로 만든 기간별 계획은 붙이지 않았어요" if prices is not None else "시세 원천 없음"
         return {"instrument_class": cls, "horizons": None, "horizon_fit": None, "horizons_note": why}
 
-    async def regime():
-        errors: dict[str, str] = {}
-        frames = {}
-        fn = _classify()
-        for tf, n in (("1d", 200), ("60m", 390)):
-            got = await _bounded(prices.candles(ticker, tf, n), f"regime_{tf}", errors)
-            if got and got.get("bars"):
-                try:
-                    frames[tf] = await asyncio.to_thread(fn, got["bars"], tf)
-                except Exception as exc:  # noqa: BLE001 - one timeframe's read missing leaves the other
-                    errors[f"regime_{tf}"] = type(exc).__name__
-        return frames, errors
-
-    rows, (frames, regime_errors) = await asyncio.gather(
-        asyncio.gather(*(_one(prices, ticker, horizons.HORIZONS[h], sr_main, main) for h in ORDER)), regime())
+    regime_errors: dict[str, str] = {}
+    rows, view = await asyncio.gather(
+        asyncio.gather(*(_one(prices, ticker, horizons.HORIZONS[h], sr_main, main) for h in ORDER)),
+        _bounded(regime_live.view(prices, ticker), "regime", regime_errors))
     out = {r["horizon"]: r for r in rows}
     if main in out:
         out[main]["model"] = _model(plan)
@@ -278,6 +247,6 @@ async def build(prices, ticker: str, plan: dict, main: str, sr_main: dict | None
     swing_atr = (out.get("swing") or {}).get("atr")
     ref = ((out.get("swing") or {}).get("map") or {}).get("price_now")
     atr_pct = swing_atr / ref * 100 if swing_atr and ref and not math.isnan(swing_atr) else None
-    fit = horizon_fit(frames, cls, atr_pct)
+    fit = horizon_fit(view or {}, cls, atr_pct)
     fit["errors"] = regime_errors or None
     return {"instrument_class": cls, "horizons": out, "horizon_fit": fit, "horizons_note": None}

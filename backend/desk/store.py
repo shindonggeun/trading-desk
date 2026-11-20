@@ -149,6 +149,15 @@ class Store:
             exists = conn.execute(select(runs.c.id).where(runs.c.id == run_id)).first()
         return "active" if exists else "missing"
 
+    def queue_view(self) -> tuple[list[str], int]:
+        """#688 the queued runs in the order an analyst claims them (oldest first) and how many are running."""
+        with self.engine.connect() as conn:
+            queued = conn.execute(select(runs.c.id).where(runs.c.status == "queued")
+                                  .order_by(runs.c.created_at, runs.c.id)).scalars().all()
+            running = conn.execute(select(func.count()).select_from(runs)
+                                   .where(runs.c.status == "running")).scalar_one()
+        return list(queued), running
+
     def list_runs(self, limit: int = 50, offset: int = 0) -> list[dict]:
         with self.engine.connect() as conn:
             rows = conn.execute(

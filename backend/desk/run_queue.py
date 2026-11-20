@@ -27,6 +27,7 @@ import contextlib
 import logging
 from dataclasses import fields
 
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from . import run_events
@@ -43,6 +44,19 @@ RESTART_REASON = "분석 서비스가 다시 시작돼 분석이 중단됐습니
 UNREADABLE = "대기열의 분석 요청을 읽지 못해 시작하지 못했습니다."
 # what a queued run carries back; ``reused`` is set by the RunManager that runs it, never read from the row
 _REQUEST_FIELDS = {f.name for f in fields(RunRequest)} - {"reused"}
+
+
+def held(engine: Engine) -> bool | None:
+    """Whether some process holds the run queue's lock on this database right now (PostgreSQL), None on SQLite.
+    ``pg_try_advisory_lock(bigint)`` files the key as classid (high 32 bits, 0 here) · objid (low) · objsubid 1."""
+    if not run_events.shared(engine):
+        return None
+    with engine.connect() as conn:
+        return bool(conn.execute(text(
+            "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted AND classid = 0 "
+            "AND objid = CAST(:k AS oid) AND objsubid = 1 "
+            "AND database = (SELECT oid FROM pg_database WHERE datname = current_database()))"),
+            {"k": LOCK_KEY}).scalar())
 
 
 class Holder:

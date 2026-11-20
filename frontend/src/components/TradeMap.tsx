@@ -166,7 +166,7 @@ function Scenarios({ list, note }: { list: TradeScenario[]; note: string | null 
               {s.low_rr && " — 1차 손익비 낮음"}
               {s.basis && <span className="muted"> · 근거 {s.basis}{s.level != null ? ` ${price(s.level)}` : ""}</span>}
               {rec && rec.n > 0 && (
-                <span className="muted"> · 이 레짐 과거 {rec.n_indep ?? rec.n}번(겹치지 않는 거래) 승률 {Math.round(rec.win_rate * 100)}% · 평균 {rText(rec.avg_r)}</span>
+                <span className="muted"> · 이 레짐 과거 {rec.n}번{rec.n_indep != null ? `(겹치지 않는 거래 ${rec.n_indep}번)` : ""} 승률 {Math.round(rec.win_rate * 100)}% · 평균 {rText(rec.avg_r)}</span>
               )}
             </li>
           );

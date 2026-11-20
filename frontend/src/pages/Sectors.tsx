@@ -4,6 +4,7 @@ import { boardBadge } from "../korean";
 import { Spark } from "../components/FavoritesPanel";
 import FavoriteStar from "../components/FavoriteStar";
 import InstrumentSearch, { type Picked } from "../components/InstrumentSearch";
+import SectorMoversCard from "../components/SectorMoversCard";
 import SectorNews from "../components/SectorNews";
 import PositioningView, { CreditSummary, positioningBadges } from "../components/PositioningView";
 import { price, time } from "../format";
@@ -398,6 +399,8 @@ export default function Sectors() {
           )}
         </>
       )}
+      {/* #740 시장 전체 섹터(미국 반도체 · 나스닥100 · 국장 반도체)의 오늘 주범(#680) — 내 섹터와 따로, 종목 아래 */}
+      <SectorMoversCard />
       {/* #245 고른 섹터와 겹치는 섹터 · 인물 이슈(#244) */}
       {sector && <SectorNews key={sector.id} tickers={tickers} name={sector.name} />}
       {sheetRow && (

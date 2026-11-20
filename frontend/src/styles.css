@@ -3016,3 +3016,16 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   .hz-grid { grid-auto-flow: column; grid-template-columns: none; grid-auto-columns: minmax(220px, 78%); overflow-x: auto; scroll-snap-type: x mandatory; }
   .hz-cell { scroll-snap-align: start; }
 }
+
+/* #740 섹터 급등락 주범(#680) — 섹터 화면 카드 */
+.sector-movers h3 { margin: 0 0 8px; }
+.sm-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.sm-row { min-width: 0; }
+.sm-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.sm-label { font-weight: 600; }
+.sm-tag { font-size: .85em; font-weight: 600; padding: 0 6px; border-radius: var(--radius-s, 6px); background: var(--surface-2); }
+.sm-who { margin: 4px 0 0; padding-left: 1.4em; display: grid; gap: 2px; }
+.sm-who li, .sm-quiet { overflow-wrap: anywhere; }
+.sm-name { font-weight: 600; }
+.sm-quiet { margin: 2px 0 0; }
+.sm-note { margin: 10px 0 0; }

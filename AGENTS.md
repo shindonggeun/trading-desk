@@ -33,8 +33,9 @@ npm install
 npm run dev      # :5173, /api 는 127.0.0.1:8000 으로 프록시
 npm run build    # tsc --noEmit + vite build — 타입 검사는 이것뿐
 
-# 배포 (backend-server, docs/deploy.md) — 서버에서 컨테이너 2개를 빌드 · 기동
-scripts/deploy.sh                       # HEAD. 백엔드만: scripts/deploy.sh HEAD backend
+# 배포 (backend-server, docs/deploy.md) — develop 머지 뒤 Jenkins 가 CI 성공을 기다려 자동으로 올린다(env 는 Vault)
+scripts/deploy.sh                       # 대체 경로(Jenkins · Vault 불가 때). 백엔드만: scripts/deploy.sh HEAD backend
+bash scripts/tests/deploy-compose.test.sh   # 배포 스크립트 시험(가짜 docker). jenkins-scripts.test.sh 는 jq 필요
 docker compose -f docker-compose-local.yml up -d --wait   # PC 에서 PostgreSQL 경로를 시험할 때만
 ```
 

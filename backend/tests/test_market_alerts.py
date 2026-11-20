@@ -173,11 +173,12 @@ def test_the_timeline_shows_the_holdings_alerts_to_the_owner_only(db_url):
             {**_shift("10:42"), "t": "2026-11-13T10:42:00+09:00"}, hold, mover])
         _login(client, OWNER)
         mine = client.get("/api/alerts/today?date=2026-11-13").json()["items"]
-        assert [(a["kind"], a["rule"]) for a in mine] == [("flow_shift", "sell_grow"), ("holding_alert", "hold_stop")]
+        assert [(a["kind"], a["rule"]) for a in mine] == [("flow_shift", "sell_grow"), ("holding_alert", "hold_stop"),
+                                                          ("sector_mover", "sector_drop")]
         assert mine[1]["tone"] == "warning" and "005930" in mine[1]["text"]
         assert mine[1]["value"] is None and mine[1]["prev"] is None        # the % against the average stays out
-        # sector_mover (#680) is still left out until its screen (#740) shows it
+        # sector_mover (#680) is the market's: every account's timeline shows it (#740)
         client.post("/api/auth/logout")
         _login(client, OTHER)
         theirs = client.get("/api/alerts/today?date=2026-11-13").json()["items"]
-        assert [a["kind"] for a in theirs] == ["flow_shift"]
+        assert [a["kind"] for a in theirs] == ["flow_shift", "sector_mover"]

@@ -373,7 +373,7 @@ class FuturesFlow:
                    else _ttl_until_open(now, CACHE_CLOSED_SEC))
             self._cache = (self._clock(), ttl, value)
             if ok:   # a failure answers this caller only - the others keep the last good one
-                await shared_cache.aput(SHARED_NS, "view", {"value": value, "ttl": ttl}, ttl)
+                await shared_cache.aput(SHARED_NS, "view", {"value": value, "ttl": ttl}, max(ttl, shared_cache.LATEST_KEEP_SEC))
             return self._with_freshness(value, ttl)
 
     def _with_freshness(self, value: dict, ttl: float) -> dict:

@@ -40,6 +40,7 @@ import threading
 import time
 from collections.abc import Callable, Hashable
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
 from cryptography.fernet import Fernet
@@ -56,6 +57,8 @@ DOWN_SEC = 30.0             # how long to skip Redis after a failure
 MAX_VALUE_BYTES = 512_000   # larger values stay in memory only
 MAX_RAW_CHARS = MAX_VALUE_BYTES * 3 // 2 + 1024   # a sealed value (base64) of that size; longer = not ours
 MAX_TTL_SEC = 7 * 86400     # no cache here lives longer (the closed-market waits run over a long weekend)
+LATEST_KEEP_SEC = 90.0      # a latest value (flows) stays shared at least this long: the collector's snapshot
+                            # jobs read every minute, while the card's own cache (and its "ttl") is 30-60 s
 SKEW_SEC = 5.0              # clocks of the api · collector · analyst hosts
 
 _lock = threading.Lock()
@@ -184,9 +187,24 @@ def _count(name: str) -> None:
         _stats[name] += 1
 
 
+def _build_id() -> str:
+    """A fingerprint of this package's code. Part of every key, so a value written by another build is never
+    read: a deploy that changes a value's shape cannot serve the old shape (a page error) for a TTL. The api ·
+    collector · analyst run one image, so they share it; a deploy simply starts on fresh keys."""
+    digest = hashlib.sha256()
+    root = Path(__file__).resolve().parent
+    for path in sorted(root.rglob("*.py")):
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:12]
+
+
+BUILD = _build_id()
+
+
 def _plain(namespace: str, key: Hashable) -> str:
     parts = key if isinstance(key, tuple) else (key,)
-    return namespace + ":" + ":".join("" if p is None else str(p) for p in parts)
+    return BUILD + "|" + namespace + ":" + ":".join("" if p is None else str(p) for p in parts)
 
 
 def _key(namespace: str, key: Hashable) -> str:
@@ -306,7 +324,8 @@ async def aget(namespace: str, key: Hashable) -> tuple[Any, float, float] | None
         pipe = _async.pipeline(transaction=False)
         pipe.get(_key(namespace, key))
         pipe.pttl(_key(namespace, key))
-        raw, left = await pipe.execute()
+        # one bound for the whole call: Sentinel discovery tries each sentinel in turn (3 x the socket timeout)
+        raw, left = await asyncio.wait_for(pipe.execute(), TIMEOUT_SEC)
     except Exception as exc:  # noqa: BLE001
         _failed(exc)
         return None
@@ -323,7 +342,7 @@ async def aput(namespace: str, key: Hashable, value: Any, ttl: float) -> None:
     if text is None:
         return
     try:
-        await _async.set(_key(namespace, key), text, px=max(1, int(ttl * 1000)))
+        await asyncio.wait_for(_async.set(_key(namespace, key), text, px=max(1, int(ttl * 1000))), TIMEOUT_SEC)
     except Exception as exc:  # noqa: BLE001
         _failed(exc)
         return
@@ -350,7 +369,9 @@ class TieredCache:
 
     A memory miss asks Redis; a Redis hit is kept in memory for what is left of its TTL (and never longer
     than the memory cache's own TTL - ``local_max``), so most reads never leave the process. ``put`` writes
-    both. ``ttl <= 0`` (the "do not keep" rule for failures) writes neither and drops the memory entry.
+    both. ``ttl <= 0`` (the "do not keep" rule for failures) drops the memory entry and writes nothing - a
+    shared copy written earlier stays until its own TTL (no caller writes a failure over a good value).
+    ``entry``/``pop``/``values`` see memory only; an entry taken from Redis is stamped when it was taken.
     Async callers use ``aget``/``aput``; the sync calls skip Redis on the event loop thread."""
 
     def __init__(self, namespace: str, local: TTLCache, local_max: float | None = None,

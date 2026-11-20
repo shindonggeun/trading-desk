@@ -203,7 +203,7 @@ class MarketFlow:
                 if ok or not fresh or not cached or cached[2].get("error") or not cached[2].get("records"):
                     self._cache[key] = got
                 if ok:   # a failure answers this caller only - the other processes keep the last good one
-                    await shared_cache.aput(SHARED_NS, key, {"value": value, "ttl": ttl}, ttl)
+                    await shared_cache.aput(SHARED_NS, key, {"value": value, "ttl": ttl}, max(ttl, shared_cache.LATEST_KEEP_SEC))
                 cached = got
         value = cached[2]
         now = self._now()

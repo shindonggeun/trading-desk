@@ -2,7 +2,8 @@
 
 With the backend split (#688) and the shared cache (#689), the api process should read the collector's
 values rather than call the brokers itself - these counters are how that is checked in production
-(``GET /api/status`` on each process; they restart from zero with the process). Counts only: no path,
+(``GET /api/status`` on each process; they restart from zero with the process). Data requests only (a retry
+after 401 · 429 counts again), not token issuance. Counts only: no path,
 no account, no token.
 """
 

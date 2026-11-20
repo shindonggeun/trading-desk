@@ -1199,7 +1199,6 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             await queue.close()             # #688 first: claim nothing more, put back a claim under way, unlock
         if all_lock is not None:
             await asyncio.to_thread(all_lock.release)
-        await shared_cache.aclose()
         notify.shutdown()                # #580 the channels' queued sends go with the process
         if kis:
             kis.cancel()
@@ -1219,6 +1218,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         await estimator.aclose()
         await longshort.aclose()
         await futures.aclose()
+        await shared_cache.aclose()      # #689 after every task that reads or writes it has stopped
         engine.dispose()
 
     docs = settings.enable_docs

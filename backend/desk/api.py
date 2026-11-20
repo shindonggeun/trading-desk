@@ -69,6 +69,7 @@ from . import (
     nq_watch,
     oscillator,
     otp,
+    outbound,
     outcome,
     outlook,
     paper,
@@ -94,6 +95,7 @@ from . import (
     sector_news,
     session_progress,
     sessions,
+    shared_cache,
     tips,
     verdict,
     web_search,
@@ -675,6 +677,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        shared_cache.configure(settings)   # #689 Redis behind some caches; nothing configured = memory only
         # #688 only a process that runs the runs it is handed (all) fails what its predecessor left; the analyst
         # does it in desk.run_queue once it holds the queue, the api and the collector never. all holds the
         # queue's lock too (PostgreSQL), so an analyst started beside it by mistake claims none of its runs.
@@ -1196,6 +1199,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             await queue.close()             # #688 first: claim nothing more, put back a claim under way, unlock
         if all_lock is not None:
             await asyncio.to_thread(all_lock.release)
+        await shared_cache.aclose()
         notify.shutdown()                # #580 the channels' queued sends go with the process
         if kis:
             kis.cancel()
@@ -1264,7 +1268,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         """#623 the background jobs (state fresh · stale · error · starting · stopped · off, last success,
         last error as a type name, next pass) and the providers' rate-limit waits. Session required."""
         return {"now": datetime.now(UTC).isoformat(timespec="seconds"), "role": settings.role,
-                "jobs": jobs.status(), "cooldowns": cooldowns()}
+                "jobs": jobs.status(), "cooldowns": cooldowns(),
+                # #689 this process's shared-cache hits and its own calls to the brokers (Toss · KIS REST)
+                "shared_cache": shared_cache.stats(), "outbound": outbound.snapshot()}
 
     # #536 per-route request times (desk.req_timing), read in production without parsing logs
     timings = req_timing.Timings()

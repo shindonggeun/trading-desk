@@ -20,6 +20,7 @@ from itertools import pairwise
 from zoneinfo import ZoneInfo
 
 from . import horizons, market_calendar, patterns, recent, sr_major, sr_zones, trend, volume_profile
+from .shared_cache import TieredCache
 from .ttl_cache import TTLCache
 
 DAILY_BARS = 200
@@ -48,7 +49,8 @@ LONG_WEEKS = 520            # ten years of weekly bars for them (one extra reque
 FLIP_FACTOR = 1.5
 CACHE_MAX = 256
 # (ticker, trade date, horizon) → the close-based result, each kept its horizon's sr_ttl_sec
-_CACHE: TTLCache[tuple, dict] = TTLCache(CACHE_MAX, CACHE_TTL_SEC)
+# #689 memory first, then the shared tier: the api, the analyst's runs and the line jobs frame the same levels
+_CACHE = TieredCache("sr", TTLCache(CACHE_MAX, CACHE_TTL_SEC))
 
 
 @dataclass
@@ -469,7 +471,7 @@ async def support_resistance(prices, ticker: str, trade_date: str | None = None,
     intraday limits) the levels come from the swing frame and say so under ``fallback``."""
     h = horizons.get(horizon)
     key = (ticker, trade_date, h.id)
-    cached = _CACHE.get(key, now=clock()) if price is None else None
+    cached = await _CACHE.aget(key, now=clock()) if price is None else None
     if cached is not None:
         return cached
     try:
@@ -481,7 +483,7 @@ async def support_resistance(prices, ticker: str, trade_date: str | None = None,
         result["fallback"] = {"from": h.primary, "reason": f"{type(exc).__name__}: {exc}"}
     result["horizon"] = h.id
     if price is None:   # a result framed around a live price is not the cached, close-based one
-        _CACHE.put(key, result, h.sr_ttl_sec, now=clock())
+        await _CACHE.aput(key, result, h.sr_ttl_sec, now=clock())
     return result
 
 

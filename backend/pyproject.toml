@@ -26,10 +26,11 @@ dependencies = [
     "pywebpush>=2.0",          # web push with VAPID (desk.push, #361)
     "holidays>=0.60",          # KRX / NYSE closed days for the market calendar (desk.market_calendar)
     "numpy>=1.26",             # fitting the day-call model offline (desk.day_call_train, #572); already in via TradingAgents
+    "redis>=5.2",              # the optional shared cache (desk.shared_cache, #689): Sentinel, sync + asyncio clients
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-xdist>=3.6", "ruff>=0.6"]
+dev = ["pytest>=8.0", "pytest-xdist>=3.6", "ruff>=0.6", "fakeredis>=2.26"]   # fakeredis: desk.shared_cache tests without a server
 
 [tool.setuptools.packages.find]
 include = ["desk*"]

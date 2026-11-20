@@ -14,6 +14,8 @@ os.environ.setdefault("DESK_MORNING_BRIEF_AT", "off")    # #571: no automatic mo
 os.environ["DESK_KIS_APP_KEY"] = ""
 os.environ["DESK_KIS_APP_SECRET"] = ""
 os.environ["DESK_KRX_API_KEY"] = ""                       # #601 nor call KRX with a real key
+os.environ["DESK_REDIS_SENTINELS"] = ""                   # #689 nor share cache entries through a real Redis
+os.environ["DESK_REDIS_URL"] = ""
 from sqlalchemy import text
 
 from desk.db import make_engine, metadata

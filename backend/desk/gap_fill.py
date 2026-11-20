@@ -35,6 +35,7 @@ from typing import Any
 
 from . import market_calendar
 from . import underlying as under
+from .shared_cache import TieredCache
 from .sr import _local_day
 from .ttl_cache import TTLCache
 
@@ -302,7 +303,8 @@ def report(fetch: Fetch, ticker: str, events: Events | None = None, now: datetim
 
 
 CACHE_MAX = 128
-_CACHE: TTLCache[str, dict] = TTLCache(CACHE_MAX, CACHE_TTL_SEC)    # #628 bounded: the oldest go first
+# #628 bounded: the oldest go first. #689 then the shared tier (api pages and the analyst's notes read the same report)
+_CACHE = TieredCache("gap_fill", TTLCache(CACHE_MAX, CACHE_TTL_SEC))
 
 
 def read(fetch: Fetch, ticker: str, events: Events | None = None, clock: Callable[[], float] = time.monotonic,

@@ -24,6 +24,7 @@ from dataclasses import asdict, is_dataclass
 
 from . import underlying as under
 from .indicators import rsi, stochastic
+from .shared_cache import TieredCache
 from .ttl_cache import TTLCache
 
 INTERVALS = ("1d", "1w")
@@ -197,7 +198,8 @@ def _reason(ticker: str, interval: str, now: dict, by_kind: dict, effect: dict, 
 
 
 CACHE_MAX = 128
-_CACHE: TTLCache[tuple[str, str], dict] = TTLCache(CACHE_MAX, CACHE_TTL_SEC)
+# #689 memory first, then the shared tier (api page and the analyst's notes)
+_CACHE = TieredCache("oscillator", TTLCache(CACHE_MAX, CACHE_TTL_SEC))
 
 
 def read(fetch: Fetch, ticker: str, interval: str = "1d", clock: Callable[[], float] = time.monotonic) -> dict:

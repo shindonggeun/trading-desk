@@ -493,7 +493,7 @@ def _default_connect(url: str):
     return websockets.connect(url, ping_interval=None, open_timeout=10, close_timeout=5, max_size=2**20)
 
 
-def make(settings, tokens: TokenStore | None = None) -> KisStream | None:
+def make(settings, tokens: TokenStore | None) -> KisStream | None:
     """The stream when both KIS keys are set, else None (the polling path stays)."""
     if not settings.kis_app_key or not settings.kis_app_secret:
         return None

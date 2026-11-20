@@ -693,10 +693,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         async def keep_tokens() -> float:
             # #688 the minting process renews the shared broker tokens ahead of expiry and answers the
             # other processes' requests (desk.token_store); the KIS approval key only when one was asked for
-            for owner in token_owners:
-                await owner.keep_token(TOKEN_AHEAD_SEC)
+            keeps = [(type(o).__name__, o.keep_token) for o in token_owners]
             if kis_feed is not None:
-                await kis_feed.keep_approval(TOKEN_AHEAD_SEC)
+                keeps.append(("KisStream", kis_feed.keep_approval))
+            for who, keep in keeps:
+                try:                       # one provider down does not hold up the others' renewals
+                    await keep(TOKEN_AHEAD_SEC)
+                except Exception as exc:  # noqa: BLE001 - the type only: a message may carry a request
+                    log.warning("broker token renewal %s failed: %s", who, type(exc).__name__)
             return TOKEN_TICK_SEC
 
         async def keep_listing_fresh() -> float:

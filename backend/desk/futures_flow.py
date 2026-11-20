@@ -329,7 +329,7 @@ def off_reason(settings) -> str | None:
     return None
 
 
-def make(settings, tokens: TokenStore | None = None) -> KisRest | None:
+def make(settings, tokens: TokenStore | None) -> KisRest | None:
     """KIS REST when both keys are set and the URL is https (the keys never go out in the clear)."""
     if not settings.kis_app_key or not settings.kis_app_secret:
         return None

@@ -411,6 +411,7 @@ broker_tokens = Table(
     Column("refusals", Integer, nullable=False, default=0),         # issues refused in a row (the backoff step)
     Column("refresh_for", String(64)),                             # a reader's request: the refused token's hash
     Column("lease_until", Timestamp),                              # a minter is issuing until then
+    Column("lease_owner", String(16)),                             # that minter's nonce (writes check it)
 )
 
 def now() -> datetime:

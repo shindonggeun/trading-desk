@@ -3,8 +3,9 @@ from .mock import MockBroker
 from .toss import TossBroker
 
 
-def make_broker(settings, tokens=None) -> Broker:
-    """``tokens``: the desk's shared token store (desk.token_store, #688); None keeps the token in this object."""
+def make_broker(settings, tokens) -> Broker:
+    """``tokens``: the desk's shared token store (desk.token_store, #688) - required, so a new caller decides;
+    None keeps the token in this object and issues on its own (tests only: in production it revokes the desk's)."""
     if settings.broker == "toss":
         return TossBroker(
             client_id=settings.toss_client_id,

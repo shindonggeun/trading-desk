@@ -60,9 +60,9 @@ def test_only_plain_krx_and_us_symbols_stream():
 
 
 def test_off_without_both_keys():
-    assert kis_stream.make(Settings(kis_app_key="", kis_app_secret="x")) is None
-    assert kis_stream.make(Settings(kis_app_key="k", kis_app_secret="")) is None
-    assert isinstance(kis_stream.make(Settings(kis_app_key="k", kis_app_secret="s")), KisStream)
+    assert kis_stream.make(Settings(kis_app_key="", kis_app_secret="x"), None) is None
+    assert kis_stream.make(Settings(kis_app_key="k", kis_app_secret=""), None) is None
+    assert isinstance(kis_stream.make(Settings(kis_app_key="k", kis_app_secret="s"), None), KisStream)
 
 
 # --- the connection -------------------------------------------------------------------------
@@ -278,10 +278,10 @@ def test_rsym_is_told_by_its_shape_not_the_record_size():
 
 
 def test_make_refuses_plain_http_for_the_keys_and_quiets_websockets_debug():
-    assert kis_stream.make(Settings(kis_app_key="k", kis_app_secret="s", kis_rest_url="http://x:9443")) is None
-    assert kis_stream.make(Settings(kis_app_key="k", kis_app_secret="s", kis_ws_url="https://x")) is None
+    assert kis_stream.make(Settings(kis_app_key="k", kis_app_secret="s", kis_rest_url="http://x:9443"), None) is None
+    assert kis_stream.make(Settings(kis_app_key="k", kis_app_secret="s", kis_ws_url="https://x"), None) is None
     logging.getLogger("websockets").setLevel(logging.NOTSET)
-    assert kis_stream.make(Settings(kis_app_key="k", kis_app_secret="s")) is not None
+    assert kis_stream.make(Settings(kis_app_key="k", kis_app_secret="s"), None) is not None
     assert logging.getLogger("websockets").level == logging.INFO
     assert "s-secret" not in repr(Settings(kis_app_key="k-secret", kis_app_secret="s-secret"))
     assert "k-secret" not in repr(Settings(kis_app_key="k-secret", kis_app_secret="s-secret"))

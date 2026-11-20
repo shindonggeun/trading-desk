@@ -81,6 +81,7 @@ from . import (
     req_timing,
     review,
     risk_regime,
+    roles,
     sector_news,
     session_progress,
     sessions,
@@ -621,32 +622,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     # #623 the background jobs and what GET /api/status shows of them (desk.jobs). Parts are the sources
     # read inside one loop's pass, each with its own line
+    # #688 the list itself, with the process role that runs each job, is desk.roles.JOBS
     jobs = Jobs()
-    for name, label, source, parent in (
-        ("listing", "종목 목록", "토스", None),
-        ("futures_snapshot", "코스피200 선물 수급 스냅숏", "한투(KIS)", None),
-        ("nq_watch", "나스닥 선물 이상 징후", "야후", None),
-        ("nq_fast", "나스닥 선물 1분 판정", "QQQ 실시간 · 바이낸스 추정", None),
-        ("line_signals", "채널 · 추세선 신호", "야후 · 토스", None),
-        ("credit", "빚투 · 예탁금", "금융투자협회(KOFIA)", None),
-        ("news", "뉴스 흐름", "GDELT · 구글 뉴스", None),
-        ("macro_news", "거시 · 정책 뉴스", "GDELT · 구글 뉴스", "news"),
-        ("sector_news", "섹터 · 인물 이슈", "GDELT · 구글 뉴스", "news"),
-        ("calendar", "일정", "FOMC · BLS · 나스닥", None),
-        ("economic_calendar", "경제 일정(FOMC · BLS)", "연준 · BLS", "calendar"),
-        ("earnings", "실적 일정", "나스닥", "calendar"),
-        ("prewarm", "대시보드 미리 읽기", "야후 · 토스 · 한투", None),
-        ("briefs", "아침 시황", "ChatGPT · 데스크", None),
-        ("day_call", "오늘 방향", "야후", None),
-        ("day_calls", "오늘 방향 판정", "야후", "day_call"),
-        ("day_call_scoring", "오늘 방향 채점", "야후", "day_call"),
-        ("krx", "KRX 일별 이력", "KRX OPEN API", None),
-        ("reports", "정기 리포트", "ChatGPT · 야후", None),
-        ("funds", "13F 기관 보유", "SEC EDGAR", None),
-        ("scoring", "분석 채점", "야후", None),
-        ("purge", "오래된 분석 정리", "DB", None),
-        ("kis_stream", "실시간 시세 스트림", "한투(KIS)", None),
-    ):
+    for name, label, source, parent, _role in roles.JOBS:
         jobs.add(name, label, source, parent)
 
     @asynccontextmanager
@@ -1009,8 +987,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         feeds_on = settings.macro_interval_sec > 0 and not settings.fake_runs   # the news flow's switch
         started: list[asyncio.Task] = []
 
+        # #688 and only the jobs of this process's role (DESK_ROLE, desk.roles; all = every one)
+        def here(name: str) -> bool:
+            return roles.runs(settings.role, name)
+
         def start(name: str, on: bool, step, retry, failed: str | None = None) -> None:
-            if on:
+            if here(name) and on:
                 started.append(jobs.spawn(name, jobs.run_forever(name, step, retry, failed)))
 
         start("listing", True, keep_listing_fresh, 3600, "listing refresh failed")
@@ -1034,7 +1016,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.exception("%s: saved snapshot not loaded", what)
         start("news", feeds_on, refresh_macro, settings.macro_interval_sec)
         start("calendar", feeds_on, refresh_calendar, CALENDAR_INTERVAL_SEC)
-        if feeds_on:
+        if here("prewarm") and feeds_on:
             started.append(jobs.spawn("prewarm", prewarm.run(prewarm_jobs, prewarm_tickers, _positioning,
                                                              then=prewarm_then)))
         start("briefs", brief_desk.at is not None, write_briefs, morning_brief.RETRY_SEC)
@@ -1048,7 +1030,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
               settings.score_interval_sec, "plan scoring failed")
         start("purge", settings.retention_days > 0, purge_old_runs, 24 * 3600, "retention sweep failed")
         # connects only once a page watches a KIS-streamable ticker (desk.broker.kis_stream)
-        kis = jobs.spawn("kis_stream", kis_feed.run()) if kis_feed is not None else None
+        kis = jobs.spawn("kis_stream", kis_feed.run()) if here("kis_stream") and kis_feed is not None else None
         if kis:
             log.info("kis stream on")
         yield
@@ -1119,8 +1101,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     def status():
         """#623 the background jobs (state fresh · stale · error · starting · stopped · off, last success,
         last error as a type name, next pass) and the providers' rate-limit waits. Session required."""
-        return {"now": datetime.now(UTC).isoformat(timespec="seconds"), "jobs": jobs.status(),
-                "cooldowns": cooldowns()}
+        return {"now": datetime.now(UTC).isoformat(timespec="seconds"), "role": settings.role,
+                "jobs": jobs.status(), "cooldowns": cooldowns()}
 
     # #536 per-route request times (desk.req_timing), read in production without parsing logs
     timings = req_timing.Timings()

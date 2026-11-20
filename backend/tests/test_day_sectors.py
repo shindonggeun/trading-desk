@@ -237,3 +237,41 @@ def test_the_sectors_api(db_url, monkeypatch):
 def test_the_sectors_api_needs_a_session(db_url):
     with _client(db_url, login=False) as client:
         assert client.get("/api/day-call/sectors?market=kr").status_code == 401
+
+
+def _row_loop(frame, count):
+    """The bars as yahoo_adjusted built them before #704 (frame.iterrows), the reference."""
+    from zoneinfo import ZoneInfo
+
+    from desk.broker.base import Bar
+
+    frame = frame.dropna(subset=["Open", "High", "Low", "Close"])
+    bars = [Bar(at=i.to_pydatetime().astimezone(ZoneInfo("UTC")).isoformat(timespec="seconds"), open=float(r["Open"]),
+                high=float(r["High"]), low=float(r["Low"]), close=float(r["Close"]), volume=0.0)
+            for i, r in frame.iterrows()]
+    return bars[-count:]
+
+
+def _frame(n, tz):
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(3)
+    idx = pd.date_range("2016-01-04", periods=n, freq="B", tz=tz)
+    close = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+    frame = pd.DataFrame({"Open": close * 1.001, "High": close * 1.01, "Low": close * 0.99, "Close": close,
+                          "Volume": rng.integers(1, 10**6, n), "Dividends": 0.0}, index=idx)
+    frame.iloc[5, 0] = np.nan                     # a row with a missing price is dropped, as before
+    return frame
+
+
+def test_column_wise_bars_are_the_row_loops():
+    # #704 the same bars from the same frame, US and Korean (Yahoo's index is in the exchange's zone)
+    from desk import day_sectors
+    from desk.broker.base import Bar
+
+    for tz in ("America/New_York", "Asia/Seoul"):
+        frame = _frame(700, tz)
+        for count in (1, 250, 700, 2000):
+            assert day_sectors.frame_bars(frame, count, Bar) == _row_loop(frame, count)
+    assert day_sectors.frame_bars(_frame(10, "UTC").iloc[:0], 5, Bar) == []

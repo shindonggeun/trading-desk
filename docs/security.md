@@ -58,6 +58,8 @@ SSE(`EventSource`)도 쿠키로 인증된다. URL 에 토큰을 싣지 않는다
 클라이언트 IP: 인그레스가 `X-Real-IP` 를 붙이고, 웹 컨테이너 nginx 가 인그레스(`192.168.0.12`)에서 온 값만 믿어
 `X-Forwarded-For` 를 그 한 값으로 **덮어쓴다**. 백엔드 uvicorn 은 `--proxy-headers` 로 그것을 클라이언트 주소로 쓴다.
 백엔드 포트는 호스트에 열지 않는다 — 열면 헤더 위조로 시도 제한을 우회할 수 있다.
+백엔드를 나누면(#688, docs/deploy.md 12절) 웹 네트워크(`DESK_DOCKER_NETWORK`)에는 `backend-prod`(api | all) 하나만 붙고,
+collector · analyst 는 프록시 헤더 없이 컨테이너 안(`127.0.0.1`)에서만 듣는다(health 확인용).
 
 로그(#712): 컨테이너 로그는 파일 · 로그 수집기로 퍼지므로 로그인 이메일과 원본 IP 를 쓰지 않는다.
 

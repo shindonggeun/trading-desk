@@ -148,6 +148,8 @@ check "api 를 all 로 띄우기 전에 지운다(토큰 발급자가 둘이 되
 
 BADF="$TMP/env.bad"; cp "$ENVF" "$BADF"; echo "DESK_BACKEND_SPLIT='yes'" >> "$BADF"
 rc=$(ENV_FILE="$BADF" deploy rev10); check "스위치 값이 0 | 1 이 아니면 바꾸기 전에 멈춘다" "1 rev9" "$rc $(prod_rev)"
+ROLEF="$TMP/env.role"; cp "$ENVF" "$ROLEF"; echo "DESK_API_ROLE='collector'" >> "$ROLEF"
+rc=$(ENV_FILE="$ROLEF" deploy rev10); check "env 파일의 DESK_API_ROLE 은 거부한다(역할은 스크립트만 정한다)" "1 rev9" "$rc $(prod_rev)"
 rc=$(ENV_FILE="$SPLITF" FAKE_SPLIT_SERVICES="collector-prod" deploy rev10)
 check "켰는데 compose 에 analyst 가 없으면 멈춘다" "1 rev9" "$rc $(prod_rev)"
 rc=$(FAKE_SERVICES="backend-prod collector-prod" deploy rev10)

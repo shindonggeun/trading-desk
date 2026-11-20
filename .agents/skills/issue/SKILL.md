@@ -10,6 +10,7 @@ trading-desk 이슈를 작성하고 **gh 로 바로 등록**한다.
 ## Read First
 
 - [docs/git-workflow.md](../../../docs/git-workflow.md) §2 — 이슈 단위, 영역, 라벨
+- 게시할 유형의 실제 템플릿을 읽는다. [기능](../../../.github/ISSUE_TEMPLATE/feature-issue.md) · [버그](../../../.github/ISSUE_TEMPLATE/bug-issue.md)
 
 ## 모드
 
@@ -67,20 +68,27 @@ trading-desk 이슈를 작성하고 **gh 로 바로 등록**한다.
 
 - 체크박스는 2~6개. **[BE] 이슈면 API 초안**(메서드 · 경로 · 인증 여부)을 작업 상세에 적는다.
 - 버그는 `.github/ISSUE_TEMPLATE/bug-issue.md` 구조(어떤 버그 / 재현 / 예상 · 실제 / 영향도)를 따른다.
+- 실제 템플릿의 제목과 순서를 유지한다. Markdown 본문에 YAML 메타데이터를 넣지 않는다. 선택 절에 내용이 없으면 절을 유지하고 `해당 없음`으로 적는다.
 
 ## 5. 등록 절차
 
 1. **중복 확인** — `gh issue list --state all --search "<키워드> in:title" --limit 10`. 같은 일이 있으면 알리고 멈춘다.
 2. **본문 파일 저장** — 파일 편집 도구로 저장소 밖 임시 파일(운영체제 임시 디렉터리)에 쓴다(셸 문자열은 한글 · 백틱 · `$` 가 깨진다).
-3. **등록**
+3. **게시 전 검사** — 아래 명령에서 기능은 `issue-feature`, 버그는 `issue-bug`를 쓴다. 실패하면 본문을 고쳐 재검사한다.
+
+   ```bash
+   python -X utf8 scripts/check_github_template.py issue-feature <본문 파일>
+   ```
+
+4. **등록**
 
    ```bash
    gh issue create --title "[BE] feat: ..." --body-file <본문 파일> \
      --assignee shindonggeun --label backend --label enhancement
    ```
 
-4. 여러 건이면 선후 관계 순서대로 등록하고 뒤 이슈의 `참고` 에 앞 번호를 적는다.
-5. 실패(권한, 없는 라벨)는 숨기지 않고 보고한다.
+5. 여러 건이면 선후 관계 순서대로 등록하고 뒤 이슈의 `참고` 에 앞 번호를 적는다.
+6. 실패(권한, 없는 라벨)는 숨기지 않고 보고한다.
 
 ## 6. 출력
 

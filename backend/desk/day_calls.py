@@ -21,6 +21,7 @@ from sqlalchemy import and_, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from . import day_call as dc
+from . import day_rounds as dr
 from . import market_calendar
 from .db import day_calls as t
 from .db import now as db_now
@@ -40,6 +41,8 @@ HOURLY_BARS = 300
 RECORD_DAYS = 90
 LIVE_RECORD_MIN = 30
 SHOWN = ("prev_close", "open")
+ROUND_WINDOW = timedelta(minutes=40)  # #619 an intraday round is called from its time until this after
+JUMP_PUSH = 2                          # #619 a round is pushed when its stage moved this many from the last round
 NOTE = [
     "판정 정의(전일 종가 대비 + 야간 선물)는 같은 검증 90일의 변형 비교를 보고 골랐다 — 숫자가 조금 낙관적일 수 있다",
     "야간 선물 특징은 야후 60분봉이 약 2년뿐이라 학습이 1.4~1.8년이다",
@@ -60,8 +63,26 @@ def fetch_series(candles: Callable, hourly_bars: int = HOURLY_BARS, daily_bars: 
             return []
 
     out = {s: get(s, "1d", daily_bars) for s in dc.SYMBOLS}
-    for key in dc.HOURLY:
+    for key in (*dc.HOURLY, *dr.HOURLY.values()):
         out[key] = get(key.split("@")[0], "60m", hourly_bars)
+    return out
+
+
+def names_of(market: str, round_: int) -> tuple[str, ...]:
+    """The calls a round makes: the day call's two (1차 · 2차), or #619's "to the close" (3차 on)."""
+    return (dr.CALL,) if round_ in dr.ROUNDS[market] else SHOWN
+
+
+def windows(market: str, day: date) -> dict[int, tuple[time, time]]:
+    """Each round of ``market``'s session on ``day`` and its local window: the two morning rounds (a
+    KRX 10:00 open has no 2차) and the intraday ones before the close (desk.day_rounds.rounds_of)."""
+    out = {}
+    for (mk, round_), span in WINDOWS.items():
+        if mk == market and not (market == "kr" and round_ == 2 and dc.kr_late_open(day)):
+            out[round_] = span
+    for round_ in dr.rounds_of(market, day):
+        start = dr.round_time(market, round_)
+        out[round_] = (start, (datetime.combine(day, start) + ROUND_WINDOW).time())
     return out
 
 
@@ -80,12 +101,16 @@ class DayCalls:
     the loop does not run (fake runs) - the stored rows are still served."""
 
     def __init__(self, engine, candles: Callable | None = None, models: dict | None = None,
-                 reports: dict | None = None, clock: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None:
+                 reports: dict | None = None, clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+                 round_models: dict | None = None, round_reports: dict | None = None) -> None:
         self.engine = engine
         self.candles = candles
         self.models = models if models is not None else {m: dc.load_model(m) for m in dc.MARKETS}
         self.reports = reports if reports is not None else {m: _load_report(m) for m in dc.MARKETS}
         self.clock = clock
+        self.round_models = round_models if round_models is not None else {m: dr.load_model(m) for m in dc.MARKETS}
+        self.round_reports = (round_reports if round_reports is not None
+                              else {m: dr.load_report(m) for m in dc.MARKETS})
         self._scored_try: datetime | None = None
         self._tried: dict[tuple[str, int, date], datetime] = {}
         self._fetched: tuple[datetime, dict] | None = None
@@ -102,29 +127,30 @@ class DayCalls:
         """The rounds whose window is open now and whose calls are not all stored."""
         now = now or self.clock()
         out = []
-        for (market, round_), (start, end) in WINDOWS.items():
-            if not self.models.get(market):
-                continue
-            m = dc.MARKETS[market]
+        for market, m in dc.MARKETS.items():
             local = now.astimezone(m.zone)
             day = local.date()
-            if not market_calendar.is_open(m.calendar, day) or not start <= local.time() < end:
+            if not market_calendar.is_open(m.calendar, day):
                 continue
-            if market == "kr" and round_ == 2 and dc.kr_late_open(day):
-                continue
-            if not set(SHOWN) <= self._have(market, day, round_):
-                out.append((market, round_, day))
+            for round_, (start, end) in windows(market, day).items():
+                names = names_of(market, round_)
+                if not (self.round_models if names == (dr.CALL,) else self.models).get(market):
+                    continue
+                if start <= local.time() < end and not set(names) <= self._have(market, day, round_):
+                    out.append((market, round_, day))
         return out
 
     def make(self, market: str, round_: int, day: date, series: dict, *, source: str = "live",
              called_at: datetime | None = None) -> list[dict]:
         """Both calls of a round, stored; the rows inserted now (a call already there, or one whose
         features are missing, is left out)."""
-        model_file = self.models[market]
+        names = names_of(market, round_)
+        model_file = (self.round_models if names == (dr.CALL,) else self.models)[market]
         made = []
-        for name in SHOWN:
+        for name in names:
             try:
-                c = dc.call(model_file, market, round_, day, series, name)
+                c = (dr.call(model_file, market, round_, day, series) if name == dr.CALL
+                     else dc.call(model_file, market, round_, day, series, name))
             except dc.NoData as exc:
                 log.info("day call %s %s round %s %s: %s", market, day, round_, name, exc)
                 continue
@@ -190,8 +216,11 @@ class DayCalls:
             series = self._series(now)
         done = 0
         for r in ready:
-            kind = "oc" if r["call"] == "open" else "cc"
-            answer = dc.label(r["market"], r["trade_date"], series, kind, now)
+            if r["call"] == dr.CALL:
+                answer = dr.label(r["market"], r["trade_date"], r["round"], series,
+                                  (r["features"] or {}).get("anchor"), now)
+            else:
+                answer = dc.label(r["market"], r["trade_date"], series, "oc" if r["call"] == "open" else "cc", now)
             if answer is None:
                 if now - closes_at(r["market"], r["trade_date"]) < GIVE_UP_AFTER:
                     continue            # Yahoo may not have the bar yet
@@ -219,19 +248,26 @@ class DayCalls:
         """The sessions after the model's training (its hold-out) re-made as of each cutoff and scored,
         ``source`` backfill - never a session the model was fitted on."""
         now = now or self.clock()
-        model_file = self.models[market]
-        through = max(date.fromisoformat(r["trained_through"]) for c in model_file["calls"].values()
-                      for r in c["rounds"].values())
         m = dc.MARKETS[market]
-        first = max(through + timedelta(days=1), now.astimezone(m.zone).date() - timedelta(days=days))
+        since = now.astimezone(m.zone).date() - timedelta(days=days)
+        firsts = {}                         # call family -> the first session its model was not fitted on
+        if self.models.get(market):
+            firsts["day"] = max(date.fromisoformat(r["trained_through"]) for c in self.models[market]["calls"].values()
+                                for r in c["rounds"].values()) + timedelta(days=1)
+        if self.round_models.get(market):
+            firsts["rounds"] = date.fromisoformat(self.round_models[market]["model"]["trained_through"]) + timedelta(days=1)
         sessions = sorted({dc.session_day(m.target, b) for b in series[m.target]})
         made = 0
         for day in sessions:
-            if day < first or closes_at(market, day) > now:
+            if closes_at(market, day) > now:
                 continue
-            for round_ in sorted(m.rounds):
-                made += len(self.make(market, round_, day, series, source="backfill",
-                                      called_at=dc.cutoff_of(market, day, round_)))
+            plan = []
+            if "day" in firsts and day >= max(firsts["day"], since):
+                plan += [(r, dc.cutoff_of(market, day, r)) for r in sorted(m.rounds)]
+            if "rounds" in firsts and day >= max(firsts["rounds"], since):
+                plan += [(r, dr.cutoff_of(market, day, r)) for r in dr.rounds_of(market, day)]
+            for round_, cutoff in plan:
+                made += len(self.make(market, round_, day, series, source="backfill", called_at=cutoff))
         self.score(now, series, force=True)
         return made
 
@@ -248,10 +284,13 @@ class DayCalls:
     def entry(self, r: dict) -> dict:
         """A stored call as the API gives it (#572 contract)."""
         probs = r["probs"]
-        return {"call": r["call"], "call_label": dc.CALL_KO[r["call"]],
-                "measured_from": "open" if r["call"] == "open" else "prev_close",
+        intraday = r["call"] == dr.CALL
+        return {"call": r["call"], "call_label": dr.CALL_KO if intraday else dc.CALL_KO[r["call"]],
+                "measured_from": "round" if intraday else "open" if r["call"] == "open" else "prev_close",
                 "fallback": r["model"] == "prev_close_plain", "date": r["trade_date"].isoformat(),
-                "round": r["round"], "round_label": dc.ROUND_KO[r["round"]],
+                "round": r["round"],
+                "round_label": dr.round_label(r["market"], r["round"]) if intraday else dc.ROUND_KO[r["round"]],
+                **({"anchor": (r["features"] or {}).get("anchor")} if intraday else {}),
                 "called_at": _iso(r["called_at"]), "cutoff_at": _iso(r["cutoff_at"]),
                 "stage": r["stage"], "label": dc.LABEL_KO[r["stage"]], "direction": dc.direction(probs),
                 "verdict": r["verdict"], "probs": probs, "edges_pct": r["edges_pct"], "reasons": r["reasons"],
@@ -268,7 +307,7 @@ class DayCalls:
         latest = [r for r in rows if r["trade_date"] == day]
         stats = self.stats(market, RECORD_DAYS, now)
         calls, rounds = {}, {}
-        for name in SHOWN:
+        for name in (*SHOWN, dr.CALL):
             mine = sorted((r for r in latest if r["call"] == name), key=lambda r: r["round"])
             rounds[name] = [self.entry(r) for r in mine]
             if mine:
@@ -277,7 +316,16 @@ class DayCalls:
                 calls[name] = None
         return {"market": market, "date": day.isoformat() if day else today.isoformat(), "today": day == today,
                 "stages": [{"key": s, "label": dc.LABEL_KO[s]} for s in dc.DISPLAY_ORDER],
-                "calls": calls, "rounds": rounds, "note": NOTE}
+                "calls": calls, "rounds": rounds, "schedule": self.schedule(market, day or today, latest),
+                "note": NOTE}
+
+    def schedule(self, market: str, day: date, rows: Sequence[dict] = ()) -> dict:
+        """#619 the intraday rounds of ``day``'s session: each one's time (aware ISO: the local time and
+        the Korean one follow from it, New York's daylight saving included) and whether it was called."""
+        done = {r["round"] for r in rows if r["call"] == dr.CALL}
+        return {dr.CALL: [{"round": r, "round_label": dr.round_label(market, r),
+                           "at": dr.cutoff_of(market, day, r).isoformat(), "called": r in done}
+                          for r in dr.rounds_of(market, day)]}
 
     def record(self, market: str, name: str, round_: int, stats: dict | None = None) -> dict:
         """The call's record next to it, for that round: the live calls once there are LIVE_RECORD_MIN
@@ -289,8 +337,11 @@ class DayCalls:
                 return {"n": part["n"], "direction_hit_rate": part["direction_hit_rate"],
                         "always_long": part["always_long"], "always_short": part["always_short"],
                         "brier_skill": part["brier_skill"], "basis": basis}
-        rep = ((self.reports.get(market) or {}).get("calls", {}).get(name, {}).get("rounds", {})
-               .get(str(round_), {}).get("holdout") or {})
+        if name == dr.CALL:
+            rep = ((self.round_reports.get(market) or {}).get("rounds", {}).get(str(round_), {}).get("holdout") or {})
+        else:
+            rep = ((self.reports.get(market) or {}).get("calls", {}).get(name, {}).get("rounds", {})
+                   .get(str(round_), {}).get("holdout") or {})
         b = rep.get("baselines") or {}
         return {"n": rep.get("n", 0), "direction_hit_rate": rep.get("direction_hit_rate"),
                 "always_long": (b.get("always_long") or {}).get("direction_hit_rate"),
@@ -309,24 +360,34 @@ class DayCalls:
         today = now.astimezone(m.zone).date()
         rows = self._rows(market, today - timedelta(days=days))
         model_file = self.models.get(market) or {}
+        round_model = (self.round_models.get(market) or {}).get("model") or {}
         out = {}
-        for name in SHOWN:
+        for name in (*SHOWN, dr.CALL):
+            intraday = name == dr.CALL
             mine = [r for r in rows if r["call"] == name]
             # unscorable rows (no answer from Yahoo) are left out of every number
             scored = sorted((r for r in mine if r["scored_at"] is not None and r["brier"] is not None),
                             key=lambda r: (r["trade_date"], r["round"]))
-            clim = {k: (model_file.get("calls", {}).get(name, {}).get("rounds", {}).get(k) or {}).get("climatology")
-                    for k in ("1", "2")}
-            block = _summary(market, scored, clim)
-            block["missed"] = self._missed(market, mine, today, now)
+            keys = sorted(dr.ROUNDS[market]) if intraday else sorted(m.rounds)
+            if intraday:
+                clim = {str(k): round_model.get("climatology") for k in keys}
+            else:
+                clim = {k: (model_file.get("calls", {}).get(name, {}).get("rounds", {}).get(k) or {}).get("climatology")
+                        for k in ("1", "2")}
+            follow = "trend" if intraday else "yesterday"
+            block = _summary(market, scored, clim, follow)
+            block["missed"] = self._missed(market, mine, today, now, name)
             block["by_round"] = {}
-            for k in sorted(m.rounds):
+            for k in keys:
                 in_round = [r for r in scored if r["round"] == k]
                 block["by_round"][str(k)] = {
-                    **_summary(market, in_round, clim),
+                    **_summary(market, in_round, clim, follow),
                     "live_n": sum(1 for r in in_round if r["source"] == "live"),
-                    **{s: _summary(market, [r for r in in_round if r["source"] == s], clim) for s in ("live", "backfill")},
+                    **{s: _summary(market, [r for r in in_round if r["source"] == s], clim, follow)
+                       for s in ("live", "backfill")},
                 }
+                if intraday:
+                    block["by_round"][str(k)]["round_label"] = dr.round_label(market, k)
             block["by_source"] = {s: {"n": sum(1 for r in scored if r["source"] == s)} for s in ("live", "backfill")}
             if name == "open":
                 n = len(scored)
@@ -335,11 +396,15 @@ class DayCalls:
                 block["called"] = {"n": len(called), "direction_hit_rate": _rate(r["hit_direction"] for r in called)}
             out[name] = block
         report = self.reports.get(market) or {}
+        round_report = self.round_reports.get(market) or {}
         return {"market": market, "days": days, "calls": out, "note": NOTE,
                 "backtest": {"model_version": model_file.get("version"), "holdout_from": report.get("holdout_from"),
-                             "stale": bool(report) and report.get("code") != _code()}}
+                             "stale": bool(report) and report.get("code") != _code()},
+                "rounds_backtest": {"model_version": (self.round_models.get(market) or {}).get("version"),
+                                    "holdout_from": round_report.get("holdout_from"),
+                                    "stale": bool(round_report) and round_report.get("code") != _code(rounds=True)}}
 
-    def _missed(self, market: str, rows: list[dict], today: date, now: datetime) -> int:
+    def _missed(self, market: str, rows: list[dict], today: date, now: datetime, name: str = "prev_close") -> int:
         """Live rounds whose window passed without a call, since the first live call."""
         live = [r for r in rows if r["source"] == "live"]
         if not live:
@@ -350,14 +415,34 @@ class DayCalls:
         missed, d = 0, first
         while d <= today:
             if market_calendar.is_open(m.calendar, d):
-                for round_ in m.rounds:
-                    if market == "kr" and round_ == 2 and dc.kr_late_open(d):
+                for round_, (_start, end_at) in windows(market, d).items():
+                    if (name == dr.CALL) != (round_ in dr.ROUNDS[market]):
                         continue
-                    end = datetime.combine(d, WINDOWS[(market, round_)][1], m.zone)
+                    end = datetime.combine(d, end_at, m.zone)
                     if end <= now and (d, round_) not in have:
                         missed += 1
             d += timedelta(days=1)
         return missed
+
+    def push_of(self, row: dict) -> tuple[str, str] | None:
+        """The push (title, body) a freshly made row earns, None for most: each market's first call of the
+        day (1차 prev_close), and (#619) an intraday round whose stage moved JUMP_PUSH or more from the
+        session's round before it - the first intraday round is not pushed (the morning call was)."""
+        where = "국장" if row["market"] == "kr" else "미장"
+        if row["call"] == "prev_close" and row["round"] == 1:
+            return f"오늘 {where} 방향", push_text(row)
+        if row["call"] != dr.CALL:
+            return None
+        with self.engine.connect() as conn:
+            before = conn.execute(
+                select(t.c.round, t.c.stage).where(and_(t.c.market == row["market"], t.c.trade_date == row["trade_date"],
+                                                        t.c.call == dr.CALL, t.c.round < row["round"]))
+                .order_by(t.c.round.desc()).limit(1)).mappings().first()
+        if before is None or dr.jump(before["stage"], row["stage"]) < JUMP_PUSH:
+            return None
+        was = f"{dr.round_label(row['market'], before['round'])} {dc.LABEL_KO[before['stage']]}"
+        return (f"{where} 장중 방향 바뀜",
+                f"{dr.round_label(row['market'], row['round'])} 마감까지 {call_words(row)} — {was}에서 바뀜")
 
     def today_call(self, now: datetime | None = None) -> dict | None:
         """#571's line: each market's latest prev_close call (the one with an edge)."""
@@ -409,13 +494,16 @@ def push_text(row: dict) -> str:
             f"{' · 야간 선물 없이' if row['model'] == 'prev_close_plain' else ''} — 적중 기록 · 기준선은 앱에서")
 
 
-def _summary(market: str, rows: list[dict], clim: dict[str, list[float] | None]) -> dict:
+def _summary(market: str, rows: list[dict], clim: dict[str, list[float] | None], follow_by: str = "yesterday") -> dict:
+    """The numbers of scored rows. ``follow_by`` "trend" (#619's rounds): the follow baseline is the
+    session so far (the sign of the move from the open to the round) instead of yesterday's answer."""
     n = len(rows)
+    follow_key = "follow_trend" if follow_by == "trend" else "follow_yesterday"
     if n == 0:
         return {"n": 0, "direction_hit_rate": None, "stage_hit_rate": None, "brier": None, "brier_skill": None,
                 "always_long": None, "always_short": None,
                 "baselines": {"always_long": {"direction_hit_rate": None}, "always_short": {"direction_hit_rate": None},
-                              "follow_yesterday": {"direction_hit_rate": None}, "climatology": {"brier": None}},
+                              follow_key: {"direction_hit_rate": None}, "climatology": {"brier": None}},
                 "per_stage": [], "calibration": []}
     moved = [r for r in rows if r["outcome"]["close"] != r["outcome"]["open"]]
     ups = [r["outcome"]["close"] > r["outcome"]["open"] for r in moved]
@@ -425,7 +513,10 @@ def _summary(market: str, rows: list[dict], clim: dict[str, list[float] | None])
     follow = []
     for r in rows:
         actual = moves[(r["round"], r["trade_date"])]
-        before = moves.get((r["round"], dc.previous_session(market, r["trade_date"])))
+        if follow_by == "trend":         # the move from the open to the round (desk.day_rounds i_move)
+            before = (r["features"] or {}).get("i_move")
+        else:
+            before = moves.get((r["round"], dc.previous_session(market, r["trade_date"])))
         if before and actual:
             follow.append((before > 0) == (actual > 0))
     brier = sum(r["brier"] for r in rows) / n
@@ -449,7 +540,7 @@ def _summary(market: str, rows: list[dict], clim: dict[str, list[float] | None])
         "always_long": up, "always_short": None if up is None else round(1 - up, 3),
         "baselines": {"always_long": {"direction_hit_rate": up},
                       "always_short": {"direction_hit_rate": None if up is None else round(1 - up, 3)},
-                      "follow_yesterday": {"direction_hit_rate": _rate(follow)},
+                      follow_key: {"direction_hit_rate": _rate(follow)},
                       "climatology": {"brier": None if clim_brier is None else round(clim_brier, 4)}},
         "per_stage": [{"stage": s, "label": dc.LABEL_KO[s], "called": sum(1 for r in rows if r["stage"] == s),
                        "called_hit": sum(1 for r in rows if r["stage"] == s and r["hit_stage"]),
@@ -475,9 +566,12 @@ def _load_report(market: str) -> dict | None:
         return None
 
 
-def _code() -> str | None:
+def _code(rounds: bool = False) -> str | None:
     try:
-        from .day_call_train import code_hash
+        if rounds:
+            from .day_rounds_train import code_hash
+        else:
+            from .day_call_train import code_hash
     except ImportError:              # numpy missing: the stale flag is unknown
         return None
     return code_hash()

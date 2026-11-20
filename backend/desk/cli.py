@@ -354,6 +354,36 @@ def _day_call(args) -> int:
     return 0
 
 
+def _day_rounds(args) -> int:
+    """#619: the intraday round model fitted before the hold-out, scored on it per round."""
+    import json
+    from pathlib import Path
+
+    from . import day_rounds_train as drt
+    series = drt.fetch()
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    for market in (("kr", "us") if args.market == "all" else (args.market,)):
+        model, report = drt.backtest(market, series, args.holdout_days or drt.HOLDOUT_DAYS,
+                                     progress=lambda msg: print(msg, file=sys.stderr))
+        for name, body in ((f"rounds_{market}.json", model), (f"rounds_report_{market}.json", report)):
+            with open(out / name, "w", encoding="utf-8", newline="\n") as f:
+                json.dump(body, f, ensure_ascii=False, indent=1)
+                f.write("\n")
+        for key, part in [("all", report["holdout"]), *((k, v["holdout"]) for k, v in report["rounds"].items())]:
+            if not part.get("n") or "baselines" not in part:
+                print(f"{market} {key}: n={part.get('n', 0)}")
+                continue
+            b = part["baselines"]
+            label = "전체" if key == "all" else report["rounds"][key]["label"]
+            print(f"{market} {label:10} n={part['n']}  방향 {part['direction_hit_rate']:.3f} {part['direction_ci95']}"
+                  f"  (항상 롱 {b['always_long']['direction_hit_rate']:.3f} · 추세 따라 {b['follow_trend']['direction_hit_rate']})"
+                  f"  단계 {part['stage_hit_rate']:.3f} (기후 {b['climatology']['stage_hit_rate']:.3f})"
+                  f"  Brier {part['brier']:.4f} skill {part['brier_skill']:+.3f}")
+        print(f"{market}: {out / f'rounds_{market}.json'} ({report['version']})")
+    return 0
+
+
 def _day_call_backfill(engine, args) -> int:
     """#572: the sessions after the committed model's training, as if called at each cutoff, scored."""
     from . import day_calls
@@ -557,9 +587,10 @@ def main(argv: list[str] | None = None) -> int:
     dcp = sub.add_parser("day-call", help=(
         "#572 today's direction call: fit the model on Yahoo daily bars before the hold-out and score the "
         "hold-out once; writes model_<market>.json and report_<market>.json"))
-    dcp.add_argument("action", choices=("backtest", "backfill"),
-                     help="backtest: fit and score (no database); backfill: the committed model's hold-out "
-                          "sessions re-made as of each cutoff into the database (source backfill), scored")
+    dcp.add_argument("action", choices=("backtest", "rounds", "backfill"),
+                     help="backtest: fit and score (no database); rounds: the same for #619's intraday rounds "
+                          "(rounds_<market>.json, rounds_report_<market>.json); backfill: the committed models' "
+                          "hold-out sessions re-made as of each cutoff into the database (source backfill), scored")
     dcp.add_argument("--days", type=int, default=90, help="backfill: how many calendar days back (default 90)")
     dcp.add_argument("--market", choices=("kr", "us", "all"), default="all")
     dcp.add_argument("--from", dest="start", default=None, help="first session to use, YYYY-MM-DD")
@@ -636,6 +667,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "day-call" and args.action == "backtest":
         _utf8_out()
         return _day_call(args)
+    if args.command == "day-call" and args.action == "rounds":
+        _utf8_out()
+        return _day_rounds(args)
     if args.command == "flow-history":
         return _flow_history(args)
     if args.command == "news-history":

@@ -35,7 +35,8 @@ const SERIES: { key: Investor; label: string; color: string }[] = [
 ];
 const COUNT = 20;
 // 장중(최신 기록이 잠정) 60초, 그 밖엔 5분 — 서버도 장 밖에는 10분 캐시한다.
-const REFRESH_LIVE_MS = 60_000;
+// #673 서버는 1분 스냅숏마다 원천을 새로 읽어 캐시를 갱신한다 — 30초면 그 값이 늦어도 30초 안에 보인다(캐시 적중이라 원천 호출은 늘지 않음)
+const REFRESH_LIVE_MS = 30_000;
 const REFRESH_IDLE_MS = 300_000;
 const PREFS = "desk.marketFlow.v1";
 
@@ -276,7 +277,8 @@ export default function MarketFlowPanel() {
       else {
         setData(d);
         setFailed(null);
-        const live = !!d.records[0]?.provisional;
+        // 잠정이어도 장 마감 뒤(15:40~18:00)는 서버 캐시가 10분이라 느리게
+        const live = !!d.records[0]?.provisional && d.session !== "closed";
         if (live !== liveRef.current) {
           liveRef.current = live;
           setRefreshMs(live ? REFRESH_LIVE_MS : REFRESH_IDLE_MS);
@@ -287,6 +289,8 @@ export default function MarketFlowPanel() {
   });
 
   const latest = data?.records[0];
+  // 원천 · 확인 두 시각은 1d 의 오늘 기록에만(서버도 그때만 원천 시각을 준다)
+  const today = prefs.interval === "1d" && !!latest?.in_progress;
   const max = latest ? Math.max(...INVESTORS.map((i) => Math.abs(latest.investors[i.key]?.net ?? 0)), 1) : 1;
   const kinds = latest ? KINDS.filter((k) => latest.institution_breakdown[k.key]) : [];
   const kindMax = latest ? Math.max(...kinds.map((k) => Math.abs(latest.institution_breakdown[k.key]!.net)), 1) : 1;
@@ -326,8 +330,11 @@ export default function MarketFlowPanel() {
           <p className="flow-period small">
             <strong>{periodLabel(latest, prefs.interval)}</strong>
             {latest.provisional && <span className="pill pill-warn flow-pill" title="장 마감 · 저녁 확정 전 값이라 바뀔 수 있습니다">잠정</span>}
+            {today && data?.session === "pre" && <span className="pill flow-pill" title="09:00 전 — 장 시작 전 거래(시간외 · NXT 프리마켓)까지 들어간 값">프리장</span>}
             <span className="muted">
-              {latest.updated_at ? ` · ${shortTime(latest.updated_at)} 갱신` : ""}
+              {today && data?.freshness
+                ? `${data.freshness.source_updated_at ? ` · 원천 갱신 ${shortTime(data.freshness.source_updated_at)}` : ""}${data.freshness.fetched_at ? ` · 확인 ${shortTime(data.freshness.fetched_at)}` : ""}`
+                : latest.updated_at ? ` · ${shortTime(latest.updated_at)} 갱신` : ""}
               {data?.source === "mock" ? " · 샘플" : ""}
             </span>
           </p>

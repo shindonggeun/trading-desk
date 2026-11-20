@@ -51,8 +51,11 @@ env_value() {  # env 파일의 값 하나(따옴표를 벗긴다). 파일을 셸
   v=${v#\'}; v=${v%\'}; v=${v#\"}; v=${v%\"}
   printf '%s' "$v"
 }
-mask() {  # 표준입력의 텍스트에서 env 파일 값을 가린다. 8자 이상이거나 비밀처럼 보이는 키의 값
+mask() {  # 표준입력의 텍스트에서 env 파일 값을 가린다. 8자 이상이거나 비밀처럼 보이는 키의 값.
+  # 긴 값부터 가린다 — 짧은 값이 긴 값의 일부면 짧은 쪽을 먼저 가렸을 때 긴 값의 나머지가 드러난다.
+  # 앱이 런타임에 받은 토큰(토스 · KIS · ChatGPT) 같은 파생 비밀은 가리지 못한다 — 앱이 로그에 쓰지 않는 것이 규칙이다(security.md §5)
   local text line k v
+  local -a vals=()
   text=$(cat)
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|\#*) continue ;; esac
@@ -62,9 +65,15 @@ mask() {  # 표준입력의 텍스트에서 env 파일 값을 가린다. 8자 �
     v=${v#\'}; v=${v%\'}; v=${v#\"}; v=${v%\"}
     [ -n "$v" ] || continue
     if [ "${#v}" -ge 8 ] || [[ $k =~ (KEY|SECRET|TOKEN|PASSWORD|CHAT_ID|DATABASE_URL) ]]; then
-      text=${text//"$v"/****}
+      vals+=("${#v} $v")
     fi
   done < "$ENV_FILE"
+  if [ "${#vals[@]}" -gt 0 ]; then
+    while IFS= read -r line; do
+      v=${line#* }
+      text=${text//"$v"/****}
+    done < <(printf '%s\n' "${vals[@]}" | sort -rn)
+  fi
   printf '%s\n' "$text"
 }
 

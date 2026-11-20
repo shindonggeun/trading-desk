@@ -77,6 +77,8 @@ def run(Map config) {
             try {
                 boolean changed
                 stage('배포 대상 확인') {
+                    // 앞 빌드가 강제로 끊겨(agent 재시작 등) finally 가 못 돌았으면 비밀 폴더가 남아 있을 수 있다
+                    sh 'rm -rf .deploy-secrets .deploy-src'
                     checkout scm
                     // 대상 커밋의 소스만 따로 푼다. 스크립트는 이 빌드(develop 끝)의 것을 쓴다 — 스크립트가 없던 옛 커밋으로도 되돌릴 수 있게
                     withEnv(["SHA=${sha}"]) {

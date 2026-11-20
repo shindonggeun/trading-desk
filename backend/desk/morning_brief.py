@@ -568,15 +568,20 @@ def allowed_numbers(b: dict) -> Check:
     return Check({_num(t) for t in _SIGNED.findall(_DATETIME.sub(" ", text))}, set(_DATETIME.findall(text)), subjects)
 
 
-def _ok(text, allowed: Check, limit: int) -> str | None:
+def _ok(text, allowed: Check, limit: int, dropped: list[str] | None = None) -> str | None:
     """The text with every sentence that says a number, date or time the bundle does not (or with the
-    wrong sign or direction, or on the wrong subject) dropped; None if nothing is left or it is not Korean."""
+    wrong sign or direction, or on the wrong subject) dropped; None if nothing is left or it is not Korean.
+    ``dropped`` gets the sentences the number check took out (#571): only counted - field and count in the
+    log and the body's ``dropped``; the sentences themselves are never logged or shown."""
     if not isinstance(text, str) or not text.strip():
         return None
     parts = explain._SENTENCE.split(text.strip()[:limit])
     if len(text.strip()) > limit:
         parts = parts[:-1]                              # cut mid-sentence: the broken last piece is not said
-    keep = [s.strip() for s in parts if s.strip() and allowed.sentence_ok(s.strip())]
+    said = [s.strip() for s in parts if s.strip()]
+    keep = [s for s in said if allowed.sentence_ok(s)]
+    if dropped is not None:
+        dropped.extend(s for s in said if s not in keep)
     good = " ".join(keep)
     return good if good and not foreign(good) else None
 
@@ -587,18 +592,26 @@ def merge(draft: dict, answer: dict | None, allowed: Check) -> dict:
     if not answer:
         return out
     taken = 0
+    dropped: dict[str, int] = {}
     for k in FIELDS:
         got = answer.get(k)
+        gone: list[str] = []
         if k in LISTS:
             if not isinstance(got, list):
                 continue
-            items = [x for x in (_ok(i, allowed, 240) for i in got[:len(draft[k]) or LIST_MAX]) if x]
+            items = [x for x in (_ok(i, allowed, 240, gone) for i in got[:len(draft[k]) or LIST_MAX]) if x]
             if items:
                 out[k], taken = items, taken + 1
         else:
-            x = _ok(got, allowed, TEXT_LIMITS.get(k, TEXT_LIMIT))
+            x = _ok(got, allowed, TEXT_LIMITS.get(k, TEXT_LIMIT), gone)
             if x:
                 out[k], taken = x, taken + 1
+        if gone:
+            dropped[k] = len(gone)
+    if dropped:     # #571 a number the bundle does not hold (or flipped): its sentence is out - say how many where
+        log.warning("morning brief: %d model sentence(s) dropped by the number check (%s)", sum(dropped.values()),
+                    ", ".join(f"{k} {n}" for k, n in dropped.items()))
+        out["dropped"] = dropped
     if taken:
         out["source"] = "ai"
     return out

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import time
 from datetime import UTC, date, datetime, timedelta
 
@@ -135,7 +136,7 @@ def test_the_models_wording_is_kept_only_where_its_numbers_are_the_bundles_and_i
     answer = {
         "title": "나스닥 +1.20% 상승 마감, 반도체 강세",                # numbers from the bundle: kept
         "numbers": ["나스닥 22,264 (+1.20%)", "엔비디아 매출 570억 달러"],   # a made-up number: that item dropped
-        "kr_flow": "어제 외국인이 코스피를 -1,234억 팔았습니다。日本語の文章ですから注意してください",   # Japanese: the draft stays
+        "kr_flow": "어제 외국인이 코스피를 -1,234억 팔았습니다。日本語の文章ですから注意してください",   # one sentence (no Korean stop) on 코스피 without that number: dropped
         "done": ["헤드라인의 12% 급등"],                            # a number only a headline had: dropped
         "closing": "오늘은 FOMC 의사록 전까지 확인 위주로 대응하세요.",
     }
@@ -149,6 +150,9 @@ def test_the_models_wording_is_kept_only_where_its_numbers_are_the_bundles_and_i
     assert out["title"] == answer["title"] and out["closing"] == answer["closing"]
     assert out["numbers"] == ["나스닥 22,264 (+1.20%)"]
     assert out["kr_flow"] == draft["kr_flow"] and out["done"] == draft["done"]
+    # #571 the number check's drops are counted per field (kr_flow's sentence runs on into the Japanese with
+    # no Korean full stop, so the check reads it as one sentence and drops it)
+    assert out["dropped"] == {"numbers": 1, "kr_flow": 1, "done": 1}
     # the headline is shown as untrusted text, and the data the model sees has no headline in it
     data = seen[0].split("데이터: ", 1)[1].split("\n", 1)[0]
     assert "Tariff" not in data and "Tariff talk" in seen[0] and "_move" not in data
@@ -384,3 +388,22 @@ def test_todays_call_line_is_the_closing_as_it_is():
     b = _bundle(day_call=lambda: {"date": "2026-11-18", "kr": {"label": "약한 롱"}, "us": None, "line": line})
     assert b["day_call"] == line and mb.rules(b)["closing"] == line
     assert _bundle(day_call=lambda: None)["day_call"] is None
+
+
+def test_the_number_checks_drops_are_logged_and_a_clean_answer_has_none(caplog):
+    """#571 a model sentence with a number the bundle does not hold is dropped and logged (how many, where);
+    the sentence itself is not logged."""
+    b = _bundle()
+    wrong = {"title": "나스닥 +3.40% 급등", "closing": "오늘은 FOMC 의사록 전까지 확인 위주로 대응하세요."}
+    with caplog.at_level(logging.WARNING, logger="desk.morning_brief"):
+        out = mb.write(b, lambda _p: json.dumps(wrong, ensure_ascii=False))
+    assert out["title"] == mb.rules(b)["title"] and out["dropped"] == {"title": 1}
+    msgs = [r.getMessage() for r in caplog.records if "number check" in r.getMessage()]
+    assert msgs == ["morning brief: 1 model sentence(s) dropped by the number check (title 1)"]
+    assert "3.40" not in msgs[0]
+    right = {"title": "나스닥 +1.20% 상승 마감, 반도체 강세"}
+    assert "dropped" not in mb.write(b, lambda _p: json.dumps(right, ensure_ascii=False))
+    # a field in another language with no number is the language check's: the draft stays, nothing counted
+    japanese = {"kr_flow": "今日の市場はとても強いです。"}
+    out = mb.write(b, lambda _p: json.dumps(japanese, ensure_ascii=False))
+    assert out["kr_flow"] == mb.rules(b)["kr_flow"] and "dropped" not in out and out["source"] == "rules"

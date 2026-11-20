@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ANALYST_CHOICES } from "../agents";
 import { api } from "../api";
-import { HORIZON } from "../korean";
 import InstrumentSearch, { type Picked } from "./InstrumentSearch";
 
 function today(): string {
@@ -39,8 +38,8 @@ function typing(target: EventTarget | null): boolean {
 }
 
 /**
- * 대시보드 맨 위 검색 한 줄(#100): 종목을 고르고 "분석 시작" — 성향 · 시간축 · 애널리스트는 기본값.
- * "옵션" 을 펴면 기준일 · 애널리스트 · 성향 · 시간축 · 언어 · 보유 반영을 바꾼다. "/" 로 검색 칸에 바로 간다.
+ * 대시보드 맨 위 검색 한 줄(#100): 종목을 고르고 "분석 시작" — 애널리스트는 기본값, 기간 · 성향은 고르지 않는다(#697 결과에 네 기간).
+ * "옵션" 을 펴면 기준일 · 애널리스트 · 언어 · 보유 반영을 바꾼다. "/" 로 검색 칸에 바로 간다.
  */
 /** #220 차트 탭의 "이 종목으로 분석" — `#/?ticker=SOXL&name=…` 로 오면 종목을 미리 채운다 */
 function prefilled(): Picked {
@@ -55,12 +54,6 @@ export default function NewRunForm() {
   const [analysts, setAnalysts] = useState<string[]>(ANALYST_CHOICES.map((c) => c.key));
   const [usePortfolio, setUsePortfolio] = useState(true);
   const [language, setLanguage] = useState("Korean");
-  const [profiles, setProfiles] = useState<{ id: string; label: string }[]>([]);
-  const [profile, setProfile] = useState("");
-  const [horizons, setHorizons] = useState(
-    Object.entries(HORIZON).map(([id, h]) => ({ id, label: h.ko, holding: h.holding })),
-  );
-  const [horizon, setHorizon] = useState("swing");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [options, setOptions] = useState(loadOpen);
@@ -72,18 +65,6 @@ export default function NewRunForm() {
     justPicked.current = false;
     startRef.current?.focus();
   }, [instrument]);
-
-  useEffect(() => {
-    api
-      .config()
-      .then((c) => {
-        setProfiles(c.profiles);
-        setProfile(c.default_profile);
-        if (c.horizons?.length) setHorizons(c.horizons);
-        if (c.default_horizon) setHorizon(c.default_horizon);
-      })
-      .catch(() => {});
-  }, []);
 
   // "/" → 검색 칸(다른 입력 칸에서 친 "/" 는 그대로 글자)
   useEffect(() => {
@@ -114,8 +95,7 @@ export default function NewRunForm() {
       const run = await api.createRun({
         ticker: instrument.ticker,
         name: instrument.name,
-        profile: profile || undefined,
-        horizon,
+        // #697 기간 · 성향은 고르지 않는다 — 결과에 네 기간이 함께 나온다(#696)
         trade_date: date,
         analysts,
         use_portfolio: usePortfolio,
@@ -128,8 +108,6 @@ export default function NewRunForm() {
     }
   };
 
-  const profileLabel = profiles.find((p) => p.id === profile)?.label;
-  const horizonInfo = horizons.find((h) => h.id === horizon);
   const custom = date !== today() || analysts.length !== ANALYST_CHOICES.length || language !== "Korean" || !usePortfolio;
   const ready = !!instrument.ticker.trim() && analysts.length > 0 && !!date;
 
@@ -152,9 +130,7 @@ export default function NewRunForm() {
         </button>
       </div>
       <p className="muted small quick-run-summary">
-        {horizonInfo?.label ?? horizon}
-        {horizonInfo ? ` · 보유 ${horizonInfo.holding}` : ""}
-        {profileLabel ? ` · ${profileLabel}` : ""}
+        스캘핑 · 단타 · 짧은 스윙 · 스윙을 한 번에
         {custom ? " · 옵션 바꿈" : ""} · 한 번에 수 분, 구독 플랜 사용량이 차감됩니다
       </p>
       {error && <p className="error">{error}</p>}
@@ -164,36 +140,6 @@ export default function NewRunForm() {
             분석 기준일
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
           </label>
-          {profiles.length > 0 && (
-            <label>
-              투자 성향
-              <select value={profile} onChange={(e) => setProfile(e.target.value)}>
-                {profiles.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-              <span className="muted small">트레이더 · 리스크 토론 · 최종 판단에 지침으로 들어갑니다</span>
-            </label>
-          )}
-          <fieldset>
-            <legend>매매 시간축</legend>
-            <div className="chips" role="radiogroup" aria-label="매매 시간축">
-              {horizons.map((h) => (
-                <label key={h.id} className={`chip ${horizon === h.id ? "chip-on" : ""}`} title={`보유 ${h.holding}`}>
-                  <input type="radio" name="horizon" value={h.id} checked={horizon === h.id} onChange={() => setHorizon(h.id)} />
-                  {h.label}
-                  {h.id === "scalp" && <span className="muted small">&nbsp;(참고)</span>}
-                </label>
-              ))}
-            </div>
-            <span className="muted small">
-              {horizon === "scalp"
-                ? "참고용 — 분석에 수 분이 걸리고 지표는 일봉이라, 계획이 도착했을 때 가격이 진입가 근처일 때만 씁니다(15분 유효)."
-                : `보유 ${horizonInfo?.holding ?? ""} · 지지 · 저항과 손절 · 목표 폭이 이 시간축의 봉으로 정해집니다`}
-            </span>
-          </fieldset>
           <fieldset>
             <legend>애널리스트</legend>
             <div className="chips">

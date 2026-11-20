@@ -24,6 +24,9 @@ import TipBadges from "../components/TipBadges";
 import { MarketTrendBadges } from "../components/TrendChips";
 import RetryRunButton from "../components/RetryRunButton";
 import { every } from "../poll";
+import HorizonsBoard from "../components/HorizonsBoard";
+import { type AllHorizonsPlan, defaultHorizon, isOtherHorizon, planFor, slotTitle } from "../allHorizons";
+import type { HorizonId } from "../types";
 
 // 백엔드 desk/profile.py 의 label 과 같다. 옛 분석(성향 없음)은 표시하지 않는다
 const PROFILE_LABEL: Record<string, string> = { aggressive_leverage: "공격형 · 레버리지", balanced: "균형형" };
@@ -161,6 +164,11 @@ export default function RunView({ runId }: { runId: string }) {
   }, [run?.status]);
 
   const plan: Plan | null = run?.plan ?? (events.find((e) => e.type === "plan")?.data as Plan | undefined) ?? null;
+  // #697 네 기간 중 차트에 그릴 기간 — 처음은 지금 장세에 맞는 기간(옛 run 은 그 기간 하나)
+  const [pickedHorizon, setPickedHorizon] = useState<HorizonId | null>(null);
+  const shownHorizon = pickedHorizon ?? defaultHorizon(plan as AllHorizonsPlan | null);
+  const chartPlan = useMemo(() => planFor(plan as AllHorizonsPlan | null, shownHorizon), [plan, shownHorizon]);
+  const otherHorizon = isOtherHorizon(plan as AllHorizonsPlan | null, shownHorizon);
   // #438 방향 전망 — 상세의 outlook, 없으면 방금 온 outlook 이벤트(마지막 것)
   const outlook: RunOutlook | null = useMemo(() => {
     if (run?.outlook) return run.outlook;
@@ -255,6 +263,8 @@ export default function RunView({ runId }: { runId: string }) {
           {tab === "summary" && (
             plan ? (
               <div className="run-summary">
+                {/* #697 결과 맨 위 — 네 기간(스캘핑 · 단타 · 짧은 스윙 · 스윙)을 나란히. 옛 run 에는 없다 */}
+                <HorizonsBoard plan={plan as AllHorizonsPlan} selected={shownHorizon} onSelect={setPickedHorizon} />
                 {plan.summary && (
                   <SummaryCard summary={plan.summary} runId={run.id} live={stillOpen(run.trade_date)}
                     horizon={plan.horizon ?? run.options.horizon ?? undefined} />
@@ -302,7 +312,11 @@ export default function RunView({ runId }: { runId: string }) {
               </section>
             )
           )}
-          {tab === "chart" && <ResultChart plan={plan} ticker={run.ticker} tradeDate={run.trade_date} outlook={outlook} runId={run.id} />}
+          {tab === "chart" && (
+            // #697 분석 기간이 아닌 칸이면 그 칸의 선만 — 분석 기간의 근거 해설(/api/levels?run=)은 붙이지 않는다
+            <ResultChart plan={chartPlan} ticker={run.ticker} tradeDate={run.trade_date} outlook={outlook}
+              runId={otherHorizon ? undefined : run.id} label={slotTitle(plan as AllHorizonsPlan | null, shownHorizon)} />
+          )}
           {tab === "debate" && (
             <div className="run-body has-glossary">
               <AgentRail events={events} status={status} analysts={run.options.analysts} />

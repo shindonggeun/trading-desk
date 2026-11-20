@@ -923,7 +923,7 @@ span.cs-hold-text { color: var(--warn); }
 @media (max-width: 760px) { .sum-verdict { font-size: 1.3rem; } .sum-big { font-size: 1.5rem; } }
 .result-chart-switch { margin-bottom: 2px; }
 /* #440 차트 옆 가격 사다리 — 넓은 화면은 오른쪽 세로 패널(접으면 차트가 넓어진다), 좁은 화면은 차트 아래 접힌 카드 */
-.chart-with-ladder { display: grid; gap: 14px; min-width: 0; }
+.chart-with-ladder { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }   /* 칸 하나일 때 auto 열이 차트 머리 길이만큼 늘지 않게(#697) */
 @media (min-width: 1100px) {
   .chart-with-ladder:has(> .level-ladder[open]) { grid-template-columns: minmax(0, 1fr) 300px; align-items: start; }
   .level-ladder[open] { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow-y: auto; }
@@ -2985,4 +2985,34 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .rp-candles figcaption { margin-top: 4px; }
 @media (max-width: 480px) {
   .rp-candles-box { height: 190px; }
+}
+/* #697 분석 결과의 네 기간 — PC 4칸, 휴대폰은 옆으로 넘김. 장세에 맞는 칸 강조 · 손익비 낮은 칸 흐리게 */
+.hz-board { display: grid; gap: 8px; }
+.hz-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.hz-head h3 { margin: 0; }
+.hz-class { font-size: 0.85em; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); }
+.hz-class-leverage, .hz-class-inverse { border-color: var(--warn); color: var(--warn); }
+.hz-class-bond, .hz-class-defensive { border-color: var(--ok); color: var(--ok); }
+.hz-fit { margin: 0; }
+.hz-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.hz-cell { display: grid; gap: 4px; align-content: start; text-align: left; padding: 10px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface); color: inherit; font: inherit; cursor: pointer; }
+.hz-cell.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.hz-cell.hz-best .hz-fit-chip { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+/* 손익비 낮은 칸 — 글자 대비를 떨어뜨리는 opacity 대신 점선 테두리 · 옅은 바탕 */
+.hz-cell.hz-low { border-style: dashed; background: color-mix(in srgb, var(--muted) 8%, var(--surface)); }
+.hz-rr-low { color: var(--warn); font-weight: 600; }
+.hz-cell-head { display: flex; justify-content: space-between; gap: 6px; align-items: baseline; }
+.hz-fit-chip { font-size: 0.8em; padding: 0 6px; border-radius: 4px; color: var(--muted); }
+.hz-fit-poor { color: var(--danger); }
+.hz-side-long { color: var(--long); font-weight: 600; }
+.hz-side-short { color: var(--short); font-weight: 600; }
+.hz-facts { display: grid; gap: 2px; }
+.hz-facts > span { display: flex; justify-content: space-between; gap: 8px; }
+.hz-facts .hz-k { color: var(--muted); }
+.hz-facts > span > span:last-child { text-align: right; }
+.hz-aside { display: block; }
+@media (max-width: 900px) {
+  .hz-grid { grid-auto-flow: column; grid-template-columns: none; grid-auto-columns: minmax(220px, 78%); overflow-x: auto; scroll-snap-type: x mandatory; }
+  .hz-cell { scroll-snap-align: start; }
 }

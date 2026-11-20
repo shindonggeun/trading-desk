@@ -1975,7 +1975,7 @@ export interface RunExplain {
 
 
 // #496 초보자 리포트(#495 /api/reports) — 01 계약(이슈 #495 댓글). 본문은 #493 RunExplain 과 같은 모양 + why · similar
-export interface ReportSubject { symbol: string; name: string; kind: "index" | "favorite" }
+export interface ReportSubject { symbol: string; name: string; kind: "index" | "favorite" | "topic" | "weekly" | "next_week" } // #681
 export interface ReportSummary {
   id: string;
   created_at: string;

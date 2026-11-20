@@ -22,12 +22,13 @@ export interface ArticleData {
 }
 
 /** 소제목의 작은 가격 그림: 세로 가격 축에 선(진입 · 손절 · 목표 · 구역 경계)과 지금가 표시. 차트 라이브러리 없이 SVG. */
-export function MiniLevels({ chart }: { chart: ExplainChart }) {
+export function MiniLevels({ chart }: { chart: ExplainChart | null }) {
+  if (!chart || chart.kind === "none" || !chart.levels) return null; // #681 그림 없는 절(일정 · 연결)
   const named = chart.levels.map((v, i) => ({ v, name: chart.labels?.[i] ?? "" })).filter((x) => x.v > 0);
   const levels = named.map((x) => x.v);
-  const marks = chart.marks.filter((v) => v > 0);
+  const marks = (chart.marks ?? []).filter((v) => v > 0);
   const all = [...levels, ...marks];
-  if (chart.kind === "none" || all.length === 0) return null;
+  if (all.length === 0) return null;
   const lo = Math.min(...all), hi = Math.max(...all);
   const pad = (hi - lo) * 0.25 || hi * 0.02;
   const H = 96, top = 8, bottom = 8;

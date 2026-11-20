@@ -69,8 +69,8 @@ export const ALERTS_LIVE: LiveSpec<MarketAlertsDay> = {
   reconcileMs: 5 * 60_000,
   apply: (prev, m) => {
     const a = m.payload as MarketAlert | null;
-    // REST 와 같게: 섹터 급등락만 타임라인에 없다(GET /api/sectors/movers). 보유 알림은 서버가 주인 세션에만 보낸다
-    if (!a || (a.kind as string) === "sector_mover" || typeof a.t !== "string") return undefined;
+    // REST 와 같게 모든 종류(섹터 급등락 포함, #740) — 보유 알림은 서버가 주인 세션에만 보낸다
+    if (!a || typeof a.kind !== "string" || typeof a.t !== "string") return undefined;
     if (a.trade_date && prev.date && a.trade_date < prev.date) return undefined;   // 자정을 넘긴 늦은 알림
     if (a.trade_date && prev.date && a.trade_date > prev.date) return { ...prev, date: a.trade_date, items: [a] };
     if (prev.items.some((x) => alertKey(x) === alertKey(a))) return undefined;

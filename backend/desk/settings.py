@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
+from desk import roles
+
 load_dotenv()
 
 
@@ -38,6 +40,8 @@ class Settings:
     # sqlite:///data/desk.db locally; postgresql+psycopg://user:pw@host:5432/db?options=-csearch_path%3Ddesk
     database_url: str = field(default_factory=lambda: os.getenv("DESK_DATABASE_URL", "sqlite:///data/desk.db"),
                               repr=False)   # #628 carries the PostgreSQL password
+    # #688 which background jobs this process runs (desk.roles): all | api | collector | analyst. Empty = all.
+    role: str = field(default_factory=lambda: roles.parse(os.getenv("DESK_ROLE")))
     # Fake runs replay a scripted debate: build the UI without spending the plan's quota.
     fake_runs: bool = field(default_factory=lambda: _bool("DESK_FAKE_RUNS"))
     fake_delay: float = field(default_factory=lambda: float(os.getenv("DESK_FAKE_DELAY", "0.6")))
@@ -131,6 +135,10 @@ class Settings:
     kakao_rest_key: str = field(default_factory=lambda: os.getenv("DESK_KAKAO_REST_KEY", ""), repr=False)
     kakao_client_secret: str = field(default_factory=lambda: os.getenv("DESK_KAKAO_CLIENT_SECRET", ""), repr=False)
     notify_key: str = field(default_factory=lambda: os.getenv("DESK_NOTIFY_KEY", ""), repr=False)
+
+    def __post_init__(self) -> None:
+        # #688 a role passed in code (tests, cli) is checked like DESK_ROLE
+        object.__setattr__(self, "role", roles.parse(self.role))
 
 
 def load() -> Settings:

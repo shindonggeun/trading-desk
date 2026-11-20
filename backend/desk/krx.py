@@ -104,6 +104,19 @@ def kst_today(at: datetime) -> date:
     return market_calendar.local_today("kr", at)
 
 
+def off_reason(settings) -> str | None:
+    """#601 why the daily collector does not run: ``no_key`` (DESK_KRX_API_KEY unset - the desk starts and
+    everything else works, nothing is asked), ``fake_runs``, ``feeds_off`` (DESK_MACRO_INTERVAL_SEC 0); None
+    when it runs (the previous business day's rows from READY_AT on)."""
+    if not settings.krx_api_key:
+        return "no_key"
+    if settings.fake_runs:
+        return "fake_runs"
+    if settings.macro_interval_sec <= 0:
+        return "feeds_off"
+    return None
+
+
 def ready_at(day: date) -> datetime:
     """When day's rows can be read: READY_AT on the next KR business day."""
     return datetime.combine(market_calendar.next_open("kr", day), READY_AT, KST)

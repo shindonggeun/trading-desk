@@ -559,7 +559,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     sector_tasks: dict[str, asyncio.Task] = {}
     # #601 KRX OPEN API end-of-day history: only with a key, and off in scripted runs and tests
     krx_desk = (krx.KrxDaily(engine, krx.Client(settings.krx_api_key))
-                if settings.krx_api_key and not settings.fake_runs and settings.macro_interval_sec > 0 else None)
+                if krx.off_reason(settings) is None else None)           # #601 no key: off, nothing else changes
     # #462: VIX · CNN / crypto Fear & Greed · VKOSPI, cached per source (fakes stay offline in tests)
     fear_gauges = (fear.Fear(candles=lambda *a: prices._yahoo_candles(*a),   # read when asked, as risk does
                              kis=lambda: getattr(futures, "rest", None),         # #486 VKOSPI via the futures KIS client

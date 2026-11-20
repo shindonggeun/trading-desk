@@ -22,14 +22,15 @@ resolve() { case "$1" in img-*) printf '%s' "$1" ;; *) cat "$S/tags/$(key "$1")"
 label() { cat "$S/img/$1.label" 2>/dev/null || true; }
 echo "docker $*" >> "$S/calls"
 if [ "$1" = compose ]; then
-  shift; while [ "$#" -gt 0 ]; do case "$1" in -p|--env-file|-f) shift 2 ;; *) break ;; esac; done
+  prof=''
+  shift; while [ "$#" -gt 0 ]; do case "$1" in -p|--env-file|-f) shift 2 ;; --profile) prof=$2; shift 2 ;; *) break ;; esac; done
   sub=$1; shift
   case "$sub" in
     config)
       case "${1:-}" in
         -q) exit 0 ;;
         --images) echo "$FAKE_IMAGE"; echo "$FAKE_IMAGE" ;;
-        --services) printf '%s\n' $FAKE_SERVICES ;;
+        --services) printf '%s\n' $FAKE_SERVICES; [ "$prof" != split ] || printf '%s\n' ${FAKE_SPLIT_SERVICES-collector-prod analyst-prod} ;;
       esac ;;
     ps) svc=${*: -1}; [ -f "$S/ctr/$svc" ] && echo "cid-$svc"; exit 0 ;;
     up)
@@ -39,6 +40,7 @@ if [ "$1" = compose ]; then
       for svc in "${svcs[@]}"; do
         h=healthy; [ "$(label "$id")" != "${FAKE_BAD_REV:-}" ] || { h=unhealthy; rc=1; }
         echo "$id $h" > "$S/ctr/$svc"
+        mkdir -p "$S/role"; echo "${DESK_API_ROLE:-unset}" > "$S/role/$svc"     # 셸 환경으로 받은 api 역할
       done
       exit $rc ;;
   esac
@@ -70,6 +72,8 @@ case "$1" in
       *) exit 0 ;;
     esac ;;
   logs) echo "boot ok, db=${FAKE_LOG_SECRET:-none}" ;;
+  ps) case "$*" in *-aq*) svc=${*: -1}; svc=${svc##*=}; [ ! -f "$S/ctr/$svc" ] || echo "cid-$svc" ;; esac ;;
+  rm) shift; for c in "$@"; do case "$c" in cid-*) rm -f "$S/ctr/${c#cid-}" ;; esac; done ;;
   images) for f in "$S"/tags/*; do b=$(basename "$f"); echo "${b%_*}:${b##*_}"; done ;;
   rmi) shift; for t in "$@"; do rm -f "$S/tags/$(key "$t")"; done ;;
 esac
@@ -121,13 +125,33 @@ touch "$SRC/backend/desk/migrations/versions/0099_new.py"
 rc=$(ROLLBACK_DRILL=1 deploy rev6); check "새 마이그레이션이면 되돌리지 않는다" "1 rev6" "$rc $(prod_rev)"
 grep -q "0099_new.py" "$TMP/out"; check "새 마이그레이션 이름을 보인다" 0 $?
 
-rc=$(FAKE_SERVICES="backend-prod collector-prod analyst-prod" deploy rev7)
-check "#688 서비스 3개를 같은 이미지로" "0 rev7 rev7 rev7" "$rc $(ctr_rev backend-prod) $(ctr_rev collector-prod) $(ctr_rev analyst-prod)"
+# ---- #688 백엔드 나누기 스위치(DESK_BACKEND_SPLIT)
+SPLITF="$TMP/env.split"; cp "$ENVF" "$SPLITF"; echo "DESK_BACKEND_SPLIT='1'" >> "$SPLITF"
+role() { cat "$STATE/role/$1" 2>/dev/null; }
+rc=$(ENV_FILE="$SPLITF" deploy rev7)
+check "#688 켜면 서비스 3개를 같은 이미지로" "0 rev7 rev7 rev7" "$rc $(ctr_rev backend-prod) $(ctr_rev collector-prod) $(ctr_rev analyst-prod)"
+check "켜면 backend-prod 는 api 역할, compose 는 profile split" "api 1" "$(role backend-prod) $(grep -c 'compose.*--profile split.* up .*backend-prod$' "$STATE/calls")"
 check "api(PRIMARY)를 먼저 올린다" "backend-prod" "$(grep 'compose.* up ' "$STATE/calls" | tail -2 | head -1 | awk '{print $NF}')"
+check "나머지는 api 를 다시 만들지 않게 --no-deps 로" 1 "$(grep 'compose.* up ' "$STATE/calls" | tail -1 | grep -c -- '--no-deps .*collector-prod analyst-prod$')"
 
-rc=$(FAKE_SERVICES="backend-prod collector-prod analyst-prod" ROLLBACK_DRILL=1 deploy rev8)
+rc=$(ENV_FILE="$SPLITF" ROLLBACK_DRILL=1 deploy rev8)
 check "서비스 3개 모두 되돌린다" "2 rev7 rev7 rev7" "$rc $(ctr_rev backend-prod) $(ctr_rev collector-prod) $(ctr_rev analyst-prod)"
 
-rc=$(PRIMARY_SERVICE=api deploy rev9); check "없는 PRIMARY_SERVICE 는 바꾸기 전에 멈춘다" "1 rev7" "$rc $(prod_rev)"
+: > "$STATE/calls"
+rc=$(deploy rev9)
+check "끄면 all 하나로 돌아간다" "0 rev9 all" "$rc $(ctr_rev backend-prod) $(role backend-prod)"
+check "끄면 collector · analyst 를 지운다" "no no" "$([ -f "$STATE/ctr/collector-prod" ] && echo yes || echo no) $([ -f "$STATE/ctr/analyst-prod" ] && echo yes || echo no)"
+first_rm=$(grep -n '^docker rm -f' "$STATE/calls" | head -1 | cut -d: -f1)
+first_up=$(grep -n 'compose.* up ' "$STATE/calls" | head -1 | cut -d: -f1)
+check "api 를 all 로 띄우기 전에 지운다(토큰 발급자가 둘이 되지 않게)" yes "$([ -n "$first_rm" ] && [ "$first_rm" -lt "${first_up:-0}" ] && echo yes)"
+
+BADF="$TMP/env.bad"; cp "$ENVF" "$BADF"; echo "DESK_BACKEND_SPLIT='yes'" >> "$BADF"
+rc=$(ENV_FILE="$BADF" deploy rev10); check "스위치 값이 0 | 1 이 아니면 바꾸기 전에 멈춘다" "1 rev9" "$rc $(prod_rev)"
+rc=$(ENV_FILE="$SPLITF" FAKE_SPLIT_SERVICES="collector-prod" deploy rev10)
+check "켰는데 compose 에 analyst 가 없으면 멈춘다" "1 rev9" "$rc $(prod_rev)"
+rc=$(FAKE_SERVICES="backend-prod collector-prod" deploy rev10)
+check "껐는데 profile 없이 collector 가 있으면 멈춘다" "1 rev9" "$rc $(prod_rev)"
+
+rc=$(PRIMARY_SERVICE=api deploy rev11); check "없는 PRIMARY_SERVICE 는 바꾸기 전에 멈춘다" "1 rev9" "$rc $(prod_rev)"
 
 if [ "$FAILS" = 0 ]; then echo "모두 통과"; else echo "${FAILS}개 실패"; exit 1; fi

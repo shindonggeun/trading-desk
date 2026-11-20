@@ -2345,3 +2345,52 @@ export interface LinesReport {
   /** DEV 에서 API 가 없을 때 봉으로 만든 가짜(화면 확인용) */
   fake?: boolean;
 }
+
+/** #631 · #672 GET /api/chart-read — 선이 차트에서 무엇인지(채널 · 짧은 추세선은 /api/lines 와 같은 id) */
+export interface ChartReadRef {
+  kind: "channel" | "trendline" | "pattern" | "swing" | "fib" | "gap";
+  id?: string | null;
+  /** 채널: upper · lower · mid · outer_upper · outer_lower, 삼각수렴: upper · lower */
+  edge?: string;
+  direction?: string;
+  /** 추세선: support · resistance, 최근 고점 · 저점: high · low */
+  side?: string;
+  /** 방금 깨진 추세선 */
+  broken?: boolean;
+  pattern?: string | null;
+  state?: string;
+  ratio?: number;
+  formed_at?: string;
+  at?: string;
+}
+
+/** 가까운 위 · 아래 선(가까운 순, 4분의 1 ATR 안의 선은 하나로 — name 은 " · " 로 이어 붙임) */
+export interface ChartReadLevel {
+  price: number;
+  name: string;
+  distance_pct: number;
+  refs?: ChartReadRef[];
+}
+
+export interface ChartReadFrame {
+  timeframe: string;
+  as_of?: string | null;
+  price?: number | null;
+  live_bar?: boolean;
+  trend?: { state: "up" | "down" | "sideways"; basis?: string };
+  levels?: { above: ChartReadLevel[]; below: ChartReadLevel[]; far?: { above: ChartReadLevel[]; below: ChartReadLevel[] } };
+  volume?: { ratio: number; hot: boolean } | null;
+  summary?: string;
+  /** 이 시간봉을 읽지 못했다(봉을 못 받음 등) */
+  error?: string;
+}
+
+export interface ChartRead {
+  ticker: string;
+  generated_at: string;
+  timeframes: ChartReadFrame[];
+  /** 시간봉끼리 엇갈리는 곳 */
+  conflicts: string[];
+  summary: string;
+  note: string;
+}

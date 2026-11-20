@@ -1,4 +1,4 @@
-import type { GapReport, LinesReport, LineTf } from "./types";
+import type { ChartRead, GapReport, LinesReport, LineTf } from "./types";
 import type { DayCallHistory, DayCallMarket, DayCallStats, DayCallToday, MorningBrief, MorningBriefList } from "./types";
 import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, PaperEquity, PaperSettings, PaperSettingsPatch, PaperSummary, PaperTrades, RunExplain, TipsView } from "./types";
 import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, ReportDetail, ReportList, Halving, FundBrief, FundChanges, FundDetail, FearIndex, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
@@ -347,6 +347,8 @@ export const api = {
         (wanted.length ? `&indicators=${encodeURIComponent(wanted.join(","))}` : ""),
     );
   },
+  /** #631 · #632 차트만 읽기 — 시간봉(5분 ~ 일)별 흐름 · 가까운 선 · 쉬운 문장(규칙 기반, 가장 짧은 봉이 끝날 때까지 캐시) */
+  chartRead: (ticker: string) => call<ChartRead>(`/api/chart-read?ticker=${encodeURIComponent(ticker)}`),
   /** #653 마지막 봉 · 현재가(서버 2초 캐시) — 차트가 보일 때만 몇 초마다 */
   candlesLive: (ticker: string, interval: CandleInterval) =>
     call<CandleLive>(`/api/candles/live?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(interval)}`),

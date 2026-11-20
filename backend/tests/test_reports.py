@@ -3,7 +3,7 @@ model's wording kept only where its numbers are the desk's, the schedule and the
 
 import json
 import time
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from desk import prices
 from desk import reports as rp
@@ -92,16 +92,6 @@ def test_the_models_wording_is_kept_only_where_its_numbers_are_the_desks():
     assert failed["source"] == "rules" and failed["fallback"] == "TimeoutError"
 
 
-def test_the_next_report_waits_for_a_korean_trading_day_after_the_close():
-    kst = rp.market_calendar.KST
-    monday = datetime(2026, 11, 16, 16, 31, tzinfo=kst)
-    assert rp.due_after(monday, 3, monday).astimezone(kst) == datetime(2026, 11, 19, 16, 30, tzinfo=kst)
-    thursday = datetime(2026, 11, 19, 16, 31, tzinfo=kst)                    # +3 is a Sunday: Monday
-    assert rp.due_after(thursday, 3, thursday).astimezone(kst) == datetime(2026, 11, 23, 16, 30, tzinfo=kst)
-    now = datetime(2026, 11, 17, 3, 0, tzinfo=UTC)                           # none yet: today's close
-    assert rp.due_after(None, 3, now).astimezone(kst) == datetime(2026, 11, 17, 16, 30, tzinfo=kst)
-
-
 def test_the_api_writes_one_in_the_background_lists_and_reads_it(db_url):
     from tests.test_api import _client
 
@@ -115,7 +105,7 @@ def test_the_api_writes_one_in_the_background_lists_and_reads_it(db_url):
             time.sleep(0.1)
         item = listed["items"][0]
         assert set(item) == {"id", "created_at", "title", "summary", "subject", "source"}
-        assert item["subject"]["kind"] == "index" and item["created_at"].endswith("Z")
+        assert item["subject"]["kind"] in ("topic", "weekly", "next_week") and item["created_at"].endswith("Z")
         full = client.get(f"/api/reports/{item['id']}").json()
         assert full["id"] == item["id"] and 3 <= len(full["sections"]) <= 5 and full["why"]["text"]
         assert all(s["image"] is None for s in full["sections"])
@@ -126,7 +116,9 @@ def test_the_api_writes_one_in_the_background_lists_and_reads_it(db_url):
         assert client.post("/api/reports").status_code in (401, 403)
 
 
-def test_only_the_owners_favorites_are_candidates(db_url):
+def test_the_candidates_are_the_two_indexes_and_the_rotation_never_a_favorite(db_url):
+    """#681 the subjects come from the rotation (desk.report_plan), no longer from anyone's favorites."""
+    from desk import report_plan
     from desk.auth import Auth
     from desk.db import favorites, make_engine, migrate, now
 
@@ -134,15 +126,15 @@ def test_only_the_owners_favorites_are_candidates(db_url):
     engine = make_engine(db_url)
     auth = Auth(engine, timedelta(hours=1), timedelta(hours=1))
     auth.create_user("owner@example.com", "pw-owner-1234")
-    auth.create_user("guest@example.com", "pw-guest-1234")
     with engine.begin() as conn:
-        conn.execute(favorites.insert(), [
-            {"user_id": 1, "ticker": "NVDA", "name": "엔비디아", "position": 0, "created_at": now()},
-            {"user_id": 2, "ticker": "TSLA", "name": "테슬라", "position": 0, "created_at": now()}])
-    desk = rp.Reports(engine, rp.fake_fetch)
-    got = [c[0] for c in desk.candidates()]
+        conn.execute(favorites.insert(), [{"user_id": 1, "ticker": "TSLA", "name": "TSLA", "position": 0,
+                                           "created_at": now()}])
+    got = rp.Reports(engine, rp.fake_fetch).candidates()
+    mine = rp.Reports(engine, rp.fake_fetch, topics=report_plan.topics("SOXL,005930.KS:삼성전자")).candidates()
     engine.dispose()
-    assert got[:len(rp.INDEXES)] == [s for s, _ in rp.INDEXES] and "NVDA" in got and "TSLA" not in got
+    assert [s for s, _, k in got if k == "index"] == ["^KS11", "NQ=F"] and "TSLA" not in [s for s, _, _ in got]
+    assert [s for s, _, k in got if k == "topic"] == [s for s, _ in report_plan.TOPICS]
+    assert [(s, n) for s, n, k in mine if k == "topic"] == [("SOXL", "SOXL"), ("005930.KS", "삼성전자")]
 
 
 def test_the_last_line_is_always_under_the_close_even_below_the_prior_low():

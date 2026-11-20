@@ -6,6 +6,10 @@ Every number comes from the desk's own calculation (the closes, the volume, RSI,
 the primary trend); the model (one call on the ChatGPT plan) only rewords the desk's draft, and a sentence
 carrying a number the desk did not give is dropped (#493 ``explain`` rules). Images (#497) are not drawn here:
 ``sections[].image`` stays ``None``.
+
+#681 one report a US trading day on a subject from a rotation (desk.report_plan), a weekly wrap-up on
+Saturday and the week ahead on Sunday, each around KOSPI's and the Nasdaq-100 future's nearest levels;
+the model is the deep tier, or DESK_REPORT_MODEL with DESK_REPORT_REASONING (``model_call``).
 """
 
 from __future__ import annotations
@@ -17,14 +21,13 @@ import math
 import secrets
 import statistics
 from collections.abc import Callable, Iterable
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.engine import Engine
 
-from desk import explain, indicators, market_calendar, primary_trend, runner, sr
-from desk.db import favorites as favorites_t
+from desk import explain, indicators, market_calendar, primary_trend, report_plan, runner, sr
 from desk.db import now as db_now
 from desk.db import reports as reports_t
 from desk.db import users as users_t
@@ -37,11 +40,11 @@ WEEKLY_BARS = 156
 WEEK = 5                     # trading days in "the last week"
 AFTER = 20                   # trading days after a past scene
 BASE = 60                    # the window for the prior low / high (before the last week)
-MAX_FAVORITES = 8
 MAX_SIMILAR = 3
-KR_DONE = time(16, 30)       # the automatic report waits for the Korean close and the closing prices
 RETRY_SEC = 30 * 60          # no free ChatGPT slot (a run is going): try again later
 MANUAL_GAP_SEC = 10 * 60     # a manual report at most this often (each one costs a model call and a push)
+REPORT_TIMEOUT_SEC = 300     # #681 a high-reasoning model takes its time over the one call
+RECENT_REPORTS = 40          # the last reports read for the written slots and the rotation
 MIN_SECTIONS = 3
 INDEXES = tuple((sym, name) for sym, _market, name in primary_trend.MARKETS)
 
@@ -368,7 +371,14 @@ def write(subject: dict, candidates: list[dict], model: Callable[[str], str] | N
     """The report for the chosen subject: the desk's draft, reworded by ``model`` (blocking, one call) when
     given. Any failure of the model leaves the draft (``fallback``)."""
     f = _facts(subject)
-    draft = rules(f)
+    out = write_draft(rules(f), f, subject["symbol"], model)
+    return {**out, "subject": {"symbol": subject["symbol"], "name": subject["name"], "kind": subject["kind"]},
+            "as_of": subject["as_of"], "why": _why(subject, candidates)}
+
+
+def write_draft(draft: dict, f: dict, label: str, model: Callable[[str], str] | None = None) -> dict:
+    """The desk's ``draft`` reworded by ``model`` (one call) where the model's sentences carry only the numbers
+    in ``f`` and the draft; a failing model leaves the draft (``fallback``), a rate limit is raised."""
     out = draft
     if model is not None:
         try:
@@ -390,12 +400,35 @@ def write(subject: dict, candidates: list[dict], model: Callable[[str], str] | N
         except Exception as exc:  # timeout, no login, an odd answer: the desk's wording
             if runner.rate_limited(exc):
                 raise                    # the run slot's back-off must see the plan's rate limit
-            log.warning("report on %s: model failed (%s)", subject["symbol"], type(exc).__name__)
+            log.warning("report on %s: model failed (%s)", label, type(exc).__name__)
             out = {**draft, "fallback": type(exc).__name__}
     for s in out["sections"]:
         s.setdefault("image", None)
-    return {**out, "subject": {"symbol": subject["symbol"], "name": subject["name"], "kind": subject["kind"]},
-            "as_of": subject["as_of"], "why": _why(subject, candidates)}
+    return out
+
+
+def model_config(cfg: dict, model: str = "", reasoning: str = "") -> dict:
+    """#681 the TradingAgents config with the report's own deep model and reasoning effort (each provider's
+    knob: OpenAI / ChatGPT ``reasoning_effort``, Anthropic ``effort``, Google ``thinking_level``)."""
+    out = dict(cfg)
+    if model:
+        out["deep_think_llm"] = model
+    if reasoning:
+        out.update(openai_reasoning_effort=reasoning, anthropic_effort=reasoning, google_thinking_level=reasoning)
+    return out
+
+
+def model_call(model: str = "", reasoning: str = "") -> Callable[[str], str]:
+    """The report's one model call: the provider's deep tier (DESK_REPORT_MODEL / DESK_REPORT_REASONING over it),
+    one attempt. Blocking."""
+    def call(prompt: str) -> str:
+        from tradingagents.default_config import build_default_config
+        from tradingagents.llm_clients import create_tier_client
+
+        cfg = model_config(build_default_config(), model, reasoning)
+        llm = create_tier_client(cfg, "deep", timeout=REPORT_TIMEOUT_SEC, max_retries=0).get_llm()
+        return llm.invoke(prompt).content
+    return call
 
 
 # ---------------------------------------------------------------- data and storage
@@ -434,23 +467,17 @@ def fake_fetch(symbol: str) -> tuple[list[dict], list[dict]]:
     return daily, weekly[-WEEKLY_BARS:]
 
 
-def due_after(last: datetime | None, every_days: int, now: datetime) -> datetime:
-    """When the next automatic report is due: ``every_days`` after the last one, after the Korean close on a
-    Korean trading day (``KR_DONE``); right away (today's close, or the next) when there is none yet."""
-    start = (last + timedelta(days=every_days)) if last else now
-    d = start.astimezone(market_calendar.KST).date()
-    for _ in range(15):                  # the first Korean trading day on or after that day
-        if market_calendar.is_open("kr", d):
-            break
-        d += timedelta(days=1)
-    return datetime.combine(d, KR_DONE, market_calendar.KST).astimezone(UTC)
-
-
 class Reports:
     """Stores the reports, picks the subject and writes one at a time."""
 
-    def __init__(self, engine: Engine, fetch: Fetch = yahoo_fetch, every_days: int = 3) -> None:
+    def __init__(self, engine: Engine, fetch: Fetch = yahoo_fetch, every_days: int = 3,
+                 topics: Iterable[tuple[str, str]] | None = None, calls: Callable[[], dict] | None = None,
+                 events: Callable[[datetime], list[dict]] | None = None) -> None:
+        """``every_days`` > 0: the automatic reports are on (#681: the schedule is desk.report_plan's, no longer
+        every few days); ``calls``: the week's day-call record; ``events``: the macro calendar after a time."""
         self.engine, self.fetch, self.every_days = engine, fetch, every_days
+        self.topics = tuple(topics or report_plan.TOPICS)
+        self.calls, self.events = calls, events
         self.generating = False
 
     # storage -----------------------------------------------------------
@@ -487,8 +514,32 @@ class Reports:
             at = at.replace(tzinfo=UTC)
         return at
 
-    def next_due(self, now: datetime | None = None) -> datetime:
-        return due_after(self.last_at(), self.every_days, now or datetime.now(UTC))
+    def _recent(self) -> list:
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(reports_t.c.created_at, reports_t.c.symbol, reports_t.c.body)
+                                .order_by(reports_t.c.created_at.desc()).limit(RECENT_REPORTS)).all()
+        return [(r.created_at if r.created_at.tzinfo else r.created_at.replace(tzinfo=UTC), r.symbol, r.body or {})
+                for r in rows]
+
+    def done_slots(self) -> set[str]:
+        """The schedule slots already written (a manual report fills none)."""
+        return {b["slot"] for _, _, b in self._recent() if b.get("slot")}
+
+    def recent_subjects(self) -> dict[str, datetime]:
+        """When each subject last had a day's report (the reports before #681 count too)."""
+        out: dict[str, datetime] = {}
+        for at, symbol, body in self._recent():
+            if body.get("kind", "daily") == "daily" and symbol not in out:
+                out[symbol] = at
+        return out
+
+    def due(self, now: datetime | None = None) -> tuple[report_plan.Slot | None, datetime | None]:
+        """The slot to write now (or None) and when the next one comes."""
+        return report_plan.due(now or datetime.now(UTC), self.done_slots())
+
+    def next_due(self, now: datetime | None = None) -> datetime | None:
+        slot, later = self.due(now)
+        return slot.due if slot else later
 
     def save(self, report: dict) -> dict:
         at = db_now()
@@ -523,55 +574,112 @@ class Reports:
             return conn.execute(select(users_t.c.id).order_by(users_t.c.id).limit(1)).scalar()
 
     def candidates(self) -> list[tuple[str, str, str]]:
-        out = [(sym, name, "index") for sym, name in INDEXES]
-        owner = self.owner()
-        if owner is None:
-            return out
-        with self.engine.connect() as conn:
-            rows = conn.execute(select(favorites_t.c.ticker, favorites_t.c.name)
-                                .where(favorites_t.c.user_id == owner)
-                                .order_by(favorites_t.c.position, favorites_t.c.ticker)).all()
+        """#681 the two indexes (KOSPI, the Nasdaq-100 future) and the rotation's topics - no longer the owner's
+        favorites."""
+        out = [(sym, name, "index") for sym, name in report_plan.INDEXES]
         seen = {s for s, _, _ in out}
-        for r in rows:
-            if r.ticker not in seen and len(out) < len(INDEXES) + MAX_FAVORITES:
-                out.append((r.ticker, r.name or r.ticker, "favorite"))
-                seen.add(r.ticker)
+        out += [(sym, name, "topic") for sym, name in self.topics if sym not in seen]
         return out
 
-    def measure_all(self) -> list[dict]:
-        measured, first = [], None
+    def _measure(self) -> tuple[list[dict], dict[str, list[dict]]]:
+        """Every candidate measured, and its daily bars dated on its own local day."""
+        measured, bars, first = [], {}, None
         for sym, name, kind in self.candidates():
             try:
                 daily, weekly = self.fetch(sym)
                 m = measure(sym, name, kind, daily, weekly)
+                if m and kind == "index":
+                    m["pattern"] = report_plan.pattern_of(daily, m["atr"])
             except Exception as exc:  # noqa: BLE001 - one subject's data failing never stops the report
                 log.warning("report: %s skipped (%s)", sym, type(exc).__name__)
                 first = first or (sym, exc)
                 continue
             if m:
                 measured.append(m)
+                zone = _zone_of(sym)
+                bars[sym] = [{**b, "day": _day(b["at"], zone)} for b in daily if b.get("close")]
         if not measured and first:           # every subject failed: say why, so the cause shows at once
             log.warning("report: every subject failed; the first, %s: %s: %s", first[0], type(first[1]).__name__,
                         str(first[1])[:200])
-        return measured
+        return measured, bars
 
-    def make(self, model: Callable[[str], str] | None = None) -> dict | None:
+    def measure_all(self) -> list[dict]:
+        return self._measure()[0]
+
+    def make(self, model: Callable[[str], str] | None = None, kind: str | None = None,
+             slot: report_plan.Slot | None = None) -> dict | None:
         """One report, written and stored (blocking): ``None`` when no subject had data."""
-        got = self.choose()
-        return None if got is None else self.finish(got, model)
+        got = self.choose(kind or (slot.kind if slot else report_plan.kind_for(datetime.now(UTC))))
+        return None if got is None else self.finish(got, model, slot)
 
-    def choose(self) -> tuple[dict, list[dict]] | None:
-        """The subject and the candidates (the price fetches; no model call)."""
-        got = pick(self.measure_all())
-        if got is None:
-            log.warning("report: no subject had data")
-        return got
+    def choose(self, kind: str = "daily", now: datetime | None = None) -> dict | None:
+        """What the report of ``kind`` is about (the price fetches; no model call): a day's subject from the
+        rotation, or the week's indexes and topics."""
+        now = now or datetime.now(UTC)
+        measured, bars = self._measure()
+        indexes = [m for m in measured if m["kind"] == "index"]
+        topics = [m for m in measured if m["kind"] != "index"]
+        plan: dict = {"kind": kind, "indexes": indexes, "topics": topics}
+        if kind == "daily":
+            ranked = report_plan.rank(topics, self.recent_subjects(), now)
+            if not ranked:
+                log.warning("report: no subject had data")
+                return None
+            subject = ranked[0]
+            link = report_plan.same_direction(bars[subject["symbol"]], bars.get(report_plan.link_of(subject["symbol"]), []))
+            return {**plan, "subject": subject, "candidates": ranked, "link": link}
+        if not indexes:
+            log.warning("report: no index had data")
+            return None
+        if kind == "weekly":
+            plan["calls"] = self._calls()
+        else:
+            plan["events"] = report_plan.week_events(now, self._events(now))
+        return plan
 
-    def finish(self, got: tuple[dict, list[dict]], model: Callable[[str], str] | None = None) -> dict:
-        """The chosen subject's report written (one model call when ``model``) and stored."""
-        report = write(*got, model=model)
+    def _calls(self) -> dict | None:
+        try:
+            return self.calls() if self.calls else None
+        except Exception as exc:  # noqa: BLE001 - the record is one section, never the report
+            log.warning("report: day-call record failed (%s)", type(exc).__name__)
+            return None
+
+    def _events(self, now: datetime) -> list[dict]:
+        try:
+            return self.events(now) if self.events else []
+        except Exception as exc:  # noqa: BLE001
+            log.warning("report: calendar failed (%s)", type(exc).__name__)
+            return []
+
+    def finish(self, plan: dict, model: Callable[[str], str] | None = None,
+               slot: report_plan.Slot | None = None) -> dict:
+        """The report of the plan written (one model call when ``model``) and stored, with its slot."""
+        kind = plan["kind"]
+        short = lambda ms: [{k: v for k, v in _facts(m).items() if k != "similar"} for m in ms]
+        if kind == "daily":
+            subject = plan["subject"]
+            f = _facts(subject)
+            draft = report_plan.daily(rules(f), subject, plan["indexes"], plan["link"])
+            facts = {**f, "indexes": short(plan["indexes"]), "link": plan["link"]}
+            head = {"subject": {"symbol": subject["symbol"], "name": subject["name"], "kind": subject["kind"]},
+                    "as_of": subject["as_of"], "why": _why(subject, plan["candidates"])}
+        else:
+            lead = next((m for m in plan["indexes"] if m["symbol"] == report_plan.NQ), plan["indexes"][0])
+            as_of = max(m["as_of"] for m in plan["indexes"])
+            if kind == "weekly":
+                draft = report_plan.weekly(plan["indexes"], plan["topics"], plan.get("calls"), as_of)
+                facts = {"indexes": short(plan["indexes"]), "movers": short(plan["topics"]), "calls": plan.get("calls")}
+            else:
+                watch = sorted(plan["topics"], key=lambda m: m["score"], reverse=True)[:3]
+                draft = report_plan.next_week(plan["indexes"], watch, plan.get("events") or [], as_of)
+                facts = {"indexes": short(plan["indexes"]), "watch": short(watch), "events": plan.get("events")}
+            head = {"subject": {"symbol": lead["symbol"], "name": report_plan.KIND_KO[kind], "kind": kind},
+                    "as_of": as_of, "why": {"text": f"{report_plan.KIND_KO[kind]}: 코스피 · 나스닥100 선물과 순환 종목 "
+                                                     f"{len(plan['topics'])}개를 봤어요.", "candidates": []}}
+        report = {**write_draft(draft, facts, head["subject"]["symbol"], model), **head, "kind": kind,
+                  "slot": slot.key if slot else None}
         if report.get("fallback"):
-            log.info("report on %s kept with the desk's wording", got[0]["symbol"])
+            log.info("report on %s kept with the desk's wording", head["subject"]["symbol"])
         return self.save(report)
 
 

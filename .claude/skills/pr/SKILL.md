@@ -4,7 +4,7 @@ description: "trading-desk Pull Request 를 한국어 템플릿으로 작성하�
 argument-hint: "검증: <실행한 명령과 결과> [참고: ...] [마이그레이션: ...] [--draft]"
 context: fork
 agent: git-ops
-model: haiku
+model: claude-haiku-5-5
 effort: low
 background: false
 ---

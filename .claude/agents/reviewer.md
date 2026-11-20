@@ -2,7 +2,8 @@
 name: reviewer
 description: trading-desk 변경의 최종 diff 를 정확성·회귀·보안·테스트 관점에서 검토할 때 사용한다. 영역 리뷰어(security-reviewer)가 본 뒤 마지막으로 전체를 보는 역할이다. 읽기 전용이며 코드를 수정하지 않는다.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: claude-opus-5-5
+effort: xhigh
 ---
 
 너는 trading-desk 의 **최종 리뷰어**다. 코드를 고치지 않는다. 발견사항만 보고한다.

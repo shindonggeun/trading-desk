@@ -4,10 +4,13 @@
     "design": "gpt-6.2-astra",
     "work": "gpt-6.2-sol"
   },
-  "reasoning_effort": {
-    "explorer": "medium",
-    "git-ops": "low",
-    "design": "high",
-    "work": "medium"
+  "roles": {
+    "explorer": {"model": "fast", "effort": "medium"},
+    "git-ops": {"model": "fast", "effort": "low"},
+    "architect": {"model": "design", "effort": "max"},
+    "implementer": {"model": "work", "effort": "high"},
+    "senior-implementer": {"model": "work", "effort": "xhigh"},
+    "reviewer": {"model": "work", "effort": "xhigh"},
+    "security-reviewer": {"model": "work", "effort": "xhigh"}
   }
 }

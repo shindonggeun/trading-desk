@@ -10,15 +10,20 @@ Git 규칙의 정본은 [docs/git-workflow.md](../../../docs/git-workflow.md) �
 
 ## 모델 라우팅
 
-| 일 | 맡는 곳 | 모델 |
-|----|---------|------|
-| 분류 · 계획 · 구현 · 검증 실행 · 완료 판단 | 메인 세션 | 세션 모델 |
-| 위치 · 호출 흐름을 모르는 탐색 | `explorer` | `.codex/agent-models.json` 의 `fast` |
-| 이슈 시작, 푸시 · PR 생성, 머지 후 정리 | `$issue-start` · `$pr` · `git_ops` | `fast` |
-| 설계 | `architect` | `design` |
-| 검토 | `security_reviewer` · `reviewer` | `work` |
+모델 · 추론 강도의 정본은 `.codex/agent-models.json` 이다(아래는 Claude 쪽과 같은 무게 배치).
+
+| 일 | 맡는 곳 | 모델 등급 · effort |
+|----|---------|--------------------|
+| 분류 · 계획 · 검증 실행 · 완료 판단 | 메인 세션 | 세션 모델 |
+| 위치 · 호출 흐름을 모르는 탐색 | `explorer` | fast · medium |
+| 이슈 시작, 푸시 · PR 생성, diff 확인, 머지 후 정리 | `$issue-start` · `$pr` · `git_ops` | fast · low |
+| 설계 (`ARCHITECTURE`, `T3`) | `architect` | design · max |
+| 단순 구현 (`T0` ~ `T1`) | `implementer` 또는 메인 세션 | work · high |
+| 어려운 구현 · 치명적 버그 · 중요한 기능 (`T2` ~ `T3`) | `senior_implementer` | work · xhigh |
+| 검토 | `security_reviewer` · `reviewer` | work · xhigh |
 
 - 위치를 아는 파일 몇 개 읽기, 커밋 한 번 같은 단일 작업은 메인 세션이 직접 한다. 하위 에이전트는 띄우는 비용이 더 크다.
+- `max` 는 설계에만 쓴다 — 토큰이 많이 들고 과하게 생각하기 쉽다.
 - 하위 에이전트는 대화 기록을 보지 못한다. 경로 · 브랜치 · 이슈 번호 · 검증 결과 · 원하는 출력 형식을 프롬프트에 담는다.
 - Codex 에서는 `spawn_agent(agent_type="explorer", ...)` 처럼 `.codex/agents/` 의 이름(하이픈 대신 밑줄)을 쓴다.
   위임이 허용되지 않았거나 하위 에이전트를 쓸 수 없으면 메인 세션이 `.agents/roles/<역할>.md` 를 읽고 같은 순서로 직접 한다.
@@ -68,7 +73,14 @@ Git 규칙의 정본은 [docs/git-workflow.md](../../../docs/git-workflow.md) �
 
 ## 5. IMPLEMENT
 
-메인 세션이 직접 한다. 공유 파일(`api.py`, `store.py`, `settings.py`, `frontend/src/api.ts`)을 고치는 쓰기 작업은 한 번에 하나만.
+| 등급 | 맡는 곳 |
+|------|---------|
+| `T0` | 메인 세션이 직접 |
+| `T1` | 메인 세션 또는 `implementer` (범위 · 대상 테스트를 고정해 넘긴다) |
+| `T2` · `T3` · 치명적 버그 | `senior_implementer` (고정한 설계 · 보존할 동작 · 검증 방법을 넘긴다) |
+
+- 공유 파일(`api.py`, `store.py`, `settings.py`, `frontend/src/api.ts`)을 고치는 쓰기 작업은 한 번에 하나만. 구현 역할을 병렬로 띄우지 않는다.
+- 구현 역할이 범위 밖 신호(인증 · 브로커 · 스키마 · 동시성)로 멈추면 등급을 올려 다시 고정한다.
 
 ## 6. VERIFY
 
@@ -86,7 +98,7 @@ cd frontend && npm run build
 
 | 범위 | 검토 역할 |
 |------|-----------|
-| 인증 · 세션 · 쿠키 · 비밀 · 브로커 키 · 인그레스 | `security-reviewer` |
+| 인증 · 세션 · 쿠키 · 비밀 · 브로커 키 · 인그레스 | `security_reviewer` |
 | 최종 diff 전반 | `reviewer` |
 
 - `T1` · `T2` 는 해당 검토 1개, `T3` 는 둘 다 — 읽기 전용이라 위임이 허용되면 **병렬로** 부르고(`spawn_agent` 여러 번 → `wait_agent`), 아니면 메인 세션이 차례로 검토한다.
@@ -96,7 +108,7 @@ cd frontend && npm run build
 
 - 커밋은 메인 세션이 경로를 하나씩 스테이징해 만든다(`docs/git-workflow.md` §4).
 - PR 은 `$pr` 에 **검증 결과를 인자로** 넘긴다. 예: `$pr 검증: pytest 24 passed · ruff OK · npm run build OK · 참고: security-reviewer HIGH 0`
-- 머지 후 정리 · 이슈 체크박스 갱신은 PR 번호 · 완료 항목을 적어 `git-ops` 에 맡긴다.
+- 머지 후 정리 · 이슈 체크박스 갱신은 PR 번호 · 완료 항목을 적어 `git_ops` 에 맡긴다.
 - 배포가 필요한 변경이면 [docs/deploy.md](../../../docs/deploy.md) 순서를 따른다.
 
 ## 완료 조건

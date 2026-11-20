@@ -10,15 +10,18 @@ Git 규칙의 정본은 [docs/git-workflow.md](../../../docs/git-workflow.md) �
 
 ## 모델 라우팅
 
-| 일 | 맡는 곳 | 모델 |
-|----|---------|------|
-| 분류 · 계획 · 구현 · 검증 실행 · 완료 판단 | 메인 세션 | 세션 모델 |
-| 위치 · 호출 흐름을 모르는 탐색 | `explorer` | Haiku |
-| 이슈 시작, 푸시 · PR 생성, 머지 후 정리 | `/issue-start` · `/pr` · `git-ops` | Haiku |
-| 설계 | `architect` | Fable |
-| 검토 | `security-reviewer` · `reviewer` | Opus |
+| 일 | 맡는 곳 | 모델 · effort |
+|----|---------|---------------|
+| 분류 · 계획 · 검증 실행 · 완료 판단 | 메인 세션 | 세션 모델 |
+| 위치 · 호출 흐름을 모르는 탐색 | `explorer` | Haiku 5.5 · medium |
+| 이슈 시작, 푸시 · PR 생성, diff 확인, 머지 후 정리 | `/issue-start` · `/pr` · `git-ops` | Haiku 5.5 · low |
+| 설계 (`ARCHITECTURE`, `T3`) | `architect` | Fable 5.2 · max |
+| 단순 구현 (`T0` ~ `T1`) | `implementer` 또는 메인 세션 | Sonnet 5.5 · high (필요하면 xhigh) |
+| 어려운 구현 · 치명적 버그 · 중요한 기능 (`T2` ~ `T3`) | `senior-implementer` | Opus 5.5 · xhigh |
+| 검토 | `security-reviewer` · `reviewer` | Opus 5.5 · xhigh |
 
 - 위치를 아는 파일 몇 개 읽기, 커밋 한 번 같은 단일 작업은 메인 세션이 직접 한다. 하위 에이전트는 띄우는 비용이 더 크다.
+- `max` 는 설계에만 쓴다 — 토큰이 많이 들고 과하게 생각하기 쉽다. Fable 은 플랜에 따라 사용 크레딧으로 청구될 수 있다.
 - 하위 에이전트는 대화 기록을 보지 못한다. 경로 · 브랜치 · 이슈 번호 · 검증 결과 · 원하는 출력 형식을 프롬프트에 담는다.
 
 ## 1. CLASSIFY
@@ -66,7 +69,14 @@ Git 규칙의 정본은 [docs/git-workflow.md](../../../docs/git-workflow.md) �
 
 ## 5. IMPLEMENT
 
-메인 세션이 직접 한다. 공유 파일(`api.py`, `store.py`, `settings.py`, `frontend/src/api.ts`)을 고치는 쓰기 작업은 한 번에 하나만.
+| 등급 | 맡는 곳 |
+|------|---------|
+| `T0` | 메인 세션이 직접 |
+| `T1` | 메인 세션 또는 `implementer` (범위 · 대상 테스트를 고정해 넘긴다) |
+| `T2` · `T3` · 치명적 버그 | `senior-implementer` (고정한 설계 · 보존할 동작 · 검증 방법을 넘긴다) |
+
+- 공유 파일(`api.py`, `store.py`, `settings.py`, `frontend/src/api.ts`)을 고치는 쓰기 작업은 한 번에 하나만. 구현 역할을 병렬로 띄우지 않는다.
+- 구현 역할이 범위 밖 신호(인증 · 브로커 · 스키마 · 동시성)로 멈추면 등급을 올려 다시 고정한다.
 
 ## 6. VERIFY
 

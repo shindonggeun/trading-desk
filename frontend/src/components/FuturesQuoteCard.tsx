@@ -2,12 +2,38 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { percent, price, tone } from "../format";
 import { contracts, hidden, isLive, kstStamp, LIVE_REFRESH_MS, nextRefresh, SESSION_KO, sessionBadge } from "../futures";
-import type { FuturesCandles, FuturesQuote } from "../types";
+import type { FuturesCandles, FuturesQuote, FuturesSession } from "../types";
 
 /**
  * #444 대시보드 "코스피200 선물" 카드 — 지금 세션(닫혔으면 마지막 세션)의 가격 · 등락 · 거래량 · 미결제약정과
  * 그 세션 5분봉 미니 차트. 장중이면 15초마다 다시 읽는다. 누르면 전용 화면(#/futures).
  */
+/** #713 주간 · 야간 두 칸 — 칸마다 진행 중 · 종료와 끝난 시각, 가격 · 등락률. 끝난 세션은 다음 세션이 열릴 때까지 그대로 */
+function SessionPair({ sessions, current }: { sessions: Record<FuturesSession, FuturesQuote>; current: FuturesSession }) {
+  return (
+    <div className="fq-pair" role="group" aria-label="주간 · 야간 시세">
+      {(["day", "night"] as const).map((k) => {
+        const s = sessions[k];
+        const open = s.state === "open";
+        const ended = !open && s.end ? `${kstStamp(s.end).slice(6)} 종료` : "마감";
+        return (
+          <div key={k} className={`fq-cell${k === current ? " fq-current" : ""}`}>
+            <span className="small muted">
+              {SESSION_KO[k]} <span className={`fq-badge ${open ? "fq-live" : ""}`}>{open ? "진행 중" : ended}</span>
+            </span>
+            {s.price == null ? <span className="small muted">{s.error ? "값 없음" : "—"}</span> : (
+              <span className={`num ${tone(s.change)}`}>
+                {price(s.price)} {s.change_pct == null ? "" : percent(s.change_pct)}
+                {(s.held || s.from_bars) && <span className="muted small" title={s.from_bars ? "분봉 마지막 값" : "끝나기 전 마지막 값"}> *</span>}
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function FuturesQuoteCard() {
   const [q, setQ] = useState<FuturesQuote | "error" | null>(null);
   const [bars, setBars] = useState<FuturesCandles["bars"]>([]);
@@ -71,6 +97,7 @@ export default function FuturesQuoteCard() {
           {q.open_interest_change != null && <span className={`num ${tone(q.open_interest_change)}`}> ({contracts(q.open_interest_change, true)})</span>}</span>
         <span>{kstStamp(q.as_of)} 기준</span>
       </div>
+      {q.sessions && <SessionPair sessions={q.sessions} current={q.current ?? q.session} />}
       {q.stale && <p className="small error">마지막으로 받은 값입니다{q.error ? ` — ${q.error}` : ""}</p>}
       {failed && !q.stale && <p className="small error">새로 읽지 못해 이전 값입니다 — 잠시 뒤 다시 읽습니다</p>}
       <span className="sr-only">{SESSION_KO[q.session]} 분봉 크게 보기</span>

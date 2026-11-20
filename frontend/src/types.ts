@@ -1834,6 +1834,16 @@ export interface FuturesQuote {
   open_interest?: number;
   open_interest_change?: number;
   as_of?: string;
+  /** #713 닫힌 세션에 한투가 빈 값을 줘서, 그 세션이 열려 있을 때 받은 마지막 값을 보이는 중 */
+  held?: boolean;
+  /** #713 그 세션 분봉의 마지막 종가로 대신한 값(등락 없음) · 그 봉 시각 */
+  from_bars?: boolean;
+  bar_at?: string;
+  /** #713 세션 지정 없이 물으면: 이 세션이 지금 열렸나(sessions 안에서만) */
+  state?: "open" | "closed";
+  /** #713 세션 지정 없이 물으면: 대표 세션(진행 중, 없으면 가장 최근에 끝난 것)과 주간 · 야간 둘 다 */
+  current?: FuturesSession;
+  sessions?: Record<FuturesSession, FuturesQuote>;
 }
 
 export type FuturesInterval = "1m" | "5m" | "15m";

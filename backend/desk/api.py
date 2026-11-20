@@ -1786,7 +1786,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         """KOSPI / KOSDAQ trading value by investor class, newest first (desk.market_flow). Read-only;
         a broker failure comes back as ``error`` with no records, not as a 5xx. #677 the 1d answer carries
         ``premarket``: today's spot flow before the bell (desk.flow_intraday.premarket) once there is one, and
-        ``program``: today's newest KRX program trading net buy (desk.program_trade, from the snapshots)."""
+        ``program``: today's newest KRX program trading net buy (desk.program_trade, from the snapshots), and
+        ``expected``: the pre-open hour's expected index / NXT large caps (desk.broker.kis_stream's standing
+        subscriptions in this api process; None without a KIS stream or before any came today)."""
         try:
             got = await flow.get(market.upper(), interval, count)
         except ValueError as exc:
@@ -1808,7 +1810,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             program_cache.clear()
             program_cache[day] = prog
         return {**got, "premarket": flow_intraday.premarket(hit[1], market.lower()),
-                "program": prog[1].get(market.lower())}
+                "program": prog[1].get(market.lower()),
+                "expected": kis_feed.expected(market.lower()) if kis_feed is not None else None}
 
     @app.get("/api/market/futures")
     async def market_futures():

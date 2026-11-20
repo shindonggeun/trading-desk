@@ -11,6 +11,15 @@ keeps one websocket to KIS and subscribes the tickers someone is watching:
   KIS gives US trades free with no delay (the docstring of its official sample ``delayed_ccnl``).
 - Everything else (indices, FX, futures, crypto, symbols with ``.`` or ``-``) is not subscribed;
   those keep the polling path.
+- #677 the hour before the KRX bell (08:00 ~ 09:00 on a KRX trading day, an hour later on a late-open
+  day) holds a few **standing** subscriptions whoever watches: the KOSPI / KOSDAQ index expected trade
+  (``H0UPANC0``, keyed by the 4-digit sector code) and the NXT expected trade of a few large caps
+  (``H0NXANC0``, the 6-digit code). They take their seats off ``MAX_SUBS`` first (the pages' tickers get
+  the rest) and are dropped at the bell; ``expected()`` serves the day's last values (the pre-open
+  section of GET /api/market/flow). The fields read are KIS' own examples' (open-trading-api
+  ``index_exp_ccnl`` / ``exp_ccnl_nxt``): the first ten of the index frame (an older sample reads 15
+  fields, a newer 30 - the same up to the tenth) and the first six of the stock frame. The KOSDAQ code
+  ``1001`` and the hours KIS serves them are to be checked on the first live morning.
 
 Demand drives the subscriptions: ``want(ticker)`` marks a ticker as watched (the live stream and
 the quote board call it every round), a ticker nobody asked for in ``WANT_SEC`` is unsubscribed,
@@ -40,7 +49,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import httpx
 
@@ -70,6 +79,14 @@ BACKOFF_MAX_SEC = 60.0
 
 KR = "H0STCNT0"
 US = "HDFSCNT0"
+INDEX_EXP = "H0UPANC0"     # #677 domestic index expected trade (the pre-open auction's index)
+NXT_EXP = "H0NXANC0"       # #677 NXT expected trade of a stock (its pre-market)
+KST = timezone(timedelta(hours=9))
+PREMARKET_LEAD = timedelta(hours=1)          # the standing subscriptions start this long before the bell
+PREMARKET_INDEXES = {"0001": "kospi", "1001": "kosdaq"}          # sector code -> market
+PREMARKET_STOCKS = {"005930": "삼성전자", "000660": "SK하이닉스"}   # NXT-traded KOSPI large caps
+STANDING_REFUSED_SEC = 3600.0   # a standing one KIS refused (a wrong code): not again this pre-open hour
+STANDING_POLL_SEC = 30.0   # how often a stream with no watcher looks whether the pre-open hour began
 
 # Yahoo's exchange codes -> KIS' US market codes. NYSE Arca / Cboe ETFs (SOXL, TQQQ ...) are AMS on KIS.
 _EXCHANGES = {
@@ -164,6 +181,69 @@ def parse_frame(raw: str) -> list[tuple[str, str, float, float | None]]:
     return out
 
 
+def _sign(sign: str, value: float | None) -> float | None:
+    """KIS' 전일대비부호: 1 상한 · 2 상승 · 3 보합 · 4 하한 · 5 하락 - the change's own sign may be dropped."""
+    if value is None:
+        return None
+    if sign in ("4", "5"):
+        return -abs(value)
+    if sign == "3":
+        return 0.0
+    return abs(value) if sign in ("1", "2") else value
+
+
+def parse_expected(raw: str) -> list[dict]:
+    """#677 an expected-trade frame (``H0UPANC0`` index · ``H0NXANC0`` NXT stock) -> [{tr_id, code, hhmmss,
+    price, change, rate}]. Other frames and anything malformed give []."""
+    parts = raw.split("|", 3)
+    if len(parts) != 4 or parts[0] != "0" or parts[1] not in (INDEX_EXP, NXT_EXP):
+        return []
+    tr_id = parts[1]
+    try:
+        count = int(parts[2])
+    except ValueError:
+        return []
+    fields = parts[3].split("^")
+    if count < 1 or len(fields) % count:
+        return []
+    size = len(fields) // count
+    out = []
+    for i in range(count):
+        f = fields[i * size:(i + 1) * size]
+        if tr_id == INDEX_EXP:          # 0 code · 1 time · 2 index · 3 sign · 4 change · ... · 9 rate
+            if size < 10:
+                continue
+            code, hhmmss, price, sign, change, rate = f[0], f[1], _num(f[2]), f[3], _num(f[4]), _num(f[9])
+        else:                           # 0 code · 1 time · 2 price · 3 sign · 4 change · 5 rate
+            if size < 6:
+                continue
+            code, hhmmss, price, sign, change, rate = f[0], f[1], _num(f[2]), f[3], _num(f[4]), _num(f[5])
+        if price and price > 0:
+            out.append({"tr_id": tr_id, "code": code.strip(), "hhmmss": hhmmss.strip(), "price": price,
+                        "change": _sign(sign, change), "rate": _sign(sign, rate)})
+    return out
+
+
+def premarket_window(day, is_open=None) -> tuple[datetime, datetime] | None:
+    """#677 the standing subscriptions' hour on ``day`` (KST): PREMARKET_LEAD before the KRX bell up to it;
+    None on a weekend or KRX holiday."""
+    if day.weekday() >= 5 or not (is_open or market_calendar.is_open)("kr", day):
+        return None
+    bell = datetime.combine(day, market_calendar.hours("kr", day)[0], KST)
+    return bell - PREMARKET_LEAD, bell
+
+
+def standing_targets(now: datetime, is_open=None) -> dict[str, tuple[str, str]]:
+    """#677 name -> (tr_id, tr_key) to hold now: the pre-open hour's index and NXT expected trades, else {}."""
+    local = now.astimezone(KST)
+    window = premarket_window(local.date(), is_open)
+    if window is None or not window[0] <= local < window[1]:
+        return {}
+    out = {f"index:{market}": (INDEX_EXP, code) for code, market in PREMARKET_INDEXES.items()}
+    out.update({f"nxt:{code}": (NXT_EXP, code) for code in PREMARKET_STOCKS})
+    return out
+
+
 class ApprovalError(RuntimeError):
     pass
 
@@ -179,7 +259,8 @@ class KisStream:
                  connect: Callable | None = None, http: httpx.AsyncClient | None = None,
                  exchange_of: Callable[[str], Awaitable[str | None]] | None = None,
                  clock: Callable[[], float] = time.monotonic, now: Callable[[], datetime] | None = None,
-                 tokens: TokenStore | None = None):
+                 tokens: TokenStore | None = None,
+                 standing: Callable[[datetime], dict[str, tuple[str, str]]] | None = None):
         self._key, self._secret = app_key, app_secret
         # #688 the approval key shared by the desk's processes (None: this object's own, as before)
         self._slot = tokens.slot("kis_approval", app_secret) if tokens is not None else None
@@ -207,6 +288,11 @@ class KisStream:
         self._connected_at: str | None = None
         self._last_drop: dict | None = None            # {at, error (exception type)}
         self._last_refusal: str | None = None          # when KIS last refused the approval key
+        # #677 the pre-open hour's standing subscriptions (name -> (tr_id, tr_key)) and their last values
+        self._standing = standing or standing_targets
+        self._fixed: dict[str, tuple[str, str]] = {}
+        self._fixed_refused: dict[str, float] = {}     # name -> until (clock)
+        self._expected: dict[str, dict] = {}           # name -> {price, change, rate, time, at}
 
     # --- what the pages use ------------------------------------------------------------------
 
@@ -232,6 +318,17 @@ class KisStream:
         tick = self._ticks.get(t) if self.connected and t in self._subs else None
         return tick if tick is not None and self._clock() - tick.seen <= max_age else None
 
+    def expected(self, market: str) -> dict | None:
+        """#677 today's last pre-open expected trades for ``market`` (kospi | kosdaq): the index and, for KOSPI,
+        the NXT large caps - {index: {price, change, rate, time, at} | None, stocks: [{code, name, ...}]}; None
+        when nothing came today. Kept after the bell (the opening auction's last expected value)."""
+        today = self._now().astimezone(KST).date().isoformat()
+        fresh = {k: v for k, v in self._expected.items() if v["at"][:10] == today}
+        index = fresh.get(f"index:{market}")
+        stocks = [{"code": code, "name": name, **fresh[f"nxt:{code}"]} for code, name in PREMARKET_STOCKS.items()
+                  if market == "kospi" and f"nxt:{code}" in fresh]
+        return {"index": index, "stocks": stocks} if index or stocks else None
+
     def status(self) -> dict:
         """Connection health for the owner (GET /api/live/kis). Never the app key, secret or
         approval key: only counts, ticker symbols, times and exception type names."""
@@ -243,6 +340,7 @@ class KisStream:
                 "refused": sorted(t for t, until in self._rejected.items() if until > now),
                 "approval_refused_at": self._last_refusal,
                 "connected_at": self._connected_at if self.connected else None,
+                "standing": sorted(self._fixed),
                 "last_drop": dict(self._last_drop) if self._last_drop else None}
 
     # --- the connection ----------------------------------------------------------------------
@@ -251,8 +349,8 @@ class KisStream:
         """Forever: wait for demand, connect, keep subscriptions in step, reconnect with backoff."""
         backoff = BACKOFF_START_SEC
         while True:
-            await self._demand.wait()
-            if not self._live_wants():
+            await self._wait_demand()
+            if not self._live_wants() and not self._standing_now():
                 self._demand.clear()              # the watchers left while this waited
                 continue
             failed = False
@@ -277,12 +375,26 @@ class KisStream:
                 self._subs.clear()
                 self._codes.clear()
                 self._ticks.clear()
+                self._fixed.clear()
             if failed:
-                if not self._live_wants():
+                if not self._live_wants() and not self._standing_now():
                     self._demand.clear()          # nobody watches: do not retry until someone does
                     continue
                 await asyncio.sleep(backoff + random.uniform(0, backoff / 2))
                 backoff = min(backoff * 2, BACKOFF_MAX_SEC)
+
+    async def _wait_demand(self) -> None:
+        """Until a page watches a ticker or the pre-open hour's standing subscriptions are due (#677)."""
+        while not self._standing_now():
+            try:
+                await asyncio.wait_for(self._demand.wait(), STANDING_POLL_SEC)
+                return
+            except TimeoutError:
+                continue
+
+    def _standing_now(self) -> dict[str, tuple[str, str]]:
+        now = self._clock()
+        return {n: t for n, t in self._standing(self._now()).items() if self._fixed_refused.get(n, 0) <= now}
 
     async def aclose(self) -> None:
         if self._own_http and self._http is not None:
@@ -340,8 +452,9 @@ class KisStream:
             del self._rejected[t]
 
     def _live_wants(self) -> list[str]:
-        self._prune_wants()
-        return sorted(self._wanted, key=self._wanted.get, reverse=True)[:MAX_SUBS]
+        self._prune_wants()      # #677 the standing subscriptions take their seats first
+        seats = max(0, MAX_SUBS - len(self._standing_now()))
+        return sorted(self._wanted, key=self._wanted.get, reverse=True)[:seats]
 
     def _drop(self, ticker: str) -> tuple[str, str] | None:
         target = self._subs.pop(ticker, None)
@@ -364,7 +477,15 @@ class KisStream:
                     self._approval = None
                     raise ApprovalError("approval key refused") if refused else ApprovalDue("approval key due")
                 wanted = self._live_wants()
-                if wanted:
+                standing = self._standing_now()
+                for name in [n for n in self._fixed if n not in standing]:     # #677 the bell: let them go
+                    tr_id, tr_key = self._fixed.pop(name)
+                    await ws.send(json.dumps(_message(key, "2", tr_id, tr_key)))
+                for name, (tr_id, tr_key) in standing.items():
+                    if name not in self._fixed:
+                        self._fixed[name] = (tr_id, tr_key)
+                        await ws.send(json.dumps(_message(key, "1", tr_id, tr_key)))
+                if wanted or standing:
                     idle_since = None
                 else:
                     idle_since = idle_since or now
@@ -433,6 +554,13 @@ class KisStream:
             if raw[:1] in ("0", "1"):
                 seen = self._clock()
                 stamp = datetime.now(UTC).isoformat(timespec="seconds")
+                for e in parse_expected(raw):                  # #677 the pre-open hour's expected trades
+                    name = (f"index:{PREMARKET_INDEXES.get(e['code'])}" if e["tr_id"] == INDEX_EXP
+                            else f"nxt:{e['code']}")
+                    if name in self._fixed:
+                        self._expected[name] = {"price": e["price"], "change": e["change"], "rate": e["rate"],
+                                                "time": e["hhmmss"],
+                                                "at": self._now().astimezone(KST).isoformat(timespec="seconds")}
                 for tr_id, code, price, rate in parse_frame(raw):
                     ticker = self._codes.get((tr_id, code))
                     if ticker and ticker in self._subs:
@@ -460,6 +588,13 @@ class KisStream:
             self._last_refusal = _now_iso()               # kept: the flag above resets on reconnect
             return
         tr_key = str(header.get("tr_key") or "")
+        tr_id = str(header.get("tr_id") or "")
+        for name, (fixed_tr, fixed_key) in list(self._fixed.items()):     # #677 not asked again this hour
+            if fixed_key == tr_key and (not tr_id or tr_id == fixed_tr):
+                del self._fixed[name]
+                self._fixed_refused[name] = self._clock() + STANDING_REFUSED_SEC
+                log.warning("kis stream refused %s: %s", name, reason)
+                return
         for ticker, (_tr, key) in list(self._subs.items()):
             if key == tr_key:
                 self._drop(ticker)

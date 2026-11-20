@@ -6,14 +6,23 @@ import asyncio
 import json
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import httpx
 import pytest
 
 from desk import live
 from desk.broker import kis_stream
-from desk.broker.kis_stream import KR, US, KisStream, market_of, parse_frame
+from desk.broker.kis_stream import (
+    INDEX_EXP,
+    KR,
+    NXT_EXP,
+    US,
+    KisStream,
+    market_of,
+    parse_expected,
+    parse_frame,
+)
 from desk.broker.mock import MockBroker
 from desk.prices import PriceSource
 from desk.settings import Settings
@@ -91,7 +100,7 @@ class FakeSocket:
 
 
 class Harness:
-    def __init__(self, exchange="AMS"):
+    def __init__(self, exchange="AMS", standing=None, now=REGULAR_SESSION):
         self.sockets: list[FakeSocket] = []
         self.approvals: list[dict] = []
         self.now = [1000.0]
@@ -106,7 +115,8 @@ class Harness:
         self.stream = KisStream(APP_KEY, APP_SECRET, connect=self.connect,
                                 http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
                                 exchange_of=exchange_of, clock=lambda: self.now[0],
-                                now=lambda: REGULAR_SESSION)          # #238: the D key, whatever the day
+                                now=lambda: now,          # #238: the D key, whatever the day
+                                standing=standing)
 
     def connect(self, url):
         harness = self
@@ -499,6 +509,127 @@ def test_the_overnight_session_subscribes_the_day_market_and_rekeys_when_it_ends
         h.stream.want("SOXL")
         await _until(lambda: sock.subs() == ["RBAASOXL", "DAMSSOXL"])
         assert sock.subs("2") == ["RBAASOXL"]
+        task.cancel()
+
+    asyncio.run(go())
+
+
+
+# --- #677 the pre-open hour's standing subscriptions -------------------------------------------------
+
+KST = timezone(timedelta(hours=9))
+
+
+def _index(code="0001", hhmmss="084500", index="2650.12", sign="5", change="12.30", rate="0.46", size=30):
+    f = [""] * size
+    f[0], f[1], f[2], f[3], f[4], f[9] = code, hhmmss, index, sign, change, rate
+    return f
+
+
+def _nxt(code="005930", hhmmss="081500", price="72300", sign="2", change="400", rate="0.56"):
+    f = [""] * 46
+    f[0], f[1], f[2], f[3], f[4], f[5] = code, hhmmss, price, sign, change, rate
+    return f
+
+
+def test_expected_frames_read_the_first_fields_whatever_the_record_size():
+    got = parse_expected(_frame(INDEX_EXP, _index(size=30), _index("1001", index="871.5", sign="2", size=30)))
+    assert [(e["code"], e["price"], e["change"], e["rate"]) for e in got] == [
+        ("0001", 2650.12, -12.3, -0.46), ("1001", 871.5, 12.3, 0.46)]      # 5 = down: the sign is KIS' own field
+    assert parse_expected(_frame(INDEX_EXP, _index(size=15)))[0]["price"] == 2650.12   # the older 15-field sample
+    nxt = parse_expected(_frame(NXT_EXP, _nxt()))
+    assert nxt == [{"tr_id": NXT_EXP, "code": "005930", "hhmmss": "081500", "price": 72300.0, "change": 400.0,
+                    "rate": 0.56}]
+    assert parse_expected(_frame(KR, _kr())) == [] and parse_frame(_frame(NXT_EXP, _nxt())) == []
+    assert parse_expected(_frame(INDEX_EXP, _index()[:8])) == [] and parse_expected("0|H0UPANC0|x|1^2") == []
+    assert parse_expected(_frame(NXT_EXP, _nxt(sign="3", change="0", rate="0")))[0]["change"] == 0.0
+
+
+def test_the_standing_hour_is_the_hour_before_a_krx_bell():
+    thu = date(2026, 11, 12)
+    at = lambda d, h, m: datetime(d.year, d.month, d.day, h, m, tzinfo=KST)
+    assert kis_stream.standing_targets(at(thu, 7, 59)) == {}
+    held = kis_stream.standing_targets(at(thu, 8, 0))
+    assert held == {"index:kospi": (INDEX_EXP, "0001"), "index:kosdaq": (INDEX_EXP, "1001"),
+                    "nxt:005930": (NXT_EXP, "005930"), "nxt:000660": (NXT_EXP, "000660")}
+    assert kis_stream.standing_targets(at(thu, 8, 59)) == held and kis_stream.standing_targets(at(thu, 9, 0)) == {}
+    assert kis_stream.standing_targets(at(date(2026, 11, 14), 8, 30)) == {}            # a Saturday
+    csat = date(2026, 11, 19)                                                          # the bell at 10:00
+    assert kis_stream.standing_targets(at(csat, 8, 30)) == {} and kis_stream.standing_targets(at(csat, 9, 30)) == held
+    assert kis_stream.standing_targets(at(thu, 8, 30), is_open=lambda m, d: False) == {}   # a KRX holiday
+
+
+def test_the_standing_ones_connect_without_a_watcher_take_their_seats_and_go_at_the_bell(monkeypatch):
+    monkeypatch.setattr(kis_stream, "MAX_SUBS", 5)
+    hour = [True]
+    targets = kis_stream.standing_targets(datetime(2026, 11, 12, 8, 30, tzinfo=KST))
+
+    async def go():
+        h = Harness(standing=lambda now: targets if hour[0] else {}, now=datetime(2026, 11, 12, 8, 30, tzinfo=KST))
+        task = asyncio.create_task(h.stream.run())
+        await _until(lambda: h.sockets and len(h.sockets[0].subs()) == 4)        # nobody watches: still connects
+        sock = h.sockets[0]
+        assert sorted(sock.subs()) == ["0001", "000660", "005930", "1001"]
+        assert {m["body"]["input"]["tr_id"] for m in sock.sent} == {INDEX_EXP, NXT_EXP}
+        for t in ("005930.KS", "000660.KS", "SOXL"):
+            h.stream.want(t)
+        await _until(lambda: len(sock.subs()) == 5)
+        await asyncio.sleep(0.05)
+        assert len(h.stream.status()["tickers"]) == 1                            # 5 seats - 4 standing
+        assert h.stream.status()["standing"] == ["index:kosdaq", "index:kospi", "nxt:000660", "nxt:005930"]
+
+        await sock.inbox.put(_frame(INDEX_EXP, _index(), _index("1001", index="871.5", sign="2")))
+        await sock.inbox.put(_frame(NXT_EXP, _nxt(), _nxt("000660", price="181000", sign="5", change="1500",
+                                                          rate="0.82")))
+        await _until(lambda: (h.stream.expected("kospi") or {}).get("stocks") and len(h.stream.expected("kospi")["stocks"]) == 2)
+        kospi = h.stream.expected("kospi")
+        assert kospi["index"]["price"] == 2650.12 and kospi["index"]["rate"] == -0.46 and kospi["index"]["time"] == "084500"
+        assert [(s["name"], s["price"], s["change"]) for s in kospi["stocks"]] == [
+            ("삼성전자", 72300.0, 400.0), ("SK하이닉스", 181000.0, -1500.0)]
+        assert h.stream.expected("kosdaq") == {"index": h.stream.expected("kosdaq")["index"], "stocks": []}
+        assert h.stream.expected("kosdaq")["index"]["price"] == 871.5
+
+        hour[0] = False                                                          # the bell
+        await _until(lambda: sorted(sock.subs("2")) == ["0001", "000660", "005930", "1001"])
+        await _until(lambda: len(h.stream.status()["tickers"]) == 3)             # the seats go back to the pages
+        assert h.stream.expected("kospi")["index"]["price"] == 2650.12           # the day's last value stays
+        assert h.stream.status()["standing"] == []
+        task.cancel()
+
+    asyncio.run(go())
+
+
+def test_a_refused_standing_code_is_not_asked_again_this_hour_and_the_rest_stay():
+    targets = kis_stream.standing_targets(datetime(2026, 11, 12, 8, 30, tzinfo=KST))
+
+    async def go():
+        h = Harness(standing=lambda now: targets, now=datetime(2026, 11, 12, 8, 30, tzinfo=KST))
+        task = asyncio.create_task(h.stream.run())
+        await _until(lambda: h.sockets and len(h.sockets[0].subs()) == 4)
+        sock = h.sockets[0]
+        await sock.inbox.put(json.dumps({"header": {"tr_id": INDEX_EXP, "tr_key": "1001"},
+                                         "body": {"rt_cd": "1", "msg1": "INVALID tr_key"}}))
+        await _until(lambda: "index:kosdaq" not in h.stream.status()["standing"])
+        await asyncio.sleep(0.1)
+        assert sock.subs().count("1001") == 1 and len(h.stream.status()["standing"]) == 3
+        assert h.stream.connected
+        task.cancel()
+
+    asyncio.run(go())
+
+
+def test_yesterdays_expected_values_are_not_served():
+    async def go():
+        day = [datetime(2026, 11, 12, 8, 30, tzinfo=KST)]
+        targets = kis_stream.standing_targets(day[0])
+        h = Harness(standing=lambda now: targets)
+        h.stream._now = lambda: day[0]
+        task = asyncio.create_task(h.stream.run())
+        await _until(lambda: h.sockets and len(h.sockets[0].subs()) == 4)
+        await h.sockets[0].inbox.put(_frame(INDEX_EXP, _index()))
+        await _until(lambda: h.stream.expected("kospi") is not None)
+        day[0] += timedelta(days=1)
+        assert h.stream.expected("kospi") is None
         task.cancel()
 
     asyncio.run(go())

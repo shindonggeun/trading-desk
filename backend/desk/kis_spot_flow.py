@@ -18,9 +18,9 @@ minute and notifies on each, so no client of its own). Toss' daily record can si
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
-from .futures_flow import INVESTOR_PATH, INVESTOR_TR, KST, _num
+KST = timezone(timedelta(hours=9))
 
 CODES = {"KOSPI": ("KSP", "0001"), "KOSDAQ": ("KSQ", "1001")}
 MN = 1_000_000                 # KIS values are in million won
@@ -39,7 +39,9 @@ HOURS = ((8, 0), (16, 0))      # pre-market through the closing snapshot (desk.f
 
 
 def _side(row: dict, prefix: str) -> dict | None:
-    buy, sell = _num(row.get(f"{prefix}_shnu_tr_pbmn")), _num(row.get(f"{prefix}_seln_tr_pbmn"))
+    from . import futures_flow  # here: desk.futures_flow imports desk.market_flow, which imports this
+
+    buy, sell = futures_flow._num(row.get(f"{prefix}_shnu_tr_pbmn")), futures_flow._num(row.get(f"{prefix}_seln_tr_pbmn"))
     if buy is None or sell is None:
         return None
     buy, sell = round(buy * MN), round(sell * MN)
@@ -95,5 +97,8 @@ def verified(kis: dict, toss_today: dict | None) -> bool:
 
 async def fetch(rest, market: str) -> dict:
     """The raw KIS answer for ``market`` (KOSPI / KOSDAQ)."""
+    from . import futures_flow
+
     code, sector = CODES[market]
-    return await rest.get(INVESTOR_PATH, INVESTOR_TR, {"FID_INPUT_ISCD": code, "FID_INPUT_ISCD_2": sector})
+    return await rest.get(futures_flow.INVESTOR_PATH, futures_flow.INVESTOR_TR,
+                          {"FID_INPUT_ISCD": code, "FID_INPUT_ISCD_2": sector})

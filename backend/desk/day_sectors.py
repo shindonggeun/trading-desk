@@ -138,11 +138,24 @@ def yahoo_adjusted(ticker: str, interval: str, count: int) -> list:
     from .prices import _yahoo_period
 
     frame = yf.Ticker(ticker).history(period=_yahoo_period(interval, count, ticker), interval="1d", auto_adjust=True)
-    frame = frame.dropna(subset=["Open", "High", "Low", "Close"])
-    bars = [Bar(at=i.to_pydatetime().astimezone(ZoneInfo("UTC")).isoformat(timespec="seconds"), open=float(r["Open"]),
-                high=float(r["High"]), low=float(r["Low"]), close=float(r["Close"]), volume=0.0)
-            for i, r in frame.iterrows()]
-    return bars[-count:]
+    return frame_bars(frame, count, Bar)
+
+
+def frame_bars(frame, count: int, bar) -> list:
+    """The last ``count`` rows of a yfinance frame with all four prices as ``bar``s (#704). Column-wise:
+    ``iterrows`` built a Series per row while holding the GIL - 73% of the server's GIL time in the
+    sector cache's warm-up starved the event loop. Same bars as the row loop (tests/test_day_sectors)."""
+    frame = frame.dropna(subset=["Open", "High", "Low", "Close"]).tail(count)
+    if frame.empty:
+        return []
+    idx = frame.index
+    if getattr(idx, "tz", None) is not None:
+        ats = idx.tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%S+00:00").tolist()
+    else:                                   # a naive index (not what yfinance gives): as the row loop read it
+        ats = [t.to_pydatetime().astimezone(ZoneInfo("UTC")).isoformat(timespec="seconds") for t in idx]
+    cols = frame[["Open", "High", "Low", "Close"]].to_numpy(dtype=float)
+    return [bar(at=at, open=o, high=h, low=lo, close=c, volume=0.0)
+            for at, (o, h, lo, c) in zip(ats, cols.tolist(), strict=True)]
 
 
 def symbols(m: Market) -> list[str]:

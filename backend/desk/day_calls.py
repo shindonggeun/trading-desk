@@ -290,7 +290,7 @@ class DayCalls:
                 "fallback": r["model"] == "prev_close_plain", "date": r["trade_date"].isoformat(),
                 "round": r["round"],
                 "round_label": dr.round_label(r["market"], r["round"]) if intraday else dc.ROUND_KO[r["round"]],
-                **({"anchor": (r["features"] or {}).get("anchor")} if intraday else {}),
+                **(self._reference(r["market"], (r["features"] or {}).get("anchor")) if intraday else {}),
                 "called_at": _iso(r["called_at"]), "cutoff_at": _iso(r["cutoff_at"]),
                 "stage": r["stage"], "label": dc.LABEL_KO[r["stage"]], "direction": dc.direction(probs),
                 "verdict": r["verdict"], "probs": probs, "edges_pct": r["edges_pct"], "reasons": r["reasons"],
@@ -318,6 +318,14 @@ class DayCalls:
                 "stages": [{"key": s, "label": dc.LABEL_KO[s]} for s in dc.DISPLAY_ORDER],
                 "calls": calls, "rounds": rounds, "schedule": self.schedule(market, day or today, latest),
                 "note": NOTE}
+
+    def _edge(self, market: str) -> bool:
+        return (self.round_models.get(market) or {}).get("verdict") == "edge"
+
+    def _reference(self, market: str, anchor: float | None) -> dict:
+        """#619 a round entry's anchor and whether its model showed an edge on the hold-out."""
+        edge = self._edge(market)
+        return {"anchor": anchor, "reference_only": not edge, "reference_label": None if edge else dr.NO_EDGE_KO}
 
     def schedule(self, market: str, day: date, rows: Sequence[dict] = ()) -> dict:
         """#619 the intraday rounds of ``day``'s session: each one's time (aware ISO: the local time and
@@ -431,8 +439,8 @@ class DayCalls:
         where = "국장" if row["market"] == "kr" else "미장"
         if row["call"] == "prev_close" and row["round"] == 1:
             return f"오늘 {where} 방향", push_text(row)
-        if row["call"] != dr.CALL:
-            return None
+        if row["call"] != dr.CALL or not self._edge(row["market"]):
+            return None                 # a round model with no hold-out edge is shown, never pushed
         with self.engine.connect() as conn:
             before = conn.execute(
                 select(t.c.round, t.c.stage).where(and_(t.c.market == row["market"], t.c.trade_date == row["trade_date"],

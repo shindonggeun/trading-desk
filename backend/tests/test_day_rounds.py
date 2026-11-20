@@ -135,6 +135,9 @@ def test_the_backtest_holds_out_the_last_90_days_per_round_and_the_server_reads_
     c = dr.call(model_file, "kr", 6, day, S)
     assert list(c["probs"].values()) == list(dc.percent(dc.raw_probs(model, rows[0]["x"])).values())[::-1]
     assert c["features"]["anchor"] and c["round_label"] == "6차 13:00" and c["reasons"]
+    assert model_file["verdict"] == report["verdict"] in ("edge", "no_edge")
+    assert c["reference_only"] == (report["verdict"] != "edge")
+    assert c["verdict"] == dc.verdict(c["probs"], dc.HOLD_MARGIN)
 
 
 # ------------------------------------------------------------------ the service
@@ -143,7 +146,7 @@ def _round_model(market: str) -> dict:
     names = list(dr.features(market, 3, DAY, S)[0])
     k = len(names)
     return {"version": f"dr-test-{market}", "market": market, "call": "to_close", "rounds": sorted(dr.ROUNDS[market]),
-            "holdout_from": "2024-06-01",
+            "holdout_from": "2024-06-01", "verdict": "edge",
             "model": {"features": names, "mean": [0.0] * k, "std": [1.0] * k, "beta0": 0.0, "beta": [0.0] * k,
                       "gamma0": -0.9, "gamma": [0.0] * k, "edges": list(dc.EDGES), "lambda": 0.5,
                       "climatology": CLIM, "label": "to_close", "trained_through": "2024-05-31"}}
@@ -231,6 +234,20 @@ def test_only_a_jump_of_two_stages_is_pushed(desk):
     first = {"market": "us", "round": 1, "call": "prev_close", "stage": "flat", "verdict": "long", "probs": probs,
              "model": "prev_close"}
     assert desk.push_of(first)[0] == "오늘 미장 방향"
+    # a round model without a hold-out edge: shown as reference only, its jumps never pushed
+    desk.round_models["kr"] = {**desk.round_models["kr"], "verdict": "no_edge"}
+    assert desk.push_of(row(7, "strong_long")) is None
+    entry = desk.view("kr", _kst(DAY, 16))["rounds"]["to_close"][-1]
+    assert entry["reference_only"] is True and entry["reference_label"] == dr.NO_EDGE_KO
+
+
+def test_the_verdict_needs_every_baseline_beaten_and_a_brier_skill():
+    base = {"always_long": {"direction_hit_rate": 0.52}, "always_short": {"direction_hit_rate": 0.48},
+            "follow_trend": {"direction_hit_rate": 0.55}}
+    assert dr.verdict_of({"direction_hit_rate": 0.61, "brier_skill": 0.02, "baselines": base}) == "edge"
+    assert dr.verdict_of({"direction_hit_rate": 0.59, "brier_skill": 0.02, "baselines": base}) == "no_edge"
+    assert dr.verdict_of({"direction_hit_rate": 0.70, "brier_skill": -0.01, "baselines": base}) == "no_edge"
+    assert dr.verdict_of({"n": 0}) == "no_edge"
 
 
 def test_the_backfill_makes_the_rounds_after_the_round_model_training(desk):

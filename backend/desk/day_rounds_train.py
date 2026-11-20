@@ -120,15 +120,19 @@ def backtest(market: str, series: dict[str, Sequence], holdout_days: int = HOLDO
                                  "holdout": _metrics(P[mask], part, clim) if part else {"n": 0}}
     share = np.bincount(dct._class_index([r["stage"] for r in train]), minlength=5) / len(train)
     version = _version(model)
+    pooled = {**_metrics(P, hold, clim), "sessions": len({r["day"] for r in hold})} if hold else {"n": 0}
+    verdict = dr.verdict_of(pooled)
+    for part in by_round.values():
+        part["verdict"] = dr.verdict_of(part["holdout"])
     model_file = {"version": version, "market": market, "call": dr.CALL, "rounds": sorted(dr.ROUNDS[market]),
-                  "holdout_from": holdout_from.isoformat(), "model": model}
+                  "holdout_from": holdout_from.isoformat(), "verdict": verdict, "model": model}
     report = {
         "version": version, "market": market, "call": dr.CALL, "code": code_hash(), "format": VERSION,
         "made_at": (now or datetime.now(UTC)).isoformat(timespec="seconds"), "holdout_from": holdout_from.isoformat(),
-        "edges": list(dc.EDGES), "features": names, "l2": l2, "lambda": lam, "cv": cv,
+        "verdict": verdict, "edges": list(dc.EDGES), "features": names, "l2": l2, "lambda": lam, "cv": cv,
         "train": {"n": len(train), "sessions": len({r["day"] for r in train}), "from": train[0]["day"].isoformat(),
                   "to": train[-1]["day"].isoformat(), "stage_share": [round(float(v), 3) for v in share][::-1]},
-        "holdout": {**_metrics(P, hold, clim), "sessions": len({r["day"] for r in hold})} if hold else {"n": 0},
+        "holdout": pooled,
         "rounds": by_round,
         "coefficients": [{"feature": n, "label": dr._label_ko(n), "beta": round(b, 4), "gamma": round(g, 4)}
                          for n, b, g in zip(names, model["beta"], model["gamma"], strict=True)],

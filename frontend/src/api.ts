@@ -502,6 +502,7 @@ export interface PushKinds {
   line_signal?: boolean;     // #614 차트 선 닿음 · 이탈(#613)
   holding_alert?: boolean;   // #714 보유 종목 손절 · 익절(#694)
   sector_mover?: boolean;    // #740 섹터 급등락 주범(#680)
+  program_alert?: boolean;   // #743 프로그램매매 매수 · 매도 전환
   tone_positive?: boolean;   // #642 수급 알림의 뜻(#641) — 끈 tone 은 이 기기로 보내지 않는다
   tone_neutral?: boolean;
   tone_caution?: boolean;
@@ -512,11 +513,12 @@ export interface PushKinds {
 export interface MarketAlert {
   trade_date: string;
   /** #581 holding_alert(#694 보유 종목 손절 · 익절)은 주인 계정에만 온다. 서버가 새 종류를 먼저 내도 화면은 "알림" 으로 보인다 */
-  kind: "flow_turn" | "flow_shift" | "flow_warn" | "nq_alert" | "holding_alert" | "sector_mover";
+  kind: "flow_turn" | "flow_shift" | "flow_warn" | "nq_alert" | "holding_alert" | "sector_mover" | "program_alert";
   rule: string;
   /** 지수 시장, holding_alert 은 그 종목 코드, sector_mover(#740)는 섹터 키(SectorMoverKey) */
   market: "kospi" | "kosdaq" | "futures" | "nq" | SectorMoverKey | (string & {});
-  who: "foreign" | "institution" | "individual" | "all";
+  /** #743 program_alert 는 prog_total(프로그램 전체) · prog_nonarb(비차익) */
+  who: "foreign" | "institution" | "individual" | "all" | "prog_total" | "prog_nonarb";
   severity: "info" | "caution" | "strong";
   /** #642 지수에 어떤 뜻인지(#641) — 크기(severity)와 따로. 예전 서버 · 예전 알림에는 없다 */
   tone?: AlertTone;

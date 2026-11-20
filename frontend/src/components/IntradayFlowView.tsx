@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ColorType, createChart, createSeriesMarkers, HistogramSeries, LineSeries,
+  ColorType, createChart, createSeriesMarkers, HistogramSeries, LineSeries, LineStyle,
   type IChartApi, type ISeriesApi, type SeriesMarker, type Time, type UTCTimestamp,
 } from "lightweight-charts";
 import { crosshairTime, ticksClearOfLabels } from "./chartFormat";
@@ -14,6 +14,8 @@ import { css, useColorScheme } from "../chartColors";
 // 고른 봉의 구간 순매수 막대, 외국인 순매수/순매도 전향 마커. 데이터는 #359 GET /api/market/flow/intraday.
 // #401 현물 차트(억원)와 선물 차트(계약)를 위아래로 나눠 각 차트가 축 하나만 쓰고, 십자선 시각을 서로 맞춘다.
 // 선 색은 주체(--flow-*), 막대 색은 극성(순매수 빨강 · 순매도 파랑) — MarketFlowPanel 과 같은 규칙.
+// #743 현물 차트에 KRX 프로그램매매(전체 · 비차익 · 차익, 억원 누적)를 주체처럼 점선으로 더하고, 막대를 프로그램
+// 구간 순매수로 바꿀 수 있다. 프로그램 매수 · 매도 전환(데드밴드 · 3분 유지)은 그 선 위 화살표.
 
 const BUCKETS: IntradayBucket[] = [1, 3, 5, 10, 15, 30, 60];
 type Spot = "kospi" | "kosdaq";
@@ -23,6 +25,17 @@ const WHO: { key: Who; label: string; color: string }[] = [
   { key: "institution", label: "기관", color: "--flow-institution" },
   { key: "individual", label: "개인", color: "--flow-individual" },
 ];
+type Prog = "program_total" | "program_non_arbitrage" | "program_arbitrage";
+const PROG: { key: Prog; label: string; short: string; color: string }[] = [
+  { key: "program_total", label: "프로그램 전체", short: "전체", color: "--flow-program-total" },
+  { key: "program_non_arbitrage", label: "프로그램 비차익", short: "비차익", color: "--flow-program-non-arbitrage" },
+  { key: "program_arbitrage", label: "프로그램 차익", short: "차익", color: "--flow-program-arbitrage" },
+];
+type Line = Who | Prog;
+const isProg = (k: Line): k is Prog => k.startsWith("program_");
+const lineLabel = (k: Line) => (isProg(k) ? PROG.find((p) => p.key === k)!.label : WHO.find((w) => w.key === k)!.label);
+const lineColor = (k: Line) => (isProg(k) ? PROG.find((p) => p.key === k)!.color : WHO.find((w) => w.key === k)!.color);
+type Bar = "foreign" | "program";
 const FUT_KEY: Record<Who, keyof IntradayFuturesBar> = {
   foreign: "foreign_contracts", institution: "institution_contracts", individual: "individual_contracts",
 };
@@ -30,15 +43,18 @@ const KST_MS = 9 * 3600_000;
 const PREFS = "desk.intradayFlow";
 // #401 주체 기본값이 "외국인만" → "셋 다"로 바뀌었다. 예전에 저장한 주체 선택(v 없음)은 버리고 새 기본을 보인다
 const PREFS_VERSION = 2;
-type Prefs = { bucket: IntradayBucket; spot: Spot; who: Record<Who, boolean> };
+type Prefs = { bucket: IntradayBucket; spot: Spot; who: Record<Who, boolean>; prog: Record<Prog, boolean>; bar: Bar };
 
 function loadPrefs(): Prefs {
-  const base: Prefs = { bucket: 5, spot: "kospi", who: { foreign: true, institution: true, individual: true } };
+  const base: Prefs = { bucket: 5, spot: "kospi", who: { foreign: true, institution: true, individual: true },
+    prog: { program_total: true, program_non_arbitrage: false, program_arbitrage: false }, bar: "foreign" };
   try {
     const raw = JSON.parse(localStorage.getItem(PREFS) ?? "{}");
     if (BUCKETS.includes(raw.bucket)) base.bucket = raw.bucket;
     if (raw.spot === "kospi" || raw.spot === "kosdaq") base.spot = raw.spot;
     if (raw.v === PREFS_VERSION) for (const w of WHO) if (typeof raw.who?.[w.key] === "boolean") base.who[w.key] = raw.who[w.key];
+    for (const p of PROG) if (typeof raw.prog?.[p.key] === "boolean") base.prog[p.key] = raw.prog[p.key];   // #743
+    if (raw.bar === "foreign" || raw.bar === "program") base.bar = raw.bar;
   } catch {
     /* 손상 · 막힌 저장소: 기본값 */
   }
@@ -75,6 +91,21 @@ function lastValue<T>(rows: T[], pick: (r: T) => number | null): number | null {
   return null;
 }
 const TURN_LABEL: Record<IntradayTurn["kind"], string> = { buy_turn: "순매수 전향", sell_turn: "순매도 전향" };
+const PROG_TURN_LABEL: Record<IntradayTurn["kind"], string> = { buy_turn: "매수 전환", sell_turn: "매도 전환" };
+
+/** #743 요약 줄의 프로그램 조각: 비차익(없으면 전체)의 누적과 마지막 전환, 외인 현물과 같은 방향인지 */
+function programPart(d: IntradayFlow, spot: Spot, foreign: number | null): string | null {
+  for (const key of ["program_non_arbitrage", "program_total"] as const) {
+    const v = lastValue(d.spot[spot], (b) => b[key] ?? null);
+    if (v == null) continue;
+    const label = PROG.find((p) => p.key === key)!.label;
+    const t = [...(d.program_turns ?? [])].reverse().find((x) => x.market === spot && x.who === key);
+    let out = `${label} ${signed(v, "억")}${t ? `(${hhmm(t.t)} ${PROG_TURN_LABEL[t.kind]})` : ""}`;
+    if (foreign != null && foreign !== 0 && v !== 0) out += foreign > 0 === v > 0 ? " · 외인 현물과 같은 방향" : " · 외인 현물과 반대";
+    return out;
+  }
+  return null;
+}
 
 /** 상단 한 줄: "외인 현물 −1,240억(10:30 순매도 전향) · 선물 −3,100계약 · 둘 다 매도" */
 export function summarize(d: IntradayFlow, spot: Spot): string | null {
@@ -92,17 +123,21 @@ export function summarize(d: IntradayFlow, spot: Spot): string | null {
     parts.push(`선물 ${signed(f, "계약")}${t ? `(${hhmm(t.t)} ${TURN_LABEL[t.kind]})` : ""}`);
   }
   if (s != null && f != null && s !== 0 && f !== 0) parts.push(s > 0 && f > 0 ? "둘 다 매수" : s < 0 && f < 0 ? "둘 다 매도" : "엇갈림");
+  const prog = programPart(d, spot, s);
+  if (prog) parts.push(prog);
   return parts.join(" · ");
 }
 
 type Point = { t: string; v: number | null };
 type Pane = {
-  /** 누적선 — 주체마다 하나 */
-  lines: { who: Who; color: string; points: Point[] }[];
-  /** 아래 막대 — 외국인 구간 순매수 */
+  /** 누적선 — 주체마다 하나(#743 프로그램은 점선) */
+  lines: { who: Line; color: string; points: Point[] }[];
+  /** 아래 막대 — 외국인(또는 #743 프로그램) 구간 순매수 */
   deltas: Point[];
   /** 전향 마커를 다는 시장(외국인 선이 켜져 있을 때만) */
   turns: IntradayTurn[];
+  /** #743 프로그램 전환 — 그 선이 켜져 있을 때 그 선 위에 */
+  progTurns?: IntradayTurn[];
   /** #581 이 시장의 수급 흐름 알림(#579) — 막대 위에 시각 · 강도 표시 */
   alerts: MarketAlert[];
   unit: string;
@@ -143,13 +178,16 @@ function drawPane(el: HTMLElement, date: string, bucketMin: number, pane: Pane):
   bars.setData(slots);
 
   let foreignLine: ISeriesApi<"Line"> | null = null;
+  const byWho = new Map<Line, ISeriesApi<"Line">>();
   // #434 주체별 마지막 값 라벨 가까운 축 눈금은 비운다 — "개인 16,666" 뒤로 눈금 "13,141" 이 비쳐 겹쳐 보였다
   const labelled: ISeriesApi<"Line">[] = [];
   const amount = (v: number) => Math.round(v).toLocaleString("ko-KR");
   const priceFormat = { type: "custom" as const, minMove: 1, formatter: amount, tickmarksFormatter: ticksClearOfLabels(() => labelled, amount) };
   for (const l of pane.lines) {
-    const label = WHO.find((w) => w.key === l.who)!.label;
-    const line = chart.addSeries(LineSeries, { color: l.color, lineWidth: 2, priceScaleId: "right", priceLineVisible: false, title: label, priceFormat });
+    const label = lineLabel(l.who);
+    const line = chart.addSeries(LineSeries, { color: l.color, lineWidth: 2, priceScaleId: "right", priceLineVisible: false, title: label, priceFormat,
+      lineStyle: isProg(l.who) ? LineStyle.Dashed : LineStyle.Solid });
+    byWho.set(l.who, line);
     labelled.push(line);
     line.setData(l.points.filter((p) => p.v != null).map((p) => ({ time: kstTime(p.t), value: p.v as number })));
     if (l.who === "foreign") foreignLine = line;
@@ -169,6 +207,19 @@ function drawPane(el: HTMLElement, date: string, bucketMin: number, pane: Pane):
         : `${hhmm(t.t)} ${TURN_LABEL[t.kind]}${t.value != null ? ` ${signed(t.value, pane.unit)}` : ""}`,
     })).sort((a, b) => (a.time as number) - (b.time as number));
     if (ms.length) createSeriesMarkers(foreignLine, ms);
+  }
+  // #743 프로그램 전환: 켜진 그 선(전체 · 비차익) 위에
+  for (const [who, line] of byWho) {
+    if (!isProg(who)) continue;
+    const ms: SeriesMarker<Time>[] = (pane.progTurns ?? []).filter((t) => t.who === who).map((t): SeriesMarker<Time> => ({
+      time: kstTime(t.t),
+      position: t.kind === "buy_turn" ? "belowBar" : "aboveBar",
+      shape: t.kind === "buy_turn" ? "arrowUp" : "arrowDown",
+      color: t.kind === "buy_turn" ? up : down,
+      text: narrow ? `${hhmm(t.t)} P${t.kind === "buy_turn" ? "매수" : "매도"}`
+        : `${hhmm(t.t)} ${PROG.find((p) => p.key === who)!.short} ${PROG_TURN_LABEL[t.kind]}`,
+    })).sort((a, b) => (a.time as number) - (b.time as number));
+    if (ms.length) createSeriesMarkers(line, ms);
   }
   // #581 수급 흐름 알림: 막대(격자 전체가 있는 시리즈) 위에, 알림 시각을 봉 격자로 내려 붙인다
   const warn = css("--warn");
@@ -191,16 +242,15 @@ function drawPane(el: HTMLElement, date: string, bucketMin: number, pane: Pane):
 }
 
 /** #401 차트 머리: 켜진 주체마다 "● 외국인 −16,952억" */
-function PaneHead({ title, values, unit }: { title: string; values: { who: Who; v: number | null }[]; unit: string }) {
+function PaneHead({ title, values, unit }: { title: string; values: { who: Line; v: number | null }[]; unit: string }) {
   return (
     <p className="intraday-pane-head">
       <strong>{title}</strong>
       {values.map(({ who, v }) => {
-        const w = WHO.find((x) => x.key === who)!;
         return (
           <span key={who} className="intraday-pane-val">
-            <span className="chip-dot" aria-hidden="true" style={{ ["--chip-dot" as string]: `var(${w.color})` }} />
-            {w.label} <span className="num">{v == null ? "—" : signed(v, unit)}</span>
+            <span className="chip-dot" aria-hidden="true" style={{ ["--chip-dot" as string]: `var(${lineColor(who)})` }} />
+            {lineLabel(who)} <span className="num">{v == null ? "—" : signed(v, unit)}</span>
           </span>
         );
       })}
@@ -284,7 +334,7 @@ function IntradayFlowViewInner() {
   // #581 오늘 알림 가운데 이 차트의 시장 · 날짜의 수급 흐름 변화(전향은 위의 전향 마커가 이미 그린다)
   const { data: alertDay } = useTodayAlerts();
   const shifts = useMemo(() => (alertDay && data && alertDay.date === data.date
-    ? alertDay.items.filter((a) => a.kind === "flow_shift") : []), [alertDay, data]);
+    ? alertDay.items.filter((a) => a.kind === "flow_shift" || a.kind === "program_alert") : []), [alertDay, data]);
 
   // #401 차트 2개(현물 · 선물). 십자선은 한쪽에서 가리킨 시각을 다른 쪽에도 그린다.
   useEffect(() => {
@@ -292,17 +342,24 @@ function IntradayFlowViewInner() {
     if (!se || !fe || !data) return;
     const on = WHO.filter((w) => prefs.who[w.key]);
     const rows = data.spot[prefs.spot];
+    const progOn = PROG.filter((p) => prefs.prog[p.key] && rows.some((b) => b[p.key] != null));
+    // #743 막대: 프로그램이면 켜진 첫 프로그램 선(없으면 전체)의 구간 순매수
+    const barKey = progOn[0]?.key ?? "program_total";
     const spot = drawPane(se, data.date, data.bucket_min, {
-      lines: on.map((w) => ({ who: w.key, color: css(w.color), points: rows.map((b) => ({ t: b.t, v: b[w.key] })) })),
-      deltas: rows.map((b) => ({ t: b.t, v: b.foreign_delta })),
+      lines: [
+        ...on.map((w) => ({ who: w.key as Line, color: css(w.color), points: rows.map((b) => ({ t: b.t, v: b[w.key] })) })),
+        ...progOn.map((p) => ({ who: p.key as Line, color: css(p.color), points: rows.map((b) => ({ t: b.t, v: b[p.key] ?? null })) })),
+      ],
+      deltas: rows.map((b) => ({ t: b.t, v: prefs.bar === "program" ? b[`${barKey}_delta` as const] ?? null : b.foreign_delta })),
       turns: data.turns.filter((t) => t.market === prefs.spot), unit: "억",
+      progTurns: (data.program_turns ?? []).filter((t) => t.market === prefs.spot),
       alerts: shifts.filter((a) => a.market === prefs.spot),
     });
     const fut = drawPane(fe, data.date, data.bucket_min, {
       lines: on.map((w) => ({ who: w.key, color: css(w.color), points: data.futures.map((b) => ({ t: b.t, v: b[FUT_KEY[w.key]] as number | null })) })),
       deltas: data.futures.map((b) => ({ t: b.t, v: b.foreign_delta })),
       turns: data.turns.filter((t) => t.market === "futures"), unit: "계약",
-      alerts: shifts.filter((a) => a.market === "futures"),
+      alerts: shifts.filter((a) => a.market === "futures" && a.kind === "flow_shift"),
     });
     const link = (from: typeof spot, to: typeof spot) => from.chart.subscribeCrosshairMove((p) => {
       if (p.time === undefined) to.chart.clearCrosshairPosition();
@@ -311,7 +368,7 @@ function IntradayFlowViewInner() {
     link(spot, fut);
     link(fut, spot);
     return () => { spot.chart.remove(); fut.chart.remove(); };
-  }, [data, prefs.spot, prefs.who, shifts]);
+  }, [data, prefs.spot, prefs.who, prefs.prog, prefs.bar, shifts]);
 
   const supported = data?.supported !== false;
 
@@ -339,6 +396,21 @@ function IntradayFlowViewInner() {
             </button>
           ))}
         </div>
+        <div className="chips" role="group" aria-label="프로그램매매">
+          {PROG.map((p) => (
+            <button key={p.key} type="button" className={`chip${prefs.prog[p.key] ? " chip-on" : ""}`} aria-pressed={prefs.prog[p.key]}
+              style={{ ["--chip-dot" as string]: `var(${p.color})` }}
+              onClick={() => update({ prog: { ...prefs.prog, [p.key]: !prefs.prog[p.key] } })}>
+              <span className="chip-dot" aria-hidden="true" />{p.label}
+            </button>
+          ))}
+        </div>
+        <div className="seg seg-small" role="group" aria-label="막대">
+          {(["foreign", "program"] as Bar[]).map((b) => (
+            <button key={b} type="button" className={b === prefs.bar ? "on" : ""} aria-pressed={b === prefs.bar}
+              onClick={() => update({ bar: b })}>막대 {b === "foreign" ? "외국인" : "프로그램"}</button>
+          ))}
+        </div>
       </div>
 
       {failed && <p className="muted small">장중 수급을 불러오지 못했습니다: {failed}</p>}
@@ -350,12 +422,15 @@ function IntradayFlowViewInner() {
             {!data.market_open && <span className="badge muted"> {beforeClose() ? "장 시작 전" : "장 마감"}</span>}
           </p>
           <PaneHead title={`현물 ${prefs.spot === "kospi" ? "코스피" : "코스닥"}`} unit="억"
-            values={WHO.filter((w) => prefs.who[w.key]).map((w) => ({ who: w.key, v: lastValue(data.spot[prefs.spot], (b) => b[w.key]) }))} />
+            values={[
+              ...WHO.filter((w) => prefs.who[w.key]).map((w) => ({ who: w.key as Line, v: lastValue(data.spot[prefs.spot], (b) => b[w.key]) })),
+              ...PROG.filter((p) => prefs.prog[p.key]).map((p) => ({ who: p.key as Line, v: lastValue(data.spot[prefs.spot], (b) => b[p.key] ?? null) })),
+            ]} />
           <div className="intraday-chart intraday-chart-pane" ref={spotBox} aria-label="오늘 장중 현물 수급 차트(억원)" />
           <PaneHead title="코스피200 선물" unit="계약"
             values={WHO.filter((w) => prefs.who[w.key]).map((w) => ({ who: w.key, v: lastValue(data.futures, (b) => b[FUT_KEY[w.key]] as number | null) }))} />
           <div className="intraday-chart intraday-chart-pane" ref={futBox} aria-label="오늘 장중 선물 수급 차트(계약)" />
-          <p className="muted small">선 = 주체별 오늘 누적 순매수(현물 억원 · 선물 계약) · 막대 = 외국인 {data.bucket_min}분 순매수 · 화살표 = 외국인 전향 · ● ■ = 수급 흐름 알림(■ 강함)</p>
+          <p className="muted small">선 = 주체별 오늘 누적 순매수(현물 억원 · 선물 계약, 점선 = 프로그램매매 KRX) · 막대 = {prefs.bar === "program" ? "프로그램" : "외국인"} {data.bucket_min}분 순매수(선물 차트는 외국인) · 화살표 = 외국인 전향 · 프로그램 전환 · ● ■ = 수급 흐름 · 프로그램 알림(■ 강함)</p>
         </>
       )}
       {!data && !failed && <p className="muted small">불러오는 중…</p>}

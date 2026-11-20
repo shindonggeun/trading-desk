@@ -585,6 +585,9 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 /* 시장 수급 패널 (#78) — 선 색은 주체(외국인 · 기관 · 개인), dataviz 검증 통과(다크 #161b22 · 라이트 #fff) */
 :root { --flow-foreigner: #a371f7; --flow-institution: #1fa39a; --flow-individual: #cf6f2a; }
 @media (prefers-color-scheme: light) { :root { --flow-foreigner: #8250df; --flow-institution: #00958a; --flow-individual: #b85c1a; } }
+/* #743 프로그램매매 — 주체 색(보라 · 청록 · 주황)과 극성(빨강 · 파랑) 어느 쪽과도 겹치지 않게: 노랑 · 분홍 · 회색, 점선 */
+:root { --flow-program-total: #d4a72c; --flow-program-non-arbitrage: #db61a2; --flow-program-arbitrage: #8b949e; }
+@media (prefers-color-scheme: light) { :root { --flow-program-total: #9a6700; --flow-program-non-arbitrage: #bf3989; --flow-program-arbitrage: #6e7781; } }
 .flow { display: grid; gap: 8px; }
 .flow-head, .flow-sub, .flow-trend-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .flow-head h3 { margin: 0; }

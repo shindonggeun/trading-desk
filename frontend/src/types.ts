@@ -1833,6 +1833,9 @@ export interface IntradaySpotBar {
   t: string; // 봉 끝 KST ISO(+09:00), 08:45 부터 bucket 격자. 스냅샷 없는 봉은 빠진다. 첫 봉 *_delta = 그 봉 누적값
   foreign: number | null; institution: number | null; individual: number | null; // 누적 억원
   foreign_delta: number | null; institution_delta: number | null; individual_delta: number | null; // 구간 억원
+  /** #743 KRX 프로그램매매 순매수(#677 스냅숏) — 누적 억원 · 구간 억원. 09:00 전 · 못 받은 봉은 null */
+  program_total?: number | null; program_non_arbitrage?: number | null; program_arbitrage?: number | null;
+  program_total_delta?: number | null; program_non_arbitrage_delta?: number | null; program_arbitrage_delta?: number | null;
 }
 export interface IntradayFuturesBar {
   t: string;
@@ -1841,7 +1844,7 @@ export interface IntradayFuturesBar {
   price: number | null;
 }
 export interface IntradayTurn {
-  t: string; market: "futures" | "kospi" | "kosdaq"; who: "foreign"; kind: "buy_turn" | "sell_turn"; value: number | null;
+  t: string; market: "futures" | "kospi" | "kosdaq"; who: "foreign" | "program_total" | "program_non_arbitrage"; kind: "buy_turn" | "sell_turn"; value: number | null;
 }
 export interface IntradayFlow {
   supported: boolean; // false 면 KIS 키 없음
@@ -1849,6 +1852,8 @@ export interface IntradayFlow {
   spot: { kospi: IntradaySpotBar[]; kosdaq: IntradaySpotBar[] };
   futures: IntradayFuturesBar[];
   turns: IntradayTurn[];
+  /** #743 프로그램 전체 · 비차익의 매수 · 매도 전환(데드밴드 · 3분 유지) */
+  program_turns?: IntradayTurn[];
 }
 
 /** #443 · #444 코스피200 선물 근월물 주간 · 야간 시세 — GET /api/market/futures/quote */

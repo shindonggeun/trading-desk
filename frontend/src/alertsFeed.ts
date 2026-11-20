@@ -12,6 +12,7 @@ export const KIND_LABEL: Record<MarketAlert["kind"], string> = {
   nq_alert: "나스닥 선물",
   holding_alert: "보유 종목",
   sector_mover: "섹터 급등락",   // #740 섹터 급등락 주범 · 주역(#680)
+  program_alert: "프로그램",      // #743 프로그램매매 매수 · 매도 전환
 };
 /** 종류 이름 — 화면이 아직 모르는 종류(서버가 먼저 낸 새 kind)는 "알림" 으로, undefined 가 보이지 않게 */
 export const kindLabel = (kind: string): string => (KIND_LABEL as Record<string, string>)[kind] ?? "알림";

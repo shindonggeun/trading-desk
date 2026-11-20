@@ -37,13 +37,14 @@ export function saveToastMarkets(m: ToastMarkets) {
 /** #573 수급 전향 말고 받을 알림 종류 — 아침 시황(#571) · 오늘 방향(#572), #581 수급 흐름 변화 · 나스닥 선물 이상 징후(#579).
  *  이 브라우저에 기억하고 기본은 켬. 수급 흐름 · 나스닥 선물 · 보유 종목은 앱 안 토스트에도 같이 적용된다. */
 export type ExtraKinds = { flow_shift: boolean; flow_warn: boolean; nq_alert: boolean; morning_brief: boolean; day_call: boolean; line_signal: boolean;
-  holding_alert: boolean; sector_mover: boolean;
+  holding_alert: boolean; sector_mover: boolean; program_alert: boolean;
   tone_positive: boolean; tone_neutral: boolean; tone_caution: boolean; tone_warning: boolean };
 const TONE_KEYS = ["tone_positive", "tone_neutral", "tone_caution", "tone_warning"] as const;
 export const EXTRA_KINDS: { key: keyof ExtraKinds; label: string; note: string }[] = [
   { key: "flow_shift", label: "수급 흐름 변화", note: "외국인 · 기관의 매수 · 매도 확대 · 축소(장중)" },
   { key: "flow_warn", label: "수급 경고", note: "개인 혼자 받치고 외국인 · 기관이 던질 때, 외국인 · 기관 매도가 과할 때(장중)" },
   { key: "nq_alert", label: "나스닥 선물 이상", note: "나스닥100 선물의 급한 매도세(거의 24시간)" },
+  { key: "program_alert", label: "프로그램", note: "코스피 · 코스닥 프로그램매매(전체 · 비차익)의 매수 · 매도 전환(장중, 09:05 부터)" },
   { key: "morning_brief", label: "아침 시황", note: "평일 오전 7시쯤" },
   { key: "day_call", label: "오늘 방향", note: "국장 · 미장 판정이 나올 때" },
   { key: "line_signal", label: "차트 선", note: "고른 종목 · 시간봉의 채널 · 추세선 닿음 · 이탈(설정 → 차트 선 알림에서 켬). 참고 등급이라 '· 참고' 도 켜져 있어야 받음" },
@@ -63,9 +64,11 @@ export function loadExtraKinds(): ExtraKinds {
     return { flow_shift: raw.flow_shift !== false, flow_warn: raw.flow_warn !== false, nq_alert: raw.nq_alert !== false,
              morning_brief: raw.morning_brief !== false, day_call: raw.day_call !== false, line_signal: raw.line_signal !== false,
              holding_alert: raw.holding_alert !== false, sector_mover: raw.sector_mover !== false,
+             program_alert: raw.program_alert !== false,
              ...Object.fromEntries(TONE_KEYS.map((k) => [k, raw[k] !== false])) as Record<(typeof TONE_KEYS)[number], boolean> };
   } catch {
     return { flow_shift: true, flow_warn: true, nq_alert: true, morning_brief: true, day_call: true, line_signal: true, holding_alert: true, sector_mover: true,
+             program_alert: true,
              tone_positive: true, tone_neutral: true, tone_caution: true, tone_warning: true };
   }
 }
@@ -115,10 +118,10 @@ export default function FlowAlertToast() {
     }
     const fresh = pushed.filter((a) => !seenShift.current!.has(alertKey(a)));
     fresh.forEach((a) => seenShift.current!.add(alertKey(a)));
-    // #581 보유 종목 · #740 섹터 급등락 알림은 그 종류 설정을, 화면이 아직 모르는 종류는 등급(tone) 설정만 따른다
+    // #581 보유 종목 · #740 섹터 급등락 · #743 프로그램 알림은 그 종류 설정을, 화면이 아직 모르는 종류는 등급(tone) 설정만 따른다
     const on = (a: MarketAlert) => (a.kind === "flow_shift" ? extra.flow_shift : a.kind === "flow_warn" ? extra.flow_warn
       : a.kind === "nq_alert" ? extra.nq_alert : a.kind === "holding_alert" ? extra.holding_alert
-      : a.kind === "sector_mover" ? extra.sector_mover : true);
+      : a.kind === "sector_mover" ? extra.sector_mover : a.kind === "program_alert" ? extra.program_alert : true);
     const wanted = fresh.filter((a) => on(a) && (!a.tone || extra[`tone_${a.tone}`]));
     if (wanted.length) {
       const until = Date.now() + SHOW_MS;

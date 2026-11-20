@@ -11,6 +11,8 @@ A turn is where the foreign running total crosses zero for good: it has to clear
 wobbling around zero does not flip back and forth. Turns are judged on the raw snapshots, not the
 bars, so every bucket shows the same turns. Bars sit on the 08:45 derivatives grid; spot trades
 from 09:00, so its first 60-minute bar covers 45 minutes.
+#743 the spot bars carry the KRX program trading net buy as three more classes (``program_total`` ...,
+from #677's snapshots, 100 million KRW), and ``program_turns`` are their turns (desk.program_flow's band).
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ OPEN, CLOSE = time(8, 45), time(15, 45)
 TURN_BAND = {"futures": 500.0, "kospi": 300.0, "kosdaq": 300.0}   # contracts / 100 million KRW
 TURN_HOLD = 2
 CLASSES = ("foreign", "institution", "individual")
+PROGRAM = ("program_total", "program_non_arbitrage", "program_arbitrage")
 
 
 def _at(point: dict) -> datetime:
@@ -67,6 +70,8 @@ def series(points: list[dict], market: str) -> list[tuple[datetime, dict]]:
             vals["price"] = p.get("price")
         else:
             vals = dict((p.get("spot") or {}).get(market) or {})
+            prog = (p.get("program") or {}).get(market) or {}
+            vals.update({c: prog.get(c.removeprefix("program_")) for c in PROGRAM})
         if any(vals.get(c) is not None for c in CLASSES):
             out.append((_at(p), vals))
     return out
@@ -82,7 +87,7 @@ def bars(points: list[dict], market: str, minutes: int) -> list[dict]:
     for end in sorted(last):
         vals = last[end]
         bar = {"t": end.isoformat(timespec="seconds")}
-        for c in CLASSES:
+        for c in CLASSES if market == "futures" else CLASSES + PROGRAM:
             v = vals.get(c)
             bar[total_key(c)] = v
             bar[f"{c}_delta"] = None if v is None else round(v - prev.get(c, 0.0), 2)
@@ -93,9 +98,10 @@ def bars(points: list[dict], market: str, minutes: int) -> list[dict]:
     return out
 
 
-def turns(points: list[dict], market: str, who: str = "foreign") -> list[dict]:
-    """The foreign buy/sell turns of one market, oldest first."""
-    band, out = TURN_BAND[market], []
+def turns(points: list[dict], market: str, who: str = "foreign", band: float | None = None,
+          hold: int = TURN_HOLD) -> list[dict]:
+    """The buy/sell turns of one market's ``who`` (the foreign by default), oldest first."""
+    band, out = TURN_BAND[market] if band is None else band, []
     side, pending, run = 0, 0, 0            # side: +1 net buying, -1 net selling, 0 not set yet
     for at, vals in series(points, market):
         v = vals.get(who)
@@ -107,7 +113,7 @@ def turns(points: list[dict], market: str, who: str = "foreign") -> list[dict]:
             continue
         run = run + 1 if now == pending else 1
         pending = now
-        if run >= TURN_HOLD:
+        if run >= hold:
             if side != 0:                    # the first side of the day is a start, not a turn
                 out.append({"t": at.isoformat(timespec="seconds"), "market": market, "who": who,
                             "kind": "buy_turn" if now > 0 else "sell_turn", "value": v})
@@ -119,8 +125,13 @@ def view(points: list[dict], minutes: int) -> dict:
     """The API body (without the date / support fields): spot and futures bars, and the turns."""
     if minutes not in BUCKETS:
         raise ValueError(f"bucket must be one of {BUCKETS}")
+    from . import program_flow
+
     all_turns = [t for m in ("futures", "kospi", "kosdaq") for t in turns(points, m)]
+    program_turns = [t for m in program_flow.MARKETS for who in program_flow.WHO
+                     for t in turns(points, m, who, band=program_flow.DEFAULT[(m, who)], hold=program_flow.HOLD)]
     return {"bucket_min": minutes,
             "spot": {m: bars(points, m, minutes) for m in ("kospi", "kosdaq")},
             "futures": bars(points, "futures", minutes),
-            "turns": sorted(all_turns, key=lambda t: t["t"])}
+            "turns": sorted(all_turns, key=lambda t: t["t"]),
+            "program_turns": sorted(program_turns, key=lambda t: t["t"])}

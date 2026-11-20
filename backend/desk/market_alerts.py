@@ -1,5 +1,6 @@
 """The day's market alerts (#579): investor flow shifts (desk.flow_shift), flow warnings (desk.flow_warn,
-#699) and NQ=F alarms (desk.nq_watch), kept in ``market_alerts`` and pushed through desk.notify.
+#699), program trading turns (desk.program_flow, #743) and NQ=F alarms (desk.nq_watch), kept in
+``market_alerts`` and pushed through desk.notify.
 
 What gets through (``admit``, read against what the day already holds):
 - the same moment of the same rule is kept once (judging the same snapshots again sends nothing twice);
@@ -11,7 +12,7 @@ What gets through (``admit``, read against what the day already holds):
 - ``DAILY_MAX`` pushed alerts a day per kind, past it only strong ones, turns and warnings (#641),
   ``STRONG_EXTRA`` more.
 A turn skips the two waits: the dead band and hold of desk.flow_intraday already keep it rare, and it
-matters most. A flow warning (``flow_warn``) skips them too and goes once a day per rule and market, plus
+matters most. #743 a program turn also goes at most ``PROGRAM_MAX`` times a day per market, class and rule. A flow warning (``flow_warn``) skips them too and goes once a day per rule and market, plus
 once more when it turns strong after a caution - the structure of the day, not a change of pace. Info alerts go on the timeline (``GET /api/alerts/today``) but are not pushed: they have
 their own DAILY_MAX, and they never hold back a pushed one (nor the other way round). Alerts of the
 same moment are judged strongest first.
@@ -31,7 +32,7 @@ from sqlalchemy import func, insert, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from . import alert_tone, flow_shift, flow_warn, holding_watch, notify, nq_watch, sector_movers
+from . import alert_tone, flow_shift, flow_warn, holding_watch, notify, nq_watch, program_flow, sector_movers
 from .db import market_alerts, now, users
 from .futures_flow import KST
 
@@ -41,6 +42,7 @@ COOLDOWN_MIN = 20
 REPEAT_MIN = 60
 DAILY_MAX = 10
 STRONG_EXTRA = 3
+PROGRAM_MAX = 3                   # #743 program turns a day per market, class and rule
 ONCE_A_DAY = {"open_buy_reversal", "open_sell_reversal", "nq_from_high",
               # #694 each holding rule once a KST day per holding (market = the ticker)
               "hold_stop", "hold_near_stop", "hold_trend_down", "hold_take_profit",
@@ -56,7 +58,8 @@ URLS = {"holding_alert": "/#/",                  # #694 the dashboard's holdings
         "sector_mover": "/#/sectors?movers"}     # #740 the sectors page, scrolled to its movers card
 OWNER_ONLY = {"holding_alert"}                   # #694 the owner's holdings: web push to the owner's devices only
 TITLE = {"flow_shift": "수급 흐름 변화", "flow_warn": "수급 경고", "nq_alert": "나스닥 선물 이상 징후",
-         "holding_alert": "보유 종목 손절 · 익절", "sector_mover": "섹터 급등락 주범"}
+         "holding_alert": "보유 종목 손절 · 익절", "sector_mover": "섹터 급등락 주범",
+         "program_alert": "프로그램매매 전환"}
 
 
 def _session(alert: dict) -> str:
@@ -72,6 +75,8 @@ def admit(alert: dict, day: list[dict], before: list[dict] = ()) -> bool:
     market = [a for a in pool if a["kind"] == alert["kind"] and a["market"] == alert["market"]]
     same = [a for a in market if a["who"] == alert["who"]]
     if any(a["rule"] == alert["rule"] and a["t"] == alert["t"] for a in same):
+        return False
+    if alert["kind"] == "program_alert" and sum(1 for a in same if a["rule"] == alert["rule"]) >= PROGRAM_MAX:
         return False
     if alert["kind"] == "flow_warn":                  # #699 once a day, once more when it turns strong
         earlier = [a for a in market if a["rule"] == alert["rule"]]
@@ -132,7 +137,8 @@ def _tag(alert: dict) -> str:
 def text(alert: dict) -> str:
     """The stored and pushed text: the tone's mark, the rule's words, one line of reading (#641)."""
     words = {"nq_alert": nq_watch.text, "flow_warn": flow_warn.text,
-             "holding_alert": holding_watch.text, "sector_mover": sector_movers.text}.get(alert["kind"], flow_shift.text)(alert)
+             "holding_alert": holding_watch.text, "sector_mover": sector_movers.text,
+             "program_alert": program_flow.text}.get(alert["kind"], flow_shift.text)(alert)
     return alert_tone.headline(alert, words)
 
 
@@ -142,6 +148,7 @@ class MarketAlerts:
         self.pusher = pusher
         self._limits: tuple[date, dict] | None = None
         self._warn_history: tuple[date, dict] | None = None
+        self._program_bands: tuple[date, dict] | None = None
         self._lock = threading.Lock()   # #674 two loops dispatch NQ=F alarms: admit and insert one at a time
 
     def list(self, day: str) -> list[dict]:
@@ -216,6 +223,18 @@ class MarketAlerts:
             log.exception("flow warn history failed - floors only today")
             got = {"n": 0, "at": {}}
         self._warn_history = (day, got)
+        try:
+            bands = program_flow.bands(points)
+        except Exception:        # #743 the defaults then
+            log.exception("program bands failed - defaults today")
+            bands = {"band": dict(program_flow.DEFAULT), "days": {}}
+        self._program_bands = (day, bands)
+
+    def program_bands(self, history, day: date) -> dict:
+        """#743 desk.program_flow.bands over the same days - once a day."""
+        if not (self._program_bands and self._program_bands[0] == day):
+            self._load(history, day)
+        return self._program_bands[1]
 
     def after_snapshot(self, history, day: date | None = None) -> list[dict]:
         """The snapshot loop calls this after each record (desk.futures_history ``history``)."""
@@ -228,6 +247,10 @@ class MarketAlerts:
             alerts += flow_warn.judge(points, self.warn_history(history, day))
         except Exception:
             log.exception("flow warn judge failed")
+        try:                     # #743 nor in the program turns
+            alerts += program_flow.judge(points, self.program_bands(history, day)["band"])
+        except Exception:
+            log.exception("program turn judge failed")
         return self.dispatch(alerts)
 
     def nq_pass(self, bars: list[dict], now: datetime | None = None) -> list[dict]:

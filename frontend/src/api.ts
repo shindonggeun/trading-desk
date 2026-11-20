@@ -1,3 +1,4 @@
+import { activityHeaders } from "./activity";
 import type { DayCallSectorsResponse } from "./components/DayCallSectors";
 import type { ChartRead, GapReport, LinesReport, LineTf } from "./types";
 import type { DayCallHistory, DayCallMarket, DayCallStats, DayCallToday, MorningBrief, MorningBriefList } from "./types";
@@ -90,7 +91,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
     credentials: "same-origin",
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    // #762 사람이 2분 넘게 손대지 않은 동안의 요청은 활동이 아니라고 알린다(activity.ts)
+    headers: { "Content-Type": "application/json", ...activityHeaders(), ...init?.headers },
   });
   if (res.status === 401 && path !== "/api/auth/login") {
     clearApiCache();

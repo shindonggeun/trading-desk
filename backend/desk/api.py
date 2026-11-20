@@ -169,6 +169,21 @@ NL2 = "\n\n"   # ends an SSE frame
 HEARTBEAT_SEC = 15
 OPEN_PATHS = frozenset({"/api/health", "/api/auth/login"})
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# #762 a request the screen sent with no one at it (the client marks it - frontend/src/activity.ts): it is
+# checked like any other but is not activity, so a tab left open still goes idle. It can only shorten a
+# session - a forged header gains nothing.
+BACKGROUND_HEADER = "x-desk-background"
+# #762 an open stream re-checks the session at least this often, whatever its own round (docs/security.md §2)
+STREAM_RECHECK_SEC = 15.0
+
+
+def is_activity(request: Request) -> bool:
+    """#762 whether a request counts as the person's activity: not one the screen marked as sent with no one
+    at it, and not a GET of an SSE stream - an EventSource cannot carry the header and reconnects by itself
+    (a restart, a network change), while the screen that opens it has already made its own requests."""
+    if request.headers.get(BACKGROUND_HEADER) == "1":
+        return False
+    return not (request.method == "GET" and request.url.path.endswith("/stream"))
 
 
 # #431 what a run cut off by a restart (a deploy) says on its failed screen
@@ -1214,7 +1229,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if request.method in UNSAFE_METHODS and not _same_origin(request):
             return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
         if request.url.path not in OPEN_PATHS:
-            user = await asyncio.to_thread(auth.resolve, request.cookies.get(COOKIE), touch=True)
+            user = await asyncio.to_thread(auth.resolve, request.cookies.get(COOKIE), touch=is_activity(request))
             if user is None:
                 return JSONResponse({"detail": "login required"}, status_code=401)
             request.state.user = user
@@ -1937,7 +1952,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     return
                 snap = await book.snapshot()
                 yield f"data: {json.dumps(snap, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(interval)
+                # #762 a round up to 60 s still re-checks the session within STREAM_RECHECK_SEC
+                waited = 0.0
+                while (step := min(STREAM_RECHECK_SEC, interval - waited)) > 0:
+                    await asyncio.sleep(step)
+                    waited += step
+                    if waited < interval and (await request.is_disconnected()
+                                              or await asyncio.to_thread(auth.resolve, token, touch=False) is None):
+                        return
 
         return StreamingResponse(frames(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -3510,9 +3532,13 @@ def _notify_routes(app: FastAPI, engine, settings: Settings) -> None:
     app.state.holding_watch = holdings_watch
 
     def holding_view(request: Request) -> dict:
-        return {**holdings_watch.settings(), "can_edit": request.state.user.id == owner_id(),
+        """#762 the owner's holdings are the owner's: another account gets the default setting and no lines -
+        not which tickers are held, their per-ticker limits or their returns, nor that any exist."""
+        mine = request.state.user.id == owner_id()
+        return {**(holdings_watch.settings() if mine else holding_watch.clean(dict(holding_watch.DEFAULT))),
+                "can_edit": mine,
                 "limits": {"max_loss_pct": list(holding_watch.MAX_LOSS_RANGE), "max_tickers": holding_watch.MAX_TICKERS},
-                "holdings": list(holdings_watch.last.values())}
+                "holdings": list(holdings_watch.last.values()) if mine else []}
 
     @app.get("/api/holding-watch")
     def holding_watch_get(request: Request):

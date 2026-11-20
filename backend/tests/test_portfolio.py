@@ -226,3 +226,28 @@ def test_an_open_portfolio_stream_does_not_keep_the_session_from_going_idle(db_u
             assert conn.execute(sessions.select()).first() is None    # expired and removed, not kept alive
         engine.dispose()
         assert client.get("/api/portfolio").status_code == 401
+
+
+def test_a_slow_portfolio_stream_still_re_checks_the_session_within_15_seconds(db_url, monkeypatch):
+    """#762: with DESK_PORTFOLIO_STREAM_SEC at 60 the stream waits in steps of at most 15 s, re-checking the
+    session after each - a sign-out ends it before the next snapshot (docs/security.md: within 15 s)."""
+    with _client(db_url, Book(), portfolio_stream_sec=60) as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        token = client.cookies.get(COOKIE)
+        steps: list[float] = []
+        real_sleep = asyncio.sleep
+
+        async def sleep(seconds):
+            steps.append(seconds)
+            if len(steps) == 2:     # sign out from elsewhere 30 s into the minute
+                engine = make_engine(db_url)
+                Auth(engine, timedelta(hours=1), timedelta(hours=1)).close_session(token)
+                engine.dispose()
+            await real_sleep(0)
+        monkeypatch.setattr("desk.api.asyncio.sleep", sleep)
+
+        with client.stream("GET", "/api/portfolio/stream") as response:
+            lines = list(response.iter_lines())
+        assert lines[0] == "retry: 60000"
+        assert len([line for line in lines if line.startswith("data: ")]) == 1
+        assert steps == [15.0, 15.0]        # ended at the re-check after the second step, not a minute later

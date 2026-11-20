@@ -218,7 +218,7 @@ export default function TradeMap({ plan, ticker }: { plan: Plan; ticker: string 
       </div>
       {!!tm.cautions?.length && (
         <ul className="tm-cautions" role="note">
-          {tm.cautions.map((c) => <li key={c.kind}><strong>{c.label}</strong> {c.text}</li>)}
+          {tm.cautions.map((c, i) => <li key={`${c.kind}:${c.timeframe ?? ""}:${i}`}><strong>{c.label}</strong> {c.text}</li>)}
         </ul>
       )}
       {!!tm.scenarios?.length && <Scenarios list={tm.scenarios} note={tm.regime_note ?? null} />}

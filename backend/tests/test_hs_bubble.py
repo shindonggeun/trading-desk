@@ -145,3 +145,32 @@ def test_the_trade_map_cautions_against_a_long_into_a_top_or_a_bubble(monkeypatc
     assert [c["kind"] for c in got] == ["bubble", "head_shoulders"] and all(c["text"] for c in got)
     assert trade_map.cautions({"hs": [p], "bubble": None}, ["short"]) == []
     assert trade_map.cautions(None, ["long"]) == []
+
+
+def test_a_retest_needs_the_price_to_leave_the_neckline_first(monkeypatch):
+    monkeypatch.setattr(hs_pattern, "_stats_cache", {})
+    # a close just through the neckline, then bars whose highs sit right under it: still only broken
+    hugging = _bars(_path(TOP[:-1] + [(86, 107.5), (88, 106.0), (99, 105.8)], 100))
+    for b in hugging[89:]:                                  # bars reaching back up near the line, never far below it
+        b["high"], b["low"] = b["close"] * 1.008, b["close"] * 0.999
+    got = hs_pattern.find(hugging, 3, 1.5)
+    assert got and got[0]["state"] == "broken"
+
+
+def test_the_false_break_share_counts_only_the_textbook_way_breaks():
+    rows = []
+    for d in range(1, 41):
+        expected = d <= 24                                  # 24 neckline breaks (12 false), 16 over the head
+        rows.append({"ticker": "T", "at": f"2024-01-{d:02d}" if d < 32 else f"2024-02-{d - 31:02d}",
+                     "kind": "head_shoulders", "timeframe": "1d", "expected": "down",
+                     "direction": "down" if expected else "up", "move_atr": 1.0,
+                     "false_break": (d % 2 == 0) if expected else None, "prior": "none", "frac": None, "reach": None})
+    s = hs_bt.table(rows, rows)["1d:head_shoulders"]
+    assert s["false_break_pct"] == 50.0
+
+
+def test_the_cautions_name_their_timeframe(monkeypatch):
+    monkeypatch.setattr(hs_pattern, "_stats_cache", {})
+    p = hs_pattern.find(_bars(_path(TOP, 100)), 3, 1.5)[0]
+    got = trade_map.cautions({"hs": [p, {**p, "timeframe": "1w"}], "bubble": None}, ["long"])
+    assert [(c["kind"], c["timeframe"]) for c in got] == [("head_shoulders", "1d"), ("head_shoulders", "1w")]

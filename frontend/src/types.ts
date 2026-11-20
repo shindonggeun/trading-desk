@@ -157,7 +157,7 @@ export interface TradeMap {
   /** 이 레짐에서 과거 어느 진입이 나았나 한 줄(표본 · 나쁘면 그대로) */
   regime_note?: string | null;
   /** #695 지도를 거스르는 읽기: 주봉 민스키형 '진입 조심' 단계, 방향을 거스르는 헤드앤숄더 */
-  cautions?: { kind: string; label: string; text: string; stage?: string; state?: string; reference_only: boolean }[];
+  cautions?: { kind: string; timeframe?: string; label: string; text: string; stage?: string; state?: string; reference_only: boolean }[];
 }
 
 export interface TradeScenarioRecord {

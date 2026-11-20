@@ -81,7 +81,7 @@ def _step(role: str, zone: dict | None, price: float, action: str, vp: dict | No
 
 
 def side_map(side: str, entry: float, stop: float | None, target: float | None, sr: dict | None,
-             atr: float, entry_type: str | None = None, origin: str = "plan") -> dict:
+             atr: float, entry_type: str | None = None, origin: str = "plan", ref: float | None = None) -> dict:
     """One direction's map. ``origin``: "plan" (the plan's own levels) or "trigger" (a hold
     plan's long/short trigger as the entry, no plan stop or target)."""
     up = side == "long"
@@ -118,7 +118,9 @@ def side_map(side: str, entry: float, stop: float | None, target: float | None, 
         p_stop = stop
     elif origin == "trigger":
         # #652 a breakout fails when the price falls back under the level it broke - not two supports down
-        stop_zone, p_stop, _ = _breakout_stop(cands, entry, atr, sign, (sr or {}).get("reference_price"))
+        # the same price the scenarios use (build's ref: live, else the levels' close) - one stop on one screen
+        stop_zone, p_stop, _ = _breakout_stop(cands, entry, atr, sign,
+                                              ref if ref is not None else (sr or {}).get("reference_price"))
     else:
         stop_zone = None
         last = guards[1] if len(guards) > 1 else guards[0] if guards else None
@@ -163,7 +165,8 @@ def _breakout_stop(cands: list[dict], entry: float, atr: float, sign: int,
     is not what a breakout breaks. Returns (the stop's zone, the stop, the broken level's price)."""
     broken = sorted((c for c in cands if c["source"] != "plan"
                      and 0 <= sign * (entry - c["price"]) <= BROKEN_REACH_ATR * atr
-                     and (ref is None or sign * (c["price"] - ref) >= 0)),
+                     # the price's other side is out - unless the price is already past the entry
+                     and (ref is None or sign * (entry - ref) <= 0 or sign * (c["price"] - ref) >= 0)),
                     key=lambda c: -sign * c["price"])                # nearest the entry first
     zone_lv = [c for c in broken if abs(c["price"] - broken[0]["price"]) <= MERGE_ATR * atr] if broken else []
     zone = level = None
@@ -274,9 +277,11 @@ def build(plan: dict, sr: dict | None) -> dict | None:
         maps.append(side_map(side, entry, stop, target, sr, atr, plan.get("entry_type")))
     else:
         if plan.get("long_trigger") is not None:
-            maps.append(side_map("long", plan["long_trigger"], None, None, sr, atr, "stop", origin="trigger"))
+            maps.append(side_map("long", plan["long_trigger"], None, None, sr, atr, "stop", origin="trigger",
+                                ref=ref))
         if plan.get("short_trigger") is not None:
-            maps.append(side_map("short", plan["short_trigger"], None, None, sr, atr, "stop", origin="trigger"))
+            maps.append(side_map("short", plan["short_trigger"], None, None, sr, atr, "stop", origin="trigger",
+                                ref=ref))
         if not maps and bias in ("long", "short") and entry is not None:
             maps.append(side_map(bias, entry, stop, target, sr, atr, plan.get("entry_type")))
     if not maps:

@@ -2502,7 +2502,70 @@ export interface ChartReadFrame {
   error?: string;
 }
 
+/** #751 chart-read's historical structure candidates, by viewing horizon. */
+export type AccumulationViewKey = "short" | "mid" | "long";
+
+export interface AccumulationBand {
+  low: number;
+  high: number;
+  score: number;
+  basis: string[];
+  role: "accumulation" | "supply";
+  distance_pct: number;
+  inside?: boolean;
+}
+
+export interface AccumulationStats {
+  n: number;
+  bounce_pct: number | null;
+  baseline_pct: number | null;
+  valid: { n: number; bounce_pct: number | null };
+  edge_pct: number | null;
+  edge_needed_pct: number | null;
+  horizon_bars: number;
+}
+
+type AccumulationViewBase = {
+  view: AccumulationViewKey;
+  label: string;
+  timeframe: "60m" | "240m" | "1d" | "1w";
+  below: AccumulationBand[];
+  above: AccumulationBand[];
+};
+
+export type AccumulationView = AccumulationViewBase & (
+  | { error: string; sentence: null }
+  | {
+      error?: never;
+      timeframe_ko: string;
+      stats: AccumulationStats | null;
+      reference_only: boolean;
+      small_sample: boolean;
+      reference_label: string | null;
+      sentence: string | null;
+    }
+);
+
+export interface AccumulationLeg {
+  direction: "up" | "down";
+  from: { at: string | null; price: number };
+  to: { at: string | null; price: number };
+  pct: number;
+  bars: number;
+  days: number | null;
+  pct_per_day: number | null;
+  live: boolean;
+}
+
+export interface AccumulationLegs {
+  items: AccumulationLeg[];
+  accelerating: boolean;
+  sentence: string | null;
+}
+
 export interface ChartRead {
+  accumulation?: (Record<AccumulationViewKey, AccumulationView | null> & { note: string }) | null;
+  legs?: Record<AccumulationViewKey, AccumulationLegs | null> | null;
   ticker: string;
   generated_at: string;
   timeframes: ChartReadFrame[];

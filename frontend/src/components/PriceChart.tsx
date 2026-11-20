@@ -35,7 +35,7 @@ import GapOddsCard from "./GapOddsCard";
 import ChannelLineCard, { type LinePick } from "./ChannelLineCard";
 import { channelTitle, fakeLines, isLineTf, TF_KO, TREND_STATE_KO, CHANNEL_STATE_KO, trendTitle } from "../channelLines";
 import { oddsLabel } from "../gapOdds";
-import type { ChartRead, ChartReadRef, GapReport, LinesReport, LineTf, OpenGap } from "../types";
+import type { AccumulationViewKey, ChartRead, ChartReadRef, GapReport, LinesReport, LineTf, OpenGap } from "../types";
 import type { BottomZone, ChartPattern, FibLevel, HsPattern, Fibonacci, OutlookPeriodId, Plan, Positioning, Projection, RunOutlook, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
 import PatternCard, { patternKey } from "./PatternCard";
@@ -44,6 +44,8 @@ import { css, useColorScheme } from "../chartColors";
 import { every, usePoll } from "../poll";
 import { delayText, LIVE_NOTE, liveLabel, liveMs, useInView } from "../liveBar";
 import ChartReadPanel from "./ChartReadPanel";
+import AccumulationPanel from "./AccumulationPanel";
+import { useAccumulationOverlay } from "./accumulationOverlay";
 import { beginnerLines, loadReadPrefs, marksOf, MARKS, type ReadPrefs, refIds, refKinds, saveReadPrefs } from "../chartRead";
 
 export type Interval = Exclude<CandleInterval, "1m">;
@@ -573,6 +575,19 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     };
   }, [ticker, oscInterval, show.osc]);
   const [drawn, setDrawn] = useState<Drawn | null>(null);
+  const [accumulationView, selectAccumulationView] = useState<AccumulationViewKey | null>(null);
+  const selectedAccumulation = accumulationView
+    ?? (interval === "1d" ? "mid" : isIntradayTf(interval) ? "short" : "long");
+  const accumulationTime = useCallback((at: string): Time | null => {
+    if (!drawn || !Number.isFinite(Date.parse(at))) return null;
+    const key = drawn.intraday ? kstStamp(at) : kstDay(at);
+    return drawn.rows.some((row) => row.key === key) ? key as Time : null;
+  }, [drawn]);
+  useAccumulationOverlay(
+    drawn, readOn ? chartRead?.accumulation?.[selectedAccumulation] : null,
+    chartRead?.legs?.[selectedAccumulation], accumulationTime,
+    { accent: css("--sr-resistance"), muted: css("--muted"), surface: css("--surface") }, "12px sans-serif",
+  );
   const reloadBars = useCallback(() => {
     // 보던 논리 범위 그대로(봉 수가 같으면 오른쪽 끝이 새 마지막 봉)
     const r = drawn?.alive.current ? drawn.chart.timeScale().getVisibleLogicalRange() : null;
@@ -2415,7 +2430,14 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
         <ChartReadPanel read={chartRead} failed={readFailed} frame={readFrame} interval={interval}
           onInterval={(tf) => setBarInterval(tf as Interval)} marks={readMarks} picked={readPick} onPick={(n) => pickMark(n, "panel")}
           beginner={readPrefs.beginner} applied={beginner} onBeginner={(b) => pickRead({ beginner: b })} idPrefix={readId}
-          open={readExpanded} onToggle={setReadExpanded} />
+          open={readExpanded} onToggle={setReadExpanded}
+          accumulation={chartRead && (
+            <AccumulationPanel read={chartRead} selected={selectedAccumulation} onSelect={(view) => {
+              selectAccumulationView(view);
+              const target = chartRead.accumulation?.[view];
+              if (target && target.error === undefined) setBarInterval(target.timeframe);
+            }} />
+          )} />
       )}
       </div>
       {plan && hasLevels && show.levels && (

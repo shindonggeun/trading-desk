@@ -3037,3 +3037,13 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 /* #764 패널 머리의 실시간 · 폴링 표시 */
 .live-badge { margin-left: 6px; font-size: var(--fs-s); font-weight: 400; color: var(--muted); white-space: nowrap; }
 .live-badge.on { color: var(--ok); }
+
+/* #751 관점별 매집 후보 */
+.accumulation-read { display: grid; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); font-size: var(--fs-s); }
+.accumulation-read :is(h4, p, ul, ol) { margin: 0; }
+.accumulation-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.accumulation-meta span { color: var(--muted); }
+.accumulation-bands { display: grid; gap: 6px; list-style: none; padding: 0; }
+.accumulation-bands li { display: grid; gap: 2px; background: var(--surface-2); border-radius: var(--radius-s); padding: 6px 8px; }
+.accumulation-record { display: grid; gap: 2px; }
+.accumulation-legs ol { padding: 4px 0 0 20px; }

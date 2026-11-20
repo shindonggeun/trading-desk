@@ -2116,14 +2116,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         key = hash_token(token or "")
         if market_streams.get(key, 0) >= MARKET_STREAMS_PER_SESSION:
             raise HTTPException(429, f"at most {MARKET_STREAMS_PER_SESSION} market streams at once")
-        def first_user() -> int | None:      # the desk's owner, as owner_id() below
-            from sqlalchemy import func, select
-
-            from .db import users
-            with engine.connect() as conn:
-                return conn.execute(select(func.min(users.c.id))).scalar()
-
-        owner = await asyncio.to_thread(first_user) == request.state.user.id
+        owner = await asyncio.to_thread(app.state.market_alerts.owner) == request.state.user.id
         market_streams[key] = market_streams.get(key, 0) + 1
         sub = bus.subscribe(wanted, names, owner)
 

@@ -401,3 +401,28 @@ def test_a_kis_trade_is_published_as_a_quote():
     stream.on_tick("005930.KS", Tick(71000.0, 0.5, "2026-11-20T01:00:00+00:00", 1.0))
     assert seen == [{"ticker": "005930.KS", "price": 71000.0, "currency": "KRW", "source": "kis",
                      "fetched_at": "2026-11-20T01:00:00+00:00"}]
+
+
+def test_a_holding_alert_goes_to_the_owner_only_without_its_figures(db_url):
+    from desk.db import make_engine, metadata
+    from tests.test_holding_watch import _hold
+
+    engine = make_engine(db_url)
+    metadata.create_all(engine)
+
+    async def go():
+        bus = market_bus.BUS
+        bus.configure(_settings(), "all")
+        owner = bus.subscribe(("alert",), frozenset(), owner=True)
+        other = bus.subscribe(("alert",), frozenset(), owner=False)
+        alerts = market_alerts.MarketAlerts(engine, None)
+        await asyncio.to_thread(alerts.dispatch, [_hold("hold_stop", "2026-11-20T10:31:00+09:00", severity="strong")])
+        await asyncio.sleep(0.05)
+        got = _drain(owner), _drain(other)
+        await bus.aclose()
+        return got
+
+    mine, theirs = _run(go())
+    engine.dispose()
+    assert [e["key"] for e in mine] == ["holding_alert"] and theirs == []
+    assert mine[0]["payload"]["value"] is None and mine[0]["payload"]["prev"] is None

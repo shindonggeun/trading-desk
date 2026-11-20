@@ -196,7 +196,10 @@ class MarketAlerts:
                 continue
             out.append(row)
             # #690 the open market streams (a holding's alert only to the owner's): the timeline's shape
-            market_bus.publish("alert", alert["kind"], {k: row.get(k) for k in STREAM_FIELDS}, "desk", alert["t"])
+            line = {k: row.get(k) for k in STREAM_FIELDS}
+            if alert["kind"] == holding_watch.KIND:   # as the timeline: the % against the average stays in holding-watch
+                line["value"] = line["prev"] = None
+            market_bus.publish("alert", alert["kind"], line, "desk", alert["t"])
             if row["pushed"]:
                 owner = self.owner() if alert["kind"] in OWNER_ONLY else None
                 notify.send(self.pusher, alert["kind"], f"tone_{row['tone']}", user_id=owner, payload={

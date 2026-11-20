@@ -35,6 +35,7 @@ LOW_QUANTILE = 0.02
 VOLUME_TIMES = 3.0
 VOLUME_MIN_TIMES = 1.5
 FROM_HIGH_PCT = 1.5
+SOURCE_NAMES = {"qqq": "QQQ 실시간", "binance": "추정(바이낸스 QQQ 무기한)", "yahoo": "야후 5분봉"}   # #674
 MIN_SAMPLE = 200                 # fewer 5-minute returns than this: no quantile worth reading
 
 
@@ -128,16 +129,30 @@ def judge(bars: list[dict], now: datetime | None = None) -> list[dict]:
     return out
 
 
+def basis(alert: dict) -> str | None:
+    """#674 what judged it and how old its price was, e.g. "판정 QQQ 실시간 · 지연 4초"; None without."""
+    source = alert.get("source")
+    if not source:
+        return None
+    delay = alert.get("delay_sec")
+    late = "" if delay is None else (f" · 지연 {delay}초" if delay < 120 else f" · 지연 약 {round(delay / 60)}분")
+    return f"판정 {SOURCE_NAMES.get(source, source)}{late}"
+
+
 def text(alert: dict) -> str:
     """e.g. "🔵 나스닥 선물 급락 · 23:35 · 5분 −0.62% (하위 2% −0.31%) · 거래량 평소의 3.4배"."""
     hhmm = datetime.fromisoformat(alert["t"]).astimezone(KST).strftime("%H:%M")
     pct = (lambda v: f"{v:+.2f}%".replace("-", "−"))
     rule = alert["rule"]
     if rule == "nq_from_high":
-        return f"🔵 나스닥 선물 장중 고점 대비 {pct(alert['value'])} · {hhmm}"
-    span = "5분" if rule == "nq_drop" else "15분"
-    head = "🔵 나스닥 선물 급락" + (" (매도세 강함)" if alert["severity"] == "strong" else "")
-    parts = [head, hhmm, f"{span} {pct(alert['value'])} (하위 {LOW_QUANTILE:.0%} {pct(alert['prev'])})"]
-    if alert.get("volume_times") is not None:
-        parts.append(f"거래량 같은 시각 평소의 {alert['volume_times']:.1f}배")
+        parts = [f"🔵 나스닥 선물 장중 고점 대비 {pct(alert['value'])}", hhmm]
+    else:
+        span = "5분" if rule == "nq_drop" else "15분"
+        head = "🔵 나스닥 선물 급락" + (" (매도세 강함)" if alert["severity"] == "strong" else "")
+        low = f"{alert.get('quantile', LOW_QUANTILE):.1%}".replace(".0%", "%")      # 2% · 0.5%
+        parts = [head, hhmm, f"{span} {pct(alert['value'])} (하위 {low} {pct(alert['prev'])})"]
+        if alert.get("volume_times") is not None:
+            parts.append(f"거래량 같은 시각 평소의 {alert['volume_times']:.1f}배")
+    if (said := basis(alert)) is not None:
+        parts.append(said)
     return " · ".join(parts)

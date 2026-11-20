@@ -57,6 +57,7 @@ class Job:
     running: bool = False
     looped: bool = False          # run through run_forever (else a spawned task with its own loop)
     ended: str | None = None
+    note: dict | None = None      # #674 what the last pass judged on (a job's own words, e.g. its source)
     _failed: bool = field(default=False, repr=False)
 
     def ok(self, at: datetime) -> None:
@@ -203,5 +204,5 @@ class Jobs:
         return [{"name": j.name, "label": j.label, "source": j.source, "parent": j.parent, "state": self.state(j, at),
                  "runs": j.runs, "errors": j.errors, "last_run": iso(j.last_run), "last_ok": iso(j.last_ok),
                  "last_error": j.last_error, "last_error_at": iso(j.last_error_at), "next_due": iso(j.next_due),
-                 "interval_sec": round(j.interval) if j.interval else None}
+                 "interval_sec": round(j.interval) if j.interval else None, "note": j.note}
                 for j in self._jobs.values()]

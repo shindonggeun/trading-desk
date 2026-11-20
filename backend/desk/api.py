@@ -61,6 +61,7 @@ from . import (
     morning_brief,
     news_digest,
     notify,
+    nq_fast,
     nq_watch,
     oscillator,
     otp,
@@ -608,6 +609,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         ("listing", "종목 목록", "토스", None),
         ("futures_snapshot", "코스피200 선물 수급 스냅숏", "한투(KIS)", None),
         ("nq_watch", "나스닥 선물 이상 징후", "야후", None),
+        ("nq_fast", "나스닥 선물 1분 판정", "QQQ 실시간 · 바이낸스 추정", None),
         ("line_signals", "채널 · 추세선 신호", "야후 · 토스", None),
         ("credit", "빚투 · 예탁금", "금융투자협회(KOFIA)", None),
         ("news", "뉴스 흐름", "GDELT · 구글 뉴스", None),
@@ -776,11 +778,41 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         async def watch_nq() -> float:
             # #579 NQ=F selling alarms (desk.nq_watch) on Yahoo's 5-minute bars while CME trades -
-            # just after each bar closes on the 5-minute grid, so every finished bar is judged once
-            if nq_watch.cme_open(datetime.now(UTC)):
+            # just after each bar closes on the 5-minute grid, so every finished bar is judged once.
+            # #674 the late check behind nq_fast: a move it already sent is not sent again
+            now_ = datetime.now(UTC)
+            if nq_watch.cme_open(now_):
                 got = await prices.candles(nq_watch.TICKER, "5m", nq_watch.BARS)
                 await asyncio.to_thread(app.state.market_alerts.nq_pass, got["bars"])
+                done = [b for b in got["bars"] if datetime.fromisoformat(b["at"]) + nq_watch.BAR <= now_]
+                if done:
+                    end = datetime.fromisoformat(done[-1]["at"]) + nq_watch.BAR
+                    jobs.get("nq_watch").note = {
+                        "at": now_.isoformat(timespec="seconds"), "source": "yahoo",
+                        "price_at": end.astimezone(UTC).isoformat(timespec="seconds"),
+                        "delay_sec": round((now_ - end).total_seconds())}     # the bar's real end: lag included
             return nq_watch.seconds_to_next(datetime.now(UTC))
+
+        async def qqq_live() -> dict:
+            # #653's live price of QQQ (the KIS stream in regular hours) for nq_fast
+            got = await chart_live.get(nq_fast.QQQ, "1m")
+            return {"price": got["price"], "at": got["price_at"], "source": got["source"],
+                    "live": got["live"], "estimated": got["estimated"]}
+
+        async def qqq_regular() -> bool:
+            return await sessions.session(calendar, nq_fast.QQQ) == "regular"
+
+        nq_fast_watch = nq_fast.NqFast(prices, estimator, qqq_live, qqq_regular)
+
+        async def watch_nq_fast() -> float:
+            # #674 NQ=F alarms each TICK_SEC on a live price (QQQ in US hours, else the Binance contract),
+            # through the same market_alerts waits as the Yahoo pass
+            _, got = await nq_fast_watch.run_pass()
+            if got:
+                await asyncio.to_thread(app.state.market_alerts.dispatch, got)
+            if nq_fast_watch.last is not None:
+                jobs.get("nq_fast").note = nq_fast_watch.last
+            return nq_fast.TICK_SEC
 
         async def watch_lines() -> float:
             # #613 channel / trendline signals on the watched tickers, each just after its bar closes
@@ -965,6 +997,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
               and getattr(futures, "rest", None) is not None,
               snapshot_futures, lambda: seconds_to_next(datetime.now(UTC), futures_every), "futures snapshot failed")
         start("nq_watch", feeds_on, watch_nq, lambda: nq_watch.seconds_to_next(datetime.now(UTC)), "NQ alarms failed")
+        start("nq_fast", feeds_on and estimator is not None, watch_nq_fast, nq_fast.TICK_SEC * 3,
+              "NQ 1-minute alarms failed")
         start("line_signals", feeds_on, watch_lines, line_signals.TICK_SEC, "line signals failed")
         start("credit", feeds_on, refresh_credit, CREDIT_RETRY_SEC, "KOFIA credit refresh failed")
         if feeds_on:

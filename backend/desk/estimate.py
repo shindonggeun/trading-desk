@@ -95,6 +95,8 @@ CANDLE_INTERVALS = {"5m": "5m", "10m": "5m", "15m": "15m", "1h": "1h", "1d": "1d
 CANDLES_TTL_SEC = 60.0
 CANDLE_LIMIT = 1000
 CANDLE_PAGES = 4         # 5-minute bars: 4 pages cover ~13 days of closed market
+MINUTE_LIMIT = 1500      # #674 markPriceKlines' page at 1 minute
+MINUTE_PAGES = 8         # eight days of minutes at the first read
 MARKS_TTL_SEC = 5.0      # one premiumIndex call returns every contract's mark
 MIN_FRACTION = 0.01      # a leveraged estimate floors at 1% of the close (the fund cannot go negative)
 
@@ -619,6 +621,25 @@ class BinanceEstimator:
             self._ot.clear()
         self._ot[code] = (self._clock(), found)
         return found
+
+    async def minute_marks(self, ticker: str, since: datetime, pages: int = MINUTE_PAGES) -> list[dict]:
+        """#674 the mark price of ``ticker``'s contract (its own or a proxy's) as 1-minute bars from
+        ``since`` (oldest first, the last one still forming), in the contract's own price - for returns,
+        not levels. Empty when there is no contract. Not cached: the caller keeps what it has read."""
+        found = await self.resolve(ticker)
+        if found is None:
+            return []
+        rows: list = []
+        start = int(since.timestamp() * 1000)
+        for _ in range(pages):
+            page = await self._get("/fapi/v1/markPriceKlines", {
+                "symbol": found[0], "interval": "1m", "startTime": start, "limit": MINUTE_LIMIT})
+            rows += page
+            if len(page) < MINUTE_LIMIT:
+                break
+            start = int(page[-1][0]) + 1
+        return [{"at": _iso(datetime.fromtimestamp(int(r[0]) / 1000, UTC)), "open": float(r[1]),
+                 "high": float(r[2]), "low": float(r[3]), "close": float(r[4])} for r in rows]
 
     async def candles(self, ticker: str, interval: str) -> dict | None:
         """Estimated bars of ``ticker`` since its last close: the contract's mark-price bars,

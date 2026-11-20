@@ -2,6 +2,7 @@
 unreachable Redis leaves every cache working from memory as before."""
 
 import asyncio
+import json
 import time
 from datetime import UTC, datetime
 
@@ -36,17 +37,25 @@ def test_off_unless_configured():
     assert sc.get("ns", "k") is None and asyncio.run(sc.aget("ns", "k")) is None
     assert sc.stats()["on"] is False
     assert "secret-pw" not in repr(Settings(database_url="sqlite://", redis_password="secret-pw",
-                                            redis_url="redis://:secret-pw@h:6379/0"))
+                                            redis_url="redis://:secret-pw@h:6379/0", redis_cache_key="secret-pw"))
+
+
+def test_no_cache_key_keeps_the_tier_off(caplog):
+    sc.configure(Settings(database_url="sqlite://", redis_url="redis://127.0.0.1:1/0", redis_cache_key=""))
+    assert sc.stats()["on"] is False
+    assert any("DESK_REDIS_CACHE_KEY" in r.message for r in caplog.records)
 
 
 def test_keys_are_prefixed_always_expire_and_round_trip(redis):
     sc.put("sr", ("NVDA", None, "swing"), {"zones": [1.5, 2], "label": "지지"}, 30)
-    assert redis.keys("*") == ["td:sr:NVDA::swing"]
-    assert 0 < redis.pttl("td:sr:NVDA::swing") <= 30_000
+    [name] = redis.keys("*")
+    assert name == sc._key("sr", ("NVDA", None, "swing")) and name.startswith("td:sr:") and "NVDA" not in name
+    assert "NVDA" not in redis.get(name) and "지지" not in redis.get(name)    # sealed: nothing readable
+    assert 0 < redis.pttl(name) <= 30_000
     value, age, left = sc.get("sr", ("NVDA", None, "swing"))
     assert value == {"zones": [1.5, 2], "label": "지지"} and 0 <= age < 5 and 0 < left <= 30
     assert sc.stats() | {"down_sec": 0} == {"on": True, "down_sec": 0, "hits": 1, "misses": 0, "writes": 1,
-                                             "skipped": 0, "errors": 0}
+                                             "skipped": 0, "rejected": 0, "errors": 0}
 
 
 def test_a_value_json_would_change_stays_in_memory(redis, caplog):
@@ -65,7 +74,7 @@ def test_sync_calls_never_block_the_event_loop_thread(redis):
         return sc.get("ns", "k"), await sc.aget("ns", "k")
 
     blocked, awaited = asyncio.run(on_loop())
-    assert blocked is None and awaited[0] == 1 and redis.keys("td:ns:other") == []
+    assert blocked is None and awaited[0] == 1 and redis.keys(sc._key("ns", "other")) == []
 
 
 def test_a_tiered_cache_reads_what_another_process_wrote_and_then_keeps_it(redis):
@@ -95,7 +104,7 @@ def test_async_tiered_calls(redis):
         a = sc.TieredCache("sr", TTLCache(8, 300))
         await a.aput(("X", None, "day"), {"z": [1]}, 120)
         b = sc.TieredCache("sr", TTLCache(8, 300))
-        return await b.aget(("X", None, "day")), redis.pttl("td:sr:X::day")
+        return await b.aget(("X", None, "day")), redis.pttl(sc._key("sr", ("X", None, "day")))
     got, left_ms = asyncio.run(go())
     assert got == {"z": [1]} and 0 < left_ms <= 120_000
 
@@ -131,7 +140,7 @@ def test_an_unreachable_server_is_skipped_for_a_while_with_one_warning(caplog):
 @pytest.mark.parametrize("settings", [{"redis_url": "redis://127.0.0.1:1/0"},
                                       {"redis_sentinels": ("127.0.0.1:1",), "redis_password": "pw-not-real"}])
 def test_a_configured_redis_that_is_down_falls_back_fast(settings, caplog):
-    sc.configure(Settings(database_url="sqlite://", **settings))
+    sc.configure(Settings(database_url="sqlite://", redis_cache_key="k" * 32, **settings))
     try:
         started = time.monotonic()
         assert sc.get("ns", "k") is None
@@ -170,7 +179,7 @@ def test_a_failed_market_flow_read_is_not_shared(redis):
         return after_failure
 
     assert asyncio.run(go()) == [] and api.calls == 1       # the api fetched itself (and then shared it)
-    assert redis.keys("td:market_flow:*") == ["td:market_flow:KOSPI:1d"]
+    assert redis.keys("td:market_flow:*") == [sc._key("market_flow", ("KOSPI", "1d"))]
 
 
 def test_the_futures_card_reads_what_the_snapshot_job_fetched(redis):
@@ -222,3 +231,58 @@ def test_outbound_counts_and_status_shows_them(db_url):
     with _client(db_url) as client:
         body = client.get("/api/status").json()
     assert body["shared_cache"]["on"] is False and "toss" in body["outbound"]
+
+
+# -- #689 security review: the server is shared on one password, so anyone may write under td:
+
+
+def test_a_value_this_app_did_not_seal_is_a_miss(redis, caplog):
+    fake = {"ticker": "005930.KS", "price": 1.0, "currency": "KRW", "source": "toss", "fetched_at": "x"}
+    sc.use(redis, None, "another-apps-key-0123456789")
+    sc.put("quote", "005930.KS", fake, 60)
+    sealed_elsewhere = redis.get(sc._key("quote", "005930.KS"))
+    sc.use(redis, None, "this-apps-key-0123456789")
+    name = sc._key("quote", "005930.KS")
+    for raw in (sealed_elsewhere,                                        # sealed with another key
+                json.dumps({"v": fake, "at": time.time()}),               # plain JSON
+                "[" * 200_000 + "]" * 200_000,                            # deep nesting
+                "x" * (sc.MAX_RAW_CHARS + 1)):                            # too long to open
+        redis.set(name, raw, px=3_600_000)
+        assert sc.get("quote", "005930.KS") is None
+    assert sc.stats()["rejected"] == 4 and sc.stats()["hits"] == 0
+    assert sum("failed its seal" in r.message for r in caplog.records) == 1   # one line per process
+
+
+def test_a_sealed_value_moved_to_another_key_or_replayed_is_a_miss(redis):
+    sc.put("quote", "AAPL", {"p": 1}, 10)
+    sealed = redis.get(sc._key("quote", "AAPL"))
+    redis.set(sc._key("quote", "NVDA"), sealed, px=60_000)                 # moved: names AAPL inside
+    assert sc.get("quote", "NVDA") is None
+    stale = sc._box.encrypt(json.dumps({"k": "quote:MSFT", "v": {"p": 2}, "at": time.time() - 11,
+                                        "ttl": 10.0}).encode()).decode()
+    redis.set(sc._key("quote", "MSFT"), stale, px=3_600_000)             # an old value with a long expiry
+    assert sc.get("quote", "MSFT") is None
+    assert sc.get("quote", "AAPL")[0] == {"p": 1}
+
+
+def test_what_is_left_comes_from_the_sealed_ttl_not_the_servers_expiry(redis):
+    sc.put("quote", "AAPL", {"p": 1}, 10)
+    redis.pexpire(sc._key("quote", "AAPL"), 3_600_000)
+    assert sc.get("quote", "AAPL")[2] <= 10
+
+
+def test_a_latest_value_entry_of_the_wrong_shape_is_a_miss():
+    assert sc.latest(({"value": {"a": 1}, "ttl": 30}, 1.0, 12.0)) == ({"a": 1}, 30.0, 12.0)
+    for bad in ([1, 2], {"value": [1], "ttl": 30}, {"value": {}, "ttl": "nan"}, {"value": {}, "ttl": -1},
+                {"value": {}}, {"value": {}, "ttl": 10 ** 9}):
+        assert sc.latest((bad, 0.0, 5.0)) is None
+
+
+def test_a_shared_quote_must_be_for_the_ticker_with_a_real_price():
+    from desk.prices import _shared_quote
+
+    good = {"ticker": "AAPL", "price": 101.5, "currency": "USD", "source": "toss", "fetched_at": "t"}
+    assert _shared_quote("AAPL", good).price == 101.5
+    for bad in ({**good, "ticker": "MSFT"}, {**good, "price": "abc"}, {**good, "price": 0}, {**good, "price": True},
+                {**good, "extra": 1}, [1, 2]):
+        assert _shared_quote("AAPL", bad) is None

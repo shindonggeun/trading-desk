@@ -6,15 +6,22 @@ and every cache stays the in-memory one it was. When Redis does not answer (time
 progress) the tier is skipped for ``DOWN_SEC`` and the caller goes on with its memory cache and its own
 fetch - a cache must never make a page fail or wait.
 
-- Keys are ``td:<namespace>:<key>``: the homelab Redis is shared with other projects. Every key is written
-  with a TTL (the server has no ``maxmemory`` policy, so a key without one would stay forever).
-- Values are JSON in an envelope ``{"v": value, "at": unix time written}``. A value whose JSON round trip is
-  not equal to it (a tuple, a datetime, a dataclass) is not shared - the caller keeps it in memory only.
+- The homelab Redis is shared with other projects, on the same password: anyone holding it can read and write
+  any key. So nothing readable is left there (docs/security.md 5.2), keyed by this app's own secret
+  ``DESK_REDIS_CACHE_KEY`` (no key = the tier stays off):
+  - key names are ``td:<namespace>:<HMAC of the key>`` - a ticker never appears in a name;
+  - values are Fernet-sealed JSON ``{"k": namespace:key, "v": value, "at": written, "ttl": seconds}``. A read
+    keeps a value only when it opens, names the key it was read under (no moving a value to another key) and
+    is younger than its own ttl (no replaying an old value with a long expiry). Anything else is a miss.
+- Every key is written with a TTL (the server has no ``maxmemory`` policy, so a key without one would stay
+  forever). A value whose JSON round trip is not equal to it (a tuple, a datetime, a dataclass) is not
+  shared - the caller keeps it in memory only.
 - ``get``/``put`` are for code in worker threads (``asyncio.to_thread``); called on the event loop's thread
   they skip Redis (a blocking socket call there would stall every request). ``aget``/``aput`` are for
   coroutines.
 - What is never put here: broker tokens (#688 keeps them in the DB), session data, anything per user.
-  The password comes from Vault (``kv/trading-desk/backend/prod/env`` ``DESK_REDIS_PASSWORD``) and is never logged.
+  The password and the cache key come from Vault (``kv/trading-desk/backend/prod/env`` ``DESK_REDIS_PASSWORD`` ·
+  ``DESK_REDIS_CACHE_KEY``) and are never logged.
 
 ``TieredCache`` wraps a ``desk.ttl_cache.TTLCache`` with the same calls, reading memory first, then Redis.
 """
@@ -22,13 +29,22 @@ fetch - a cache must never make a page fail or wait.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import logging
+import math
+import os
 import threading
 import time
 from collections.abc import Callable, Hashable
 from contextlib import suppress
 from typing import Any
+
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from desk.ttl_cache import TTLCache
 
@@ -38,22 +54,40 @@ PREFIX = "td:"
 TIMEOUT_SEC = 0.25          # a LAN round trip is ~1 ms; past this the tier is treated as down
 DOWN_SEC = 30.0             # how long to skip Redis after a failure
 MAX_VALUE_BYTES = 512_000   # larger values stay in memory only
+MAX_RAW_CHARS = MAX_VALUE_BYTES * 3 // 2 + 1024   # a sealed value (base64) of that size; longer = not ours
+MAX_TTL_SEC = 7 * 86400     # no cache here lives longer (the closed-market waits run over a long weekend)
+SKEW_SEC = 5.0              # clocks of the api · collector · analyst hosts
 
 _lock = threading.Lock()
 _sync = None                # redis.Redis (or a test double)
 _async = None               # redis.asyncio.Redis (or a test double)
+_box: Fernet | None = None  # seals values
+_name_key = b""             # HMAC key for key names
 _down_until = 0.0
-_stats = {"hits": 0, "misses": 0, "writes": 0, "skipped": 0, "errors": 0}
+_stats = {"hits": 0, "misses": 0, "writes": 0, "skipped": 0, "rejected": 0, "errors": 0}
 _unshareable: set[str] = set()
+_warned_rejected = False
+
+
+def _derive(secret: str | bytes, what: str) -> bytes:
+    raw = secret.encode() if isinstance(secret, str) else secret
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=None,
+                info=f"trading-desk shared cache {what} v1".encode()).derive(raw)
 
 
 def configure(settings) -> None:
     """Build the clients from settings (``redis_sentinels`` · ``redis_master`` · ``redis_password`` ·
-    ``redis_url``). Nothing configured = off. The import is lazy: without Redis settings the package is
-    never loaded."""
+    ``redis_url`` · ``redis_cache_key``). Nothing configured = off. The import is lazy: without Redis
+    settings the package is never loaded."""
     sentinels = tuple(getattr(settings, "redis_sentinels", ()) or ())
     url = getattr(settings, "redis_url", "") or ""
+    secret = getattr(settings, "redis_cache_key", "") or ""
     if not sentinels and not url:
+        use(None, None)
+        return
+    if len(secret) < 16:
+        # without it every value would be readable · writable by the server's other users
+        log.warning("shared cache off: DESK_REDIS_CACHE_KEY is missing or short (docs/deploy.md 12)")
         use(None, None)
         return
     import redis
@@ -81,7 +115,7 @@ def configure(settings) -> None:
         sync = redis.Redis.from_url(url, **sync_opts)
         aio = redis.asyncio.Redis.from_url(url, **async_opts)
         where = "url"
-    use(sync, aio)
+    use(sync, aio, secret)
     log.info("shared cache on (%s)", where)
 
 
@@ -92,14 +126,19 @@ def _host_port(text: str) -> tuple[str, int]:
     return host, int(port)
 
 
-def use(sync_client, async_client) -> None:
-    """Set the clients directly (tests pass fakeredis; ``None, None`` turns the tier off)."""
-    global _sync, _async, _down_until
+def use(sync_client, async_client, secret: str | bytes | None = None) -> None:
+    """Set the clients directly (tests pass fakeredis; ``None, None`` turns the tier off). ``secret`` is
+    ``DESK_REDIS_CACHE_KEY``; None = a random one (this process only - what a test of one module needs)."""
+    global _sync, _async, _down_until, _box, _name_key, _warned_rejected
+    secret = os.urandom(32) if secret is None else secret
     with _lock:
         _sync, _async, _down_until = sync_client, async_client, 0.0
+        _box = Fernet(base64.urlsafe_b64encode(_derive(secret, "seal")))
+        _name_key = _derive(secret, "name")
         for k in _stats:
             _stats[k] = 0
         _unshareable.clear()
+        _warned_rejected = False
 
 
 async def aclose() -> None:
@@ -145,14 +184,26 @@ def _count(name: str) -> None:
         _stats[name] += 1
 
 
-def _key(namespace: str, key: Hashable) -> str:
+def _plain(namespace: str, key: Hashable) -> str:
     parts = key if isinstance(key, tuple) else (key,)
-    return PREFIX + namespace + ":" + ":".join("" if p is None else str(p) for p in parts)
+    return namespace + ":" + ":".join("" if p is None else str(p) for p in parts)
 
 
-def _encode(namespace: str, value: Any) -> str | None:
+def _key(namespace: str, key: Hashable) -> str:
+    """``td:<namespace>:<HMAC>`` - the namespace stays readable (what kind of data, for whoever runs the
+    server); the key itself (a ticker, a date) does not."""
+    digest = hmac.new(_name_key, _plain(namespace, key).encode(), hashlib.sha256).hexdigest()[:32]
+    return PREFIX + namespace + ":" + digest
+
+
+def _reject_constant(name: str):
+    raise ValueError(name)
+
+
+def _encode(namespace: str, key: Hashable, value: Any, ttl: float) -> str | None:
     try:
-        text = json.dumps({"v": value, "at": time.time()}, separators=(",", ":"), allow_nan=False)
+        text = json.dumps({"k": _plain(namespace, key), "v": value, "at": time.time(), "ttl": float(ttl)},
+                          separators=(",", ":"), allow_nan=False)
         same = json.loads(text)["v"] == value
     except (TypeError, ValueError):
         same, text = False, ""
@@ -162,21 +213,44 @@ def _encode(namespace: str, value: Any) -> str | None:
             log.info("shared cache: %s value does not round-trip through JSON - kept in memory only", namespace)
         _count("skipped")
         return None
-    return text
+    return _box.encrypt(text.encode()).decode("ascii")
 
 
-def _decode(raw: str | None, left_ms: int | None) -> tuple[Any, float, float] | None:
+def _decode(namespace: str, key: Hashable, raw: str | None, left_ms: int | None
+            ) -> tuple[Any, float, float] | None:
+    """Open and check a value read from the server; anything not sealed by this app for this very key, or
+    older than its own ttl, is a miss (counted as ``rejected``)."""
     if raw is None:
         return None
     try:
-        env = json.loads(raw)
-        value, at = env["v"], float(env["at"])
-    except (ValueError, KeyError, TypeError):
+        if len(raw) > MAX_RAW_CHARS:
+            raise ValueError("too long")
+        env = json.loads(_box.decrypt(raw.encode("ascii")), parse_constant=_reject_constant)
+        if env["k"] != _plain(namespace, key):
+            raise ValueError("another key's value")
+        at, ttl = float(env["at"]), float(env["ttl"])
+        if not (math.isfinite(at) and math.isfinite(ttl) and 0 < ttl <= MAX_TTL_SEC):
+            raise ValueError("bad ttl")
+        age = time.time() - at
+        if age < -SKEW_SEC or age >= ttl:
+            raise ValueError("expired")
+        value = env["v"]
+    except Exception:  # noqa: BLE001 - a bad token, bad JSON, deep nesting, a wrong shape: all just "no value"
+        _rejected(namespace)
         return None
-    left = (left_ms or 0) / 1000.0
+    left = min(ttl - max(0.0, age), (left_ms or 0) / 1000.0)
     if left <= 0:
         return None
-    return value, max(0.0, time.time() - at), left
+    return value, max(0.0, age), left
+
+
+def _rejected(namespace: str) -> None:
+    global _warned_rejected
+    _count("rejected")
+    if not _warned_rejected:   # once per process: the key changed, or someone else writes under td:
+        _warned_rejected = True
+        log.warning("shared cache: a %s value failed its seal or checks - ignored (another key or writer?)",
+                    namespace)
 
 
 def _on_loop_thread() -> bool:
@@ -199,15 +273,22 @@ def get(namespace: str, key: Hashable) -> tuple[Any, float, float] | None:
     except Exception as exc:  # noqa: BLE001 - any client error means "no shared value"
         _failed(exc)
         return None
-    hit = _decode(raw, left)
+    hit = _decode(namespace, key, raw, left)
     _count("hits" if hit else "misses")
     return hit
 
 
+def _life(ttl: float) -> float:
+    """The ttl a value is written with: none (0) for "do not keep" or a nonsense value; never past MAX_TTL_SEC."""
+    ttl = float(ttl)
+    return min(ttl, MAX_TTL_SEC) if math.isfinite(ttl) and ttl > 0 else 0.0
+
+
 def put(namespace: str, key: Hashable, value: Any, ttl: float) -> None:
+    ttl = _life(ttl)
     if _sync is None or ttl <= 0 or not _up() or _on_loop_thread():
         return
-    text = _encode(namespace, value)
+    text = _encode(namespace, key, value, ttl)
     if text is None:
         return
     try:
@@ -229,15 +310,16 @@ async def aget(namespace: str, key: Hashable) -> tuple[Any, float, float] | None
     except Exception as exc:  # noqa: BLE001
         _failed(exc)
         return None
-    hit = _decode(raw, left)
+    hit = _decode(namespace, key, raw, left)
     _count("hits" if hit else "misses")
     return hit
 
 
 async def aput(namespace: str, key: Hashable, value: Any, ttl: float) -> None:
+    ttl = _life(ttl)
     if _async is None or ttl <= 0 or not _up():
         return
-    text = _encode(namespace, value)
+    text = _encode(namespace, key, value, ttl)
     if text is None:
         return
     try:
@@ -246,6 +328,21 @@ async def aput(namespace: str, key: Hashable, value: Any, ttl: float) -> None:
         _failed(exc)
         return
     _count("writes")
+
+
+def latest(hit: tuple[Any, float, float] | None) -> tuple[dict, float, float] | None:
+    """A latest-value entry ``{"value": {...}, "ttl": seconds}`` (market_flow · futures_flow) as
+    ``(value, ttl, left)``, or None when its shape is not that - a miss, never an error on a page."""
+    if hit is None:
+        return None
+    shared, _age, left = hit
+    try:
+        value, ttl = shared["value"], float(shared["ttl"])
+    except (TypeError, KeyError, ValueError):
+        return None
+    if not isinstance(value, dict) or not (math.isfinite(ttl) and 0 < ttl <= MAX_TTL_SEC):
+        return None
+    return value, ttl, min(left, ttl)
 
 
 class TieredCache:

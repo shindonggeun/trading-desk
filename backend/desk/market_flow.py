@@ -185,11 +185,10 @@ class MarketFlow:
             cached = self._cache.get(key)
             if not fresh and (not cached or self._clock() - cached[0] >= cached[1]):
                 # #689 another process (the collector's snapshot job reads fresh) may have it already
-                hit = await shared_cache.aget(SHARED_NS, key)
+                hit = shared_cache.latest(await shared_cache.aget(SHARED_NS, key))
                 if hit is not None:
-                    shared, _age, left = hit
-                    ttl = float(shared["ttl"])
-                    cached = self._cache[key] = (self._clock() - max(0.0, ttl - left), ttl, shared["value"])
+                    shared, ttl, left = hit
+                    cached = self._cache[key] = (self._clock() - max(0.0, ttl - left), ttl, shared)
             if fresh or not cached or self._clock() - cached[0] >= cached[1]:
                 value, ok = await self._fetch(market, interval)
                 now = self._now()

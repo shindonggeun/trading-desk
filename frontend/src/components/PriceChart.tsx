@@ -36,7 +36,7 @@ import ChannelLineCard, { type LinePick } from "./ChannelLineCard";
 import { channelTitle, fakeLines, isLineTf, TF_KO, TREND_STATE_KO, CHANNEL_STATE_KO, trendTitle } from "../channelLines";
 import { oddsLabel } from "../gapOdds";
 import type { ChartRead, ChartReadRef, GapReport, LinesReport, LineTf, OpenGap } from "../types";
-import type { BottomZone, ChartPattern, FibLevel, Fibonacci, OutlookPeriodId, Plan, Positioning, Projection, RunOutlook, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
+import type { BottomZone, ChartPattern, FibLevel, HsPattern, Fibonacci, OutlookPeriodId, Plan, Positioning, Projection, RunOutlook, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
 import PatternCard, { patternKey } from "./PatternCard";
 import { clipPath, ConeShade, directionLabel, OUTLOOK_PERIODS, outlookCone } from "./chartOutlook";
@@ -632,6 +632,8 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   const patterns: ChartPattern[] = useMemo(() => (show.pattern ? srSource?.patterns ?? [] : []), [show.pattern, srSource]);
   // #630 고른 패턴(목록 칩 · 다시 누르면 풀림) — 강조해 그리고 돌파 예상 구간 띠 · 꼭짓점 · 목표선 · 설명 카드
   const [patSel, setPatSel] = useState<string | null>(null);
+  // #695 헤드앤숄더: 패턴 겹(삼각수렴과 같은 스위치)이 켜졌을 때 넥라인 · 목표
+  const hsList: HsPattern[] = useMemo(() => (show.pattern ? srSource?.hs ?? [] : []), [show.pattern, srSource]);
   const picked = patterns.find((p) => patternKey(p) === patSel) ?? null;
   // #300 예상도: 이 봉 주기와 짝인 시간축만(일봉 · 1시간 · 5분). 모델 설명이 오는 중이면 20초 뒤 한 번 더 읽는다.
   const projFor = PROJECTION_HORIZON[interval];
@@ -1951,6 +1953,50 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       for (const s of added) chart.removeSeries(s);
     };
   }, [drawn, patterns, ticker, patSel]);
+
+  // #695 헤드앤숄더 넥라인(점선, 왼쪽 골부터 마지막 봉까지)과 깬 뒤의 목표(가격선) — 축 범위엔 넣지 않는다
+  useEffect(() => {
+    if (!drawn || hsList.length === 0) return;
+    const { chart, rows, intraday } = drawn;
+    const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
+    const first = Date.parse(rows[0].bar.at);
+    const added: ISeriesApi<"Line">[] = [];
+    const detach: (() => void)[] = [];
+    for (const p of hsList) {
+      try {
+        const t0 = Date.parse(p.neckline.from.at), t1 = Date.parse(p.neckline.to.at);
+        if (!(p.neckline.from.price > 0 && p.neckline.to.price > 0) || !Number.isFinite(t0) || !Number.isFinite(t1)) continue;
+        const rate = Math.log(p.neckline.to.price / p.neckline.from.price);
+        const data = [];
+        for (const r of rows) {
+          const t = Date.parse(r.bar.at);
+          if (t < Math.max(t0, first)) continue;
+          data.push({ time: time(r.key), value: p.neckline.from.price * Math.exp((rate * (t - t0)) / Math.max(1, t1 - t0)) });
+        }
+        if (data.length < 2) continue;
+        const color = css(p.kind === "head_shoulders" ? "--down" : "--up");
+        const s = chart.addSeries(LineSeries, { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+          autoscaleInfoProvider: () => null, color, lineWidth: 2, lineStyle: LineStyle.Dashed });
+        s.setData(data);
+        added.push(s);
+        const m = createSeriesMarkers(s, [{ time: data[data.length - 1].time, position: "belowBar", shape: "square", color,
+          text: `${p.label}(${tfLabel(p.timeframe)}) 넥라인 · ${p.state_label}`, size: 0.5 } as SeriesMarker<Time>]);
+        detach.push(() => m.detach());
+        if (p.state === "broken" || p.state === "retest") {
+          const line = drawn.series.createPriceLine({ price: p.target, title: `${p.label} 목표 ${price(p.target)}`,
+            color: withAlpha(color, 0.85), lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: true });
+          detach.push(() => drawn.series.removePriceLine(line));
+        }
+      } catch {
+        /* 이상한 패턴 하나는 건너뛴다 */
+      }
+    }
+    return () => {
+      if (!drawn.alive.current) return;
+      for (const d of detach) d();
+      for (const s of added) chart.removeSeries(s);
+    };
+  }, [drawn, hsList]);
 
   // #300 예상도 — 마지막 봉 뒤 미래 칸에 확률 원뿔(68% 실선 · 95% 점선 · 가운데 점선)과 시나리오 경로(강세 · 약세 · 범위)를 그린다.
   // 축 범위엔 95% 띠를 넣지 않는다(먼 범위가 봉을 누르지 않게). 이 차트 주기와 같은 시간축의 예상도만 그린다.

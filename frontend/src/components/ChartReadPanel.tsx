@@ -98,6 +98,14 @@ export default function ChartReadPanel({ read, failed, frame, interval, onInterv
         {frame && (
           <>
             <p className="chart-read-head">{headline(frame)}</p>
+            {read?.bubble?.caution && (
+              <p className="chart-read-caution" role="note">
+                <strong>주봉 '{read.bubble.label}' — 진입 조심</strong> {read.bubble.explain}
+              </p>
+            )}
+            {(frame.hs ?? []).map((p) => (
+              <p key={p.kind} className="muted small">{p.explain}</p>
+            ))}
             <h4>위에서 막힐 수 있는 곳</h4>
             {above.length ? <ol className="read-levels">{above.map((m) => <Level key={m.n} m={m} idPrefix={idPrefix} picked={picked} onPick={onPick} />)}</ol>
               : <p className="muted small">가까운 위 선이 없어요.</p>}

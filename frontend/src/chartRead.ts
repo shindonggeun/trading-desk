@@ -49,6 +49,10 @@ export function whyOf(level: ChartReadLevel, side: "above" | "below"): string {
   else if (r.kind === "pattern")
     text = `좁혀지는 모양(삼각수렴 · 쐐기)의 ${r.edge === "upper" ? "윗선" : "아랫선"} — ${side === "above"
       ? "위에서 막을 수 있고, 넘으면 위로 움직임이 커지기 쉬워요" : "아래에서 받칠 수 있고, 깨면 아래로 움직임이 커지기 쉬워요"}`;
+  else if (r.kind === "neckline")
+    text = r.edge === "target"
+      ? "헤드앤숄더 머리 높이만큼 간 목표 — 과거 도달 비율은 설명을 봐요"
+      : `헤드앤숄더 넥라인 — ${side === "above" ? "다시 넘기 전까지 막히기 쉬워요" : "깨면 아래로 움직임이 커지기 쉬워요"}`;
   else if (r.kind === "swing" && r.side === "high")
     text = side === "above" ? "아직 넘지 못한 최근 고점 — 팔려는 사람이 많았던 자리예요" : "막 넘어선 최근 고점 — 다시 내려오면 받쳐 주기 쉬워요";
   else if (r.kind === "swing")

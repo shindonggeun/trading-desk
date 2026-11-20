@@ -2905,6 +2905,10 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .chart-read-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; justify-content: space-between; margin: 6px 0; }
 .chart-read-beginner { display: inline-flex; gap: 4px; align-items: center; white-space: nowrap; }
 .chart-read-head { margin: 6px 0; font-weight: 500; }
+/* #695 주봉 민스키형 '진입 조심' · 매매 지도의 거스르는 읽기 */
+.chart-read-caution, .tm-cautions { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); font-size: 13px; }
+.tm-cautions { list-style: none; }
+.tm-cautions li + li { margin-top: 4px; }
 .read-levels { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .read-level { display: flex; gap: 8px; align-items: flex-start; width: 100%; text-align: left; background: none; border: 1px solid transparent;
   border-radius: 6px; padding: 4px 6px; color: inherit; font: inherit; cursor: pointer; }

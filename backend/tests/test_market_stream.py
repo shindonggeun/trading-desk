@@ -360,7 +360,7 @@ def test_a_market_alert_is_pushed_after_it_is_recorded(db_url):
 # -- where events come from ---------------------------------------------------------------------------
 
 
-def test_a_fresh_flow_futures_and_quote_read_are_published_a_failed_one_is_not():
+def test_a_fresh_flow_futures_and_quote_read_are_published_a_failed_one_is_not(monkeypatch):
     from datetime import UTC, datetime
 
     from desk import futures_flow as ff
@@ -371,8 +371,8 @@ def test_a_fresh_flow_futures_and_quote_read_are_published_a_failed_one_is_not()
     from tests.test_shared_cache import NOW, _QuoteBroker
 
     async def go():
-        bus = market_bus.BUS
-        bus.configure(_settings(), "all")
+        bus = _local()
+        monkeypatch.setattr(market_bus, "BUS", bus)
         sub = bus.subscribe(("flow", "futures", "quote"), frozenset({"AAPL"}), owner=False)
         await MarketFlow(CountingBroker(), now=lambda: NOW).get("KOSPI", "1d", 1, fresh=True)
         await MarketFlow(CountingBroker(fail=True), now=lambda: NOW).get("KOSDAQ", "1d", 1, fresh=True)
@@ -391,24 +391,43 @@ def test_a_fresh_flow_futures_and_quote_read_are_published_a_failed_one_is_not()
     assert got[2]["payload"]["price"] == 101.5 and got[2]["source"] == "mock"
 
 
-def test_a_kis_trade_is_published_as_a_quote():
-    from desk.broker.kis_stream import KisStream, Tick
+def test_a_kis_socket_trade_reaches_the_quote_callback():
     from desk.prices import kis_quote
+    from tests.test_kis_stream import KR, Harness, _frame, _kr, _until
 
-    seen = []
-    stream = KisStream("k", "s")
-    stream.on_tick = lambda ticker, tick: seen.append(kis_quote(ticker, tick).to_dict())
-    stream.on_tick("005930.KS", Tick(71000.0, 0.5, "2026-11-20T01:00:00+00:00", 1.0))
-    assert seen == [{"ticker": "005930.KS", "price": 71000.0, "currency": "KRW", "source": "kis",
-                     "fetched_at": "2026-11-20T01:00:00+00:00"}]
+    async def go():
+        harness = Harness()
+        stream = harness.stream
+        seen = []
+        stream.on_tick = lambda ticker, tick: seen.append(kis_quote(ticker, tick).to_dict())
+        task = asyncio.create_task(stream.run())
+        try:
+            stream.want("005930.KS")
+            await _until(lambda: harness.sockets and harness.sockets[0].subs())
+            socket = harness.sockets[0]
+            await socket.inbox.put(_frame(KR, _kr(price="71000"), _kr("000660")))
+            await _until(lambda: stream.latest("005930.KS") is not None)
+            tick = stream.latest("005930.KS")
+            assert seen == [{"ticker": "005930.KS", "price": 71000.0, "currency": "KRW", "source": "kis",
+                             "fetched_at": tick.received_at}]
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    _run(go())
 
 
 def test_a_holding_alert_goes_to_the_owner_only_without_its_figures(db_url):
+    from desk import holding_watch
     from desk.db import make_engine, metadata
-    from tests.test_holding_watch import _hold
+    from tests.test_holding_watch import NOW, _lines, _range
 
     engine = make_engine(db_url)
     metadata.create_all(engine)
+    _, lines = _lines(_range(), average=97.0)
+    candidates = holding_watch.judge("AAA", lines["stop"] * 0.99, 97.0, lines, NOW)
+    assert [alert["rule"] for alert in candidates] == ["hold_stop"]
+    assert candidates[0]["value"] is not None and candidates[0]["prev"] is not None
 
     async def go():
         bus = market_bus.BUS
@@ -416,7 +435,7 @@ def test_a_holding_alert_goes_to_the_owner_only_without_its_figures(db_url):
         owner = bus.subscribe(("alert",), frozenset(), owner=True)
         other = bus.subscribe(("alert",), frozenset(), owner=False)
         alerts = market_alerts.MarketAlerts(engine, None)
-        await asyncio.to_thread(alerts.dispatch, [_hold("hold_stop", "2026-11-20T10:31:00+09:00", severity="strong")])
+        await asyncio.to_thread(alerts.dispatch, candidates)
         await asyncio.sleep(0.05)
         got = _drain(owner), _drain(other)
         await bus.aclose()

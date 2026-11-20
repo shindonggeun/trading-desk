@@ -38,6 +38,7 @@ SSE(`EventSource`)도 쿠키로 인증된다. URL 에 토큰을 싣지 않는다
 - FastAPI `/docs` · `/openapi.json` 은 기본으로 꺼져 있고(`DESK_ENABLE_DOCS`), 켜도 로그인 뒤다.
 - `POST`/`PUT`/`PATCH`/`DELETE` 는 `Origin` 이 있으면 자기 `Host` 와 같아야 한다(로그인 CSRF 포함). `SameSite=Strict` 와 이중 방어다.
 - 계정별 데이터(즐겨찾기 `favorites` #134, 섹터 탭 `sector_groups` #156)는 세션의 `request.state.user.id` 로만 범위를 정한다 — 경로 · 본문의 사용자 id 는 받지 않는다.
+- 브로커 계좌 데이터는 **소유자(첫 계정) 것**이다(#775, 판정은 `desk.auth.owner_id` 하나). `GET /api/portfolio` · `/api/portfolio/stream` · `/api/review`(체결)는 다른 계정에 같은 403(`only the desk's owner sees the account`)을 주고, `POST /api/runs` 의 `use_portfolio` 는 다른 계정이면 무시한다(계좌를 읽지 않는다). 보유 종목 감시(`/api/holding-watch`, #762)는 다른 계정에 기본 설정 · 빈 목록을, 보유 종목 알림은 소유자에게만 보낸다(#694 · #756).
 - 리포트(#495 `reports`)는 모든 계정이 같이 본다. 그래서 #681 부터 주제 후보는 설정의 순환 목록(`DESK_REPORT_TOPICS`, 비면 기본 목록)과 두 지수뿐이고 **누구의 즐겨찾기도 넣지 않는다**. 새 리포트 푸시는 소유자(첫 계정)에게만 보낸다. 수동 생성(`POST /api/reports`)은 동시에 1개, 직전 리포트 뒤 10분 안에는 429 다.
   경로 · 본문의 자원 id(섹터 id 등)는 언제나 `user_id` 와 함께 찾고, 남의 것이면 없는 것과 똑같이 답한다(수정 404, 삭제 204).
 - 채팅 도구 중 밖으로 나가는 것은 `news_search`(#403) 하나다. 보내는 것은 모델이 쓴 짧은 검색어뿐이고(100자, 9자리 이상 숫자열 · 이메일은 보내지 않고 거절),

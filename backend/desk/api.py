@@ -1244,6 +1244,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             request.state.user = user
         return await call_next(request)
 
+    def owns(request: Request) -> bool:
+        """#775 the session is the owner's (desk.auth.owner_id): the account's holdings, fills and the runs
+        that read them are the owner's alone - another account is refused the same way whatever is held."""
+        return request.state.user.id == auth.owner_id()
+
+    def must_own_account(request: Request) -> None:
+        if not owns(request):
+            raise HTTPException(403, "only the desk's owner sees the account")
+
     @app.get("/api/health")
     def health():
         return {"ok": True}
@@ -1463,7 +1472,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             horizon=body.horizon or horizons.DEFAULT_HORIZON,   # stored explicitly, never left implicit
             trade_date=(body.trade_date or date.today()).isoformat(),
             analysts=body.analysts,
-            use_portfolio=body.use_portfolio,
+            use_portfolio=body.use_portfolio and owns(request),   # #775 another account's run never reads it
             output_language=body.output_language,
             max_debate_rounds=body.max_debate_rounds,
             max_risk_rounds=body.max_risk_rounds,
@@ -1703,8 +1712,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             return value
 
     @app.get("/api/review")
-    async def trade_review(days: int = 90):
-        """Executions of the last ``days`` (max 180, KST dates) next to the plan of the time. Read-only."""
+    async def trade_review(request: Request, days: int = 90):
+        """Executions of the last ``days`` (max 180, KST dates) next to the plan of the time. Read-only.
+        #775 the owner's only."""
+        must_own_account(request)
         days = min(max(days, 1), review.MAX_DAYS)
         today = datetime.now(KST).date()
         start = today - timedelta(days=days)
@@ -1950,13 +1961,16 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return {"symbol": symbol, "weeks": await asyncio.to_thread(weekly.history, symbol, min(max(weeks, 1), 52))}
 
     @app.get("/api/portfolio")
-    async def portfolio():
-        """Holdings at live prices in KRW and USD (desk.portfolio). Failures land in ``error``."""
+    async def portfolio(request: Request):
+        """Holdings at live prices in KRW and USD (desk.portfolio). Failures land in ``error``. #775 the
+        owner's only."""
+        must_own_account(request)
         return await book.snapshot()
 
     @app.get("/api/portfolio/stream")
     async def portfolio_stream(request: Request):
-        """The same snapshot every DESK_PORTFOLIO_STREAM_SEC seconds, as SSE."""
+        """The same snapshot every DESK_PORTFOLIO_STREAM_SEC seconds, as SSE. #775 the owner's only."""
+        must_own_account(request)
         token = request.cookies.get(COOKIE)
         interval = min(max(settings.portfolio_stream_sec, 2.0), 60.0)
 
@@ -3510,11 +3524,9 @@ def _notify_routes(app: FastAPI, engine, settings: Settings) -> None:
     Kakao's OAuth comes back to the static /kakao-callback.html, which POSTs the code and state here: the
     callback keeps the session and the Origin check (no open path). A state is 32 random bytes, kept
     hashed in this process for 10 minutes, for the account that asked, once (one worker process)."""
-    from sqlalchemy import func, select
-
     from . import notify_channels as nc
     from . import otp, push
-    from .db import users
+    from .auth import owner_id as account_owner
 
     nc.install_log_filter()
     store = nc.ChannelStore(engine, otp.SecretBox(settings.notify_key, "DESK_NOTIFY_KEY"))
@@ -3530,8 +3542,7 @@ def _notify_routes(app: FastAPI, engine, settings: Settings) -> None:
     last_test = {"at": 0.0}
 
     def owner_id() -> int | None:
-        with engine.connect() as conn:
-            return conn.execute(select(func.min(users.c.id))).scalar()
+        return account_owner(engine)     # #775 the one rule (desk.auth.owner_id)
 
     def must_own(request: Request) -> None:
         if request.state.user.id != owner_id():

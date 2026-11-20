@@ -50,6 +50,13 @@ class User:
     username: str
 
 
+def owner_id(engine: Engine) -> int | None:
+    """#775 the desk's owner: the first account (the one the broker keys are the owner's). The one rule for
+    what is the owner's alone - the account's holdings, fills and alerts (docs/security.md §3)."""
+    with engine.connect() as conn:
+        return conn.execute(select(func.min(users.c.id))).scalar()
+
+
 class Auth:
     def __init__(self, engine: Engine, max_age: timedelta, idle: timedelta) -> None:
         self.engine = engine
@@ -76,6 +83,9 @@ class Auth:
                          .values(password_hash=_hasher.hash(password), password_changed_at=now()))
             conn.execute(delete(sessions).where(sessions.c.user_id == user_id))
         return True
+
+    def owner_id(self) -> int | None:
+        return owner_id(self.engine)
 
     def revoke_all(self, username: str) -> int:
         with self.engine.begin() as conn:

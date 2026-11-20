@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, followPortfolio, type HoldingLine, type StreamState } from "../api";
+import { api, ApiError, followPortfolio, type HoldingLine, type StreamState } from "../api";
 import { HoldingBadge, useHoldingLines } from "../holdingWatch";
 import { type Currency, money, percent, price, time, tone } from "../format";
 import type { Money, Portfolio, PortfolioRow } from "../types";
@@ -80,25 +80,38 @@ function Row({ row, currency, view, line }: { row: PortfolioRow; currency: Curre
 export default function PortfolioPanel() {
   const [data, setData] = useState<Portfolio | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  // #775 계좌는 주인 계정 것 — 다른 계정은 403 이고 스트림도 열지 않는다(열면 403 으로 끝없이 다시 연결)
+  const [notOwner, setNotOwner] = useState(false);
   const [stream, setStream] = useState<StreamState | "connecting">("connecting");
   const [currency, setCurrency] = useState<Currency>(() => remembered("pf.currency", ["KRW", "USD"] as const, "KRW"));
   const [view, setView] = useState<"price" | "value">(() => remembered("pf.view", ["price", "value"] as const, "value"));
 
   useEffect(() => {
-    let streamed = false;
     let cancelled = false;
-    // Draw the snapshot first; the stream takes over once it delivers.
-    api
-      .portfolio()
-      .then((p) => !streamed && !cancelled && setData(p))
-      .catch((e) => !streamed && !cancelled && setFailure(String(e)));
-    const stop = followPortfolio(
+    let stop = () => {};
+    const follow = () => {
+      if (cancelled) return;
+      stop = followPortfolio(
+        (p) => {
+          setData(p);
+          setFailure(null);
+        },
+        setStream,
+      );
+    };
+    // Draw the snapshot first; the stream takes over after it. #775 not the owner: no stream at all.
+    api.portfolio().then(
       (p) => {
-        streamed = true;
+        if (cancelled) return;
         setData(p);
-        setFailure(null);
+        follow();
       },
-      setStream,
+      (e) => {
+        if (cancelled) return;
+        if (e instanceof ApiError && e.status === 403) return setNotOwner(true);
+        setFailure(String(e));
+        follow();
+      },
     );
     return () => {
       cancelled = true;
@@ -148,6 +161,7 @@ export default function PortfolioPanel() {
         </div>
       )}
 
+      {notOwner && <p className="muted">계좌(보유 · 체결)는 주인 계정에서만 보여요.</p>}
       {failure && <p className="error small">{failure}</p>}
       {data?.error && <p className="error small">{data.error}</p>}
       {data && data.holdings.length === 0 && !data.error && <p className="muted">보유 종목 없음</p>}

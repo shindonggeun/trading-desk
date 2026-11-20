@@ -75,6 +75,7 @@ from . import (
     projection,
     regime,
     report_images,
+    report_plan,
     reports,
     req_timing,
     review,
@@ -383,34 +384,39 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # #495 the beginner reports (made-up prices with scripted runs: no network)
     # (scripted runs: no automatic reports, so no "next due" either)
     report_desk = reports.Reports(engine, reports.fake_fetch if settings.fake_runs else reports.yahoo_fetch,
-                                  0 if settings.fake_runs else settings.report_every_days)
+                                  0 if settings.fake_runs else settings.report_every_days,
+                                  topics=report_plan.topics(settings.report_topics))
+    # #681 the report's one model call: the deep tier, or DESK_REPORT_MODEL / DESK_REPORT_REASONING
+    report_model = reports.model_call(settings.report_model, settings.report_reasoning)
     report_tasks: set[asyncio.Task] = set()
     # #497 explainer pictures (OpenAI image API): off without OPENAI_API_KEY, and always with scripted runs
     if pictures is None:
         pictures = report_images.ReportImages(None) if settings.fake_runs else report_images.from_env()
 
-    async def make_report(auto: bool, taken: bool = False) -> str:
+    async def make_report(auto: bool, taken: bool = False, slot: report_plan.Slot | None = None) -> str:
         """One report (#495): ``made`` · ``none`` (no subject had data) · ``busy`` (one being written, or -
         automatic only - no free ChatGPT slot: try later; a manual one is written in the desk's words)."""
         if not taken:                    # ``taken``: the caller already holds the one-at-a-time flag
             if report_desk.generating:
                 return "busy"
             report_desk.generating = True
+        # #681 the slot's kind (a manual one: the weekly wrap-up on Saturday, the week ahead on Sunday, else the day's)
+        kind = slot.kind if slot else report_plan.kind_for(datetime.now(UTC))
         try:
             if settings.fake_runs:
-                out = await asyncio.to_thread(report_desk.make, None)
+                out = await asyncio.to_thread(report_desk.make, None, kind, slot)
             else:
                 if auto:                 # a run going: no price fetches either, try later
                     async with app.state.manager.spare_slot() as free:
                         if not free:
                             return "busy"
-                got = await asyncio.to_thread(report_desk.choose)     # the fetches, without holding the slot
+                got = await asyncio.to_thread(report_desk.choose, kind)   # the fetches, without holding the slot
                 if got is None:
                     return "none"
                 async with app.state.manager.spare_slot() as free:  # the slot only around the one model call
                     if not free and auto:
                         return "busy"
-                    out = await asyncio.to_thread(report_desk.finish, got, projection.llm_note if free else None)
+                    out = await asyncio.to_thread(report_desk.finish, got, report_model if free else None, slot)
             if out is not None and pictures.enabled:   # out of the ChatGPT slot; before the push, so it opens whole
                 try:
                     drawn = await asyncio.to_thread(pictures.draw, out)
@@ -492,6 +498,20 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # with the same switch as the news flow and the prewarm: scripted runs and tests fetch nothing
     day_desk = day_calls.DayCalls(engine, None if settings.fake_runs or settings.macro_interval_sec <= 0
                                   else (lambda *a: prices._yahoo_candles(*a)))
+
+    def week_calls() -> dict:
+        """#681 the week's day-call record for Saturday's report: scored calls and the direction hit share."""
+        out = {}
+        for market in ("kr", "us"):
+            s = (day_desk.stats(market, days=7) or {}).get("prev_close") or {}
+            rate = s.get("direction_hit_rate")
+            out[market] = {"n": s.get("n") or 0, "hit_pct": round(rate * 100) if rate is not None else None}
+        return out
+
+    report_desk.calls = week_calls
+    # the market-wide macro releases (FOMC, CPI, jobs) for Sunday's week ahead
+    report_desk.events = lambda now: [{"label": e.label, "at": e.at}
+                                      for e in events_calendar.CACHE.upcoming(now, days=14, importance=2)]
     # #620 today's strong / weak sectors per market, from the sector ETFs' daily bars (the same switch)
     sector_candles = None if settings.fake_runs or settings.macro_interval_sec <= 0 else day_sectors.yahoo_adjusted
     sector_cache = day_sectors.Cache()
@@ -831,15 +851,16 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         report_failures = {"n": 0}
 
         async def write_reports() -> float:
-            # #495: one report every DESK_REPORT_EVERY_DAYS days after the Korean close; while a run holds
-            # the ChatGPT slot it waits and tries again; a failure (no prices, the model, the DB) tries again
-            # later and later (30 min doubling to 8 h) so a lasting fault never burns the quota or Yahoo
-            wait = (report_desk.next_due() - datetime.now(UTC)).total_seconds()
-            if wait > 0:
-                return min(wait, 3600)
+            # #681 the slots of desk.report_plan (each US trading day after the close, Saturday, Sunday); while a
+            # run holds the ChatGPT slot it waits and tries again; a failure (no prices, the model, the DB) tries
+            # again later and later (30 min doubling to 8 h) so a lasting fault never burns the quota or Yahoo
+            now = datetime.now(UTC)
+            slot, later = await asyncio.to_thread(report_desk.due, now)
+            if slot is None:
+                return max(60.0, min((later - now).total_seconds() if later else 3600.0, 3600.0))
             failed: BaseException | None = None
             try:
-                got = await make_report(auto=True)
+                got = await make_report(auto=True, slot=slot)
             except Exception as exc:  # a failed pass must not stop the next one
                 log.exception("report failed")
                 failed, got = exc, "failed"

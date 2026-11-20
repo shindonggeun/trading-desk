@@ -74,8 +74,14 @@ class Settings:
     score_interval_sec: int = field(default_factory=lambda: int(os.getenv("DESK_SCORE_INTERVAL_SEC", "3600")))
     # Seconds between refreshes of the world news-flow themes from GDELT (desk.macro_news). 0 = off.
     macro_interval_sec: int = field(default_factory=lambda: int(os.getenv("DESK_MACRO_INTERVAL_SEC", "3600")))
-    # Days between the automatic beginner reports (desk.reports, #495), after the Korean close. 0 = off.
+    # The automatic desk reports (desk.reports): 0 = off. #681 any other value turns on the schedule of
+    # desk.report_plan (a report each US trading day after the close, Saturday's week, Sunday's week ahead).
     report_every_days: int = field(default_factory=lambda: int(os.getenv("DESK_REPORT_EVERY_DAYS", "3")))
+    # #681 the report's model (the provider's deep tier when empty) and its reasoning effort (the provider's
+    # default when empty), and the rotation of subjects ("SOXL,005930.KS:삼성전자,..."; empty = the default list)
+    report_model: str = field(default_factory=lambda: os.getenv("DESK_REPORT_MODEL", "").strip())
+    report_reasoning: str = field(default_factory=lambda: os.getenv("DESK_REPORT_REASONING", "").strip())
+    report_topics: str = field(default_factory=lambda: os.getenv("DESK_REPORT_TOPICS", "").strip())
     # #571 the morning brief's time on Korean trading days, "HH:MM" KST; "off" (or empty) = no automatic brief.
     morning_brief_at: str = field(default_factory=lambda: os.getenv("DESK_MORNING_BRIEF_AT", "07:00"))
     # Minutes between KOSPI200 futures snapshots in the session (desk.futures_history, #254). 0 = off.

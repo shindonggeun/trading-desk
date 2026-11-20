@@ -31,7 +31,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from . import long_lines
-from .lines_bt import BOUNCE_ATR, _line, _tally, _touch
+from .lines_bt import BOUNCE_ATR, _line, _tally, _touch, edge_note
 
 OUT = Path(__file__).parent / "data" / "backtest" / "long_lines.json"
 TICKERS = ("AMD", "NVDA", "SOXX", "KORU", "SOXL", "TQQQ", "QQQ", "SPY", "AAPL", "MSFT")
@@ -140,7 +140,8 @@ def rate_text(role: str, table: dict | None = None) -> str:
 
     base = got["baseline"]
     return (f"과거 장기 선에 닿은 뒤 {table['horizon_bars']}봉 안 반등 {pct(got['bounce_rate'])} · 이탈 "
-            f"{pct(got['break_rate'])} (같은 자리 아무 선 반등 {pct(base['bounce_rate'])}, {got['n']}번)")
+            f"{pct(got['break_rate'])} (같은 자리 아무 선 반등 {pct(base['bounce_rate'])}, {got['n']}번)"
+            f"{edge_note(got['bounce_rate'], base['bounce_rate'])}")
 
 
 def table(rep: dict) -> list[str]:

@@ -164,6 +164,13 @@ def test_the_rate_line_reads_the_long_table():
         "과거 장기 선에 닿은 뒤 10봉 안 반등 55% · 이탈 30% (같은 자리 아무 선 반등 45%, 40번)"
     assert "아직" in long_lines_bt.rate_text("long_resistance", table)
     assert "이탈 뒤" in long_lines_bt.rate_text("long_break", table)
+    # #613 the measured 40% against 36% (#679): about any line's - the line says it is only a note
+    thin = {"horizon_bars": 10, "roles": {"long_support": {"n": 2100, "bounce_rate": 0.40, "break_rate": 0.31,
+                                                            "baseline": {"bounce_rate": 0.36}}}}
+    assert long_lines_bt.rate_text("long_support", thin).endswith("2100번) · 차이 작음")
+    from desk.lines_bt import edge_note
+    assert edge_note(0.40, 0.35) == "" and edge_note(0.404, 0.3545) == ""      # shown 40% against 35%: 5%p, either way
+    assert edge_note(0.40, 0.36) == " · 차이 작음" and edge_note(None, 0.36) == ""
 
 
 def test_the_backtest_counts_a_line_once_and_beats_nothing_on_a_random_walk():

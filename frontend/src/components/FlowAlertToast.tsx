@@ -46,11 +46,11 @@ export const EXTRA_KINDS: { key: keyof ExtraKinds; label: string; note: string }
   { key: "nq_alert", label: "나스닥 선물 이상", note: "나스닥100 선물의 급한 매도세(거의 24시간)" },
   { key: "morning_brief", label: "아침 시황", note: "평일 오전 7시쯤" },
   { key: "day_call", label: "오늘 방향", note: "국장 · 미장 판정이 나올 때" },
-  { key: "line_signal", label: "차트 선", note: "고른 종목 · 시간봉의 채널 · 추세선 닿음 · 이탈(설정 → 차트 선 알림에서 켬)" },
+  { key: "line_signal", label: "차트 선", note: "고른 종목 · 시간봉의 채널 · 추세선 닿음 · 이탈(설정 → 차트 선 알림에서 켬). 참고 등급이라 '· 참고' 도 켜져 있어야 받음" },
   { key: "holding_alert", label: "보유 종목 손절 · 익절", note: "보유 종목이 손절선에 가까워지거나 넘을 때, 하락 추세로 바뀔 때, 박스권 위 끝일 때(설정 → 보유 종목 알림에서 켬, 데스크 주인 기기로만)" },
-  // #642 수급 알림의 뜻(#641) — 끄면 그 등급은 보내지 않는다(예: 경고만 받기)
+  // #642 알림의 뜻(#641) — 끄면 그 등급은 보내지 않는다(예: 경고만 받기). #613 차트 선 알림은 모두 '참고'
   { key: "tone_positive", label: "◎ 호재", note: "외인 · 기관 매수 전향 · 확대, 매도 축소" },
-  { key: "tone_neutral", label: "· 참고", note: "개인 수급 · 작은 움직임" },
+  { key: "tone_neutral", label: "· 참고", note: "개인 수급 · 작은 움직임, 차트 선 알림" },
   { key: "tone_caution", label: "! 주의", note: "매도 확대 · 매수 축소, 나스닥 선물 고점 대비 밀림" },
   { key: "tone_warning", label: "⚠ 경고", note: "매수→매도 전향 · 강한 매도 확대 · 나스닥 선물 급락" },
 ];

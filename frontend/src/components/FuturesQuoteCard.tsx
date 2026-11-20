@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { percent, price, tone } from "../format";
-import { contracts, hidden, isLive, kstStamp, LIVE_REFRESH_MS, nextRefresh, SESSION_KO, sessionBadge } from "../futures";
+import { contracts, hidden, isLive, kstStamp, LIVE_REFRESH_MS, nextRefresh, SESSION_KO, sessionBadge, standIn } from "../futures";
 import type { FuturesCandles, FuturesQuote, FuturesSession } from "../types";
 
 /**
@@ -17,16 +17,17 @@ function SessionPair({ sessions, current }: { sessions: Record<FuturesSession, F
         const open = s.state === "open";
         const ended = !open && s.end ? `${kstStamp(s.end).slice(6)} 종료` : "마감";
         return (
-          <div key={k} className={`fq-cell${k === current ? " fq-current" : ""}`}>
+          <div key={k} className={`fq-cell${k === current ? " fq-current" : ""}`} aria-current={k === current ? "true" : undefined}>
             <span className="small muted">
               {SESSION_KO[k]} <span className={`fq-badge ${open ? "fq-live" : ""}`}>{open ? "진행 중" : ended}</span>
+              {k === current && <span className="sr-only"> · 위 가격의 세션</span>}
             </span>
             {s.price == null ? <span className="small muted">{s.error ? "값 없음" : "—"}</span> : (
               <span className={`num ${tone(s.change)}`}>
                 {price(s.price)} {s.change_pct == null ? "" : percent(s.change_pct)}
-                {(s.held || s.from_bars) && <span className="muted small" title={s.from_bars ? "분봉 마지막 값" : "끝나기 전 마지막 값"}> *</span>}
               </span>
             )}
+            {standIn(s) && <span className="small muted">{standIn(s)}</span>}
           </div>
         );
       })}

@@ -34,6 +34,13 @@ export function sessionBadge(q: Pick<FuturesQuote, "market" | "session">): strin
   return `${SESSION_KO[q.session]} · ${isLive(q) ? "장중" : "마감"}`;
 }
 
+/** #713 대신 보이는 값의 한 줄 — 끝나기 전 값이면 그 시각, 분봉 종가면 그렇게. 정상 시세면 null */
+export function standIn(q: Pick<FuturesQuote, "held" | "held_early" | "held_at" | "from_bars" | "bar_at">): string | null {
+  if (q.from_bars) return `분봉 종가${q.bar_at ? ` · ${kstStamp(q.bar_at).slice(6)}` : ""} (등락 없음)`;
+  if (q.held && q.held_early) return `마감가 아님 · ${kstStamp(q.held_at).slice(6)} 값`;
+  return null;
+}
+
 /** 계약 수 — 천 단위 쉼표, 없으면 "—" */
 export function contracts(v: number | null | undefined, signed = false): string {
   if (v == null) return "—";

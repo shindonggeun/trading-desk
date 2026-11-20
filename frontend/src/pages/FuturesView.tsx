@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { crosshairTime, ticksClearOfLabels } from "../components/chartFormat";
 import { percent, price, tone } from "../format";
-import { chartSec, contracts, hidden, isLive, kstStamp, LIVE_REFRESH_MS, nextRefresh, SESSION_HOURS, SESSION_KO, sessionBadge } from "../futures";
+import { chartSec, contracts, hidden, isLive, kstStamp, LIVE_REFRESH_MS, nextRefresh, SESSION_HOURS, SESSION_KO, sessionBadge, standIn } from "../futures";
 import type { FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession } from "../types";
 import { css, useColorScheme } from "../chartColors";
 
@@ -156,6 +156,7 @@ function QuoteLine({ q }: { q: FuturesQuote }) {
         <span>미결제 <b className="num">{contracts(q.open_interest)}</b>
           {q.open_interest_change != null && <span className={`num ${tone(q.open_interest_change)}`}> ({contracts(q.open_interest_change, true)})</span>}</span>
       </span>
+      {standIn(q) && <span className="small muted">{standIn(q)}{q.from_bars ? " — 시 · 고 · 저 · 거래량도 분봉으로 셈" : ""}</span>}
     </div>
   );
 }

@@ -1836,6 +1836,9 @@ export interface FuturesQuote {
   as_of?: string;
   /** #713 닫힌 세션에 한투가 빈 값을 줘서, 그 세션이 열려 있을 때 받은 마지막 값을 보이는 중 */
   held?: boolean;
+  /** #713 held 값을 받은 시각 · 세션 끝보다 2분 넘게 일러 마감가가 아님 */
+  held_at?: string;
+  held_early?: boolean;
   /** #713 그 세션 분봉의 마지막 종가로 대신한 값(등락 없음) · 그 봉 시각 */
   from_bars?: boolean;
   bar_at?: string;

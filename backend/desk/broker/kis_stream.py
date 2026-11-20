@@ -45,6 +45,7 @@ from datetime import UTC, datetime
 import httpx
 
 from .. import market_calendar
+from ..token_store import Issued, TokenStore, TokenUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -177,8 +178,12 @@ class KisStream:
     def __init__(self, app_key: str, app_secret: str, *, ws_url: str = WS_URL, rest_url: str = REST_URL,
                  connect: Callable | None = None, http: httpx.AsyncClient | None = None,
                  exchange_of: Callable[[str], Awaitable[str | None]] | None = None,
-                 clock: Callable[[], float] = time.monotonic, now: Callable[[], datetime] | None = None):
+                 clock: Callable[[], float] = time.monotonic, now: Callable[[], datetime] | None = None,
+                 tokens: TokenStore | None = None):
         self._key, self._secret = app_key, app_secret
+        # #688 the approval key shared by the desk's processes (None: this object's own, as before)
+        self._slot = tokens.slot("kis_approval", app_secret) if tokens is not None else None
+        self._refused_value: str | None = None     # the key KIS just refused (never logged)
         self._now = now or (lambda: datetime.now(UTC))     # the wall clock for the US session
         self._ws_url, self._rest_url = ws_url, rest_url.rstrip("/")
         self._connect = connect
@@ -287,9 +292,24 @@ class KisStream:
         now = self._clock()
         if self._approval and now < self._approval[0]:
             return self._approval[1]
+        if self._slot is not None:
+            # #688 issued only by the minting process, on demand (each issue notifies the owner)
+            try:
+                key, expires = await self._slot.get(self._issue_approval, refused=self._refused_value,
+                                                    gap=lambda _refusals: APPROVAL_MIN_GAP_SEC)
+            except TokenUnavailable:
+                raise ApprovalError("approval key: none available yet") from None
+            self._refused_value = None
+            self._approval = (now + min(APPROVAL_TTL_SEC, (expires - datetime.now(UTC)).total_seconds()), key)
+            return key
         if now - self._approval_asked < APPROVAL_MIN_GAP_SEC:
             raise ApprovalError("waiting before asking KIS for another approval key")
         self._approval_asked = now
+        got = await self._issue_approval()
+        self._approval = (now + got.life_sec, got.value)
+        return got.value
+
+    async def _issue_approval(self) -> Issued:
         if self._http is None:
             self._http = httpx.AsyncClient(timeout=10.0)
         res = await self._http.post(f"{self._rest_url}/oauth2/Approval", json={
@@ -302,8 +322,19 @@ class KisStream:
             key = None
         if not key or not isinstance(key, str):
             raise ApprovalError("approval key: no key in the answer")
-        self._approval = (now + APPROVAL_TTL_SEC, key)
-        return key
+        return Issued(key, APPROVAL_TTL_SEC)
+
+    async def keep_approval(self, ahead: float) -> bool:
+        """#688 the collector's ``tokens`` job: a key only when a streaming process asked for one."""
+        if self._slot is None:
+            return False
+        try:
+            got = await self._slot.keep(self._issue_approval, ahead=ahead, on_demand=True,
+                                        gap=lambda _refusals: APPROVAL_MIN_GAP_SEC)
+        except ApprovalError as exc:
+            log.warning("kis approval key failed: %s", exc)
+            return False
+        return got is not None          # a connected socket keeps its key until it reconnects
 
     def _prune_wants(self) -> None:
         now = self._clock()
@@ -332,6 +363,8 @@ class KisStream:
                 if self._refused_key or now - started >= APPROVAL_TTL_SEC:
                     # KIS refused the approval key, or it is due: reconnect with a new one
                     refused, self._refused_key = self._refused_key, False
+                    if refused and self._approval:
+                        self._refused_value = self._approval[1]   # #688 the store must not hand it back
                     self._approval = None
                     raise ApprovalError("approval key refused") if refused else ApprovalDue("approval key due")
                 wanted = self._live_wants()
@@ -460,7 +493,7 @@ def _default_connect(url: str):
     return websockets.connect(url, ping_interval=None, open_timeout=10, close_timeout=5, max_size=2**20)
 
 
-def make(settings) -> KisStream | None:
+def make(settings, tokens: TokenStore | None = None) -> KisStream | None:
     """The stream when both KIS keys are set, else None (the polling path stays)."""
     if not settings.kis_app_key or not settings.kis_app_secret:
         return None
@@ -472,4 +505,4 @@ def make(settings) -> KisStream | None:
         return None
     # the websockets library logs every frame at DEBUG, the approval key included
     logging.getLogger("websockets").setLevel(logging.INFO)
-    return KisStream(settings.kis_app_key, settings.kis_app_secret, ws_url=ws_url, rest_url=rest_url)
+    return KisStream(settings.kis_app_key, settings.kis_app_secret, ws_url=ws_url, rest_url=rest_url, tokens=tokens)

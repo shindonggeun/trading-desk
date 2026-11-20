@@ -28,6 +28,7 @@ import httpx
 
 from . import freshness
 from .market_flow import KST, _ttl_until_open
+from .token_store import Issued, TokenStore, TokenUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +48,10 @@ TOKEN_MIN_GAP_SEC = 60.0          # KIS allows one issue a minute (and notifies 
 # A refused issue (or a fresh token refused again) waits longer each time, so a key without the
 # rights or a changed IP does not ask KIS every minute all day (each issue notifies the owner).
 TOKEN_BACKOFF_SEC = (60.0, 600.0, 1800.0)
+
+
+def _backoff(refusals: int) -> float:
+    return TOKEN_BACKOFF_SEC[min(refusals, len(TOKEN_BACKOFF_SEC) - 1)]
 TIMEOUT_SEC = 8.0
 CACHE_OPEN_SEC = 30.0
 CACHE_CLOSED_SEC = 600.0
@@ -195,8 +200,10 @@ class KisRest:
     """KIS REST with its access token cached in memory (one issue a minute at most)."""
 
     def __init__(self, app_key: str, app_secret: str, rest_url: str, *, http: httpx.AsyncClient | None = None,
-                 clock=time.monotonic) -> None:
+                 clock=time.monotonic, tokens: TokenStore | None = None) -> None:
         self._key, self._secret, self._url = app_key, app_secret, rest_url.rstrip("/")
+        # #688 the token shared by the desk's processes (None: this object's own, as before)
+        self._slot = tokens.slot("kis_rest", app_secret) if tokens is not None else None
         self._http = http
         self._own_http = http is None
         self._clock = clock
@@ -213,33 +220,61 @@ class KisRest:
             self._http = httpx.AsyncClient(timeout=TIMEOUT_SEC)
         return self._http
 
-    async def token(self) -> str:
+    async def token(self, refused: str | None = None) -> str:
         async with self._lock:
             now = self._clock()
-            if self._token and now < self._token[0]:
+            if self._token and self._token[1] != refused and now < self._token[0]:
                 return self._token[1]
+            if self._slot is not None:
+                # #688 the desk's one token (desk.token_store): issued only by the minting process
+                try:
+                    token, expires = await self._slot.get(self._issue, refused=refused, gap=_backoff)
+                except TokenUnavailable:
+                    raise KisError("access token: none available yet") from None
+                self._token = (now + (expires - datetime.now(UTC)).total_seconds(), token)
+                return token
             if now - self._asked < self._gap():
                 raise KisError("waiting before asking KIS for another access token")
             self._asked = now
-            res = await (await self._client()).post(f"{self._url}{TOKEN_PATH}", json={
-                "grant_type": "client_credentials", "appkey": self._key, "appsecret": self._secret})
-            if res.status_code != 200:
-                self._refusals += 1
-                raise KisError(f"access token: HTTP {res.status_code}")
             try:
-                body = res.json()
-            except ValueError:
-                body = {}
-            token = body.get("access_token")
-            if not token or not isinstance(token, str):
+                got = await self._issue()
+            except KisError:
                 self._refusals += 1
-                raise KisError("access token: none in the answer")
-            life = min(float(body.get("expires_in") or TOKEN_TTL_SEC), TOKEN_TTL_SEC)
-            self._token = (now + life, token)
-            return token
+                raise
+            self._token = (now + got.life_sec, got.value)
+            return got.value
 
     def _gap(self) -> float:
-        return TOKEN_BACKOFF_SEC[min(self._refusals, len(TOKEN_BACKOFF_SEC) - 1)]
+        return _backoff(self._refusals)
+
+    async def _issue(self) -> Issued:
+        res = await (await self._client()).post(f"{self._url}{TOKEN_PATH}", json={
+            "grant_type": "client_credentials", "appkey": self._key, "appsecret": self._secret})
+        if res.status_code != 200:
+            raise KisError(f"access token: HTTP {res.status_code}")
+        try:
+            body = res.json()
+        except ValueError:
+            body = {}
+        token = body.get("access_token")
+        if not token or not isinstance(token, str):
+            raise KisError("access token: none in the answer")
+        return Issued(token, min(float(body.get("expires_in") or TOKEN_TTL_SEC), TOKEN_TTL_SEC))
+
+    async def keep_token(self, ahead: float) -> bool:
+        """#688 the collector's ``tokens`` job: renew ahead of expiry, or for a reader's request."""
+        if self._slot is None:
+            return False
+        try:
+            got = await self._slot.keep(self._issue, ahead=ahead, gap=_backoff)
+        except KisError as exc:
+            log.warning("kis token renewal failed: %s", exc)
+            return False
+        if got is None:
+            return False
+        async with self._lock:          # this process uses the new token at once
+            self._token = (self._clock() + (got[1] - datetime.now(UTC)).total_seconds(), got[0])
+        return True
 
     def _scrub(self, text: str) -> str:
         for secret in (self._key, self._secret, self._token[1] if self._token else ""):
@@ -248,8 +283,9 @@ class KisRest:
         return text
 
     async def get(self, path: str, tr_id: str, params: dict) -> dict:
+        refused = None
         for attempt in (0, 1):
-            token = await self.token()
+            token = await self.token(refused)
             res = await (await self._client()).get(f"{self._url}{path}", params=params, headers={
                 "content-type": "application/json; charset=utf-8", "authorization": f"Bearer {token}",
                 "appkey": self._key, "appsecret": self._secret, "tr_id": tr_id, "custtype": "P"})
@@ -262,6 +298,7 @@ class KisRest:
                 if attempt == 0:
                     if self._token and self._token[1] == token:
                         self._token = None               # revoked early: one fresh token, once
+                    refused = token                      # #688 with a shared store: not this one again
                     continue
                 self._refusals += 1                      # a fresh token refused too: back off
                 raise KisError(f"{tr_id}: token refused")
@@ -292,7 +329,7 @@ def off_reason(settings) -> str | None:
     return None
 
 
-def make(settings) -> KisRest | None:
+def make(settings, tokens: TokenStore | None = None) -> KisRest | None:
     """KIS REST when both keys are set and the URL is https (the keys never go out in the clear)."""
     if not settings.kis_app_key or not settings.kis_app_secret:
         return None
@@ -302,7 +339,7 @@ def make(settings) -> KisRest | None:
     if not url.startswith("https://"):
         log.warning("futures flow off: DESK_KIS_REST_URL must be https://")
         return None
-    return KisRest(settings.kis_app_key, settings.kis_app_secret, url)
+    return KisRest(settings.kis_app_key, settings.kis_app_secret, url, tokens=tokens)
 
 
 class FuturesFlow:

@@ -160,13 +160,16 @@ def _entry_backtest(args) -> int:
 
 
 def _flow_history(args) -> int:
-    """#389: the broker from the settings (.env) - its keys are read there, never printed."""
+    """#389: the broker from the settings (.env) - its keys are read there, never printed. #688 the token comes
+    from the desk's shared store and is never issued here: a token issued by a one-off command would revoke the
+    running desk's, so the desk (all | collector) must be running on the same database."""
     import asyncio
     from datetime import date
 
     from . import flow_history
     from .broker import make_broker
     from .market_flow import KST
+    from .token_store import TokenStore
 
     settings = load()
     if settings.broker != "toss":
@@ -176,7 +179,7 @@ def _flow_history(args) -> int:
     start, today = date.fromisoformat(args.start), datetime.now(KST).date()
 
     async def go() -> None:
-        broker = make_broker(settings)
+        broker = make_broker(settings, TokenStore(make_engine(settings.database_url), role="cli"))
         for market in markets:
             path = flow_history.path_for(args.out_dir, market)
             data = await flow_history.collect(broker, market, start, path, today=today)

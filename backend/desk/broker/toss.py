@@ -17,6 +17,7 @@ from decimal import Decimal, InvalidOperation
 
 import httpx
 
+from ..token_store import Issued, TokenStore, TokenUnavailable
 from .base import INSTITUTION_KINDS, Bar, Broker, Fill, FlowRecord, Holding, IndexPrice, Listing, MarketDay
 
 BASE_URL = "https://openapi.tossinvest.com"
@@ -104,10 +105,13 @@ class TossBroker(Broker):
     name = "toss"
 
     def __init__(self, client_id: str, client_secret: str, account_seq: str = "",
-                 kosdaq_symbols: list[str] | None = None, http: httpx.AsyncClient | None = None) -> None:
+                 kosdaq_symbols: list[str] | None = None, http: httpx.AsyncClient | None = None,
+                 tokens: TokenStore | None = None) -> None:
         if not client_id or not client_secret:
             raise TossError("DESK_BROKER=toss needs TOSS_CLIENT_ID and TOSS_CLIENT_SECRET.")
         self._basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        # #688 the token shared by the desk's processes (None: this object's own, as before)
+        self._slot = tokens.slot("toss", client_secret) if tokens is not None else None
         self._account_seq = account_seq
         self._kosdaq = set(kosdaq_symbols or [])
         self._http = http or httpx.AsyncClient(base_url=BASE_URL, timeout=15)
@@ -124,6 +128,8 @@ class TossBroker(Broker):
         async with self._lock:
             if self._token and self._token != revoked and time.monotonic() < self._expires_at:
                 return self._token
+            if self._slot is not None:
+                return await self._shared_token(revoked)
             if revoked is not None:
                 if self._renewed_at is not None and time.monotonic() - self._renewed_at < RENEW_COOLDOWN_SEC:
                     raise TossError("Toss token revoked again within a minute: another client is using "
@@ -142,6 +148,47 @@ class TossBroker(Broker):
             self._token = body["access_token"]
             self._expires_at = time.monotonic() + max(60.0, float(body.get("expires_in", 3600)) - REFRESH_MARGIN_SEC)
             return self._token
+
+    async def _issue(self) -> Issued:
+        r = await self._http.post(
+            "/oauth2/token",
+            headers={"Authorization": f"Basic {self._basic}", "Content-Type": "application/x-www-form-urlencoded"},
+            data={"grant_type": "client_credentials"},
+        )
+        if r.status_code != 200:
+            raise TossError(f"Toss token request failed {r.status_code}: {r.text[:300]}")
+        body = r.json()
+        return Issued(body["access_token"], float(body.get("expires_in", 3600)))
+
+    async def _shared_token(self, revoked: str | None) -> str:
+        """#688 the desk's one token (desk.token_store): issued here only in the minting process, under the
+        store's lease and gap; other processes take it from the store (and ask for a new one on a 401)."""
+        if revoked is not None:
+            log.warning("toss token refused (401); taking a new one from the store")
+        try:
+            token, expires = await self._slot.get(self._issue, refused=revoked, ahead=REFRESH_MARGIN_SEC,
+                                                  gap=lambda _refusals: RENEW_COOLDOWN_SEC)
+        except TokenUnavailable as exc:
+            raise TossError(f"Toss token unavailable: {exc}") from None
+        left = (expires - datetime.now(UTC)).total_seconds() - REFRESH_MARGIN_SEC
+        self._token, self._expires_at = token, time.monotonic() + max(0.0, left)
+        return token
+
+    async def keep_token(self, ahead: float) -> bool:
+        """#688 the collector's ``tokens`` job: renew ahead of expiry, or for a reader's request."""
+        if self._slot is None:
+            return False
+        try:
+            got = await self._slot.keep(self._issue, ahead=ahead, gap=lambda _refusals: RENEW_COOLDOWN_SEC)
+        except TossError as exc:
+            log.warning("toss token renewal failed: %s", str(exc)[:80])
+            return False
+        if got is None:
+            return False
+        async with self._lock:          # this process uses the new token at once (the old one is revoked)
+            left = (got[1] - datetime.now(UTC)).total_seconds() - REFRESH_MARGIN_SEC
+            self._token, self._expires_at = got[0], time.monotonic() + max(0.0, left)
+        return True
 
     async def _get(self, path: str, headers: dict | None = None, params: dict | None = None):
         token = await self._access_token()

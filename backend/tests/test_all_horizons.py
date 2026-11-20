@@ -124,9 +124,93 @@ def test_a_fake_run_carries_four_scripted_horizons(db_url):
         assert plan["horizon_fit"]["best"] == ["scalp", "intraday"] and "변동성 끌림" in plan["horizon_fit"]["sentence"]
 
 
+def _same_shape(real, script, where="plan"):
+    """The script's value has the real one's shape: the same keys all the way down, list items like the
+    real first one, and the same kind of value wherever both have one (a number is a number)."""
+    if real is None or script is None:
+        return
+    if isinstance(real, dict):
+        assert isinstance(script, dict), where
+        assert set(script) == set(real), (where, set(script) ^ set(real))
+        for k in real:
+            _same_shape(real[k], script[k], f"{where}.{k}")
+    elif isinstance(real, list):
+        assert isinstance(script, list), where
+        if where.endswith(".refs"):        # a level's references differ by kind (swing · fibonacci · sr …)
+            assert all(isinstance(x, dict) and "kind" in x for x in real + script), where
+        elif real and script:
+            _same_shape(real[0], script[0], f"{where}[0]")
+    else:
+        num = (int, float)
+        assert (isinstance(real, num) and isinstance(script, num)) or type(real) is type(script),             (where, type(real), type(script))
+
+
 def test_the_scripted_horizons_have_the_live_shape():
+    # review #696: the page is built on DESK_FAKE_RUNS - its values must have the real nested shapes
     real = asyncio.run(all_horizons.build(_Prices(), "ZZZT", {"bias": "long"}, "swing", None, same_day=True))
     script = all_horizons.fake("ZZZT", {"bias": "long", "entry_price": 50.0}, "swing")
     for h in all_horizons.ORDER:
-        assert set(script["horizons"][h]) == set(real["horizons"][h])
-    assert set(script["horizon_fit"]) == set(real["horizon_fit"])
+        r = real["horizons"][h]
+        assert r["errors"] is None and r["chart"] and r["map"].get("side"), (h, r["errors"])
+        assert r["chart"]["above"] or r["chart"]["below"]
+        _same_shape(r, script["horizons"][h], h)
+    _same_shape({k: v for k, v in real["horizon_fit"].items() if k != "frames"},
+                {k: v for k, v in script["horizon_fit"].items() if k != "frames"}, "horizon_fit")
+    _same_shape(real["horizon_fit"]["frames"]["1d"], script["horizon_fit"]["frames"]["1d"], "frames.1d")
+
+
+def test_the_entry_reads_the_markets_score_like_the_entry_page(monkeypatch):
+    # review #696: the live playbooks' cache is shared - the run must build them gated as /api/entry does
+    seen = []
+
+    async def entry(prices, ticker, horizon=None, risk=None, bottoms=None, reach=None):
+        seen.append((horizon, risk))
+        return {"best": None, "stand_aside": {"reason": "x"}}
+
+    monkeypatch.setattr(all_horizons.entry_now, "entry_now", entry)
+    marker = object()
+    asyncio.run(all_horizons.build(_Prices(), "ZZZT", {}, "swing", None, same_day=True, risk=marker))
+    assert sorted(h for h, _ in seen) == sorted(all_horizons.ORDER) and all(r is marker for _, r in seen)
+
+
+def test_a_failed_build_still_says_the_class_and_nulls(db_url, monkeypatch):
+    from datetime import timedelta as td
+
+    from fastapi.testclient import TestClient
+
+    from desk.api import create_app
+    from desk.auth import Auth
+    from desk.db import make_engine
+    from desk.runner import make_fake_runner
+    from desk.settings import Settings
+    from tests.test_api import OWNER, PASSWORD, _wait_done
+
+    async def broken(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(all_horizons, "build", broken)
+    settings = Settings(database_url=db_url, fake_delay=0, fake_runs=True)
+    client = TestClient(create_app(settings, runner=make_fake_runner(0)), base_url="https://testserver")
+    engine = make_engine(db_url)
+    Auth(engine, td(hours=1), td(hours=1)).create_user(OWNER, PASSWORD)
+    engine.dispose()
+    with client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        run = _wait_done(client, client.post("/api/runs", json={"ticker": "SOXL"}).json()["id"])
+        plan = run["plan"]
+        assert run["status"] == "done" and plan["horizons"] is None and plan["horizon_fit"] is None
+        assert plan["instrument_class"]["id"] == "leverage" and "RuntimeError" in plan["horizons_note"]
+
+
+def test_the_run_list_leaves_the_horizons_to_the_runs_own_page(db_url):
+    from desk.db import make_engine, migrate
+    from desk.store import Store
+
+    migrate(db_url)
+    store = Store(make_engine(db_url))
+    run_id = store.create_run("SOXL", "2026-11-20", {})
+    store.mark_done(run_id, {"rating": "Buy", "horizons": {"swing": {}}, "horizon_fit": {"best": []},
+                             "instrument_class": {"id": "leverage"}}, None)
+    listed = next(r for r in store.list_runs() if r["id"] == run_id)["plan"]
+    assert "horizons" not in listed and "horizon_fit" not in listed and listed["instrument_class"]["id"] == "leverage"
+    assert store.get_run(run_id)["plan"]["horizons"] == {"swing": {}}

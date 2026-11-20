@@ -1057,7 +1057,7 @@ class RunManager:
                 wide = asyncio.ensure_future(all_horizons.build(
                     self.prices, request.ticker, dict(plan), horizon.id, sr,
                     same_day=request.trade_date == dt.date.today().isoformat(),
-                    scripted=bool(getattr(self.runner, "fake", False))))
+                    scripted=bool(getattr(self.runner, "fake", False)), risk=self.risk))
                 try:
                     # #116: the product's playbooks (its own bars), the model's three lines merged when sane
                     try:
@@ -1085,7 +1085,10 @@ class RunManager:
                         plan.update(await asyncio.wait_for(asyncio.shield(wide), all_horizons.TIMEOUT_SEC * 2))
                     except Exception as exc:  # noqa: BLE001 - incl. timeout: the run's own horizon stands
                         log.warning("no other horizons for %s: %s", request.ticker, type(exc).__name__)
-                        plan["horizons"], plan["horizons_note"] = None, f"기간별 계획을 만들지 못했어요({type(exc).__name__})"
+                        plan.update({"instrument_class": all_horizons.instrument_class(request.ticker),
+                                     "horizons": None, "horizon_fit": None,
+                                     "horizons_note": f"기간별 계획을 만들지 못했어요({type(exc).__name__})"})
+                    watch.mark("horizons")      # #696: what the four horizons cost past the summary's overlap
                     plan.update(await closing)
                 finally:
                     closing.cancel()   # a no-op once it is done

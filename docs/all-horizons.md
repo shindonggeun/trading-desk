@@ -13,7 +13,7 @@
   // … 지금까지의 필드(entry_price · stop_loss · price_target · horizon · trade_map …)는 그대로
   "instrument_class": {
     "id": "leverage",            // leverage · inverse · bond · defensive · general
-    "label": "레버리지", "risk": "공격", "basis": "QQQ 의 하루 3배", "multiple": 3, "underlying": "QQQ"
+    "label": "레버리지", "risk": "공격", "basis": "QQQ 의 하루 3배", "multiple": 3.0 /* 실수 */, "underlying": "QQQ"
   },
   "horizons": {                  // 오늘 분석에만. 지난 날짜 · 시세 없음이면 null (horizons_note 가 이유)
     "scalp": {
@@ -30,7 +30,13 @@
       },                          // 고른 쪽이 없으면 side 등은 없고 stand_aside 에 이유
       "levels": {"support": [{"price", "strength", "basis"} ×≤2], "resistance": [… ×≤2]},
       "atr": 0.8,
-      "chart": {"timeframe": "5m", "summary": "…", "trend": "…", "above": […≤2], "below": […≤2], "patterns": [kind…]},
+      "chart": {"timeframe": "5m", "summary": "…",
+                "trend": {"state": "up" /* up · down · sideways */, "ema20": 114.4, "ema50": 114.0, "basis": "…"},
+                "above": [{"price": 125.5, "name": "최근 고점", "distance_pct": 4.1,
+                           "refs": [{"kind": "swing", …}]   // refs 항목은 kind 마다 필드가 다르다(swing · fib …)
+                          } /* ×≤2 */],
+                "below": [ /* above 와 같은 꼴 ×≤2 */ ],
+                "patterns": [kind…]},
       "errors": null              // {"levels"|"entry"|"chart": "TimeoutError"} — 그 조각만 빠짐
     },
     "intraday": { … }, "short_swing": { … }, "swing": { … }
@@ -52,7 +58,10 @@
 }
 ```
 
-옛 run 에는 이 필드들이 없다. 화면은 없으면 지금처럼 기간 하나만 보인다.
+- 옛 run 에는 이 필드들이 없다. 화면은 없으면 지금처럼 기간 하나만 보인다.
+- 만들다 실패하면 `instrument_class` 는 있고 `horizons` · `horizon_fit` 은 `null`, 이유는 `horizons_note` 에 있다.
+- **목록(`GET /api/runs`)의 plan 에는 `horizons` · `horizon_fit` 이 없다**(run 하나에 약 10 KB). `GET /api/runs/{id}` 에만 있다.
+- 대본 값(`horizons_fake`)은 실제 값과 같은 중첩 모양이다(테스트로 고정).
 
 ## 규칙
 

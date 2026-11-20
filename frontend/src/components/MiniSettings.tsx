@@ -16,7 +16,7 @@ export default function MiniSettings() {
     <section className="card settings-card">
       <h2>작은 창</h2>
       <p className="muted">
-        회사에서 조용히 띄워 두는 작은 창이에요. 아래 종목 시세 · 코스피 외인/기관 수급 · 오늘 마지막 알림을 띠(창이 낮으면) 또는
+        회사에서 조용히 띄워 두는 작은 창이에요. 아래 종목 시세 · 국장/미장 방향 · 코스피 외인/기관 수급 · 오늘 마지막 알림을 띠(창이 낮으면) 또는
         세로 카드(창이 높으면)로 15초마다 보여 줘요. 창 안의 ⚙ 는 종목 고치기, ◐ 는 조용한 모드(회색조 · ▲▼ 기호), 가 는 글자 크기예요.
       </p>
       <div className="settings-actions">

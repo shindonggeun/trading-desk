@@ -2,10 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { alertKey, alertLines, ALERTS_KEY, badgeOf, hhmm, loadAlerts } from "../alertsFeed";
 import { api, Unauthorized, type MarketAlert } from "../api";
 import MiniTickerEditor from "../components/MiniTickerEditor";
+import { KIND_KO, MARKET_KO, verdictText } from "../dayCall";
 import { krwShort, price } from "../format";
 import { loadMiniPrefs, MINI_FUTURES, saveMiniPrefs, useMiniItems, type MiniPrefs } from "../miniWindow";
 import { byAsked } from "../ticker";
-import type { BoardItem } from "../types";
+import type { BoardItem, DayCallMarket, DayCallToday } from "../types";
 import { usePoll } from "../poll";
 
 const QUOTE_MS = 15_000;          // 시세판과 같은 주기
@@ -25,6 +26,22 @@ function Mark({ v }: { v: number | null | undefined }) {
 
 const signed = (v: number | null | undefined) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(2)}%`);
 const tone = (v: number | null | undefined) => (v == null || v === 0 ? "" : v > 0 ? "up" : "down");
+function MiniDirection({ market, data, failing }: { market: DayCallMarket; data?: DayCallToday; failing: boolean }) {
+  const kind = data?.calls.prev_close ? "prev_close" : "open";
+  const call = data?.calls[kind];
+  const verdict = call ? verdictText(call) : null;
+  const title = call && data ? `${data.date} · ${KIND_KO[kind]} · ${call.round_label}` : undefined;
+  return (
+    <li className="mini-direction" title={title}>
+      <span className="mini-name">{MARKET_KO[market]}</span>{" "}
+      {verdict ? <span className={verdict.cls}><span aria-hidden="true">{verdict.mark}</span> {verdict.text}</span>
+        : <span className="mini-muted">{failing ? "불러오기 실패" : data ? "판정 없음" : "불러오는 중"}</span>}
+      {call && data?.today === false && <span className="mini-muted"> 이전 장</span>}
+      {call && failing && <span className="mini-muted"> 지연</span>}
+    </li>
+  );
+}
+
 const fromBoard = (it: BoardItem): Quote => ({ price: it.price ?? null, change_pct: it.change_pct ?? null, estimate: it.state === "estimate" });
 
 /**
@@ -59,6 +76,11 @@ export default function MiniWindow({ pip = false }: { pip?: boolean }) {
     v.addEventListener("resize", apply);
     return () => v.removeEventListener("resize", apply);
   }, []);
+
+  // 방향도 PiP의 원래 탭이 가려진 동안 시세와 같은 주기로 갱신한다.
+  const kr = usePoll("day-call:kr", () => api.dayCall("kr"), QUOTE_MS, { pauseHidden: false });
+  const us = usePoll("day-call:us", () => api.dayCall("us"), QUOTE_MS, { pauseHidden: false });
+  const needsLogin = login || kr.error instanceof Unauthorized || us.error instanceof Unauthorized;
 
   const boardKey = items.filter((it) => it.ticker !== MINI_FUTURES).map((it) => it.ticker).join(",");
   const wantFutures = items.some((it) => it.ticker === MINI_FUTURES);
@@ -138,7 +160,7 @@ export default function MiniWindow({ pip = false }: { pip?: boolean }) {
 
   return (
     <div ref={root} className={`mini mini-${layout} mini-size-${prefs.size}${prefs.quiet ? " mini-quiet" : ""}${pip ? " mini-pip" : ""}`}>
-      {login ? (
+      {needsLogin ? (
         <p className="mini-login">세션이 끝났어요 — <button type="button" className="link" onClick={openDesk}>데스크에서 다시 로그인</button></p>
       ) : editing ? (
         <section className="mini-editor-panel" aria-label="작은 창 종목 고치기">
@@ -146,7 +168,9 @@ export default function MiniWindow({ pip = false }: { pip?: boolean }) {
           <MiniTickerEditor items={items} onChange={setItems} search={false} />
         </section>
       ) : (
-        <ul className="mini-items" aria-label="작은 창 시세">
+        <ul className="mini-items" aria-label="작은 창 시세와 오늘 방향">
+          <MiniDirection market="kr" data={kr.data} failing={kr.failing} />
+          <MiniDirection market="us" data={us.data} failing={us.failing} />
           {items.length === 0 ? <li className="mini-muted">종목이 없어요 — ⚙ 에서 더해 주세요</li>
             : items.map((it) => {
               const q = quotes[it.ticker];

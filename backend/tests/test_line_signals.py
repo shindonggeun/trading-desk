@@ -98,16 +98,17 @@ def test_the_text_follows_the_issue_example():
     sig = {"event": "touch", "rule": "touch_resistance", "role": "channel_upper", "line": "하락 채널 상단",
            "line_id": "x", "at": "2026-11-18T04:00:00+00:00", "price": 27180.0, "line_price": 27160.0}
     title, body = line_signals.text(sig, "SOXL", "60m", RATES)
-    assert title == "🔵 저항 | SOXL 1시간봉 — 가격이 저항 구간(하락 채널 상단)에 닿았어요 → 상승이 막히는지 지켜볼 자리"
+    assert title == "🔵 저항 · 참고 | SOXL 1시간봉 — 가격이 저항 구간(하락 채널 상단)에 닿았어요 → 상승이 막히는지 지켜볼 자리"
     lines = body.split("\n")
     assert lines[0] == "선 27,160 · 지금 27,180 (+0.07%)"
-    assert lines[1] == "과거 닿은 뒤 8봉 안 반등 35% · 이탈 57% (같은 자리 아무 선 반등 38%, 474번)"
+    # 35% against any line's 38%: within WEAK_EDGE, so it says the line adds little (#613 "참고" tone)
+    assert lines[1] == "과거 닿은 뒤 8봉 안 반등 35% · 이탈 57% (같은 자리 아무 선 반등 38%, 474번) · 차이 작음"
     assert lines[2] == "⚠️ 1시간봉은 짧은 봉이라 신호가 자주 틀릴 수 있어요"
     assert lines[3] == "※ 매수 · 매도 추천이 아닙니다"
     brk = {**sig, "event": "break", "rule": "break_down", "role": "trend_break", "line": "상승 추세선"}
     title, body = line_signals.text(brk, "NQ=F", "240m", RATES)
-    assert title.startswith("🔻 하향 이탈 | NQ=F 4시간봉 — 종가가 상승 추세선 아래로 넘었어요")
-    assert "1 ATR 더 간 비율 44% (같은 자리 아무 선 61%, 62번)" in body and "짧은 봉" not in body
+    assert title.startswith("🔻 하향 이탈 · 참고 | NQ=F 4시간봉 — 종가가 상승 추세선 아래로 넘었어요")
+    assert "1 ATR 더 간 비율 44% (같은 자리 아무 선 61%, 62번)\n" in body and "짧은 봉" not in body   # 17%p apart: no note
     _t, body = line_signals.text({**sig, "role": "channel_break", "rule": "break_up"}, "KORU", "15m", RATES)
     assert "이 사건은 따로 재지 않았어요" in body and body.endswith("※ 매수 · 매도 추천이 아닙니다")
     _t, body = line_signals.text(sig, "KORU", "15m", {})
@@ -150,8 +151,10 @@ def test_a_scan_sends_once_and_keeps_it(watch, monkeypatch, caplog):
         got = watch.scan("NQ=F", "5m", bars, cfg=cfg)
     assert [s["rule"] for s in got] == ["break_down"]
     kinds, payload = sent[0]
-    assert kinds == ("line_signal",) and payload["title"].startswith("🔻 하향 이탈 | NQ=F 5분봉")
-    assert payload["body"].endswith("※ 매수 · 매도 추천이 아닙니다") and payload["url"] == "/#/market"
+    # #613 "참고": under tone_neutral (a warnings-only device skips it); it opens that chart
+    assert kinds == ("line_signal", "tone_neutral") and payload["title"].startswith("🔻 하향 이탈 · 참고 | NQ=F 5분봉")
+    assert payload["body"].endswith("※ 매수 · 매도 추천이 아닙니다") and payload["url"] == "/#/charts?t=NQ%3DF&iv=5m"
+    assert payload["tone"] == "neutral" and line_signals.chart_url("005930.KS", "120m") == "/#/charts?t=005930.KS&iv=60m"
     assert watch.recent()[0]["rule"] == "break_down"
     assert watch.scan("NQ=F", "5m", bars, cfg=cfg) == [] and len(sent) == 1   # the same bar again: nothing
     off = watch.save({**cfg, "events": {"break": False}})

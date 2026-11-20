@@ -35,6 +35,15 @@ from . import channels
 OUT = Path(__file__).parent / "data" / "backtest" / "lines.json"
 HORIZON = channels.HORIZON
 BOUNCE_ATR = 1.0
+# #613 a line's rate within 5%p of any line's at the same spot: the line adds little (#679 measured long
+# supports 40% against 35-36%) - the alert says so instead of reading it as an edge
+WEAK_EDGE = 0.05
+
+
+def edge_note(rate: float | None, base: float | None) -> str:
+    """The words after a past-rate line when ``rate`` is about ``base`` (any line at the same spot)."""
+    # rounded as shown (whole %): 40% against 35% is 5%p whatever the float's last digits say
+    return " · 차이 작음" if rate is not None and base is not None and abs(round(rate * 100) - round(base * 100)) < WEAK_EDGE * 100 else ""
 FETCH = {"5m": 16000, "15m": 6000, "60m": 12000, "120m": 6000, "240m": 3000, "1d": 6500}
 DEFAULT_TFS = ("5m", "60m", "1d")
 ROLES = ("channel_lower", "channel_upper", "trend_support", "trend_resistance")

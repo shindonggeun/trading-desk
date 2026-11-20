@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import math
 from datetime import UTC, datetime, timedelta
+from urllib.parse import quote
 
 from sqlalchemy import desc, insert, select, update
 from sqlalchemy.engine import Engine
@@ -52,6 +53,10 @@ PASS_MAX = 20              # market data reads in one pass; the rest wait for th
 DEFAULT = {"enabled": False, "tickers": ["NQ=F"], "timeframes": ["60m"],
            "events": {e: True for e in EVENTS}}
 NO_ADVICE = "※ 매수 · 매도 추천이 아닙니다"
+# #613 a line's edge is thin (#679: long supports 40% against 35-36%): every line signal is "참고" - the
+# title says it and it goes out under tone_neutral, so a device or channel taking warnings only skips it
+REFERENCE = "참고"
+TONE = "neutral"
 
 _ICON = {"touch_support": "🟢 지지", "touch_resistance": "🔵 저항", "break_down": "🔻 하향 이탈",
          "break_up": "🔺 상향 이탈", "retest_down": "↩️ 되돌림", "retest_up": "↩️ 되돌림",
@@ -190,16 +195,18 @@ def _rate_line(sig: dict, rates: dict) -> str:
     pct = (lambda x: "-" if x is None else f"{x * 100:.0f}%")
     if role == "trend_break":
         return (f"과거 막 이탈 뒤 {got['horizon_bars']}봉 안에 1 ATR 더 간 비율 {pct(got['follow_rate'])} "
-                f"(같은 자리 아무 선 {pct(got['baseline_rate'])}, {got['n']}번)")
+                f"(같은 자리 아무 선 {pct(got['baseline_rate'])}, {got['n']}번)"
+                f"{lines_bt.edge_note(got['follow_rate'], got['baseline_rate'])}")
     return (f"과거 닿은 뒤 {got['horizon_bars']}봉 안 반등 {pct(got['bounce_rate'])} · 이탈 {pct(got['break_rate'])} "
-            f"(같은 자리 아무 선 반등 {pct(got['baseline_bounce_rate'])}, {got['n']}번)")
+            f"(같은 자리 아무 선 반등 {pct(got['baseline_bounce_rate'])}, {got['n']}번)"
+            f"{lines_bt.edge_note(got['bounce_rate'], got['baseline_bounce_rate'])}")
 
 
 def text(sig: dict, ticker: str, tf: str, rates: dict) -> tuple[str, str]:
     """(title, body) of a signal: what happened and what to watch / the line, the price, the past rate /
     the short-bar warning / no advice."""
     tf_ko = channels.TF_KO[tf]
-    title = f"{_ICON[sig['rule']]} | {ticker} {tf_ko} — {_SAY[sig['rule']].format(line=sig['line'])}"
+    title = f"{_ICON[sig['rule']]} · {REFERENCE} | {ticker} {tf_ko} — {_SAY[sig['rule']].format(line=sig['line'])}"
     gap = (sig["price"] / sig["line_price"] - 1) * 100
     lines = [f"선 {_fmt(sig['line_price'])} · 지금 {_fmt(sig['price'])} ({gap:+.2f}%)", _rate_line(sig, rates)]
     if tf in SHORT:
@@ -238,6 +245,11 @@ def admit(sig: dict, ticker: str, tf: str, today: list[dict], before: list[dict]
     if len(today) >= DAILY_MAX:
         return False
     return sum(1 for r in today if r["ticker"] == ticker) < PER_TICKER_MAX
+
+
+def chart_url(ticker: str, tf: str) -> str:
+    """Where the alert opens: that ticker · timeframe's chart (the timeline's link, frontend lineSignals.chartHref)."""
+    return f"/#/charts?t={quote(ticker, safe='')}&iv={'60m' if tf == '120m' else tf}"
 
 
 def kst_day(at: str) -> str:
@@ -333,8 +345,8 @@ class LineWatch:
                         text=f"{title}\n{body}"[:600], created_at=now()))
             except IntegrityError:                     # another pass kept it first
                 continue
-            notify.send(pusher, KIND, payload={"title": title, "body": body, "tag": f"line-{ticker}-{tf}",
-                                               "url": "/#/market"})
+            notify.send(pusher, KIND, f"tone_{TONE}", payload={"title": title, "body": body, "tag": f"line-{ticker}-{tf}",
+                                                               "url": chart_url(ticker, tf), "tone": TONE})
             sent.append({**sig, "title": title, "body": body})
         return sent
 

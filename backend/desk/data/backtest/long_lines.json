@@ -1,0 +1,125 @@
+{
+ "generated_at": "2026-11-20T01:14:07+00:00",
+ "tickers": [
+  "AMD",
+  "NVDA",
+  "SOXX",
+  "KORU",
+  "SOXL",
+  "TQQQ",
+  "QQQ",
+  "SPY",
+  "AAPL",
+  "MSFT"
+ ],
+ "window": 252,
+ "step": 5,
+ "horizon_bars": 10,
+ "bounce_atr": 1.0,
+ "roles": {
+  "long_support": {
+   "n": 752,
+   "bounce": 300,
+   "break": 445,
+   "none": 7,
+   "bounce_rate": 0.399,
+   "break_rate": 0.592,
+   "baseline": {
+    "n": 634,
+    "bounce": 224,
+    "break": 403,
+    "none": 7,
+    "bounce_rate": 0.353,
+    "break_rate": 0.636
+   }
+  },
+  "long_resistance": {
+   "n": 419,
+   "bounce": 115,
+   "break": 298,
+   "none": 6,
+   "bounce_rate": 0.274,
+   "break_rate": 0.711,
+   "baseline": {
+    "n": 374,
+    "bounce": 131,
+    "break": 237,
+    "none": 6,
+    "bounce_rate": 0.35,
+    "break_rate": 0.634
+   }
+  }
+ },
+ "per_ticker": {
+  "AMD": {
+   "from": "2006-03-21T05:00:00+00:00",
+   "to": "2026-11-18T05:00:00+00:00",
+   "steps": 988,
+   "long_support": 74,
+   "long_resistance": 69
+  },
+  "NVDA": {
+   "from": "2006-03-21T05:00:00+00:00",
+   "to": "2026-11-18T05:00:00+00:00",
+   "steps": 988,
+   "long_support": 90,
+   "long_resistance": 46
+  },
+  "SOXX": {
+   "from": "2006-03-21T05:00:00+00:00",
+   "to": "2026-11-18T05:00:00+00:00",
+   "steps": 988,
+   "long_support": 81,
+   "long_resistance": 46
+  },
+  "KORU": {
+   "from": "2013-04-10T04:00:00+00:00",
+   "to": "2026-11-18T05:00:00+00:00",
+   "steps": 633,
+   "long_support": 42,
+   "long_resistance": 43
+  },
+  "SOXL": {
+   "from": "2010-03-11T05:00:00+00:00",
+   "to": "2026-11-18T05:00:00+00:00",
+   "steps": 788,
+   "long_support": 70,
+   "long_resistance": 38
+  },
+  "TQQQ": {
+   "from": "2010-02-11T05:00:00+00:00",
+   "to": "2026-11-18T05:00:00+00:00",
+   "steps": 792,
+   "long_support": 60,
+   "long_resistance": 26
+  },
+  "QQQ": {
+   "from": "2006-03-21T05:00:00+00:00",
+   "to": "2026-11-18T05:00:00+00:00",
+   "steps": 988,
+   "long_support": 80,
+   "long_resistance": 29
+  },
+  "SPY": {
+   "from": "2006-03-21T05:00:00+00:00",
+   "to": "2026-11-18T05:00:00+00:00",
+   "steps": 988,
+   "long_support": 82,
+   "long_resistance": 33
+  },
+  "AAPL": {
+   "from": "2006-03-21T05:00:00+00:00",
+   "to": "2026-11-18T05:00:00+00:00",
+   "steps": 988,
+   "long_support": 84,
+   "long_resistance": 36
+  },
+  "MSFT": {
+   "from": "2006-03-21T05:00:00+00:00",
+   "to": "2026-11-18T05:00:00+00:00",
+   "steps": 988,
+   "long_support": 89,
+   "long_resistance": 53
+  }
+ }
+}

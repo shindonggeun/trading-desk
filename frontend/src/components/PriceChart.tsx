@@ -164,9 +164,6 @@ function savePrefs(interval: Interval, show: Show, preset: Preset, custom: Show)
 const AUTOSCALE_MAX_GAP = 0.5;
 // #560 전망 기준가와 분석일 종가가 이만큼 넘게 다르면 원뿔을 그리지 않는다
 const OUTLOOK_FAR = 0.2;
-// 체결 마커는 복기 API(브로커 체결 + 종목별 일봉)를 쓴다. 분석 화면을 오갈 때마다 다시 부르지 않게 잠깐 기억한다.
-const FILLS_TTL_MS = 60_000;
-let fillsMemo: { at: number; rows: Promise<ReviewRow[]> } | null = null;
 
 /** 체결이 든 봉 — 분봉은 체결 시각이 든 봉(장 전 · 시간외는 그날 첫 봉, 그날 봉이 없으면 null), 일봉 이상은 그 거래일이 든 봉. */
 function fillBar(f: ReviewRow, rows: { key: Key; day?: string }[], intraday: boolean, ticker: string): Key | null {
@@ -176,14 +173,6 @@ function fillBar(f: ReviewRow, rows: { key: Key; day?: string }[], intraday: boo
   if (at == null) return null;
   if (intraday && rows.find((r) => r.key === at)?.day !== fillOn) return rows.find((r) => r.day === fillOn)?.key ?? null;
   return at;
-}
-
-function recentFills(): Promise<ReviewRow[]> {
-  if (!fillsMemo || Date.now() - fillsMemo.at > FILLS_TTL_MS) {
-    const rows = api.review(180).then((r) => r.fills).catch(() => [] as ReviewRow[]);
-    fillsMemo = { at: Date.now(), rows };
-  }
-  return fillsMemo.rows;
 }
 
 const isKorean = (ticker: string) => /\.(KS|KQ)$/i.test(ticker);
@@ -958,10 +947,14 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     };
   }, [ticker, interval, wanted, show.rsi, show.stoch, show.bb, refreshed]);
 
-  // 이 종목 체결만. 브로커가 체결 내역을 안 주거나 실패하면 마커 없이 그린다.
+  // 현재 세션으로 복기를 조회한다. 권한이 없거나 조회에 실패하면 마커 없이 그린다.
   useEffect(() => {
     let live = true;
-    recentFills().then((rows) => live && setFills(rows.filter((f) => baseCode(f.ticker) === baseCode(ticker))));
+    setFills([]);
+    api.review(180).then(
+      ({ fills }) => live && setFills(fills.filter((f) => baseCode(f.ticker) === baseCode(ticker))),
+      () => {},
+    );
     return () => {
       live = false;
     };

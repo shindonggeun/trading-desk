@@ -19,7 +19,7 @@ CODEX_MODEL_CONFIG = ROOT / ".codex/agent-models.json"
 MODEL_TIERS = {"fast", "design", "work"}
 REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 # Codex 전용으로 직접 관리하며 Claude 원본이 없는 스킬(상대 경로).
-STANDALONE_SKILLS: set[str] = set()
+STANDALONE_SKILLS = {".agents/skills/codex-team/SKILL.md"}
 SKILL_NAMES = ("dev-orchestrator", "issue-start", "issue", "pr")
 SYNC_COMMAND = "python -X utf8 scripts/sync-agent-skills.py --write"
 GENERATED_NOTE = "scripts/sync-agent-skills.py 가 Claude 원본에서 생성한다. 직접 고치지 않는다."
@@ -80,6 +80,7 @@ AGENTS_FOOTER = """
 ## Codex 에서
 
 - 스킬은 `.agents/skills/<이름>/SKILL.md` — `$issue` · `$issue-start <번호>` · `$pr 검증: ...` · `$dev-orchestrator` 로 부른다.
+  독립 Codex 세션끼리 감독 · 작업 역할로 메시지를 주고받을 때는 `$codex-team`([docs/codex-team.md](docs/codex-team.md), Codex 전용).
   스킬 본문의 `/스킬명` 이 남아 있으면 같은 워크플로를 뜻한다.
 - 역할 지침은 `.agents/roles/*.md`, 하위 에이전트 정의는 `.codex/agents/*.toml`(이름은 `git_ops` · `security_reviewer` 처럼 밑줄).
   모델 · 추론 강도는 `.codex/agent-models.json` 에서 고친다. 대응표와 사용법은 [docs/claude-agents.md](docs/claude-agents.md) 의 Codex 절.

@@ -60,6 +60,17 @@ SSE(`EventSource`)도 쿠키로 인증된다. URL 에 토큰을 싣지 않는다
 
 ## 5. 비밀
 
+**운영 env 의 정본은 홈랩 Vault 다(#691)** — `kv/trading-desk/backend/prod/env`(백엔드), `kv/trading-desk/frontend/prod/env`(웹: 네트워크 · 바인드 · 포트).
+Jenkins 가 배포할 때마다 읽어 임시 env 파일(600)로 compose 에 넘기고 끝나면 지운다([deploy.md](deploy.md) 2 · 3절). 앱은 env 를 그대로 읽고 Vault SDK 는 쓰지 않는다.
+아래 표의 "서버 `.env.runtime`" 은 Vault 로 옮기기 전의 위치이자 손 배포(`scripts/deploy.sh`, Jenkins · Vault 를 못 쓸 때) 대체 경로다 —
+값을 바꿀 때는 **Vault 를 고치고**(`vault kv patch`, 값은 채팅 · 로그 · 커밋에 쓰지 않는다) Jenkins 잡을 `FORCE_DEPLOY` 로 다시 돌린다. `.env.runtime` 을 쓰는 날에는 먼저 Vault 와 맞춘다.
+
+- 파이프라인 규칙: 값은 Groovy 변수 · 명령 인자 · 콘솔에 나오지 않는다(`set +x`, 토큰 · AppRole 자격은 표준입력으로 curl 에). 키 이름 · 개수만 찍는다.
+  배포 확인 실패 때 찍는 컨테이너 로그는 env 값(8자 이상 또는 비밀처럼 보이는 키)을 `****` 로 가린다. 로그인 토큰은 끝날 때 `revoke-self` 로 폐기한다.
+- Jenkins credential 은 폴더 `trading-desk` 범위(`trading-desk-vault-role-id` · `-secret-id` · `trading-desk-github`). AppRole `jenkins-trading-desk` 는 `kv/trading-desk/+/+/env` 읽기만.
+- 저장소가 공개라 잡은 fork PR 을 발견하지 않는다. develop 은 소유자만 머지한다 — Jenkinsfile 은 docker 소켓이 있는 운영 agent 에서 돈다.
+- secret-id 회전: Infra 저장소 `vault/scripts/rotate-approle-secret.sh jenkins-trading-desk` → 새 값을 Jenkins 폴더 credential 에 바꿔 넣는다(Infra `vault/README.md` trading-desk 절).
+
 | 비밀 | 있는 곳 | 저장소 |
 |------|---------|--------|
 | DB 비밀번호 · 토스 키 | 서버 `~/deploy/trading-desk/.env.runtime` (권한 600) | `.env.example` 에 이름만 |

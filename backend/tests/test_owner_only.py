@@ -1,5 +1,6 @@
 """#775 the broker account is the owner's: holdings, fills and the runs that read them - not another account's."""
 
+import json
 from datetime import timedelta
 
 from desk import auth as auth_module
@@ -27,12 +28,16 @@ def test_the_owner_reads_the_account(db_url):
     with _client(db_url) as client:
         assert client.get("/api/portfolio").status_code == 200
         assert client.get("/api/review").status_code == 200
-        run_id = client.post("/api/runs", json={"ticker": "NVDA", "use_portfolio": True}).json()["id"]
-        assert "Current position in NVDA: 12 units" in _trader(client, run_id)
+        run = client.post("/api/runs", json={"ticker": "NVDA", "use_portfolio": True})
+        assert run.status_code == 201
+        assert run.json()["options"]["use_portfolio"] is True
+        assert "Current position in NVDA: 12 units" in _trader(client, run.json()["id"])
 
 
 def test_another_account_never_gets_the_account(db_url):
     with _client(db_url) as client:
+        assert client.get("/api/portfolio").status_code == 200
+        assert client.get("/api/review?days=180").status_code == 200
         _second_account(client, db_url)
         for path in ("/api/portfolio", "/api/portfolio/stream", "/api/review", "/api/review?days=180"):
             got = client.get(path)
@@ -41,8 +46,13 @@ def test_another_account_never_gets_the_account(db_url):
         # a run asked with the portfolio is run without it - no position reaches the agents or the events
         run = client.post("/api/runs", json={"ticker": "NVDA", "use_portfolio": True})
         assert run.status_code == 201
-        trader = _trader(client, run.json()["id"])
-        assert "Current position" not in trader and "12 units" not in trader
+        assert run.json()["options"]["use_portfolio"] is False
+        run_id = run.json()["id"]
+        assert _wait_done(client, run_id)["status"] == "done"
+        events = client.get(f"/api/runs/{run_id}/events").json()
+        assert any(event["agent"] == "trader" for event in events)
+        rendered = json.dumps(events)
+        assert "Current position" not in rendered and "12 units" not in rendered
         # the rest of the desk is still theirs to use
         assert client.get("/api/runs").status_code == 200
         assert client.get("/api/holding-watch").json()["holdings"] == []

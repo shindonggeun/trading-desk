@@ -89,6 +89,11 @@ export default function PortfolioPanel() {
   useEffect(() => {
     let cancelled = false;
     let stop = () => {};
+    const clearAccount = () => {
+      setData(null);
+      setFailure(null);
+      setNotOwner(true);
+    };
     const follow = () => {
       if (cancelled) return;
       stop = followPortfolio(
@@ -97,6 +102,7 @@ export default function PortfolioPanel() {
           setFailure(null);
         },
         setStream,
+        clearAccount,
       );
     };
     // Draw the snapshot first; the stream takes over after it. #775 not the owner: no stream at all.
@@ -108,7 +114,7 @@ export default function PortfolioPanel() {
       },
       (e) => {
         if (cancelled) return;
-        if (e instanceof ApiError && e.status === 403) return setNotOwner(true);
+        if (e instanceof ApiError && e.status === 403) return clearAccount();
         setFailure(String(e));
         follow();
       },

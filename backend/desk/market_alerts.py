@@ -32,7 +32,17 @@ from sqlalchemy import insert, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from . import alert_tone, auth, flow_shift, flow_warn, holding_watch, notify, nq_watch, program_flow, sector_movers
+from . import (
+    alert_tone,
+    auth,
+    flow_shift,
+    flow_warn,
+    holding_watch,
+    notify,
+    nq_watch,
+    program_flow,
+    sector_movers,
+)
 from .db import market_alerts, now
 from .futures_flow import KST
 

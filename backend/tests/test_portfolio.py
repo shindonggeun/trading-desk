@@ -193,6 +193,23 @@ def test_portfolio_stream_sends_snapshots_until_the_session_ends(db_url, monkeyp
         assert len(snapshots) == 2      # the stream closed by itself once the session was gone
         assert lines[0] == "retry: 2000"   # 0 s in settings is clamped to 2 s
         assert snapshots[0]["fx"]["usd_krw"] == 1400.0
+        assert client.get("/api/portfolio/stream").status_code == 401
+
+        other = "portfolio-viewer@example.com"
+        engine = make_engine(db_url)
+        Auth(engine, timedelta(hours=1), timedelta(hours=1)).create_user(other, PASSWORD)
+        engine.dispose()
+        assert client.post("/api/auth/login", json={"username": other, "password": PASSWORD}).status_code == 204
+        denied = client.get("/api/portfolio/stream")
+        assert denied.status_code == 403
+        assert denied.json() == {"detail": "only the desk's owner sees the account"}
+
+        assert client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD}).status_code == 204
+        token = client.cookies.get(COOKIE)
+        rounds = 0
+        with client.stream("GET", "/api/portfolio/stream") as response:
+            assert response.status_code == 200
+            assert len([line for line in response.iter_lines() if line.startswith("data: ")]) == 2
 
 
 def test_an_open_portfolio_stream_does_not_keep_the_session_from_going_idle(db_url, monkeypatch):

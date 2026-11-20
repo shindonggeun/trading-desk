@@ -1056,7 +1056,8 @@ class RunManager:
                 # beside the summary (the model's plan on the run's horizon is its own copy)
                 wide = asyncio.ensure_future(all_horizons.build(
                     self.prices, request.ticker, dict(plan), horizon.id, sr,
-                    same_day=request.trade_date == dt.date.today().isoformat()))
+                    same_day=request.trade_date == dt.date.today().isoformat(),
+                    scripted=bool(getattr(self.runner, "fake", False))))
                 try:
                     # #116: the product's playbooks (its own bars), the model's three lines merged when sane
                     try:

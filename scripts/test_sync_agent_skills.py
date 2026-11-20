@@ -28,6 +28,10 @@ class AdaptTest(unittest.TestCase):
     def test_role_path_points_to_codex_roles(self):
         self.assertIn(".agents/roles", sync.adapt("하위 에이전트(.claude/agents)"))
 
+    def test_role_names_become_codex_names_but_skill_names_stay(self):
+        self.assertEqual(sync.adapt("`git-ops` · `senior-implementer` · `issue-start` · `dev-orchestrator`"),
+                         "`git_ops` · `senior_implementer` · `issue-start` · `dev-orchestrator`")
+
 
 class ProfileTest(unittest.TestCase):
     def _write(self, data):
@@ -35,13 +39,19 @@ class ProfileTest(unittest.TestCase):
         path.write_text(json.dumps(data), encoding="utf-8")
         return path
 
-    def test_repo_profiles_load(self):
+    def test_repo_profiles_cover_every_claude_role(self):
         profiles = sync.load_codex_profiles(sync.CODEX_MODEL_CONFIG)
-        self.assertEqual(set(profiles), {"explorer", "git-ops", "design", "work"})
+        self.assertEqual(set(profiles), {p.stem for p in (sync.ROOT / ".claude/agents").glob("*.md")})
 
     def test_bad_effort_is_rejected(self):
         path = self._write({"models": {"fast": "a", "design": "b", "work": "c"},
-                            "reasoning_effort": {"explorer": "low", "git-ops": "low", "design": "huge", "work": "low"}})
+                            "roles": {"explorer": {"model": "fast", "effort": "huge"}}})
+        with self.assertRaises(ValueError):
+            sync.load_codex_profiles(path)
+
+    def test_unknown_tier_is_rejected(self):
+        path = self._write({"models": {"fast": "a", "design": "b", "work": "c"},
+                            "roles": {"explorer": {"model": "turbo", "effort": "low"}}})
         with self.assertRaises(ValueError):
             sync.load_codex_profiles(path)
 

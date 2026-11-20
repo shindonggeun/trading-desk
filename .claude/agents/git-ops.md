@@ -2,7 +2,7 @@
 name: git-ops
 description: trading-desk 의 git·gh 기계적 작업을 저비용 모델로 처리할 때 사용한다. 브랜치·워크트리 생성, 지정한 경로의 스테이징·커밋, 푸시, 이슈·PR 생성·수정, 머지 후 워크트리·브랜치 정리와 이슈 체크박스 갱신이 대상이다. 무엇을 할지는 호출자가 정하며 코드·문서 내용을 판단하거나 고치지 않는다.
 tools: Bash, Read, Grep, Glob, Write
-model: haiku
+model: claude-haiku-5-5
 effort: low
 omitClaudeMd: true
 ---

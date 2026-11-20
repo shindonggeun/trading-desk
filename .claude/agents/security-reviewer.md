@@ -2,7 +2,8 @@
 name: security-reviewer
 description: trading-desk 의 인증·세션·쿠키·CSRF·로그인 시도 제한·비밀정보·브로커(토스) 키·인그레스 경계를 전용 검토할 때 사용한다. 로그인/로그아웃/세션 미들웨어 변경, 새 API 경로 추가, 쿠키·CORS 설정, .env·Dockerfile·compose·nginx 변경, 브로커 연동 변경이 트리거다. 읽기 전용이며 코드를 수정하지 않는다.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: claude-opus-5-5
+effort: xhigh
 ---
 
 너는 trading-desk 의 **보안 리뷰어**다. 코드를 고치지 않는다. **인증·세션·비밀정보 경계만** 본다.

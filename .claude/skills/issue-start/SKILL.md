@@ -4,7 +4,7 @@ description: "trading-desk GitHub 이슈 번호로 작업을 시작한다. 이�
 argument-hint: "<이슈 번호> [--worktree]"
 context: fork
 agent: git-ops
-model: haiku
+model: claude-haiku-5-5
 effort: low
 background: false
 ---

@@ -16,8 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CODEX_MODEL_CONFIG = ROOT / ".codex/agent-models.json"
-FAST_ROLES = {"explorer", "git-ops"}
-DESIGN_ROLES = {"architect"}
+MODEL_TIERS = {"fast", "design", "work"}
 REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 # Codex 전용으로 직접 관리하며 Claude 원본이 없는 스킬(상대 경로).
 STANDALONE_SKILLS: set[str] = set()
@@ -39,18 +38,26 @@ COMMON_REPLACEMENTS = {
 
 # 스킬 호출 표기: Claude `/issue` → Codex `$issue`. 경로(`origin/pr`, `/api/...`)는 건드리지 않는다.
 SKILL_CALL = re.compile(r"(?<![\w./$-])/(" + "|".join(SKILL_NAMES) + r")(?![\w-])")
+# 하이픈이 든 역할 이름만(스킬 `issue-start` · `dev-orchestrator` 는 Codex 에서도 그대로다).
+_HYPHEN_ROLES = sorted((p.stem for p in (ROOT / ".claude/agents").glob("*.md") if "-" in p.stem), key=len, reverse=True)
+ROLE_NAME = re.compile(r"`(" + "|".join(map(re.escape, _HYPHEN_ROLES or ["(?!)"])) + r")`")
 
 ROUTING = """## 모델 라우팅
 
-| 일 | 맡는 곳 | 모델 |
-|----|---------|------|
-| 분류 · 계획 · 구현 · 검증 실행 · 완료 판단 | 메인 세션 | 세션 모델 |
-| 위치 · 호출 흐름을 모르는 탐색 | `explorer` | `.codex/agent-models.json` 의 `fast` |
-| 이슈 시작, 푸시 · PR 생성, 머지 후 정리 | `$issue-start` · `$pr` · `git_ops` | `fast` |
-| 설계 | `architect` | `design` |
-| 검토 | `security_reviewer` · `reviewer` | `work` |
+모델 · 추론 강도의 정본은 `.codex/agent-models.json` 이다(아래는 Claude 쪽과 같은 무게 배치).
+
+| 일 | 맡는 곳 | 모델 등급 · effort |
+|----|---------|--------------------|
+| 분류 · 계획 · 검증 실행 · 완료 판단 | 메인 세션 | 세션 모델 |
+| 위치 · 호출 흐름을 모르는 탐색 | `explorer` | fast · medium |
+| 이슈 시작, 푸시 · PR 생성, diff 확인, 머지 후 정리 | `$issue-start` · `$pr` · `git_ops` | fast · low |
+| 설계 (`ARCHITECTURE`, `T3`) | `architect` | design · max |
+| 단순 구현 (`T0` ~ `T1`) | `implementer` 또는 메인 세션 | work · high |
+| 어려운 구현 · 치명적 버그 · 중요한 기능 (`T2` ~ `T3`) | `senior_implementer` | work · xhigh |
+| 검토 | `security_reviewer` · `reviewer` | work · xhigh |
 
 - 위치를 아는 파일 몇 개 읽기, 커밋 한 번 같은 단일 작업은 메인 세션이 직접 한다. 하위 에이전트는 띄우는 비용이 더 크다.
+- `max` 는 설계에만 쓴다 — 토큰이 많이 들고 과하게 생각하기 쉽다.
 - 하위 에이전트는 대화 기록을 보지 못한다. 경로 · 브랜치 · 이슈 번호 · 검증 결과 · 원하는 출력 형식을 프롬프트에 담는다.
 - Codex 에서는 `spawn_agent(agent_type="explorer", ...)` 처럼 `.codex/agents/` 의 이름(하이픈 대신 밑줄)을 쓴다.
   위임이 허용되지 않았거나 하위 에이전트를 쓸 수 없으면 메인 세션이 `.agents/roles/<역할>.md` 를 읽고 같은 순서로 직접 한다.
@@ -97,6 +104,8 @@ def split_source(path):
 def adapt(text):
     for before, after in COMMON_REPLACEMENTS.items():
         text = text.replace(before, after)
+    # 역할 이름: Claude `git-ops` → Codex `git_ops` (백틱으로 감싼 이름만).
+    text = ROLE_NAME.sub(lambda m: f"`{codex_name(m.group(1))}`", text)
     return SKILL_CALL.sub(r"$\1", text)
 
 
@@ -127,17 +136,21 @@ def role_content(path):
 
 
 def load_codex_profiles(path):
+    """역할마다 (모델 ID, 추론 강도). 역할 목록이 .claude/agents 와 같은지는 expected_files 가 본다."""
     config = json.loads(path.read_text(encoding="utf-8"))
-    models, efforts = config["models"], config["reasoning_effort"]
-    if set(models) != {"fast", "design", "work"}:
+    models, roles = config["models"], config["roles"]
+    if set(models) != MODEL_TIERS:
         raise ValueError("models 는 fast · design · work 를 가져야 한다")
-    if set(efforts) != FAST_ROLES | {"design", "work"}:
-        raise ValueError("reasoning_effort 는 explorer · git-ops · design · work 를 가져야 한다")
     if any(not isinstance(m, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]*", m) for m in models.values()):
         raise ValueError("Codex 모델 ID 형식이 틀렸다")
-    if any(e not in REASONING_EFFORTS for e in efforts.values()):
-        raise ValueError("Codex 추론 강도가 틀렸다")
-    return {key: (models["fast" if key in FAST_ROLES else key], effort) for key, effort in efforts.items()}
+    profiles = {}
+    for role, spec in roles.items():
+        if spec.get("model") not in MODEL_TIERS:
+            raise ValueError(f"{role}: model 은 fast · design · work 중 하나다")
+        if spec.get("effort") not in REASONING_EFFORTS:
+            raise ValueError(f"{role}: Codex 추론 강도가 틀렸다")
+        profiles[role] = (models[spec["model"]], spec["effort"])
+    return profiles
 
 
 def validate_catalog(path, profiles):
@@ -153,18 +166,12 @@ def validate_catalog(path, profiles):
             raise ValueError(f"{role}: {model} 은 {effort} 를 지원하지 않는다")
 
 
-def profile_of(role):
-    if role in FAST_ROLES:
-        return role
-    return "design" if role in DESIGN_ROLES else "work"
-
-
 def codex_agent_content(path, profiles):
     meta, _ = split_source(path)
     body = role_content(path)
     if "'''" in body:
         raise ValueError(f"역할 본문에 ''' 가 있어 TOML 리터럴로 못 쓴다: {path.relative_to(ROOT).as_posix()}")
-    model, effort = profiles[profile_of(path.stem)]
+    model, effort = profiles[path.stem]
     description = json.dumps(adapt(meta["description"]), ensure_ascii=False)
     return (f"# {GENERATED_NOTE}\n"
             f'name = "{codex_name(path.stem)}"\n'
@@ -188,8 +195,10 @@ def expected_files(profiles):
         raise ValueError(f"SKILL_NAMES 를 원본 스킬과 맞춘다: 추가={sorted(names - set(SKILL_NAMES))}, "
                          f"없음={sorted(set(SKILL_NAMES) - names)}")
     roles = sorted((ROOT / ".claude/agents").glob("*.md"))
-    if not FAST_ROLES | DESIGN_ROLES <= {p.stem for p in roles}:
-        raise ValueError("FAST_ROLES · DESIGN_ROLES 의 역할이 .claude/agents 에 없다")
+    role_names = {p.stem for p in roles}
+    if role_names != set(profiles):
+        raise ValueError(f".codex/agent-models.json 의 roles 를 .claude/agents 와 맞춘다: "
+                         f"추가={sorted(role_names - set(profiles))}, 없음={sorted(set(profiles) - role_names)}")
     expected = {ROOT / ".agents/skills" / p.parent.name / "SKILL.md": skill_content(p) for p in skills}
     expected.update({ROOT / ".agents/roles" / p.name: role_content(p) for p in roles})
     expected.update({ROOT / ".codex/agents" / f"{codex_name(p.stem)}.toml": codex_agent_content(p, profiles)

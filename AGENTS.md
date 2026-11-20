@@ -65,7 +65,7 @@ TradingAgents SHA 를 올리면 `_SLOTS` 의 필드 이름부터 확인한다.
 compose `environment` 에는 앱이 읽는 키만 나열한다 — 새 env 키는 compose · `.env.example` 을 같이 고친다.
 
 **인증**: `/api/health` · `/api/auth/login` 을 뺀 **모든 경로**가 세션 쿠키를 요구한다(`api.require_session`, 기본 닫힘).
-계정은 CLI(`python -m desk.cli create-user`)로만 만든다. 규칙 정본은 [docs/security.md](docs/security.md) — 인증을 건드리면 `security-reviewer` 를 부른다.
+계정은 CLI(`python -m desk.cli create-user`)로만 만든다. 규칙 정본은 [docs/security.md](docs/security.md) — 인증을 건드리면 `security_reviewer` 를 부른다.
 
 **DB**: 스키마는 `db.py`(SQLAlchemy Core), 변경은 Alembic 리비전(`desk/migrations/versions/`)으로, 기동 시 `upgrade head` 자동.
 로컬은 SQLite, 서버는 홈랩 PostgreSQL(스키마 `desk`). `tests/test_db.py` 가 리비전과 `db.py` 의 어긋남을 잡는다.

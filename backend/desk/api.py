@@ -76,6 +76,7 @@ from . import (
     positioning,
     prewarm,
     primary_trend,
+    program_flow,
     program_trade,
     projection,
     regime,
@@ -1874,8 +1875,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except ValueError:
             raise HTTPException(422, "date must be YYYY-MM-DD") from None
         points = await asyncio.to_thread(futures_history.intraday, day)
+        # #743 the program turns on the alerts' band (once a day per process)
+        band = (await asyncio.to_thread(program_flow.bands_for, futures_history, day))["band"]
         try:
-            body = flow_intraday.view(points, bucket)
+            body = flow_intraday.view(points, bucket, band)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         return {"supported": getattr(futures, "rest", None) is not None, "date": day.isoformat(),

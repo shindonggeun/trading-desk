@@ -12,7 +12,8 @@ wobbling around zero does not flip back and forth. Turns are judged on the raw s
 bars, so every bucket shows the same turns. Bars sit on the 08:45 derivatives grid; spot trades
 from 09:00, so its first 60-minute bar covers 45 minutes.
 #743 the spot bars carry the KRX program trading net buy as three more classes (``program_total`` ...,
-from #677's snapshots, 100 million KRW), and ``program_turns`` are their turns (desk.program_flow's band).
+from #677's snapshots, 100 million KRW; a minute with them but without Toss' investors still makes a bar),
+and ``program_turns`` are their turns (desk.program_flow: the alerts' band and hours).
 """
 
 from __future__ import annotations
@@ -61,8 +62,8 @@ def premarket(points: list[dict], market: str) -> dict | None:
                        for c in CLASSES}}
 
 
-def series(points: list[dict], market: str) -> list[tuple[datetime, dict]]:
-    """(time, {class: running total}) per snapshot for one market, skipping empty snapshots."""
+def series(points: list[dict], market: str, need: tuple[str, ...] = CLASSES) -> list[tuple[datetime, dict]]:
+    """(time, {class: running total}) per snapshot for one market, skipping the snapshots with none of ``need``."""
     out = []
     for p in points:
         if market == "futures":
@@ -72,7 +73,7 @@ def series(points: list[dict], market: str) -> list[tuple[datetime, dict]]:
             vals = dict((p.get("spot") or {}).get(market) or {})
             prog = (p.get("program") or {}).get(market) or {}
             vals.update({c: prog.get(c.removeprefix("program_")) for c in PROGRAM})
-        if any(vals.get(c) is not None for c in CLASSES):
+        if any(vals.get(c) is not None for c in need):
             out.append((_at(p), vals))
     return out
 
@@ -80,7 +81,7 @@ def series(points: list[dict], market: str) -> list[tuple[datetime, dict]]:
 def bars(points: list[dict], market: str, minutes: int) -> list[dict]:
     """One bar per ``minutes`` that has a snapshot, oldest first."""
     last: dict[datetime, dict] = {}
-    for at, vals in series(points, market):
+    for at, vals in series(points, market, CLASSES if market == "futures" else CLASSES + PROGRAM):
         last[_bucket_end(at, minutes)] = vals         # points are oldest first: the last one wins
     out, prev = [], {}
     total_key = (lambda c: f"{c}_contracts") if market == "futures" else (lambda c: c)
@@ -103,7 +104,7 @@ def turns(points: list[dict], market: str, who: str = "foreign", band: float | N
     """The buy/sell turns of one market's ``who`` (the foreign by default), oldest first."""
     band, out = TURN_BAND[market] if band is None else band, []
     side, pending, run = 0, 0, 0            # side: +1 net buying, -1 net selling, 0 not set yet
-    for at, vals in series(points, market):
+    for at, vals in series(points, market, need=(who,)):
         v = vals.get(who)
         if v is None:
             continue
@@ -121,17 +122,16 @@ def turns(points: list[dict], market: str, who: str = "foreign", band: float | N
     return out
 
 
-def view(points: list[dict], minutes: int) -> dict:
+def view(points: list[dict], minutes: int, program_band: dict | None = None) -> dict:
     """The API body (without the date / support fields): spot and futures bars, and the turns."""
     if minutes not in BUCKETS:
         raise ValueError(f"bucket must be one of {BUCKETS}")
     from . import program_flow
 
     all_turns = [t for m in ("futures", "kospi", "kosdaq") for t in turns(points, m)]
-    program_turns = [t for m in program_flow.MARKETS for who in program_flow.WHO
-                     for t in turns(points, m, who, band=program_flow.DEFAULT[(m, who)], hold=program_flow.HOLD)]
+    program_turns = program_flow.turns(points, program_band)
     return {"bucket_min": minutes,
             "spot": {m: bars(points, m, minutes) for m in ("kospi", "kosdaq")},
             "futures": bars(points, "futures", minutes),
             "turns": sorted(all_turns, key=lambda t: t["t"]),
-            "program_turns": sorted(program_turns, key=lambda t: t["t"])}
+            "program_turns": program_turns}

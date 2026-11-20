@@ -29,6 +29,12 @@ WHO_KO = {"foreign": "외인", "institution": "기관", "individual": "개인"}
 
 POSITIVE = {"buy_turn", "buy_grow", "sell_shrink", "open_sell_reversal"}
 WARNING = {"sell_turn", "open_buy_reversal"}
+HOLDING = {"hold_stop": "warning", "hold_near_stop": "caution", "hold_trend_down": "caution",
+           "hold_take_profit": "positive"}
+HOLDING_READING = {"hold_stop": "손절선을 넘었음 — 미리 정한 대로 정리를 검토(지더라도 작게)",
+                   "hold_near_stop": "손절선이 가까움 — 이탈하면 바로 알림",
+                   "hold_trend_down": "일봉 하락 추세 — 비중 줄이기를 검토",
+                   "hold_take_profit": "박스권 위 끝 — 일부 익절을 검토(박스권은 위에서 팔고 아래에서 버팀)"}
 _DOT = re.compile(r"^[🔴🔵]\s*")
 
 
@@ -36,6 +42,8 @@ def tone(alert: dict) -> str:
     """The tone of an alert in desk.market_alerts' shape (kind, rule, who, severity); a foreign turn of
     desk.flow_alerts reads as kind ``flow_turn`` with its kind as the rule."""
     kind, rule, severity = alert.get("kind"), alert.get("rule"), alert.get("severity")
+    if kind == "holding_alert":          # #694 🔴 손절 · 🟠 주의 · 🟢 익절 고려
+        return HOLDING.get(rule, "caution")
     if kind == "nq_alert":
         return "caution" if rule == "nq_from_high" and severity != "strong" else "warning"
     if alert.get("who") == "individual":
@@ -59,6 +67,8 @@ def reading(alert: dict, t: str | None = None) -> str:
     """One line of what it means, e.g. "외인 매수 유입 — 지수에 우호적"."""
     t = t or tone(alert)
     rule, who = alert.get("rule"), WHO_KO.get(alert.get("who") or "", "")
+    if alert.get("kind") == "holding_alert":
+        return HOLDING_READING.get(alert.get("rule"), "보유 종목 확인")
     if alert.get("kind") == "nq_alert":
         return ("나스닥 선물이 장중 고점에서 밀림 — 미국 기술주 약세 쪽" if t == "caution"
                 else "나스닥 선물 급락 — 국장 시초가 · 반도체에 부담")

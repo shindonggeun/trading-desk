@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 # #571 "morning_brief" the morning brief.
 # #579 "flow_shift" the investors' flow shifts, "nq_alert" the NQ=F selling alarms (desk.market_alerts).
 KINDS = ("flow", "flow_futures", "flow_kospi", "flow_kosdaq", "morning_brief", "flow_shift", "nq_alert", "day_call",
-         "line_signal",
+         "line_signal", "holding_alert",       # #694 each holding's stop / take-profit (desk.holding_watch)
          # #641 the alerts' tone (desk.alert_tone): a channel or a device can turn one off, e.g. only warnings
          "tone_positive", "tone_neutral", "tone_caution", "tone_warning")
 MAX_PER_USER = 10
@@ -150,9 +150,13 @@ class Pusher:
                 sent += 1
         return sent
 
-    def broadcast(self, *kinds: str, payload: dict) -> int:
-        """To every subscription that has all of ``kinds`` on; the number delivered."""
-        return self._deliver(self.store.for_kind(*kinds), payload)
+    def broadcast(self, *kinds: str, payload: dict, user_id: int | None = None) -> int:
+        """To every subscription that has all of ``kinds`` on (#694 ``user_id``: only that user's); the
+        number delivered."""
+        subs = self.store.for_kind(*kinds)
+        if user_id is not None:
+            subs = [s for s in subs if s["user_id"] == user_id]
+        return self._deliver(subs, payload)
 
     def to_user(self, user_id: int, payload: dict) -> int:
         return self._deliver(self.store.of_user(user_id), payload)

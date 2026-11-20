@@ -304,6 +304,15 @@ docker run --rm -it -p 127.0.0.1:1455:1455 -v trading-desk-tradingagents-home:/h
 그다음 `.env.runtime` 에서 `DESK_FAKE_RUNS=false`, 모델 ID(`TRADINGAGENTS_QUICK_THINK_LLM` · `TRADINGAGENTS_DEEP_THINK_LLM`)를 채우고 `scripts/deploy.sh HEAD backend`.
 속도 옵션 env 4개(`TRADINGAGENTS_DEBATE_PARALLEL_FIRST_ROUND` · `TRADINGAGENTS_RISK_PARALLEL_FIRST_ROUND` · `TRADINGAGENTS_QUICK_THINK_REASONING_EFFORT` · `TRADINGAGENTS_DEEP_THINK_REASONING_EFFORT`)는 비워 두면, 보고서 재사용 `DESK_REUSE_REPORTS_MIN` 은 0 이면 꺼진다 — README "ChatGPT 플랜으로 실제 실행".
 
+**토큰 갱신을 여러 프로세스가 함께 쓸 때(#766, 백엔드 나누기)**: 액세스 토큰은 1시간이고, 갱신할 때마다 refresh token 이 바뀐다 —
+이미 쓴 refresh token 을 다시 보내면 OpenAI 가 로그인을 끝낸다. 라이브러리(`tradingagents.llm_clients.chatgpt_auth.access_token`)가
+갱신을 볼륨의 `chatgpt-auth.json.lock` 잠금(`flock`) 안에서만 하고, 잠금을 잡은 뒤 파일을 다시 읽어 다른 프로세스가 이미 갱신했으면
+그 토큰을 쓴다. 새 토큰은 임시 파일에 쓴 뒤 원자적으로 바꾼다. 그래서 api(AI 채팅)와 analyst(분석 · 리포트 · 아침 시황)가 같은 볼륨을
+써도 갱신은 한 번이다 — `backend/tests/test_chatgpt_refresh.py` 가 독립 프로세스 둘과 가짜 OAuth(회전 · 재사용 거절)로 이를 확인하고,
+TradingAgents SHA 를 올려 이 잠금이 빠지면 여기서 깨진다. 전제: 세 컨테이너가 **같은 호스트의 같은 명명 볼륨**
+(`trading-desk-tradingagents-home`, local 드라이버)을 같은 사용자(`app`)로 쓴다. NFS 같은 네트워크 볼륨이나 다른 호스트로 나누면 `flock` 이
+보장되지 않으니 그때는 갱신을 한 프로세스로 모아야 한다.
+
 ## 6. 토스증권 Open API
 
 - `.env.runtime` 에 `DESK_BROKER=toss`, `TOSS_CLIENT_ID` · `TOSS_CLIENT_SECRET`(· `TOSS_ACCOUNT_SEQ`).

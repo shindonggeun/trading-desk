@@ -90,7 +90,8 @@ def test_staged_targets_and_a_rising_wedges_downside_at_its_lowest_trough(monkey
 
 def test_retest_scenarios_in_the_trade_maps_shape(monkeypatch):
     monkeypatch.setattr(patterns, "_stats_cache", {"kinds": {"1d:ascending": {
-        "n": 40, "pullback_pct": 64.0, "retest_win_pct": 48.0, "retest_r_avg": 0.21, "retest_n": 25}}})
+        "n": 40, "pullback_pct": 64.0, "retest_win_pct": 48.0, "retest_r_avg": 0.21, "retest_n": 25,
+        "chase_r_avg": -0.05}}})
     p = _one(_asc())
     sc = p["retest"]["scenarios"]
     assert [s["side"] for s in sc] == ["long", "short"] and all(s["when"] == "if_break" for s in sc)
@@ -106,7 +107,7 @@ def test_retest_scenarios_in_the_trade_maps_shape(monkeypatch):
     p = _one(broke)
     sc = p["retest"]["scenarios"]
     assert len(sc) == 1 and sc[0]["side"] == "long" and sc[0]["when"] == "after_break"
-    assert "되돌림에서 진입" in p["explain"] and "과거 되돌림 64%" in p["explain"]
+    assert "선으로 되돌아온 비율 64%" in p["explain"] and "되돌림 진입 평균 +0.21R" in p["explain"]
 
 
 def test_no_edge_says_reference_only(monkeypatch):

@@ -30,7 +30,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import func, insert, select
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from . import alert_tone, flow_shift, flow_warn, holding_watch, notify, nq_watch, program_flow, sector_movers
 from .db import market_alerts, now, users
@@ -148,7 +148,6 @@ class MarketAlerts:
         self.pusher = pusher
         self._limits: tuple[date, dict] | None = None
         self._warn_history: tuple[date, dict] | None = None
-        self._program_bands: tuple[date, dict] | None = None
         self._lock = threading.Lock()   # #674 two loops dispatch NQ=F alarms: admit and insert one at a time
 
     def list(self, day: str) -> list[dict]:
@@ -178,6 +177,9 @@ class MarketAlerts:
                         who=alert["who"], severity=alert["severity"], at=alert["t"], value=alert.get("value"),
                         prev=alert.get("prev"), text=row["text"], pushed=row["pushed"], created_at=now()))
             except IntegrityError:            # another pass recorded it first (the transaction rolled back)
+                continue
+            except SQLAlchemyError as exc:    # #743 one alert the database refuses never costs the others
+                log.warning("market alert %s/%s not recorded: %s", alert["kind"], alert["rule"], type(exc).__name__)
                 continue
             out.append(row)
             if row["pushed"]:
@@ -223,18 +225,13 @@ class MarketAlerts:
             log.exception("flow warn history failed - floors only today")
             got = {"n": 0, "at": {}}
         self._warn_history = (day, got)
-        try:
-            bands = program_flow.bands(points)
-        except Exception:        # #743 the defaults then
-            log.exception("program bands failed - defaults today")
-            bands = {"band": dict(program_flow.DEFAULT), "days": {}}
-        self._program_bands = (day, bands)
+        program_flow.bands_for(history, day, points)     # #743 the same days, once (the chart reads it too)
 
     def program_bands(self, history, day: date) -> dict:
-        """#743 desk.program_flow.bands over the same days - once a day."""
-        if not (self._program_bands and self._program_bands[0] == day):
+        """#743 desk.program_flow.bands_for - once a day, on the days read above."""
+        if not program_flow.cached(day):
             self._load(history, day)
-        return self._program_bands[1]
+        return program_flow.bands_for(history, day)
 
     def after_snapshot(self, history, day: date | None = None) -> list[dict]:
         """The snapshot loop calls this after each record (desk.futures_history ``history``)."""

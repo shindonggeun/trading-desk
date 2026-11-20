@@ -1,8 +1,9 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { krwShort, price } from "../format";
-import type { FlowInterval, FlowMarket, FlowRecord, FlowSide, InstitutionKind, Investor, MarketFlow } from "../types";
+import type { FlowInterval, FlowMarket, FlowRecord, FlowSide, InstitutionKind, Investor } from "../types";
 import FuturesFlowView from "./FuturesFlowView";
+import PremarketExpected, { type MarketFlowWithExpected } from "./PremarketExpected";
 // #644 오늘 장중(차트 라이브러리 160KB)은 그 탭을 열 때만 받는다 — 대시보드 첫 화면은 현물 탭이라 차트가 없다
 const IntradayFlowView = lazy(() => import("./IntradayFlowView"));
 import { useLivePoll } from "../livePoll";
@@ -266,7 +267,7 @@ function TrendChart({ records, on, interval }: { records: FlowRecord[]; on: Reco
 /** 메인 화면 시장 수급 패널 — 오늘(최신 기간) 4분류 순매수, 기관 세부, 최근 흐름(#78, API #76). */
 export default function MarketFlowPanel() {
   const [prefs, setPrefs] = useState(loadPrefs);
-  const [data, setData] = useState<MarketFlow | null>(null);
+  const [data, setData] = useState<MarketFlowWithExpected | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const liveRef = useRef(true); // 최신 기록이 아직 바뀔 수 있나(잠정)
 
@@ -302,7 +303,7 @@ export default function MarketFlowPanel() {
   }, [spotMarket, prefs.interval]);
   // #764 실시간 스트림의 키는 "KOSPI:1d"(최근 20개 = COUNT) — 장 전 칸(premarket)은 스트림에 없어 받은 값을 둔다
   const flowKeys = spotMarket ? [`${spotMarket}:${prefs.interval}`] : [];
-  const flowPoll = useLivePoll(spotMarket ? `market-flow:${spotMarket}:${prefs.interval}:${COUNT}` : null, () => api.marketFlow(spotMarket!, prefs.interval, COUNT), refreshMs, {
+  const flowPoll = useLivePoll<MarketFlowWithExpected>(spotMarket ? `market-flow:${spotMarket}:${prefs.interval}:${COUNT}` : null, () => api.marketFlow(spotMarket!, prefs.interval, COUNT), refreshMs, {
     onData: (d) => {
       // 서버가 실패를 error 로 주면 마지막 값을 그대로 두고 알림만
       if (d.error && d.records.length === 0) setFailed(d.error);
@@ -322,11 +323,17 @@ export default function MarketFlowPanel() {
     channel: "flow",
     keys: flowKeys,
     apply: (prev, m) => {
-      const next = m.payload as MarketFlow | null;
+      const next = m.payload as MarketFlowWithExpected | null;
       if (!next || !Array.isArray(next.records)) return undefined;
       // 장 전 칸(premarket) · 프로그램매매(program, #677)는 스트림에 없다 — 같은 날의 것만 둔다(밤새 켜 둔 탭이 어제 값을 오늘처럼 보이지 않게)
       const sameDay = !!prev.records[0] && prev.records[0].date === next.records[0]?.date;
-      return { ...next, premarket: next.premarket ?? (sameDay ? prev.premarket : null), program: next.program ?? (sameDay ? prev.program : null) };
+      return {
+        ...next,
+        premarket: next.premarket ?? (sameDay ? prev.premarket : null),
+        program: next.program ?? (sameDay ? prev.program : null),
+        // 예상체결은 수급 기록보다 먼저 올 수 있다. 당일 여부는 값의 KST 시각으로 확인한다.
+        expected: next.expected === undefined ? prev.expected : next.expected,
+      };
     },
     // 장 전(08:00~09:00)은 그 칸이 REST 로만 오니 쉬지 않는다. 키 하나만 조용해져도 5분마다 맞춘다
     pauseWhen: (d) => !!d && d.session !== "pre",
@@ -343,6 +350,9 @@ export default function MarketFlowPanel() {
   const kinds = latest ? KINDS.filter((k) => latest.institution_breakdown[k.key]) : [];
   const kindMax = latest ? Math.max(...kinds.map((k) => Math.abs(latest.institution_breakdown[k.key]!.net)), 1) : 1;
   const marketLabel = TABS.find((m) => m.key === prefs.market)!.label;
+  const expectedIndex = prefs.interval === "1d" && data?.interval === "1d" && data.market === spotMarket
+    ? data.expected?.index
+    : null;
 
   return (
     <section className="card flow" id="market-flow" ref={card} aria-label="시장 수급">
@@ -369,6 +379,7 @@ export default function MarketFlowPanel() {
         </div>
       </div>
 
+      <PremarketExpected index={expectedIndex} />
       {failed && <p className="error small" role="alert">{data ? "갱신하지 못했습니다 — 마지막 값을 보여 줍니다." : `수급을 불러오지 못했습니다. ${failed}`}</p>}
       {data && !data.supported && <p className="muted small">이 브로커는 시장 수급을 제공하지 않습니다.</p>}
       {!data && !failed && <p className="muted small">불러오는 중…</p>}

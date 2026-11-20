@@ -12,7 +12,7 @@ from desk import token_store
 from desk.broker import TossBroker
 from desk.broker.toss import TossError
 from desk.db import broker_tokens, make_engine, migrate
-from desk.futures_flow import KisRest
+from desk.futures_flow import KisError, KisRest
 from desk.token_store import TokenStore
 from tests.test_token_store import Clock
 from tests.test_toss_token import FakeToss
@@ -90,18 +90,21 @@ def test_a_403_asks_for_no_new_token(engine):
 
 
 class FakeKis:
-    def __init__(self):
-        self.issued = 0
+    def __init__(self, refuse=False):
+        self.issued, self.refuse = 0, refuse
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         if request.url.path == "/oauth2/tokenP":
             self.issued += 1
             return httpx.Response(200, json={"access_token": f"k{self.issued}", "expires_in": 86400})
+        if self.refuse:                                   # every token turned away (a key without the rights)
+            return httpx.Response(401, json={"rt_cd": "1", "msg_cd": "EGW00123"})
         return httpx.Response(200, json={"rt_cd": "0", "output": {}})
 
 
-def _kis(fake, engine, role) -> KisRest:
-    return KisRest("key", "secret", "https://kis.test", tokens=TokenStore(engine, role=role, wait_sec=3.0, poll_sec=0.02),
+def _kis(fake, engine, role, clock=None) -> KisRest:
+    store = TokenStore(engine, role=role, wait_sec=3.0, poll_sec=0.02, **({"clock": clock} if clock else {}))
+    return KisRest("key", "secret", "https://kis.test", tokens=store,
                    http=httpx.AsyncClient(transport=httpx.MockTransport(fake)))
 
 
@@ -110,4 +113,24 @@ def test_kis_rest_is_issued_once_and_read_by_another_process(engine):
     assert asyncio.run(_kis(fake, engine, "collector").token()) == "k1"
     assert asyncio.run(_kis(fake, engine, "api").token()) == "k1"
     assert asyncio.run(_kis(fake, engine, "all").token()) == "k1"   # a restart reuses it
+    assert fake.issued == 1
+
+
+def test_kis_tokens_turned_away_back_off_instead_of_an_issue_a_minute(engine):
+    fake, clock = FakeKis(refuse=True), Clock()
+    rest = _kis(fake, engine, "all", clock)
+    for _minute in range(30):                         # half an hour of calls, one a minute
+        with pytest.raises(KisError):
+            asyncio.run(rest.get("/uapi/x", "TR", {}))
+        clock.tick(61)
+    assert fake.issued <= 3                           # 60 s -> 600 s -> 1800 s, as before #688
+
+
+def test_a_toss_401_within_a_minute_of_the_issue_waits_instead_of_issuing_again(engine):
+    fake, clock = FakeToss(), Clock()
+    broker = _toss(fake, engine, "all", clock=clock)
+    asyncio.run(broker.quote("NVDA"))
+    fake.revoke()                                     # another client on the same key, right away
+    with pytest.raises(TossError, match="waiting"):
+        asyncio.run(broker.quote("NVDA"))
     assert fake.issued == 1

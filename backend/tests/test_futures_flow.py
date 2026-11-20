@@ -193,9 +193,9 @@ def test_the_derivatives_session_and_off_reasons():
 
 def test_make_needs_both_keys_and_https():
     s = SimpleNamespace(kis_app_key=KEY, kis_app_secret=SECRET, kis_rest_url="")
-    assert ff.make(s) is not None
-    assert ff.make(SimpleNamespace(kis_app_key="", kis_app_secret=SECRET, kis_rest_url="")) is None
-    assert ff.make(SimpleNamespace(kis_app_key=KEY, kis_app_secret=SECRET, kis_rest_url="http://x")) is None
+    assert ff.make(s, None) is not None
+    assert ff.make(SimpleNamespace(kis_app_key="", kis_app_secret=SECRET, kis_rest_url=""), None) is None
+    assert ff.make(SimpleNamespace(kis_app_key=KEY, kis_app_secret=SECRET, kis_rest_url="http://x"), None) is None
 
 
 def test_api_answers_unsupported_without_keys(db_url):

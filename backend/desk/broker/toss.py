@@ -101,6 +101,15 @@ def _num(value) -> float | None:
         return None
 
 
+def _error_code(r: httpx.Response) -> str:
+    try:
+        err = r.json().get("error")
+    except ValueError:
+        return ""
+    code = err.get("code") if isinstance(err, dict) else err
+    return str(code)[:40] if isinstance(code, str) else ""
+
+
 class TossBroker(Broker):
     name = "toss"
 
@@ -156,9 +165,13 @@ class TossBroker(Broker):
             data={"grant_type": "client_credentials"},
         )
         if r.status_code != 200:
-            raise TossError(f"Toss token request failed {r.status_code}: {r.text[:300]}")
+            # the status and Toss' error code only: the body of a token answer is not ours to log
+            raise TossError(f"Toss token request failed {r.status_code} {_error_code(r)}".rstrip())
         body = r.json()
-        return Issued(body["access_token"], float(body.get("expires_in", 3600)))
+        token = body.get("access_token")
+        if not token or not isinstance(token, str):
+            raise TossError("Toss token request: no token in the answer")
+        return Issued(token, float(body.get("expires_in", 3600)))
 
     async def _shared_token(self, revoked: str | None) -> str:
         """#688 the desk's one token (desk.token_store): issued here only in the minting process, under the

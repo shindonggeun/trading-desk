@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -167,6 +168,9 @@ def test_on_demand_issues_only_what_a_reader_asked_for(engine):
         asyncio.run(reader.get(issue))
     assert asyncio.run(minter.keep(issue, ahead=600, on_demand=True))
     assert asyncio.run(reader.get(issue))[0] == "tok-1"
+    clock.tick(3600 - 300)                                          # 5 minutes left, nobody asked again
+    assert asyncio.run(minter.keep(issue, ahead=600, on_demand=True)) is None
+    assert issue.count == 1                                         # never renewed ahead of time
 
 
 def test_a_token_near_expiry_is_renewed_ahead_and_unknown_names_are_refused(engine):
@@ -178,3 +182,79 @@ def test_a_token_near_expiry_is_renewed_ahead_and_unknown_names_are_refused(engi
     assert asyncio.run(minter.keep(issue, ahead=600)) and issue.count == 2
     with pytest.raises(ValueError):
         _store(engine, "all", clock).slot("other", SECRET)
+
+
+def test_a_reader_uses_a_token_near_its_end_at_once_and_asks_for_the_next(engine):
+    clock, issue = Clock(), Issuer(life=1000)
+    asyncio.run(_store(engine, "collector", clock).slot("toss", SECRET).keep(issue, ahead=600))
+    clock.tick(800)                                                 # 200 s left: under the reader's 300
+    reader = _store(engine, "api", clock, wait_sec=5.0).slot("toss", SECRET)
+    started = time.monotonic()
+    assert asyncio.run(reader.get(issue, ahead=300))[0] == "tok-1"
+    assert time.monotonic() - started < 2.0                         # no wait
+    assert _row(engine)["refresh_for"] == token_hash("tok-1")
+
+
+def test_after_a_wait_in_vain_a_reader_still_reads_the_row(engine, monkeypatch):
+    monkeypatch.setattr(token_store, "FAIL_FAST_SEC", 60.0)
+    clock, issue = Clock(), Issuer()
+    reader = _store(engine, "api", clock, wait_sec=0.05).slot("toss", SECRET)
+    with pytest.raises(TokenUnavailable):
+        asyncio.run(reader.get(issue))
+    asyncio.run(_store(engine, "collector", clock).slot("toss", SECRET).keep(issue, ahead=600))
+    assert asyncio.run(reader.get(issue))[0] == "tok-1"            # inside the fail-fast window
+
+
+def test_a_fresh_token_refused_again_backs_off_longer(engine):
+    clock, issue = Clock(), Issuer(life=20 * 3600)
+    minter = _store(engine, "all", clock).slot("kis_rest", SECRET)
+
+    def gap(refusals):
+        return (60.0, 600.0, 1800.0)[min(refusals, 2)]
+
+    asyncio.run(minter.get(issue, gap=gap))                         # tok-1
+    clock.tick(61)
+    with pytest.raises(TokenUnavailable):                           # refused right after its issue: 600 s
+        asyncio.run(minter.get(issue, refused="tok-1", gap=gap))
+    clock.tick(540)
+    assert asyncio.run(minter.get(issue, refused="tok-1", gap=gap))[0] == "tok-2"
+    clock.tick(61)
+    with pytest.raises(TokenUnavailable):                           # tok-2 refused too: 1800 s now
+        asyncio.run(minter.get(issue, refused="tok-2", gap=gap))
+    clock.tick(1200)
+    with pytest.raises(TokenUnavailable):
+        asyncio.run(minter.get(issue, refused="tok-2", gap=gap))
+    clock.tick(600)
+    assert asyncio.run(minter.get(issue, refused="tok-2", gap=gap))[0] == "tok-3"
+    assert _row(engine, "kis_rest")["refusals"] == 2
+    clock.tick(20 * 3600)                                           # tok-3 served its day: an expiry
+    assert asyncio.run(minter.get(issue, gap=gap))[0] == "tok-4"
+    assert _row(engine, "kis_rest")["refusals"] == 0 and issue.count == 4
+
+
+def test_a_minter_that_outran_its_lease_saves_nothing(engine):
+    clock, fast = Clock(), Issuer()
+    a = _store(engine, "all", clock).slot("toss", SECRET)
+    b = _store(engine, "all", clock).slot("toss", SECRET)
+
+    async def scenario():
+        inside, go = asyncio.Event(), asyncio.Event()
+
+        async def slow():
+            inside.set()                                            # A asked the provider
+            await go.wait()
+            return Issued("slow-token", 3600)
+
+        task = asyncio.create_task(a.get(slow))
+        await inside.wait()
+        clock.tick(token_store.LEASE_SEC + 61)                      # A's lease (and the gap) ran out
+        got_b = await b.get(fast)
+        go.set()
+        with pytest.raises(TokenUnavailable, match="lease lost"):
+            await task
+        return got_b
+
+    assert asyncio.run(scenario())[0] == "tok-1"
+    row = _row(engine)
+    assert row["lease_owner"] is None and row["lease_until"] is None
+    assert asyncio.run(_store(engine, "all", clock).slot("toss", SECRET).get(fast))[0] == "tok-1"   # B's stands

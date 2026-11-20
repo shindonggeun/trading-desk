@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from . import (
+    all_horizons,
     horizons,
     language,
     macro_news,
@@ -1051,6 +1052,11 @@ class RunManager:
                 # it thinks while the product's playbooks and trade map are built
                 closing = asyncio.ensure_future(   # its own copy: the summariser's thread must not see it grow
                     self._consensus(run_id, request, subject.ticker, result.final_state, dict(plan), price, book))
+                # #696 every horizon's map, the instrument's class and the horizon the market suits - no model,
+                # beside the summary (the model's plan on the run's horizon is its own copy)
+                wide = asyncio.ensure_future(all_horizons.build(
+                    self.prices, request.ticker, dict(plan), horizon.id, sr,
+                    same_day=request.trade_date == dt.date.today().isoformat()))
                 try:
                     # #116: the product's playbooks (its own bars), the model's three lines merged when sane
                     try:
@@ -1074,9 +1080,15 @@ class RunManager:
                         log.warning("no trade map for %s: %s", request.ticker, exc)
                     if related:
                         plan["related"] = related
+                    try:
+                        plan.update(await asyncio.wait_for(asyncio.shield(wide), all_horizons.TIMEOUT_SEC * 2))
+                    except Exception as exc:  # noqa: BLE001 - incl. timeout: the run's own horizon stands
+                        log.warning("no other horizons for %s: %s", request.ticker, type(exc).__name__)
+                        plan["horizons"], plan["horizons_note"] = None, f"기간별 계획을 만들지 못했어요({type(exc).__name__})"
                     plan.update(await closing)
                 finally:
                     closing.cancel()   # a no-op once it is done
+                    wide.cancel()
                 watch.mark("consensus")         # the summary, with the playbooks and trade map beside it
                 plan["timing"] = watch.result()
                 if reused:

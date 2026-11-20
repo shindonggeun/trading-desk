@@ -90,7 +90,7 @@ def configure(settings) -> None:
         return
     if len(secret) < 16:
         # without it every value would be readable · writable by the server's other users
-        log.warning("shared cache off: DESK_REDIS_CACHE_KEY is missing or short (docs/deploy.md 12)")
+        log.warning("shared cache off: DESK_REDIS_CACHE_KEY is missing or short (docs/deploy.md 13)")
         use(None, None)
         return
     import redis

@@ -935,17 +935,18 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         async def make_day_calls() -> float:
             # #572: every TICK_SEC - a round inside its window gets its calls (both markets), the closed
-            # sessions get scored; each market's first call of the day is pushed (kind day_call)
+            # sessions get scored; each market's first call of the day is pushed (kind day_call), and
+            # (#619) an intraday round whose stage jumped two or more from the round before
             made = []
             with jobs.part("day_calls", "day calls failed"):
                 made = await asyncio.wait_for(asyncio.to_thread(day_desk.run), 180)
             for row in made:
-                if row["round"] != 1 or row["call"] != "prev_close":
-                    continue
                 try:                     # a failed push loses only itself
+                    push = await asyncio.to_thread(day_desk.push_of, row)
+                    if push is None:     # #619 an intraday round only when its stage jumped two or more
+                        continue
                     await asyncio.to_thread(notify.send, app.state.pusher, "day_call", payload={
-                        "title": f"오늘 {'국장' if row['market'] == 'kr' else '미장'} 방향",
-                        "body": day_calls.push_text(row),
+                        "title": push[0], "body": push[1],
                         "tag": f"day_call-{row['market']}", "url": "/#/day-call", "kind": "day_call"})
                 except Exception:
                     log.exception("day call push failed")

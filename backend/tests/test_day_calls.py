@@ -7,6 +7,7 @@ from sqlalchemy import insert, select
 
 from desk import day_call as dc
 from desk import day_calls, push
+from desk import day_rounds as dr
 from desk.db import day_calls as t
 from desk.db import make_engine, migrate
 from tests.test_day_call import SERIES
@@ -39,7 +40,8 @@ def _candles(symbol, interval, count):
 def desk(db_url):
     migrate(db_url)
     engine = make_engine(db_url)
-    yield day_calls.DayCalls(engine, _candles, models={"kr": _model("kr"), "us": _model("us")}, reports={})
+    yield day_calls.DayCalls(engine, _candles, models={"kr": _model("kr"), "us": _model("us")}, reports={},
+                             round_models={}, round_reports={})
     engine.dispose()
 
 
@@ -92,7 +94,7 @@ def test_the_views_the_record_and_the_morning_line(desk):
     desk.score(_kst(DAY, 16, 5))
     now = _kst(DAY, 17)
     v = desk.view("kr", now)
-    assert v["date"] == DAY.isoformat() and v["today"] is True and set(v["calls"]) == {"prev_close", "open"}
+    assert v["date"] == DAY.isoformat() and v["today"] is True and set(v["calls"]) == {"prev_close", "open", "to_close"}
     pc = v["calls"]["prev_close"]
     assert pc["round"] == 2 and [e["round"] for e in v["rounds"]["prev_close"]] == [1, 2]
     assert pc["call_label"] == "전일 종가 대비" and pc["measured_from"] == "prev_close" and pc["outcome"]
@@ -145,7 +147,7 @@ def test_the_api_needs_a_session_checks_the_market_and_answers_empty(db_url):
         client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
         assert client.get("/api/day-call?market=jp").status_code == 422
         body = client.get("/api/day-call?market=us").json()
-        assert body["calls"] == {"prev_close": None, "open": None} and body["note"]
+        assert body["calls"] == {"prev_close": None, "open": None, "to_close": None} and body["note"]
         assert client.get("/api/day-call/history?market=kr&days=9999").json()["days"] == 365
         stats = client.get("/api/day-call/stats?market=kr").json()
         assert stats["calls"]["prev_close"]["n"] == 0 and stats["calls"]["open"]["hold_rate"] is None
@@ -233,7 +235,7 @@ def test_a_round_that_cannot_be_called_yet_is_tried_every_ten_minutes_not_every_
         return []
 
     desk.candles = empty
-    per_fetch = len(dc.SYMBOLS) + len(dc.HOURLY)
+    per_fetch = len(dc.SYMBOLS) + len(dc.HOURLY) + len(dr.HOURLY)   # #619 the two indices hourly too
     assert desk.run(_kst(DAY, 7, 32)) == [] and len(asked) == per_fetch
     for minute in (34, 36, 38, 40):                  # the loop's ticks inside the retry interval
         desk.run(_kst(DAY, 7, minute))
@@ -258,4 +260,4 @@ def test_the_scoring_right_after_the_calls_reuses_their_bars(desk):
     n = len(asked)
     desk.run(_et(DAY, 10, 5))                                    # the US round 2, then the Korean scoring
     desk.score(_et(DAY, 10, 5) + timedelta(seconds=20))
-    assert len(asked) == n + len(dc.SYMBOLS) + len(dc.HOURLY)    # one fetch for both
+    assert len(asked) == n + len(dc.SYMBOLS) + len(dc.HOURLY) + len(dr.HOURLY)    # one fetch for both

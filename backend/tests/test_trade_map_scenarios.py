@@ -1,5 +1,7 @@
 """#652 the trade map's two entry scenarios per side: breakout and support, stops where the reason breaks."""
 
+import pytest
+
 from desk import trade_map, trade_map_record
 
 # KORU as in the issue: 6.93 now, a strong support zone 6.51 just under it, the long trigger 7.73, a far
@@ -27,7 +29,7 @@ def test_koru_gets_a_support_entry_near_the_price_beside_the_breakout():
     tm = trade_map.build(HOLD, KORU)
     sup = _sc(tm, "long", "support")
     assert sup["entry_type"] == "now" and sup["entry"] == 6.93          # 6.93 is within half an ATR of 6.51
-    assert sup["stop"] == 6.1                                           # under the zone's far edge (6.4) by 0.5 ATR
+    assert sup["stop"] == pytest.approx(6.1)                                           # under the zone's far edge (6.4) by 0.5 ATR
     assert sup["targets"][0]["price"] == 7.6 and sup["rr"] == round((7.6 - 6.93) / (6.93 - 6.1), 2)
     assert sup["level"] == 6.51 and sup["strength"] == 11.1 and "스윙 저점" in sup["basis"]
     brk = _sc(tm, "long", "breakout")
@@ -60,8 +62,8 @@ def test_a_support_further_away_is_a_limit_above_it_and_low_reward_is_flagged():
 def test_a_short_mirrors_with_the_nearest_strong_resistance():
     tm = trade_map.build(HOLD, KORU)
     res = _sc(tm, "short", "support")
-    assert res["level"] == 7.6 and res["entry_type"] == "limit" and res["entry"] == round(7.6 - 0.15, 2)
-    assert res["stop"] == round(7.6 + 0.3, 2) and res["targets"][0]["price"] < res["entry"]
+    assert res["level"] == 7.6 and res["entry_type"] == "limit" and res["entry"] == pytest.approx(7.6 - 0.15)
+    assert res["stop"] == pytest.approx(7.6 + 0.3) and res["targets"][0]["price"] < res["entry"]
 
 
 def test_a_plan_with_a_side_gets_that_sides_scenarios_only():
@@ -223,3 +225,37 @@ def test_a_gap_on_a_later_bar_and_old_files_without_bar_indexes():
             "r": 1.0, "exit": "target"}]
     assert bt.summarize(old, {})["long:support:range"]["n_indep"] is None    # not silently n
     assert trade_map_record._n({"n": 5, "n_indep": None}) == 5
+
+
+@pytest.mark.parametrize(("side", "sign"), [("long", 1), ("short", -1)])
+@pytest.mark.parametrize(("entry", "atr"), [(1000.6, 0.2), (0.1006, 0.0002)])
+def test_trade_map_keeps_precision_for_ladder_and_scenario_risk(side, sign, entry, atr):
+    sr = {"reference_price": entry - sign * atr, "atr": atr, "levels": [
+        {"price": entry - sign * atr, "strength": 4, "basis": "진입 근거"},
+    ]}
+    tm = trade_map.build({f"{side}_trigger": entry}, sr)
+    steps = {s["role"]: s for s in tm["maps"][0]["steps"]}
+    scenario = _sc(tm, side, "breakout")
+    stop = entry - sign * 1.5 * atr
+    assert steps["entry"]["price"] == scenario["entry"] == entry
+    assert steps["stop"]["price"] == scenario["stop"] == pytest.approx(stop)
+    assert steps["target1"]["then_stop"] == entry
+    assert tm["atr"] == atr
+    assert scenario["stop_atr"] == 1.5
+    assert trade_map.scenarios(sr, sr["reference_price"], atr, side, entry)[0]["entry"] == (
+        float(round(entry)) if entry >= 1000 else round(entry, 2)
+    )
+
+
+@pytest.mark.parametrize(("side", "sign"), [("long", 1), ("short", -1)])
+@pytest.mark.parametrize(("entry", "atr"), [(1000.6, 0.2), (0.1006, 0.0002)])
+def test_ladder_keeps_a_clamped_or_explicit_stop_at_its_calculated_price(side, sign, entry, atr):
+    sr = {"levels": [{"price": entry - sign * 10 * atr, "strength": 4}]}
+    computed = trade_map.side_map(side, entry, None, None, sr, atr)
+    stop = next(s for s in computed["steps"] if s["role"] == "stop")
+    assert stop["price"] == pytest.approx(entry - sign * 3 * atr)
+    explicit_price = entry - sign * 5 * atr
+    custom = trade_map.side_map(side, entry, explicit_price, None, sr, atr)
+    explicit_stop = next(s for s in custom["steps"] if s["role"] == "stop")
+    assert explicit_stop["source"] == "plan"
+    assert explicit_stop["price"] == explicit_price

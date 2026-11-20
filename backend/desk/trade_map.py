@@ -75,7 +75,7 @@ def _zones(cands: list[dict], atr: float, up: bool) -> list[dict]:
 
 def _step(role: str, zone: dict | None, price: float, action: str, vp: dict | None, **extra) -> dict:
     z = zone or {"source": "atr", "sources": ["atr"], "strength": None, "basis": None}
-    return {"role": role, "price": _round(price), "source": z["source"], "sources": z["sources"],
+    return {"role": role, "price": price if role in ("entry", "stop") else _round(price), "source": z["source"], "sources": z["sources"],
             "strength": z["strength"], "basis": z["basis"], "volume": volume_profile.density(vp, price),
             "action": action, **extra}
 
@@ -139,7 +139,7 @@ def side_map(side: str, entry: float, stop: float | None, target: float | None, 
                                  gap_thin=volume_profile.gap_thin(vp, p1, p2)))
     if p1 is not None:
         targets_out.append(_step("target1", t1, p1, "take_partial", vp, share=50 if heavy else 33, heavy=heavy,
-                                 then_stop=_round(entry), rr=rr(p1)))
+                                 then_stop=entry, rr=rr(p1)))
     steps = [
         *targets_out,
         _step("entry", {"source": origin, "sources": [origin], "strength": None,
@@ -204,25 +204,27 @@ def _targets(cands: list[dict], entry: float, atr: float, sign: int, risk: float
 
 
 def _scenario(side: str, kind: str, entry: float, entry_type: str, stop: float, level: dict | None,
-              cands: list[dict], ref: float, atr: float) -> dict | None:
+              cands: list[dict], ref: float, atr: float, *, precise_prices: bool) -> dict | None:
     sign = 1 if side == "long" else -1
     risk = abs(entry - stop)
     if risk <= 0 or entry <= 0 or stop <= 0:
         return None
     targets = _targets(cands, entry, atr, sign, risk)
     rr = targets[0]["rr"] if targets else None
-    return {"side": side, "kind": kind, "entry": _round(entry), "entry_type": entry_type, "stop": _round(stop),
+    return {"side": side, "kind": kind, "entry": entry if precise_prices else _round(entry),
+            "entry_type": entry_type, "stop": stop if precise_prices else _round(stop),
             "stop_atr": round(risk / atr, 2), "stop_pct": round(risk / entry * 100, 1),
             "targets": targets, "rr": rr, "low_rr": rr is None or rr < LOW_RR,
             "distance_pct": round((entry / ref - 1) * 100, 2) if ref else None,
             "level": _round(level["price"]) if level else None, "basis": (level or {}).get("basis")}
 
 
-def scenarios(sr: dict | None, ref: float, atr: float, side: str, trigger: float | None = None) -> list[dict]:
+def scenarios(sr: dict | None, ref: float, atr: float, side: str, trigger: float | None = None,
+              *, precise_prices: bool = False) -> list[dict]:
     """#652 two ways into ``side``: a **breakout** past the nearest resistance (support for a short) - the
     trigger when the plan has one - its stop back under the broken level; and a **support** entry at the
     nearest strong support (resistance) within SUPPORT_REACH_ATR, its stop past that zone's far edge. Every
-    stop at most MAX_STOP_ATR from its entry. Plan arithmetic on the chart's levels, not a forecast."""
+    stop at most MAX_STOP_ATR from its entry. Keep the original rounded prices for backtest callers."""
     sign = 1 if side == "long" else -1
     cands = _candidates(sr, None)
     out = []
@@ -235,7 +237,7 @@ def scenarios(sr: dict | None, ref: float, atr: float, side: str, trigger: float
     if entry is not None:
         zone, stop, level = _breakout_stop(cands, entry, atr, sign, ref)
         broken = {"price": level, "basis": (zone or {}).get("basis")} if level is not None else None
-        sc = _scenario(side, "breakout", entry, "stop", stop, broken, cands, ref, atr)
+        sc = _scenario(side, "breakout", entry, "stop", stop, broken, cands, ref, atr, precise_prices=precise_prices)
         if sc:
             out.append(sc)
     # support (resistance for a short): the nearest strong one on the far side of the price, or the price in it
@@ -253,7 +255,8 @@ def scenarios(sr: dict | None, ref: float, atr: float, side: str, trigger: float
             entry, how = edge + sign * ZONE_ENTRY_ATR * atr, "limit"
         stop = _clamp_stop(entry, far - sign * SUPPORT_STOP_ATR * atr, atr, sign)
         basis = " · ".join(dict.fromkeys(c["basis"] for c in zone if c["basis"])) or None
-        sc = _scenario(side, "support", entry, how, stop, {"price": top["price"], "basis": basis}, cands, ref, atr)
+        sc = _scenario(side, "support", entry, how, stop, {"price": top["price"], "basis": basis},
+                       cands, ref, atr, precise_prices=precise_prices)
         if sc:
             sc["strength"] = max((c["strength"] or 0) for c in zone) or None
             out.append(sc)
@@ -297,10 +300,10 @@ def build(plan: dict, sr: dict | None) -> dict | None:
         trigger = plan.get(f"{s_}_trigger")
         if side and entry is not None:
             trigger = entry if plan.get("entry_type") == "stop" else None
-        found += scenarios(sr, ref, atr, s_, trigger) if ref else []
+        found += scenarios(sr, ref, atr, s_, trigger, precise_prices=True) if ref else []
     # the record is of daily bars (swing): a scalp · intraday · short-swing run gets none of it
     record = trade_map_record.lookup(regime, found, horizon=plan.get("horizon") or trade_map_record.HORIZON)
-    return {"maps": maps, "reference_price": _round(ref) if ref else None, "atr": _round(atr),
+    return {"maps": maps, "reference_price": ref if ref else None, "atr": atr,
             "volume_profile": bool(vp), "levels": bool((sr or {}).get("levels")),
             "scenarios": found, "regime": regime, "cautions": cautions(sr, sides), **record}
 

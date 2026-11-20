@@ -266,7 +266,8 @@ export const api = {
   runExplain: (id: string, refresh = false) =>
     call<RunExplain>(`/api/runs/${encodeURIComponent(id)}/explain${refresh ? "?refresh=1" : ""}`),
   createRun: (body: NewRun) => call<Run>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
-  portfolio: () => call<Portfolio>("/api/portfolio"),
+  // 계좌 응답은 진행 중인 GET과 공유하지 않고 현재 세션으로 다시 확인한다.
+  portfolio: () => request<Portfolio>("/api/portfolio", { cache: "no-store" }),
   regime: () => call<RegimeSnapshot>("/api/regime"),
   /** #115 거시 · 정책 뉴스 흐름 — 서버가 30분마다 새로 모은다. */
   macroBrief: () => call<MacroBrief>("/api/macro/brief"),
@@ -304,7 +305,7 @@ export const api = {
   futuresCandles: (session?: FuturesSession, interval: FuturesInterval = "1m") =>
     call<FuturesCandles>(`/api/market/futures/candles?interval=${interval}${session ? `&session=${session}` : ""}`),
   /** 매매 복기(백엔드 desk/review.py): 최근 days 일 체결을 그때의 분석 계획과 묶는다. 읽기 전용. */
-  review: (days: number) => call<ReviewResponse>(`/api/review?days=${days}`),
+  review: (days: number) => request<ReviewResponse>(`/api/review?days=${days}`, { cache: "no-store" }),
   quote: (ticker: string) =>
     call<{ ticker: string; price: number; currency: string | null; source: string; fetched_at: string }>(
       `/api/quote?ticker=${encodeURIComponent(ticker)}`,

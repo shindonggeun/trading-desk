@@ -23,7 +23,8 @@ reading, and it is pushed under its kind and ``tone_<tone>``.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+import threading
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import insert, select
 from sqlalchemy.engine import Engine
@@ -54,7 +55,10 @@ def _session(alert: dict) -> str:
 def admit(alert: dict, day: list[dict], before: list[dict] = ()) -> bool:
     """Whether ``alert`` goes through, given the day's alerts so far (any order) and, for NQ=F's
     once-a-session rule, the KST day before's."""
-    market = [a for a in day if a["kind"] == alert["kind"] and a["market"] == alert["market"]]
+    # #674 NQ=F's waits look across the KST midnight too (10:00 ET in winter - QQQ's busiest hour):
+    # the 1-minute alarm at 23:58 and Yahoo's late one at 00:00 are the same move
+    pool = [*day, *before] if alert["kind"] == "nq_alert" else day
+    market = [a for a in pool if a["kind"] == alert["kind"] and a["market"] == alert["market"]]
     same = [a for a in market if a["who"] == alert["who"]]
     if any(a["rule"] == alert["rule"] and a["t"] == alert["t"] for a in same):
         return False
@@ -97,6 +101,7 @@ class MarketAlerts:
         self.engine = engine
         self.pusher = pusher
         self._limits: tuple[date, dict] | None = None
+        self._lock = threading.Lock()   # #674 two loops dispatch NQ=F alarms: admit and insert one at a time
 
     def list(self, day: str) -> list[dict]:
         with self.engine.connect() as conn:
@@ -115,7 +120,7 @@ class MarketAlerts:
             row = {**alert, "trade_date": day, "text": text(alert), "pushed": alert["severity"] in PUSHED,
                    "tone": alert_tone.tone(alert)}
             try:
-                with self.engine.begin() as conn:
+                with self._lock, self.engine.begin() as conn:
                     before = (self.list_in(conn, (date.fromisoformat(day) - timedelta(days=1)).isoformat())
                               if alert["kind"] == "nq_alert" else [])
                     if not admit(alert, self.list_in(conn, day), before):
@@ -159,5 +164,10 @@ class MarketAlerts:
         return self.dispatch(flow_shift.judge(points, self.limits(history, day)))
 
     def nq_pass(self, bars: list[dict], now: datetime | None = None) -> list[dict]:
-        """The NQ=F loop calls this with Yahoo's 5-minute bars."""
-        return self.dispatch(nq_watch.judge(bars, now))
+        """The NQ=F loop calls this with Yahoo's 5-minute bars: since #674 the late check - a move the
+        1-minute pass (desk.nq_fast) already sent is held back by the waits above (same rules)."""
+        now = now or datetime.now(UTC)
+        got = nq_watch.judge(bars, now)
+        for a in got:
+            a.update(source="yahoo", delay_sec=max(0, round((now - datetime.fromisoformat(a["t"])).total_seconds())))
+        return self.dispatch(got)

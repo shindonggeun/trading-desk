@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { api, followPortfolio, type StreamState } from "../api";
+import { api, followPortfolio, type HoldingLine, type StreamState } from "../api";
+import { HoldingBadge, useHoldingLines } from "../holdingWatch";
 import { type Currency, money, percent, price, time, tone } from "../format";
 import type { Money, Portfolio, PortfolioRow } from "../types";
 
@@ -47,7 +48,7 @@ function Flash({ value, className = "", children }: { value: unknown; className?
   );
 }
 
-function Row({ row, currency, view }: { row: PortfolioRow; currency: Currency; view: "price" | "value" }) {
+function Row({ row, currency, view, line }: { row: PortfolioRow; currency: Currency; view: "price" | "value"; line?: HoldingLine }) {
   const pnl = pick(row.pnl, currency);
   const native = row.currency === "USD" ? "USD" : "KRW";
   return (
@@ -57,6 +58,7 @@ function Row({ row, currency, view }: { row: PortfolioRow; currency: Currency; v
         <div className="muted small">
           {row.yahoo_ticker} · {row.quantity.toLocaleString()}주 · 평단 {money(row.average_price, native)}
         </div>
+        {line && <HoldingBadge line={line} />}
       </div>
       <div className="num">
         {/* key: a toggle remounts the cell, so only data changes blink */}
@@ -117,6 +119,7 @@ export default function PortfolioPanel() {
   const totalValue = total ? (currency === "KRW" ? total.krw : total.usd) : null;
   const totalPnl = total ? (currency === "KRW" ? total.pnl_krw : total.pnl_usd) : null;
   const groups = data ? Object.entries(data.groups) : [];
+  const lines = useHoldingLines();       // #714 보유 종목 알림(#694)이 켜져 있으면 장세 · 손절선까지 %
 
   return (
     <section className="card pf">
@@ -162,7 +165,7 @@ export default function PortfolioPanel() {
               <div className="muted small pf-group-title">{GROUPS[market] ?? market}</div>
               <ul className="holdings">
                 {rows.map((row) => (
-                  <Row key={row.symbol} row={row} currency={currency} view={view} />
+                  <Row key={row.symbol} row={row} currency={currency} view={view} line={lines.get(row.yahoo_ticker)} />
                 ))}
               </ul>
             </div>

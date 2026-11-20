@@ -37,6 +37,7 @@ export function saveToastMarkets(m: ToastMarkets) {
 /** #573 수급 전향 말고 받을 알림 종류 — 아침 시황(#571) · 오늘 방향(#572), #581 수급 흐름 변화 · 나스닥 선물 이상 징후(#579).
  *  이 브라우저에 기억하고 기본은 켬. 수급 흐름 · 나스닥 선물은 앱 안 토스트에도 같이 적용된다. */
 export type ExtraKinds = { flow_shift: boolean; flow_warn: boolean; nq_alert: boolean; morning_brief: boolean; day_call: boolean; line_signal: boolean;
+  holding_alert: boolean;
   tone_positive: boolean; tone_neutral: boolean; tone_caution: boolean; tone_warning: boolean };
 const TONE_KEYS = ["tone_positive", "tone_neutral", "tone_caution", "tone_warning"] as const;
 export const EXTRA_KINDS: { key: keyof ExtraKinds; label: string; note: string }[] = [
@@ -46,6 +47,7 @@ export const EXTRA_KINDS: { key: keyof ExtraKinds; label: string; note: string }
   { key: "morning_brief", label: "아침 시황", note: "평일 오전 7시쯤" },
   { key: "day_call", label: "오늘 방향", note: "국장 · 미장 판정이 나올 때" },
   { key: "line_signal", label: "차트 선", note: "고른 종목 · 시간봉의 채널 · 추세선 닿음 · 이탈(설정 → 차트 선 알림에서 켬)" },
+  { key: "holding_alert", label: "보유 종목 손절 · 익절", note: "보유 종목이 손절선에 가까워지거나 넘을 때, 하락 추세로 바뀔 때, 박스권 위 끝일 때(설정 → 보유 종목 알림에서 켬, 데스크 주인 기기로만)" },
   // #642 수급 알림의 뜻(#641) — 끄면 그 등급은 보내지 않는다(예: 경고만 받기)
   { key: "tone_positive", label: "◎ 호재", note: "외인 · 기관 매수 전향 · 확대, 매도 축소" },
   { key: "tone_neutral", label: "· 참고", note: "개인 수급 · 작은 움직임" },
@@ -59,9 +61,10 @@ export function loadExtraKinds(): ExtraKinds {
     const raw = JSON.parse(localStorage.getItem(EXTRA_KEY) ?? "{}");
     return { flow_shift: raw.flow_shift !== false, flow_warn: raw.flow_warn !== false, nq_alert: raw.nq_alert !== false,
              morning_brief: raw.morning_brief !== false, day_call: raw.day_call !== false, line_signal: raw.line_signal !== false,
+             holding_alert: raw.holding_alert !== false,
              ...Object.fromEntries(TONE_KEYS.map((k) => [k, raw[k] !== false])) as Record<(typeof TONE_KEYS)[number], boolean> };
   } catch {
-    return { flow_shift: true, flow_warn: true, nq_alert: true, morning_brief: true, day_call: true, line_signal: true,
+    return { flow_shift: true, flow_warn: true, nq_alert: true, morning_brief: true, day_call: true, line_signal: true, holding_alert: true,
              tone_positive: true, tone_neutral: true, tone_caution: true, tone_warning: true };
   }
 }

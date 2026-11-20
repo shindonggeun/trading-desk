@@ -2952,3 +2952,19 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 
 /* #701 긴 추세선 카드 — 시험 중 · 이탈을 먼저 한 줄로 */
 .line-card-alert { margin: 4px 0; padding: 4px 8px; border-radius: 6px; background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); }
+
+/* #714 보유 종목 알림(#694) — 장세 배지 · 손절선까지 %, 설정 */
+.hw-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; margin-top: 2px; }
+.hw-regime { font-weight: 600; padding: 0 6px; border-radius: var(--radius-s, 6px); background: var(--surface-2); color: var(--text); }
+.hw-regime-trend_up { color: var(--long); }
+.hw-regime-trend_down { color: var(--short); }
+.hw-stop { color: var(--muted); }
+.hw-stop-near { color: var(--short); font-weight: 600; }
+.hw-tp { color: var(--long); }
+.holding-watch h3 { margin: 12px 0 6px; }
+.hw-loss { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.hw-loss input { width: 5.5em; }
+.hw-tickers { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.hw-tickers li { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+.hw-tickers .hw-line { flex-basis: 100%; }
+.hw-ticker-on { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }

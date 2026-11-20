@@ -938,6 +938,9 @@ export interface FlowRecord {
   held?: boolean;
 }
 
+/** #677 외국인 · 기관 · 개인 순매수(억원, 없으면 null) */
+export type FlowClassNets = { foreign: number | null; institution: number | null; individual: number | null };
+
 /** GET /api/market/flow (backend desk/market_flow.py, #76) — records 는 최신순. */
 export interface MarketFlow {
   market: FlowMarket;
@@ -952,6 +955,8 @@ export interface MarketFlow {
   changed_at?: string | null;
   /** #673 pre: 08:00~09:00 장 시작 전 거래가 들어간 값 · regular: 정규장 · closed. */
   session?: "pre" | "regular" | "closed";
+  /** #677 1d 만: 오늘 09:00 전 현물 수급(프리장 스냅숏, 억원) — 첫 값 · 마지막 값 · 변화. 아직 없으면 null */
+  premarket?: { from: string; to: string; n: number; first: FlowClassNets; last: FlowClassNets; change: FlowClassNets } | null;
   /** #645 원천 시각(source_updated_at = max(토스 updatedAt, changed_at)) · 확인 시각(fetched_at). */
   freshness?: FlowFreshness;
 }

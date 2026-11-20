@@ -44,6 +44,8 @@ def tone(alert: dict) -> str:
     """The tone of an alert in desk.market_alerts' shape (kind, rule, who, severity); a foreign turn of
     desk.flow_alerts reads as kind ``flow_turn`` with its kind as the rule."""
     kind, rule, severity = alert.get("kind"), alert.get("rule"), alert.get("severity")
+    if kind == "sector_mover":           # #680 a sector's slump / jump
+        return "warning" if rule == "sector_drop" else "positive"
     if kind == "holding_alert":          # #694 🔴 손절 · 🟠 주의 · 🟢 익절 고려
         return HOLDING.get(rule, "caution")
     if kind == "nq_alert":
@@ -71,6 +73,9 @@ def reading(alert: dict, t: str | None = None) -> str:
     """One line of what it means, e.g. "외인 매수 유입 — 지수에 우호적"."""
     t = t or tone(alert)
     rule, who = alert.get("rule"), WHO_KO.get(alert.get("who") or "", "")
+    if alert.get("kind") == "sector_mover":
+        return ("섹터 전체보다 몇 종목이 끌어내렸는지 — 주범 종목의 원인부터 확인" if alert.get("rule") == "sector_drop"
+                else "몇 종목이 섹터를 끌어올렸는지 — 주역 종목의 원인부터 확인")
     if alert.get("kind") == "holding_alert":
         return HOLDING_READING.get(alert.get("rule"), "보유 종목 확인")
     if alert.get("kind") == "nq_alert":

@@ -31,7 +31,7 @@ from sqlalchemy import func, insert, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from . import alert_tone, flow_shift, flow_warn, holding_watch, notify, nq_watch
+from . import alert_tone, flow_shift, flow_warn, holding_watch, notify, nq_watch, sector_movers
 from .db import market_alerts, now, users
 from .futures_flow import KST
 
@@ -43,17 +43,19 @@ DAILY_MAX = 10
 STRONG_EXTRA = 3
 ONCE_A_DAY = {"open_buy_reversal", "open_sell_reversal", "nq_from_high",
               # #694 each holding rule once a KST day per holding (market = the ticker)
-              "hold_stop", "hold_near_stop", "hold_trend_down", "hold_take_profit"}
+              "hold_stop", "hold_near_stop", "hold_trend_down", "hold_take_profit",
+              # #680 a sector's big day once a session per direction
+              "sector_drop", "sector_jump"}
 NO_COOLDOWN = {"buy_turn", "sell_turn", "hold_stop"}      # a stop is said at once, past the cooldown
 UNCAPPED = {"hold_stop"}                          # #694 and past the day's cap: other holdings' cautions never hold it
-CROSS_MIDNIGHT = {"nq_alert", "holding_alert"}    # the waits read the KST day before too (a US session spans it)
+CROSS_MIDNIGHT = {"nq_alert", "holding_alert", "sector_mover"}    # the waits read the KST day before too (a US session spans it)
 PUSHED = {"caution", "strong"}
 HISTORY_DAYS = 20                 # trading days of snapshots behind the flow thresholds
 ALERT_URL = "/#/market"
 URLS = {"holding_alert": "/#/"}                  # #694 the dashboard's holdings
 OWNER_ONLY = {"holding_alert"}                   # #694 the owner's holdings: web push to the owner's devices only
 TITLE = {"flow_shift": "수급 흐름 변화", "flow_warn": "수급 경고", "nq_alert": "나스닥 선물 이상 징후",
-         "holding_alert": "보유 종목 손절 · 익절"}
+         "holding_alert": "보유 종목 손절 · 익절", "sector_mover": "섹터 급등락 주범"}
 
 
 def _session(alert: dict) -> str:
@@ -85,6 +87,10 @@ def admit(alert: dict, day: list[dict], before: list[dict] = ()) -> bool:
         elif alert["kind"] == "holding_alert":     # #694 once a day of the holding's own market
             earlier = [a for a in same if a["rule"] == alert["rule"]]
             if any(holding_watch.session_day(a) == holding_watch.session_day(alert) for a in earlier):
+                return False
+        elif alert["kind"] == "sector_mover":      # #680 once a session of the sector's own market
+            earlier = [a for a in same if a["rule"] == alert["rule"]]
+            if any(sector_movers.session_day(a) == sector_movers.session_day(alert) for a in earlier):
                 return False
         elif any(a["rule"] == alert["rule"] for a in same):
             return False
@@ -125,7 +131,7 @@ def _tag(alert: dict) -> str:
 def text(alert: dict) -> str:
     """The stored and pushed text: the tone's mark, the rule's words, one line of reading (#641)."""
     words = {"nq_alert": nq_watch.text, "flow_warn": flow_warn.text,
-             "holding_alert": holding_watch.text}.get(alert["kind"], flow_shift.text)(alert)
+             "holding_alert": holding_watch.text, "sector_mover": sector_movers.text}.get(alert["kind"], flow_shift.text)(alert)
     return alert_tone.headline(alert, words)
 
 

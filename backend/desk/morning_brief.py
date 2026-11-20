@@ -110,6 +110,7 @@ class Sources:
     extra: Callable[[], list[dict]] | None = None
     krx: Callable[[], dict | None] | None = None
     sectors: Callable[[], dict | None] | None = None
+    movers: Callable[[], Awaitable[list[dict]]] | None = None   # #680 the US sectors' movers (desk.sector_movers)
 
 
 def day_call_source() -> Callable[[], dict | None] | None:
@@ -157,6 +158,7 @@ async def collect(src: Sources, now: datetime | None = None) -> dict:
     raw["extra"] = (await guard("calendar.json", asyncio.to_thread(src.extra))) if src.extra else []
     raw["krx"] = await guard("krx", asyncio.to_thread(src.krx)) if src.krx else None
     raw["sectors"] = await guard("sectors", asyncio.to_thread(src.sectors)) if src.sectors else None
+    raw["movers"] = await guard("movers", src.movers()) if src.movers else None
     return raw
 
 
@@ -308,6 +310,20 @@ def _sectors(raw: dict, today: date) -> dict | None:
     return {"date": v.get("date"), "strong": side(v["top"]), "weak": side(v["bottom"])}
 
 
+def _movers(raw: dict, today: date) -> list[dict]:
+    """#680 the US sectors' big days of the last session (the sentence naming the stocks that drove them) -
+    a session more than a few days old is no "last night"."""
+    out = []
+    for m in raw.get("movers") or []:
+        if not m or not m.get("big") or not m.get("sentence") or not m.get("date"):
+            continue
+        if (today - date.fromisoformat(m["date"])).days > 4:
+            continue
+        out.append({"label": m["label"], "sentence": m["sentence"], "move_pct": m["move_pct"],
+                    "falling": m["move_pct"] < 0})
+    return out
+
+
 def _themes(raw: dict) -> list[dict]:
     """The surging news themes (label and the first headline - untrusted text, no numbers taken from it)."""
     rows = [t for t in (raw.get("macro") or {}).get("themes") or [] if not t.get("quiet") and not t.get("stale")]
@@ -339,7 +355,8 @@ def bundle(raw: dict, now: datetime | None = None) -> dict:
     return {"date": today.isoformat(), "us": us, "futures": fut, "kr": kr, "flow": flow, "fear": fear,
             "events_done": done, "events_ahead": ahead, "earnings_done": reported, "earnings_ahead": due,
             "themes": _themes(raw), "day_call": (call or {}).get("line") if isinstance(call, dict) else None,
-            "krx": _krx(raw), "sectors": _sectors(raw, today), "missing": list(raw.get("missing") or [])}
+            "krx": _krx(raw), "sectors": _sectors(raw, today), "movers": _movers(raw, today),
+            "missing": list(raw.get("missing") or [])}
 
 
 def _public(b: dict) -> dict:
@@ -415,6 +432,10 @@ def rules(b: dict) -> dict:
                     + " · ".join(f"{r['name']} {r['prob']}" for r in sec["strong"]))
         bad.insert(min(1, len(bad)), "오늘 국장에서 시장보다 약할 확률이 높은 섹터(강할 확률): "
                    + " · ".join(f"{r['name']} {r['prob']}" for r in sec["weak"]))
+    for falling, side in ((True, bad), (False, good)):   # #680 the biggest US sector day of each side, after the leads
+        ms = [m for m in b.get("movers") or [] if m["falling"] == falling]
+        if ms:
+            side.insert(min(2, len(side)), "간밤 " + max(ms, key=lambda m: abs(m.get("move_pct") or 0))["sentence"])
     if not good:
         good.append("숫자 하나로 방향을 단정하기보다 개장 30분 수급을 먼저 확인하세요")
     if not bad:
@@ -445,12 +466,12 @@ def prompt(b: dict, draft: dict) -> str:
             f"초안: {json.dumps(texts, ensure_ascii=False)}")
 
 
-_SIGNED = re.compile(r"(?<![\d.,/:])[+-]?\d[\d,]*(?:\.\d+)?%?")
+_SIGNED = re.compile(r"(?<![\d.,/:])[+\-−]?\d[\d,]*(?:\.\d+)?%?")   # −: the typographic minus (#680)
 _DATETIME = re.compile(r"\d{4}-\d{2}-\d{2}(?:T[\d:.+]*)?|\d{1,2}/\d{1,2}|\d{1,2}:\d{2}")
 
 
 def _num(token: str) -> str:
-    t = token.replace(",", "")
+    t = token.replace(",", "").replace("−", "-")
     if "." in t and not t.endswith("%"):
         t = t.rstrip("0").rstrip(".")
     return t
@@ -531,6 +552,8 @@ def _subjects(b: dict) -> dict[str, set[str]]:
     sec = b.get("sectors") or {}
     for r in (sec.get("strong") or []) + (sec.get("weak") or []):   # #620 a sector's own probability only
         add(r["name"], r["prob"])
+    for m in b.get("movers") or []:          # #680 the numbers of a sector's movers sentence
+        add(m["label"], *_SIGNED.findall(m["sentence"]))
     return out
 
 

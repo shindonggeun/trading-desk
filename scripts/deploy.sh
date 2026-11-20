@@ -42,6 +42,16 @@ fi
 SHA=$(git rev-parse "$REF^{commit}")
 echo "배포: ${SHA:0:12} → $HOST:~/$DIR ($TARGET)"
 
+# #752 운영 커밋의 정본은 컨테이너 이미지 라벨이다. 서버 src/REVISION 은 마지막 "손 배포" 소스의 표시이고 Jenkins 배포는
+# src/ 를 쓰지 않는다. 둘이 다르면(그 사이 Jenkins 가 올렸으면) 한 줄 알린다 — 손 배포가 Jenkins 가 올린 것보다 옛 커밋일 수 있다.
+LABEL_FMT='{{index .Config.Labels "org.opencontainers.image.revision"}}'
+REVS=$(ssh "$HOST" "echo \"\$(cat ~/$DIR/src/REVISION 2>/dev/null)\"; docker inspect -f $(printf '%q' "$LABEL_FMT") trading-desk-backend-prod 2>/dev/null" || true)
+SRC_REV=$(printf '%s\n' "$REVS" | sed -n 1p | tr -d '\r')
+RUN_REV=$(printf '%s\n' "$REVS" | sed -n 2p | tr -d '\r')
+if [ -n "$RUN_REV" ] && [ "$SRC_REV" != "$RUN_REV" ]; then
+  echo "참고: 운영 백엔드는 ${RUN_REV:0:12}(컨테이너 라벨 — Jenkins 배포 포함), 서버 src/REVISION ${SRC_REV:0:12} 는 마지막 손 배포 소스다"
+fi
+
 # #431 진행 중인 분석. 백엔드 컨테이너 안의 `desk.cli unfinished` 는 첫 줄에 개수, 다음 줄부터 종목 · 상태 · 시각 · id 를
 # 낸다. 컨테이너가 없거나(첫 배포) 옛 이미지라 명령이 없으면 "?" — 확인할 수 없다고 알리고 그대로 진행한다.
 # 여기서는 소스를 보내기 전에 미리 묻는다. 빌드한 뒤 컨테이너를 바꾸기 직전의 확인은 서버의 deploy-compose.sh 가 한다.

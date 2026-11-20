@@ -432,7 +432,12 @@ class RunManager:
                  weekly: Callable[[str], Awaitable[str | None]] | None = None,
                  risk: Callable[[str, str | None], dict | None] | None = None,
                  outlook: Callable[[str, str, float | None, dict | None], Awaitable[dict | None]] | None = None,
-                 reuse_minutes: float = 0, rate_limit_cooldown_min: float = RATE_LIMIT_COOLDOWN_MIN) -> None:
+                 reuse_minutes: float = 0, rate_limit_cooldown_min: float = RATE_LIMIT_COOLDOWN_MIN,
+                 direct: bool = True) -> None:
+        # #688 direct (DESK_ROLE=all): a submitted run runs here. Otherwise submit only queues it and the
+        # analyst's desk.run_queue claims it (start), calling on_free when one of its runs ends
+        self.direct = direct
+        self.on_free: Callable[[], None] | None = None
         self.levels = levels
         # #171: news and fundamentals reports this fresh are taken over from an earlier run (0 = off)
         self.reuse_minutes = reuse_minutes
@@ -483,6 +488,8 @@ class RunManager:
         self._slots = _Gate(max_concurrent, rate_limit_cooldown_min * 60)
         self._instrument_locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._run_ids: dict[asyncio.Task, str] = {}
+        self._for_instrument = 0      # #688 runs here still waiting for their instrument (no slot held)
 
     @contextlib.asynccontextmanager
     async def spare_slot(self):
@@ -617,12 +624,57 @@ class RunManager:
             return None
 
     def submit(self, request: RunRequest) -> str:
-        run_id = self.store.create_run(request.ticker, request.trade_date, asdict(request))
-        self._publish(run_id, {"type": "status", "agent": "system", "content": "queued"})
+        # #688 the run and its first event in one transaction: an analyst can claim the run the moment it is
+        # committed, and its own events must come after this one. Queued for the analyst: the screen says so.
+        queued = {"type": "status", "agent": "system", "content": "queued",
+                  **({} if self.direct else {"data": {"waiting_for": "analyst"}})}
+        run_id = self.store.create_run(request.ticker, request.trade_date, asdict(request), first_event=queued)
+        self.hub.notify(run_id)
+        if self.direct:
+            self.start(run_id, request)
+        return run_id
+
+    def start(self, run_id: str, request: RunRequest) -> None:
+        """Run a queued run here (submit's own, or one desk.run_queue claimed)."""
         task = asyncio.create_task(self._execute(run_id, request))
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-        return run_id
+        self._run_ids[task] = run_id
+        task.add_done_callback(self._ended)
+
+    def _ended(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        self._run_ids.pop(task, None)
+        if self.on_free is not None:
+            self.on_free()
+
+    def run_ids(self) -> set[str]:
+        """The runs this process is running (or about to): #688 a queue taken over spares them."""
+        return set(self._run_ids.values())
+
+    def room(self) -> bool:
+        """#688 whether the run queue may claim one more: fewer runs here than the gate lets go at once (one
+        during a rate-limit cooldown). A run waiting for its instrument holds no slot and is not counted - as
+        under ``all``, another ticker runs meanwhile."""
+        return len(self._tasks) - self._for_instrument < self._slots.limit()
+
+    @contextlib.asynccontextmanager
+    async def _instrument(self, request: RunRequest):
+        lock = self._instrument_lock(request)
+        self._for_instrument += 1
+        try:
+            await lock.acquire()
+        finally:
+            self._for_instrument -= 1
+        try:
+            yield
+        finally:
+            lock.release()
+
+    def fail_claimed(self, run_id: str, message: str) -> None:
+        """A claimed run that cannot start (its stored options do not make a request)."""
+        self.store.mark_failed(run_id, message)
+        self._publish(run_id, {"type": "error", "agent": "system", "content": message})
+        self._publish(run_id, {"type": "done", "agent": "system", "content": "failed"})
 
     async def _live_quote(self, request: RunRequest, ticker: str | None = None) -> dict | None:
         """The current quote of ``ticker`` (default: the run's) for a same-day analysis; None for a
@@ -958,7 +1010,7 @@ class RunManager:
 
     async def _execute(self, run_id: str, request: RunRequest) -> None:
         # the instrument first: a second run of it waits without holding a slot another ticker could use
-        async with self._instrument_lock(request), self._slots:
+        async with self._instrument(request), self._slots:
             self.store.mark_running(run_id)
             # A leveraged/inverse product is analysed through its underlying (desk.underlying, #82):
             # TradingAgents reads SOXX, then the leverage analyst turns the call into one on SOXL.

@@ -42,18 +42,23 @@ def shared(engine: Engine) -> bool:
     return engine.dialect.name == "postgresql"
 
 
-def _connect(engine: Engine):
+def _connect(engine: Engine, app_name: str = APP_NAME):
     """A connection of its own, outside the pool, in autocommit (LISTEN takes effect at once). The arguments
     are the ones SQLAlchemy would give the driver for this URL."""
     import psycopg
 
     cargs, cparams = engine.dialect.create_connect_args(engine.url)
-    cparams["application_name"] = APP_NAME
+    cparams["application_name"] = app_name
     cparams.setdefault("connect_timeout", CONNECT_TIMEOUT_SEC)
     # a connection that goes dark (no RST) fails within a minute instead of the kernel's ~15 min of retries
     for key, value in (("keepalives", 1), ("keepalives_idle", 30), ("keepalives_interval", 10),
                        ("keepalives_count", 3), ("tcp_user_timeout", int(PING_SEC * 2 * 1000))):
         cparams.setdefault(key, value)
+    # and the server's side of it: a session (with the analyst's queue lock) whose client host died must end in
+    # about a minute, not at the server OS's ~2 h keepalive. Added to the URL's own options (search_path).
+    server = ("-c tcp_keepalives_idle=30 -c tcp_keepalives_interval=10 -c tcp_keepalives_count=3 "
+              f"-c tcp_user_timeout={int(PING_SEC * 2 * 1000)}")
+    cparams["options"] = f"{cparams['options']} {server}" if cparams.get("options") else server
     return psycopg.connect(*cargs, **cparams, autocommit=True)
 
 

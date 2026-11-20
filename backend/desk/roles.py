@@ -36,6 +36,7 @@ API, COLLECTOR, ANALYST = "api", "collector", "analyst"
 JOBS: tuple[tuple[str, str, str, str | None, str], ...] = (
     ("listing", "종목 목록", "토스", None, COLLECTOR),
     ("futures_snapshot", "코스피200 선물 수급 스냅숏", "한투(KIS)", None, COLLECTOR),
+    ("futures_close_quote", "코스피200 선물 세션 마감가", "한투(KIS)", None, COLLECTOR),
     ("nq_watch", "나스닥 선물 이상 징후", "야후", None, COLLECTOR),
     ("nq_fast", "나스닥 선물 1분 판정", "QQQ 실시간 · 바이낸스 추정", None, COLLECTOR),
     ("line_signals", "채널 · 추세선 신호", "야후 · 토스", None, COLLECTOR),

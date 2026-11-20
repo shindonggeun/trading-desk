@@ -15,9 +15,12 @@ import asyncio
 import logging
 import math
 import time
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta, timezone
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, replace
+from datetime import UTC, date, datetime, timedelta, timezone
+from datetime import time as clock_time
 
+from . import market_calendar
 from .broker.base import Bar, Broker
 from .indicators import WARMUP, annotate, normalize
 
@@ -119,26 +122,88 @@ def _yahoo_period(interval: str, count: int, ticker: str = "") -> str:
     return f"{max(count * 2, 30)}d"
 
 
-def yahoo_candles(ticker: str, interval: str, count: int) -> list[Bar]:
+def _yahoo_rows(ticker: str, period: str, interval: str) -> list[tuple[object, Bar]]:
+    """yfinance's bars as (index in the exchange's own time zone, Bar stamped UTC), oldest first."""
     import yfinance as yf
 
-    frame = yf.Ticker(ticker).history(period=_yahoo_period(interval, count, ticker),
-                                      interval=_YAHOO_INTERVAL[interval], auto_adjust=False)
+    frame = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
     frame = frame.dropna(subset=["Open", "High", "Low", "Close"])
-    # The index is in the exchange's own time zone, so .date() is the trading day there.
     rows = []
     for index, row in frame.iterrows():
         volume = row["Volume"]
         rows.append((index, Bar(at=index.to_pydatetime().astimezone(UTC).isoformat(timespec="seconds"),
                                 open=float(row["Open"]), high=float(row["High"]), low=float(row["Low"]),
                                 close=float(row["Close"]), volume=0.0 if math.isnan(volume) else float(volume))))
+    return rows
+
+
+def yahoo_candles(ticker: str, interval: str, count: int) -> list[Bar]:
+    rows = _yahoo_rows(ticker, _yahoo_period(interval, count, ticker), _YAHOO_INTERVAL[interval])
+    # The index is in the exchange's own time zone, so .date() is the trading day there.
     if interval in ("120m", "240m"):
         bars = group_bars([(index.date(), bar) for index, bar in rows], size=_MINUTES[interval] // 60)
     elif interval == "1y":
         bars = group_bars([(index.year, bar) for index, bar in rows])
     else:
         bars = [bar for _, bar in rows]
+    if interval == "1d":
+        bars = with_finished_session(ticker, bars, datetime.now(UTC),
+                                     lambda: [bar for _, bar in _yahoo_rows(ticker, "5d", "1h")])
     return bars[-count:]
+
+
+# #747 CME futures: the bar dated D trades from 18:00 New York on D-1 to 17:00 on D (desk.session_progress).
+CME_REOPENS = clock_time(18)
+_FINISHED: dict[tuple[str, date], Bar] = {}     # a finished session's bar never changes: built once
+_FINISHED_MAX = 64
+
+
+def _ny_midnight(day: date) -> str:
+    """A US daily bar's stamp: midnight New York, in UTC (04:00 / 05:00)."""
+    return datetime.combine(day, clock_time(0), market_calendar.ET).astimezone(UTC).isoformat(timespec="seconds")
+
+
+def with_finished_session(ticker: str, bars: list[Bar], now: datetime, hourly: Callable[[], list[Bar]]) -> list[Bar]:
+    """#747 Monday to Thursday from 18:00 New York, Yahoo dates the next session's live daily row with that
+    evening's date, and yfinance keeps only the newer of two same-date rows (fix_Yahoo_returning_live_separate):
+    the session that ended at 17:00 is gone and the live one sits in its place, right after the session before
+    it - a chart missing a day, and a whole day's move read as a gap (#741). Put both back: the finished session
+    rebuilt from the hourly bars (18:00 the evening before to 17:00), the live row moved to the next weekday,
+    the session it is. Sunday evening drops nothing (no session is dated Sunday). Without the hourly bars the
+    daily ones stay as they came (desk.gap_fill still keeps the live row from opening a gap)."""
+    if not ticker.upper().endswith("=F") or not bars:
+        return bars
+    local = now.astimezone(market_calendar.ET)
+    day = local.date()
+    if local.weekday() > 3 or local.time() < CME_REOPENS or _bar_date(bars[-1]) != day:
+        return bars
+    key = (ticker.upper(), day)
+    finished = _FINISHED.get(key)
+    if finished is None:
+        try:
+            got = hourly()
+        except Exception as exc:  # noqa: BLE001 - the daily bars stand as they came
+            log.warning("hourly bars for %s's %s session failed: %s", ticker, day, type(exc).__name__)
+            return bars
+        start = datetime.combine(day - timedelta(days=1), CME_REOPENS, market_calendar.ET)
+        end = datetime.combine(day, market_calendar.CME_CLOSES, market_calendar.ET)
+        inside = [b for b in got if start <= _at(b.at) < end]
+        if not inside:
+            return bars
+        finished = Bar(at=_ny_midnight(day), open=inside[0].open, high=max(b.high for b in inside),
+                       low=min(b.low for b in inside), close=inside[-1].close, volume=sum(b.volume for b in inside))
+        if len(_FINISHED) >= _FINISHED_MAX:
+            _FINISHED.pop(next(iter(_FINISHED)))
+        _FINISHED[key] = finished
+    if math.isclose(bars[-1].open, finished.open, rel_tol=1e-9):
+        return bars           # the finished session itself: no live row yet (or Yahoo not rolled over)
+    live = replace(bars[-1], at=_ny_midnight(market_calendar.next_weekday(day)))
+    return [*bars[:-1], finished, live]
+
+
+def _bar_date(bar: Bar) -> date:
+    """A US daily bar's own date (stamped midnight New York, so its UTC date)."""
+    return _at(bar.at).date()
 
 
 def group_bars(keyed: list[tuple[object, Bar]], size: int | None = None) -> list[Bar]:

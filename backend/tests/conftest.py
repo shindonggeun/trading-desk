@@ -18,18 +18,40 @@ from sqlalchemy import text
 
 from desk.db import make_engine, metadata
 
+# Tests that take seconds in CI (``--durations``, #748), with their rough cost. The shards place these first so
+# no shard gets two; a test missing here only balances less well. Every other test counts as LIGHT.
+SLOW = {
+    "tests/test_day_call.py::test_the_backtest_holds_out_the_last_90_days_and_the_server_reads_the_same_numbers": 29,
+    "tests/test_day_call.py::test_the_cli_writes_the_model_and_the_report": 24,
+    "tests/test_channels.py::test_on_a_random_walk_each_line_reads_like_its_baseline": 13,
+    "tests/test_day_call.py::test_a_call_from_the_committed_model_has_the_contract_shape": 10,
+    "tests/test_day_call.py::test_the_held_out_sessions_choose_nothing": 9,
+    "tests/test_risk_regime.py::test_the_backtest_gates_the_plans_and_compares_on_and_off": 5,
+    "tests/test_earnings_yahoo_calendar.py::test_a_403_is_covered_by_yahoos_calendar_and_nasdaq_rests": 5,
+    "tests/test_news_history.py::test_the_backtest_replays_the_macro_part_only_when_given_the_files": 3,
+    "tests/test_day_calls.py::test_the_backfill_makes_only_the_sessions_after_training": 3,
+}
+LIGHT = 0.25
+
 
 def pytest_collection_modifyitems(config, items):
-    """``DESK_TEST_SHARD=i/n`` (CI matrix, #748): keep every n-th test from the i-th (1-based). Round-robin
-    over the collected order, so a module's heavy tests spread over the shards instead of landing on one."""
+    """``DESK_TEST_SHARD=i/n`` (CI matrix, #748): keep the i-th (1-based) of n shards. Greedy by cost - the SLOW
+    tests first, then the rest in collected order - each to the least loaded shard; the kept tests stay in
+    collected order. Deterministic, so every xdist worker of a shard collects the same set."""
     shard = os.getenv("DESK_TEST_SHARD")
     if not shard:
         return
     i, n = (int(x) for x in shard.split("/"))
-    keep = [item for k, item in enumerate(items) if k % n == i - 1]
-    drop = [item for k, item in enumerate(items) if k % n != i - 1]
-    config.hook.pytest_deselected(items=drop)
-    items[:] = keep
+    cost = [SLOW.get(item.nodeid, LIGHT) for item in items]
+    loads = [0.0] * n
+    mine = set()
+    for k in sorted(range(len(items)), key=lambda k: -cost[k]):      # stable: equal costs keep their order
+        s = min(range(n), key=lambda j: (loads[j], j))
+        loads[s] += cost[k]
+        if s == i - 1:
+            mine.add(k)
+    config.hook.pytest_deselected(items=[item for k, item in enumerate(items) if k not in mine])
+    items[:] = [item for k, item in enumerate(items) if k in mine]
 
 
 @pytest.fixture(scope="session")

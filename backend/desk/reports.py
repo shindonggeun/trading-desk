@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.engine import Engine
 
-from desk import explain, indicators, market_calendar, primary_trend, report_plan, runner, sr
+from desk import explain, indicators, market_calendar, primary_trend, report_charts, report_plan, runner, sr
 from desk.db import now as db_now
 from desk.db import reports as reports_t
 from desk.db import users as users_t
@@ -483,18 +483,24 @@ class Reports:
 
     def __init__(self, engine: Engine, fetch: Fetch = yahoo_fetch, every_days: int = 3,
                  topics: Iterable[tuple[str, str]] | None = None, calls: Callable[[], dict] | None = None,
-                 events: Callable[[datetime], list[dict]] | None = None) -> None:
+                 events: Callable[[datetime], list[dict]] | None = None,
+                 bars: report_charts.BarsFetch | None = None) -> None:
         """``every_days`` > 0: the automatic reports are on (#681: the schedule is desk.report_plan's, no longer
         every few days); ``calls``: the week's day-call record; ``events``: the macro calendar after a time."""
         self.engine, self.fetch, self.every_days = engine, fetch, every_days
         self.topics = tuple(topics or report_plan.TOPICS)
         self.calls, self.events = calls, events
+        # #682 the four timeframes' bars of a report's charts: made-up with the made-up prices, else Yahoo
+        self.bars = bars or (report_charts.fake_bars if fetch is fake_fetch else report_charts.yahoo_bars)
         self.generating = False
 
     # storage -----------------------------------------------------------
     def list(self, limit: int = 20, before: str | None = None) -> dict:
         limit = max(1, min(limit, 50))
-        q = select(reports_t.c.id, reports_t.c.created_at, reports_t.c.body).order_by(
+        # #682 the body carries the candle charts (~100KB): the list reads only the keys it shows
+        q = select(reports_t.c.id, reports_t.c.created_at, reports_t.c.title, reports_t.c.source,
+                   reports_t.c.body["summary"].as_string().label("summary"),
+                   reports_t.c.body["subject"].label("subject")).order_by(
             reports_t.c.created_at.desc(), reports_t.c.id.desc())
         rows = []
         with self.engine.connect() as conn:
@@ -506,7 +512,8 @@ class Reports:
                                 and_(reports_t.c.created_at == at, reports_t.c.id < before)))
             if not before or at is not None:
                 rows = conn.execute(q.limit(limit + 1)).all()
-        items = [_summary(r.id, r.created_at, r.body) for r in rows[:limit]]
+        items = [{"id": r.id, "created_at": _iso(r.created_at), "title": r.title, "summary": r.summary,
+                  "subject": r.subject, "source": r.source} for r in rows[:limit]]
         return {"items": items, "generating": self.generating,
                 "next_due": _iso(self.next_due()) if self.every_days > 0 else None,
                 "next_before": items[-1]["id"] if len(rows) > limit else None}
@@ -527,10 +534,12 @@ class Reports:
 
     def _recent(self) -> list:
         with self.engine.connect() as conn:
-            rows = conn.execute(select(reports_t.c.created_at, reports_t.c.symbol, reports_t.c.body)
+            rows = conn.execute(select(reports_t.c.created_at, reports_t.c.symbol,
+                                       reports_t.c.body["slot"].as_string().label("slot"),
+                                       reports_t.c.body["kind"].as_string().label("kind"))
                                 .order_by(reports_t.c.created_at.desc()).limit(RECENT_REPORTS)).all()
-        return [(r.created_at if r.created_at.tzinfo else r.created_at.replace(tzinfo=UTC), r.symbol, r.body or {})
-                for r in rows]
+        return [(r.created_at if r.created_at.tzinfo else r.created_at.replace(tzinfo=UTC), r.symbol,
+                 {"slot": r.slot, "kind": r.kind} if r.kind else ({"slot": r.slot} if r.slot else {})) for r in rows]
 
     def done_slots(self) -> set[str]:
         """The schedule slots already written (a manual report fills none)."""
@@ -621,7 +630,7 @@ class Reports:
              slot: report_plan.Slot | None = None) -> dict | None:
         """One report, written and stored (blocking): ``None`` when no subject had data."""
         got = self.choose(kind or (slot.kind if slot else report_plan.kind_for(datetime.now(UTC))))
-        return None if got is None else self.finish(got, model, slot)
+        return None if got is None else self.attach_charts(self.finish(got, model, slot))
 
     def choose(self, kind: str = "daily", now: datetime | None = None) -> dict | None:
         """What the report of ``kind`` is about (the price fetches; no model call): a day's subject from the
@@ -692,6 +701,36 @@ class Reports:
         if report.get("fallback"):
             log.info("report on %s kept with the desk's wording", head["subject"]["symbol"])
         return self.save(report)
+
+    def attach_charts(self, report: dict) -> dict:
+        """#682 the stored report with its candle charts added (blocking: price fetches, no model) - the caller
+        runs it after the ChatGPT slot is let go, before the push, so the report opens whole."""
+        charts = self.charts(report)
+        if charts:
+            self.set_charts(report["id"], charts)
+        return {**report, "charts": charts}
+
+    def set_charts(self, report_id: str, charts: dict) -> bool:
+        with self.engine.begin() as conn:
+            body = conn.execute(select(reports_t.c.body).where(reports_t.c.id == report_id)).scalar()
+            if body is None:
+                return False
+            conn.execute(update(reports_t).where(reports_t.c.id == report_id).values(body={**body, "charts": charts}))
+        return True
+
+    def charts(self, report: dict) -> dict:
+        """#682 the candle charts of the symbols the sections draw, kept with the report (the same picture later).
+        One symbol failing leaves the others; none at all is ``{}`` and the page keeps the levels picture."""
+        out = {}
+        for sym in report_charts.symbols_of(report):
+            try:
+                snap = report_charts.snapshot(sym, self.bars)
+            except Exception as exc:  # noqa: BLE001 - a chart is a picture, never the report
+                log.warning("report chart %s failed (%s)", sym, type(exc).__name__)
+                continue
+            if snap:
+                out[sym] = snap
+        return out
 
 
 def _iso(at: datetime | None) -> str | None:

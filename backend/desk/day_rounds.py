@@ -6,7 +6,10 @@ the close" in five stages, scored per round.
   NYSE bars start at 09:30 and end on the half hour. KR rounds are 10:00 to 15:00 KST, US rounds 10:30 to
   15:30 ET (desk.market_calendar's zones: New York's daylight saving moves them in Korean time, not in
   New York's). A round at or after the session's close is not made (a US half day ends at 13:00); a
-  KRX session that opens at 10:00 (the year's first, the CSAT day) has no 10:00 round (no bar yet).
+  KRX session that opens at 10:00 (the year's first, the CSAT day) has no rounds at all: the morning
+  features read the open by 09:30 (desk.day_call.kr_late_open), and the training left those days out.
+- Yahoo's KRX bars come about 20 minutes late (desk.live_bars.YAHOO_LAG), the CME futures 10: a live KR
+  round waits READY after its time before it reads the bar that ended at it (desk.day_calls.windows).
 - The answer is the session's close against the last hourly close by the round (``anchor``), in the
   ATR of the days before scaled to the time left: ``z = (close - anchor) / (ATR * sqrt(left))``, where
   ``left`` is the share of the regular session still to run. A round near the close has little room
@@ -45,6 +48,8 @@ ROUNDS = {
     "us": {3: time(10, 30), 4: time(11, 30), 5: time(12, 30), 6: time(13, 30), 7: time(14, 30), 8: time(15, 30)},
 }
 HOURLY = {"kr": "^KS11@60m", "us": "^GSPC@60m"}     # the target's hourly bars in a series dict
+# how long after a round its last bar is complete on Yahoo (KRX ~20 min late, the NQ futures 10, ^GSPC 0)
+READY = {"kr": timedelta(minutes=25), "us": timedelta(minutes=1)}
 NQ = "NQ=F@60m"
 # the day call's daily features kept (decided before the hold-out was looked at: the trend and stretch of
 # the days before, how wild they were, VIX, the open gap, the expiry day)
@@ -77,6 +82,8 @@ def bounds(market: str, day: date) -> tuple[datetime, datetime]:
 def rounds_of(market: str, day: date) -> list[int]:
     """The rounds of ``day``'s session: none on a closed day, none at or after the close."""
     if not market_calendar.is_open(dc.MARKETS[market].calendar, day):
+        return []
+    if market == "kr" and dc.kr_late_open(day):
         return []
     opens, closes = bounds(market, day)
     return [r for r in sorted(ROUNDS[market]) if opens < cutoff_of(market, day, r) < closes]
@@ -133,10 +140,12 @@ def features(market: str, round_: int, day: date, series: dict[str, Sequence],
     today = session_bars(market, day, series.get(HOURLY[market]) or [], cutoff)
     if not today:
         raise dc.NoData(f"{HOURLY[market]}: no bar of {day} by {cutoff}")
+    if datetime.fromisoformat(today[0].at) != bounds(market, day)[0] or not today[0].open:
+        raise dc.NoData(f"{HOURLY[market]}: the opening bar of {day} is missing")
     a = meta["atr"]
     prev_close = meta["last_close"]
     anchor = today[-1].close
-    opened = today[0].open or prev_close
+    opened = today[0].open
     high = max(b.high for b in today)
     low = min(b.low for b in today)
     before = today[-2].close if len(today) > 1 else opened
@@ -251,7 +260,7 @@ def verdict_of(holdout: dict) -> str:
     hit = holdout.get("direction_hit_rate")
     if hit is None or best is None or (holdout.get("brier_skill") or 0) <= 0:
         return "no_edge"
-    return "edge" if hit >= best + EDGE_POINTS else "no_edge"
+    return "edge" if round(hit - best, 3) >= EDGE_POINTS else "no_edge"     # the rates are rounded to 3 places
 
 
 STAGE_INDEX = {s: i for i, s in enumerate(dc.STAGES)}

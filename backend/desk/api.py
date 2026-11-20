@@ -1684,8 +1684,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return day_desk.view(_day_market(market))
 
     @app.get("/api/day-call/history")
-    def day_call_history(market: str = "kr", days: int = day_calls.RECORD_DAYS):
-        return day_desk.history(_day_market(market), min(max(days, 1), 365))
+    def day_call_history(market: str = "kr", days: int = day_calls.RECORD_DAYS, call: str | None = None):
+        if call not in (None, "prev_close", "open", "to_close"):
+            raise HTTPException(422, "call must be prev_close, open or to_close")
+        return day_desk.history(_day_market(market), min(max(days, 1), 365), call=call)
 
     @app.get("/api/day-call/stats")
     def day_call_stats(market: str = "kr", days: int = day_calls.RECORD_DAYS):

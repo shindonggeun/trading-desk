@@ -22,7 +22,10 @@ process's memory:
 - caches read both by the screens and by a run's notes: credit, the economic calendar, macro news, market /
   futures flow, tips (prewarm) and ``calibration.TABLE``'s live record (scoring);
 - the KIS live quotes (``kis_stream``, api) that ``nq_fast`` (collector) reads for QQQ;
-- the run gate's ``spare_slot`` the news digest, the brief and the reports wait on, and ``runner.Hub``.
+- the run gate's ``spare_slot`` the news digest, the brief and the reports wait on.
+
+A run's events already cross processes on PostgreSQL (desk.run_events: ``pg_notify`` on write, the ``run_events``
+job listens where the streams are served).
 """
 
 from __future__ import annotations
@@ -60,6 +63,7 @@ JOBS: tuple[tuple[str, str, str, str | None, str], ...] = (
     ("scoring", "분석 채점", "야후", None, ANALYST),
     ("purge", "오래된 분석 정리", "DB", None, COLLECTOR),
     ("kis_stream", "실시간 시세 스트림", "한투(KIS)", None, API),
+    ("run_events", "분석 이벤트 알림", "PostgreSQL LISTEN", None, API),   # wakes this process's SSE streams
 )
 
 _ROLE_OF = {name: role for name, _label, _source, _parent, role in JOBS}

@@ -12,7 +12,7 @@ GET /api/stream/market?channels=quote,flow,futures,alert&tickers=AAPL,005930.KS
 | 매개변수 | 뜻 |
 |----------|----|
 | `channels` | 받을 채널(쉼표). 비우면 `flow,futures,alert`. 알 수 없는 이름은 422 |
-| `tickers` | `quote` 채널에서 받을 종목(쉼표, 최대 50). 비우면 시세를 보내지 않는다 |
+| `tickers` | `quote` 채널에서 받을 종목(쉼표, 최대 50). 비우면 시세를 보내지 않는다. 서버가 `/api/quote` 와 같이 정규화한다(대문자 · `005930.KS` · 이름 → 코드) — 이벤트의 `key` 는 그 정규형이다 |
 
 - 세션 쿠키가 필요하다(기본 닫힘, 없으면 401). 열린 동안 15초마다 세션을 다시 확인하고(활동으로 세지 않는다), 로그아웃 · 폐기 · 만료면 스트림을 끝낸다.
 - 한 세션에 동시에 3개까지(넘으면 429). **탭 하나에 연결 하나**를 쓰고 채널 · 종목은 쿼리로 묶는다(종목이 바뀌면 다시 연다).
@@ -45,12 +45,13 @@ SSE 형식 그대로다: `event:` 가 종류, `data:` 가 JSON 한 줄, 데이�
 | kind | key | payload | 같은 REST |
 |------|-----|---------|-----------|
 | `quote` | 종목(`AAPL`, `005930.KS`) | `{ticker, price, currency, source, fetched_at}` | `GET /api/quote?ticker=` |
-| `flow` | `KOSPI:1d` 처럼 `시장:간격` | 그 시장 · 간격의 응답, `records` 최근 20개. **`premarket` 은 없다** — 장 전 칸은 REST 그대로 | `GET /api/market/flow?market=&interval=&count=20` |
+| `flow` | `KOSPI:1d` 처럼 `시장:간격` | 그 시장 · 간격의 응답, `records` 최근 20개. **`premarket` · `program` 은 없다** — 장 전 · 프로그램매매 칸은 REST 그대로 | `GET /api/market/flow?market=&interval=&count=20` |
 | `futures` | `view` | 선물 화면 응답 | `GET /api/market/futures` |
 | `alert` | 알림 `kind`(`flow_turn` · `flow_shift` · `flow_warn` · `nq_alert` · `holding_alert` · `sector_mover`) | 알림 한 건(`/api/alerts/today` 의 `items[]` 한 줄 모양, `tone` 포함) | `GET /api/alerts/today` |
 
 - 같은 `quote` 키는 **초당 최대 1번**(그 사이 값은 마지막 것으로 합친다). 한투 실시간 틱과 토스 · 야후 폴링 시세가 같은 채널로 온다.
 - `flow` · `futures` 는 collector 의 1분 스냅숏(`DESK_FUTURES_SNAPSHOT_MIN`)이 성공한 직후에 온다. 실패한 읽기는 오지 않는다.
+  스냅숏은 `1d` 만 읽는다 — 다른 간격(`1w` …)은 누가 그 간격을 새로 읽었을 때만 오므로 화면은 그 키를 폴링으로 둔다.
 - `alert` 는 DB 에 기록된 뒤에 온다. 보유 종목 알림(`holding_alert`)은 소유자 세션에만 간다. 놓친 알림은 `GET /api/alerts/today` 로 다시 읽는다(스트림은 재생하지 않는다).
 - 알림 타임라인이 숨기는 종류(`holding_alert` · `sector_mover`)도 스트림에는 온다 — 거를지는 화면이 정한다.
 
@@ -64,7 +65,7 @@ SSE 형식 그대로다: `event:` 가 종류, `data:` 가 JSON 한 줄, 데이�
 | `reset` | `{"v":1, "reason": "overflow"\|"shutdown"}` | 이 연결의 대기열이 넘쳤거나 서버가 내려갈 때. 바로 뒤에 스트림이 끝난다 | REST 로 다시 맞추고 재연결 |
 
 - **낡음(`stale`)**: 장중(수급 · 선물 세션)인데 그 채널의 마지막 이벤트가 3분보다 오래됐으면 `degraded` 에 든다. 구독 소켓이 살아 있어도 원천(collector)이 멈췄을 수 있어서다.
-- **버스 끊김(`bus_down`)**: api 가 Redis 구독을 잃으면 Redis 로 오는 채널(`flow` · `futures` · `alert` · collector 의 시세)이 `degraded` 다. 한투 실시간 시세는 api 안에서 오므로 계속 온다.
+- **버스 끊김(`bus_down`)**: api 가 Redis 구독을 잃으면 Redis 로 오는 채널(`flow` · `futures` · `alert`)이 `degraded` 다. 시세는 api 안(한투 실시간 · prewarm)에서도 오므로 `degraded` 에 넣지 않는다.
 - 연결이 끊기면(네트워크 · 401 · 재배포) FE 는 바로 REST 한 번 → 기존 폴링 → 지터를 둔 재연결. REST 가 401 이면 로그인 처리.
 
 ## 3. 서버 구성

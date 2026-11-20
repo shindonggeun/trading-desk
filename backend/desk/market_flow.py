@@ -38,7 +38,7 @@ import logging
 import time
 from datetime import UTC, date, datetime, timedelta, timezone
 
-from . import freshness, kis_spot_flow, shared_cache
+from . import freshness, kis_spot_flow, market_bus, shared_cache
 from .broker.base import INSTITUTION_KINDS, INVESTORS, Broker, FlowRecord
 
 log = logging.getLogger(__name__)
@@ -53,6 +53,7 @@ CONFIRMED_AFTER = (18, 0)
 CACHE_OPEN_SEC = 60.0
 CACHE_CLOSED_SEC = 600.0
 CACHE_FAIL_SEC = 30.0
+STREAM_COUNT = 20             # #690 records in a pushed flow event (the card's default count)
 SHARED_NS = "market_flow"   # #689 desk.shared_cache: the last good page per (market, interval), {"value", "ttl"}
 PREMARKET_FROM = (8, 0)        # NXT pre-market opens 08:00 (KRX pre-open off-hours trades 08:30-08:40)
 
@@ -204,14 +205,22 @@ class MarketFlow:
                     self._cache[key] = got
                 if ok:   # a failure answers this caller only - the other processes keep the last good one
                     await shared_cache.aput(SHARED_NS, key, {"value": value, "ttl": ttl}, max(ttl, shared_cache.LATEST_KEEP_SEC))
+                    # #690 and to the open market streams, as the card would answer it
+                    pushed = self._answer(value, ttl, interval, STREAM_COUNT)
+                    first = (value.get("records") or [None])[0] or {}
+                    market_bus.publish("flow", f"{market}:{interval}", pushed,
+                                       "kis_spot_investors" if first.get("source") == "kis" else "toss_investors",
+                                       pushed["freshness"]["source_updated_at"])
                 cached = got
-        value = cached[2]
+        return self._answer(cached[2], cached[1], interval, count)
+
+    def _answer(self, value: dict, ttl: float, interval: str, count: int) -> dict:
         now = self._now()
         latest = (value.get("records") or [None])[0] or {}
         # #645 how old the figures are: Toss stamps today's record with its own update time;
         # #673 or later, when the figures were seen to change after it
         today = interval == "1d" and latest.get("date") == now.astimezone(KST).date().isoformat()
-        stamp = freshness.stamp(value.get("fetched_at"), now, cached[1], live=session(now) != "closed",
+        stamp = freshness.stamp(value.get("fetched_at"), now, ttl, live=session(now) != "closed",
                                 source_at=_later(latest.get("updated_at"), value.get("changed_at")) if today else None,
                                 source="kis_spot_investors" if latest.get("source") == "kis" else "toss_investors")
         return {**value, "records": value["records"][:count], "freshness": stamp, "session": session(now)}

@@ -26,7 +26,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
-from . import freshness, outbound, shared_cache
+from . import freshness, market_bus, outbound, shared_cache
 from .market_flow import KST, _ttl_until_open
 from .token_store import Issued, TokenStore, TokenUnavailable
 
@@ -374,6 +374,9 @@ class FuturesFlow:
             self._cache = (self._clock(), ttl, value)
             if ok:   # a failure answers this caller only - the others keep the last good one
                 await shared_cache.aput(SHARED_NS, "view", {"value": value, "ttl": ttl}, max(ttl, shared_cache.LATEST_KEEP_SEC))
+                answer = self._with_freshness(value, ttl)
+                market_bus.publish("futures", "view", answer, "kis_futures")   # #690 the open market streams
+                return answer
             return self._with_freshness(value, ttl)
 
     def _with_freshness(self, value: dict, ttl: float) -> dict:

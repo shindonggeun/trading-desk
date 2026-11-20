@@ -16,7 +16,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from . import alert_tone, notify
+from . import alert_tone, market_bus, notify
 from .db import flow_alerts_sent, now
 
 log = logging.getLogger(__name__)
@@ -71,6 +71,11 @@ class FlowAlerts:
             except IntegrityError:            # another pass recorded it first (the transaction rolled back)
                 continue
             out.append({**row, "tone": tone})
+            # #690 the open market streams: the same line as /api/alerts/today shows for it
+            market_bus.publish("alert", "flow_turn", {
+                "trade_date": day, "kind": "flow_turn", "rule": turn["kind"], "market": turn["market"], "who": "foreign",
+                "severity": "caution", "t": at, "value": turn.get("value"), "prev": None, "text": row["text"],
+                "pushed": True, "tone": tone}, "desk", at)
             notify.send(self.pusher, "flow", f"flow_{turn['market']}", f"tone_{tone}", payload={   # #579 the one exit
                 "title": "외국인 수급 전향", "body": row["text"], "tag": f"flow-{turn['market']}",
                 "url": ALERT_URL, "market": turn["market"], "kind": turn["kind"], "tone": tone})

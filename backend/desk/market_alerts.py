@@ -38,6 +38,7 @@ from . import (
     flow_shift,
     flow_warn,
     holding_watch,
+    market_bus,
     notify,
     nq_watch,
     program_flow,
@@ -66,6 +67,8 @@ HISTORY_DAYS = 20                 # trading days of snapshots behind the flow th
 ALERT_URL = "/#/market"
 URLS = {"holding_alert": "/#/",                  # #694 the dashboard's holdings
         "sector_mover": "/#/sectors?movers"}     # #740 the sectors page, scrolled to its movers card
+# #690 an alert as GET /api/alerts/today lists it (and the market stream pushes it)
+STREAM_FIELDS = ("trade_date", "kind", "rule", "market", "who", "severity", "t", "value", "prev", "text", "pushed", "tone")
 OWNER_ONLY = {"holding_alert"}                   # #694 the owner's holdings: web push to the owner's devices only
 TITLE = {"flow_shift": "수급 흐름 변화", "flow_warn": "수급 경고", "nq_alert": "나스닥 선물 이상 징후",
          "holding_alert": "보유 종목 손절 · 익절", "sector_mover": "섹터 급등락 주범",
@@ -192,6 +195,8 @@ class MarketAlerts:
                 log.warning("market alert %s/%s not recorded: %s", alert["kind"], alert["rule"], type(exc).__name__)
                 continue
             out.append(row)
+            # #690 the open market streams (a holding's alert only to the owner's): the timeline's shape
+            market_bus.publish("alert", alert["kind"], {k: row.get(k) for k in STREAM_FIELDS}, "desk", alert["t"])
             if row["pushed"]:
                 owner = self.owner() if alert["kind"] in OWNER_ONLY else None
                 notify.send(self.pusher, alert["kind"], f"tone_{row['tone']}", user_id=owner, payload={

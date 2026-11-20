@@ -409,11 +409,13 @@ def aware(value: datetime | None) -> datetime | None:
 
 
 def make_engine(url: str) -> Engine:
+    # hide_parameters (#712): a DB error's text never carries the bound values (a login e-mail, a client
+    # address, a token or password hash) into a traceback in the log.
     parsed = make_url(url)
     if parsed.get_backend_name() == "sqlite":
         if parsed.database and parsed.database != ":memory:":
             Path(parsed.database).parent.mkdir(parents=True, exist_ok=True)
-        engine = create_engine(url, connect_args={"check_same_thread": False, "timeout": 30})
+        engine = create_engine(url, connect_args={"check_same_thread": False, "timeout": 30}, hide_parameters=True)
 
         @event.listens_for(engine, "connect")
         def _sqlite_pragmas(dbapi_conn, _record):
@@ -424,7 +426,7 @@ def make_engine(url: str) -> Engine:
 
         return engine
     # pool_pre_ping: the homelab DB restarts now and then; a dead pooled connection should not fail a request.
-    return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5)
+    return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5, hide_parameters=True)
 
 
 def alembic_config(url: str):

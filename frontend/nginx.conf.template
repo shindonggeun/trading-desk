@@ -1,5 +1,14 @@
 # 웹 컨테이너 nginx (frontend.Dockerfile 이 /etc/nginx/templates 에 두고 기동 시 envsubst 한다).
 # 치환되는 것은 컨테이너에 정의된 환경변수(BACKEND_UPSTREAM)뿐이다 — $host 같은 nginx 변수는 그대로 남는다.
+
+# #712 접근 로그는 컨테이너 로그(stdout)로 퍼지므로 클라이언트 IPv4 의 마지막 옥텟을 가린다(그 밖의 주소는 "?").
+# 로그인 차단(fail2ban)은 이 로그가 아니라 인그레스 nginx 접근 로그를 본다(Infra nginx-trading-login).
+map $remote_addr $desk_masked_addr {
+    "~^(?<desk_net>\d+\.\d+\.\d+)\.\d+$" $desk_net.x;
+    default                                  "?";
+}
+log_format desk_masked '$desk_masked_addr - [$time_local] "$request" $status $body_bytes_sent '
+                       '"$http_referer" "$http_user_agent" $request_time';
 server {
     listen 80;
     root /usr/share/nginx/html;
@@ -9,6 +18,7 @@ server {
     # 그 밖(LAN 직접 접속 · docker)은 접속한 주소 그대로다 (docs/security.md §4)
     set_real_ip_from 192.168.0.12;
     real_ip_header X-Real-IP;
+    access_log /var/log/nginx/access.log desk_masked;
 
     add_header X-Content-Type-Options nosniff always;
     add_header X-Frame-Options DENY always;

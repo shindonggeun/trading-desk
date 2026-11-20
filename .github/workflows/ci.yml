@@ -60,6 +60,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build -f backend/backend.Dockerfile -t trading-desk-backend:ci backend
       - run: docker build -f frontend/frontend.Dockerfile -t trading-desk-web:ci frontend
+      - name: web image nginx config is valid (template rendered as at start)
+        run: docker run --rm -e BACKEND_UPSTREAM=127.0.0.1:8000 trading-desk-web:ci nginx -t
       - name: backend image starts and serves /api/health
         run: |
           docker run -d --name be -e DESK_DATABASE_URL=sqlite:////tmp/desk.db trading-desk-backend:ci

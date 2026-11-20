@@ -1149,7 +1149,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             if not passed:
                 if user is not None:
                     otp_fails.attempt(f"user:{user.id}")
-                log.warning("login otp failed ip=%s", ip)
+                log.warning("login otp failed ip=%s", log_setup.mask_ip(ip))
                 return JSONResponse({"detail": "invalid or expired code"}, status_code=401)
             challenges.close(body.challenge)
             throttle.succeeded(ip)
@@ -1161,18 +1161,18 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except Busy:
             return JSONResponse({"detail": "busy, try again"}, status_code=503, headers={"Retry-After": "5"})
         if user is None:
-            log.warning("login failed ip=%s", ip)   # fail2ban reads the ingress log; this is for us
+            log.warning("login failed ip=%s", log_setup.mask_ip(ip))   # fail2ban reads the ingress log (#712)
             return JSONResponse({"detail": "invalid username or password"}, status_code=401)
         if auth.otp_enabled(user.id):
             if not otp_box.available:                       # fail closed: never skip the second factor
-                log.error("user %s has OTP on but the OTP key is unusable: %s", user.username,
+                log.error("user #%s has OTP on but the OTP key is unusable: %s", user.id,
                           otp_box.error or "DESK_OTP_KEY is missing")
                 return JSONResponse({"detail": "OTP is not available on the server"}, status_code=503)
             # Spread over many IPs, code guessing is still capped per account. Reaching the cap means
             # someone holds the password: say so loudly.
             wait = otp_fails.blocked_for(f"user:{user.id}")
             if wait:
-                log.error("otp failures for user %s over the limit; the password may be known", user.username)
+                log.error("otp failures for user #%s over the limit; the password may be known", user.id)
                 return JSONResponse({"detail": "too many failed codes", "retry_after": wait},
                                     status_code=429, headers={"Retry-After": str(wait)})
             # No session yet, and the IP's attempt count stays: the code is still to be guessed.
@@ -1183,7 +1183,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     def _signed_in(user: User, ip: str, request: Request) -> Response:
         auth.close_session(request.cookies.get(COOKIE))   # never keep a token issued before this login
         token = auth.open_session(user, ip, request.headers.get("user-agent"))
-        log.info("login ok user=%s ip=%s", user.username, ip)
+        log.info("login ok user=#%s ip=%s", user.id, log_setup.mask_ip(ip))
         response = Response(status_code=204)
         response.set_cookie(COOKIE, token, max_age=int(settings.session_max_hours * 3600), path="/",
                             secure=settings.cookie_secure, httponly=True, samesite="strict")
@@ -1209,7 +1209,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except Busy:
             return JSONResponse({"detail": "busy, try again"}, status_code=503, headers={"Retry-After": "5"})
         if not ok:
-            log.warning("otp change: wrong password ip=%s", _client_ip(request))
+            log.warning("otp change: wrong password ip=%s", log_setup.mask_ip(_client_ip(request)))
             return JSONResponse({"detail": "wrong password"}, status_code=403)
         return None
 
@@ -1238,10 +1238,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except otp.OtpUnavailable:
             return JSONResponse({"detail": "OTP is not configured on the server (DESK_OTP_KEY)"}, status_code=503)
         if codes is None:
-            log.warning("otp enable: code refused ip=%s", _client_ip(request))
+            log.warning("otp enable: code refused ip=%s", log_setup.mask_ip(_client_ip(request)))
             return JSONResponse({"detail": "code does not match, or setup expired (10 min); start setup again"},
                                 status_code=403)
-        log.info("otp enabled user=%s", user.username)
+        log.info("otp enabled user=#%s", user.id)
         return {"recovery_codes": codes}
 
     @app.post("/api/auth/otp/disable", status_code=204)
@@ -1252,12 +1252,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             return refused
         try:
             if not auth.otp_verify(user.id, body.code, otp_box):
-                log.warning("otp disable: code refused ip=%s", _client_ip(request))
+                log.warning("otp disable: code refused ip=%s", log_setup.mask_ip(_client_ip(request)))
                 return JSONResponse({"detail": "invalid code"}, status_code=403)
         except otp.OtpUnavailable:
             return JSONResponse({"detail": "OTP is not available on the server"}, status_code=503)
         auth.otp_disable(user.id, keep_token=request.cookies.get(COOKIE))
-        log.info("otp disabled user=%s", user.username)
+        log.info("otp disabled user=#%s", user.id)
         return Response(status_code=204)
 
     @app.post("/api/auth/logout", status_code=204)

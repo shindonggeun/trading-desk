@@ -265,11 +265,7 @@ class KisRest:
         """#688 the collector's ``tokens`` job: renew ahead of expiry, or for a reader's request."""
         if self._slot is None:
             return False
-        try:
-            got = await self._slot.keep(self._issue, ahead=ahead, gap=_backoff)
-        except KisError as exc:
-            log.warning("kis token renewal failed: %s", exc)
-            return False
+        got = await self._slot.keep(self._issue, ahead=ahead, gap=_backoff)
         if got is None:
             return False
         async with self._lock:          # this process uses the new token at once

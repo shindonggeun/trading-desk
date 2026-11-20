@@ -328,12 +328,8 @@ class KisStream:
         """#688 the collector's ``tokens`` job: a key only when a streaming process asked for one."""
         if self._slot is None:
             return False
-        try:
-            got = await self._slot.keep(self._issue_approval, ahead=ahead, on_demand=True,
-                                        gap=lambda _refusals: APPROVAL_MIN_GAP_SEC)
-        except ApprovalError as exc:
-            log.warning("kis approval key failed: %s", exc)
-            return False
+        got = await self._slot.keep(self._issue_approval, ahead=ahead, on_demand=True,
+                                    gap=lambda _refusals: APPROVAL_MIN_GAP_SEC)
         return got is not None          # a connected socket keeps its key until it reconnects
 
     def _prune_wants(self) -> None:

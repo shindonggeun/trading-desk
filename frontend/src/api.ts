@@ -676,7 +676,7 @@ export interface StatusCooldown { name: string; label: string; until: string | n
 export interface DeskStatus { now: string; jobs: StatusJob[]; cooldowns: StatusCooldown[] }
 
 /** #614 차트 선 알림(#613 GET · PUT /api/notify/line-watch) — 감시는 주인이 켜기 전까지 꺼짐 */
-export type LineWatchEvent = "touch" | "break" | "retest";
+export type LineWatchEvent = "touch" | "break" | "retest" | "long";
 export interface LineSignal {
   trade_date: string;        // KST 날짜
   ticker: string;

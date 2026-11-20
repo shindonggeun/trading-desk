@@ -2327,6 +2327,21 @@ export interface ShortTrendline {
   explain: string;
   hit_rate: LineRate | LineBreakRate | null;
 }
+/** #679 몇 달(일봉) · 몇 년(주봉)에 걸친 긴 추세선(desk/long_lines.py) — 짧은 추세선 필드 + 닿은 자리 · 거짓 이탈 */
+export interface LongTrendline extends Omit<ShortTrendline, "hit_rate"> {
+  long: true;
+  /** 닿은 봉 시각 · 그때 선 가격(마지막이 오늘 봉이면 "오늘 닿음") */
+  touch_points: LinePoint[];
+  /** 종가가 3봉 이하로 선을 넘었다 돌아온 구간(꼬리는 세지 않는다) */
+  false_breaks: { from: string; to: string; closes: number; extreme: number }[];
+  /** holding 유지 · testing 시험 중 · broken 이탈 */
+  status: "holding" | "testing" | "broken";
+  distance_pct: number;
+  /** 첫 닿음 시각 */
+  since: string;
+  span_bars: number;
+  score: number;
+}
 export interface LineEvent { at: string; kind: "trend_break" | "channel_break"; line_id: string; text: string }
 export interface LinesReport {
   ticker: string;
@@ -2339,6 +2354,8 @@ export interface LinesReport {
   atr: number | null;
   channels: ParallelChannel[];
   trendlines: ShortTrendline[];
+  /** #679 일봉 차트에서만: 일봉 · 주봉의 긴 지지 · 저항선(다른 주기는 []; 옛 서버는 없다) */
+  long_lines?: LongTrendline[];
   events: LineEvent[];
   note: string;
   backtest: { generated_at: string; timeframes: Record<string, { from: string; to: string; steps: number }> } | null;

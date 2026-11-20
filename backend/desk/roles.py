@@ -7,7 +7,7 @@ The backend is one image run as up to three processes, each with its own event l
                   a job that fills them runs where they are read);
 - ``collector`` - the feeds and alerts: the broker listing, futures / market flow snapshots, NQ and line alerts,
                   credit, news, calendars, KRX history, 13F, and periodic upkeep;
-- ``analyst``   - the model work: LLM runs (a later step of #688), the morning brief, reports, the day call
+- ``analyst``   - the model work: LLM runs (the api queues them, desk.run_queue), the morning brief, reports, the day call
                   and plan scoring.
 
 ``all`` (the default) runs every job in one process - exactly the desk before #688.
@@ -22,10 +22,11 @@ process's memory:
 - caches read both by the screens and by a run's notes: credit, the economic calendar, macro news, market /
   futures flow, tips (prewarm) and ``calibration.TABLE``'s live record (scoring);
 - the KIS live quotes (``kis_stream``, api) that ``nq_fast`` (collector) reads for QQQ;
-- the run gate's ``spare_slot`` the news digest, the brief and the reports wait on.
+- the run gate's ``spare_slot`` the news digest, the brief and the reports wait on, and its rate-limit cooldown
+  the chat (api) reads.
 
 A run's events already cross processes on PostgreSQL (desk.run_events: ``pg_notify`` on write, the ``run_events``
-job listens where the streams are served).
+job listens where the streams are served), and runs from the api to the analyst (desk.run_queue).
 """
 
 from __future__ import annotations
@@ -64,6 +65,7 @@ JOBS: tuple[tuple[str, str, str, str | None, str], ...] = (
     ("purge", "오래된 분석 정리", "DB", None, COLLECTOR),
     ("kis_stream", "실시간 시세 스트림", "한투(KIS)", None, API),
     ("run_events", "분석 이벤트 알림", "PostgreSQL LISTEN", None, API),   # wakes this process's SSE streams
+    ("run_queue", "분석 실행 대기열", "DB", None, ANALYST),   # claims what the api queued (desk.run_queue)
 )
 
 _ROLE_OF = {name: role for name, _label, _source, _parent, role in JOBS}

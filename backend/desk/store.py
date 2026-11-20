@@ -38,13 +38,17 @@ class Store:
 
     # --- runs -----------------------------------------------------------------------
 
-    def create_run(self, ticker: str, trade_date: str, options: dict) -> str:
+    def create_run(self, ticker: str, trade_date: str, options: dict, first_event: dict | None = None) -> str:
+        """A queued run; with ``first_event`` (#688 its ``queued`` event) written in the same transaction, so a
+        run another process can claim always has its first event already (seq 1)."""
         run_id = uuid.uuid4().hex[:12]
         with self.engine.begin() as conn:
             conn.execute(runs.insert().values(
                 id=run_id, ticker=ticker, trade_date=trade_date, status="queued",
                 options=options, created_at=now(),
             ))
+            if first_event is not None:
+                self._insert_event(conn, run_id, first_event)
         return run_id
 
     def mark_running(self, run_id: str) -> None:
@@ -66,14 +70,44 @@ class Store:
         return [{"id": r["id"], "ticker": r["ticker"], "status": r["status"],
                  "created_at": iso(r["created_at"]), "started_at": iso(r["started_at"])} for r in rows]
 
-    def fail_unfinished(self, reason: str) -> int:
-        """Runs a previous process left mid-way cannot continue; say so instead of spinning forever."""
+    def fail_unfinished(self, reason: str, statuses: tuple[str, ...] = ("queued", "running"),
+                        spare: set[str] | frozenset[str] = frozenset()) -> int:
+        """Runs a previous process left mid-way cannot continue; say so instead of spinning forever.
+        #688 the analyst fails only ``running`` (its own worker died with it) less those it runs itself
+        (``spare``); ``queued`` waits to be claimed."""
+        where = [runs.c.status.in_(statuses)]
+        if spare:
+            where.append(runs.c.id.not_in(list(spare)))
         with self.engine.begin() as conn:
-            result = conn.execute(
-                update(runs).where(runs.c.status.in_(("queued", "running")))
-                .values(status="failed", error=reason, finished_at=now())
-            )
-            return result.rowcount
+            failed = conn.execute(
+                update(runs).where(*where)
+                .values(status="failed", error=reason, finished_at=now()).returning(runs.c.id)
+            ).scalars().all()
+            for run_id in failed:
+                self._announce(conn, run_id)      # an open stream elsewhere closes now, not at its heartbeat
+        return len(failed)
+
+    def claim_queued(self) -> tuple[str, dict] | None:
+        """#688 the oldest queued run, now ``running``, with its stored options (as stored) - or None. PostgreSQL skips a row
+        another transaction holds (``FOR UPDATE SKIP LOCKED``), so two claims never take the same run; SQLite
+        (one local process) has no row locks and the dialect leaves the clause out."""
+        oldest = (select(runs.c.id).where(runs.c.status == "queued").order_by(runs.c.created_at, runs.c.id)
+                  .limit(1).with_for_update(skip_locked=True).scalar_subquery())
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                update(runs).where(runs.c.id == oldest, runs.c.status == "queued")
+                .values(status="running", started_at=now()).returning(runs.c.id, runs.c.options)
+            ).first()
+            if row is None:
+                return None
+            self._announce(conn, row.id)
+        return row.id, row.options
+
+    def requeue(self, run_id: str) -> None:
+        """#688 a run claimed by an analyst that is shutting down goes back to the queue, untouched."""
+        with self.engine.begin() as conn:
+            conn.execute(update(runs).where(runs.c.id == run_id, runs.c.status == "running")
+                         .values(status="queued", started_at=None))
 
     def purge_finished_before(self, cutoff: datetime) -> int:
         """Delete done/failed runs created before ``cutoff`` with their events. Queued and
@@ -177,21 +211,25 @@ class Store:
 
     def append_event(self, run_id: str, event: dict) -> dict:
         with self.engine.begin() as conn:
-            seq = conn.execute(
-                select(func.coalesce(func.max(events.c.seq), 0) + 1).where(events.c.run_id == run_id)
-            ).scalar_one()
-            stored = {
-                "run_id": run_id,
-                "seq": seq,
-                "ts": now(),
-                "type": event["type"],
-                "agent": event.get("agent"),
-                "content": event.get("content"),
-                "data": event.get("data"),
-            }
-            conn.execute(events.insert().values(**stored))
-            self._announce(conn, run_id)
+            stored = self._insert_event(conn, run_id, event)
         return {**stored, "ts": iso(stored["ts"])}
+
+    def _insert_event(self, conn, run_id: str, event: dict) -> dict:
+        seq = conn.execute(
+            select(func.coalesce(func.max(events.c.seq), 0) + 1).where(events.c.run_id == run_id)
+        ).scalar_one()
+        stored = {
+            "run_id": run_id,
+            "seq": seq,
+            "ts": now(),
+            "type": event["type"],
+            "agent": event.get("agent"),
+            "content": event.get("content"),
+            "data": event.get("data"),
+        }
+        conn.execute(events.insert().values(**stored))
+        self._announce(conn, run_id)
+        return stored
 
     def events_after(self, run_id: str, after: int = 0) -> list[dict]:
         with self.engine.connect() as conn:

@@ -88,6 +88,7 @@ from . import (
     risk_regime,
     roles,
     run_events,
+    run_queue,
     sector_movers,
     sector_news,
     session_progress,
@@ -658,9 +659,19 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        stale = store.fail_unfinished(RESTART_REASON)
-        if stale:
-            log.warning("marked %d unfinished run(s) as failed", stale)
+        # #688 only a process that runs the runs it is handed (all) fails what its predecessor left; the analyst
+        # does it in desk.run_queue once it holds the queue, the api and the collector never. all holds the
+        # queue's lock too (PostgreSQL), so an analyst started beside it by mistake claims none of its runs.
+        all_lock = None
+        if settings.role == "all":
+            all_lock = run_queue.Holder(engine)
+            if await asyncio.to_thread(all_lock.hold):
+                stale = store.fail_unfinished(RESTART_REASON)
+                if stale:
+                    log.warning("marked %d unfinished run(s) as failed", stale)
+            else:
+                log.error("another process (an analyst?) holds the run queue on this database: this one runs the "
+                          "runs it is handed but leaves unfinished ones alone - run all or the split, not both")
         # Scripted runs keep levels on the script's numbers instead of fetching a live quote.
         app.state.manager = RunManager(store, hub, runner, broker, settings.max_concurrent_runs,
                                        prices=None if settings.fake_runs else prices,
@@ -696,7 +707,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        risk=risk,
                                        # #171: recent news/fundamentals reports taken over (0 = off)
                                        reuse_minutes=settings.reuse_reports_min,
-                                       rate_limit_cooldown_min=settings.rate_limit_cooldown_min)
+                                       rate_limit_cooldown_min=settings.rate_limit_cooldown_min,
+                                       direct=settings.role == "all")   # #688 elsewhere: queue for the analyst
 
         # #623 every loop below is a step that returns its next wait, run by jobs.run_forever: an exception
         # is logged and the loop goes on after its retry wait; GET /api/status shows each one's state
@@ -1134,6 +1146,18 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         start("scoring", settings.score_interval_sec > 0 and not settings.fake_runs, score_plans,
               settings.score_interval_sec, "plan scoring failed")
         start("purge", settings.retention_days > 0, purge_old_runs, 24 * 3600, "retention sweep failed")
+        # #688 the analyst claims the runs the api queued (desk.run_queue); all runs its own straight away
+        queue = None
+        if here("run_queue") and settings.role == "analyst":
+            queue = run_queue.RunQueue(store, app.state.manager, run_queue.Holder(engine))
+
+            async def serve_queue() -> float:
+                wait = await queue.step()
+                if queue.blocked:
+                    jobs.mark_error("run_queue", "another analyst holds the run queue")
+                return wait
+
+            start("run_queue", True, serve_queue, run_queue.POLL_SEC, "run queue failed")
         # connects only once a page watches a KIS-streamable ticker (desk.broker.kis_stream)
         kis = jobs.spawn("kis_stream", kis_feed.run()) if here("kis_stream") and kis_feed is not None else None
         if kis:
@@ -1152,6 +1176,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             jobs.get("run_events").looped = True
             started.append(jobs.spawn("run_events", run_events.follow(hub, engine, listening)))
         yield
+        if queue is not None:
+            await queue.close()             # #688 first: claim nothing more, put back a claim under way, unlock
+        if all_lock is not None:
+            await asyncio.to_thread(all_lock.release)
         notify.shutdown()                # #580 the channels' queued sends go with the process
         if kis:
             kis.cancel()

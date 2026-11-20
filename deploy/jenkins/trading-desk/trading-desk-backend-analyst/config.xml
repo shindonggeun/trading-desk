@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<flow-definition>
+  <description>백엔드 analyst 배포 잡 (#785). #776 배포 계약과 비운영 리허설 확인 전까지 비활성입니다.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties/>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition">
+    <script>error('TD-785: analyst deployment is not wired')</script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>true</disabled>
+</flow-definition>

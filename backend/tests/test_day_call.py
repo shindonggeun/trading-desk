@@ -199,34 +199,59 @@ def test_the_fit_finds_the_signal_and_is_the_same_twice():
 QUICK = {"STEPS": 150, "L2_GRID": (0.01, 0.1), "LAMBDA_GRID": (0.0, 0.3), "CV_YEARS": 1}
 
 
-@pytest.fixture
-def quick(monkeypatch):
+def _use_quick_settings(monkeypatch):
     for name, value in QUICK.items():
         monkeypatch.setattr(dct, name, value)
 
 
-_BACKTESTS: dict = {}
+@pytest.fixture(scope="module")
+def _us_backtest():
+    with pytest.MonkeyPatch.context() as patch:
+        _use_quick_settings(patch)
+        return dct.backtest("us", SERIES, compare=False)
 
 
-def _backtest(market: str, compare: bool = True) -> tuple[dict, dict]:
-    """dct.backtest(market, SERIES) with the QUICK settings, run once per module and handed out as copies:
-    the same pure computation several tests read (CI time, #748). Tests that change the series call
-    dct.backtest themselves."""
-    key = (market, compare)
-    if key not in _BACKTESTS:
-        saved = {name: getattr(dct, name) for name in QUICK}
-        try:
-            for name, value in QUICK.items():
-                setattr(dct, name, value)
-            _BACKTESTS[key] = dct.backtest(market, SERIES, compare=compare)
-        finally:
-            for name, value in saved.items():
-                setattr(dct, name, value)
-    return copy.deepcopy(_BACKTESTS[key])
+@pytest.fixture
+def us_backtest(_us_backtest):
+    return copy.deepcopy(_us_backtest)
 
 
-def test_the_backtest_holds_out_the_last_90_days_and_the_server_reads_the_same_numbers(quick):
-    model, report = _backtest("kr")
+def test_the_backtest_holds_out_the_last_90_days_and_the_server_reads_the_same_numbers(tmp_path, monkeypatch, capsys):
+    from desk import cli
+
+    _use_quick_settings(monkeypatch)
+    monkeypatch.setattr(dct, "fetch", lambda candles=None, flow_dir=None: SERIES)
+    # Default calls also appear in the comparison table. Reuse only identical fits
+    # during this one run so every distinct combination still trains and scores.
+    fit_round = dct.fit_round
+    fits = {}
+
+    def fit_once(market, round_, series, holdout_from, *, kind, extras, edges=None, start=None):
+        key = (market, round_, id(series), holdout_from, kind, tuple(extras), edges, start)
+        if key not in fits:
+            fits[key] = fit_round(market, round_, series, holdout_from, kind=kind, extras=extras, edges=edges, start=start)
+        return copy.deepcopy(fits[key])
+
+    monkeypatch.setattr(dct, "fit_round", fit_once)
+    backtest = dct.backtest
+    results = []
+
+    def run_backtest(market, series, holdout_days, start, **kwargs):
+        assert (market, series is SERIES, holdout_days, start, kwargs["compare"]) == (
+            "kr", True, dct.HOLDOUT_DAYS, None, True,
+        )
+        result = backtest(market, series, holdout_days, start, **kwargs)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(dct, "backtest", run_backtest)
+    assert cli.main(["day-call", "backtest", "--market", "kr", "--out-dir", str(tmp_path)]) == 0
+    model = json.loads((tmp_path / "model_kr.json").read_text(encoding="utf-8"))
+    report = json.loads((tmp_path / "report_kr.json").read_text(encoding="utf-8"))
+    assert results == [(model, report)]
+    assert model["market"] == "kr" and report["holdout_days"] == dct.HOLDOUT_DAYS
+    assert report["code"] == dct.code_hash() and "news" in report["not_run"] and "flow" not in report["not_run"]
+    assert "kr 1차" in capsys.readouterr().out
     assert set(model["calls"]) == set(dc.CALLS) == set(report["calls"]) and set(report["notes"]) >= {"selection", "night"}
     assert model["calls"]["prev_close"]["label"] == "cc" and model["calls"]["prev_close"]["extras"] == ["night"]
     r1 = report["calls"]["open"]["rounds"]["1"]
@@ -258,11 +283,10 @@ def test_the_backtest_holds_out_the_last_90_days_and_the_server_reads_the_same_n
     X = (dct._matrix(rows, m["features"]) - np.array(m["mean"])) / np.array(m["std"])
     expect = (1 - m["lambda"]) * dct._probs(theta, X, dc.EDGES) + m["lambda"] * clim
     assert np.allclose(dct._predict(m, rows), expect, atol=1e-12)
-    assert json.loads(json.dumps(model)) == model                         # plain JSON
 
 
-def test_a_call_from_the_committed_model_has_the_contract_shape(quick, tmp_path):
-    model, _report = _backtest("us", compare=False)                     # the variants table is not read here
+def test_a_call_from_the_committed_model_has_the_contract_shape(us_backtest, tmp_path):
+    model, _report = us_backtest
     (tmp_path / "model_us.json").write_text(json.dumps(model), encoding="utf-8")
     loaded = dc.load_model("us", tmp_path)
     c = dc.call(loaded, "us", 2, date(2025, 9, 3), SERIES)
@@ -282,24 +306,6 @@ def test_a_call_from_the_committed_model_has_the_contract_shape(quick, tmp_path)
     assert dc.load_model("kr", tmp_path) is None and dc.today_call() is None
 
 
-def test_the_cli_writes_the_model_and_the_report(quick, tmp_path, monkeypatch, capsys):
-    from desk import cli
-
-    monkeypatch.setattr(dct, "fetch", lambda candles=None, flow_dir=None: SERIES)
-    asked = []
-
-    def backtest(market, series, holdout_days, start, **kw):          # the fit itself is tested above
-        asked.append((market, series is SERIES, holdout_days, start, kw.get("compare")))
-        return _backtest(market)
-    monkeypatch.setattr(dct, "backtest", backtest)
-    assert cli.main(["day-call", "backtest", "--market", "kr", "--out-dir", str(tmp_path)]) == 0
-    assert asked == [("kr", True, dct.HOLDOUT_DAYS, None, True)]
-    assert json.loads((tmp_path / "model_kr.json").read_text(encoding="utf-8"))["market"] == "kr"
-    report = json.loads((tmp_path / "report_kr.json").read_text(encoding="utf-8"))
-    assert report["code"] == dct.code_hash() and "news" in report["not_run"] and "flow" not in report["not_run"]
-    assert "kr 1차" in capsys.readouterr().out
-
-
 def test_a_session_still_in_progress_is_no_answer():
     bars = SERIES["^KS11"]
     last = bars[-1]
@@ -310,8 +316,9 @@ def test_a_session_still_in_progress_is_no_answer():
     assert all(r["day"] < day for r in dct.rows("kr", 1, SERIES, now=during))
 
 
-def test_the_held_out_sessions_choose_nothing(quick):
-    model, report = _backtest("us", compare=False)
+def test_the_held_out_sessions_choose_nothing(us_backtest, monkeypatch):
+    _use_quick_settings(monkeypatch)
+    model, report = us_backtest
     start = date.fromisoformat(report["holdout_from"])
     moved = {**SERIES, "^GSPC": [SimpleNamespace(**{**vars(b), "close": b.close * (1.03 if i % 2 else 0.97)})
                                   if dc.session_day("^GSPC", b) >= start else b

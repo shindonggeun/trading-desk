@@ -18,6 +18,9 @@ the close" in five stages, scored per round.
   open (#568). Nothing after the round's time is read.
 - The intraday investor flows (#579) have no history on this side (the server keeps them since #359),
   so they are not in the model.
+- A call is "판단 보류" when its long and short sides are within desk.day_call.HOLD_MARGIN, and the whole
+  model is "참고용 · 통계적 우위 없음" (``reference_only``) unless its hold-out beat every baseline
+  (``verdict_of``); such a model's rounds are not pushed (desk.day_calls.push_of).
 """
 
 from __future__ import annotations
@@ -33,6 +36,8 @@ from . import market_calendar
 
 CALL = "to_close"
 CALL_KO = "지금부터 마감까지"
+NO_EDGE_KO = "참고용 · 통계적 우위 없음"
+EDGE_POINTS = 0.05          # the hold-out direction hit must beat the best baseline by this (and Brier skill > 0)
 DATA = dc.DATA
 # round -> local time (the end of an hourly index bar); numbered after the day call's 1차 and 2차
 ROUNDS = {
@@ -228,11 +233,25 @@ def call(model_file: dict, market: str, round_: int, day: date, series: dict[str
     return {"market": market, "date": day.isoformat(), "call": CALL, "call_label": CALL_KO,
             "measured_from": "round", "round": round_, "round_label": round_label(market, round_),
             "cutoff_at": meta["cutoff"].isoformat(), "stage": stage, "label": dc.LABEL_KO[stage],
-            "direction": dc.direction(probs), "verdict": dc.direction(probs),
+            "direction": dc.direction(probs), "verdict": dc.verdict(probs, dc.HOLD_MARGIN),
+            "reference_only": model_file.get("verdict") != "edge",
+            "reference_label": None if model_file.get("verdict") == "edge" else NO_EDGE_KO,
             "probs": {s: probs[s] for s in dc.DISPLAY_ORDER},
             "edges_pct": {"flat": round(flat * room, 2), "strong": round(strong * room, 2)},
             "reasons": reasons(model, x), "model_version": model_file["version"], "fallback": False,
             "features": {**x, "anchor": meta["anchor"], "left": meta["left"]}}
+
+
+def verdict_of(holdout: dict) -> str:
+    """"edge" when the hold-out direction hit beats always long, always short and following the session
+    so far by EDGE_POINTS and the Brier skill is above zero; "no_edge" otherwise (or too few rows)."""
+    b = holdout.get("baselines") or {}
+    rates = [(b.get(k) or {}).get("direction_hit_rate") for k in ("always_long", "always_short", "follow_trend")]
+    best = max((r for r in rates if r is not None), default=None)
+    hit = holdout.get("direction_hit_rate")
+    if hit is None or best is None or (holdout.get("brier_skill") or 0) <= 0:
+        return "no_edge"
+    return "edge" if hit >= best + EDGE_POINTS else "no_edge"
 
 
 STAGE_INDEX = {s: i for i, s in enumerate(dc.STAGES)}

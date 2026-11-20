@@ -90,7 +90,7 @@ export PATH="$TMP/bin:$PATH" STATE="$TMP/state" STABLE_SEC=0 WAIT_MIN=0 ENV_FILE
 export FAKE_IMAGE=trading-desk-backend:prod FAKE_SERVICES=backend-prod
 
 prod_rev() { local id; id=$(cat "$STATE/tags/trading-desk-backend_prod"); cat "$STATE/img/$id.label"; }
-ctr_rev() { local id h; read -r id h < "$STATE/ctr/$1"; cat "$STATE/img/$id.label"; }
+ctr_rev() { local id; read -r id _ < "$STATE/ctr/$1"; cat "$STATE/img/$id.label"; }
 deploy() { REVISION="$1" bash "$SCRIPT" backend "$SRC" > "$TMP/out" 2>&1; echo $?; }
 check() {  # $1 이름, $2 기대, $3 실제
   if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: 기대 '$2' 실제 '$3'"; sed 's/^/     | /' "$TMP/out"; FAILS=$((FAILS + 1)); fi
@@ -101,7 +101,7 @@ check "첫 배포는 rollback 태그가 없다" "" "$(cat "$STATE/tags/trading-d
 
 rc=$(deploy rev2); check "두 번째 배포" "0 rev2 rev2" "$rc $(prod_rev) $(ctr_rev backend-prod)"
 check "직전 이미지를 rollback 으로 남긴다" "rev1" "$(cat "$STATE/img/$(cat "$STATE/tags/trading-desk-backend_rollback").label")"
-check "옛 커밋 태그를 지운다" "" "$(ls "$STATE/tags" | grep -F 'rev1' || true)"
+check "옛 커밋 태그를 지운다" 0 "$(find "$STATE/tags" -name '*rev1*' | wc -l | tr -d ' ')"
 
 rc=$(ROLLBACK_DRILL=1 deploy rev3); check "드릴은 되돌린다" "2 rev2 rev2" "$rc $(prod_rev) $(ctr_rev backend-prod)"
 grep -q "ROLLBACK_DRILL" "$TMP/out"; check "드릴을 알린다" 0 $?

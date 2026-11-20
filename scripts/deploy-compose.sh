@@ -97,7 +97,7 @@ NET=$(env_value DESK_DOCKER_NETWORK)
 docker network inspect "$NET" >/dev/null 2>&1 || docker network create "$NET" >/dev/null
 
 PREV_CID=$(cid "$PRIMARY")
-PREV_IMAGE= PREV_REV=
+PREV_IMAGE='' PREV_REV=''
 if [ -n "$PREV_CID" ]; then
   PREV_IMAGE=$(docker inspect -f '{{.Image}}' "$PREV_CID")
   PREV_REV=$(rev_of "$PREV_CID")

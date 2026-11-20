@@ -11,6 +11,18 @@ change. It caches per (market, interval): Toss is always asked for the full 100 
   (CONFIRMED_AFTER). A record last updated on an earlier day is final for the days it covers,
   which keeps a confirmed week from turning provisional again over the weekend. The 18:00 mark
   comes from the spec's sample (updatedAt 18:10); check it against a live updatedAt (#76).
+
+#673 today's figures can move while Toss' ``updatedAt`` stays put (the card read "09:01 갱신" for 10-30
+minutes). So each market's 1d record is watched between fetches: when its figures change, the time is the
+previous fetch's (the change happened after it - never fresher than known), and the source time is the
+later of that and ``updatedAt``. Every change is one INFO line (``toss flow``) - the source's real cadence
+in the server log. ``fresh`` skips the cache (the minute snapshots, desk.futures_history: so the stored
+spot figures are the minute's, and the card's cache is refreshed by them).
+
+Before the bell (PREMARKET_FROM ~ 09:00) today's record already carries the trades before the regular
+session (the server's snapshots: non-zero 08:45 figures that differ day to day and move again by 09:01 -
+the pre-open off-hours and NXT pre-market trades). It is cached as in the session and marked
+``session: "pre"`` so the screens can say 프리장.
 """
 
 from __future__ import annotations
@@ -35,6 +47,7 @@ CONFIRMED_AFTER = (18, 0)
 CACHE_OPEN_SEC = 60.0
 CACHE_CLOSED_SEC = 600.0
 CACHE_FAIL_SEC = 30.0
+PREMARKET_FROM = (8, 0)        # NXT pre-market opens 08:00 (KRX pre-open off-hours trades 08:30-08:40)
 
 
 def market_open(now: datetime) -> bool:
@@ -47,12 +60,24 @@ def market_open(now: datetime) -> bool:
     return 9 * 60 <= minutes <= 15 * 60 + 40
 
 
-def _ttl_until_open(now: datetime, ttl: float) -> float:
-    """Do not carry a pre-open answer past 09:00 KST on a weekday."""
+def premarket(now: datetime) -> bool:
+    """Weekdays PREMARKET_FROM ~ 09:00 KST: trades before the regular session already count in today's record."""
     local = now.astimezone(KST)
-    if local.weekday() >= 5 or local.hour >= 9:
+    return local.weekday() < 5 and PREMARKET_FROM <= (local.hour, local.minute) < (9, 0)
+
+
+def session(now: datetime) -> str:
+    """``pre`` · ``regular`` · ``closed`` for the screens."""
+    return "regular" if market_open(now) else "pre" if premarket(now) else "closed"
+
+
+def _ttl_until_open(now: datetime, ttl: float) -> float:
+    """Do not carry an early-morning answer past PREMARKET_FROM on a weekday (#673: from then on the
+    pre-market is read as the session is)."""
+    local = now.astimezone(KST)
+    if local.weekday() >= 5 or (local.hour, local.minute) >= PREMARKET_FROM:
         return ttl
-    opens = local.replace(hour=9, minute=0, second=0, microsecond=0)
+    opens = local.replace(hour=PREMARKET_FROM[0], minute=PREMARKET_FROM[1], second=0, microsecond=0)
     return max(1.0, min(ttl, (opens - local).total_seconds()))
 
 
@@ -106,6 +131,16 @@ def normalize(record: FlowRecord, interval: str, now: datetime) -> dict:
     }
 
 
+def _later(a: str | None, b: str | None) -> str | None:
+    """The later of two ISO times (either may be missing)."""
+    if not a or not b:
+        return a or b
+    pa, pb = _parse_time(a), _parse_time(b)
+    if pa is None or pb is None:
+        return a if pa is not None else b
+    return a if pa >= pb else b
+
+
 def _short_error(exc: Exception) -> str:
     """The class and the first clause only — Toss error bodies stay in the log (as #17 does)."""
     return f"{type(exc).__name__}: {str(exc).split(':')[0]}"
@@ -120,8 +155,10 @@ class MarketFlow:
         self._now = now
         self._cache: dict[tuple, tuple[float, float, dict]] = {}   # key -> (stamp, ttl, value)
         self._locks: dict[tuple, asyncio.Lock] = {}
+        # market -> (date, updatedAt, figures, fetched at, figures first seen changed at or None)
+        self._seen: dict[str, tuple[str, str | None, tuple, datetime, datetime | None]] = {}
 
-    async def get(self, market: str, interval: str, count: int) -> dict:
+    async def get(self, market: str, interval: str, count: int, fresh: bool = False) -> dict:
         if market not in MARKETS:
             raise ValueError(f"market must be one of {', '.join(MARKETS)}")
         if interval not in INTERVALS:
@@ -131,26 +168,49 @@ class MarketFlow:
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:   # concurrent refreshes of one key share a single broker call
             cached = self._cache.get(key)
-            if not cached or self._clock() - cached[0] >= cached[1]:
+            if fresh or not cached or self._clock() - cached[0] >= cached[1]:
                 value, ok = await self._fetch(market, interval)
                 now = self._now()
                 if not ok:
                     ttl = CACHE_FAIL_SEC
-                elif market_open(now):
+                elif market_open(now) or premarket(now):
                     ttl = CACHE_OPEN_SEC
                 else:
                     ttl = _ttl_until_open(now, CACHE_CLOSED_SEC)
-                cached = (self._clock(), ttl, value)
-                self._cache[key] = cached
+                got = (self._clock(), ttl, value)
+                # a failed fresh read (the snapshot's) answers its caller but leaves a good cache to the card
+                if ok or not fresh or not cached or cached[2].get("error") or not cached[2].get("records"):
+                    self._cache[key] = got
+                cached = got
         value = cached[2]
         now = self._now()
         latest = (value.get("records") or [None])[0] or {}
-        # #645 how old the figures are: Toss stamps today's record with its own update time
-        fresh = freshness.stamp(value.get("fetched_at"), now, cached[1], live=market_open(now),
-                                source_at=(latest.get("updated_at") if interval == "1d"
-                                           and latest.get("date") == now.astimezone(KST).date().isoformat() else None),
+        # #645 how old the figures are: Toss stamps today's record with its own update time;
+        # #673 or later, when the figures were seen to change after it
+        today = interval == "1d" and latest.get("date") == now.astimezone(KST).date().isoformat()
+        stamp = freshness.stamp(value.get("fetched_at"), now, cached[1], live=session(now) != "closed",
+                                source_at=_later(latest.get("updated_at"), value.get("changed_at")) if today else None,
                                 source="toss_investors")
-        return {**value, "records": value["records"][:count], "freshness": fresh}
+        return {**value, "records": value["records"][:count], "freshness": stamp, "session": session(now)}
+
+    def _watch(self, market: str, record: dict, now: datetime) -> str | None:
+        """#673 when today's figures were last seen to change (the fetch before the change, KST ISO), and
+        an INFO line on each change of the figures or of ``updatedAt``."""
+        figures = tuple(sorted((k, v["net"]) for k, v in (record.get("investors") or {}).items()))
+        day, updated = record.get("date"), record.get("updated_at")
+        before = self._seen.get(market)
+        changed_at = before[4] if before and before[0] == day else None
+        if before and before[0] == day and (before[1], before[2]) != (updated, figures):
+            moved = before[2] != figures
+            if moved:
+                gap = f"+{(before[3] - before[4]).total_seconds():.0f}s" if before[4] else "first"
+                changed_at = before[3]
+            else:
+                gap = "-"
+            log.info("toss flow %s: updatedAt %s figures %s (since last change %s)", market,
+                     (updated or "-")[11:19], "changed" if moved else "same", gap)
+        self._seen[market] = (day, updated, figures, now, changed_at)
+        return changed_at.astimezone(KST).isoformat(timespec="seconds") if changed_at else None
 
     async def _fetch(self, market: str, interval: str) -> tuple[dict, bool]:
         now = self._now()
@@ -171,5 +231,8 @@ class MarketFlow:
                 log.info("index price %s failed: %s", market, index)   # the flow still shows without it
         else:
             level = next(({"price": p.price, "at": p.at} for p in index if p.symbol == market), None)
-        return {**base, "supported": True, "index": level,
-                "records": [normalize(r, interval, now) for r in records], "error": None}, True
+        rows = [normalize(r, interval, now) for r in records]
+        changed_at = (self._watch(market, rows[0], now) if interval == "1d" and rows
+                      and rows[0]["date"] == now.astimezone(KST).date().isoformat() else None)
+        return {**base, "supported": True, "index": level, "records": rows, "error": None,
+                "changed_at": changed_at}, True

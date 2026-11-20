@@ -103,9 +103,10 @@ def _num(value) -> float | None:
 
 def _error_code(r: httpx.Response) -> str:
     try:
-        err = r.json().get("error")
+        body = r.json()
     except ValueError:
         return ""
+    err = body.get("error") if isinstance(body, dict) else None
     code = err.get("code") if isinstance(err, dict) else err
     return str(code)[:40] if isinstance(code, str) else ""
 
@@ -152,7 +153,7 @@ class TossBroker(Broker):
                 data={"grant_type": "client_credentials"},
             )
             if r.status_code != 200:
-                raise TossError(f"Toss token request failed {r.status_code}: {r.text[:300]}")
+                raise TossError(f"Toss token request failed {r.status_code} {_error_code(r)}".rstrip())
             body = r.json()
             self._token = body["access_token"]
             self._expires_at = time.monotonic() + max(60.0, float(body.get("expires_in", 3600)) - REFRESH_MARGIN_SEC)
@@ -191,11 +192,7 @@ class TossBroker(Broker):
         """#688 the collector's ``tokens`` job: renew ahead of expiry, or for a reader's request."""
         if self._slot is None:
             return False
-        try:
-            got = await self._slot.keep(self._issue, ahead=ahead, gap=lambda _refusals: RENEW_COOLDOWN_SEC)
-        except TossError as exc:
-            log.warning("toss token renewal failed: %s", str(exc)[:80])
-            return False
+        got = await self._slot.keep(self._issue, ahead=ahead, gap=lambda _refusals: RENEW_COOLDOWN_SEC)
         if got is None:
             return False
         async with self._lock:          # this process uses the new token at once (the old one is revoked)

@@ -696,11 +696,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             keeps = [(type(o).__name__, o.keep_token) for o in token_owners]
             if kis_feed is not None:
                 keeps.append(("KisStream", kis_feed.keep_approval))
+            failed = []
             for who, keep in keeps:
                 try:                       # one provider down does not hold up the others' renewals
                     await keep(TOKEN_AHEAD_SEC)
                 except Exception as exc:  # noqa: BLE001 - the type only: a message may carry a request
                     log.warning("broker token renewal %s failed: %s", who, type(exc).__name__)
+                    failed.append(who)
+            if failed:                     # GET /api/status shows the job in error (names only)
+                raise RuntimeError(f"renewal failed: {', '.join(failed)}")
             return TOKEN_TICK_SEC
 
         async def keep_listing_fresh() -> float:

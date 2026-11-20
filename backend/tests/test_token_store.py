@@ -258,3 +258,25 @@ def test_a_minter_that_outran_its_lease_saves_nothing(engine):
     row = _row(engine)
     assert row["lease_owner"] is None and row["lease_until"] is None
     assert asyncio.run(_store(engine, "all", clock).slot("toss", SECRET).get(fast))[0] == "tok-1"   # B's stands
+
+
+def test_a_token_that_works_after_a_refusal_ends_the_backoff_run(engine):
+    clock, issue = Clock(), Issuer(life=20 * 3600)
+    minter = _store(engine, "all", clock).slot("kis_rest", SECRET)
+
+    def gap(refusals):
+        return (60.0, 600.0, 1800.0)[min(refusals, 2)]
+
+    asyncio.run(minter.get(issue, gap=gap))                         # tok-1
+    clock.tick(61)
+    with pytest.raises(TokenUnavailable):
+        asyncio.run(minter.get(issue, refused="tok-1", gap=gap))    # counted: refusals 1
+    clock.tick(600)
+    assert asyncio.run(minter.get(issue, refused="tok-1", gap=gap))[0] == "tok-2"
+    clock.tick(3600)                                                # tok-2 works for an hour
+    failing = Issuer(fail=True)
+    with pytest.raises(RuntimeError):                               # one passing 5xx on a renewal
+        asyncio.run(minter.get(failing, refused="tok-2", gap=gap))
+    assert _row(engine, "kis_rest")["refusals"] == 1                # a fresh run of one, not the old run + 1
+    clock.tick(601)                                                 # 600 s (as before #688), not 1800 s
+    assert asyncio.run(minter.get(issue, refused="tok-2", gap=gap))[0] == "tok-3"

@@ -209,6 +209,18 @@ class TokenSlot:
         return cur is not None and row.get("refresh_for") == COUNTED + token_hash(cur[0])
 
     @staticmethod
+    def _refusals(row: dict, cur, now: datetime) -> int:
+        """The row's refusals in a row - none once the token the last ask gave has served ``FRESH_SEC`` unrefused
+        (a refusal followed by a token that works ends the run)."""
+        count = row.get("refusals") or 0
+        if count and cur is not None and not TokenSlot._counted(row, cur):
+            issued, last = aware(row.get("issued_at")), aware(row.get("asked_at"))
+            if issued is not None and last is not None and issued >= last \
+                    and (now - issued).total_seconds() >= FRESH_SEC:
+                return 0
+        return count
+
+    @staticmethod
     def _fresh_refusal(row: dict, cur, refused: str | None, asked: bool, now: datetime) -> bool:
         """The token in the row turned away soon after its issue, and not counted yet."""
         issued = aware(row.get("issued_at"))
@@ -252,7 +264,7 @@ class TokenSlot:
             await asyncio.to_thread(store._count_refusal, self.name, COUNTED + token_hash(cur[0]))
             row, cur = await self._read()
         last = aware(row.get("asked_at"))
-        if last is not None and (now - last).total_seconds() < gap(row.get("refusals") or 0):
+        if last is not None and (now - last).total_seconds() < gap(self._refusals(row, cur, now)):
             if self._usable(cur, refused, 0.0, now):
                 return row, cur, True                     # a renewal ahead of time can wait for the gap
             raise TokenUnavailable(f"{self.name}: waiting before asking for another token")
@@ -281,8 +293,8 @@ class TokenSlot:
                 if use:
                     return cur, False
                 counted = self._counted(row, cur)
-                refusals = row.get("refusals") or 0
                 at = store._clock()
+                refusals = self._refusals(row, cur, at)
                 # the ask counts before it is sent: a crash, a cancel or a lost save still keeps the gap
                 if not await asyncio.to_thread(store._write_leased, self.name, owner, asked_at=at):
                     raise TokenUnavailable(f"{self.name}: lease lost")

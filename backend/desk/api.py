@@ -76,6 +76,7 @@ from . import (
     positioning,
     prewarm,
     primary_trend,
+    program_trade,
     projection,
     regime,
     regime_live,
@@ -812,6 +813,17 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.warning("spot flow for the futures snapshot timed out")
                     return None
 
+            async def program_now(at: datetime) -> dict | None:
+                # #677 KRX program trading from the 09:00 bell, on the futures' KIS client (bounded, never raises)
+                rest = getattr(futures, "rest", None)
+                if rest is None or not program_trade.hours(at):
+                    return None
+                try:
+                    return await program_trade.fetch(rest, at)
+                except Exception as exc:  # noqa: BLE001 - the snapshot goes on without it
+                    log.warning("program trade failed: %s", exc)
+                    return None
+
             if premarket_window(moment):
                 # #677 the pre-market: the spot only (no futures, no alerts - the session's rules start later)
                 await asyncio.to_thread(futures_history.record_spot, await spot_now(), moment)
@@ -820,7 +832,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             elif futures_open(moment) or (closing_window(moment) and snapshot_marks["closed_on"] != today_kst):
                 spot = await spot_now()
                 view = await futures.get(fresh=True)
-                await asyncio.to_thread(futures_history.record, view, None, spot)
+                # after the futures read: a KIS token refreshed on a 401 is that (unbounded) call's to do
+                program = await program_now(moment)
+                await asyncio.to_thread(futures_history.record, view, None, spot, program)
                 try:                     # #361: a push problem never stops the snapshots
                     await asyncio.to_thread(app.state.flow_alerts.after_snapshot, futures_history.intraday)
                 except Exception as exc:  # noqa: BLE001
@@ -1726,12 +1740,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return got
 
     premarket_cache: dict[str, tuple[float, list[dict], bool]] = {}
+    program_cache: dict[str, tuple[float, dict]] = {}
 
     @app.get("/api/market/flow")
     async def market_flow(market: str = "KOSPI", interval: str = "1d", count: int = 20):
         """KOSPI / KOSDAQ trading value by investor class, newest first (desk.market_flow). Read-only;
         a broker failure comes back as ``error`` with no records, not as a 5xx. #677 the 1d answer carries
-        ``premarket``: today's spot flow before the bell (desk.flow_intraday.premarket) once there is one."""
+        ``premarket``: today's spot flow before the bell (desk.flow_intraday.premarket) once there is one, and
+        ``program``: today's newest KRX program trading net buy (desk.program_trade, from the snapshots)."""
         try:
             got = await flow.get(market.upper(), interval, count)
         except ValueError as exc:
@@ -1747,7 +1763,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             hit = (time.monotonic(), await asyncio.to_thread(futures_history.premarket, local.date()), final)
             premarket_cache.clear()
             premarket_cache[day] = hit
-        return {**got, "premarket": flow_intraday.premarket(hit[1], market.lower())}
+        prog = program_cache.get(day)
+        if not prog or time.monotonic() - prog[0] >= PREMARKET_CACHE_SEC:   # the snapshots' minute: a half minute
+            prog = (time.monotonic(), await asyncio.to_thread(futures_history.program, local.date()))
+            program_cache.clear()
+            program_cache[day] = prog
+        return {**got, "premarket": flow_intraday.premarket(hit[1], market.lower()),
+                "program": prog[1].get(market.lower())}
 
     @app.get("/api/market/futures")
     async def market_futures():

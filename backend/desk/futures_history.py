@@ -22,9 +22,10 @@ import logging
 import math
 from datetime import UTC, date, datetime, time, timedelta
 
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import delete, func, insert, or_, select
 from sqlalchemy.engine import Engine
 
+from . import program_trade
 from .db import futures_snapshots
 from .futures_flow import KST, futures_open
 
@@ -57,9 +58,9 @@ def spot_cols(spot: dict | None, today: str) -> dict:
     return out
 
 
-def row_of(view: dict, now: datetime, spot: dict | None = None) -> dict | None:
+def row_of(view: dict, now: datetime, spot: dict | None = None, program: dict | None = None) -> dict | None:
     """The snapshot row for a futures view (desk.futures_flow), or None when it has no price or
-    no investors (a failed fetch is not history)."""
+    no investors (a failed fetch is not history); #677 ``program``: desk.program_trade.fetch's answer."""
     price, investors = view.get("price") or {}, view.get("investors") or {}
     if price.get("price") is None or not investors:
         return None
@@ -72,6 +73,7 @@ def row_of(view: dict, now: datetime, spot: dict | None = None) -> dict | None:
         row[f"{c}_contracts"] = side.get("net_contracts")
         row[f"{c}_value_mn"] = side.get("net_value_mn")
     row.update(spot_cols(spot, row["trade_date"]))
+    row.update(program_trade.cols(program))
     return row
 
 
@@ -100,7 +102,9 @@ def _point(r) -> dict:
             "market_basis": r["market_basis"],
             "investors": {c: {"net_contracts": r[f"{c}_contracts"], "net_value_mn": r[f"{c}_value_mn"]}
                           for c in CLASSES},
-            "spot": {m: {c: r.get(f"{m}_{c}_100m") for c in SPOT_CLASSES} for m in SPOT_MARKETS}}
+            "spot": {m: {c: r.get(f"{m}_{c}_100m") for c in SPOT_CLASSES} for m in SPOT_MARKETS},
+            "program": {m: {k: r.get(f"{m}_program_{k}_100m") for k in program_trade.KINDS}
+                        for m in program_trade.MARKETS}}
 
 
 def interval_min(setting: float) -> float:
@@ -148,18 +152,38 @@ class FuturesHistory:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
 
-    def record(self, view: dict, now: datetime | None = None, spot: dict | None = None) -> bool:
+    def record(self, view: dict, now: datetime | None = None, spot: dict | None = None,
+               program: dict | None = None) -> bool:
         """Store the view as a snapshot when the session is open (or in its closing window, for the
         day's final totals) and the view is whole."""
         now = now or datetime.now(UTC)
         if not (futures_open(now) or closing_window(now)):
             return False
-        row = row_of(view, now, spot)
+        row = row_of(view, now, spot, program)
         if row is None:
             return False
         with self.engine.begin() as conn:
             conn.execute(insert(futures_snapshots).values(**row))
         return True
+
+    def program(self, day: date) -> dict:
+        """#677 each market's newest program trading figures of the day (a market KIS failed for in the latest
+        snapshot keeps its earlier ones): ``{"kospi": {"at", "arbitrage", "non_arbitrage", "total"} | None,
+        "kosdaq": ...}`` (100 million KRW)."""
+        out: dict[str, dict | None] = {}
+        with self.engine.connect() as conn:
+            for m in program_trade.MARKETS:
+                cols = [futures_snapshots.c[f"{m}_program_{k}_100m"] for k in program_trade.KINDS]
+                q = (select(futures_snapshots).where(futures_snapshots.c.trade_date == day.isoformat(),
+                                                     or_(*(c.isnot(None) for c in cols)))
+                     .order_by(futures_snapshots.c.at.desc(), futures_snapshots.c.id.desc()).limit(1))
+                r = conn.execute(q).mappings().first()
+                if r is None:
+                    out[m] = None
+                else:
+                    p = _point(r)
+                    out[m] = {"at": p["at"], **p["program"][m]}
+        return out
 
     def record_spot(self, spot: dict | None, now: datetime | None = None) -> bool:
         """#677 a pre-market snapshot (spot only) inside ``premarket_window``."""

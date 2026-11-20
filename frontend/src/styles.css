@@ -2975,3 +2975,14 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .hw-tickers li { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
 .hw-tickers .hw-line { flex-basis: 100%; }
 .hw-ticker-on { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
+
+/* #682 리포트 칸의 작은 캔들 차트 — 시간봉 탭, 띠, 여러 시간봉 구역 목록 */
+.rp-candles { margin: 8px 0 12px; }
+.rp-candles-tabs { flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.rp-candles-box { position: relative; height: 240px; }
+.rp-places { margin: 6px 0 2px; padding-left: 0; list-style: none; display: grid; gap: 2px; }
+.rp-place-num { color: var(--warn); font-weight: 600; }
+.rp-candles figcaption { margin-top: 4px; }
+@media (max-width: 480px) {
+  .rp-candles-box { height: 190px; }
+}

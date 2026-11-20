@@ -2012,7 +2012,11 @@ export interface FundChangeItem { fund: string; name: string; quarter: string; c
 export interface FundChanges { items: Record<string, FundChangeItem[]> }
 
 /** #493 GET /api/runs/{id}/explain — 초보자 해설. 숫자는 데스크 계산값만, 문장은 AI(source "ai") 또는 규칙("rules") */
-export interface ExplainChart { kind: "levels" | "zone" | "none"; levels: number[]; labels?: string[]; marks: number[] }
+export interface ExplainChart {
+  kind: "levels" | "zone" | "none"; levels: number[]; labels?: string[]; marks: number[];
+  /** #681 · #682 리포트: 이 칸이 그리는 종목 · 시간봉(report.charts[symbol] 로 캔들 차트) */
+  symbol?: string | null; timeframe?: string;
+}
 export interface RunExplain {
   version: number;
   hook: string;
@@ -2051,7 +2055,28 @@ export interface ReportSection {
   chart: ExplainChart;
   image: { url: string; alt: string } | null; // #497 설명 그림(차트 없는 섹션만, 서버에 그림 키가 있을 때) — url 은 세션 쿠키로 받는 /api 경로
 }
+/** #682 리포트에 저장한 캔들 차트(desk/report_charts.py) — 시간봉별 봉 · 선 띠와 여러 시간봉 구역 */
+export type ReportFrame = "1d" | "240m" | "120m" | "60m";
+export interface ReportChartZone {
+  price: number; low: number; high: number; kind: "support" | "resistance"; name: string; distance_pct: number;
+  /** 그 시간봉 읽기가 가깝다고 꼽은 선(위 · 아래 3개) — 아니면 그다음 선 */
+  near: boolean;
+}
+export interface ReportChartPlace {
+  low: number; high: number; kind: "support" | "resistance"; frames: ReportFrame[]; count: number; names: string[];
+  /** "일봉 · 4시간 · 1시간이 모두 가리키는 지지 141~143" */
+  label: string; distance_pct: number;
+}
+export interface ReportChartSnap {
+  symbol: string; close: number; as_of: string; note: string;
+  /** 봉은 [시각 ISO, 시가, 고가, 저가, 종가] — 최근 120개 */
+  frames: Partial<Record<ReportFrame, { bars: [string, number, number, number, number][]; zones: ReportChartZone[]; price: number | null;
+    trend: string | null; summary?: string | null; live_bar?: boolean }>>;
+  confluence: ReportChartPlace[];
+}
 export interface ReportDetail extends ReportSummary {
+  /** #682 칸이 그리는 종목의 저장된 캔들 차트(옛 리포트 · 실패면 없음 — 그때는 가격선 그림) */
+  charts?: Record<string, ReportChartSnap>;
   /** 가격 기준 거래일(YYYY-MM-DD) — #495 계약 보충 */
   as_of?: string | null;
   why: { text: string; candidates: { symbol: string; name: string; score: number; reasons: string[] }[] } | null;

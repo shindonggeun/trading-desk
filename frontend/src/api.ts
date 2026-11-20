@@ -437,6 +437,10 @@ export const api = {
   lineWatch: () => call<LineWatch>("/api/notify/line-watch"),
   saveLineWatch: (body: Partial<Pick<LineWatch, "enabled" | "tickers" | "timeframes" | "events">>) =>
     call<LineWatch>("/api/notify/line-watch", { method: "PUT", body: JSON.stringify(body) }),
+  /** #714 보유 종목 손절 · 익절 알림(#694) — 설정과 지난 판정의 종목별 선 */
+  holdingWatch: () => call<HoldingWatch>("/api/holding-watch"),
+  saveHoldingWatch: (body: HoldingWatchBody) =>
+    call<HoldingWatch>("/api/holding-watch", { method: "PUT", body: JSON.stringify(body) }),
 };
 
 /** #705 GET /api/batch/{kind} — 종목마다 같은 경로를 부르던 화면이 한 번에(최대 30종목, 서버가 4개씩 같은 핸들러로) */
@@ -490,6 +494,7 @@ export interface PushKinds {
   nq_alert?: boolean;        // #581 나스닥 선물 이상 징후(#579)
   flow_warn?: boolean;       // #699 수급 경고(개미 홀로 받치기 · 과도한 매도)
   line_signal?: boolean;     // #614 차트 선 닿음 · 이탈(#613)
+  holding_alert?: boolean;   // #714 보유 종목 손절 · 익절(#694)
   tone_positive?: boolean;   // #642 수급 알림의 뜻(#641) — 끈 tone 은 이 기기로 보내지 않는다
   tone_neutral?: boolean;
   tone_caution?: boolean;
@@ -739,4 +744,37 @@ export interface LineWatch {
   allowed: { timeframes: string[]; events: LineWatchEvent[]; max_tickers: number };
   limits: { cooldown_min: number; cooldown_bars: number; daily_max: number; per_ticker_max: number };
   recent: LineSignal[];
+}
+
+/** #714 보유 종목 손절 · 익절 알림(#694 GET · PUT /api/holding-watch) — 감시는 주인이 켜기 전까지 꺼짐.
+ *  수량 · 금액은 없다. 손절선이 최대 손실선(평단 −n%)이면 stop 은 null(가격을 쓰면 평단이 드러난다). */
+export type HoldingRegime = "trend_up" | "trend_down" | "range" | "turning" | "unknown";
+export interface HoldingLine {
+  ticker: string;
+  regime: HoldingRegime;
+  label: string;
+  stop: number | null;
+  stop_basis: string;
+  to_stop_pct: number;        // 현재가가 손절선보다 몇 % 위(음수면 아래)
+  take_profit: number | null; // 박스권 위 끝 근처(박스권만)
+  tp_basis: string | null;
+  profit_pct: number;         // 평단 대비 %
+  max_loss_pct: number;
+  basis: string[];            // 장세 근거(ADX · 박스 …)
+  at: string;
+}
+export interface HoldingTicker { enabled: boolean; max_loss_pct: number | null }
+export interface HoldingWatch {
+  enabled: boolean;
+  max_loss_pct: number;
+  tickers: Record<string, HoldingTicker>;
+  can_edit: boolean;
+  limits: { max_loss_pct: [number, number]; max_tickers: number };
+  holdings: HoldingLine[];
+}
+/** 빠진 필드는 그대로. tickers 는 종목별로 합치고, null 이면 그 종목 설정을 지운다(전체 설정을 따름) */
+export interface HoldingWatchBody {
+  enabled?: boolean;
+  max_loss_pct?: number;
+  tickers?: Record<string, Partial<HoldingTicker> | null>;
 }

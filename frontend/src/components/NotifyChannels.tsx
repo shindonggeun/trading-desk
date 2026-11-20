@@ -8,7 +8,7 @@ const KIND_LABEL: Record<string, string> = {
   flow: "수급 전향", ...Object.fromEntries(EXTRA_KINDS.map((k) => [k.key, k.label])),
 };
 // 채널에서 고르게 할 종류 — 시장별 전향 스위치(flow_kospi …)는 웹 푸시 칸에서만
-const SHOWN_KINDS = ["flow", "flow_shift", "flow_warn", "nq_alert", "morning_brief", "day_call", "line_signal",
+const SHOWN_KINDS = ["flow", "flow_shift", "flow_warn", "nq_alert", "morning_brief", "day_call", "line_signal", "holding_alert",
   "tone_positive", "tone_neutral", "tone_caution", "tone_warning"];   // #642 등급 — 예: 텔레그램은 경고만
 const PLACEHOLDER: { id: NotifyChannelId; label: string }[] = [{ id: "telegram", label: "텔레그램" }, { id: "kakao", label: "카카오톡" }];
 const TEST_ERROR: Record<string, string> = {

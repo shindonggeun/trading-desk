@@ -135,27 +135,40 @@ def test_a_dropped_listener_reconnects_and_wakes_every_stream(engine, monkeypatc
     asyncio.run(scenario())
 
 
-def _terminate_listener(engine):
+# Only this database's listeners: under xdist every worker has its own test database on the same server, and
+# a listener of another worker (or one an earlier test here has not closed yet) is none of this test's business.
+_LISTENERS = ("SELECT pid FROM pg_stat_activity WHERE application_name = :n AND datname = current_database() "
+              "AND pid <> pg_backend_pid()")
+
+
+def _listeners(engine) -> set[int]:
+    with engine.connect() as conn:
+        return set(conn.execute(text(_LISTENERS), {"n": run_events.APP_NAME}).scalars())
+
+
+def _terminate_listener(engine, pids: set[int] | None = None):
+    """Drop the listening connections of this database (or just ``pids``)."""
+    targets = _listeners(engine) if pids is None else pids
     with engine.begin() as conn:
-        killed = conn.execute(text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                                   "WHERE application_name = :n"), {"n": run_events.APP_NAME}).all()
-    assert killed
+        killed = [conn.execute(text("SELECT pg_terminate_backend(:p)"), {"p": pid}).scalar_one() for pid in targets]
+    assert any(killed)
 
 
 def test_the_listener_stops_with_its_task(engine):
     _pg(engine)
+    before = _listeners(engine)
+    mine: set[int] = set()
 
     async def scenario():
         hub, states = Hub(), []
         task = await _following(engine, hub, states)
+        mine.update(await asyncio.to_thread(_listeners, engine) - before)
         await _stop(task)
 
     asyncio.run(scenario())
+    assert mine                                      # the one this test started
     for _ in range(50):                             # the thread looks up within POLL_SEC and closes
-        with engine.connect() as conn:
-            left = conn.execute(text("SELECT count(*) FROM pg_stat_activity WHERE application_name = :n"),
-                                {"n": run_events.APP_NAME}).scalar_one()
-        if not left:
+        if not mine & _listeners(engine):
             return
         time.sleep(0.1)
     raise AssertionError("the listening connection outlived its task")

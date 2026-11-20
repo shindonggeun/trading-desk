@@ -5,7 +5,8 @@ import type { FlowInterval, FlowMarket, FlowRecord, FlowSide, InstitutionKind, I
 import FuturesFlowView from "./FuturesFlowView";
 // #644 오늘 장중(차트 라이브러리 160KB)은 그 탭을 열 때만 받는다 — 대시보드 첫 화면은 현물 탭이라 차트가 없다
 const IntradayFlowView = lazy(() => import("./IntradayFlowView"));
-import { usePoll } from "../poll";
+import { useLivePoll } from "../livePoll";
+import LiveBadge from "./LiveBadge";
 import { alertLines, badgeOf, hhmm, useTodayAlerts } from "../alertsFeed";
 import type { MarketAlert } from "../api";
 
@@ -299,7 +300,9 @@ export default function MarketFlowPanel() {
     setData((d) => (d && d.market === prefs.market && d.interval === prefs.interval ? d : null));
     setFailed(null); // 이전 시장 · 단위의 오류를 새 선택에 남기지 않는다
   }, [spotMarket, prefs.interval]);
-  usePoll(spotMarket ? `market-flow:${spotMarket}:${prefs.interval}:${COUNT}` : null, () => api.marketFlow(spotMarket!, prefs.interval, COUNT), refreshMs, {
+  // #764 실시간 스트림의 키는 "KOSPI:1d"(최근 20개 = COUNT) — 장 전 칸(premarket)은 스트림에 없어 받은 값을 둔다
+  const flowKeys = spotMarket ? [`${spotMarket}:${prefs.interval}`] : [];
+  const flowPoll = useLivePoll(spotMarket ? `market-flow:${spotMarket}:${prefs.interval}:${COUNT}` : null, () => api.marketFlow(spotMarket!, prefs.interval, COUNT), refreshMs, {
     onData: (d) => {
       // 서버가 실패를 error 로 주면 마지막 값을 그대로 두고 알림만
       if (d.error && d.records.length === 0) setFailed(d.error);
@@ -315,6 +318,14 @@ export default function MarketFlowPanel() {
       }
     },
     onError: (e) => setFailed(e instanceof Error ? e.message : "불러오지 못했습니다."),
+  }, {
+    channel: "flow",
+    keys: flowKeys,
+    apply: (prev, m) => {
+      const next = m.payload as MarketFlow | null;
+      if (!next || !Array.isArray(next.records)) return undefined;
+      return { ...next, premarket: next.premarket ?? prev.premarket };
+    },
   });
 
   const latest = data?.records[0];
@@ -331,7 +342,7 @@ export default function MarketFlowPanel() {
   return (
     <section className="card flow" id="market-flow" ref={card} aria-label="시장 수급">
       <div className="flow-head">
-        <h3>시장 수급</h3>
+        <h3>시장 수급 {spotMarket && <LiveBadge channel="flow" keys={flowKeys} on={flowPoll.live} />}</h3>
         <div className="seg" role="group" aria-label="시장">
           {TABS.map((m) => (
             <button key={m.key} type="button" className={m.key === prefs.market ? "on" : ""} aria-pressed={m.key === prefs.market}

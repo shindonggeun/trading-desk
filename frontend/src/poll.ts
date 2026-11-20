@@ -27,6 +27,8 @@ export type PollOptions<T> = {
   delay?: number;
   onData?: (d: T) => void;
   onError?: (e: unknown) => void;
+  /** #764 true 면 이번 차례를 건너뛴다(값이 이미 있을 때만 — 실시간 스트림이 대신 채우는 동안). livePoll.ts */
+  paused?: (data: T | undefined) => boolean;
 };
 
 const MAX_BACKOFF = 8;
@@ -75,6 +77,10 @@ function run(e: Entry<unknown>) {
     return;
   }
   e.missed = false;
+  if (e.snap.at != null && [...e.subs].some((s) => s.opts.current.paused?.(e.snap.data))) {
+    schedule(e);   // #764 스트림이 채우는 중 — 끊기면 livePoll 이 바로 다시 부른다
+    return;
+  }
   const first = e.subs.values().next().value as Sub<unknown>;
   e.inflight = true;
   let p: Promise<unknown>;
@@ -175,6 +181,19 @@ export function usePoll<T>(key: string | null, fetch: () => Promise<T>, ms: numb
     if (e && !e.inflight) { window.clearTimeout(e.timer); run(e); }
   };
   return { ...snap, refresh };
+}
+
+/**
+ * #764 key 의 값을 밖에서(실시간 스트림) 바꾼다 — 구독자 모두에게 onData · 새 값. update 가 undefined 나 같은 값을 주면 그대로.
+ * 아직 받은 값이 없으면 바꾸지 않는다(첫 값은 REST 가 맞춘다).
+ */
+export function pushPollData<T>(key: string, update: (prev: T) => T | undefined): void {
+  const e = entries.get(key) as Entry<T> | undefined;
+  if (!e || e.snap.data === undefined) return;
+  const data = update(e.snap.data);
+  if (data === undefined || data === e.snap.data) return;
+  e.snap = { data, error: null, at: Date.now(), failing: false };
+  for (const s of [...e.subs]) { s.opts.current.onData?.(data); s.set(e.snap); }
 }
 
 /** ms 마다 바뀌는 지금 시각(경과 · "n분 전" 표시용). enabled 가 false 면 멈춘다 */

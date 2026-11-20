@@ -506,9 +506,11 @@ export interface PushKinds {
 /** #581 알림 타임라인 한 건(GET /api/alerts/today) — flow_turn 은 #361 의 수급 전향 */
 export interface MarketAlert {
   trade_date: string;
-  kind: "flow_turn" | "flow_shift" | "flow_warn" | "nq_alert";
+  /** #581 holding_alert(#694 보유 종목 손절 · 익절)은 주인 계정에만 온다. 서버가 새 종류를 먼저 내도 화면은 "알림" 으로 보인다 */
+  kind: "flow_turn" | "flow_shift" | "flow_warn" | "nq_alert" | "holding_alert";
   rule: string;
-  market: "kospi" | "kosdaq" | "futures" | "nq";
+  /** 지수 시장, holding_alert 은 그 종목 코드 */
+  market: "kospi" | "kosdaq" | "futures" | "nq" | (string & {});
   who: "foreign" | "institution" | "individual" | "all";
   severity: "info" | "caution" | "strong";
   /** #642 지수에 어떤 뜻인지(#641) — 크기(severity)와 따로. 예전 서버 · 예전 알림에는 없다 */

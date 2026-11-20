@@ -10,7 +10,13 @@ export const KIND_LABEL: Record<MarketAlert["kind"], string> = {
   flow_shift: "수급 흐름",
   flow_warn: "수급 경고",
   nq_alert: "나스닥 선물",
+  holding_alert: "보유 종목",
 };
+/** 종류 이름 — 화면이 아직 모르는 종류(서버가 먼저 낸 새 kind)는 "알림" 으로, undefined 가 보이지 않게 */
+export const kindLabel = (kind: string): string => (KIND_LABEL as Record<string, string>)[kind] ?? "알림";
+/** #581 보유 종목 알림은 그 종목 차트로 */
+export const alertHref = (a: Pick<MarketAlert, "kind" | "market">): string | null =>
+  a.kind === "holding_alert" && a.market ? `#/chart/${encodeURIComponent(a.market)}` : null;
 export const SEVERITY_LABEL: Record<MarketAlert["severity"], string> = { info: "참고", caution: "주의", strong: "강함" };
 /** #642 tone(#641) — 색만으로 가르지 않게 글자와 기호를 같이. 한국식 오름 빨강과 겹치지 않게 호재는 초록 ◎ */
 export const TONE_LABEL: Record<AlertTone, string> = { positive: "호재", neutral: "참고", caution: "주의", warning: "경고" };
@@ -46,6 +52,8 @@ export function sideOf(a: MarketAlert): "up" | "down" | null {
   if (/buy/.test(a.rule)) return shrink ? "down" : "up";
   if (/sell/.test(a.rule)) return shrink ? "up" : "down";
   if (/drop|from_high/.test(a.rule)) return "down";
+  // #694 보유 종목: 익절 고려는 위, 손절 · 손절 근접 · 하락 추세는 아래
+  if (a.kind === "holding_alert") return a.rule === "hold_take_profit" ? "up" : "down";
   return null;
 }
 

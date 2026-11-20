@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { alertKey, useTodayAlerts } from "../alertsFeed";
+import { alertHref, alertKey, useTodayAlerts } from "../alertsFeed";
 import { api, type FlowAlert, type MarketAlert, type PushKinds } from "../api";
 
 /** #362 앱 안 토스트 — 장중에 수급 전향 목록(/api/alerts/flow)을 폴링해 새로 온 것만 화면 위에 띄운다.
@@ -35,7 +35,7 @@ export function saveToastMarkets(m: ToastMarkets) {
 }
 
 /** #573 수급 전향 말고 받을 알림 종류 — 아침 시황(#571) · 오늘 방향(#572), #581 수급 흐름 변화 · 나스닥 선물 이상 징후(#579).
- *  이 브라우저에 기억하고 기본은 켬. 수급 흐름 · 나스닥 선물은 앱 안 토스트에도 같이 적용된다. */
+ *  이 브라우저에 기억하고 기본은 켬. 수급 흐름 · 나스닥 선물 · 보유 종목은 앱 안 토스트에도 같이 적용된다. */
 export type ExtraKinds = { flow_shift: boolean; flow_warn: boolean; nq_alert: boolean; morning_brief: boolean; day_call: boolean; line_signal: boolean;
   holding_alert: boolean;
   tone_positive: boolean; tone_neutral: boolean; tone_caution: boolean; tone_warning: boolean };
@@ -93,7 +93,8 @@ export function inFlowHours(now = new Date()): boolean {
 const keyOf = (a: FlowAlert) => `${a.trade_date}|${a.market}|${a.kind}|${a.t}`;
 
 /** 토스트 한 건 — 수급 전향(#361) 또는 #579 알림(푸시로 나간 것) */
-type Toast = { key: string; text: string; tone: "buy" | "sell" | "warn" };
+/** href: 누르면 갈 곳 — 수급 · 나스닥은 시장 수급, #581 보유 종목은 그 종목 차트(타임라인 행과 같게) */
+type Toast = { key: string; text: string; tone: "buy" | "sell" | "warn"; href?: string };
 type Shown = Toast & { until: number };
 
 export default function FlowAlertToast() {
@@ -113,11 +114,13 @@ export default function FlowAlertToast() {
     }
     const fresh = pushed.filter((a) => !seenShift.current!.has(alertKey(a)));
     fresh.forEach((a) => seenShift.current!.add(alertKey(a)));
-    const on = (a: MarketAlert) => (a.kind === "flow_shift" ? extra.flow_shift : a.kind === "flow_warn" ? extra.flow_warn : extra.nq_alert);
+    // #581 보유 종목 알림은 그 종류 설정을, 화면이 아직 모르는 종류는 등급(tone) 설정만 따른다
+    const on = (a: MarketAlert) => (a.kind === "flow_shift" ? extra.flow_shift : a.kind === "flow_warn" ? extra.flow_warn
+      : a.kind === "nq_alert" ? extra.nq_alert : a.kind === "holding_alert" ? extra.holding_alert : true);
     const wanted = fresh.filter((a) => on(a) && (!a.tone || extra[`tone_${a.tone}`]));
     if (wanted.length) {
       const until = Date.now() + SHOW_MS;
-      setShown((s) => [...wanted.map((a): Shown => ({ key: alertKey(a), text: a.text.split("\n")[0], tone: "warn", until })), ...s]
+      setShown((s) => [...wanted.map((a): Shown => ({ key: alertKey(a), text: a.text.split("\n")[0], tone: "warn", href: alertHref(a) ?? undefined, until })), ...s]
         .slice(0, MAX_SHOWN));
     }
   }, [day]);
@@ -170,7 +173,7 @@ export default function FlowAlertToast() {
     <div className="flow-toasts" role="status" aria-live="polite">
       {shown.map((a) => (
         <div key={a.key} className={`flow-toast flow-toast-${a.tone}`}>
-          <a href={FLOW_ROUTE} onClick={() => setShown((s) => s.filter((x) => x.key !== a.key))}>{a.text}</a>
+          <a href={a.href ?? FLOW_ROUTE} onClick={() => setShown((s) => s.filter((x) => x.key !== a.key))}>{a.text}</a>
           <button type="button" className="flow-toast-close" aria-label="닫기"
             onClick={() => setShown((s) => s.filter((x) => x.key !== a.key))}>×</button>
         </div>

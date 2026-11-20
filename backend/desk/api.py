@@ -3316,19 +3316,24 @@ def _push_routes(app: FastAPI, engine, settings: Settings) -> None:
         return {"date": day, "items": app.state.flow_alerts.list(day)}
 
     @app.get("/api/alerts/today")
-    def alerts_today(date: str | None = None):
+    def alerts_today(request: Request, date: str | None = None):
         """#579 the day's alert timeline (KST, default today), oldest first: the foreign turns (#361) and
-        the flow shifts / NQ=F alarms (desk.market_alerts) in one shape."""
+        the flow shifts / NQ=F alarms (desk.market_alerts) in one shape. #581 the holdings' stop / take-profit
+        alerts (#694) only for the owner - they are pushed to the owner's devices only."""
         if date is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
             raise HTTPException(422, "date: YYYY-MM-DD")
         day = date or datetime.now(futures_kst).date().isoformat()
         turns = [{"trade_date": a["trade_date"], "kind": "flow_turn", "rule": a["kind"], "market": a["market"],
                   "who": "foreign", "severity": "caution", "t": a["t"], "value": a["value"], "prev": None,
                   "text": a["text"], "pushed": True} for a in app.state.flow_alerts.list(day)]
-        # #694 a holding's alerts are its own (GET /api/holding-watch), not the market's timeline; #680 a
-        # sector's big day has its own line (GET /api/sectors/movers) until the timeline shows that kind
-        items = turns + [a for a in app.state.market_alerts.list(day)
-                         if a["kind"] not in (holding_watch.KIND, sector_movers.KIND)]
+        # #680 a sector's big day has its own line (GET /api/sectors/movers) until the timeline shows that kind
+        hidden = {sector_movers.KIND}
+        if request.state.user.id != app.state.market_alerts.owner():
+            hidden.add(holding_watch.KIND)
+        items = turns + [a for a in app.state.market_alerts.list(day) if a["kind"] not in hidden]
+        for a in items:     # #694 the % against the average stays in GET /api/holding-watch (docs/holding-watch.md)
+            if a["kind"] == holding_watch.KIND:
+                a["value"] = a["prev"] = None
         for a in items:     # #641 the direction beside the size, worked out from what each one stores
             a["tone"] = alert_tone.tone(a)
         items.sort(key=lambda a: datetime.fromisoformat(a["t"]))

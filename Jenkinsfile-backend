@@ -1,0 +1,30 @@
+// Jenkins 멀티브랜치 파이프라인 이름: trading-desk-backend (폴더 trading-desk, Script Path: Jenkinsfile-backend)
+// develop → 운영(backend-server). 이 저장소에 dev 환경은 없다. 흐름 · 잡 등록: docs/deploy.md 2절, 공통부: Jenkinsfile.deploy-common.groovy
+//
+// 이미지 하나로 compose 의 서비스를 모두 올린다. primaryService(기동 시 Alembic upgrade head 를 하는 api)를 먼저 올리고 나머지를 그다음에.
+// #688 로 api · collector · analyst 가 나뉘어도 compose 에 서비스를 더하면 되고, api 서비스 이름이 바뀌면 primaryService 만 고친다.
+
+def deployPipeline
+node('builder') {
+    checkout scm
+    deployPipeline = load 'Jenkinsfile.deploy-common.groovy'
+}
+
+deployPipeline.run([
+    target                   : 'backend',
+    branch                   : 'develop',
+    githubRepo               : 'shindonggeun/trading-desk',
+    githubCredentialId       : 'trading-desk-github',
+    ciWorkflow               : 'ci',
+    ciWaitMinutes            : 45,
+    gateAgentLabel           : 'builder',
+    deployAgentLabel         : 'deploy-backend-prod',
+    lockName                 : 'trading-desk-prod-deploy',
+    vaultPath                : 'kv/trading-desk/backend/prod/env',
+    vaultRoleIdCredentialId  : 'trading-desk-vault-role-id',
+    vaultSecretIdCredentialId: 'trading-desk-vault-secret-id',
+    composeFile              : 'backend/docker-compose-backend.yml',
+    primaryService           : 'backend-prod',
+    container                : 'trading-desk-backend-prod',
+    watchPath                : 'backend',
+])

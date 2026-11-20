@@ -7,7 +7,7 @@
 
 ```text
 이슈(/issue) → 브랜치(/issue-start) → 작업 · 커밋 → PR(/pr) → CI 통과 → Rebase and merge → 브랜치 정리 → 이슈 갱신
-                                                                          └→ 배포는 수동(scripts/deploy.sh, §8)
+                                                                          └→ develop 머지 뒤 Jenkins 가 자동 배포(§8)
 ```
 
 **이슈 없이 브랜치를 만들지 않는다.** 이슈가 작업 단위이자 추적 지점이다.
@@ -140,7 +140,7 @@ CI 는 GitHub Actions(`.github/workflows/ci.yml` — 백엔드 ruff · pytest, �
 
 | 브랜치 | 배포 |
 |--------|------|
-| `develop` | 머지 뒤 CI 가 통과한 커밋을 `scripts/deploy.sh <커밋>` 으로 `backend-server`(`192.168.0.9`)에 올린다 — 정본 [docs/deploy.md](deploy.md) |
+| `develop` | 머지하면 Jenkins 가 그 커밋의 CI 성공을 기다려 `backend-server`(`192.168.0.9`)에 올린다. 손 배포 `scripts/deploy.sh <커밋>` 은 대체 경로 — 정본 [docs/deploy.md](deploy.md) |
 | 그 외 | 없음 (`main` 포함) |
 
 1인 운영이라 develop → main 릴리스를 두지 않는다. 되돌릴 때는 서버의 직전 배포본(`src.old`)이나 이전 develop 커밋을 다시 올린다.

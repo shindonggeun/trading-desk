@@ -241,11 +241,7 @@ class DayCalls:
             series = self._series(now)
         done = 0
         for r in ready:
-            if r["call"] == dr.CALL:
-                answer = dr.label(r["market"], r["trade_date"], r["round"], series,
-                                  (r["features"] or {}).get("anchor"), now)
-            else:
-                answer = dc.label(r["market"], r["trade_date"], series, "oc" if r["call"] == "open" else "cc", now)
+            answer = answer_of(r, series, now)
             if answer is None:
                 if now - closes_at(r["market"], r["trade_date"]) < GIVE_UP_AFTER:
                     continue            # Yahoo may not have the bar yet
@@ -302,8 +298,7 @@ class DayCalls:
             series = self._series(now)
         done = 0
         for r in todo:
-            kind = "oc" if r["call"] == "open" else "cc"
-            answer = dc.label("kr", r["trade_date"], series, kind, now)
+            answer = answer_of(r, series, now)
             if answer is None or r["trade_date"] not in self._krx_days:
                 continue
             values = self._scored(r, answer, now)
@@ -568,6 +563,13 @@ class DayCalls:
             return None
         out["line"] = ", ".join(text[k] for k in ("kr", "us", "kr_later") if k in text) + "."
         return out
+
+
+def answer_of(r: dict, series: dict, now: datetime) -> dict | None:
+    """A stored call's answer: from its round's anchor (#619 to_close), the open or the close before."""
+    if r["call"] == dr.CALL:
+        return dr.label(r["market"], r["trade_date"], r["round"], series, (r["features"] or {}).get("anchor"), now)
+    return dc.label(r["market"], r["trade_date"], series, "oc" if r["call"] == "open" else "cc", now)
 
 
 def call_words(row: dict) -> str:

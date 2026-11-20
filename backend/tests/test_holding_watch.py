@@ -154,12 +154,18 @@ def test_api_holding_watch(db_url):
         got = client.put("/api/holding-watch", json={"max_loss_pct": 5, "tickers": {"005930.ks": {"enabled": False}}})
         assert got.status_code == 200, got.text
         assert got.json()["tickers"] == {"005930.KS": {"enabled": False, "max_loss_pct": None}}
+        client.app.state.holding_watch.last = {"005930.KS": {"ticker": "005930.KS", "pnl_pct": -3.1}}
+        assert [h["ticker"] for h in client.get("/api/holding-watch").json()["holdings"]] == ["005930.KS"]
         engine = make_engine(db_url)
         Auth(engine, td(hours=1), td(hours=1)).create_user("other@example.com", PASSWORD)
         engine.dispose()
         client.post("/api/auth/logout")
         client.post("/api/auth/login", json={"username": "other@example.com", "password": PASSWORD})
-        assert client.get("/api/holding-watch").json()["can_edit"] is False
+        theirs = client.get("/api/holding-watch").json()
+        assert theirs["can_edit"] is False
+        # #762 another account sees the default setting and no lines: not which tickers, limits or returns
+        assert (theirs["enabled"], theirs["max_loss_pct"], theirs["tickers"], theirs["holdings"]) == (False, 8.0, {}, [])
+        assert "005930" not in str(theirs)
         assert client.put("/api/holding-watch", json={"enabled": False}).status_code == 403
 
 

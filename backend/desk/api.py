@@ -745,16 +745,19 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             moment = datetime.now(UTC)
             today_kst = moment.astimezone(futures_kst).date()
             if futures_open(moment) or (closing_window(moment) and snapshot_marks["closed_on"] != today_kst):
-                view = await futures.get(fresh=True)
                 # #359 the spot flows at the same moment (a broker failure is an ``error`` body)
-                # (bounded: a hung broker must not cost the futures snapshot)
+                # (bounded: a hung broker must not cost the futures snapshot); #673 fetched fresh, so the
+                # stored figures are the minute's and the card's cache is renewed - first, so the futures
+                # view's own KOSPI read (the foreign split) is served from that cache
                 try:
                     got = await asyncio.wait_for(asyncio.gather(
-                        flow.get("KOSPI", "1d", 1), flow.get("KOSDAQ", "1d", 1)), SPOT_TIMEOUT_SEC)
+                        flow.get("KOSPI", "1d", 1, fresh=True), flow.get("KOSDAQ", "1d", 1, fresh=True)),
+                        SPOT_TIMEOUT_SEC)
                     spot = {"kospi": got[0], "kosdaq": got[1]}
                 except TimeoutError:
                     log.warning("spot flow for the futures snapshot timed out")
                     spot = None
+                view = await futures.get(fresh=True)
                 await asyncio.to_thread(futures_history.record, view, None, spot)
                 try:                     # #361: a push problem never stops the snapshots
                     await asyncio.to_thread(app.state.flow_alerts.after_snapshot, futures_history.intraday)

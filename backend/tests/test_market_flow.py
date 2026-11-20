@@ -303,14 +303,14 @@ def test_every_count_is_cut_from_one_full_page():
 def test_a_pre_open_answer_expires_at_the_open():
     clock = [0.0]
     broker = CountingBroker()
-    flow = MarketFlow(broker, clock=lambda: clock[0], now=lambda: datetime(2026, 11, 5, 8, 58, tzinfo=KST))
+    flow = MarketFlow(broker, clock=lambda: clock[0], now=lambda: datetime(2026, 11, 5, 7, 58, tzinfo=KST))
 
     async def scenario():
         await flow.get("KOSPI", "1d", 5)
         clock[0] += 119
         await flow.get("KOSPI", "1d", 5)
         assert broker.calls == 1
-        clock[0] += 2                                      # 09:00 passed: not 10 more minutes
+        clock[0] += 2                                      # 08:00 (pre-market) passed: not 10 more minutes
         await flow.get("KOSPI", "1d", 5)
         assert broker.calls == 2
     asyncio.run(scenario())
@@ -366,3 +366,140 @@ def test_toss_index_failure_leaves_the_flow():
 
     out = asyncio.run(MarketFlow(_toss(NoPrices())).get("KOSPI", "1d", 5))
     assert out["index"] is None and out["error"] is None and len(out["records"]) == 1
+
+
+# #673 -------------------------------------------------------------------------------------------
+
+
+class ScriptedBroker(MockBroker):
+    """Today's KOSPI record with the given (updatedAt, foreign buy) per call."""
+
+    def __init__(self, script):
+        self.script, self.calls = list(script), 0
+
+    async def investor_flow(self, market, interval, count, until=None):
+        updated, buy = self.script[min(self.calls, len(self.script) - 1)]
+        self.calls += 1
+        pair = (1_000, 900)
+        return [FlowRecord(date="2026-11-05", updated_at=updated,
+                           investors={"individual": pair, "foreigner": (buy, 900), "institution": pair,
+                                      "other_corporation": pair}, institution_breakdown={})], None
+
+
+def _at(h, m, s=0):
+    return datetime(2026, 11, 5, h, m, s, tzinfo=KST)
+
+
+def test_figures_moving_under_a_stuck_update_time_carry_the_fetch_before_the_change(caplog):
+    caplog.set_level("INFO", logger="desk.market_flow")
+    stuck = "2026-11-05T09:01:00+09:00"
+    broker = ScriptedBroker([(stuck, 1_000), (stuck, 1_000), (stuck, 1_500), (stuck, 1_500)])
+    now = [_at(9, 5)]
+    flow = MarketFlow(broker, now=lambda: now[0])
+
+    async def scenario():
+        first = await flow.get("KOSPI", "1d", 1, fresh=True)
+        assert first["freshness"]["source_updated_at"] == "2026-11-05T00:01:00+00:00"   # updatedAt only
+        now[0] = _at(9, 6)
+        same = await flow.get("KOSPI", "1d", 1, fresh=True)
+        assert same["freshness"]["source_updated_at"] == "2026-11-05T00:01:00+00:00"    # nothing moved yet
+        now[0] = _at(9, 7)
+        moved = await flow.get("KOSPI", "1d", 1, fresh=True)
+        # the change came after the 09:06 fetch: that time, never the 09:07 one (not fresher than known)
+        assert moved["changed_at"] == "2026-11-05T09:06:00+09:00"
+        assert moved["freshness"]["source_updated_at"] == "2026-11-05T00:06:00+00:00"
+        assert moved["freshness"]["source_delay_sec"] == 60
+        now[0] = _at(9, 8)
+        later = await flow.get("KOSPI", "1d", 1, fresh=True)
+        assert later["changed_at"] == "2026-11-05T09:06:00+09:00"                     # kept while unchanged
+        assert broker.calls == 4                                                     # fresh skips the cache
+    asyncio.run(scenario())
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("toss flow")]
+    assert lines == ["toss flow KOSPI: updatedAt 09:01:00 figures changed (since last change first)"]
+
+
+def test_a_newer_update_time_wins_over_the_seen_change():
+    broker = ScriptedBroker([("2026-11-05T09:01:00+09:00", 1_000), ("2026-11-05T09:01:00+09:00", 1_500),
+                             ("2026-11-05T09:09:30+09:00", 1_500)])
+    now = [_at(9, 5)]
+    flow = MarketFlow(broker, now=lambda: now[0])
+
+    async def scenario():
+        await flow.get("KOSPI", "1d", 1, fresh=True)
+        now[0] = _at(9, 8)
+        await flow.get("KOSPI", "1d", 1, fresh=True)
+        now[0] = _at(9, 10)
+        got = await flow.get("KOSPI", "1d", 1, fresh=True)
+        assert got["changed_at"] == "2026-11-05T09:05:00+09:00"
+        assert got["freshness"]["source_updated_at"] == "2026-11-05T00:09:30+00:00"
+    asyncio.run(scenario())
+
+
+def test_another_day_or_interval_is_not_watched():
+    broker = ScriptedBroker([("2026-11-04T18:10:00+09:00", 1_000), ("2026-11-04T18:10:00+09:00", 1_500)])
+    flow = MarketFlow(broker, now=lambda: _at(9, 5) + timedelta(days=1))
+
+    async def scenario():
+        await flow.get("KOSPI", "1d", 1, fresh=True)
+        got = await flow.get("KOSPI", "1d", 1, fresh=True)
+        assert got["changed_at"] is None and got["freshness"]["source_updated_at"] is None
+        week = await flow.get("KOSPI", "1w", 1, fresh=True)
+        assert week["changed_at"] is None
+    asyncio.run(scenario())
+
+
+def test_pre_market_is_cached_as_the_session_and_says_so():
+    clock = [0.0]
+    broker = CountingBroker()
+    flow = MarketFlow(broker, clock=lambda: clock[0], now=lambda: _at(8, 20))
+
+    async def scenario():
+        got = await flow.get("KOSPI", "1d", 5)
+        assert got["session"] == "pre" and got["freshness"]["live"] is True
+        clock[0] += 61
+        await flow.get("KOSPI", "1d", 5)
+        assert broker.calls == 2                          # 60 s, as in the session
+    asyncio.run(scenario())
+
+
+def test_a_failed_fresh_read_answers_the_snapshot_but_keeps_the_good_cache():
+    clock = [0.0]
+    broker = CountingBroker()
+    flow = MarketFlow(broker, clock=lambda: clock[0], now=lambda: _at(10, 0))
+
+    async def scenario():
+        good = await flow.get("KOSPI", "1d", 5)
+        broker.fail = True
+        clock[0] += 30
+        bad = await flow.get("KOSPI", "1d", 5, fresh=True)
+        assert bad["error"] and bad["records"] == []
+        card = await flow.get("KOSPI", "1d", 5)
+        assert card["records"] == good["records"] and broker.calls == 2    # still the 30 s old good answer
+    asyncio.run(scenario())
+
+
+def test_only_a_new_update_time_keeps_the_seen_change(caplog):
+    caplog.set_level("INFO", logger="desk.market_flow")
+    broker = ScriptedBroker([("2026-11-05T09:01:00+09:00", 1_000), ("2026-11-05T09:01:00+09:00", 1_500),
+                             ("2026-11-05T09:04:00+09:00", 1_500)])
+    now = [_at(9, 2)]
+    flow = MarketFlow(broker, now=lambda: now[0])
+
+    async def scenario():
+        for at in (_at(9, 2), _at(9, 3), _at(9, 5)):
+            now[0] = at
+            got = await flow.get("KOSPI", "1d", 1, fresh=True)
+        assert got["changed_at"] == "2026-11-05T09:02:00+09:00"
+    asyncio.run(scenario())
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("toss flow")]
+    assert lines[-1] == "toss flow KOSPI: updatedAt 09:04:00 figures same (since last change -)"
+
+
+def test_sessions_by_the_clock():
+    from desk.market_flow import session
+    assert session(_at(7, 59)) == "closed"
+    assert session(_at(8, 0)) == "pre"
+    assert session(_at(8, 59)) == "pre"
+    assert session(_at(9, 0)) == "regular"
+    assert session(_at(15, 41)) == "closed"
+    assert session(datetime(2026, 11, 7, 8, 30, tzinfo=KST)) == "closed"            # Saturday

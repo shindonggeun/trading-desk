@@ -9,6 +9,9 @@ the finished bars only. Just after a bar of a watched ticker · timeframe closes
 - **break**: its close is the first beyond a trendline (desk.channels' ``broken_at``) or a channel.
 - **retest**: a trendline broken within HORIZON bars is reached again from the broken side and the bar
   closes on that side still.
+- **long** (daily bars only, #679): a long line of months (desk.long_lines) is reached - the bar's low
+  arrives at a long support (high at a long resistance) and its close holds: "장기 지지 시험" - or its
+  second close beyond it confirms the break. Read once the daily bar has ended.
 
 What goes out is gated: the watch is off until the owner turns it on (``line_watch``, default off);
 the same line · signal goes once a KST day; a ticker · timeframe · kind of signal waits COOLDOWN_MIN
@@ -27,15 +30,15 @@ from sqlalchemy import desc, insert, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from . import channels, lines_bt, notify
+from . import channels, lines_bt, long_lines, long_lines_bt, notify
 from .db import line_signals, line_watch, now
 
 log = logging.getLogger(__name__)
 
 KIND = "line_signal"
-TIMEFRAMES = ("5m", "15m", "60m", "120m", "240m")       # watched; a daily line moves too slowly for this
+TIMEFRAMES = ("5m", "15m", "60m", "120m", "240m", "1d")  # watched; 1d for the long lines of months (#679)
 SHORT = {"5m", "15m", "60m", "120m"}                    # bars short enough to warn about
-EVENTS = ("touch", "break", "retest")
+EVENTS = ("touch", "break", "retest", "long")
 MAX_TICKERS = 10
 COOLDOWN_MIN = 30
 COOLDOWN_BARS = 2
@@ -51,7 +54,9 @@ DEFAULT = {"enabled": False, "tickers": ["NQ=F"], "timeframes": ["60m"],
 NO_ADVICE = "※ 매수 · 매도 추천이 아닙니다"
 
 _ICON = {"touch_support": "🟢 지지", "touch_resistance": "🔵 저항", "break_down": "🔻 하향 이탈",
-         "break_up": "🔺 상향 이탈", "retest_down": "↩️ 되돌림", "retest_up": "↩️ 되돌림"}
+         "break_up": "🔺 상향 이탈", "retest_down": "↩️ 되돌림", "retest_up": "↩️ 되돌림",
+         "long_support": "🟢 장기 지지 시험", "long_resistance": "🔵 장기 저항 시험",
+         "long_break_down": "🔻 장기 지지 이탈", "long_break_up": "🔺 장기 저항 돌파"}
 _SAY = {
     "touch_support": "가격이 지지 구간({line})에 닿았어요 → 하락이 멈추는지 지켜볼 자리",
     "touch_resistance": "가격이 저항 구간({line})에 닿았어요 → 상승이 막히는지 지켜볼 자리",
@@ -59,6 +64,10 @@ _SAY = {
     "break_up": "종가가 {line} 위로 넘었어요 → 다시 선 아래로 돌아오는지 지켜볼 자리",
     "retest_down": "아래로 이탈한 {line}에 다시 닿았지만 넘지 못했어요 → 이탈이 굳는지 지켜볼 자리",
     "retest_up": "위로 이탈한 {line}에 다시 닿았지만 넘지 못했어요 → 이탈이 굳는지 지켜볼 자리",
+    "long_support": "몇 달 이어 온 {line}을 시험 중이에요 → 버티는지 지켜볼 자리",
+    "long_resistance": "몇 달 이어 온 {line}을 시험 중이에요 → 막히는지 지켜볼 자리",
+    "long_break_down": "종가가 이틀째 {line} 아래예요 → 다시 선 위로 돌아오는지 지켜볼 자리",
+    "long_break_up": "종가가 이틀째 {line} 위예요 → 다시 선 아래로 돌아오는지 지켜볼 자리",
 }
 _DIR_KO = {"up": "상승", "down": "하락", "flat": "횡보"}
 
@@ -136,7 +145,31 @@ def detect(bars: list[dict], tf: str, now: datetime | None = None) -> list[dict]
                 add("retest_down", "trend_retest", tid, name, t.at)
             elif not support and lo[c] <= t.at(c) + touch and cl[c] > t.at(c) and lo[c - 1] > t.at(c - 1) + touch:
                 add("retest_up", "trend_retest", tid, name, t.at)
+    if tf == "1d":
+        _long(usable, add, lo, hi, cl)
     return out
+
+
+def _long(usable: list[dict], add, lo: list[float], hi: list[float], cl: list[float]) -> None:
+    """#679 the long lines' signals on the last finished daily bar (``add`` appends to detect's list)."""
+    a = long_lines.atr(usable)
+    if not a:
+        return
+    c = len(usable) - 1
+    unit = a / usable[c]["close"]
+    touch, brk = long_lines.TOUCH_ATR * unit, long_lines.BREAK_ATR * unit
+    for ln in long_lines.find(usable, "1d", unit):
+        lid = f"1d-long-{ln.kind}-{usable[ln.i]['at']}-{usable[ln.j]['at']}"
+        support = ln.kind == "support"
+        since = datetime.fromisoformat(usable[ln.touches[0]]["at"])
+        name = f"{since.month}월 {since.day}일부터의 장기 {'상승 지지선' if support else '하락 저항선'}"
+        if ln.broken_at is None:
+            if support and lo[c] <= ln.at(c) + touch and cl[c] >= ln.at(c) - brk and lo[c - 1] > ln.at(c - 1) + touch:
+                add("long_support", "long_support", lid, name, ln.at)
+            elif not support and hi[c] >= ln.at(c) - touch and cl[c] <= ln.at(c) + brk and                     hi[c - 1] < ln.at(c - 1) - touch:
+                add("long_resistance", "long_resistance", lid, name, ln.at)
+        elif ln.run == long_lines.CONFIRM_BARS:        # this close confirmed it
+            add("long_break_down" if support else "long_break_up", "long_break", lid, name, ln.at)
 
 
 def _fmt(price: float) -> str:
@@ -148,6 +181,8 @@ def _rate_line(sig: dict, rates: dict) -> str:
     got = (rates.get("channel") or {}).get(role.split("_")[1]) if role.startswith("channel_") and role != "channel_break" \
         else rates.get(role) if role in ("trend_support", "trend_resistance") \
         else rates.get("trend_break") if role == "trend_break" else None
+    if role.startswith("long_"):
+        return long_lines_bt.rate_text(role)
     if role in ("channel_break", "trend_retest"):
         return "과거 맞은 비율: 이 사건은 따로 재지 않았어요"
     if not got or not got.get("n"):
@@ -281,7 +316,7 @@ class LineWatch:
             return []
         rates = lines_bt.rates(ticker, tf)
         sent = []
-        order = {"break": 0, "retest": 1, "touch": 2}
+        order = {"long": 0, "break": 1, "retest": 2, "touch": 3}
         for sig in sorted(found, key=lambda s: order[s["event"]]):
             title, body = text(sig, ticker, tf, rates)
             day = kst_day(sig["at"])

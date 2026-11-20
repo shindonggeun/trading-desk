@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 
@@ -250,7 +250,8 @@ def sentence(d: dict, bars: list[dict], tf: str) -> str:
     fb = f", 종가가 잠깐 {'아래' if up else '위'}로 갔다 돌아온 거짓 이탈 {len(d['false_breaks'])}번" if d["false_breaks"] else ""
     head = f"{what} — {_day(d['since'])}부터 {len(d['touches'])}번 닿았어요{fb}."
     move = (bars[-1]["close"] / bars[-2]["close"] - 1) * 100 if len(bars) > 1 else 0.0
-    today = "오늘" if tf == "1d" else "이번 주"
+    # the bar's own date: the lines are read on finished bars, which may be yesterday's
+    today = _day(bars[-1]["at"]) + ("" if tf == "1d" else " 주")
     if d["state"] == "broken":
         return f"{head} {_day(d['broken_at'])} 종가로 {'아래' if up else '위'}로 이탈했어요(선 {_fmt(d['broken_price'])})."
     if d["state"] == "testing":
@@ -267,3 +268,15 @@ def lines(bars: list[dict], tf: str) -> list[dict]:
         return []
     unit = a / usable[-1]["close"]
     return [to_dict(ln, usable, tf, unit) for ln in find(usable, tf, unit)]
+
+
+def for_chart(days: list[dict], weeks: list[dict], live: bool) -> list[dict]:
+    """/api/lines' ``long_lines`` for a daily chart: the daily lines on the finished days (``live``: the
+    last one still trading is left out) and the weekly ones on the finished weeks (a week whose Friday
+    the finished days have not reached yet is left out)."""
+    done = days[:-1] if live else days
+    if not done:
+        return []
+    last_day = date.fromisoformat(done[-1]["at"][:10])
+    full = [w for w in weeks if date.fromisoformat(w["at"][:10]) + timedelta(days=4) <= last_day]
+    return lines(done, "1d") + (lines(full, "1w") if full else [])

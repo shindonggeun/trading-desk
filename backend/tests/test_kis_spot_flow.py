@@ -14,6 +14,12 @@ KST = timezone(timedelta(hours=9))
 JO = 1_000_000_000_000          # 1조 KRW
 
 
+@pytest.fixture(autouse=True)
+def _kis_spot_on(monkeypatch):
+    """These tests are the KIS path's (off in production since #711: KIS counts a narrower market)."""
+    monkeypatch.setattr(kis_spot_flow, "ENABLED", True)
+
+
 def _cols(prefix, buy, sell):
     return {f"{prefix}_shnu_tr_pbmn": str(buy), f"{prefix}_seln_tr_pbmn": str(sell),
             f"{prefix}_ntby_tr_pbmn": str(buy - sell), f"{prefix}_ntby_qty": "0"}
@@ -274,3 +280,12 @@ def test_the_desk_loggers_info_lines_reach_one_handler():
     finally:
         desk.setLevel(before[0])
         desk.handlers[:] = before[1]
+
+
+def test_off_kis_is_not_asked_and_toss_serves_today(monkeypatch):
+    """#711: KIS' [0403] is KRX regular-market stocks only, Toss' record wider (NXT; ETFs on KOSPI)."""
+    monkeypatch.setattr(kis_spot_flow, "ENABLED", False)
+    kis = FakeKis()
+    got = asyncio.run(MarketFlow(TossBroker(), now=lambda: _at(10, 0), kis=kis).get("KOSDAQ", "1d", 5))
+    assert kis.calls == []
+    assert got["records"][0]["date"] == "2026-11-05" and got["records"][0].get("source") is None

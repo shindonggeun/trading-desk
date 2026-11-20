@@ -175,3 +175,27 @@ def test_the_table_carries_the_rules_and_the_grades(monkeypatch):
     rules = s["rules"]
     assert rules["n"] == 21                                            # weak ones left out
     assert rules["verdict"] in ("edge", "no_edge", "unstable", "unmeasured") and rules["edge_pct"] is not None
+
+
+def test_a_whipsaw_out_one_side_then_the_other_is_a_break_of_the_last(monkeypatch):
+    monkeypatch.setattr(patterns, "_stats_cache", {})
+    bars = _asc()
+    bars[-2].update(close=125.0, high=125.5)                          # out the top ...
+    floor = bars[-1]["low"]
+    bars[-1].update(close=floor - 8, low=floor - 8.5)                  # ... then the last close under the bottom
+    p = _one(bars)
+    assert p["state"] == "broke_down"
+    assert p["breakout"]["side"] == "down" and p["breakout"]["status"] in ("broken", "late")
+    assert p["breakout"]["at"] == bars[-1]["at"] and [s["side"] for s in p["retest"]["scenarios"]] == ["short"]
+
+
+def test_the_live_retest_entry_is_the_one_the_backtest_walks(monkeypatch):
+    import math
+
+    monkeypatch.setattr(patterns, "_stats_cache", {})
+    p = _one(_asc())
+    long_ = p["retest"]["scenarios"][0]
+    unit = 1.0 / _asc()[-1]["close"]
+    risk = math.log(long_["entry"] / long_["stop"]) / unit                  # in ATR, as patterns_bt's limit and stop
+    assert abs(risk - (patterns.TOUCH_ATR + patterns.RETEST_STOP_ATR)) < 0.05
+    assert long_["stop_atr"] == patterns.TOUCH_ATR + patterns.RETEST_STOP_ATR

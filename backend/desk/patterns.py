@@ -166,20 +166,28 @@ def breakout(bars: list[dict], up: _Line, low: _Line, start: int, apex: float, u
              price: float | None = None) -> dict:
     """#664 what the last STATE_BARS bars did with the lines (``price``, live, stands for the last close):
     a close beyond a line (by BREAK_ATR) is the break - false when the last close is back inside, late past
-    LATE_SHARE of the way to the apex; without one a wick beyond is an attempt, the apex at hand spent."""
+    LATE_SHARE of the way to the apex; without one a wick beyond is an attempt, the apex at hand spent.
+    The last close decides the side (as ``state``): out one side then the other is a break of the last."""
     last = len(bars) - 1
     tol = BREAK_ATR * unit
     closes = [math.log(b["close"]) for b in bars]
     if price and price > 0:
         closes[last] = math.log(price)
-    side, xb = None, None
-    for x in range(max(start, last - STATE_BARS + 1), last + 1):
-        if closes[x] > up.at(x) + tol:
-            side, xb = "up", x
-            break
-        if closes[x] < low.at(x) - tol:
-            side, xb = "down", x
-            break
+    span = range(max(start, last - STATE_BARS + 1), last + 1)
+
+    def out(x: int) -> str | None:
+        return "up" if closes[x] > up.at(x) + tol else "down" if closes[x] < low.at(x) - tol else None
+
+    side, xb = out(last), None
+    if side:                                    # broken now: the break is where this run of closes outside began
+        xb = last
+        while xb - 1 in span and out(xb - 1) == side:
+            xb -= 1
+    else:                                       # inside now: the last close outside, if any, was a false break
+        outs = [x for x in span if out(x)]
+        if outs:
+            xb = outs[-1]
+            side = out(xb)
     share = None
     if side is None:
         for x in range(max(start, last - STATE_BARS + 1), last + 1):
@@ -190,8 +198,7 @@ def breakout(bars: list[dict], up: _Line, low: _Line, start: int, apex: float, u
         status = "attempt" if side else "expired" if apex - last <= EXPIRED_BARS else "converging"
     else:
         share = round((xb - start) / (apex - start), 2)
-        line, sign = (up, 1) if side == "up" else (low, -1)
-        if sign * (closes[last] - line.at(last)) <= tol:       # the last close (live price) back inside
+        if not out(last):                                       # the last close (live price) back inside
             status = "false"
         else:
             status = "late" if share > LATE_SHARE else "broken"
@@ -222,8 +229,9 @@ def retest(p: dict, up: _Line, low: _Line, last: int, xb: float, unit: float, st
     for s in sides:
         sign = 1 if s == "up" else -1
         line = up if s == "up" else low
-        entry = math.exp(line.at(x))
-        stop = entry * math.exp(-sign * RETEST_STOP_ATR * unit)
+        # as desk.patterns_bt walks it: a limit just outside the line (TOUCH_ATR), the stop RETEST_STOP_ATR inside
+        entry = math.exp(line.at(x) + sign * TOUCH_ATR * unit)
+        stop = math.exp(line.at(x) - sign * RETEST_STOP_ATR * unit)
         risk = abs(entry - stop)
         targets = []
         for st in stages:
@@ -232,7 +240,7 @@ def retest(p: dict, up: _Line, low: _Line, last: int, xb: float, unit: float, st
                 targets.append({"stage": st["stage"], "price": price, "rr": round(abs(price - entry) / risk, 2)})
         out.append({"side": "long" if s == "up" else "short", "kind": "retest", "when": when,
                     "entry": _round(entry), "entry_type": "limit", "stop": _round(stop),
-                    "stop_atr": RETEST_STOP_ATR, "stop_pct": round(risk / entry * 100, 1),
+                    "stop_atr": TOUCH_ATR + RETEST_STOP_ATR, "stop_pct": round(risk / entry * 100, 1),
                     "targets": targets, "rr": targets[0]["rr"] if targets else None})
     note = {"false": "거짓 돌파 뒤라 리테스트 진입은 없어요", "expired": "꼭짓점에 다다라 진입 근거가 약해요"}.get(status)
     return {"scenarios": out, "pullback_pct": stats.get("pullback_pct"), "win_pct": stats.get("retest_win_pct"),

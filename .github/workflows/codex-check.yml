@@ -29,7 +29,8 @@ permissions:
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    # codex_team 의 Windows 전경 프로세스 트리 종료 테스트까지 돌린다(commerce-foundry 와 같음).
+    runs-on: windows-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -38,5 +39,5 @@ jobs:
           python-version: "3.12"
       - name: Claude 원본 ↔ Codex 생성본 동기화 확인
         run: python -B -X utf8 scripts/sync-agent-skills.py
-      - name: 스크립트 테스트
+      - name: 동기화 · codex-team 스크립트 테스트 (Codex CLI 없이)
         run: python -B -X utf8 -m unittest discover -s scripts -p "test_*.py"

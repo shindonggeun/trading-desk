@@ -53,6 +53,7 @@ AGENTS.md                         CLAUDE.md 본문을 Codex 표기로 바꾼 것
 .agents/roles/<역할>.md            역할 지침 7개 (생성본)
 .codex/agents/<역할>.toml          Codex 하위 에이전트 7개 (생성본, 이름은 밑줄)
 .codex/agent-models.json          Codex 역할별 모델 등급 · 추론 강도 (직접 고친다)
+.agents/skills/codex-team/SKILL.md Codex 전용 스킬 — 독립 Codex 세션 팀(직접 고친다, docs/codex-team.md)
 scripts/sync-agent-skills.py      생성 · 검사. CI codex-check 가 PR 마다 검사한다
 ```
 

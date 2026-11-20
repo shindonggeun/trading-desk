@@ -1,12 +1,11 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { HORIZON } from "../korean";
 import type { DeskConfig } from "../types";
 import FavoriteStar from "./FavoriteStar";
 
 /**
  * #539 상세 분석(에이전트 토론 → 타점) 시작 확인 칸 — 시장 칸(MarketBoard)과 차트 화면(ChartView)이 같이 쓴다.
- * 누르기만으로는 시작하지 않는다: 투자 성향 · 시간축 · 사용량 안내를 보고 "분석 시작"을 한 번 더 눌러야 run 을 만든다.
+ * 누르기만으로는 시작하지 않는다: 사용량 안내를 보고 "분석 시작"을 한 번 더 눌러야 run 을 만든다(#697 기간 · 성향은 고르지 않는다).
  * 열리면 포커스는 "취소"(Enter 를 한 번 더 눌러도 시작되지 않게), Esc 로 닫힌다.
  */
 export default function DeepRunConfirm({ ticker, name, extra, onCancel }: {
@@ -37,9 +36,6 @@ export default function DeepRunConfirm({ ticker, name, extra, onCancel }: {
     return () => document.removeEventListener("keydown", onKey, true);
   }, [ticker, onCancel]);
 
-  const profileLabel = config?.profiles.find((p) => p.id === config.default_profile)?.label ?? config?.default_profile;
-  const horizonId = config?.default_horizon ?? "swing";
-  const horizonLabel = config?.horizons?.find((h) => h.id === horizonId)?.label ?? HORIZON[horizonId]?.ko ?? horizonId;
 
   async function start() {
     setBusy(true);
@@ -48,8 +44,6 @@ export default function DeepRunConfirm({ ticker, name, extra, onCancel }: {
       const run = await api.createRun({
         ticker,
         name,
-        profile: config?.default_profile,
-        horizon: horizonId,
         analysts: config?.analysts ?? ["market", "social", "news", "fundamentals"], // 재무는 서버가 지수 · 선물 · 환율에서 뺀다
         use_portfolio: false,
         output_language: "Korean",
@@ -68,7 +62,7 @@ export default function DeepRunConfirm({ ticker, name, extra, onCancel }: {
       </p>
       {extra}
       <p className="muted small">
-        에이전트들이 토론해 진입 · 손절 · 목표가를 냅니다. 투자 성향 {profileLabel ?? "기본"} · 시간축 {horizonLabel} · 보고서
+        에이전트들이 토론해 진입 · 손절 · 목표가를 내고, 스캘핑 · 단타 · 짧은 스윙 · 스윙 네 기간을 함께 보여 줍니다. 보고서
         한국어 · 보유 종목 반영 안 함. 지수 · 선물 · 환율 · 코인은 재무 분석가 없이 진행합니다. 한 번에 수 분이 걸리고 구독 플랜
         사용량이 차감됩니다.
       </p>

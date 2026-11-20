@@ -122,10 +122,14 @@ function Chart({ ticker, tradeDate, plan, title, outlook = null, runId }: { tick
  * 분석 화면 차트 탭(#99): 차트 하나. 레버리지 상품이면 본주 · 상품을 전환한다(처음은 입력한 상품).
  * 분석 중(계획 없음)에는 레벨 없이 시세만.
  */
-export function ResultChart({ plan, ticker, tradeDate, outlook = null, runId }: { plan: Plan | null; ticker: string; tradeDate: string; outlook?: RunOutlook | null; runId?: string }) {
+export function ResultChart({ plan, ticker, tradeDate, outlook = null, runId, label = null }: {
+  plan: Plan | null; ticker: string; tradeDate: string; outlook?: RunOutlook | null; runId?: string;
+  /** #697 분석 기간이 아닌 칸을 그릴 때 제목 꼬리("단타 · 데스크 지도") — 이때 runId 는 넘기지 않는다(근거 해설은 분석 기간 것) */
+  label?: string | null;
+}) {
   const u = plan?.underlying;
   const [side, setSide] = useState<"product" | "underlying">("product");
-  if (!u) return <Chart ticker={ticker} tradeDate={tradeDate} plan={plan} title={plan ? `${ticker} · 분석 결과` : `${ticker} · 가격`} outlook={outlook} runId={runId} />;
+  if (!u) return <Chart ticker={ticker} tradeDate={tradeDate} plan={plan} title={plan ? `${ticker} · ${label ?? "분석 결과"}` : `${ticker} · 가격`} outlook={outlook} runId={runId} />;
   const lev = `${u.leverage > 0 ? "+" : ""}${u.leverage}배`;
   return (
     <div className="result-chart">
@@ -137,7 +141,7 @@ export function ResultChart({ plan, ticker, tradeDate, outlook = null, runId }: 
       </div>
       {side === "product" ? (
         // #438 전망은 분석한 종목(상품) 가격 기준 — 본주 차트에는 그리지 않는다
-        <Chart key="product" ticker={ticker} tradeDate={tradeDate} plan={plan} title={`${ticker} · ${lev} 상품`} outlook={outlook} runId={runId} />
+        <Chart key="product" ticker={ticker} tradeDate={tradeDate} plan={plan} title={`${ticker} · ${lev} 상품${label ? ` · ${label}` : ""}`} outlook={outlook} runId={runId} />
       ) : (
         <Chart key="underlying" ticker={u.ticker} tradeDate={tradeDate} plan={u} title={`${u.ticker} · 본주 기준`} />
       )}

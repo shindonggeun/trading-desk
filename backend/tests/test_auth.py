@@ -132,3 +132,39 @@ def test_open_stream_ends_when_the_session_is_revoked(db_url):
         engine.dispose()
         # Auth passed at the door only via the middleware; revoked now, so the stream is refused
         assert client.get(f"/api/runs/{run_id}/stream").status_code == 401
+
+
+def test_a_run_streams_session_re_check_is_not_activity(db_url, monkeypatch):
+    """#753: only the request that opens the stream counts as activity (the middleware); every round's
+    re-check passes touch=False, so an open tab does not hold off the idle expiry."""
+    from tests.test_api import _wait_done
+
+    seen: list[bool] = []
+    real = Auth.resolve
+
+    def spy(self, token, *, touch):
+        seen.append(touch)
+        return real(self, token, touch=touch)
+
+    with _client(db_url) as client:
+        run_id = client.post("/api/runs", json={"ticker": "NVDA"}).json()["id"]
+        _wait_done(client, run_id)
+        monkeypatch.setattr(Auth, "resolve", spy)
+        with client.stream("GET", f"/api/runs/{run_id}/stream") as response:
+            assert response.status_code == 200
+            list(response.iter_lines())
+    assert seen[0] is True and len(seen) >= 2 and not any(seen[1:])
+
+
+def test_every_stream_re_check_in_the_api_passes_touch_false():
+    """#753: the middleware is the one place a session check is activity; any other auth.resolve in
+    desk/api.py is a background re-check (an open stream) and must say touch=False."""
+    from pathlib import Path
+
+    import desk.api
+
+    calls = [line.strip() for line in Path(desk.api.__file__).read_text(encoding="utf-8").splitlines()
+             if "auth.resolve" in line]
+    door = [c for c in calls if "request.cookies.get(COOKIE)" in c]
+    assert len(door) == 1 and "touch=True" in door[0] and len(calls) >= 4
+    assert all("touch=False" in c for c in calls if c not in door), calls

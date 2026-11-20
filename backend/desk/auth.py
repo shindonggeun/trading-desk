@@ -118,10 +118,11 @@ class Auth:
             ))
         return token
 
-    def resolve(self, token: str | None, touch: bool = True) -> User | None:
-        """The session's user, or None when it is unknown, expired or idle. ``touch=False`` is for a
-        background re-check (an open SSE stream): it must not count as activity, or an open tab would
-        keep the session from ever going idle."""
+    def resolve(self, token: str | None, *, touch: bool) -> User | None:
+        """The session's user, or None when it is unknown, expired or idle. ``touch`` says whether this
+        check is activity: True only for a request coming in (the middleware), False for a background
+        re-check (an open SSE stream), or an open tab would keep the session from ever going idle (#753).
+        It has no default, so a caller that forgets it fails at once instead of extending the session."""
         if not token:
             return None
         key = hash_token(token)

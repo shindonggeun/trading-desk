@@ -193,3 +193,36 @@ def test_portfolio_stream_sends_snapshots_until_the_session_ends(db_url, monkeyp
         assert len(snapshots) == 2      # the stream closed by itself once the session was gone
         assert lines[0] == "retry: 2000"   # 0 s in settings is clamped to 2 s
         assert snapshots[0]["fx"]["usd_krw"] == 1400.0
+
+
+def test_an_open_portfolio_stream_does_not_keep_the_session_from_going_idle(db_url, monkeypatch):
+    """#753: the stream's re-check is not activity - a tab left open still goes idle (12 h by default)."""
+    from desk import auth as auth_module
+    from desk.db import now as real_now
+    from desk.db import sessions
+
+    clock = [real_now()]
+    monkeypatch.setattr(auth_module, "now", lambda: clock[0])
+    with _client(db_url, Book(), portfolio_stream_sec=0) as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        rounds = 0
+        real_sleep = asyncio.sleep
+
+        async def sleep(_seconds):
+            nonlocal rounds
+            rounds += 1
+            # 5 hours between rounds; past round 6 the 72-hour cap ends any stream (so a regression cannot hang)
+            clock[0] += timedelta(hours=100 if rounds >= 6 else 5)
+            await real_sleep(0)
+        monkeypatch.setattr("desk.api.asyncio.sleep", sleep)
+
+        with client.stream("GET", "/api/portfolio/stream") as response:
+            lines = list(response.iter_lines())
+        snapshots = [line for line in lines if line.startswith("data: ")]
+        # rounds at 0, 5 and 10 hours after the last request; at 15 hours the session is idle and the stream ends
+        assert len(snapshots) == 3
+        engine = make_engine(db_url)
+        with engine.connect() as conn:
+            assert conn.execute(sessions.select()).first() is None    # expired and removed, not kept alive
+        engine.dispose()
+        assert client.get("/api/portfolio").status_code == 401

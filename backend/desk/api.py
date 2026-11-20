@@ -1165,7 +1165,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if request.method in UNSAFE_METHODS and not _same_origin(request):
             return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
         if request.url.path not in OPEN_PATHS:
-            user = await asyncio.to_thread(auth.resolve, request.cookies.get(COOKIE))
+            user = await asyncio.to_thread(auth.resolve, request.cookies.get(COOKIE), touch=True)
             if user is None:
                 return JSONResponse({"detail": "login required"}, status_code=401)
             request.state.user = user
@@ -1574,7 +1574,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             seq = start
             while not await request.is_disconnected():
                 # Re-check every round: logout, revoke or expiry ends an open stream too.
-                if await asyncio.to_thread(auth.resolve, token) is None:
+                if await asyncio.to_thread(auth.resolve, token, touch=False) is None:
                     return
                 waiter = hub.listen(run_id)          # before reading, so nothing slips between
                 events = store.events_after(run_id, seq)
@@ -1874,7 +1874,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             yield f"retry: {int(interval * 1000)}\n\n"
             while not await request.is_disconnected():
                 # Re-check every round: logout, revoke or expiry ends an open stream too.
-                if await asyncio.to_thread(auth.resolve, token) is None:
+                if await asyncio.to_thread(auth.resolve, token, touch=False) is None:
                     return
                 snap = await book.snapshot()
                 yield f"data: {json.dumps(snap, ensure_ascii=False)}\n\n"
@@ -1907,7 +1907,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     # counting it as activity: an open tab must not keep the session from idling.
                     slow = checked is None or loop.time() - checked >= live.TICK_SEC - 0.05
                     if slow:
-                        if await asyncio.to_thread(auth.resolve, token, False) is None:
+                        if await asyncio.to_thread(auth.resolve, token, touch=False) is None:
                             return
                         checked = loop.time()
                     is_open = await live.is_open(calendar, ticker)
@@ -1930,7 +1930,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                         # a failing ticker is tried again a minute later, the session still every 15 s
                         for _ in range(max(1, int(live.FAILING_SEC // live.CLOSED_SEC))):
                             await asyncio.sleep(live.CLOSED_SEC)
-                            if await asyncio.to_thread(auth.resolve, token, False) is None:
+                            if await asyncio.to_thread(auth.resolve, token, touch=False) is None:
                                 return
                     else:
                         await asyncio.sleep(pause)
@@ -3032,7 +3032,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     if event is None or loop_now - checked >= 5.0:
                         # docs/security.md §2: an open stream re-checks the session within 5 s
                         checked = loop_now
-                        if await asyncio.to_thread(auth.resolve, token) is None or await request.is_disconnected():
+                        if await asyncio.to_thread(auth.resolve, token, touch=False) is None or await request.is_disconnected():
                             return
                         if event is None:
                             yield ": ping\n\n"

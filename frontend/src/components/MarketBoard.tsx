@@ -9,6 +9,7 @@ import type { Estimate, GapReport, SupportResistance } from "../types";
 import DeepRunConfirm from "./DeepRunConfirm";
 import FearIndexStrip from "./FearIndexStrip";
 import { TrendStrip } from "./TrendChips";
+import { usePoll } from "../poll";
 
 const REFRESH_MS = 60_000;
 const BARS: Record<BoardMode, number> = { "1d": 63, "5m": 78 }; // 일봉 약 3개월 · 5분봉 약 하루
@@ -118,6 +119,7 @@ function useTiles(all: MarketSymbol[], mode: BoardMode, enabled: boolean, seen: 
   const priced = useRef<{ mode: BoardMode; tickers: Set<string> }>({ mode, tickers: new Set() });
   // 결과는 훅이 살아 있는 동안 받는다 — 새 타일이 보여 effect 가 다시 돌아도 앞서 보낸 요청의 답을 버리지 않게(#644)
   const mounted = useRef(true);
+  const load = useRef<(onlyNew?: boolean) => Promise<unknown>>(() => Promise.resolve());
   useEffect(() => () => { mounted.current = false; }, []);
   useEffect(() => {
     if (!enabled) return;
@@ -131,28 +133,26 @@ function useTiles(all: MarketSymbol[], mode: BoardMode, enabled: boolean, seen: 
     // 새로 보인 타일만 바로, 이미 받은 타일은 다음 주기에(주기 · 모드가 바뀌면 다시 전부)
     if (priced.current.mode !== mode) priced.current = { mode, tickers: new Set() };
     const loadPrices = (onlyNew = false) => {
-      if (document.hidden) return;
+      const jobs: Promise<unknown>[] = [];
       for (const { ticker } of markets) {
         if (onlyNew && priced.current.tickers.has(ticker)) continue;
         priced.current.tickers.add(ticker);
         const daily = api.candles(ticker, "1d", BARS["1d"]);
         const chart = mode === "1d" ? daily : api.candles(ticker, "5m", BARS["5m"]);
-        Promise.all([daily, chart]).then(
+        jobs.push(Promise.all([daily, chart]).then(
           ([d, c]) => set(ticker, { bars: c.bars, last: c.bars.length ? c.bars[c.bars.length - 1].close : null, change: dailyChange(d.bars), error: false }),
           () => set(ticker, { error: true }),
-        );
+        ));
       }
+      return Promise.allSettled(jobs);
     };
+    load.current = loadPrices;
     loadPrices(true);
-    const every = () => loadPrices();
-    const timer = setInterval(every, REFRESH_MS);
-    document.addEventListener("visibilitychange", every);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", every);
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, mode, enabled]);
+  // #678 이미 받은 타일 전부는 1분마다 usePoll 로(가려진 탭은 쉬고 다시 보이면 건너뛴 차례를 바로) — 첫 차례는 한 주기 뒤.
+  // 타일 하나의 실패는 그 타일에만 적고 주기는 그대로(요청 묶음이 끝난 뒤 다음 차례)
+  usePoll(enabled && key ? `market-board:${mode}:${key}` : null, () => load.current(), REFRESH_MS, { delay: REFRESH_MS });
 
   // 지지 · 저항 · 추정가는 차트 주기와 상관없이 타일마다 한 번 — 서버가 캐시한다
   const asked = useRef<Set<string>>(new Set());

@@ -248,9 +248,12 @@ function IntradayFlowViewInner() {
   useEffect(() => {
     let alive = true;
     let timer: number | undefined;
+    let first = true;
+    let waiting = false;
     const load = () => {
-      // #626 가려진 탭은 쉰다(장중 봉 간격으로 다시 보며 기다린다)
-      if (document.hidden) { timer = window.setTimeout(load, 30_000); return; }
+      // #626 가려진 탭은 쉰다 — #678 첫 읽기는 가려져 있어도 하고, 쉬던 차례는 다시 보이는 순간 바로
+      if (document.hidden && !first) { waiting = true; return; }
+      first = false;
       api.marketFlowIntraday(prefs.bucket)
         .then((d) => {
           if (!alive) return;
@@ -267,8 +270,14 @@ function IntradayFlowViewInner() {
           timer = window.setTimeout(load, 60_000);
         });
     };
+    const onVisible = () => {
+      if (document.hidden || !waiting) return;
+      waiting = false;
+      load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     load();
-    return () => { alive = false; window.clearTimeout(timer); };
+    return () => { alive = false; window.clearTimeout(timer); document.removeEventListener("visibilitychange", onVisible); };
   }, [prefs.bucket]);
 
   const summary = useMemo(() => (data ? summarize(data, prefs.spot) : null), [data, prefs.spot]);

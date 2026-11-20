@@ -72,6 +72,8 @@ export default function TodayStrip() {
   const fundCh = useFundChanges(list.map((x) => x.ticker));   // #484 기관 13F 배지
   const report = useLatestReport();   // #496 최신 리포트 한 줄
   const firstRun = useRef(false);
+  const keyNow = useRef(key);
+  useEffect(() => { keyNow.current = key; }, [key]);
 
   useEffect(() => {
     if (!key) setFound(favs ? {} : null);
@@ -125,7 +127,8 @@ export default function TodayStrip() {
     });
     return out;
     };
-    if (later) setFound(build([]));
+    // #678 첫 요청 중에 즐겨찾기가 바뀌었으면 예전 목록의 부분 결과로 덮지 않는다
+    if (later && keyNow.current === key) setFound(build([]));
     return build(await perP);
   }, REFRESH_MS, { onData: (out) => setFound(out) });
 

@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
  * #626 주기적으로 다시 읽기는 모두 여기서 — 화면 코드는 setInterval 을 직접 쓰지 않는다.
  * - 같은 key 는 요청 하나를 함께 쓴다(먼저 온 구독자의 fetch, 주기는 구독자 중 가장 짧은 것).
  * - 탭이 가려지면 쉬고(pauseHidden, 기본 켬 — 모든 구독자가 원할 때만), 다시 보이면 쉬는 동안 건너뛴 차례를 바로 채운다.
- * - 실패하면 다음 차례를 2 · 4 · 8배로 늦추고(backoffOnError, 기본 켬) 성공하면 원래 주기로.
+ * - 실패하면 다음 차례를 2 · 4 · 8배로 늦추되 첫 실패 뒤엔 RETRY_CAP_MS(2분)를 넘기지 않고(이어지면 4 · 8 · 16분)(backoffOnError, 기본 켬) 성공하면 원래 주기로.
+ *   주기가 2분보다 긴 카드(10분 · 30분 · 몇 시간)는 실패하면 오히려 2분 뒤 다시 본다(#678 — 502 한 번에 몇 시간 밀리지 않게).
  * - 요청이 끝난 뒤 다음 차례를 잡아 겹쳐 부르지 않는다. 화면을 떠난 구독자에게는 늦게 온 응답을 주지 않는다.
  */
 
@@ -29,6 +30,8 @@ export type PollOptions<T> = {
 };
 
 const MAX_BACKOFF = 8;
+/** #678 실패 뒤 다시 묻기까지 가장 오래 기다리는 시간 */
+export const RETRY_CAP_MS = 120_000;
 
 type Sub<T> = {
   fetch: { current: () => Promise<T> };
@@ -58,7 +61,9 @@ function schedule(e: Entry<unknown>, wait?: number) {
   if (!e.subs.size) return;
   const base = period(e);
   const backoff = e.fails > 0 && [...e.subs].some((s) => s.opts.current.backoffOnError !== false);
-  const delay = wait ?? (backoff ? base * Math.min(2 ** e.fails, MAX_BACKOFF) : base);
+  // 실패가 이어지면 상한도 2 · 4 · 8 · 16분으로 늘린다(하루 종일 막힌 원천을 2분마다 두드리지 않게, 주기 × 8 을 넘지 않게)
+  const cap = RETRY_CAP_MS * 2 ** Math.max(0, e.fails - 1);
+  const delay = wait ?? (backoff ? Math.min(base * Math.min(2 ** e.fails, MAX_BACKOFF), cap) : base);
   e.timer = window.setTimeout(() => run(e), delay);
 }
 
@@ -130,15 +135,15 @@ export function usePoll<T>(key: string | null, fetch: () => Promise<T>, ms: numb
     subRef.current = sub;
     e.subs.add(sub);
     const entry = e as Entry<unknown>;
+    // #678 이 key 의 지금 값으로 바꾼다(새 entry 면 빈 값) — key 를 바꾼 뒤 예전 key 의 값 · 실패 표시가 남지 않게
+    setSnap(e.snap);
     if (fresh) {
       schedule(entry, optsRef.current.delay ?? 0);
     } else {
-      // 이미 받은 값이 있으면 이 구독자에게도 바로 — 주기보다 오래됐으면 지금 다시 부른다
-      if (e.snap.at != null) {
-        setSnap(e.snap);
-        if (e.snap.data !== undefined) optsRef.current.onData?.(e.snap.data);
-      }
-      if (e.snap.at == null || Date.now() - e.snap.at >= ms) { if (!e.inflight) schedule(entry, 0); }
+      // 이미 받은 값이 있으면 이 구독자에게도 바로 — 주기보다 오래됐으면 지금 다시 부른다(실패 중이면 늦춘 차례 그대로)
+      if (e.snap.at != null && e.snap.data !== undefined) optsRef.current.onData?.(e.snap.data);
+      if (e.inflight || e.fails > 0) { /* 끝나면 · 늦춘 차례에 */ }
+      else if (e.snap.at == null || Date.now() - e.snap.at >= ms) schedule(entry, 0);
       else schedule(entry, Math.max(0, e.snap.at + period(entry) - Date.now()));
     }
     return () => {
@@ -147,8 +152,9 @@ export function usePoll<T>(key: string | null, fetch: () => Promise<T>, ms: numb
       if (!e!.subs.size) {
         window.clearTimeout(e!.timer);
         entries.delete(key);
-      } else {
-        schedule(entry);
+      } else if (!e!.inflight && e!.fails === 0 && e!.snap.at != null) {
+        // #678 남은 구독자의 주기로, 마지막으로 받은 때부터 — 구독자가 붙었다 떨어질 때마다 차례가 밀리지 않게
+        schedule(entry, Math.max(0, e!.snap.at + period(entry) - Date.now()));
       }
     };
     // ms 는 아래 effect 가 따로 맞춘다(바뀌어도 다시 부르지 않게)

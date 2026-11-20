@@ -1,9 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
-import ExplainArticle from "../components/ExplainArticle";
+import ExplainArticle, { MiniLevels } from "../components/ExplainArticle";
+import WhenVisible from "../components/WhenVisible";
 import { clearLatestReport } from "../latestReport";
 import { FAKE_REPORTS, fakeList } from "../reportsFake";
-import type { ReportDetail, ReportList, ReportSummary } from "../types";
+import type { ExplainChart, ReportDetail, ReportList, ReportSummary } from "../types";
+
+// #682 캔들 차트는 차트 라이브러리를 쓰니 따로 받는다 — 리포트 목록 · 글은 먼저 보인다
+const ReportCandles = lazy(() => import("../components/ReportCandles"));
 
 // #496 리포트(#/reports · #/reports/{id}): 2~3일마다 데스크가 쓰는 초보자용 분석 글(#495)을 블로그 글처럼 읽고 지난 리포트를 고른다.
 // 알림(웹 푸시)의 url 이 /#/reports/{id} 다. 본문 모양은 "쉽게 보기"(#494)와 같은 ExplainArticle.
@@ -162,6 +166,15 @@ function DetailView({ id }: { id: string }) {
             <h1>{r.title}</h1>
           </header>
           <ExplainArticle data={r} className="easy-view rp-article"
+            chartFor={(chart: ExplainChart) => {
+              const snap = chart.kind !== "none" && chart.symbol ? r.charts?.[chart.symbol] : undefined;
+              if (!snap) return null;   // 옛 리포트 · 차트 저장 실패 — 가격선 그림
+              return (
+                <WhenVisible placeholderPx={280} margin="200px">
+                  <Suspense fallback={<MiniLevels chart={chart} />}><ReportCandles snap={snap} chart={chart} /></Suspense>
+                </WhenVisible>
+              );
+            }}
             afterHook={r.why && (
               <aside className="rp-why">
                 <strong>왜 이 주제?</strong> {r.why.text}

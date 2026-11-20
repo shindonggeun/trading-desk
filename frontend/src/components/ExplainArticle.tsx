@@ -63,8 +63,10 @@ function range(lo: number | null, hi: number | null): string {
   return `${price(Math.min(lo, hi))} ~ ${price(Math.max(lo, hi))}`;
 }
 
-export default function ExplainArticle({ data, className = "easy-view", busy, afterHook, beforeStages, footer }: {
+export default function ExplainArticle({ data, className = "easy-view", busy, afterHook, beforeStages, footer, chartFor }: {
   data: ArticleData;
+  /** #682 칸의 그림을 바꿔 그린다(리포트: 저장된 캔들 차트) — null 이면 기본 가격선 그림 */
+  chartFor?: (chart: ExplainChart, i: number) => ReactNode | null;
   className?: string;
   busy?: boolean;
   /** 질문 바로 아래(해설: 기본 해설 안내 · 리포트: 고른 이유) */
@@ -82,7 +84,7 @@ export default function ExplainArticle({ data, className = "easy-view", busy, af
         <section key={i} className="ev-section">
           <h3><span className="ev-num">{i + 1}</span>{s.title}</h3>
           {s.image ? <img className="ev-img" src={s.image.url} alt={s.image.alt} loading="lazy"
-            onError={(e) => { e.currentTarget.hidden = true; }} /> : <MiniLevels chart={s.chart} />}
+            onError={(e) => { e.currentTarget.hidden = true; }} /> : (chartFor?.(s.chart, i) ?? <MiniLevels chart={s.chart} />)}
           {s.body.split(/\n{2,}/).map((p, n) => <p key={n}>{p}</p>)}
           {s.highlight && <p className="ev-highlight"><mark>{s.highlight}</mark></p>}
           {s.term?.explain && (

@@ -1,5 +1,6 @@
 """#572 today's direction call: stages, the cutoff (no future bar), the model and the backtest."""
 
+import copy
 import json
 import math
 import random
@@ -195,16 +196,37 @@ def test_the_fit_finds_the_signal_and_is_the_same_twice():
     assert np.allclose(P.sum(axis=1), 1) and (P >= 0).all()
 
 
+QUICK = {"STEPS": 150, "L2_GRID": (0.01, 0.1), "LAMBDA_GRID": (0.0, 0.3), "CV_YEARS": 1}
+
+
 @pytest.fixture
 def quick(monkeypatch):
-    monkeypatch.setattr(dct, "STEPS", 150)
-    monkeypatch.setattr(dct, "L2_GRID", (0.01, 0.1))
-    monkeypatch.setattr(dct, "LAMBDA_GRID", (0.0, 0.3))
-    monkeypatch.setattr(dct, "CV_YEARS", 1)
+    for name, value in QUICK.items():
+        monkeypatch.setattr(dct, name, value)
+
+
+_BACKTESTS: dict = {}
+
+
+def _backtest(market: str, compare: bool = True) -> tuple[dict, dict]:
+    """dct.backtest(market, SERIES) with the QUICK settings, run once per module and handed out as copies:
+    the same pure computation several tests read (CI time, #748). Tests that change the series call
+    dct.backtest themselves."""
+    key = (market, compare)
+    if key not in _BACKTESTS:
+        saved = {name: getattr(dct, name) for name in QUICK}
+        try:
+            for name, value in QUICK.items():
+                setattr(dct, name, value)
+            _BACKTESTS[key] = dct.backtest(market, SERIES, compare=compare)
+        finally:
+            for name, value in saved.items():
+                setattr(dct, name, value)
+    return copy.deepcopy(_BACKTESTS[key])
 
 
 def test_the_backtest_holds_out_the_last_90_days_and_the_server_reads_the_same_numbers(quick):
-    model, report = dct.backtest("kr", SERIES)
+    model, report = _backtest("kr")
     assert set(model["calls"]) == set(dc.CALLS) == set(report["calls"]) and set(report["notes"]) >= {"selection", "night"}
     assert model["calls"]["prev_close"]["label"] == "cc" and model["calls"]["prev_close"]["extras"] == ["night"]
     r1 = report["calls"]["open"]["rounds"]["1"]
@@ -240,7 +262,7 @@ def test_the_backtest_holds_out_the_last_90_days_and_the_server_reads_the_same_n
 
 
 def test_a_call_from_the_committed_model_has_the_contract_shape(quick, tmp_path):
-    model, _report = dct.backtest("us", SERIES)
+    model, _report = _backtest("us", compare=False)                     # the variants table is not read here
     (tmp_path / "model_us.json").write_text(json.dumps(model), encoding="utf-8")
     loaded = dc.load_model("us", tmp_path)
     c = dc.call(loaded, "us", 2, date(2025, 9, 3), SERIES)
@@ -264,7 +286,14 @@ def test_the_cli_writes_the_model_and_the_report(quick, tmp_path, monkeypatch, c
     from desk import cli
 
     monkeypatch.setattr(dct, "fetch", lambda candles=None, flow_dir=None: SERIES)
+    asked = []
+
+    def backtest(market, series, holdout_days, start, **kw):          # the fit itself is tested above
+        asked.append((market, series is SERIES, holdout_days, start, kw.get("compare")))
+        return _backtest(market)
+    monkeypatch.setattr(dct, "backtest", backtest)
     assert cli.main(["day-call", "backtest", "--market", "kr", "--out-dir", str(tmp_path)]) == 0
+    assert asked == [("kr", True, dct.HOLDOUT_DAYS, None, True)]
     assert json.loads((tmp_path / "model_kr.json").read_text(encoding="utf-8"))["market"] == "kr"
     report = json.loads((tmp_path / "report_kr.json").read_text(encoding="utf-8"))
     assert report["code"] == dct.code_hash() and "news" in report["not_run"] and "flow" not in report["not_run"]
@@ -282,7 +311,7 @@ def test_a_session_still_in_progress_is_no_answer():
 
 
 def test_the_held_out_sessions_choose_nothing(quick):
-    model, report = dct.backtest("us", SERIES, compare=False)
+    model, report = _backtest("us", compare=False)
     start = date.fromisoformat(report["holdout_from"])
     moved = {**SERIES, "^GSPC": [SimpleNamespace(**{**vars(b), "close": b.close * (1.03 if i % 2 else 0.97)})
                                   if dc.session_day("^GSPC", b) >= start else b

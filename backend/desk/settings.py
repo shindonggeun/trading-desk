@@ -86,6 +86,8 @@ class Settings:
     morning_brief_at: str = field(default_factory=lambda: os.getenv("DESK_MORNING_BRIEF_AT", "07:00"))
     # Minutes between KOSPI200 futures snapshots in the session (desk.futures_history, #254). 0 = off.
     futures_snapshot_min: float = field(default_factory=lambda: float(os.getenv("DESK_FUTURES_SNAPSHOT_MIN", "1")))
+    # #676 the desk.* loggers' level (desk.log_setup): DEBUG | INFO | WARNING ...
+    log_level: str = field(default_factory=lambda: os.getenv("DESK_LOG_LEVEL", "INFO"))
     cors_origins: list[str] = field(default_factory=lambda: _list("DESK_CORS_ORIGINS"))
 
     # Default investing style for new runs (desk.profile.PROFILES).

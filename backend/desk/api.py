@@ -56,6 +56,7 @@ from . import (
     lines_bt,
     live,
     live_bars,
+    log_setup,
     macro_news,
     market_calendar,
     morning_brief,
@@ -356,6 +357,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                longshort: LongShort | None = None, chatter: chat.Chatter | None = None,
                pictures: report_images.ReportImages | None = None) -> FastAPI:
     settings = settings or load()
+    log_setup.configure(settings.log_level)     # #676 the desk.* INFO lines reach the container log
     migrate(settings.database_url)
     engine = make_engine(settings.database_url)
     store = Store(engine)

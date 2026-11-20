@@ -451,9 +451,9 @@ class KisStream:
         for t in [t for t, until in self._rejected.items() if until <= now]:
             del self._rejected[t]
 
-    def _live_wants(self) -> list[str]:
+    def _live_wants(self, standing_count: int = 0) -> list[str]:
         self._prune_wants()      # #677 the standing subscriptions take their seats first
-        seats = max(0, MAX_SUBS - len(self._standing_now()))
+        seats = max(0, MAX_SUBS - standing_count)
         return sorted(self._wanted, key=self._wanted.get, reverse=True)[:seats]
 
     def _drop(self, ticker: str) -> tuple[str, str] | None:
@@ -476,10 +476,14 @@ class KisStream:
                         self._refused_value = self._approval[1]   # #688 the store must not hand it back
                     self._approval = None
                     raise ApprovalError("approval key refused") if refused else ApprovalDue("approval key due")
-                wanted = self._live_wants()
                 standing = self._standing_now()
+                wanted = self._live_wants(len(standing))
                 for name in [n for n in self._fixed if n not in standing]:     # #677 the bell: let them go
                     tr_id, tr_key = self._fixed.pop(name)
+                    await ws.send(json.dumps(_message(key, "2", tr_id, tr_key)))
+                # Release displaced quote subscriptions before taking the newly reserved slots.
+                for t in [t for t in self._subs if t not in wanted or self._stale_key(t)]:
+                    tr_id, tr_key = self._drop(t)       # re-keyed ones subscribe again below
                     await ws.send(json.dumps(_message(key, "2", tr_id, tr_key)))
                 for name, (tr_id, tr_key) in standing.items():
                     if name not in self._fixed:
@@ -493,9 +497,6 @@ class KisStream:
                         self._demand.clear()
                         log.info("kis stream idle: closing")
                         return
-                for t in [t for t in self._subs if t not in wanted or self._stale_key(t)]:
-                    tr_id, tr_key = self._drop(t)       # re-keyed ones subscribe again below
-                    await ws.send(json.dumps(_message(key, "2", tr_id, tr_key)))
                 lookups = 0
                 for t in wanted:
                     if t in self._subs or self._rejected.get(t, 0) > now:
@@ -589,17 +590,21 @@ class KisStream:
             return
         tr_key = str(header.get("tr_key") or "")
         tr_id = str(header.get("tr_id") or "")
-        for name, (fixed_tr, fixed_key) in list(self._fixed.items()):     # #677 not asked again this hour
-            if fixed_key == tr_key and (not tr_id or tr_id == fixed_tr):
-                del self._fixed[name]
-                self._fixed_refused[name] = self._clock() + STANDING_REFUSED_SEC
-                log.warning("kis stream refused %s: %s", name, reason)
-                return
-        for ticker, (_tr, key) in list(self._subs.items()):
-            if key == tr_key:
-                self._drop(ticker)
-                self._rejected[ticker] = self._clock() + REJECT_SEC
-                log.warning("kis stream refused %s: %s", ticker, reason)
+        standing = [name for name, (tr, key) in self._fixed.items() if key == tr_key and tr_id in ("", tr)]
+        quotes = [ticker for ticker, (tr, key) in self._subs.items() if key == tr_key and tr_id in ("", tr)]
+        # A key-only error can only identify a subscription when the two channels do not share it.
+        if len(standing) + len(quotes) != 1:
+            return
+        if standing:
+            name = standing[0]
+            del self._fixed[name]
+            self._fixed_refused[name] = self._clock() + STANDING_REFUSED_SEC
+            log.warning("kis stream refused %s", name)
+        else:
+            ticker = quotes[0]
+            self._drop(ticker)
+            self._rejected[ticker] = self._clock() + REJECT_SEC
+            log.warning("kis stream refused %s: %s", ticker, reason)
 
 
 def _now_iso() -> str:

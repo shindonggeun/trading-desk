@@ -599,6 +599,66 @@ def test_the_standing_ones_connect_without_a_watcher_take_their_seats_and_go_at_
     asyncio.run(go())
 
 
+def test_entering_the_standing_hour_on_a_full_socket_releases_slots_first(monkeypatch):
+    monkeypatch.setattr(kis_stream, "MAX_SUBS", 4)
+    ts = datetime(2026, 11, 12, 8, 30, tzinfo=KST)
+    targets = kis_stream.standing_targets(ts)
+
+    async def go():
+        hour = False
+        h = Harness(standing=lambda now: targets if hour else {}, now=ts)
+        for ticker in ("005930.KS", "000660.KS", "005380.KS", "035420.KS"):
+            h.stream.want(ticker)
+        task = asyncio.create_task(h.stream.run())
+        try:
+            await _until(lambda: h.sockets and len(h.sockets[0].subs()) == 4)
+            sock = h.sockets[0]
+            hour = True
+            await _until(lambda: len(sock.sent) == 12)
+            assert [m["header"]["tr_type"] for m in sock.sent] == ["1"] * 4 + ["2"] * 4 + ["1"] * 4
+            assert {m["body"]["input"]["tr_id"] for m in sock.sent[-4:]} == {INDEX_EXP, NXT_EXP}
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize(("tr_id", "has_standing", "refused_quote", "refused_standing"), [
+    (None, True, False, False),
+    (None, False, True, False),
+    (KR, True, True, False),
+    (NXT_EXP, True, False, True),
+    (NXT_EXP, False, False, False),
+])
+def test_refusal_is_applied_only_to_the_identified_channel(tr_id, has_standing, refused_quote, refused_standing):
+    ts = datetime(2026, 11, 12, 8, 30, tzinfo=KST)
+    targets = {"nxt:005930": (NXT_EXP, "005930")} if has_standing else {}
+
+    async def go():
+        h = Harness(standing=lambda now: targets, now=ts)
+        h.stream.want("005930.KS")
+        task = asyncio.create_task(h.stream.run())
+        try:
+            await _until(lambda: h.sockets and len(h.sockets[0].subs()) == 1 + has_standing)
+            sock = h.sockets[0]
+            header = {"tr_key": "005930"}
+            if tr_id is not None:
+                header["tr_id"] = tr_id
+            await sock.inbox.put(json.dumps({"header": header, "body": {"rt_cd": "1", "msg1": "INVALID tr_key"}}))
+            await sock.inbox.put('{"header":{"tr_id":"PINGPONG"}}')
+            await _until(lambda: sock.pongs)
+            status = h.stream.status()
+            assert status["refused"] == (["005930.KS"] if refused_quote else [])
+            assert status["tickers"] == ([] if refused_quote else ["005930.KS"])
+            assert status["standing"] == (["nxt:005930"] if has_standing and not refused_standing else [])
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(go())
+
+
 def test_a_refused_standing_code_is_not_asked_again_this_hour_and_the_rest_stay():
     targets = kis_stream.standing_targets(datetime(2026, 11, 12, 8, 30, tzinfo=KST))
 

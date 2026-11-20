@@ -4,6 +4,9 @@ import type { Plan, TradeMap as Map, TradeScenario, TradeStep, VolumeProfile } f
 
 type Side = "long" | "short";
 
+// Keep the digits needed to read the stop distance, without floating-point noise.
+const riskPrice = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 15 });
+
 // 숏이면 "지지" 자리가 진입 위의 저항이다.
 const ROLE: Record<Side, Record<TradeStep["role"], string>> = {
   long: { target2: "2차 목표", target1: "1차 목표", entry: "진입", guard1: "1차 지지", guard2: "2차 지지", stop: "손절" },
@@ -51,7 +54,7 @@ function scenario(side: Side, steps: TradeStep[]): ReactNode[] {
   if (e) {
     out.push(
       <>
-        <strong>{price(e.price)}</strong> {e.entry_type ? `${entryWord(e.entry_type, up)} ` : ""}
+        <strong>{riskPrice.format(e.price)}</strong> {e.entry_type ? `${entryWord(e.entry_type, up)} ` : ""}
         {up ? "매수" : "매도(숏)"} 진입
       </>,
     );
@@ -62,7 +65,7 @@ function scenario(side: Side, steps: TradeStep[]): ReactNode[] {
       <>
         <strong>{price(t1.price)}</strong>({why(t1) || "1차 목표"}) 도달 시 <strong>{t1.share}%</strong> 익절
         {heavy ? " — 벽이 두꺼워 여기서 많이 던다" : ""}
-        {t1.then_stop != null && <>, 남은 물량 손절선은 진입가({price(t1.then_stop)})까지 {up ? "올림" : "내림"}</>}
+        {t1.then_stop != null && <>, 남은 물량 손절선은 진입가({riskPrice.format(t1.then_stop)})까지 {up ? "올림" : "내림"}</>}
       </>,
     );
   }
@@ -91,7 +94,7 @@ function scenario(side: Side, steps: TradeStep[]): ReactNode[] {
   if (st) {
     out.push(
       <>
-        <strong className="tm-stop-text">{price(st.price)}</strong> {up ? "이탈" : "돌파"} 시 전량 손절{st.source === "atr" ? "(레벨이 없어 ATR 로 계산)" : ""}
+        <strong className="tm-stop-text">{riskPrice.format(st.price)}</strong> {up ? "이탈" : "돌파"} 시 전량 손절{st.source === "atr" ? "(레벨이 없어 ATR 로 계산)" : ""}
       </>,
     );
   }
@@ -112,14 +115,14 @@ function Ladder({ side, steps, live, vp }: { side: Side; steps: TradeStep[]; liv
         r.kind === "live" ? (
           <li key="live" className="tm-row tm-live">
             <span className="tm-role">현재가</span>
-            <strong className="tm-price num">{price(r.p)}</strong>
+            <strong className="tm-price num">{riskPrice.format(r.p)}</strong>
             <span className="tm-pct muted small">{entry != null ? pctFrom(entry, r.p) : ""}</span>
             <span className="tm-why muted small" />
           </li>
         ) : (
           <li key={r.s.role} className={`tm-row tm-${r.s.role}`}>
             <span className="tm-role">{ROLE[side][r.s.role]}</span>
-            <strong className="tm-price num">{price(r.s.price)}</strong>
+            <strong className="tm-price num">{r.s.role === "entry" || r.s.role === "stop" ? riskPrice.format(r.s.price) : price(r.s.price)}</strong>
             <span className="tm-pct muted small">
               {entry != null && r.s.role !== "entry" ? pctFrom(entry, r.s.price) : ""}
               {r.s.rr != null && ` · 손익비 ${r.s.rr}`}
@@ -159,9 +162,9 @@ function Scenarios({ list, note }: { list: TradeScenario[]; note: string | null 
           return (
             <li key={`${s.side}-${s.kind}`} className={s.low_rr ? "tm-sc-low" : undefined}>
               <b>{s.side === "long" ? "롱" : "숏"} · {kind}</b>{" "}
-              {HOW[s.entry_type]} {price(s.entry)}
+              {HOW[s.entry_type]} {riskPrice.format(s.entry)}
               {s.distance_pct != null && s.entry_type !== "now" && ` (지금보다 ${s.distance_pct > 0 ? "+" : ""}${s.distance_pct}%)`}
-              {" "}· 손절 {price(s.stop)} (−{s.stop_pct}%, {s.stop_atr} ATR)
+              {" "}· 손절 {riskPrice.format(s.stop)} (−{s.stop_pct}%, {s.stop_atr} ATR)
               {s.targets.map((t, i) => ` · ${i + 1}차 ${price(t.price)} 손익비 ${t.rr}`).join("")}
               {s.low_rr && " — 1차 손익비 낮음"}
               {s.basis && <span className="muted"> · 근거 {s.basis}{s.level != null ? ` ${price(s.level)}` : ""}</span>}
@@ -223,7 +226,7 @@ export default function TradeMap({ plan, ticker }: { plan: Plan; ticker: string 
       )}
       {!!tm.scenarios?.length && <Scenarios list={tm.scenarios} note={tm.regime_note ?? null} />}
       <p className="muted small">
-        {ticker} 가격 기준 — 계획 값, 지지 · 저항 구역{tm.volume_profile ? ", 매물대" : ""}로 계산한 지도입니다(ATR {price(tm.atr)}).
+        {ticker} 가격 기준 — 계획 값, 지지 · 저항 구역{tm.volume_profile ? ", 매물대" : ""}로 계산한 지도입니다(ATR {riskPrice.format(tm.atr)}).
         {!tm.levels && " 이 분석에는 지지 · 저항 기록이 없어 ATR 배수로 채운 칸이 있습니다."}
         {" "}가격 기록의 계산이지 예측이 아닙니다.
       </p>

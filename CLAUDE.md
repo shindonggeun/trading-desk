@@ -78,6 +78,7 @@ compose `environment` 에는 앱이 읽는 키만 나열한다 — 새 env 키�
 ## 작업 규칙
 
 - Git 흐름 정본: [docs/git-workflow.md](docs/git-workflow.md) — `이슈(/issue) → 브랜치(/issue-start) → PR(/pr, base develop) → Rebase and merge`.
+  자동화와 위임 작업도 게시 전에 `.github/ISSUE_TEMPLATE/` 또는 `.github/PULL_REQUEST_TEMPLATE.md`의 실제 본문을 읽고, 해당 스킬의 템플릿 검사를 통과한 파일을 `--body-file`로 제출한다.
   커밋 `[BE|FE|INFRA|DOCS] type: 요약 (#번호)`, 본문은 한국어 변경 목록. 경로를 하나씩 스테이징한다(`git add -A` · `git stash` 금지).
 - 스킬 · 에이전트: [docs/claude-agents.md](docs/claude-agents.md). 비단순 작업은 `/dev-orchestrator` 로 분류한다 — 인증 · 세션 · 브로커 키 · 스키마 · 배포가 T3 신호다.
 - 저장소는 private 이지만 토스 키 · 계좌 정보 · 비밀번호 · 세션 토큰 · 서버 `.env` 값은 어디에도 쓰지 않는다. 키 이름만 `.env.example` 에.

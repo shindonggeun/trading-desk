@@ -52,7 +52,8 @@ CROSS_MIDNIGHT = {"nq_alert", "holding_alert", "sector_mover"}    # the waits re
 PUSHED = {"caution", "strong"}
 HISTORY_DAYS = 20                 # trading days of snapshots behind the flow thresholds
 ALERT_URL = "/#/market"
-URLS = {"holding_alert": "/#/"}                  # #694 the dashboard's holdings
+URLS = {"holding_alert": "/#/",                  # #694 the dashboard's holdings
+        "sector_mover": "/#/sectors?movers"}     # #740 the sectors page, scrolled to its movers card
 OWNER_ONLY = {"holding_alert"}                   # #694 the owner's holdings: web push to the owner's devices only
 TITLE = {"flow_shift": "수급 흐름 변화", "flow_warn": "수급 경고", "nq_alert": "나스닥 선물 이상 징후",
          "holding_alert": "보유 종목 손절 · 익절", "sector_mover": "섹터 급등락 주범"}

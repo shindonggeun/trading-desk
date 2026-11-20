@@ -3343,8 +3343,8 @@ def _push_routes(app: FastAPI, engine, settings: Settings) -> None:
         turns = [{"trade_date": a["trade_date"], "kind": "flow_turn", "rule": a["kind"], "market": a["market"],
                   "who": "foreign", "severity": "caution", "t": a["t"], "value": a["value"], "prev": None,
                   "text": a["text"], "pushed": True} for a in app.state.flow_alerts.list(day)]
-        # #680 a sector's big day has its own line (GET /api/sectors/movers) until the timeline shows that kind
-        hidden = {sector_movers.KIND}
+        # #740 a sector's big day (#680) is the market's; a holding's alerts (#694) its owner's only
+        hidden = set()
         if request.state.user.id != app.state.market_alerts.owner():
             hidden.add(holding_watch.KIND)
         items = turns + [a for a in app.state.market_alerts.list(day) if a["kind"] not in hidden]

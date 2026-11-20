@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from desk import alert_tone, market_alerts, morning_brief, sector_movers
+from desk import alert_tone, market_alerts, morning_brief, push, sector_movers
 
 SOX = sector_movers.SECTORS["sox"]
 WEIGHT = sum(SOX["members"].values())
@@ -166,3 +166,33 @@ def test_api_sector_movers(db_url, monkeypatch):
         assert got.status_code == 200 and got.json()["sector"] == "sox"
         assert client.get("/api/sectors/movers", params={"sector": "nope"}).status_code == 422
         assert client.get("/api/sectors").status_code == 200                # the user's own sectors still answer
+
+
+
+def test_a_big_day_is_on_the_timeline_and_its_push_opens_the_sectors_page(db_url):
+    # #740 the timeline shows the kind beside the others (a holding's alert: the owner's, #756)
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from tests.test_holding_watch import _hold
+    from tests.test_push import OWNER, _app, _login, _pusher, _Sent
+
+    app = _app(db_url)
+    with TestClient(app, base_url="https://testserver") as client:
+        _login(client, OWNER)
+        engine = app.state.market_alerts.engine
+        push.PushStore(engine).subscribe(1, "https://fcm.googleapis.com/fcm/send/abc", {"p256dh": "k", "auth": "a"}, "폰", {})
+        sent = _Sent()
+        alerts = market_alerts.MarketAlerts(engine, _pusher(engine, sent))
+        m = sector_movers.movers("sox", _bars(-0.034, {"AMD": -0.10}))
+        alerts.dispatch(sector_movers.alerts(m, datetime(2026, 11, 19, 14, 45, tzinfo=UTC)))
+        alerts.dispatch([{**_hold("hold_trend_down", "2026-11-19T23:50:00+09:00"), "stop": 95.0, "price": 96.0}])
+        body = client.get("/api/alerts/today?date=2026-11-19").json()
+        assert [(a["kind"], a["rule"], a["market"]) for a in body["items"]] == [
+            ("sector_mover", "sector_drop", "sox"), ("holding_alert", "hold_trend_down", "AAA")]   # by time
+        assert body["items"][0]["tone"] == "warning"
+        assert body["items"][0]["text"].startswith("🔴 경고 · 미국 반도체 급락(−3.4%) 주범: AMD")
+        assert [a["kind"] for a in alerts.list("2026-11-19")] == ["sector_mover", "holding_alert"]
+        payload = json.loads(next(d for _, d in sent.calls if json.loads(d)["kind"] == "sector_mover"))
+        assert payload["url"] == "/#/sectors?movers"

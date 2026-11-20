@@ -50,6 +50,9 @@ class Settings:
     redis_password: str = field(default_factory=lambda: os.getenv("DESK_REDIS_PASSWORD", ""), repr=False)
     # This app's own secret: hides key names (HMAC) and seals values (Fernet) on that shared server. Empty = tier off.
     redis_cache_key: str = field(default_factory=lambda: os.getenv("DESK_REDIS_CACHE_KEY", ""), repr=False)
+    # #690 GET /api/stream/market (docs/market-stream.md): on unless DESK_MARKET_STREAM=off
+    market_stream: bool = field(default_factory=lambda: os.getenv("DESK_MARKET_STREAM", "on").strip().lower()
+                                not in ("off", "false", "0", "no"))
     # Fake runs replay a scripted debate: build the UI without spending the plan's quota.
     fake_runs: bool = field(default_factory=lambda: _bool("DESK_FAKE_RUNS"))
     fake_delay: float = field(default_factory=lambda: float(os.getenv("DESK_FAKE_DELAY", "0.6")))

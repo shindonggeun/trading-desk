@@ -122,6 +122,50 @@ def configure(settings) -> None:
     log.info("shared cache on (%s)", where)
 
 
+def listener(settings):
+    """#690 a redis.asyncio client for one long pub/sub subscription (desk.market_bus): the same server as the
+    cache, but no read timeout (a quiet channel is not a failure) - None when the tier is off."""
+    if not enabled():
+        return None
+    import redis.asyncio
+    from redis.asyncio.sentinel import Sentinel as AsyncSentinel
+
+    opts = {"socket_connect_timeout": 1.0, "decode_responses": True, "health_check_interval": 15,
+            "password": getattr(settings, "redis_password", "") or None}
+    sentinels = tuple(getattr(settings, "redis_sentinels", ()) or ())
+    if sentinels:
+        side = {"socket_timeout": 1.0, "socket_connect_timeout": 1.0}
+        return AsyncSentinel([_host_port(s) for s in sentinels], sentinel_kwargs=side).master_for(
+            getattr(settings, "redis_master", "") or "master-redis", **opts)
+    return redis.asyncio.Redis.from_url(settings.redis_url, **opts)
+
+
+def channel(name: str) -> str:
+    """#690 a pub/sub channel name: ``td:bus:<HMAC>`` - this build and this key only (like the cache's keys)."""
+    return PREFIX + "bus:" + hmac.new(_name_key, f"{BUILD}|bus:{name}".encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def seal(obj: dict) -> str:
+    """#690 a pub/sub message sealed like a cached value (JSON inside, Fernet with this app's key)."""
+    return _box.encrypt(json.dumps(obj, separators=(",", ":"), allow_nan=False).encode()).decode("ascii")
+
+
+def unseal(raw: str) -> dict | None:
+    """A message this app sealed, or None (another key or writer, too long, not JSON, not an object)."""
+    try:
+        if _box is None or len(raw) > MAX_RAW_CHARS:
+            return None
+        got = json.loads(_box.decrypt(raw.encode("ascii")), parse_constant=_reject_constant)
+    except Exception:  # noqa: BLE001 - anything not ours is just not a message
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def publisher():
+    """The cache's asyncio client (short timeouts) for PUBLISH, or None."""
+    return _async
+
+
 def _host_port(text: str) -> tuple[str, int]:
     host, _, port = text.strip().rpartition(":")
     if not host:

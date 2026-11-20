@@ -277,6 +277,7 @@ class KisStream:
         self._subs: dict[str, tuple[str, str]] = {}    # ticker -> (tr_id, tr_key) on this socket
         self._codes: dict[tuple[str, str], str] = {}   # (tr_id, code) -> ticker
         self._ticks: dict[str, Tick] = {}
+        self.on_tick: Callable[[str, Tick], None] | None = None   # #690 each trade, on the loop (desk.market_bus)
         self._rejected: dict[str, float] = {}          # ticker -> until (clock)
         self._exchanges: OrderedDict[str, tuple[float, str | None]] = OrderedDict()
         self._approval: tuple[float, str] | None = None
@@ -566,6 +567,11 @@ class KisStream:
                     ticker = self._codes.get((tr_id, code))
                     if ticker and ticker in self._subs:
                         self._ticks[ticker] = Tick(price, rate, stamp, seen)
+                        if self.on_tick is not None:
+                            try:
+                                self.on_tick(ticker, self._ticks[ticker])
+                            except Exception as exc:  # noqa: BLE001 - a listener never stops the feed
+                                log.debug("tick listener failed: %s", type(exc).__name__)
                         self._last_tick["KR" if tr_id == KR else "US"] = stamp
                 continue
             self._control(raw)

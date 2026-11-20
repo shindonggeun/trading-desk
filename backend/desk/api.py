@@ -63,6 +63,7 @@ from . import (
     log_setup,
     long_lines,
     macro_news,
+    market_bus,
     market_calendar,
     morning_brief,
     news_digest,
@@ -124,7 +125,7 @@ from .leverage_analyst import fake_analyst, llm_analyst
 from .longshort import LongShort
 from .market_flow import MarketFlow
 from .portfolio import Portfolio
-from .prices import INTERVALS, PriceSource
+from .prices import INTERVALS, PriceSource, kis_quote
 from .related import collect as collect_related
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
 from .runner import rate_limited as run_rate_limited
@@ -172,6 +173,8 @@ REVIEW_CACHE_SEC = 60
 REVIEW_FAIL_CACHE_SEC = 30
 log = logging.getLogger(__name__)
 NL2 = "\n\n"   # ends an SSE frame
+MARKET_STREAMS_PER_SESSION = 3    # #690 open market streams per session (one per tab)
+MARKET_STREAM_TICKERS = 50        # quote channel tickers per stream
 HEARTBEAT_SEC = 15
 OPEN_PATHS = frozenset({"/api/health", "/api/auth/login"})
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -687,6 +690,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         shared_cache.configure(settings)   # #689 Redis behind some caches; nothing configured = memory only
+        # #690 the market stream: in this process (all), or over Redis pub/sub when split (docs/market-stream.md)
+        market_bus.BUS.configure(settings, settings.role)
+        market_bus.BUS.expect("futures", lambda: futures_open(datetime.now(UTC)))
+        market_bus.BUS.expect("flow", lambda: premarket_window(datetime.now(UTC)) or futures_open(datetime.now(UTC)))
+        if kis_feed is not None:
+            kis_feed.on_tick = lambda ticker, tick: market_bus.publish(
+                "quote", ticker, kis_quote(ticker, tick).to_dict(), "kis", tick.received_at)
         # #688 only a process that runs the runs it is handed (all) fails what its predecessor left; the analyst
         # does it in desk.run_queue once it holds the queue, the api and the collector never. all holds the
         # queue's lock too (PostgreSQL), so an analyst started beside it by mistake claims none of its runs.
@@ -1231,6 +1241,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         await estimator.aclose()
         await longshort.aclose()
         await futures.aclose()
+        await market_bus.BUS.aclose()    # #690 its streams are told reset; its subscription and publishes stop
         await shared_cache.aclose()      # #689 after every task that reads or writes it has stopped
         engine.dispose()
 
@@ -1311,7 +1322,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return {"now": datetime.now(UTC).isoformat(timespec="seconds"), "role": settings.role,
                 "jobs": jobs.status(), "cooldowns": cooldowns(),
                 # #689 this process's shared-cache hits and its own calls to the brokers (Toss · KIS REST)
-                "shared_cache": shared_cache.stats(), "outbound": outbound.snapshot()}
+                "shared_cache": shared_cache.stats(), "outbound": outbound.snapshot(),
+                "market_stream": market_bus.BUS.stats()}
 
     # #536 per-route request times (desk.req_timing), read in production without parsing logs
     timings = req_timing.Timings()
@@ -2077,6 +2089,85 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 live_streams[key] -= 1
                 if not live_streams[key]:
                     del live_streams[key]
+
+        return StreamingResponse(frames(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    market_streams: dict[str, int] = {}
+
+    @app.get("/api/stream/market")
+    async def market_stream(request: Request, channels: str = "", tickers: str = ""):
+        """#690 quotes · flows · futures · alerts pushed as they are seen (docs/market-stream.md): the latest
+        values first, then ``ready``, then each event; ``degraded`` names the channels to poll again,
+        ``heartbeat`` every 15 s, ``reset`` before closing a stream that fell behind or a stopping server."""
+        bus = market_bus.BUS
+        if not bus.on:
+            raise HTTPException(503, "market stream is off (DESK_MARKET_STREAM)")
+        wanted = tuple(dict.fromkeys(c.strip() for c in channels.split(",") if c.strip())) or market_bus.DEFAULT_CHANNELS
+        if any(c not in market_bus.KINDS for c in wanted):
+            raise HTTPException(422, f"channels: {', '.join(market_bus.KINDS)}")
+        try:
+            names = frozenset(clean_ticker(t) for t in tickers.split(",") if t.strip())
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if len(names) > MARKET_STREAM_TICKERS:
+            raise HTTPException(422, f"at most {MARKET_STREAM_TICKERS} tickers")
+        token = request.cookies.get(COOKIE)
+        key = hash_token(token or "")
+        if market_streams.get(key, 0) >= MARKET_STREAMS_PER_SESSION:
+            raise HTTPException(429, f"at most {MARKET_STREAMS_PER_SESSION} market streams at once")
+        def first_user() -> int | None:      # the desk's owner, as owner_id() below
+            from sqlalchemy import func, select
+
+            from .db import users
+            with engine.connect() as conn:
+                return conn.execute(select(func.min(users.c.id))).scalar()
+
+        owner = await asyncio.to_thread(first_user) == request.state.user.id
+        market_streams[key] = market_streams.get(key, 0) + 1
+        sub = bus.subscribe(wanted, names, owner)
+
+        def frame(event: str, data: dict, event_id: str | None = None) -> str:
+            head = f"event: {event}\n" + (f"id: {event_id}\n" if event_id else "")
+            return head + "data: " + json.dumps(data, ensure_ascii=False, separators=(",", ":")) + NL2
+
+        async def frames():
+            try:
+                yield "retry: 3000" + NL2
+                for event in bus.snapshot(sub):
+                    yield frame(event["kind"], event, event["event_id"])
+                degraded, _why = bus.degraded()
+                yield frame("ready", {"v": market_bus.VERSION, "channels": list(wanted), "bus": bus.mode,
+                                      "degraded": degraded})
+                loop = asyncio.get_running_loop()
+                beat = loop.time()
+                while not await request.is_disconnected():
+                    try:
+                        event = await asyncio.wait_for(sub.queue.get(), market_bus.HEARTBEAT_SEC)
+                    except TimeoutError:
+                        event = None
+                    if sub.overflowed or not bus.on:
+                        yield frame("reset", {"v": market_bus.VERSION, "reason": "overflow" if bus.on else "shutdown"})
+                        return
+                    if event is not None:
+                        yield frame(event["kind"], event, event["event_id"])
+                    now_degraded, why = bus.degraded()
+                    if now_degraded != degraded:
+                        degraded = now_degraded
+                        yield frame("degraded", {"v": market_bus.VERSION, "degraded": degraded, "reason": why})
+                    if loop.time() - beat >= market_bus.HEARTBEAT_SEC:
+                        beat = loop.time()
+                        # logout, revoke or expiry ends the stream; the check is not activity (an open tab idles)
+                        if await asyncio.to_thread(auth.resolve, token, False) is None:
+                            return
+                        yield frame("heartbeat", {"v": market_bus.VERSION,
+                                                  "t": datetime.now(UTC).isoformat(timespec="seconds"),
+                                                  "degraded": degraded})
+            finally:
+                bus.unsubscribe(sub)
+                market_streams[key] -= 1
+                if not market_streams[key]:
+                    del market_streams[key]
 
         return StreamingResponse(frames(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

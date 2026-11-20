@@ -1,0 +1,403 @@
+"""#690 the market stream (desk.market_bus, GET /api/stream/market): events in this process, the same over
+Redis pub/sub between processes (fakeredis), and the SSE contract of docs/market-stream.md."""
+
+import asyncio
+import json
+
+import fakeredis
+import pytest
+
+from desk import market_alerts, market_bus
+from desk import shared_cache as sc
+from desk.market_bus import Bus
+from desk.settings import Settings
+
+
+def _settings(**kw):
+    return Settings(database_url="sqlite://", **kw)
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+def _local(clock=None) -> Bus:
+    bus = Bus(clock=clock) if clock else Bus()
+    bus.configure(_settings(), "all")
+    return bus
+
+
+def test_owner_only_kinds_match_the_alerts():
+    assert market_bus.OWNER_ONLY == frozenset(market_alerts.OWNER_ONLY)
+
+
+def test_events_reach_the_streams_that_asked_for_them():
+    async def go():
+        bus = _local()
+        flows = bus.subscribe(("flow",), frozenset(), owner=False)
+        quotes = bus.subscribe(("quote", "alert"), frozenset({"AAPL"}), owner=False)
+        owner = bus.subscribe(("alert",), frozenset(), owner=True)
+        bus.publish("flow", "KOSPI:1d", {"records": []}, "toss_investors")
+        bus.publish("quote", "AAPL", {"price": 1.0}, "toss")
+        bus.publish("quote", "MSFT", {"price": 2.0}, "toss")              # not asked for
+        bus.publish("alert", "holding_alert", {"text": "손절"}, "desk")    # the owner's only
+        bus.publish("alert", "flow_shift", {"text": "수급"}, "desk")
+        got = {name: [e["key"] for e in _drain(sub)] for name, sub in
+               (("flows", flows), ("quotes", quotes), ("owner", owner))}
+        event = bus.snapshot(flows)[0]
+        await bus.aclose()
+        return got, event
+
+    got, event = _run(go())
+    assert got == {"flows": ["KOSPI:1d"], "quotes": ["AAPL", "flow_shift"], "owner": ["holding_alert", "flow_shift"]}
+    assert set(event) == {"v", "kind", "key", "event_id", "source", "source_at", "observed_at", "payload"}
+    assert event["v"] == 1 and event["observed_at"].endswith("+00:00")
+
+
+def _drain(sub):
+    out = []
+    while not sub.queue.empty():
+        out.append(sub.queue.get_nowait())
+    return out
+
+
+def test_one_tickers_quote_goes_out_at_most_once_a_second_newest_first():
+    async def go():
+        bus = _local()
+        sub = bus.subscribe(("quote",), frozenset({"AAPL"}), owner=False)
+        for price in (1.0, 2.0, 3.0):
+            bus.publish("quote", "AAPL", {"price": price}, "kis")
+        first = [e["payload"]["price"] for e in _drain(sub)]
+        await asyncio.sleep(market_bus.QUOTE_GAP_SEC + 0.2)
+        later = [e["payload"]["price"] for e in _drain(sub)]
+        await bus.aclose()
+        return first, later
+
+    assert _run(go()) == ([1.0], [3.0])
+
+
+def test_a_stream_that_falls_behind_is_marked_for_reset(monkeypatch):
+    monkeypatch.setattr(market_bus, "QUEUE_MAX", 2)
+
+    async def go():
+        bus = _local()
+        slow = bus.subscribe(("flow",), frozenset(), owner=False)
+        for i in range(5):
+            bus.publish("flow", f"K{i}:1d", {}, "toss_investors")
+        stats = bus.stats()
+        await bus.aclose()
+        return slow.overflowed, stats["overflows"]
+
+    assert _run(go()) == (True, 1)
+
+
+def test_a_channel_quiet_while_its_session_is_open_is_degraded():
+    clock = [1000.0]
+
+    async def go():
+        bus = _local(clock=lambda: clock[0])
+        live = [True]
+        bus.expect("flow", lambda: live[0])
+        out = [bus.degraded()]
+        clock[0] += market_bus.STALE_SEC + 1
+        out.append(bus.degraded())
+        bus.publish("flow", "KOSPI:1d", {}, "toss_investors")
+        out.append(bus.degraded())
+        clock[0] += market_bus.STALE_SEC + 1
+        live[0] = False                                   # closed: quiet is normal
+        out.append(bus.degraded())
+        await bus.aclose()
+        return out
+
+    assert _run(go()) == [([], None), (["flow"], "stale"), ([], None), ([], None)]
+
+
+def test_off_publishes_nothing():
+    async def go():
+        bus = Bus()
+        bus.configure(_settings(market_stream=False), "all")
+        sub = bus.subscribe(("flow",), frozenset(), owner=False)
+        bus.publish("flow", "KOSPI:1d", {}, "toss_investors")
+        return bus.on, sub.queue.qsize()
+
+    assert _run(go()) == (False, 0)
+    assert Settings(database_url="sqlite://").market_stream is True
+
+
+def test_a_publish_from_a_worker_thread_reaches_the_loop():
+    async def go():
+        bus = _local()
+        sub = bus.subscribe(("alert",), frozenset(), owner=False)
+        await asyncio.to_thread(bus.publish, "alert", "flow_shift", {"text": "x"}, "desk")
+        event = await asyncio.wait_for(sub.queue.get(), 1)
+        await bus.aclose()
+        return event["key"]
+
+    assert _run(go()) == "flow_shift"
+
+
+# -- split processes over Redis pub/sub -----------------------------------------------------------
+
+
+@pytest.fixture
+def redis_pair(monkeypatch):
+    server = fakeredis.FakeServer()
+    sc.use(fakeredis.FakeRedis(server=server, decode_responses=True),
+           fakeredis.FakeAsyncRedis(server=server, decode_responses=True), "bus-test-key-0123456789")
+    monkeypatch.setattr(sc, "listener", lambda settings: fakeredis.FakeAsyncRedis(server=server, decode_responses=True))
+    monkeypatch.setattr(market_bus, "LISTEN_POLL_SEC", 0.01)   # fakeredis waits for a message without yielding
+    yield server
+    sc.use(None, None)
+
+
+async def _wait(predicate, seconds=3.0):
+    for _ in range(int(seconds / 0.02)):
+        if predicate():
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
+def test_the_collectors_events_reach_the_api_over_redis_sealed(redis_pair):
+    async def go():
+        api, collector = Bus(), Bus()
+        api.configure(_settings(), "api")
+        collector.configure(_settings(), "collector")
+        assert (api.mode, api.subscribe_remote, collector.mode, collector.subscribe_remote) == \
+            ("redis", True, "redis", False)
+        sub = api.subscribe(("flow", "alert"), frozenset(), owner=True)
+        await _wait(lambda: api.stats()["subscribed"])
+        await asyncio.sleep(0.1)
+        spy = fakeredis.FakeAsyncRedis(server=redis_pair, decode_responses=True).pubsub()
+        await spy.subscribe(sc.channel("market"))
+        collector.publish("flow", "KOSPI:1d", {"records": [{"date": "2026-11-20"}]}, "toss_investors")
+        collector.publish("alert", "holding_alert", {"text": "005930 손절"}, "desk")
+        assert await _wait(lambda: sub.queue.qsize() == 2)
+        got = _drain(sub)
+        raw = [m async for m in _messages(spy, 2)]
+        stats = api.stats()
+        await api.aclose()
+        await collector.aclose()
+        return got, raw, stats
+
+    got, raw, stats = _run(go())
+    assert [e["key"] for e in got] == ["KOSPI:1d", "holding_alert"] and "origin" not in got[0]
+    assert got[0]["payload"] == {"records": [{"date": "2026-11-20"}]}
+    assert raw and all("005930" not in r and "손절" not in r for r in raw)       # sealed on the shared server
+    assert sc.channel("market").startswith("td:bus:") and "market" not in sc.channel("market")
+    assert stats["received_remote"] == 2 and stats["lag_sec"]["flow"]["n"] == 1
+
+
+async def _messages(pubsub, n):
+    seen = 0
+    for _ in range(100):
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.05)
+        if message:
+            seen += 1
+            yield message["data"]
+            if seen == n:
+                return
+
+
+def test_the_api_ignores_its_own_echo_and_anything_not_sealed_by_this_app(redis_pair):
+    async def go():
+        api = Bus()
+        api.configure(_settings(), "api")
+        sub = api.subscribe(("flow", "quote"), frozenset({"AAPL"}), owner=False)
+        await _wait(lambda: api.stats()["subscribed"])
+        await asyncio.sleep(0.1)
+        api.publish("quote", "AAPL", {"price": 1.0}, "kis")            # local delivery once, echo dropped
+        writer = fakeredis.FakeAsyncRedis(server=redis_pair, decode_responses=True)
+        fake = {"v": 1, "kind": "flow", "key": "KOSPI:1d", "event_id": "x", "source": "toss_investors",
+                "source_at": None, "observed_at": "2026-11-20T00:00:00+00:00", "payload": {"records": []}}
+        await writer.publish(sc.channel("market"), json.dumps(fake))           # plain JSON from someone else
+        await writer.publish(sc.channel("market"), sc.seal({**fake, "v": 9}))  # sealed, unknown version
+        assert await _wait(lambda: api.stats()["dropped"] == 2)
+        await asyncio.sleep(0.1)
+        keys = [e["key"] for e in _drain(sub)]
+        await api.aclose()
+        return keys
+
+    assert _run(go()) == ["AAPL"]
+
+
+def test_a_lost_subscription_degrades_the_remote_channels_and_comes_back(redis_pair, monkeypatch):
+    class Down:
+        def pubsub(self, **_):
+            raise ConnectionError("refused")
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(sc, "listener", lambda settings: Down())
+    monkeypatch.setattr(market_bus, "RECONNECT_MAX_SEC", 0.05)
+
+    async def go():
+        api = Bus()
+        api.configure(_settings(), "api")
+        assert await _wait(lambda: api.stats()["reconnects"] >= 1)
+        degraded = api.degraded()
+        await api.aclose()
+        return degraded
+
+    assert _run(go()) == (["alert", "flow", "futures"], "bus_down")
+
+
+def test_one_process_never_touches_redis_even_when_it_is_configured(redis_pair):
+    async def go():
+        bus = Bus()
+        bus.configure(_settings(), "all")
+        return bus.mode, bus.subscribe_remote
+
+    assert _run(go()) == ("local", False)
+
+
+# -- the SSE route -----------------------------------------------------------------------------------
+
+
+def _frames(lines, until):
+    """(event, data) pairs up to and including the first ``until`` event (``lines``: one response's iterator)."""
+    out, event = [], None
+    for line in lines:
+        if line.startswith("event: "):
+            event = line[7:]
+        elif line.startswith("data: "):
+            out.append((event, json.loads(line[6:])))
+            if event == until:
+                return out
+    return out
+
+
+def test_the_route_needs_a_session_and_checks_its_query(db_url):
+    from tests.test_api import OWNER, PASSWORD
+    from tests.test_live import Prices
+    from tests.test_prices import _client
+
+    with _client(db_url, Prices(), fake_runs=True) as client:
+        assert client.get("/api/stream/market").status_code == 401
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        assert client.get("/api/stream/market?channels=quote,trades").status_code == 422
+        assert client.get("/api/stream/market?channels=quote&tickers=NV%20DA").status_code == 422
+
+
+def test_the_route_is_503_when_the_stream_is_off(db_url):
+    from tests.test_api import OWNER, PASSWORD
+    from tests.test_live import Prices
+    from tests.test_prices import _client
+
+    with _client(db_url, Prices(), fake_runs=True, market_stream=False) as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        assert client.get("/api/stream/market").status_code == 503
+
+
+def test_the_route_sends_the_latest_values_then_ready_then_events(db_url, monkeypatch):
+    from tests.test_api import OWNER, PASSWORD
+    from tests.test_live import Prices
+    from tests.test_prices import _client
+
+    with _client(db_url, Prices(), fake_runs=True) as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        market_bus.publish("futures", "view", {"price": 400.5}, "kis_futures")
+        market_bus.publish("quote", "NVDA", {"price": 200.0}, "kis")
+        market_bus.publish("quote", "AAPL", {"price": 100.0}, "kis")
+        assert _wait_sync(lambda: market_bus.BUS.stats()["quote"] == 2)
+        with client.stream("GET", "/api/stream/market?channels=futures,quote,alert&tickers=NVDA") as response:
+            assert response.headers["content-type"].startswith("text/event-stream")
+            assert response.headers["x-accel-buffering"] == "no"
+            lines = response.iter_lines()
+            first = _frames(lines, "ready")
+            market_bus.publish("alert", "flow_shift", {"text": "외국인 순매도 전환"}, "desk")
+            after = _frames(lines, "alert")
+        status = client.get("/api/status").json()["market_stream"]
+        monkeypatch.setattr("desk.api.MARKET_STREAMS_PER_SESSION", 0)
+        assert client.get("/api/stream/market").status_code == 429
+    kinds = [e for e, _ in first]
+    assert sorted(kinds[:-1]) == ["futures", "quote"] and kinds[-1] == "ready"     # AAPL was not asked for
+    ready = first[-1][1]
+    assert ready["v"] == 1 and ready["channels"] == ["futures", "quote", "alert"] and ready["bus"] == "local"
+    assert after[-1][1]["payload"] == {"text": "외국인 순매도 전환"} and after[-1][1]["kind"] == "alert"
+    assert status["on"] is True and status["mode"] == "local" and status["alert"] == 1
+
+
+def _wait_sync(predicate, seconds=3.0):
+    import time
+
+    for _ in range(int(seconds / 0.02)):
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_a_market_alert_is_pushed_after_it_is_recorded(db_url):
+    from datetime import UTC, datetime
+
+    from desk.db import make_engine, metadata
+
+    engine = make_engine(db_url)
+    metadata.create_all(engine)
+
+    async def go():
+        bus = market_bus.BUS
+        bus.configure(_settings(), "all")
+        sub = bus.subscribe(("alert",), frozenset(), owner=False)
+        alerts = market_alerts.MarketAlerts(engine, None)
+        alert = {"kind": "nq_alert", "rule": "nq_drop", "market": "nq", "who": "all", "severity": "caution",
+                 "t": datetime(2026, 11, 20, 1, 0, tzinfo=UTC).isoformat(), "value": -0.5, "prev": -0.3}
+        await asyncio.to_thread(alerts.dispatch, [alert])
+        await asyncio.to_thread(alerts.dispatch, [alert])            # refused the second time: not pushed again
+        await asyncio.sleep(0.05)
+        got = _drain(sub)
+        await bus.aclose()
+        return got
+
+    got = _run(go())
+    engine.dispose()
+    assert len(got) == 1 and got[0]["key"] == "nq_alert"
+    assert set(got[0]["payload"]) == set(market_alerts.STREAM_FIELDS) and got[0]["payload"]["text"]
+
+
+# -- where events come from ---------------------------------------------------------------------------
+
+
+def test_a_fresh_flow_futures_and_quote_read_are_published_a_failed_one_is_not():
+    from datetime import UTC, datetime
+
+    from desk import futures_flow as ff
+    from desk.market_flow import MarketFlow
+    from desk.prices import PriceSource
+    from tests.test_futures_flow import _rest
+    from tests.test_market_flow import CountingBroker
+    from tests.test_shared_cache import NOW, _QuoteBroker
+
+    async def go():
+        bus = market_bus.BUS
+        bus.configure(_settings(), "all")
+        sub = bus.subscribe(("flow", "futures", "quote"), frozenset({"AAPL"}), owner=False)
+        await MarketFlow(CountingBroker(), now=lambda: NOW).get("KOSPI", "1d", 1, fresh=True)
+        await MarketFlow(CountingBroker(fail=True), now=lambda: NOW).get("KOSDAQ", "1d", 1, fresh=True)
+        now = lambda: datetime(2026, 11, 6, 2, 0, tzinfo=UTC)
+        await ff.FuturesFlow(_rest([]), None, now=now).get(fresh=True)
+        await PriceSource(_QuoteBroker()).quote("AAPL")
+        got = _drain(sub)
+        await bus.aclose()
+        return got
+
+    got = _run(go())
+    assert [(e["kind"], e["key"]) for e in got] == [("flow", "KOSPI:1d"), ("futures", "view"), ("quote", "AAPL")]
+    flow = got[0]
+    assert flow["source"] == "toss_investors" and "freshness" in flow["payload"] and "premarket" not in flow["payload"]
+    assert len(flow["payload"]["records"]) <= 20
+    assert got[2]["payload"]["price"] == 101.5 and got[2]["source"] == "mock"
+
+
+def test_a_kis_trade_is_published_as_a_quote():
+    from desk.broker.kis_stream import KisStream, Tick
+    from desk.prices import kis_quote
+
+    seen = []
+    stream = KisStream("k", "s")
+    stream.on_tick = lambda ticker, tick: seen.append(kis_quote(ticker, tick).to_dict())
+    stream.on_tick("005930.KS", Tick(71000.0, 0.5, "2026-11-20T01:00:00+00:00", 1.0))
+    assert seen == [{"ticker": "005930.KS", "price": 71000.0, "currency": "KRW", "source": "kis",
+                     "fetched_at": "2026-11-20T01:00:00+00:00"}]

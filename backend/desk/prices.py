@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from datetime import time as clock_time
 
-from . import market_calendar, shared_cache
+from . import market_bus, market_calendar, shared_cache
 from .broker.base import Bar, Broker
 from .indicators import WARMUP, annotate, normalize
 
@@ -326,8 +326,7 @@ class PriceSource:
     async def quote(self, ticker: str) -> Quote:
         tick = self.stream.latest(ticker) if self.stream is not None else None
         if tick is not None:
-            currency = "KRW" if ticker.upper().endswith((".KS", ".KQ")) else "USD"
-            return Quote(ticker, _tidy(tick.price), currency, "kis", tick.received_at)
+            return kis_quote(ticker, tick)
         cached = self._quotes.get(ticker)
         if cached and self._clock() - cached[0] < QUOTE_TTL_SEC:
             return cached[1]
@@ -351,6 +350,7 @@ class PriceSource:
             quote = Quote(ticker, _tidy(price), currency, "yahoo", _now())
         _remember(self._quotes, ticker, (self._clock(), quote), QUOTE_TTL_SEC, self._clock)
         await shared_cache.aput(SHARED_NS, ticker, quote.to_dict(), QUOTE_TTL_SEC)
+        market_bus.publish("quote", ticker, quote.to_dict(), quote.source)   # #690 open market streams
         return quote
 
     async def candles(self, ticker: str, interval: str = "1d", count: int = 120,
@@ -440,6 +440,12 @@ class PriceSource:
             return bars, "yahoo"                 # Yahoo's own 1m lags just the same
         filled = fill_recent(bars, [Bar(**b) for b in recent["bars"]], _MINUTES[interval])
         return filled, ("yahoo" if filled is bars else f"yahoo+{self.broker.name}")
+
+
+def kis_quote(ticker: str, tick) -> Quote:
+    """A KIS realtime trade (desk.broker.kis_stream.Tick) as a quote."""
+    currency = "KRW" if ticker.upper().endswith((".KS", ".KQ")) else "USD"
+    return Quote(ticker, _tidy(tick.price), currency, "kis", tick.received_at)
 
 
 def _shared_quote(ticker: str, raw) -> Quote | None:

@@ -244,3 +244,91 @@ def test_a_closed_nights_empty_minutes_keep_the_ones_taken_while_it_traded():
     assert held["held"] is True and held["bars"] == live and held["market"] == "day"
     fresh = fq.FuturesQuote(rest, now=lambda: at("2026-11-17", "11:37"), is_open=is_open)   # a restart
     assert asyncio.run(fresh.candles("night"))["bars"] == []
+
+
+def test_a_zero_price_counts_as_empty_and_is_never_held():
+    class Zero(FakeRest):
+        zero = False
+
+        async def get(self, path, tr_id, params):
+            if tr_id == fq.PRICE_TR and self.zero and params["FID_COND_MRKT_DIV_CODE"] == "CM":
+                self.calls.append((tr_id, params))
+                return {"rt_cd": "0", "output1": {**NIGHT, "futs_prpr": "0.00"}}
+            return await super().get(path, tr_id, params)
+
+    now, clock = [at("2026-11-17", "05:59")], [0.0]
+    rest = Zero()
+    quotes = fq.FuturesQuote(rest, now=lambda: now[0], clock=lambda: clock[0], is_open=is_open)
+    asyncio.run(quotes.both())
+    rest.zero, now[0], clock[0] = True, at("2026-11-17", "06:30"), 1860.0
+    night = asyncio.run(quotes.both())["sessions"]["night"]
+    assert night["held"] is True and night["price"] == 782.75
+
+
+def test_a_quote_held_long_before_the_end_keeps_its_time_and_says_it_is_not_the_close():
+    now, clock = [at("2026-11-17", "01:10")], [0.0]
+    rest = ClosedEmpty()
+    rest.empty = set()
+    quotes = fq.FuturesQuote(rest, now=lambda: now[0], clock=lambda: clock[0], is_open=is_open)
+    asyncio.run(quotes.both())                                  # the tab closed at 01:10
+    rest.empty, now[0], clock[0] = {"CM"}, at("2026-11-17", "07:00"), 21000.0
+    night = asyncio.run(quotes.both())["sessions"]["night"]
+    assert night["held"] is True and night["held_early"] is True
+    assert night["as_of"].startswith("2026-11-17T01:10") and night["held_at"] == night["as_of"]
+
+
+def test_the_close_read_job_reads_the_session_ending_and_sleeps_to_the_next_close():
+    assert fq.seconds_to_close_read(at("2026-11-17", "05:00"), is_open) == 59 * 60 + 30     # → 05:59:30
+    assert fq.seconds_to_close_read(at("2026-11-17", "06:00"), is_open) == fq.MAX_SLEEP_SEC  # 15:44:30 is far
+    assert fq.seconds_to_close_read(at("2026-11-17", "15:30"), is_open) == 14 * 60 + 30
+    assert fq.seconds_to_close_read(at("2026-11-17", "15:45"), is_open) == fq.MAX_SLEEP_SEC
+    # Saturday: Friday's night ends 06:00, then Monday's day session (no session on the weekend)
+    assert fq.seconds_to_close_read(at("2026-11-14", "05:59"), is_open) == 30.0     # Friday night: 05:59:30 Sat
+    rest = FakeRest()
+    near = fq.FuturesQuote(rest, now=lambda: at("2026-11-17", "05:59") + timedelta(seconds=30), is_open=is_open)
+    assert asyncio.run(near.read_close()) == "night" and len(rest.calls) == 1
+    early = fq.FuturesQuote(FakeRest(), now=lambda: at("2026-11-17", "05:50"), is_open=is_open)
+    assert asyncio.run(early.read_close()) is None
+
+
+def test_a_cached_answer_from_before_the_bell_reads_with_the_state_of_now():
+    now, clock = [at("2026-11-17", "05:59")], [0.0]
+    quotes = fq.FuturesQuote(FakeRest(), now=lambda: now[0], clock=lambda: clock[0], is_open=is_open)
+    asyncio.run(quotes.both())
+    now[0], clock[0] = at("2026-11-17", "06:00"), 5.0           # inside the open answer's 15 s cache
+    got = asyncio.run(quotes.both())
+    assert got["market"] == "closed" and got["sessions"]["night"]["market"] == "closed"
+    assert got["sessions"]["night"]["state"] == "closed"
+
+
+def test_nothing_to_show_is_kept_briefly_not_asked_on_every_poll():
+    rest = ClosedEmpty()
+    rest.empty = {"CM"}
+
+    class NoBars(ClosedEmpty):
+        async def get(self, path, tr_id, params):
+            if tr_id == fq.CANDLE_TR:
+                self.calls.append((tr_id, params))
+                return {"rt_cd": "0", "output2": []}
+            return await super().get(path, tr_id, params)
+
+    rest = NoBars()
+    clock = [0.0]
+    quotes = fq.FuturesQuote(rest, now=lambda: at("2026-11-17", "06:30"), clock=lambda: clock[0], is_open=is_open)
+    with pytest.raises(RuntimeError):
+        asyncio.run(quotes.quote("night"))
+    calls = len(rest.calls)
+    clock[0] = 5.0
+    with pytest.raises(RuntimeError):
+        asyncio.run(quotes.quote("night"))
+    assert len(rest.calls) == calls
+
+
+def test_an_older_days_answers_and_held_values_are_dropped():
+    now, clock = [at("2026-11-16", "22:00")], [0.0]
+    quotes = fq.FuturesQuote(FakeRest(), now=lambda: now[0], clock=lambda: clock[0], is_open=is_open)
+    asyncio.run(quotes.both())
+    now[0], clock[0] = at("2026-11-17", "18:30"), 80000.0
+    asyncio.run(quotes.both())
+    days = {k[2] for k in quotes._cache if k[1] == "night"}
+    assert days == {"2026-11-17"} and ("night", "2026-11-16") not in quotes._good

@@ -24,6 +24,10 @@ keeps the last good quote of that very session (``held``) when KIS answers it em
 minute bars likewise: KIS answers a closed night's minutes empty, so the ones taken while it traded
 stay (``held``). A new session is a new cache key (its opening day), so 08:45 and 18:00 are read fresh.
 What is kept lives in this process: after a restart a closed session shows what KIS still gives.
+A held quote keeps its own ``as_of`` (``held_at``); one taken more than HELD_CLOSE_SEC before its session
+ended is ``held_early`` - not the close. So that the close is what is held, the ``futures_close_quote`` job
+reads each session ``CLOSE_READ_SEC`` before it ends (``seconds_to_close_read``). KIS answering a price
+of 0 counts as empty.
 """
 
 from __future__ import annotations
@@ -51,6 +55,9 @@ CACHE_CLOSED_SEC = 600.0
 CACHE_FAIL_SEC = 20.0             # a stale answer after a failed refresh, before KIS is asked again
 PAGE_PAUSE_SEC = 0.25
 LOOKBACK_DAYS = 10                # to find the last session past a long holiday
+CLOSE_READ_SEC = 30.0             # #713 each session's quote read this long before it ends (its close, held)
+HELD_CLOSE_SEC = 120.0            # a held quote taken earlier than this before the end is not the close
+MAX_SLEEP_SEC = 3600.0
 
 
 def _kst(now: datetime) -> datetime:
@@ -81,6 +88,24 @@ def futures_session(now: datetime, is_open=market_calendar.is_open) -> dict:
     live = next((p for p in picks if p["start"] <= local < p["end"]), None)
     shown = live or max(picks, key=lambda p: p["end"])
     return {**shown, "now": live["session"] if live else "closed", "shown": shown["session"]}
+
+
+def seconds_to_close_read(now: datetime, is_open=market_calendar.is_open) -> float:
+    """#713 until the next session's end less CLOSE_READ_SEC (05:59:30, 15:44:30 on trading days), at most
+    MAX_SLEEP_SEC (a holiday added later is seen within the hour)."""
+    local = _kst(now)
+    targets = []
+    for back in range(-1, LOOKBACK_DAYS):
+        d = local.date() - timedelta(days=back) if back >= 0 else local.date() + timedelta(days=1)
+        if not is_open("kr", d):
+            continue
+        for _, end_t, plus in SESSIONS.values():
+            at = datetime.combine(d + timedelta(days=plus), end_t, KST) - timedelta(seconds=CLOSE_READ_SEC)
+            if at > local:
+                targets.append(at)
+    if not targets:
+        return MAX_SLEEP_SEC
+    return max(1.0, min((min(targets) - local).total_seconds(), MAX_SLEEP_SEC))
 
 
 def normalize_quote(out1: dict, kind: str) -> dict:
@@ -171,19 +196,33 @@ class FuturesQuote:
         async with self._locks.setdefault(key, asyncio.Lock()):
             hit = self._cache.get(key)
             if hit and self._clock() - hit[0] < hit[1]:
+                if isinstance(hit[2], BaseException):
+                    raise hit[2]
                 return hit[2]
             try:
                 value = await fetch()
             except Exception as exc:   # KIS down, refused or slow: the last answer, marked
                 log.warning("futures quote %s failed: %s", key[0], _short(exc))
-                if hit:
+                if hit and not isinstance(hit[2], BaseException):
                     stale = {**hit[2], "stale": True, "error": f"새 값을 받지 못해 마지막 값을 보입니다 — {_short(exc)}"}
                     # kept a little while too: a KIS outage is not asked again on every request
                     self._cache[key] = (self._clock(), CACHE_FAIL_SEC, stale)
                     return stale
+                # #713 nothing to show either: the failure itself is kept a little while (every poll would ask)
+                self._cache[key] = (self._clock(), CACHE_FAIL_SEC, exc)
                 raise
             self._cache[key] = (self._clock(), CACHE_OPEN_SEC if live else CACHE_CLOSED_SEC, value)
+            self._forget_before(key)
             return value
+
+    def _forget_before(self, key: tuple) -> None:
+        """#713 one day per (answer, session) kept: an older day's cache, lock and held values go."""
+        name, kind, day = key
+        for k in [k for k in self._cache if k[:2] == (name, kind) and k[2] != day]:
+            self._cache.pop(k, None)
+            self._locks.pop(k, None)
+        for k in [k for k in self._good if k[-2] == kind and k[-1] < day]:
+            self._good.pop(k, None)
 
     def _base(self, s: dict, front: dict) -> dict:
         return {"supported": True, "error": None, "stale": False, "source": "kis",
@@ -202,7 +241,7 @@ class FuturesQuote:
             res = await self.rest.get(PRICE_PATH, PRICE_TR, {"FID_COND_MRKT_DIV_CODE": DIVISION[s["shown"]],
                                                              "FID_INPUT_ISCD": front["code"]})
             q = normalize_quote(res.get("output1") or {}, s["shown"])
-            if q["price"] is None:
+            if q["price"] is None or q["price"] <= 0:          # KIS' empty: "" or 0
                 kept = await self._closed_stand_in(s, front)
                 if kept is not None:
                     return kept
@@ -222,7 +261,9 @@ class FuturesQuote:
             return None
         kept = self._good.get((s["shown"], s["date"]))
         if kept is not None:
-            return {**kept, **self._base(s, front), "contract": kept["contract"], "held": True}
+            early = s["end"] - datetime.fromisoformat(kept["as_of"]) > timedelta(seconds=HELD_CLOSE_SEC)
+            return {**kept, "market": s["now"], "stale": False, "error": None, "held": True,
+                    "held_at": kept["as_of"], "held_early": early}
         try:
             bars = (await self.candles(s["shown"]))["bars"]
         except Exception as exc:   # noqa: BLE001 - no stand-in then; the caller says the quote is empty
@@ -240,15 +281,25 @@ class FuturesQuote:
         """#713 the session shown now at the top level, and ``sessions`` day and night each with its ``state``
         (a session failing alone carries its error)."""
         current = futures_session(self._now(), self._is_open)
+        got = await asyncio.gather(*(self.quote(kind) for kind in SESSIONS), return_exceptions=True)
         sessions: dict[str, dict] = {}
-        for kind in SESSIONS:
-            try:
-                got = await self.quote(kind)
-            except Exception as exc:   # noqa: BLE001 - the other session still shows
-                got = {"supported": True, "error": f"선물 시세를 받지 못했습니다 — {_short(exc)}", "stale": False,
-                       "session": kind, "market": current["now"]}
-            sessions[kind] = {**got, "state": "open" if current["now"] == kind else "closed"}
+        for kind, one in zip(SESSIONS, got, strict=True):
+            if isinstance(one, BaseException):       # the other session still shows
+                one = {"supported": True, "error": f"선물 시세를 받지 못했습니다 — {_short(one)}", "stale": False,
+                       "session": kind}
+            # a cached answer may predate the bell: the state is now's
+            sessions[kind] = {**one, "market": current["now"], "state": "open" if current["now"] == kind else "closed"}
         return {**sessions[current["shown"]], "current": current["shown"], "sessions": sessions}
+
+    async def read_close(self) -> str | None:
+        """#713 the ``futures_close_quote`` job: the session ending within CLOSE_READ_SEC (+ a little) read now,
+        so its held quote is its close; the session read, or None."""
+        now = _kst(self._now())
+        s = futures_session(now, self._is_open)
+        if s["now"] == "closed" or s["end"] - now > timedelta(seconds=CLOSE_READ_SEC + 15):
+            return None
+        await self.quote(s["now"])
+        return s["now"]
 
     async def candles(self, session: str | None = None, interval: str = "1m") -> dict:
         if interval not in INTERVALS:

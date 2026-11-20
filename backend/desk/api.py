@@ -1015,6 +1015,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
               "NQ 1-minute alarms failed")
         start("line_signals", feeds_on, watch_lines, line_signals.TICK_SEC, "line signals failed")
         start("holding_watch", feeds_on, watch_holdings, holding_watch.TICK_SEC, "holding watch failed")
+
+        async def read_futures_close() -> float:
+            # #713 each futures session's quote read 30 s before it ends: its close is what stays (held)
+            await futures_quotes.read_close()
+            return futures_quote.seconds_to_close_read(datetime.now(UTC))
+
+        start("futures_close_quote", getattr(futures, "rest", None) is not None, read_futures_close,
+              futures_quote.CLOSE_READ_SEC, "futures close quote failed")
         start("credit", feeds_on, refresh_credit, CREDIT_RETRY_SEC, "KOFIA credit refresh failed")
         if feeds_on:
             # #428: the pass saved before a restart answers until the first one here finishes

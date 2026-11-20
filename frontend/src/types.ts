@@ -957,6 +957,8 @@ export interface MarketFlow {
   session?: "pre" | "regular" | "closed";
   /** #677 1d 만: 오늘 09:00 전 현물 수급(프리장 스냅숏, 억원) — 첫 값 · 마지막 값 · 변화. 아직 없으면 null */
   premarket?: { from: string; to: string; n: number; first: FlowClassNets; last: FlowClassNets; change: FlowClassNets } | null;
+  /** #677 1d 만: 오늘 가장 최근 KRX 프로그램매매 순매수(스냅숏, 억원 누적) — 차익 · 비차익 · 합계. 09:00 전이나 없으면 null */
+  program?: { at: string; arbitrage: number | null; non_arbitrage: number | null; total: number | null } | null;
   /** #645 원천 시각(source_updated_at = max(토스 updatedAt, changed_at)) · 확인 시각(fetched_at). */
   freshness?: FlowFreshness;
 }

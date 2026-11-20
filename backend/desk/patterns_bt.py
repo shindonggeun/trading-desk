@@ -7,6 +7,13 @@ the close broke first, how far the move went in the next bars, and whether it fe
 make the breakout window desk.patterns shows), whether the measured move - the starting height added
 at the break - was reached within REACH_BARS (``reach``), and the shares by the trend before.
 
+#664 also, per case: the pattern's quality grade at the sighting, whether the break was late, whether
+the price came back to the broken line within PULLBACK_BARS (``pullback``), the first target (FIRST_SHARE
+of the height) reached (``reach1``), a wedge's own extreme reached, and two entries walked to the first
+target or a close past the stop within REACH_BARS - the chase (at the break's close) and the retest (a
+limit at the line on the pullback) - in R. ``rules`` per kind: the same after the rules (no weak pattern,
+no late break) against the shuffled baseline after the same rules - the before / after table.
+
     python -m desk.patterns_bt [--out desk/data/pattern_stats.json]
 
 Writes the table desk.patterns reads (``stats``). Yahoo bars, no key.
@@ -48,6 +55,7 @@ MIN_N = 20                 # fewer instances than this: no stats (weak evidence)
 SHUFFLES = 3
 EDGE_PCT = 5.0             # held-out expected-way share at least this far from the shuffled one
 UNSTABLE_PCT = 10.0        # train and held-out further apart than this: unstable
+PULLBACK_BARS = 10         # #664 a return to the broken line within this many bars of the break
 
 
 def shuffled(bars: list[dict], seed: int) -> list[dict]:
@@ -103,9 +111,11 @@ def instances(bars: list[dict], timeframe: str, k: int, step: int, ticker: str =
                 direction, at = "down", x
                 break
         busy_until = at if at is not None else t + horizon
+        grade = patterns.quality(window, up, low, start, last - patterns.STATE_BARS, unit)["grade"]
         row = {"ticker": ticker, "at": window[-1]["at"][:10], "kind": kind, "timeframe": timeframe,
                "expected": expected, "direction": direction, "move_atr": None, "false_break": None,
-               "prior": prior, "frac": None, "reach": None}
+               "prior": prior, "frac": None, "reach": None, "grade": grade, "late": None, "pullback": None,
+               "reach1": None, "extreme": None, "chase_r": None, "retest_r": None}
         if direction and atr:
             sign = 1 if direction == "up" else -1
             if at + MOVE_BARS < len(bars):
@@ -119,7 +129,62 @@ def instances(bars: list[dict], timeframe: str, k: int, step: int, ticker: str =
             ahead = bars[at + 1: at + 1 + REACH_BARS]
             hit = any(sign * (math.log(b["high"] if sign > 0 else b["low"]) - goal) >= 0 for b in ahead)
             row["reach"] = True if hit else (False if len(ahead) == REACH_BARS else None)   # None: too recent
+            row.update(_after_break(bars, at, offset, line, sign, height, unit, kind,
+                                    patterns._extremes(window, start)))
+            row["late"] = row["frac"] > patterns.LATE_SHARE
         out.append(row)
+    return out
+
+
+def _walk(bars: list[dict], first: int, end: int, entry: float, stop: float, goal: float, sign: int) -> float | None:
+    """R of a trade from bar ``first`` (log prices): the goal touched wins, a close past the stop loses (at that
+    close), else the close at ``end`` - None when the bars stop before ``end`` (too recent)."""
+    risk = sign * (entry - stop)
+    if risk <= 0:
+        return None
+    for x in range(first, min(end + 1, len(bars))):
+        b = bars[x]
+        c = math.log(b["close"])
+        if sign * (c - stop) < 0:
+            return round(sign * (c - entry) / risk, 2)
+        if x > first and sign * (math.log(b["high"] if sign > 0 else b["low"]) - goal) >= 0:
+            return round(sign * (goal - entry) / risk, 2)
+    if end >= len(bars):
+        return None
+    return round(sign * (math.log(bars[end]["close"]) - entry) / risk, 2)
+
+
+def _after_break(bars: list[dict], at: int, offset: int, line, sign: int, height: float, unit: float, kind: str,
+                 extremes: tuple[float, float]) -> dict:
+    """#664 what followed a break: the first target, a wedge's own extreme, the pullback to the line, and the
+    chase and the retest entries in R (stop: a close RETEST_STOP_ATR back inside the line)."""
+    touch, stop_d = patterns.TOUCH_ATR * unit, patterns.RETEST_STOP_ATR * unit
+    base = line.at(at - offset)
+    goal1 = base + sign * patterns.FIRST_SHARE * height
+    ahead = bars[at + 1: at + 1 + REACH_BARS]
+    full = len(ahead) == REACH_BARS
+
+    def hit(goal: float) -> bool | None:
+        got = any(sign * (math.log(b["high"] if sign > 0 else b["low"]) - goal) >= 0 for b in ahead)
+        return True if got else (False if full else None)
+
+    out = {"reach1": hit(goal1), "extreme": None, "pullback": None, "retest_r": None}
+    if kind == "rising_wedge" and sign < 0:
+        out["extreme"] = hit(extremes[0])
+    elif kind == "falling_wedge" and sign > 0:
+        out["extreme"] = hit(extremes[1])
+    end = at + REACH_BARS
+    entry = math.log(bars[at]["close"])
+    out["chase_r"] = _walk(bars, at, end, entry, base - sign * stop_d, goal1, sign)
+    back = bars[at + 1: at + 1 + PULLBACK_BARS]
+    for x, b in enumerate(back, start=at + 1):
+        level = line.at(x - offset) + sign * touch                       # a limit just outside the line
+        if sign * (math.log(b["low"] if sign > 0 else b["high"]) - level) <= 0:
+            out["pullback"] = True
+            out["retest_r"] = _walk(bars, x, end, level, line.at(x - offset) - sign * stop_d, goal1, sign)
+            break
+    else:
+        out["pullback"] = False if len(back) == PULLBACK_BARS else None
     return out
 
 
@@ -156,7 +221,43 @@ def summarize(rows: list[dict], detail: bool = True) -> dict | None:
             if got:
                 by[prior] = {k: got[k] for k in ("n", "up_pct", "down_pct", "none_pct")}
         out["by_prior"] = by
+        out.update(_rule_metrics(broke))
+        out["by_grade"] = {g: {**{k: got[k] for k in ("n", "expected_pct", "false_break_pct")},
+                               **_rule_metrics([r for r in rs if r["direction"]])}
+                           for g in ("strong", "normal", "weak")
+                           if (got := summarize(rs := [r for r in rows if r.get("grade") == g], detail=False))}
     return out
+
+
+def _rule_metrics(broke: list[dict]) -> dict:
+    """#664 the shares and average R over broken cases."""
+    pct = lambda xs: round(100 * sum(xs) / len(xs), 1) if xs else None
+    avg = lambda xs: round(sum(xs) / len(xs), 2) if xs else None
+    of = lambda key: [r[key] for r in broke if r.get(key) is not None]
+    chase, retest = of("chase_r"), of("retest_r")
+    return {"reach1_pct": pct(of("reach1")), "pullback_pct": pct(of("pullback")),
+            "late_pct": pct(of("late")), "extreme_reach_pct": pct(of("extreme")),
+            "chase_n": len(chase), "chase_win_pct": pct([x > 0 for x in chase]), "chase_r_avg": avg(chase),
+            "retest_n": len(retest), "retest_win_pct": pct([x > 0 for x in retest]), "retest_r_avg": avg(retest)}
+
+
+def _after_rules(rows: list[dict]) -> list[dict]:
+    """#664 the rules: no weak pattern; a late break is not taken (counted as no break)."""
+    return [r if not r.get("late") else {**r, "direction": None} for r in rows if r.get("grade") != "weak"]
+
+
+def _rules(group: list[dict], null_group: list[dict]) -> dict | None:
+    """#664 the same measures after the rules, with their own held-out edge over the shuffled baseline."""
+    kept = _after_rules(group)
+    whole = summarize(kept)
+    if not whole:
+        return None
+    cut = int(len(kept) * TRAIN_SHARE)
+    null = summarize(_after_rules(null_group))
+    entry = {"n": whole["n"], "train": summarize(kept[:cut]), "valid": summarize(kept[cut:]), "null": null}
+    keep = ("expected_pct", "false_break_pct", "reach_pct", "reach1_pct", "pullback_pct", "chase_win_pct",
+            "chase_r_avg", "retest_n", "retest_win_pct", "retest_r_avg")
+    return {"n": whole["n"], **{k: whole.get(k) for k in keep}, **_verdict(entry, null)}
 
 
 def _verdict(s: dict, null: dict | None) -> dict:
@@ -189,7 +290,8 @@ def table(rows: list[dict], null_rows: list[dict] | None = None) -> dict:
             null = summarize([r for r in null_rows or [] if f"{r['timeframe']}:{r['kind']}" == key])
             entry = {**whole, "train": summarize(group[:cut]), "valid": summarize(group[cut:]),
                      "cut": group[cut]["at"] if cut < len(group) else None, "null": null}
-            out[key] = {**entry, **_verdict(entry, null)}
+            nulls = sorted((r for r in null_rows or [] if f"{r['timeframe']}:{r['kind']}" == key), key=lambda r: r["at"])
+            out[key] = {**entry, **_verdict(entry, null), "rules": _rules(group, nulls)}
     return out
 
 
@@ -220,7 +322,11 @@ def run(tickers=PATTERN_TICKERS, frames=FRAMES, progress=print) -> dict:
                       f"the apex; reach = the starting height added at the break touched within {REACH_BARS} bars; "
                       f"train = first {int(TRAIN_SHARE * 100)}% by date; "
                       f"null = the same walk on each ticker's returns shuffled ({SHUFFLES}x); edge = held-out "
-                      f"expected-way share minus the null's, {EDGE_PCT} points or more to count",
+                      f"expected-way share minus the null's, {EDGE_PCT} points or more to count; "
+                      f"#664 reach1 = {patterns.FIRST_SHARE} of the height; pullback = back to the line within "
+                      f"{PULLBACK_BARS} bars; chase / retest R to reach1 or a close {patterns.RETEST_STOP_ATR} ATR "
+                      f"inside the line within {REACH_BARS} bars; rules = no weak pattern, no late break "
+                      f"(past {patterns.LATE_SHARE} of the way to the apex)",
             "kinds": table(rows, null_rows)}
 
 
@@ -236,6 +342,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{key:24s} n={s['n']:4d} up={s['up_pct']} down={s['down_pct']} expected={s['expected_pct']}% "
               f"move={s['move_atr_avg']} | held-out n={v.get('n')} expected={v.get('expected_pct')}% | "
               f"null expected={b.get('expected_pct')}% move={b.get('move_atr_avg')} | {s['verdict']} {s['edge_pct']}")
+        r = s.get("rules") or {}
+        print(f"{'':24s} rules n={r.get('n')} false={r.get('false_break_pct')}% reach1={r.get('reach1_pct')}% "
+              f"chase R={s.get('chase_r_avg')} retest R={r.get('retest_r_avg')} | {r.get('verdict')} {r.get('edge_pct')}")
     return 0
 
 

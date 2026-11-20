@@ -90,6 +90,13 @@ def _candidates(frame: dict, bars: list[dict], tf: str, price: float,
         ref = {"kind": "pattern", "pattern": p.get("kind"), "state": p.get("state", "converging")}
         out.append((p["upper"]["to"]["price"], f"{p['label']} 윗선{after}", {**ref, "edge": "upper"}))
         out.append((p["lower"]["to"]["price"], f"{p['label']} 아랫선{after}", {**ref, "edge": "lower"}))
+    for p in frame.get("hs") or []:                   # #695 the neckline, and the target once it broke
+        if p["state"] == "failed":
+            continue
+        ref = {"kind": "neckline", "pattern": p["kind"], "state": p["state"]}
+        out.append((p["neckline"]["to"]["price"], f"{p['label']} 넥라인", {**ref, "edge": "neckline"}))
+        if p["state"] in ("broken", "retest"):
+            out.append((p["target"], f"{p['label']} 목표", {**ref, "edge": "target"}))
     k = channels.SWING_K[tf]
     recent = bars[-SWING_BARS:]
     closes = [b["close"] for b in recent]
@@ -164,6 +171,11 @@ def sentence(f: dict) -> str:
     for p in f.get("patterns") or []:
         text += (f" {p['label']}{'수렴' if 'wedge' not in p['kind'] else ''} "
                  f"{PATTERN_STATE_KO.get(p.get('state', 'converging'), '진행 중')}.")
+    for p in f.get("hs") or []:
+        text += f" {p['label']} {p['state_label']}."
+    b = f.get("bubble")
+    if b and b["stage"] != "none":
+        text += f" 주봉 민스키형 '{b['label']}'{' — 진입 조심' if b['caution'] else ''}."
     t = fresh_break(f)
     if t:
         text += f" {'상승' if t['kind'] == 'support' else '하락'}추세선 이탈(방금)."
@@ -222,6 +234,7 @@ def frame(bars: list[dict], tf: str, live: bool, rates: dict | None = None, gaps
     out = {"timeframe": tf, "as_of": got.get("as_of"), "price": price, "live_bar": live,
            "channels": got["channels"], "trendlines": got["trendlines"], "events": got["events"],
            "patterns": got.get("patterns") or [], "patterns_error": got.get("patterns_error"),
+           "hs": got.get("hs") or [], "bubble": got.get("bubble"),
            "trend": trend_state(done),
            "levels": {"above": [], "below": [], "far": {"above": [], "below": []}}, "volume": volume(done)}
     if price and got.get("atr"):
@@ -234,5 +247,7 @@ def read(ticker: str, frames: list[dict]) -> dict:
     """The whole read: the timeframes, where they disagree, one summary."""
     disagree = conflicts(frames)
     summary = " ".join([f["summary"] for f in frames if f.get("summary")] + disagree + ["예측 · 추천 아님."])
+    # #695 the weekly bubble stage on top: the caution reads before the timeframes
+    bubble = next((f["bubble"] for f in frames if f.get("bubble")), None)
     return {"ticker": ticker, "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            "timeframes": frames, "conflicts": disagree, "summary": summary, "note": NOTE}
+            "timeframes": frames, "conflicts": disagree, "summary": summary, "bubble": bubble, "note": NOTE}

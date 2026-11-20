@@ -302,4 +302,21 @@ def build(plan: dict, sr: dict | None) -> dict | None:
     record = trade_map_record.lookup(regime, found, horizon=plan.get("horizon") or trade_map_record.HORIZON)
     return {"maps": maps, "reference_price": _round(ref) if ref else None, "atr": _round(atr),
             "volume_profile": bool(vp), "levels": bool((sr or {}).get("levels")),
-            "scenarios": found, "regime": regime, **record}
+            "scenarios": found, "regime": regime, "cautions": cautions(sr, sides), **record}
+
+
+def cautions(sr: dict | None, sides: list[str]) -> list[dict]:
+    """#695 what speaks against the map: the weekly Minsky-style stage when it says caution (mania, the first
+    drop, the bull trap), and a head and shoulders against the side (a top against a long, a bottom against a
+    short) that is forming or broke. Each with its own sentence and measured record - readings, not orders."""
+    out = []
+    b = (sr or {}).get("bubble")
+    if b and b.get("caution"):
+        out.append({"kind": "bubble", "stage": b["stage"], "label": b["label"], "text": b["explain"],
+                    "reference_only": b.get("reference_only", True)})
+    for p in (sr or {}).get("hs") or []:
+        against = ("long" if p["kind"] == "head_shoulders" else "short") in sides
+        if against and p["state"] in ("forming", "broken", "retest"):
+            out.append({"kind": p["kind"], "state": p["state"], "label": p["label"], "text": p["explain"],
+                        "reference_only": p.get("reference_only", True)})
+    return out

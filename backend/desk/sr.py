@@ -401,6 +401,21 @@ def add_patterns(result: dict, days: list[dict], weeks: list[dict], h: horizons.
     except Exception as exc:  # noqa: BLE001 - the levels and lines stand without it
         result["patterns"] = []
         result["patterns_error"] = f"{type(exc).__name__}: {exc}"
+    # #695 head and shoulders on both timeframes, the Minsky-style stage on the weekly bars (when weekly)
+    from . import bubble_stage, hs_pattern
+
+    try:
+        hs_found = hs_pattern.find(days, h.primary_k, result["atr"] or (_atr(days) or 0.0), h.primary, price)
+        if weeks:
+            hs_found += hs_pattern.find(weeks, h.secondary_k, _atr(weeks) or 0.0, h.secondary, price)
+        result["hs"] = hs_found
+    except Exception as exc:  # noqa: BLE001
+        result["hs"] = []
+        result["patterns_error"] = result.get("patterns_error") or f"{type(exc).__name__}: {exc}"
+    try:
+        result["bubble"] = bubble_stage.stage(weeks) if weeks and h.secondary == "1w" else None
+    except Exception:  # noqa: BLE001
+        result["bubble"] = None
 
 
 def add_volume_profile(result: dict, days: list[dict], h: horizons.Horizon) -> None:

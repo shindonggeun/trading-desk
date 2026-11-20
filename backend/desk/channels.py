@@ -373,7 +373,8 @@ def _next_line(price: float, channels: list[dict], below: bool) -> tuple[str, fl
 
 
 def _empty(tf: str, usable: list[dict]) -> dict:
-    return {"timeframe": tf, "channels": [], "trendlines": [], "events": [], "patterns": [], "atr": None,
+    return {"timeframe": tf, "channels": [], "trendlines": [], "events": [], "patterns": [], "hs": [], "bubble": None,
+            "atr": None,
             "reference_price": round(usable[-1]["close"], 2) if usable else None,
             "as_of": usable[-1]["at"] if usable else None, "note": NOTE}
 
@@ -420,6 +421,17 @@ def lines(bars: list[dict], tf: str, rates: dict | None = None, live: bool = Fal
         found, found_error = patterns.find(done, k, _atr(done) or a, tf, reference), None
     except Exception as exc:  # noqa: BLE001 - the lines stand without the pattern
         found, found_error = [], type(exc).__name__
+    # #695 head and shoulders on the same bars, and on the weekly frame the Minsky-style bubble stage
+    from . import bubble_stage, hs_pattern
+
+    try:
+        hs_found = hs_pattern.find(done, k, _atr(done) or a, tf, reference)
+    except Exception as exc:  # noqa: BLE001
+        hs_found, found_error = [], found_error or type(exc).__name__
+    try:
+        bubble = bubble_stage.stage(done) if tf == "1w" else None
+    except Exception:  # noqa: BLE001
+        bubble = None
     return {"timeframe": tf, "channels": channels, "trendlines": trends, "events": events, "patterns": found,
-            "patterns_error": found_error,
+            "patterns_error": found_error, "hs": hs_found, "bubble": bubble,
             "atr": round(a, 4), "reference_price": round(reference, 2), "as_of": usable[-1]["at"], "note": NOTE}

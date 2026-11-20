@@ -6,7 +6,7 @@ from datetime import date
 from fastapi.testclient import TestClient
 
 from desk import flow_alerts, market_alerts, notify, push
-from tests.test_push import OWNER, _app, _login, _pusher, _Sent, _store_with_sub, _turn
+from tests.test_push import OTHER, OWNER, _app, _login, _pusher, _Sent, _store_with_sub, _turn
 
 DAY = "2026-11-17"
 
@@ -157,3 +157,27 @@ def test_the_timeline_needs_a_session_and_merges_the_turns(db_url):
         assert [a["tone"] for a in body["items"]] == ["warning", "warning", "caution"]     # #641 beside the severity
         assert [a["severity"] for a in body["items"]] == ["caution", "caution", "caution"]
         assert client.get("/api/alerts/today").json()["items"] == []
+
+
+def test_the_timeline_shows_the_holdings_alerts_to_the_owner_only(db_url):
+    """#581 a holding's stop alert (#694) is in the owner's timeline; another account doesn't see it."""
+    app = _app(db_url)
+    hold = {"kind": "holding_alert", "rule": "hold_stop", "market": "005930", "ticker": "005930", "who": "all",
+            "severity": "strong", "t": "2026-11-13T10:50:00+09:00", "value": -6.2, "prev": -0.4, "price": 70000.0,
+            "stop": 70300.0, "stop_basis": "20일선", "stop_is_max_loss": False, "regime": "trend_down",
+            "regime_label": "하락 추세", "take_profit": None, "tp_basis": None}
+    with TestClient(app, base_url="https://testserver") as client:
+        mover = {"kind": "sector_mover", "rule": "sector_drop", "market": "kr_semi", "who": "all", "severity": "strong",
+                 "t": "2026-11-13T11:00:00+09:00", "value": -3.4, "prev": None, "sentence": "국장 반도체 급락"}
+        market_alerts.MarketAlerts(app.state.market_alerts.engine).dispatch([
+            {**_shift("10:42"), "t": "2026-11-13T10:42:00+09:00"}, hold, mover])
+        _login(client, OWNER)
+        mine = client.get("/api/alerts/today?date=2026-11-13").json()["items"]
+        assert [(a["kind"], a["rule"]) for a in mine] == [("flow_shift", "sell_grow"), ("holding_alert", "hold_stop")]
+        assert mine[1]["tone"] == "warning" and "005930" in mine[1]["text"]
+        assert mine[1]["value"] is None and mine[1]["prev"] is None        # the % against the average stays out
+        # sector_mover (#680) is still left out until its screen (#740) shows it
+        client.post("/api/auth/logout")
+        _login(client, OTHER)
+        theirs = client.get("/api/alerts/today?date=2026-11-13").json()["items"]
+        assert [a["kind"] for a in theirs] == ["flow_shift"]

@@ -173,14 +173,14 @@ class MarketAlerts:
                 continue
             out.append(row)
             if row["pushed"]:
-                owner = self._owner() if alert["kind"] in OWNER_ONLY else None
+                owner = self.owner() if alert["kind"] in OWNER_ONLY else None
                 notify.send(self.pusher, alert["kind"], f"tone_{row['tone']}", user_id=owner, payload={
                     "title": TITLE[alert["kind"]], "body": row["text"], "tag": _tag(alert),
                     "url": URLS.get(alert["kind"], ALERT_URL), "kind": alert["kind"], "rule": alert["rule"], "market": alert["market"],
                     "severity": alert["severity"], "tone": row["tone"]})
         return out
 
-    def _owner(self) -> int | None:
+    def owner(self) -> int | None:
         """The desk's owner: the first account (as api.owner_id)."""
         with self.engine.connect() as conn:
             return conn.execute(select(func.min(users.c.id))).scalar()

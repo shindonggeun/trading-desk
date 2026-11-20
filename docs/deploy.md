@@ -19,7 +19,7 @@
 | 파일 | 내용 |
 |------|------|
 | `backend/backend.Dockerfile` (+ `.dockerignore`) | 멀티 스테이지. 의존성 층과 소스 층을 갈라 `desk/` 만 바뀌면 TradingAgents 를 다시 설치하지 않는다. 비루트 `app` |
-| `backend/docker-compose-backend.yml` | `backend-prod`. 앱이 읽는 키만 `environment` 로 넘기고 필수 키는 `${KEY:?}` 로 막는다 |
+| `backend/docker-compose-backend.yml` | `backend-prod`(+ 나누기를 켜면 `collector-prod` · `analyst-prod`, 12절). 앱이 읽는 키만 `environment` 로 넘기고 필수 키는 `${KEY:?}` 로 막는다 |
 | `frontend/frontend.Dockerfile` (+ `.dockerignore`) | 멀티 스테이지. Vite 빌드 → nginx. `nginx.conf.template` 의 `${BACKEND_UPSTREAM}` 을 기동 시 치환 |
 | `frontend/docker-compose-frontend.yml` | `web-prod`. 외부에 여는 유일한 컨테이너 |
 | `docker-compose-local.yml` | PC 에서 PostgreSQL 경로를 시험할 때만 쓰는 DB |
@@ -368,3 +368,27 @@ docker run --rm -it -p 127.0.0.1:1455:1455 -v trading-desk-tradingagents-home:/h
 - 그다음부터 KRX 영업일 08:30 KST 뒤 첫 패스(15분 간격)가 전 영업일치를 `krx_daily` 에 쌓는다. 서버가 쉬었으면 최근 2주 중 빠진 날을 채운다.
 - 과거치: `ssh -t homelab-backend-server docker exec -it trading-desk-backend-prod python -m desk.cli krx backfill --api kospi_dd_trd --from 2015-01-01`
   (이미 받은 날은 건너뛴다 · 기본 `--max-calls 3000`, 키 한도는 하루 10,000건). 진행은 `python -m desk.cli krx status`.
+
+## 12. 백엔드 나누기 — api · collector · analyst (#688)
+
+같은 이미지(`trading-desk-backend:prod`)를 역할(`DESK_ROLE`, `backend/desk/roles.py`)만 달리해 컨테이너 3개로 띄운다. **기본은 꺼짐**이다 — `backend-prod` 하나가 `all` 로 지금처럼 돈다.
+
+| 서비스 · 컨테이너 | 역할 | 네트워크 | 메모리 상한 |
+|---|---|---|---|
+| `backend-prod` · `trading-desk-backend-prod` | 꺼짐 `all` / 켜짐 `api`(화면 · SSE · 로그인, run 은 `queued` 만 쓴다) | `desk`(웹이 이름으로 닿는 유일한 백엔드) | `DESK_BACKEND_MEM_LIMIT`(기본 2g, 켜면 1g 권장) |
+| `collector-prod` · `trading-desk-collector-prod` | `collector`(시세 · 수급 · 알림 · 정기 작업, **브로커 토큰 발급**) | 프로젝트 `default`(밖으로 나가는 연결만) | `DESK_COLLECTOR_MEM_LIMIT`(기본 1g) |
+| `analyst-prod` · `trading-desk-analyst-prod` | `analyst`(LLM run 을 DB 대기열에서 가져감 · 아침 시황 · 리포트 · 채점). **하나만** — 두 번째는 PG advisory lock 에 막힌다 | 프로젝트 `default` | `DESK_ANALYST_MEM_LIMIT`(기본 2g) |
+
+- **스위치**: Vault `kv/trading-desk/backend/prod/env` 의 `DESK_BACKEND_SPLIT` — `0`(기본) | `1`. `scripts/deploy-compose.sh` 가 읽어 `1` 이면 compose profile `split` 을 켜고 `backend-prod` 를 `api` 로 띄운다(셸 환경 `DESK_API_ROLE`). 다른 값이면 바꾸기 전에 멈춘다. compose 를 손으로 부르지 않는다 — 스위치와 역할을 맞추는 것이 이 스크립트다.
+- **순서**: api 를 먼저 `up --wait`(기동 시 Alembic `upgrade head`), healthy 가 된 뒤 collector · analyst(`--no-deps`, 이미 head 라 upgrade 는 아무것도 하지 않는다). 확인 · 되돌림은 2-1 · 2-2 그대로 — 세 컨테이너 모두 커밋 라벨 · 재시작 없음 · health 를 보고, 실패하면 셋 다 직전 이미지로.
+- **끄기**: `DESK_BACKEND_SPLIT=0` 으로 바꾸고 다시 배포한다(Jenkins `FORCE_DEPLOY` 또는 `scripts/deploy.sh HEAD backend`). 스크립트가 남은 collector · analyst 를 **api 를 `all` 로 바꾸기 전에** 지운다 — `all` 과 `collector` 가 함께 떠 브로커 토큰을 둘이 발급하지 않게.
+- **진행 중인 분석**: 배포 전 확인(`desk.cli unfinished`)은 DB 를 읽으므로 그대로다. 켜진 상태에서 api 재시작은 run 을 끊지 않고, analyst 재시작은 `running` 만 실패로 바꾸며 `queued` 는 남는다.
+
+### 켜기 전 선행 조건 (모두 머지 · 배포된 뒤, 사용자 승인으로 켠다)
+
+1. **ChatGPT 로그인 토큰 동시 갱신(#766)**: `chatgpt-auth.json`(볼륨 공유)을 AI 채팅(api)과 run · 리포트(analyst)가 함께 쓴다. 두 프로세스가 동시에 갱신하면 refresh token 회전으로 로그인이 끊길 수 있다.
+2. **run 대기열**: api 는 `queued` 만 쓰고 analyst 가 가져가 실행한다(#688 3단계 analyst 큐). 없으면 켜진 상태의 run 이 `queued` 로 남는다.
+3. **#750**: run 이벤트를 PostgreSQL `LISTEN/NOTIFY` 로 알려 analyst 가 쓴 이벤트로 api 의 SSE 가 깨어난다.
+4. **#760 · #690**: 화면과 run 메모가 함께 읽는 캐시(수급 · 선물 · 시세 …)를 Redis 로 나누고, collector 가 모은 시세 · 수급 · 알림을 화면 SSE 로 흘린다. 없으면 api 의 캐시가 collector 의 수집을 보지 못한다.
+
+켠 뒤 확인: `docker ps --filter name=trading-desk` 에 컨테이너 3개가 healthy, 로그의 브로커 토큰 발급 줄이 `collector` 에서만(`toss token issued (collector)`), `GET /api/status` 의 작업들이 오류 없이 도는지.

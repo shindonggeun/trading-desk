@@ -14,6 +14,9 @@
 #   WAIT_TIMEOUT     compose up --wait 상한 초(기본 300)
 #   ROLLBACK_DRILL=1 확인을 일부러 실패시켜 되돌림을 시험한다
 #
+# 백엔드 나누기(#688, docs/deploy.md 12절): env 파일의 DESK_BACKEND_SPLIT=1 이면 compose profile split(collector · analyst)을 켜고
+# backend-prod 를 api 역할로 띄운다. 0(기본)이면 backend-prod 하나가 all 이고, 남아 있는 collector · analyst 는 api 를 바꾸기 전에 지운다.
+#
 # 종료 코드: 0 배포됨 · 1 실패, 되돌리지 못함(사람이 본다) · 2 실패해서 직전 이미지로 되돌림 · 3 진행 중인 분석 때문에 멈춤(운영은 그대로)
 #
 # 이미지 태그: <이름>:<커밋 12자> 로 빌드 → 지금 운영 이미지를 <이름>:rollback 으로 남김 → <이름>:prod 로 바꿔 compose 를 다시 띄운다.
@@ -41,8 +44,9 @@ case "$TARGET" in
   *) echo "대상은 backend | web" >&2; exit 1 ;;
 esac
 
+PROFILE=() SPLIT=0 SPLIT_SERVICES=(collector-prod analyst-prod)
 # -p 를 빼지 않는다 — 빠지면 디렉터리 이름이 프로젝트가 돼 --remove-orphans 가 남의 컨테이너를 지울 수 있다
-compose() { docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$ROOT/$DIR/$FILE" "$@"; }
+compose() { docker compose -p "$PROJECT" --env-file "$ENV_FILE" ${PROFILE[@]+"${PROFILE[@]}"} -f "$ROOT/$DIR/$FILE" "$@"; }
 cid() { compose ps -a -q "$1" 2>/dev/null | head -n 1; }
 rev_of() { docker inspect -f "{{index .Config.Labels \"$LABEL\"}}" "$1" 2>/dev/null || true; }
 env_value() {  # env 파일의 값 하나(따옴표를 벗긴다). 파일을 셸로 읽지 않는다
@@ -78,6 +82,16 @@ mask() {  # 표준입력의 텍스트에서 env 파일 값을 가린다. 8자 �
 }
 
 echo "== $TARGET: ${REVISION:0:12} ($PROJECT)"
+# #688 스위치 하나로 profile 과 api 의 역할을 함께 정한다. 셸 환경의 DESK_API_ROLE 이 env 파일보다 앞선다(compose 보간 규칙)
+if [ "$TARGET" = backend ]; then
+  case "$(env_value DESK_BACKEND_SPLIT)" in
+    ''|0|false) SPLIT=0 ;;
+    1|true) SPLIT=1 ;;
+    *) echo "DESK_BACKEND_SPLIT 는 0 | 1 이어야 한다" >&2; exit 1 ;;
+  esac
+  if [ "$SPLIT" = 1 ]; then PROFILE=(--profile split); export DESK_API_ROLE=api; else export DESK_API_ROLE=all; fi
+  echo "백엔드 나누기: $([ "$SPLIT" = 1 ] && echo '켜짐 — api · collector · analyst' || echo '꺼짐 — all 하나')"
+fi
 # 필수 키(\${KEY:?})가 비면 여기서 멈춘다. -q 라 값은 출력하지 않는다
 compose config -q
 
@@ -91,6 +105,12 @@ printf '%s\n' "${SERVICES[@]}" | grep -qxF "$PRIMARY" || { echo "compose 에 $PR
 OTHERS=()
 for s in "${SERVICES[@]}"; do [ "$s" = "$PRIMARY" ] || OTHERS+=("$s"); done
 echo "서비스: $PRIMARY ${OTHERS[*]}"
+if [ "$TARGET" = backend ]; then     # 스위치와 compose 가 어긋나면(서비스 이름이 바뀜 등) 바꾸기 전에 멈춘다
+  for s in "${SPLIT_SERVICES[@]}"; do
+    has=0; printf '%s\n' "${SERVICES[@]}" | grep -qxF "$s" && has=1
+    [ "$has" = "$SPLIT" ] || { echo "DESK_BACKEND_SPLIT=$SPLIT 와 compose 가 어긋난다: $s 서비스 $([ "$has" = 1 ] && echo 있음 || echo 없음)" >&2; exit 1; }
+  done
+fi
 
 NET=$(env_value DESK_DOCKER_NETWORK)
 [ -n "$NET" ] || { echo "env 파일에 DESK_DOCKER_NETWORK 가 없다" >&2; exit 1; }
@@ -152,8 +172,23 @@ wait_idle() {
 }
 wait_idle || exit 3
 
+# #688 스위치를 끈 배포: 남은 collector · analyst 를 api 가 all 로 뜨기 전에 지운다 — all 과 collector 가 함께 떠 브로커 토큰을
+# 둘이 발급하지 않게. 꺼진 profile 의 컨테이너는 --remove-orphans 로 지워진다고 기대하지 않는다
+drop_split() {
+  [ "$TARGET" = backend ] && [ "$SPLIT" = 0 ] || return 0
+  local s ids
+  for s in "${SPLIT_SERVICES[@]}"; do
+    ids=$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=$s")
+    [ -n "$ids" ] || continue
+    echo "백엔드 나누기를 껐다 — $s 를 멈추고 지운다"
+    printf '%s\n' "$ids" | xargs docker rm -f >/dev/null
+  done
+}
+drop_split
+
 up() { compose up -d --no-build --force-recreate --wait --wait-timeout "$WAIT_TIMEOUT" "$@"; }
-up_all() { up --remove-orphans "$PRIMARY" && { [ "${#OTHERS[@]}" = 0 ] || up "${OTHERS[@]}"; }; }
+# api 를 먼저(Alembic upgrade head), 나머지는 그다음. --no-deps: depends_on 으로 api 를 한 번 더 다시 만들지 않는다
+up_all() { up --remove-orphans "$PRIMARY" && { [ "${#OTHERS[@]}" = 0 ] || up --no-deps "${OTHERS[@]}"; }; }
 
 probe() {  # 컨테이너 안에서 본다 — 백엔드는 호스트 포트를 열지 않는다
   local c

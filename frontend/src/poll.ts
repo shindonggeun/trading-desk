@@ -27,8 +27,9 @@ export type PollOptions<T> = {
   delay?: number;
   onData?: (d: T) => void;
   onError?: (e: unknown) => void;
-  /** #764 true 면 이번 차례를 건너뛴다(값이 이미 있을 때만 — 실시간 스트림이 대신 채우는 동안). livePoll.ts */
-  paused?: (data: T | undefined) => boolean;
+  /** #764 true 면 이번 차례를 건너뛴다(값이 이미 있을 때만 — 실시간 스트림이 대신 채우는 동안). livePoll.ts.
+   *  restAt: 이 key 를 마지막으로 REST 로 받은 시각(ms, 스트림이 밀어 넣은 값은 세지 않는다) */
+  paused?: (data: T | undefined, restAt: number) => boolean;
 };
 
 const MAX_BACKOFF = 8;
@@ -49,6 +50,8 @@ type Entry<T> = {
   inflight: boolean;
   fails: number;
   missed: boolean;
+  /** #764 마지막으로 REST 로 받은 시각 */
+  restAt: number;
 };
 
 const entries = new Map<string, Entry<unknown>>();
@@ -77,7 +80,7 @@ function run(e: Entry<unknown>) {
     return;
   }
   e.missed = false;
-  if (e.snap.at != null && [...e.subs].some((s) => s.opts.current.paused?.(e.snap.data))) {
+  if (e.snap.at != null && [...e.subs].some((s) => s.opts.current.paused?.(e.snap.data, e.restAt))) {
     schedule(e);   // #764 스트림이 채우는 중 — 끊기면 livePoll 이 바로 다시 부른다
     return;
   }
@@ -92,6 +95,7 @@ function run(e: Entry<unknown>) {
   p.then(
     (data) => {
       e.fails = 0;
+      e.restAt = Date.now();
       e.snap = { data, error: null, at: Date.now(), failing: false };
       for (const s of [...e.subs]) { s.opts.current.onData?.(data); s.set(e.snap); }
     },
@@ -134,7 +138,7 @@ export function usePoll<T>(key: string | null, fetch: () => Promise<T>, ms: numb
     let e = entries.get(key) as Entry<T> | undefined;
     const fresh = !e;
     if (!e) {
-      e = { subs: new Set(), snap: { data: undefined, error: null, at: null, failing: false }, inflight: false, fails: 0, missed: false };
+      e = { subs: new Set(), snap: { data: undefined, error: null, at: null, failing: false }, inflight: false, fails: 0, missed: false, restAt: 0 };
       entries.set(key, e as Entry<unknown>);
     }
     const sub: Sub<T> = { fetch: fetchRef, opts: optsRef, ms, set: setSnap };

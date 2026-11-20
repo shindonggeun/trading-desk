@@ -324,8 +324,13 @@ export default function MarketFlowPanel() {
     apply: (prev, m) => {
       const next = m.payload as MarketFlow | null;
       if (!next || !Array.isArray(next.records)) return undefined;
-      return { ...next, premarket: next.premarket ?? prev.premarket };
+      // 장 전 칸은 스트림에 없다 — 같은 날의 것만 둔다(밤새 켜 둔 탭이 어제 값을 오늘처럼 보이지 않게)
+      const sameDay = !!prev.records[0] && prev.records[0].date === next.records[0]?.date;
+      return { ...next, premarket: next.premarket ?? (sameDay ? prev.premarket : null) };
     },
+    // 장 전(08:00~09:00)은 그 칸이 REST 로만 오니 쉬지 않는다. 키 하나만 조용해져도 5분마다 맞춘다
+    pauseWhen: (d) => !!d && d.session !== "pre",
+    reconcileMs: 5 * 60_000,
   });
 
   const latest = data?.records[0];

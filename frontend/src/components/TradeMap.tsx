@@ -141,6 +141,11 @@ function Ladder({ side, steps, live, vp }: { side: Side; steps: TradeStep[]; liv
 const KIND = { breakout: "돌파 확인 진입", support: "지지 근처 진입" } as const;
 const KIND_SHORT = { breakout: "이탈 확인 진입", support: "저항 근처 진입" } as const;
 const HOW = { now: "지금", limit: "지정가", stop: "도달 시" } as const;
+/** #671 평균 R 은 부호와 함께, ±0.005 안쪽은 0 — "−0.00R" 을 쓰지 않는다 */
+const rText = (v: number) => {
+  const x = Math.abs(v) < 0.005 ? 0 : v;
+  return `${x >= 0 ? "+" : ""}${x.toFixed(2)}R`;
+};
 
 /** #652 진입 시나리오 비교: 방향마다 돌파 확인과 지지(저항) 근처 진입을 한 줄씩 — 손익비 낮으면 흐리게. */
 function Scenarios({ list, note }: { list: TradeScenario[]; note: string | null }) {
@@ -158,10 +163,10 @@ function Scenarios({ list, note }: { list: TradeScenario[]; note: string | null 
               {s.distance_pct != null && s.entry_type !== "now" && ` (지금보다 ${s.distance_pct > 0 ? "+" : ""}${s.distance_pct}%)`}
               {" "}· 손절 {price(s.stop)} (−{s.stop_pct}%, {s.stop_atr} ATR)
               {s.targets.map((t, i) => ` · ${i + 1}차 ${price(t.price)} 손익비 ${t.rr}`).join("")}
-              {s.low_rr && " — 손익비 낮음"}
+              {s.low_rr && " — 1차 손익비 낮음"}
               {s.basis && <span className="muted"> · 근거 {s.basis}{s.level != null ? ` ${price(s.level)}` : ""}</span>}
               {rec && rec.n > 0 && (
-                <span className="muted"> · 이 레짐 과거 {rec.n}번 승률 {Math.round(rec.win_rate * 100)}% · 평균 {rec.avg_r >= 0 ? "+" : ""}{rec.avg_r.toFixed(2)}R</span>
+                <span className="muted"> · 이 레짐 과거 {rec.n_indep ?? rec.n}번(겹치지 않는 거래) 승률 {Math.round(rec.win_rate * 100)}% · 평균 {rText(rec.avg_r)}</span>
               )}
             </li>
           );

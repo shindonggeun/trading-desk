@@ -160,6 +160,8 @@ export interface TradeMap {
 
 export interface TradeScenarioRecord {
   n: number;
+  /** #671 겹치지 않는 거래 수(같은 종목 · 방향 · 진입에서 보유 기간이 겹치지 않는 것) — 없으면 n */
+  n_indep?: number;
   win_rate: number;
   avg_r: number;
   median_r?: number;

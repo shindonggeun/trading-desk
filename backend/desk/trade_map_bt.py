@@ -91,15 +91,18 @@ def play(sc: dict, future: list[dict], cost_bps: float = COST_BPS) -> dict | Non
     return {"r": r, "exit": how, "fill": fill, "bars": len(bars), "start": at, "end": end}
 
 
-def _independent(ts: list[dict]) -> int:
-    """How many of ``ts`` do not overlap an earlier kept one of the same ticker, side and kind."""
+def _independent(ts: list[dict]) -> int | None:
+    """How many of ``ts`` do not overlap an earlier kept one of the same ticker, side and kind; None when a
+    trade has no bar indexes (a per-ticker file from before #671) - not silently all of them."""
+    if any("t0" not in t or "t1" not in t for t in ts):
+        return None
     last: dict[tuple, int] = {}
     n = 0
-    for t in sorted(ts, key=lambda t: (t["ticker"], t.get("t0", 0))):
+    for t in sorted(ts, key=lambda t: (t["ticker"], t["t0"])):
         k = (t["ticker"], t["side"], t["kind"])
-        if "t0" not in t or t["t0"] > last.get(k, -1):
+        if t["t0"] > last.get(k, -1):
             n += 1
-            last[k] = t.get("t1", t.get("t0", 0))
+            last[k] = t["t1"]
     return n
 
 
@@ -209,7 +212,7 @@ def table(report: dict) -> list[str]:
                 r = report["rows"].get(f"{side}:{kind}:{reg}")
                 if not r:
                     continue
-                lines.append(f"| {side} | {kind} | {reg} | {r['n']} ({r.get('n_indep', '—')} · {round(r['fill_rate'] * 100)}%) | "
+                lines.append(f"| {side} | {kind} | {reg} | {r['n']} ({'—' if r.get('n_indep') is None else r['n_indep']} · {round(r['fill_rate'] * 100)}%) | "
                              f"{round(r['win_rate'] * 100)}% | {r['avg_r']:+.2f} | {r['median_r']:+.2f} | "
                              f"{round(r['target_rate'] * 100)}% | {round(r['stop_rate'] * 100)}% | {r['max_dd_r']:+.1f} |")
     return lines

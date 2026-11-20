@@ -44,7 +44,9 @@ def _r(v: float) -> str:
 
 
 def _n(r: dict) -> int:
-    return r.get("n_indep", r.get("n", 0))
+    """The sample compared: the non-overlapping trades; a row without them (an old report) its n."""
+    got = r.get("n_indep")
+    return r.get("n", 0) if got is None else got
 
 
 def lookup(regime: str | None, scenarios: list[dict], table: dict | None = None,
@@ -88,7 +90,8 @@ def lookup(regime: str | None, scenarios: list[dict], table: dict | None = None,
         else:
             notes.append(f"{SIDE_KO[side]}: {where}에서는 과거 {kinds[best]}이 나았어요 — 평균 {_r(b['avg_r'])} · "
                          f"승률 {round(b['win_rate'] * 100)}% ({_n(b)}번) vs {kinds[other]} {_r(o['avg_r'])} · "
-                         f"승률 {round(o['win_rate'] * 100)}% ({_n(o)}번, 겹치지 않는 표본)")
+                         f"승률 {round(o['win_rate'] * 100)}% ({_n(o)}번) — 표본은 겹치지 않는 거래 수, 승률 · 평균은 겹치는 "
+                         f"거래 전체({b.get('n')} · {o.get('n')}번)")
     meta = {k: table.get(k) for k in ("generated_at", "tickers", "from", "to")} if table else None
     if meta is not None:
         meta["horizon"] = HORIZON

@@ -201,3 +201,25 @@ def test_short_notes_use_the_short_names():
     found = trade_map.scenarios(KORU, 6.93, 0.6, "short", 5.92)
     note = trade_map_record.lookup("uptrend", found, table)["regime_note"]
     assert "저항 근처 진입" in note and "이탈 확인 진입" in note and "지지 근처" not in note
+
+
+def test_a_price_already_past_the_trigger_keeps_the_broken_level_and_one_stop():
+    # review #671: live 7.8 is past the 7.73 trigger - 7.6 is still what it broke, and the map says the same
+    tm = trade_map.build({**HOLD, "live_price": {"price": 7.8}}, KORU)
+    brk = _sc(tm, "long", "breakout")
+    assert brk["stop"] == 7.3 and brk["level"] == 7.6
+    long_map = next(m for m in tm["maps"] if m["side"] == "long")
+    assert next(st["price"] for st in long_map["steps"] if st["role"] == "stop") == brk["stop"]
+
+
+def test_a_gap_on_a_later_bar_and_old_files_without_bar_indexes():
+    from desk import trade_map_bt as bt
+
+    sc = {"side": "long", "kind": "support", "entry": 10.0, "entry_type": "limit", "stop": 9.0,
+          "targets": [{"price": 12.0, "rr": 2.0}]}
+    got = bt.play(sc, [_bar(10.5, 10.6, 10.2, 10.4), _bar(8.7, 8.9, 8.5, 8.8)], cost_bps=0)
+    assert (got["exit"], got["fill"], got["r"], got["start"], got["end"]) == ("stop", 8.7, 0.0, 1, 1)
+    old = [{"day": "2026-01-01", "ticker": "X", "side": "long", "kind": "support", "regime": "range",
+            "r": 1.0, "exit": "target"}]
+    assert bt.summarize(old, {})["long:support:range"]["n_indep"] is None    # not silently n
+    assert trade_map_record._n({"n": 5, "n_indep": None}) == 5

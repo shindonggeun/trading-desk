@@ -537,6 +537,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                      off=futures_off(settings))
     # #443 day / night session price and minute bars on the same KIS client (one token)
     futures_quotes = futures_quote.FuturesQuote(getattr(futures, "rest", None), off=futures_off(settings))
+    # #676 today's spot investors from KIS first, on the same client (one token)
+    if isinstance(flow, MarketFlow) and flow.kis is None and getattr(futures, "rest", None) is not None:
+        flow.kis = futures.rest
 
     async def _futures_note() -> str | None:
         return futures_note(await futures.get())

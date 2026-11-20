@@ -3105,6 +3105,7 @@ class PushKindsIn(BaseModel):
     morning_brief: bool = True      # #571 the 07:00 morning brief
     flow_shift: bool = True         # #579 the investors' flow shifts (desk.market_alerts)
     nq_alert: bool = True           # #579 the NQ=F selling alarms
+    flow_warn: bool = True          # #699 the flow warnings (retail alone, heavy selling)
     day_call: bool = True           # #572 each market's first direction call of the day
     line_signal: bool = True        # #613 channel / trendline signals (the watch itself is off until set)
     holding_alert: bool = True      # #694 each holding's stop / take-profit (desk.holding_watch)

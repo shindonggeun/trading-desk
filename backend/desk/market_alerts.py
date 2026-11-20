@@ -1,5 +1,5 @@
-"""The day's market alerts (#579): investor flow shifts (desk.flow_shift) and NQ=F alarms (desk.nq_watch),
-kept in ``market_alerts`` and pushed through desk.notify.
+"""The day's market alerts (#579): investor flow shifts (desk.flow_shift), flow warnings (desk.flow_warn,
+#699) and NQ=F alarms (desk.nq_watch), kept in ``market_alerts`` and pushed through desk.notify.
 
 What gets through (``admit``, read against what the day already holds):
 - the same moment of the same rule is kept once (judging the same snapshots again sends nothing twice);
@@ -11,7 +11,8 @@ What gets through (``admit``, read against what the day already holds):
 - ``DAILY_MAX`` pushed alerts a day per kind, past it only strong ones, turns and warnings (#641),
   ``STRONG_EXTRA`` more.
 A turn skips the two waits: the dead band and hold of desk.flow_intraday already keep it rare, and it
-matters most. Info alerts go on the timeline (``GET /api/alerts/today``) but are not pushed: they have
+matters most. A flow warning (``flow_warn``) skips them too and goes once a day per rule and market, plus
+once more when it turns strong after a caution - the structure of the day, not a change of pace. Info alerts go on the timeline (``GET /api/alerts/today``) but are not pushed: they have
 their own DAILY_MAX, and they never hold back a pushed one (nor the other way round). Alerts of the
 same moment are judged strongest first.
 
@@ -30,7 +31,7 @@ from sqlalchemy import func, insert, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from . import alert_tone, flow_shift, holding_watch, notify, nq_watch
+from . import alert_tone, flow_shift, flow_warn, holding_watch, notify, nq_watch
 from .db import market_alerts, now, users
 from .futures_flow import KST
 
@@ -51,7 +52,8 @@ HISTORY_DAYS = 20                 # trading days of snapshots behind the flow th
 ALERT_URL = "/#/market"
 URLS = {"holding_alert": "/#/"}                  # #694 the dashboard's holdings
 OWNER_ONLY = {"holding_alert"}                   # #694 the owner's holdings: web push to the owner's devices only
-TITLE = {"flow_shift": "수급 흐름 변화", "nq_alert": "나스닥 선물 이상 징후", "holding_alert": "보유 종목 손절 · 익절"}
+TITLE = {"flow_shift": "수급 흐름 변화", "flow_warn": "수급 경고", "nq_alert": "나스닥 선물 이상 징후",
+         "holding_alert": "보유 종목 손절 · 익절"}
 
 
 def _session(alert: dict) -> str:
@@ -68,6 +70,13 @@ def admit(alert: dict, day: list[dict], before: list[dict] = ()) -> bool:
     same = [a for a in market if a["who"] == alert["who"]]
     if any(a["rule"] == alert["rule"] and a["t"] == alert["t"] for a in same):
         return False
+    if alert["kind"] == "flow_warn":                  # #699 once a day, once more when it turns strong
+        earlier = [a for a in market if a["rule"] == alert["rule"]]
+        if earlier and (alert["severity"] != "strong" or len(earlier) > 1
+                        or any(a["severity"] == "strong" for a in earlier)):
+            return False
+        count = sum(1 for a in day if a["kind"] == alert["kind"])
+        return count < DAILY_MAX + STRONG_EXTRA
     if alert["rule"] in ONCE_A_DAY:
         if alert["kind"] == "nq_alert":
             earlier = [a for a in [*day, *before] if a["kind"] == "nq_alert" and a["rule"] == alert["rule"]]
@@ -103,11 +112,21 @@ def admit(alert: dict, day: list[dict], before: list[dict] = ()) -> bool:
     return pushed and urgent and count < DAILY_MAX + STRONG_EXTRA
 
 
+def _tag(alert: dict) -> str:
+    """The push's replace-me tag: a warning (#699) or a holding's alert (#694) of another rule must not hide
+    the one before it."""
+    if alert["kind"] == "flow_warn":
+        return f"flow_warn-{alert['rule']}-{alert['market']}"
+    if alert["kind"] in OWNER_ONLY:
+        return f"{alert['kind']}-{alert['market']}-{alert['rule']}"
+    return f"{alert['kind']}-{alert['market']}"
+
+
 def text(alert: dict) -> str:
     """The stored and pushed text: the tone's mark, the rule's words, one line of reading (#641)."""
-    if alert["kind"] == "holding_alert":
-        return alert_tone.headline(alert, holding_watch.text(alert))
-    return alert_tone.headline(alert, nq_watch.text(alert) if alert["kind"] == "nq_alert" else flow_shift.text(alert))
+    words = {"nq_alert": nq_watch.text, "flow_warn": flow_warn.text,
+             "holding_alert": holding_watch.text}.get(alert["kind"], flow_shift.text)(alert)
+    return alert_tone.headline(alert, words)
 
 
 class MarketAlerts:
@@ -115,6 +134,7 @@ class MarketAlerts:
         self.engine = engine
         self.pusher = pusher
         self._limits: tuple[date, dict] | None = None
+        self._warn_history: tuple[date, dict] | None = None
         self._lock = threading.Lock()   # #674 two loops dispatch NQ=F alarms: admit and insert one at a time
 
     def list(self, day: str) -> list[dict]:
@@ -149,7 +169,7 @@ class MarketAlerts:
             if row["pushed"]:
                 owner = self._owner() if alert["kind"] in OWNER_ONLY else None
                 notify.send(self.pusher, alert["kind"], f"tone_{row['tone']}", user_id=owner, payload={
-                    "title": TITLE[alert["kind"]], "body": row["text"], "tag": f"{alert['kind']}-{alert['market']}" + (f"-{alert['rule']}" if alert["kind"] in OWNER_ONLY else ""),
+                    "title": TITLE[alert["kind"]], "body": row["text"], "tag": _tag(alert),
                     "url": URLS.get(alert["kind"], ALERT_URL), "kind": alert["kind"], "rule": alert["rule"], "market": alert["market"],
                     "severity": alert["severity"], "tone": row["tone"]})
         return out
@@ -168,12 +188,27 @@ class MarketAlerts:
 
     def limits(self, history, day: date) -> dict:
         """desk.flow_shift.thresholds over the HISTORY_DAYS trading days before ``day`` - once a day."""
-        if self._limits and self._limits[0] == day:
-            return self._limits[1]
+        if not (self._limits and self._limits[0] == day):
+            self._load(history, day)
+        return self._limits[1]
+
+    def warn_history(self, history, day: date) -> dict:
+        """#699 desk.flow_warn.history over the same days - once a day."""
+        if not (self._warn_history and self._warn_history[0] == day):
+            self._load(history, day)
+        return self._warn_history[1]
+
+    def _load(self, history, day: date) -> None:
+        """The HISTORY_DAYS trading days before ``day`` read once for both."""
         days = [d["date"] for d in history.daily(HISTORY_DAYS + 1) if d.get("date") and d["date"] < day.isoformat()]
-        got = flow_shift.thresholds([history.intraday(date.fromisoformat(d)) for d in days[:HISTORY_DAYS]])
-        self._limits = (day, got)
-        return got
+        points = [history.intraday(date.fromisoformat(d)) for d in days[:HISTORY_DAYS]]
+        self._limits = (day, flow_shift.thresholds(points))
+        try:
+            got = flow_warn.history(points)
+        except Exception:        # the warnings then run on their floors - not read again every minute
+            log.exception("flow warn history failed - floors only today")
+            got = {"n": 0, "at": {}}
+        self._warn_history = (day, got)
 
     def after_snapshot(self, history, day: date | None = None) -> list[dict]:
         """The snapshot loop calls this after each record (desk.futures_history ``history``)."""
@@ -181,7 +216,12 @@ class MarketAlerts:
         points = history.intraday(day)
         if not points:
             return []
-        return self.dispatch(flow_shift.judge(points, self.limits(history, day)))
+        alerts = flow_shift.judge(points, self.limits(history, day))
+        try:                     # #699 a fault in the warnings never costs the shifts
+            alerts += flow_warn.judge(points, self.warn_history(history, day))
+        except Exception:
+            log.exception("flow warn judge failed")
+        return self.dispatch(alerts)
 
     def nq_pass(self, bars: list[dict], now: datetime | None = None) -> list[dict]:
         """The NQ=F loop calls this with Yahoo's 5-minute bars: since #674 the late check - a move the

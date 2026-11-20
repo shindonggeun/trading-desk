@@ -9,6 +9,8 @@ moves are ``neutral``):
 - ``caution`` 주의: selling that grows, buying that shrinks; NQ=F off its session high.
 - ``warning`` 경고: a sell turn or a buy-then-sell opening reversal (buying turned to selling), strong
   selling growth, an NQ=F slump.
+- #699 a flow warning (``flow_warn``: the individual alone against the main positions' selling, or their
+  selling past its floor) is ``caution``, ``warning`` when strong.
 - ``neutral`` 참고: the individual, and the other small (``info``) moves. A shrink is always ``info`` by
   size (desk.flow_shift), yet its direction is the news: it reads by its rule, not as small.
 
@@ -46,6 +48,8 @@ def tone(alert: dict) -> str:
         return HOLDING.get(rule, "caution")
     if kind == "nq_alert":
         return "caution" if rule == "nq_from_high" and severity != "strong" else "warning"
+    if kind == "flow_warn":
+        return "warning" if severity == "strong" else "caution"
     if alert.get("who") == "individual":
         return "neutral"
     if rule == "sell_shrink":
@@ -72,6 +76,12 @@ def reading(alert: dict, t: str | None = None) -> str:
     if alert.get("kind") == "nq_alert":
         return ("나스닥 선물이 장중 고점에서 밀림 — 미국 기술주 약세 쪽" if t == "caution"
                 else "나스닥 선물 급락 — 국장 시초가 · 반도체에 부담")
+    if alert.get("kind") == "flow_warn":
+        if rule == "retail_alone":
+            return "개인 혼자 받는 장 — 외인 · 기관이 빠져나가는 중, 하락 압력 경계"
+        if rule == "heavy_sell_combined":
+            return "외인 · 기관이 현물 · 선물로 함께 던지는 중 — 하락 압력 경계"
+        return f"{who} 매도가 과함 — 하락 압력 경계"
     if t == "neutral":
         return ("개인 흐름 — 지수 방향과 반대로 읽히는 경우가 많아 참고만" if alert.get("who") == "individual"
                 else "작은 변화 — 참고만")

@@ -1,0 +1,141 @@
+{
+ "generated_at": "2026-11-20T06:27:45+00:00",
+ "tickers": [
+  "GC=F",
+  "NVDA",
+  "KORU",
+  "005930.KS",
+  "SPY",
+  "QQQ",
+  "AMD",
+  "SOXX",
+  "AAPL",
+  "MSFT"
+ ],
+ "bounce_atr": 2.0,
+ "break_atr": 1.0,
+ "shuffles": 3,
+ "views": {
+  "short": {
+   "n": 1348,
+   "bounce_pct": 39.5,
+   "break_pct": 52.4,
+   "baseline_pct": 42.1,
+   "baseline_n": 5037,
+   "train": {
+    "n": 943,
+    "bounce_pct": 39.9,
+    "break_pct": 52.1
+   },
+   "valid": {
+    "n": 405,
+    "bounce_pct": 38.8,
+    "break_pct": 53.1
+   },
+   "edge_pct": -3.3,
+   "edge_needed_pct": 5.0,
+   "verdict": "no_edge",
+   "horizon_bars": 20,
+   "watch_bars": 60,
+   "timeframe": "240m"
+  },
+  "mid": {
+   "n": 2323,
+   "bounce_pct": 43.3,
+   "break_pct": 47.2,
+   "baseline_pct": 38.9,
+   "baseline_n": 8577,
+   "train": {
+    "n": 1626,
+    "bounce_pct": 44.1,
+    "break_pct": 47.0
+   },
+   "valid": {
+    "n": 697,
+    "bounce_pct": 41.5,
+    "break_pct": 47.5
+   },
+   "edge_pct": 2.6,
+   "edge_needed_pct": 5.0,
+   "verdict": "no_edge",
+   "horizon_bars": 20,
+   "watch_bars": 60,
+   "timeframe": "1d"
+  },
+  "long": {
+   "n": 950,
+   "bounce_pct": 41.9,
+   "break_pct": 23.6,
+   "baseline_pct": 29.4,
+   "baseline_n": 3729,
+   "train": {
+    "n": 665,
+    "bounce_pct": 38.6,
+    "break_pct": 27.4
+   },
+   "valid": {
+    "n": 285,
+    "bounce_pct": 49.5,
+    "break_pct": 14.7
+   },
+   "edge_pct": 20.1,
+   "edge_needed_pct": 6.1,
+   "verdict": "unstable",
+   "horizon_bars": 10,
+   "watch_bars": 26,
+   "timeframe": "1w"
+  }
+ },
+ "per_ticker": {
+  "GC=F": {
+   "short": 192,
+   "mid": 274,
+   "long": 141
+  },
+  "NVDA": {
+   "short": 164,
+   "mid": 208,
+   "long": 81
+  },
+  "KORU": {
+   "short": 80,
+   "mid": 166,
+   "long": 56
+  },
+  "005930.KS": {
+   "short": 110,
+   "mid": 277,
+   "long": 116
+  },
+  "SPY": {
+   "short": 120,
+   "mid": 214,
+   "long": 68
+  },
+  "QQQ": {
+   "short": 137,
+   "mid": 283,
+   "long": 92
+  },
+  "AMD": {
+   "short": 107,
+   "mid": 236,
+   "long": 88
+  },
+  "SOXX": {
+   "short": 133,
+   "mid": 207,
+   "long": 128
+  },
+  "AAPL": {
+   "short": 181,
+   "mid": 220,
+   "long": 93
+  },
+  "MSFT": {
+   "short": 124,
+   "mid": 238,
+   "long": 87
+  }
+ }
+}

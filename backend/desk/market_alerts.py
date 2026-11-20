@@ -28,12 +28,12 @@ import logging
 import threading
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import func, insert, select
+from sqlalchemy import insert, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from . import alert_tone, flow_shift, flow_warn, holding_watch, notify, nq_watch, program_flow, sector_movers
-from .db import market_alerts, now, users
+from . import alert_tone, auth, flow_shift, flow_warn, holding_watch, notify, nq_watch, program_flow, sector_movers
+from .db import market_alerts, now
 from .futures_flow import KST
 
 log = logging.getLogger(__name__)
@@ -191,9 +191,8 @@ class MarketAlerts:
         return out
 
     def owner(self) -> int | None:
-        """The desk's owner: the first account (as api.owner_id)."""
-        with self.engine.connect() as conn:
-            return conn.execute(select(func.min(users.c.id))).scalar()
+        """The desk's owner: the first account (desk.auth.owner_id, #775 - one rule)."""
+        return auth.owner_id(self.engine)
 
     @staticmethod
     def list_in(conn, day: str) -> list[dict]:

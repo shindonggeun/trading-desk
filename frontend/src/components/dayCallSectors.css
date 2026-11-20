@@ -1,0 +1,34 @@
+.daycall-sectors {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+}
+
+.daycall-sectors :is(h4, h5, p, ol) { margin: 0; }
+.daycall-sectors :is(h4, h5) { font-size: inherit; }
+.daycall-sector-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 8px;
+}
+
+.daycall-sector-group {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+}
+
+.daycall-sector-group ol { list-style: none; padding: 0; }
+.daycall-sector-group li { margin-top: 6px; }
+.daycall-sector-group li + li { border-top: 1px solid var(--border); padding-top: 6px; }
+.daycall-sector-row, .daycall-sector-status {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 8px;
+}
+.daycall-sector-row > span { font-variant-numeric: tabular-nums; }
+.daycall-sector-status { flex-wrap: wrap; }

@@ -4,6 +4,7 @@ import { fakeDayCall } from "../briefsFake";
 import { DAY_CALL_KINDS, DAY_CALL_STAGES, KIND_KO, kstStamp, LIVE_RECORD_MIN, MARKET_KO, percent, rate, scoredOutcome, STAGE_KO, STAGE_MARK, verdictText } from "../dayCall";
 import type { DayCallEntry, DayCallMarket, DayCallProbs, DayCallReason, DayCallRecord, DayCallStage, DayCallToday } from "../types";
 
+import DayCallSectors from "./DayCallSectors";
 const is404 = (e: unknown) => e instanceof ApiError && e.status === 404;
 const PENDING_TEXT = "오늘 방향 판정은 준비 중이에요. 판정이 시작되면 여기에 보여요.";
 const MARKETS: DayCallMarket[] = ["kr", "us"];
@@ -193,6 +194,7 @@ export default function DayCallCard() {
             </div>
             </>
           )}
+        <DayCallSectors key={market} market={market} />
         <p className="daycall-note small muted">
           확률은 추정이에요{note ? ` — ${note}` : ""}. <a href="#/day-call">적중 기록</a>
         </p>

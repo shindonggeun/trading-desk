@@ -1,3 +1,4 @@
+import type { DayCallSectorsResponse } from "./components/DayCallSectors";
 import type { ChartRead, GapReport, LinesReport, LineTf } from "./types";
 import type { DayCallHistory, DayCallMarket, DayCallStats, DayCallToday, MorningBrief, MorningBriefList } from "./types";
 import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, PaperEquity, PaperSettings, PaperSettingsPatch, PaperSummary, PaperTrades, RunExplain, TipsView } from "./types";
@@ -412,6 +413,7 @@ export const api = {
   morningBriefs: (limit = 20) => call<MorningBriefList>(`/api/briefs/morning/list?limit=${limit}`),
   // #573 오늘 방향(#572) — 판정이 없으면 200 + call: null
   dayCall: (market: DayCallMarket) => call<DayCallToday>(`/api/day-call?market=${market}`),
+  dayCallSectors: (market: DayCallMarket) => call<DayCallSectorsResponse>(`/api/day-call/sectors?market=${market}`),
   dayCallHistory: (market: DayCallMarket, days = 90) =>
     call<DayCallHistory>(`/api/day-call/history?market=${market}&days=${days}`),
   dayCallStats: (market: DayCallMarket, days = 90) =>

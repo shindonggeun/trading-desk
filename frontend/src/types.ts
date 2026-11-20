@@ -896,6 +896,13 @@ export interface MarketFlow {
   index: { price: number; at: string | null } | null;
   records: FlowRecord[];
   error: string | null;
+  /** #673 오늘 값이 실제로 바뀐 것을 이 서버가 본 시각(그 직전 확인 시각, KST ISO) — 1d 오늘 기록만. */
+  changed_at?: string | null;
+  /** #673 pre: 08:00~09:00 장 시작 전 거래가 들어간 값 · regular: 정규장 · closed. */
+  session?: "pre" | "regular" | "closed";
+  /** #645 원천 시각(source_updated_at = max(토스 updatedAt, changed_at)) · 확인 시각(fetched_at). */
+  freshness?: { fetched_at: string | null; source_updated_at: string | null; source_delay_sec: number | null;
+                live: boolean; label: string | null };
 }
 
 export interface RegimeSnapshot {

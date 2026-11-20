@@ -146,10 +146,13 @@ scripts/deploy.sh "$(git rev-parse --short origin/develop)" backend   # backend/
 작업 세션은 자격 증명을 받지 않는다. 값 자리는 `<...>` 이고 값은 채팅 · 로그 · 커밋에 쓰지 않는다. 순서:
 
 1. **Vault 정책 · AppRole** — Infra 저장소의 `vault/scripts/bootstrap-trading-desk.sh` 를 ai-host 에서 root 토큰으로 돌린다(Infra `vault/README.md` trading-desk 절).
+   root 토큰은 `read -s` 로 받아 이름만 쓴 `-e VAULT_TOKEN` 으로 넘긴다 — 명령 인자(`ps`) · 셸 history 에 남지 않게.
    ```bash
-   docker exec -e VAULT_TOKEN='<root-token>' -e VAULT_UI_USERNAME=<UI 계정> vault sh /vault/scripts/bootstrap-trading-desk.sh
-   docker exec -e VAULT_TOKEN='<root-token>' vault vault read -field=role_id auth/approle/role/jenkins-trading-desk/role-id
-   docker exec -e VAULT_TOKEN='<root-token>' vault vault write -f -field=secret_id auth/approle/role/jenkins-trading-desk/secret-id
+   read -rs VAULT_TOKEN && export VAULT_TOKEN          # root 토큰을 붙여 넣는다(화면에 안 찍힘)
+   docker exec -e VAULT_TOKEN -e VAULT_UI_USERNAME=<UI 계정> vault sh /vault/scripts/bootstrap-trading-desk.sh
+   docker exec -e VAULT_TOKEN vault vault read -field=role_id auth/approle/role/jenkins-trading-desk/role-id
+   docker exec -e VAULT_TOKEN vault vault write -f -field=secret_id auth/approle/role/jenkins-trading-desk/secret-id
+   unset VAULT_TOKEN
    ```
 2. **Vault 에 값 넣기** — 3절 "`.env.runtime` → Vault 옮기기".
 3. **Jenkins 폴더 `trading-desk`** 를 만들고 폴더 범위 credential 3개를 넣는다(전역에 두지 않는다 — 다른 프로젝트 잡이 쓰지 못하게).
@@ -193,50 +196,48 @@ kv/trading-desk/frontend/prod/env   # 웹 compose 보간 키만: DESK_DOCKER_NET
 
 ### `.env.runtime` → Vault 옮기기 (#691, 한 번)
 
-값은 화면 · 채팅 · 로그 · 커밋에 내지 않는다. 키 이름만 본다.
+값은 화면 · 채팅 · 로그 · 커밋 · 명령 인자에 내지 않고, 평문 사본 파일도 만들지 않는다(파이프로만 넘긴다). 키 이름만 본다.
 
 ```bash
 ssh homelab-backend-server
-cd ~/deploy/trading-desk && umask 077
-# 1) 키 이름만
-grep -oE '^[A-Z_][A-Z0-9_]*' .env.runtime
-# 2) 백엔드 · 웹 JSON 두 개(600). 셸이 읽는 것처럼 따옴표를 풀고, 작은따옴표 · 줄바꿈이 든 키는 이름만 알린다
-python3 - <<'PY'
-import json, pathlib, shlex
+cd ~/deploy/trading-desk
+# 1) .env.runtime 을 셸이 읽는 것처럼 풀어 JSON 하나를 표준출력으로 낸다. 인자: backend | frontend | check(키 이름 · 걸리는 키만)
+read -r -d '' TO_JSON <<'PY'
+import json, pathlib, shlex, sys
 env = {}
 for line in pathlib.Path(".env.runtime").read_text().splitlines():
     line = line.strip()
     if not line or line.startswith("#") or "=" not in line:
         continue
     key, raw = line.split("=", 1)
-    key = key.removeprefix("export ").strip()
     words = shlex.split(raw)
-    env[key] = words[0] if words else ""
-bad = sorted(k for k, v in env.items() if "'" in v or "\n" in v or "\r" in v)
-web_keys = {"DESK_DOCKER_NETWORK", "DESK_WEB_BIND", "DESK_WEB_PORT", "DESK_WEB_MEM_LIMIT"}
-backend = {k: v for k, v in env.items() if k not in web_keys - {"DESK_DOCKER_NETWORK"}}
-web = {k: v for k, v in env.items() if k in web_keys}
-pathlib.Path("vault-backend.json").write_text(json.dumps(backend))
-pathlib.Path("vault-frontend.json").write_text(json.dumps(web))
-print("backend", len(backend), "frontend", sorted(web), "bad", bad)
+    env[key.removeprefix("export ").strip()] = words[0] if words else ""
+web = {"DESK_DOCKER_NETWORK", "DESK_WEB_BIND", "DESK_WEB_PORT", "DESK_WEB_MEM_LIMIT"}
+part = {"backend": {k: v for k, v in env.items() if k not in web - {"DESK_DOCKER_NETWORK"}},
+        "frontend": {k: v for k, v in env.items() if k in web}}
+if sys.argv[1] == "check":
+    bad = sorted(k for k, v in env.items() if any(c in v for c in "'\\\n\r"))
+    print("backend:", " ".join(sorted(part["backend"])), "\nfrontend:", " ".join(sorted(part["frontend"])), "\n걸리는 키(작은따옴표 · 역슬래시 · 줄바꿈):", bad)
+else:
+    print(json.dumps({"data": part[sys.argv[1]]}))
 PY
-# 3) Vault 에 넣기 — Vault Web UI 에 ui-trading-desk 가 붙은 계정으로 로그인해 토큰을 복사해 둔다(화면에 찍히지 않게 read -s)
+python3 -c "$TO_JSON" check        # 걸리는 키가 있으면 값을 먼저 바꾼다(그 키의 발급처에서)
+# 2) Vault Web UI 에 ui-trading-desk 가 붙은 계정으로 로그인해 토큰을 복사해 둔다(화면에 찍히지 않게 read -s)
 read -rs VAULT_TOKEN && export VAULT_TOKEN
 for part in backend frontend; do
-  jq '{data: .}' "vault-$part.json" | curl -sS --fail -o /dev/null -X POST \
+  python3 -c "$TO_JSON" "$part" | curl -sS --fail -o /dev/null -X POST \
     --header @<(printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN") --data @- \
-    "https://vault.8llow8llowme.com/v1/kv/data/trading-desk/$part/prod/env"
+    "https://vault.8llow8llowme.com/v1/kv/data/trading-desk/$part/prod/env" && echo "$part 넣음"
 done
-# 4) 이름만 확인
+# 3) 이름만 확인
 for part in backend frontend; do
   curl -sS --fail --header @<(printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN") \
     "https://vault.8llow8llowme.com/v1/kv/data/trading-desk/$part/prod/env" | jq -r '.data.data | keys | join(" ")'
 done
-# 5) 지운다
-shred -u vault-backend.json vault-frontend.json; unset VAULT_TOKEN
-# 6) .env.runtime 은 손 배포 대체용으로 남기고 사본을 하나 둔다(600)
-cp -p .env.runtime .env.runtime.bak-$(date +%Y%m%d)
+unset VAULT_TOKEN TO_JSON
 ```
+
+`.env.runtime` 은 손 배포 대체용으로 그대로 둔다(사본 · 백업 파일을 더 만들지 않는다). 그 뒤로 값을 바꾸면 Vault 와 `.env.runtime` 을 같이 고친다.
 
 그다음 Jenkins `trading-desk-backend` · `trading-desk-web` 을 `FORCE_DEPLOY=true` 로 돌려 Vault env 로 뜨는지 본다(2-3).
 

@@ -66,6 +66,9 @@ rc=$(vault_env "$(jq -n '{data:{data:{DESK_DATABASE_URL:"a", DESK_DOCKER_NETWORK
 check "작은따옴표 값은 멈춘다" 1 "$rc"
 check "걸린 키 이름만, 값은 없이" "1 0" "$(grep -c FRED_API_KEY "$TMP/out") $(grep -c "it's" "$TMP/out")"
 rc=$(vault_env '{"data":{"data":{"DESK_DATABASE_URL":"a\nb","DESK_DOCKER_NETWORK":"n"}}}'); check "줄바꿈 값은 멈춘다" 1 "$rc"
+rc=$(vault_env '{"data":{"data":{"DESK_DATABASE_URL":"pw-ends-with\\","DESK_DOCKER_NETWORK":"n"}}}'); check "역슬래시 값은 멈춘다" 1 "$rc"
+rc=$(vault_env "$GOOD" VAULT_BASE=http://vault.example); check "https 가 아니면 로그인하지 않는다" "1 0" "$rc $(grep -c login "$FAKE_DIR/calls" 2>/dev/null || echo 0)"
+check "임시 폴더를 남기지 않는다" 0 "$(find "$TMP" -mindepth 1 -maxdepth 1 -name 'tmp.*' | wc -l | tr -d ' ')"
 rc=$(vault_env '{"data":{"data":{"DESK_DATABASE_URL":"a","DESK_DOCKER_NETWORK":"n","postgres://leak":"x"}}}')
 check "이름 형식이 틀린 키는 이름도 찍지 않는다" "1 0" "$rc $(grep -c leak "$TMP/out")"
 

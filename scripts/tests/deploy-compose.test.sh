@@ -84,7 +84,7 @@ touch "$SRC/backend/docker-compose-backend.yml" "$SRC/backend/backend.Dockerfile
       "$SRC/backend/desk/migrations/versions/0001_initial.py"
 ENVF="$TMP/env"
 printf '%s\n' "DESK_DOCKER_NETWORK='trading-desk-prod'" "DESK_DATABASE_URL='postgresql://u:s3cr3t-pass@db/x'" \
-  "DESK_KIS_APP_KEY='k1'" "DESK_MAX_CONCURRENT_RUNS='1'" > "$ENVF"
+  "DESK_KIS_APP_KEY='k1'" "DESK_OTP_KEY='s3cr3t'" "DESK_MAX_CONCURRENT_RUNS='1'" > "$ENVF"
 
 export PATH="$TMP/bin:$PATH" STATE="$TMP/state" STABLE_SEC=0 WAIT_MIN=0 ENV_FILE="$ENVF"
 export FAKE_IMAGE=trading-desk-backend:prod FAKE_SERVICES=backend-prod
@@ -109,7 +109,7 @@ grep -q "ROLLBACK_DRILL" "$TMP/out"; check "드릴을 알린다" 0 $?
 rc=$(FAKE_BAD_REV=rev4 deploy rev4); check "health 실패면 되돌린다" "2 rev2 rev2" "$rc $(prod_rev) $(ctr_rev backend-prod)"
 
 FAKE_LOG_SECRET='postgresql://u:s3cr3t-pass@db/x' FAKE_BAD_REV=rev4b deploy rev4b > /dev/null
-check "실패 로그에서 env 값을 가린다" "0 1" "$(grep -c 's3cr3t' "$TMP/out") $(grep -c 'db=\*\*\*\*' "$TMP/out")"
+check "실패 로그에서 env 값을 가린다(긴 값부터 — 짧은 비밀이 긴 값의 일부여도)" "0 0 1" "$(grep -c 's3cr3t' "$TMP/out") $(grep -c 'pass' "$TMP/out") $(grep -cxF 'boot ok, db=****' "$TMP/out")"
 
 rc=$(FAKE_UNFINISHED='2\nAAPL running 10:00 r1\nNVDA queued 10:01 r2' deploy rev5)
 check "진행 중인 분석이 있으면 멈추고 운영은 그대로" "3 rev2" "$rc $(prod_rev)"

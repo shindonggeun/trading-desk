@@ -69,6 +69,12 @@ Jenkins 가 배포할 때마다 읽어 임시 env 파일(600)로 compose 에 넘
   배포 확인 실패 때 찍는 컨테이너 로그는 env 값(8자 이상 또는 비밀처럼 보이는 키)을 `****` 로 가린다. 로그인 토큰은 끝날 때 `revoke-self` 로 폐기한다.
 - Jenkins credential 은 폴더 `trading-desk` 범위(`trading-desk-vault-role-id` · `-secret-id` · `trading-desk-github`). AppRole `jenkins-trading-desk` 는 `kv/trading-desk/+/+/env` 읽기만.
 - 저장소가 공개라 잡은 fork PR 을 발견하지 않는다. develop 은 소유자만 머지한다 — Jenkinsfile 은 docker 소켓이 있는 운영 agent 에서 돈다.
+  PR · 다른 브랜치를 거르는 가드는 `load` 보다 먼저, 얇은 `Jenkinsfile-*` 에 있다. 폴더 `trading-desk` 의 Configure · Replay · 콘솔 읽기 권한은 소유자만 갖는다(Replay = 운영 호스트 root).
+- **받아들인 위험 — 공유 deploy agent**: `backend-prod-agent` · `frontend-prod-agent` 는 다른 홈랩 프로젝트의 prod 배포도 쓰고 docker 소켓(= 호스트 root)이 있다.
+  그 프로젝트의 배포 브랜치 · 잡을 바꿀 수 있는 사람은 `docker inspect trading-desk-backend-prod` 로 이 앱의 env(DB · 브로커 · 알림 키)를 읽을 수 있다.
+  지금은 홈랩의 모든 배포 권한자가 소유자 한 명이라 공유한다. **다른 사람이 커밋 · 잡 권한을 갖게 되면** trading-desk 전용 agent(라벨 `deploy-trading-desk`, 다른 폴더 잡은 못 쓰게 제한)로 옮긴다.
+- AppRole 은 CIDR 에 묶이지 않았다(Vault 가 인그레스 nginx 뒤라 출발지 주소가 보이지 않는다). role-id · secret-id 가 새면 어디서나 읽힌다 —
+  credential 은 Jenkins 폴더에만 두고, 샌 의심이 들면 바로 secret-id 를 회전하고 옛 것을 destroy 한다. 로그인 토큰 수명은 10분(`token_ttl`)이다.
 - secret-id 회전: Infra 저장소 `vault/scripts/rotate-approle-secret.sh jenkins-trading-desk` → 새 값을 Jenkins 폴더 credential 에 바꿔 넣는다(Infra `vault/README.md` trading-desk 절).
 
 | 비밀 | 있는 곳 | 저장소 |

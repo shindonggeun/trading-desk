@@ -1,6 +1,7 @@
 import { type ReactNode, useMemo, useState } from "react";
 import type { LineSignal, MarketAlert } from "../api";
 import { alertHref, alertKey, alertLines, badgeOf, hhmm, isWarning, KIND_LABEL, kindLabel, sideOf, useTodayAlerts } from "../alertsFeed";
+import LiveBadge from "./LiveBadge";
 import { chartHref, kstHhmm, signalTime, LINE_TF_KO, signalKey, splitText, useTodayLineSignals } from "../lineSignals";
 
 /** #581 오늘 알림 타임라인 — 수급 전향 · 수급 흐름 변화 · 나스닥 선물 이상 징후(주인 계정은 보유 종목 손절 · 익절도)를 시각 순서로.
@@ -56,7 +57,7 @@ export function AlertRow({ a }: { a: MarketAlert }) {
 }
 
 export default function AlertTimeline() {
-  const { data, error } = useTodayAlerts();
+  const { data, error, live } = useTodayAlerts();
   const lines = useTodayLineSignals(data?.date, data);
   const [filter, setFilter] = useState<Filter>("all");
   const items = useMemo(() => {
@@ -72,7 +73,7 @@ export default function AlertTimeline() {
   return (
     <section className="alert-timeline" id="alert-timeline" aria-label="오늘 알림">
       <div className="alert-timeline-head">
-        <h4>오늘 알림{data ? <span className="muted small"> · {data.date}</span> : null}</h4>
+        <h4>오늘 알림{data ? <span className="muted small"> · {data.date}</span> : null} <LiveBadge channel="alert" keys={null} on={live} /></h4>
         <div className="chips" role="group" aria-label="알림 종류">
           {filters.map((f) => (
             <button key={f.key} type="button" className={`chip${filter === f.key ? " chip-on" : ""}`} aria-pressed={filter === f.key}

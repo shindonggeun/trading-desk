@@ -5,11 +5,39 @@ import { price, time } from "../format";
 import type { BoardItem } from "../types";
 import { LongShortBar, LongShortToggle, useLongShort, useLongShortShown } from "./LongShortBar";
 import { boardBadge, boardBadgeClass, boardReason, quoteSourceShort } from "../korean";
-import { usePoll } from "../poll";
+import { useLivePoll, type LiveSpec } from "../livePoll";
+import LiveBadge from "./LiveBadge";
 
 export type BoardTicker = { ticker: string; name?: string };
 
 const POLL_MS = 15_000;
+/** #764 스트림이 시세를 대신 주는 동안에도 칸의 상태(장중 · 추정 · 장 마감)는 서버가 정한다 — 이만큼마다 한 번 맞춘다 */
+const RECONCILE_MS = 5 * 60_000;
+
+type Board = { items: BoardItem[] };
+type StreamQuote = { ticker?: string; price?: number | null; source?: string | null; fetched_at?: string | null };
+const trading = (it: BoardItem) => it.state === "live" && it.session === "regular";
+
+/** #764 실시간 시세(quote)를 정규장 칸에만 — 추정 · 시간외(NXT) 칸은 서버의 계산을 그대로 둔다 */
+export const BOARD_LIVE = (tickers: string[]): LiveSpec<Board> => ({
+  channel: "quote",
+  keys: tickers,
+  apply: (prev, m) => {
+    const q = m.payload as StreamQuote | null;
+    if (!q || q.price == null || !Number.isFinite(q.price)) return undefined;
+    let hit = false;
+    const items = prev.items.map((it) => {
+      if (!trading(it) || askedOf([m.key], it.ticker) !== m.key || it.price === q.price) return it;
+      hit = true;
+      const change = it.close ? Math.round((q.price! / it.close - 1) * 10_000) / 100 : it.change_pct;
+      return { ...it, price: q.price!, change_pct: change, quote_source: q.source ?? it.quote_source, fetched_at: q.fetched_at ?? m.observed_at };
+    });
+    return hit ? { ...prev, items } : undefined;
+  },
+  // 모든 칸이 정규장일 때만 쉰다 — 추정 칸은 서버가 바이낸스로 계산한다
+  pauseWhen: (d) => !!d && d.items.length > 0 && d.items.every(trading),
+  reconcileMs: RECONCILE_MS,
+});
 const BUNDLE_KEY = "desk.board.weekend";
 const OPEN_KEY = "desk.board.weekend.open";
 
@@ -130,14 +158,15 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
   const ls = useLongShort(tickers, lsShown);
 
   // #626 15초마다(가려진 탭은 쉰다) — 같은 종목 묶음이면 즐겨찾기 · 섹터 화면과 요청 하나를 함께 쓴다
-  usePoll(tickers.length ? `board:${key}` : null, () => api.board(tickers), POLL_MS, {
+  const boardLive = useMemo(() => BOARD_LIVE(tickers), [tickers]);
+  const boardPoll = useLivePoll(tickers.length ? `board:${key}` : null, () => api.board(tickers), POLL_MS, {
     onData: (r) => {
       setItems((cur) => ({ ...cur, ...byAsked(tickers, r.items) }));
       for (const it of r.items) if (it.price != null) onPriceRef.current?.(askedOf(tickers, it.ticker), it.price);
       setFailedAt(null);
     },
     onError: () => setFailedAt(new Date().toISOString()),
-  });
+  }, boardLive);
 
   const flipBundle = () => {
     save(OPEN_KEY, !bundleOpen);
@@ -158,6 +187,7 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
     <section className="card quote-board" aria-label="시세판">
       <div className="qb-head">
         <h2>시세판</h2>
+        {tickers.length > 0 && <LiveBadge channel="quote" keys={tickers} on={boardPoll.live} />}
         <span className="muted small">
           {updated ? `${time(updated)} 갱신` : "불러오는 중"}
           {failedAt && ` · ${time(failedAt)} 갱신 실패 — 마지막 값`}

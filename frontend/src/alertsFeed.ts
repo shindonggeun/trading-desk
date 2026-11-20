@@ -1,5 +1,5 @@
 import { api, ApiError, type AlertTone, type MarketAlert, type MarketAlertsDay } from "./api";
-import { usePoll } from "./poll";
+import { useLivePoll, type LiveSpec } from "./livePoll";
 
 /** #581 오늘 알림(GET /api/alerts/today) — 대시보드 띠 · 타임라인 · 장중 수급 차트 마커가 같이 쓴다.
  *  화면이 보이는 동안 POLL_MS 마다 다시 읽고, 같은 페이지의 여러 구독자는 요청 하나를 나눠 쓴다. */
@@ -59,7 +59,21 @@ export function sideOf(a: MarketAlert): "up" | "down" | null {
   return null;
 }
 
-type Feed = { data: MarketAlertsDay | null; error: string | null };
+type Feed = { data: MarketAlertsDay | null; error: string | null; live: boolean };
+
+/** #764 실시간 스트림의 알림 한 건을 오늘 목록에 — REST 가 주는 종류만, 같은 알림은 한 번, 날이 바뀌면 새 목록 */
+export const ALERTS_LIVE: LiveSpec<MarketAlertsDay> = {
+  channel: "alert",
+  keys: null,
+  apply: (prev, m) => {
+    const a = m.payload as MarketAlert | null;
+    // REST 와 같게: 섹터 급등락만 타임라인에 없다(GET /api/sectors/movers). 보유 알림은 서버가 주인 세션에만 보낸다
+    if (!a || (a.kind as string) === "sector_mover" || typeof a.t !== "string") return undefined;
+    if (a.trade_date && prev.date && a.trade_date !== prev.date) return { ...prev, date: a.trade_date, items: [a] };
+    if (prev.items.some((x) => alertKey(x) === alertKey(a))) return undefined;
+    return { ...prev, items: [...prev.items, a] };
+  },
+};
 
 /** #626 같은 요청(ALERTS_KEY)을 대시보드 띠 · 타임라인 · 토스트 · 작은 창이 함께 쓴다. DEV 에서 API 가 없으면(404) 예시 */
 export const ALERTS_KEY = "alerts-today";
@@ -68,10 +82,10 @@ export const loadAlerts = (): Promise<MarketAlertsDay> => api.alertsToday().catc
   throw e;
 });
 
-/** 오늘 알림 — 1분마다(가려진 탭은 쉰다), 실패하면 앞서 받은 값을 두고 오류만 */
+/** 오늘 알림 — 실시간 스트림(#764)이 살아 있으면 바로, 아니면 1분마다(가려진 탭은 쉰다). 실패하면 앞서 받은 값을 두고 오류만 */
 export function useTodayAlerts(): Feed {
-  const s = usePoll(ALERTS_KEY, loadAlerts, POLL_MS);
-  return { data: s.data ?? null, error: s.failing ? (s.error instanceof Error ? s.error.message : "불러오지 못했습니다") : null };
+  const s = useLivePoll(ALERTS_KEY, loadAlerts, POLL_MS, {}, ALERTS_LIVE);
+  return { data: s.data ?? null, error: s.failing ? (s.error instanceof Error ? s.error.message : "불러오지 못했습니다") : null, live: s.live };
 }
 
 /** DEV 에서 백엔드에 /api/alerts/today 가 없을 때(404)만 쓰는 예시 */

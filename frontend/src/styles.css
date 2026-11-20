@@ -3029,3 +3029,7 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .sm-name { font-weight: 600; }
 .sm-quiet { margin: 2px 0 0; }
 .sm-note { margin: 10px 0 0; }
+
+/* #764 패널 머리의 실시간 · 폴링 표시 */
+.live-badge { margin-left: 6px; font-size: var(--fs-s); font-weight: 400; color: var(--muted); white-space: nowrap; }
+.live-badge.on { color: var(--ok); }

@@ -138,8 +138,9 @@ def test_a_daily_bar_arriving_at_a_long_line_is_a_long_signal():
     days = _fix("AMD")
     upto = [b for b in days if b["at"][:10] <= "2026-11-02"]
     got = [s for s in line_signals.detect(upto, "1d", datetime(2030, 1, 1, tzinfo=UTC)) if s["event"] == "long"]
-    assert [(s["rule"], s["at"][:10]) for s in got] == [("long_support", "2026-11-02")]
-    title, body = line_signals.text(got[0], "AMD", "1d", {})
+    sup = [s for s in got if s["rule"] == "long_support"]
+    assert [s["at"][:10] for s in sup] == ["2026-11-02"] and "5월 19일부터의" in sup[0]["line"]
+    title, body = line_signals.text(sup[0], "AMD", "1d", {})
     assert "장기 지지 시험" in title and "장기 상승 지지선" in title and "AMD 일봉" in title
     assert "장기 선" in body and "짧은 봉" not in body                    # rate line, no short-bar warning
     soxx = [b for b in _fix("SOXX") if b["at"][:10] <= "2026-11-02"]
@@ -179,3 +180,35 @@ def test_the_backtest_counts_a_line_once_and_beats_nothing_on_a_random_walk():
     got = long_lines_bt.backtest(bars, step=10)
     sup = got["roles"]["long_support"]["line"]
     assert got["steps"] > 50 and sup["n"] == sup["bounce"] + sup["break"] + sup["none"]
+
+
+def test_a_korean_days_dates_read_in_kst():
+    # review #679: Yahoo stamps a Korean day at 15:00 UTC of the day before - the sentence's dates are KST
+    assert long_lines._day("2026-11-19T15:00:00+00:00") == "11월 20일"
+    assert long_lines._day("2026-11-19T05:00:00+00:00") == "11월 19일"           # a US day: the same date
+    kr = [{**b, "at": f"{date.fromisoformat(b['at'][:10]) - timedelta(days=1)}T15:00:00+00:00"} for b in _fix("AMD")]
+    ln = next(ln for ln in long_lines.lines(kr, "1d") if ln["kind"] == "support")
+    assert "5월 19일부터" in ln["explain"] and "11월 19일 -7.7%" in ln["explain"]
+
+
+def test_a_fresh_break_far_below_is_still_shown():
+    # review #679: a crash two closes deep past the line is the news, not a line out of reach
+    bars = _bars(202, closes_off={200: -0.35, 201: -0.40})
+    ln = next(ln for ln in long_lines.lines(bars, "1d") if ln["kind"] == "support")
+    assert ln["state"] == "broken" and ln["distance_pct"] > 25
+
+
+def test_a_setting_stored_before_the_long_event_reads_it_as_default(db_url):
+    from sqlalchemy import insert
+
+    from desk import line_signals
+    from desk.db import line_watch, make_engine, migrate
+
+    migrate(db_url)
+    engine = make_engine(db_url)
+    with engine.begin() as conn:
+        conn.execute(insert(line_watch).values(id=1, updated_at=__import__("datetime").datetime(2026, 11, 1), body={"enabled": True, "tickers": ["AMD"], "timeframes": ["1d"],
+                                                           "events": {"touch": True, "break": True, "retest": False}}))
+    watch = line_signals.LineWatch(engine)
+    assert watch.settings()["events"]["long"] is True and watch.settings()["events"]["retest"] is False
+    engine.dispose()

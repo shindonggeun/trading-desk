@@ -26,14 +26,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
 
 TF_KO = {"1d": "일봉", "1w": "주봉"}
 # per timeframe: (window bars, swing k, min anchor gap, min span first-last touch, touch gap)
-SPEC = {"1d": {"window": 252, "k": 3, "gap": 15, "span": 60, "touch_gap": 10},
-        "1w": {"window": 156, "k": 2, "gap": 6, "span": 40, "touch_gap": 4}}
+# fresh: bars since a break within which it is shown however far the price went
+SPEC = {"1d": {"window": 252, "k": 3, "gap": 15, "span": 60, "touch_gap": 10, "fresh": 5},
+        "1w": {"window": 156, "k": 2, "gap": 6, "span": 40, "touch_gap": 4, "fresh": 2}}
 MIN_TOUCHES = 3
 TOUCH_ATR = 0.5            # a swing this close to the line (in ATR) touches it
 BREAK_ATR = 0.3            # a close this far past the line is beyond it
@@ -45,7 +46,7 @@ KEEP_BROKEN = 20           # bars a broken line is still shown
 MAX_DISTANCE_ATR = 8.0     # an unbroken line further than this from the price is not shown
 MAX_DISTANCE_PCT = 25.0    # nor further than this (a leveraged product's ATR is wide)
 SWINGS = 40                # the most recent swings tried as anchors
-PER_KIND = 1
+PER_KIND = 1               # holding lines per kind (and as many broken ones)
 MIN_SCORE = 2.0            # below this a line is a weak fit (few touches, far, stale, false breaks)
 ATR_N = 14
 
@@ -137,8 +138,10 @@ def find(bars: list[dict], tf: str, unit: float) -> list[_Long]:
                     line.broken_at = n - line.run
                     if line.run > KEEP_BROKEN:
                         continue
-                # a line far from the price (broken long ago in effect, or out of reach) is not worth showing
-                if abs(cl[-1] - line.at(n - 1)) > min(MAX_DISTANCE_ATR * unit, math.log(1 + MAX_DISTANCE_PCT / 100)):
+                # a line far from the price is out of reach - but a fresh break (FRESH bars) is news however
+                # far the drop went
+                fresh = line.broken_at is not None and line.run <= spec["fresh"]
+                if not fresh and                         abs(cl[-1] - line.at(n - 1)) > min(MAX_DISTANCE_ATR * unit, math.log(1 + MAX_DISTANCE_PCT / 100)):
                     continue
                 last = None
                 for x in swings:
@@ -172,13 +175,19 @@ def find(bars: list[dict], tf: str, unit: float) -> list[_Long]:
                     found.append(line)
         found.sort(key=lambda ln: -ln.score)
         kept: list[_Long] = []
-        for ln in found:
-            if any(abs(ln.at(n - 1) - o.at(n - 1)) <= 2 * touch and
-                   abs(ln.slope - o.slope) * (n - 1 - min(ln.i, o.i)) <= 2 * touch for o in kept):
-                continue
-            kept.append(ln)
-            if len(kept) == PER_KIND:
-                break
+        # the best line still holding, and apart from it the best broken one: a break never hides the
+        # line the price is on now
+        for broken in (False, True):
+            n_kept = 0
+            for ln in found:
+                if (ln.broken_at is not None) != broken or any(
+                        abs(ln.at(n - 1) - o.at(n - 1)) <= 2 * touch and
+                        abs(ln.slope - o.slope) * (n - 1 - min(ln.i, o.i)) <= 2 * touch for o in kept):
+                    continue
+                kept.append(ln)
+                n_kept += 1
+                if n_kept == PER_KIND:
+                    break
         out += kept
     for ln in out:                                  # back to the caller's bar indexes
         ln.i, ln.j = ln.i + off, ln.j + off
@@ -197,8 +206,13 @@ def _fmt(price: float) -> str:
     return f"{price:,.0f}" if price >= 1000 else f"{price:,.2f}"
 
 
+KST = timezone(timedelta(hours=9))
+
+
 def _day(at: str) -> str:
-    d = date.fromisoformat(at[:10])
+    """The bar's date as a person reads it: Yahoo stamps a Korean day at 15:00 UTC of the day before, so
+    the date is read in KST (a US day at 00:00 ET is the same date in KST too)."""
+    d = datetime.fromisoformat(at).astimezone(KST) if "T" in at else date.fromisoformat(at[:10])
     return f"{d.month}월 {d.day}일"
 
 

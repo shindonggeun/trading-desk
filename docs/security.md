@@ -98,7 +98,7 @@ Jenkins 가 배포할 때마다 읽어 임시 env 파일(600)로 compose 에 넘
 | 텔레그램 봇 토큰 · chat_id · 카카오 REST 키 · 클라이언트 시크릿 · `DESK_NOTIFY_KEY` (#580) | 서버 `.env.runtime` | `.env.example` 에 이름만 |
 | 카카오 액세스 · 리프레시 토큰 (#580) | DB `notify_channels.secret`, `DESK_NOTIFY_KEY`(Fernet)로 봉인 | 없음 |
 | KRX OPEN API 인증키 (#601) | 서버 `.env.runtime` 의 `DESK_KRX_API_KEY`. 요청 헤더 `AUTH_KEY` 로만 보내고 로그 · URL · DB 에 남기지 않는다 | `.env.example` 에 이름만 |
-| 홈랩 Redis 비밀번호 (#689, 선택) | Vault `kv/trading-desk/backend/prod/env` 의 `DESK_REDIS_PASSWORD`(아래 §5.2). 설정 repr · 로그 · `/api/status` 에 나오지 않는다 | `.env.example` 에 이름만 |
+| 홈랩 Redis 비밀번호 · 공유 캐시 키 (#689, 선택) | Vault `kv/trading-desk/backend/prod/env` 의 `DESK_REDIS_PASSWORD` · `DESK_REDIS_CACHE_KEY`(아래 §5.2). 설정 repr · 로그 · `/api/status` 에 나오지 않는다 | `.env.example` 에 이름만 |
 
 ### KIS 실시간 시세 키 (#125)
 
@@ -142,12 +142,21 @@ Jenkins 가 배포할 때마다 읽어 임시 env 파일(600)로 compose 에 넘
 
 ### 5.2 공유 캐시 — 홈랩 Redis (#689)
 
-- 홈랩 Redis(Sentinel `master-redis`)는 **다른 프로젝트와 함께 쓰는 서버**고 비밀번호(`requirepass`)도 같다. 그 비밀번호를 가진 누구든 키를 읽을 수 있다고 보고,
-  **공개 시장 데이터만** 넣는다 — 시장 · 선물 수급, 시세(10초), 지지 · 저항, 갭, 오실레이터(`desk/shared_cache.py` 가 정본).
-- **넣지 않는 것:** 브로커 토큰(#688 은 DB 에 봉인), 세션 · 로그인 · 사용자별 데이터, 보유 종목 · 계좌, 알림 채널 비밀. 새 캐시를 공유로 바꿀 때는 이 목록부터 본다.
-- 키는 모두 `td:` 접두어에 TTL 이 있다(그 서버는 `maxmemory` 가 없어 TTL 없는 키는 영원히 남는다). 값은 JSON 뿐이다(pickle 없음 — 읽는 쪽이 코드를 실행하지 않는다).
-- 비밀번호는 Vault `DESK_REDIS_PASSWORD` 에만. 설정의 `redis_password` · `redis_url` 은 `repr=False`, 연결 실패 로그는 예외 **형식 이름만** 남긴다(메시지에 호스트 · 응답이 실릴 수 있다).
+- 홈랩 Redis(Sentinel `master-redis`)는 **다른 프로젝트와 함께 쓰는 서버**고 비밀번호(`requirepass`)도 같다. 그 비밀번호를 가진 누구든
+  아무 키나 **읽고 쓸 수 있다**고 본다. 그래서 두 가지를 지킨다(`desk/shared_cache.py` 가 정본):
+  - **넣는 것은 시장 데이터뿐** — 시장 · 선물 수급, 시세(10초), 지지 · 저항, 갭, 오실레이터.
+  - **읽을 수 있게 두지 않는다** — 이 앱 전용 비밀 `DESK_REDIS_CACHE_KEY`(Vault)에서 HKDF 로 두 키를 만든다. 키 이름은 `td:<종류>:<HMAC>`
+    (종목 · 날짜가 이름에 없다 — 시세 키 집합이 곧 보유 종목 목록이 되지 않게), 값은 Fernet 봉인. 캐시 키가 없으면 Redis 를 설정해도 꺼진다.
+- **남이 쓴 값을 믿지 않는다:** 읽은 값은 봉인이 열리고, 안에 적힌 키가 요청한 키와 같고(다른 키로 옮긴 값 거절), 봉인 안의 쓴 시각 · ttl 로
+  아직 살아 있을 때만(긴 만료로 다시 넣은 옛 값 거절) 쓴다. 남은 시간도 서버의 PTTL 이 아니라 봉인 안의 ttl 로 잰다. 그 밖은 전부 miss
+  (`/api/status` `shared_cache.rejected`, 경고 한 줄). 값은 JSON 뿐(pickle 없음), 크기 상한 · NaN 거부, 수급 · 선물 · 시세는 형태도 다시 본다.
+- **넣지 않는 것:** 브로커 토큰(#688 은 DB 에 봉인), 세션 · 로그인 · 사용자별 데이터, 보유 수량 · 평단 · 계좌, 알림 채널 비밀. 새 캐시를 공유로 바꿀 때는 이 목록부터 본다.
+- 키는 모두 TTL 이 있다(그 서버는 `maxmemory` 가 없어 TTL 없는 키는 영원히 남는다. 7일 상한).
+- 비밀번호 · 캐시 키는 Vault 에만. 설정의 `redis_password` · `redis_url` · `redis_cache_key` 는 `repr=False`, 연결 실패 로그는 예외 **형식 이름만** 남긴다(메시지에 호스트 · 응답이 실릴 수 있다).
 - Redis 가 없거나 죽어도 각 프로세스는 메모리 캐시 · 자기 호출로 지금처럼 돈다(0.25초 시간 초과, 실패 뒤 30초 건너뜀). 가용성 의존이 아니다.
+- **남는 위험:** 같은 비밀번호를 가진 쪽은 `td:*` 를 지우거나 덮어 **캐시를 비울** 수 있다(앱은 자기 호출로 돌아가 호출 수만 는다). 종류별 키 개수 · 쓰는 시각은 보인다.
+  Infra 쪽 Sentinel 에는 인증이 없고 Redis 는 TLS 없이 LAN 평문이다 — LAN 의 누군가가 Sentinel 의 master 주소를 바꾸면 이 앱은 그 호스트에 공유 비밀번호로 AUTH 한다.
+  근본 수정은 Infra 에서 프로젝트별 ACL 사용자 · 키 패턴과 Sentinel `requirepass` 를 두는 것이다(이 앱은 그때 `sentinel_kwargs` 에 비밀번호를 넘긴다).
 
 ### KIS REST 접근 토큰 — 코스피200 선물 현황 (#160)
 

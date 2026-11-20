@@ -361,12 +361,11 @@ class FuturesFlow:
             if not fresh:
                 # #689 the collector's snapshot job reads fresh every minute and shares it: the card's read
                 # takes that instead of calling KIS again from this process
-                hit = await shared_cache.aget(SHARED_NS, "view")
+                hit = shared_cache.latest(await shared_cache.aget(SHARED_NS, "view"))
                 if hit is not None:
-                    (shared, _age, left) = hit
-                    ttl = float(shared["ttl"])
-                    self._cache = (self._clock() - max(0.0, ttl - left), ttl, shared["value"])
-                    return self._with_freshness(shared["value"], ttl)
+                    shared, ttl, left = hit
+                    self._cache = (self._clock() - max(0.0, ttl - left), ttl, shared)
+                    return self._with_freshness(shared, ttl)
             value, ok = await self._fetch()
             now = self._now()
             # any failed part (price, investors) is retried soon; the derivatives session sets the rest

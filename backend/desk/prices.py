@@ -334,10 +334,7 @@ class PriceSource:
         # #689 a quote another process (collector · analyst · api) read in the last QUOTE_TTL_SEC
         hit = await shared_cache.aget(SHARED_NS, ticker)
         if hit is not None:
-            try:
-                quote = Quote(**hit[0])
-            except TypeError:   # a shape from another version of this class
-                quote = None
+            quote = _shared_quote(ticker, hit[0])
             if quote is not None:
                 _remember(self._quotes, ticker, (self._clock() - max(0.0, QUOTE_TTL_SEC - hit[2]), quote),
                           QUOTE_TTL_SEC, self._clock)
@@ -443,6 +440,19 @@ class PriceSource:
             return bars, "yahoo"                 # Yahoo's own 1m lags just the same
         filled = fill_recent(bars, [Bar(**b) for b in recent["bars"]], _MINUTES[interval])
         return filled, ("yahoo" if filled is bars else f"yahoo+{self.broker.name}")
+
+
+def _shared_quote(ticker: str, raw) -> Quote | None:
+    """#689 a shared quote only when it is one for this ticker with a real price - a miss otherwise."""
+    try:
+        quote = Quote(**raw)
+    except TypeError:   # not a dict, or a shape from another version of this class
+        return None
+    ok = (quote.ticker == ticker and isinstance(quote.price, int | float) and not isinstance(quote.price, bool)
+          and math.isfinite(quote.price) and quote.price > 0
+          and isinstance(quote.source, str) and isinstance(quote.fetched_at, str)
+          and (quote.currency is None or isinstance(quote.currency, str)))
+    return quote if ok else None
 
 
 def _remember(cache: dict, key, entry: tuple, ttl: float, clock) -> None:

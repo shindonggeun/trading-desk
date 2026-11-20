@@ -403,6 +403,7 @@ api · collector · analyst(#688) 가 따로 뜨면 같은 수급 · 시세를 �
 | `DESK_REDIS_SENTINELS` | `192.168.0.11:26379,192.168.0.13:26379,192.168.0.12:26379` (Infra `redis/README.md`) |
 | `DESK_REDIS_MASTER` | 비우면 `master-redis` |
 | `DESK_REDIS_PASSWORD` | Redis `requirepass` — **Vault 에만** |
+| `DESK_REDIS_CACHE_KEY` | 이 앱 전용 무작위 비밀(32바이트, base64). 키 이름을 HMAC 으로 가리고 값을 봉인한다 — **Vault 에만**. 비면 Redis 를 설정해도 꺼진다. 바꾸면 기존 값은 TTL 까지 무시될 뿐이다 |
 | `DESK_REDIS_URL` | Sentinel 대신 단일 서버(`redis://host:6379/0`, 시험용). Sentinel 이 있으면 무시 |
 
 | 공유 이름(`td:<이름>:…`) | 쓰는 쪽 → 읽는 쪽 | TTL |
@@ -416,19 +417,22 @@ api · collector · analyst(#688) 가 따로 뜨면 같은 수급 · 시세를 �
 ### 켜기 (사람이 한 번)
 
 ```bash
-# 1) Vault 에 키 3개를 더한다 — PATCH(merge) 라 다른 키는 그대로다(POST 는 secret 전체를 덮어쓴다).
-#    토큰 · 비밀번호는 read -s 로 받아 파이프로만 넘긴다(argv · 셸 기록 · 파일에 남기지 않는다). 토큰은 3절처럼 ui-trading-desk 계정에서
+# 1) Vault 에 키 4개를 더한다 — PATCH(merge) 라 다른 키는 그대로다(POST 는 secret 전체를 덮어쓴다).
+#    토큰 · 비밀번호는 read -s 로 받아 파이프로만 넘긴다(argv · 셸 기록 · 파일에 남기지 않는다). 토큰은 3절처럼 ui-trading-desk 계정에서.
+#    캐시 키는 여기서 만들어 바로 넣는다(화면에 내지 않는다)
 read -rs -p 'vault token: ' VAULT_TOKEN; echo
 read -rs -p 'redis password: ' P; echo
-printf '%s' "$P" | jq -Rs '{data: {DESK_REDIS_SENTINELS: "192.168.0.11:26379,192.168.0.13:26379,192.168.0.12:26379",
-                                  DESK_REDIS_MASTER: "master-redis", DESK_REDIS_PASSWORD: .}}' \
+K=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+printf '%s\n%s' "$P" "$K" | jq -Rs 'split("\n") as [$p, $k]
+  | {data: {DESK_REDIS_SENTINELS: "192.168.0.11:26379,192.168.0.13:26379,192.168.0.12:26379",
+            DESK_REDIS_MASTER: "master-redis", DESK_REDIS_PASSWORD: $p, DESK_REDIS_CACHE_KEY: $k}}' \
   | curl -sS --fail -o /dev/null -X PATCH --header 'Content-Type: application/merge-patch+json' \
       --header @<(printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN") --data @- \
       https://vault.8llow8llowme.com/v1/kv/data/trading-desk/backend/prod/env && echo 넣음
 curl -sS --fail --header @<(printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN") \
   https://vault.8llow8llowme.com/v1/kv/data/trading-desk/backend/prod/env | jq -r '.data.data | keys[]' | grep REDIS   # 이름만 확인
-unset VAULT_TOKEN P
-# 2) Jenkins trading-desk-backend 를 FORCE_DEPLOY 로 (손 배포면 .env.runtime 에 같은 3줄 → scripts/deploy.sh HEAD backend)
+unset VAULT_TOKEN P K
+# 2) Jenkins trading-desk-backend 를 FORCE_DEPLOY 로 (손 배포면 .env.runtime 에 같은 4줄 → scripts/deploy.sh HEAD backend)
 ```
 
 ### 연결 확인 (배포 뒤)
@@ -439,9 +443,17 @@ ssh homelab-backend-server 'docker logs trading-desk-backend-prod 2>&1 | grep -E
 #   shared cache unreachable (...) - memory only for 30s  ← 닿지 않음: 앱은 메모리 캐시로 계속 돈다
 ```
 
-- `/api/status` 의 `shared_cache`: `on` · `down_sec`(건너뛰는 남은 초) · `hits` · `misses` · `writes` · `skipped` · `errors` — 이 프로세스 것.
-- 키 확인(Redis 서버에서, 값은 보지 않는다): `redis-cli --scan --pattern 'td:*' | head` 와 `redis-cli ttl <키>` (-1 이면 TTL 없음 — 버그).
-  비밀번호는 `REDISCLI_AUTH` 환경 변수로 넘긴다(`-a` 는 argv 에 남는다).
+- `/api/status` 의 `shared_cache`: `on` · `down_sec`(건너뛰는 남은 초) · `hits` · `misses` · `writes` · `skipped` ·
+  `rejected`(봉인 · 검사에 걸린 값 — 0 이 아니면 캐시 키가 바뀌었거나 누가 `td:` 아래에 쓴다) · `errors` — 이 프로세스 것.
+- 키 확인(master 호스트 main-server 에서). 키 이름은 `td:<종류>:<HMAC>` 라 종목이 보이지 않고 값은 봉인돼 있다. 비밀번호는 argv 대신 env 로:
+
+```bash
+ssh -t homelab-main-server
+read -rs -p 'redis password: ' REDISCLI_AUTH; echo; export REDISCLI_AUTH
+docker exec -e REDISCLI_AUTH redis-node1 redis-cli --scan --pattern 'td:*' | cut -d: -f2 | sort | uniq -c   # 종류별 개수
+docker exec -e REDISCLI_AUTH redis-node1 sh -c 'redis-cli --scan --pattern "td:*" | head -50 | while read k; do redis-cli ttl "$k"; done' | sort -n | head -3   # -1 이 나오면 TTL 없는 키(버그)
+unset REDISCLI_AUTH
+```
 
 ### 전 · 후 측정 (#689 완료 기준)
 

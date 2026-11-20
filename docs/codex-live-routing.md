@@ -17,7 +17,9 @@ OpenAI [App Server 문서](https://learn.chatgpt.com/docs/app-server)는 `thread
 
 ## 사용법
 
-감독 세션이 등록된 뒤 실행한다. `peers`는 현재 공용 서버에서 로드된 사용자 thread만 보여준다. 저장된 전체 대화 목록이나 최근 사용 시각으로 작업자를 추정하지 않는다. loaded 상태는 사용자 화면 픽셀을 관찰한 증거가 아니므로 첫 회신과 실제 창 표시를 별도로 확인한다.
+감독 세션이 등록된 뒤 실행한다. `peers`의 JSON 목록은 현재 공용 서버에서 로드된 같은 저장소의 독립 사용자 thread를 보여준다. `id`는 바인딩에 사용하는 수신 thread UUID, `source`는 서버가 기록한 출처(예: `cli`, `vscode`), `status`는 서버의 실행 상태다. 서버가 생략한 출처나 상태는 `null`로 표시한다. 수신 창은 사용자가 직접 대조한다.
+
+`effectivePolicy`는 항상 `확인 불가`로 표시한다. 이 조회에는 대상 turn의 유효 승인·샌드박스 정책 필드가 없다. CLI 실행 인자, 디스크 설정이나 발신자의 권한으로 수신 정책을 추정하지 않는다. 대상이 없으면 빈 JSON 목록을 반환하고, 연결 실패나 조회 API 미지원은 종료 코드 1로 알린다. 두 경우 모두 표준 오류에 기존 `inbox <역할>` 확인 경로를 표시한다.
 
 ```powershell
 python -B -X utf8 scripts/codex_team.py peers

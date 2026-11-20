@@ -181,6 +181,9 @@ class Client:
             if message.get("id") != request_id:
                 continue
             if "error" in message:
+                error = message["error"]
+                if isinstance(error, dict) and error.get("code") == -32601:
+                    raise LiveError(f"공용 서버가 {method} 메서드를 지원하지 않습니다")
                 raise LiveError(f"공용 서버 {method} 요청 거절")
             if "result" not in message:
                 raise LiveError("JSON-RPC result가 없습니다")

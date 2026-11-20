@@ -96,6 +96,12 @@ class WireTests(unittest.TestCase):
                 self.client.call("test", {})
             self.assertNotIn("private details", str(caught.exception))
 
+    def test_rpc_method_not_found_reports_unsupported_without_server_details(self):
+        self.client.buffer = frame(1, b'{"id":1,"error":{"code":-32601,"message":"private"}}')
+        with self.assertRaisesRegex(live.LiveError, "thread/read.*지원하지") as caught:
+            self.client.call("thread/read", {})
+        self.assertNotIn("private", str(caught.exception))
+
     def test_handshake_failure_closes_proxy(self):
         child = Mock()
         child.stdout.read1.return_value = b"HTTP/1.1 403 Forbidden\r\n\r\n"
@@ -156,9 +162,13 @@ class RoutingTests(unittest.TestCase):
     def test_peers_filters_subagent_and_ephemeral_metadata(self):
         with TemporaryDirectory() as tmp:
             client = Mock()
-            client.loaded.return_value = ["user", "sub", "ephemeral"]
+            cli, ide = str(uuid.uuid4()), str(uuid.uuid4())
+            client.loaded.return_value = [cli, ide, "legacy", "sub", "ephemeral"]
             client.call.side_effect = [{"thread": row} for row in (
-                {"id": "user", "cwd": tmp, "source": "vscode"},
+                {"id": cli, "cwd": tmp, "source": "cli", "status": {"type": "idle"},
+                 "approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}},
+                {"id": ide, "cwd": tmp, "source": "vscode", "status": {"type": "active"}},
+                {"id": "legacy", "cwd": tmp},
                 {"id": "sub", "cwd": tmp, "source": {"subAgent": {}}},
                 {"id": "ephemeral", "cwd": tmp, "ephemeral": True})]
             with patch.object(team, "state_path", return_value=Path(tmp)/"state.sqlite"), \
@@ -169,8 +179,34 @@ class RoutingTests(unittest.TestCase):
                  patch("builtins.print") as output:
                 team.main()
             rows = json.loads(output.call_args.args[0])
-            self.assertEqual(["user"], [r["id"] for r in rows])
+            self.assertEqual([cli, ide, "legacy"], [r["id"] for r in rows])
+            self.assertEqual(["cli", "vscode", None], [r["source"] for r in rows])
+            self.assertEqual([{"type": "idle"}, {"type": "active"}, None], [r["status"] for r in rows])
+            self.assertEqual({"확인 불가"}, {r["effectivePolicy"] for r in rows})
+            self.assertTrue(all("approvalPolicy" not in r and "sandboxPolicy" not in r for r in rows))
             self.assertTrue(all(not call.args[1]["includeTurns"] for call in client.call.call_args_list))
+
+    def test_peers_failure_and_empty_results_point_to_existing_inbox(self):
+        from contextlib import redirect_stderr, redirect_stdout
+
+        for mode in ("empty", "unsupported", "mismatched-id"):
+            with self.subTest(mode=mode), TemporaryDirectory() as tmp:
+                client = Mock()
+                client.loaded.return_value = [] if mode == "empty" else ["expected"]
+                if mode == "unsupported":
+                    client.call.side_effect = live.LiveError("공용 서버가 thread/read 메서드를 지원하지 않습니다")
+                else:
+                    client.call.return_value = {"thread": {"id": "other", "cwd": tmp}}
+                out, err = io.StringIO(), io.StringIO()
+                with patch.object(team, "state_path", return_value=Path(tmp) / "state.sqlite"), \
+                     patch.object(live, "Client", return_value=client), \
+                     patch.object(team, "codex", return_value="codex"), \
+                     patch.object(team.sys, "argv", ["codex_team.py", "peers"]), \
+                     redirect_stdout(out), redirect_stderr(err):
+                    self.assertEqual(0 if mode == "empty" else 1, team.main())
+                self.assertIn("inbox <역할>", err.getvalue())
+                self.assertEqual("[]" if mode == "empty" else "", out.getvalue().strip())
+                self.assertTrue(all(c.args[0] == "thread/read" for c in client.call.call_args_list))
 
     def test_non_supervisor_cannot_bind_loaded_thread(self):
         with TemporaryDirectory() as tmp:

@@ -236,7 +236,8 @@ def retest(p: dict, up: _Line, low: _Line, last: int, xb: float, unit: float, st
                     "targets": targets, "rr": targets[0]["rr"] if targets else None})
     note = {"false": "거짓 돌파 뒤라 리테스트 진입은 없어요", "expired": "꼭짓점에 다다라 진입 근거가 약해요"}.get(status)
     return {"scenarios": out, "pullback_pct": stats.get("pullback_pct"), "win_pct": stats.get("retest_win_pct"),
-            "r_avg": stats.get("retest_r_avg"), "n": stats.get("retest_n"), "note": note}
+            "r_avg": stats.get("retest_r_avg"), "n": stats.get("retest_n"), "chase_r_avg": stats.get("chase_r_avg"),
+            "note": note}
 
 
 def best(bars: list[dict], k: int, atr: float):
@@ -560,7 +561,11 @@ def _rules_said(p: dict) -> str:
             "late": " 꼭짓점 가까이 나온 늦은 돌파라 1차 목표만 봐요.",
             "expired": " 꼭짓점에 다다라 패턴이 힘을 잃었어요."}.get(b.get("status"), "")
     if b.get("status") in ("broken", "late") and r.get("pullback_pct") is not None:
-        out += f" 바로 따라가기보다 선 근처 되돌림에서 진입을 봐요(과거 되돌림 {r['pullback_pct']:.0f}%)."
+        # measured, not advised: the retest entry did not beat the chase in our record (#664 PR table)
+        out += f" 과거 돌파 뒤 선으로 되돌아온 비율 {r['pullback_pct']:.0f}%"
+        if r.get("r_avg") is not None and r.get("chase_r_avg") is not None:
+            out += f", 그 되돌림 진입 평균 {r['r_avg']:+.2f}R · 바로 따라간 진입 {r['chase_r_avg']:+.2f}R"
+        out += "."
     if q.get("grade") == "weak":
         out += f" 선이 약한 패턴이에요(점수 {q['score']})."
     if p.get("reference_label") == NO_EDGE_KO:

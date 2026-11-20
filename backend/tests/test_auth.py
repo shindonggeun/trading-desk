@@ -193,7 +193,7 @@ def test_what_counts_as_activity():
     assert is_activity(req("POST", "/api/chat/threads/t/messages"))      # sending a chat message is the person
     assert is_activity(req("GET", "/api/runs", [("X-Desk-Background", "0")]))
     assert not is_activity(req("GET", "/api/runs", [("X-Desk-Background", "1")]))
-    for path in ("/api/runs/r1/stream", "/api/portfolio/stream", "/api/live/stream"):
+    for path in ("/api/runs/r1/stream", "/api/portfolio/stream", "/api/live/stream", "/api/stream/market"):
         assert not is_activity(req("GET", path)), path
 
 

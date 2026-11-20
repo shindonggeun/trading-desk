@@ -38,7 +38,6 @@ from . import (
     flow_shift,
     flow_warn,
     holding_watch,
-    market_bus,
     notify,
     nq_watch,
     program_flow,
@@ -46,6 +45,7 @@ from . import (
 )
 from .db import market_alerts, now
 from .futures_flow import KST
+from .market_bus import publish as publish_market_event
 
 log = logging.getLogger(__name__)
 
@@ -199,7 +199,7 @@ class MarketAlerts:
             line = {k: row.get(k) for k in STREAM_FIELDS}
             if alert["kind"] == holding_watch.KIND:   # as the timeline: the % against the average stays in holding-watch
                 line["value"] = line["prev"] = None
-            market_bus.publish("alert", alert["kind"], line, "desk", alert["t"])
+            publish_market_event("alert", alert["kind"], line, "desk", alert["t"])
             if row["pushed"]:
                 owner = self.owner() if alert["kind"] in OWNER_ONLY else None
                 notify.send(self.pusher, alert["kind"], f"tone_{row['tone']}", user_id=owner, payload={

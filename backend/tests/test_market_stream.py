@@ -76,6 +76,46 @@ def test_one_tickers_quote_goes_out_at_most_once_a_second_newest_first():
     assert _run(go()) == ([1.0], [3.0])
 
 
+def test_distinct_alerts_observed_in_the_same_millisecond_have_distinct_ids(monkeypatch):
+    from datetime import UTC, datetime
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 20, 1, tzinfo=UTC).astimezone(tz)
+
+    monkeypatch.setattr(market_bus, "datetime", FixedDatetime)
+
+    async def go():
+        bus = _local()
+        sub = bus.subscribe(("alert",), frozenset(), owner=False)
+        bus.publish("alert", "flow_shift", {"market": "KOSPI"}, "desk")
+        bus.publish("alert", "flow_shift", {"market": "KOSDAQ"}, "desk")
+        first, second = _drain(sub)
+        await bus.aclose()
+        assert first["observed_at"] == second["observed_at"]
+        assert first["event_id"] != second["event_id"]
+
+    _run(go())
+
+
+def test_quote_fallback_depends_on_the_tickers_the_stream_requested():
+    async def go():
+        clock = [0.0]
+        bus = _local(lambda: clock[0])
+        sub = bus.subscribe(("quote",), frozenset({"AAPL", "NVDA"}), owner=False)
+        bus.publish("quote", "AAPL", {"price": 1}, "kis")
+        assert bus.degraded(sub) == (["quote"], "stale")
+        bus.publish("quote", "NVDA", {"price": 2}, "kis")
+        assert bus.degraded(sub) == ([], None)
+        clock[0] += market_bus.QUOTE_STALE_SEC + 1
+        bus.publish("quote", "AAPL", {"price": 3}, "kis")
+        assert bus.degraded(sub) == (["quote"], "stale")
+        await bus.aclose()
+
+    _run(go())
+
+
 def test_a_stream_that_falls_behind_is_marked_for_reset(monkeypatch):
     monkeypatch.setattr(market_bus, "QUEUE_MAX", 2)
 
@@ -221,6 +261,48 @@ def test_the_api_ignores_its_own_echo_and_anything_not_sealed_by_this_app(redis_
     assert _run(go()) == ["AAPL"]
 
 
+def test_redis_and_local_quotes_share_the_same_limit_without_relaying_received_quotes(redis_pair):
+    async def go():
+        clock = [0.0]
+        api, collector = Bus(clock=lambda: clock[0]), Bus()
+        api.configure(_settings(), "api")
+        collector.configure(_settings(), "collector")
+        sub = api.subscribe(("quote",), frozenset({"AAPL"}), owner=False)
+        try:
+            assert await _wait(lambda: api.stats()["subscribed"])
+            api.publish("quote", "AAPL", {"price": 1}, "kis")
+            collector.publish("quote", "AAPL", {"price": 2}, "toss")
+            assert await _wait(lambda: api.stats()["received_remote"] == 1)
+            assert [e["payload"]["price"] for e in _drain(sub)] == [1]
+            event = await asyncio.wait_for(sub.queue.get(), 3)
+            assert event["payload"]["price"] == 2
+            assert api.stats()["published_remote"] == 1
+            clock[0] += market_bus.QUOTE_GAP_SEC + 1
+            delayed = {**event, "observed_at": "2000-01-01T00:00:00.000+00:00", "payload": {"price": 0.5}}
+            await sc.publisher().publish(sc.channel("market"), sc.seal(delayed))
+            assert await _wait(lambda: api.stats()["received_remote"] == 2)
+            assert sub.queue.empty()
+            assert api.snapshot(sub) == [event]
+        finally:
+            await api.aclose()
+            await collector.aclose()
+
+    _run(go())
+
+
+def test_a_split_api_without_redis_keeps_the_remote_channels_in_fallback():
+    async def go():
+        api = Bus()
+        api.configure(_settings(), "api")
+        try:
+            assert api.mode == "local"
+            assert api.degraded() == (["alert", "flow", "futures"], "bus_down")
+        finally:
+            await api.aclose()
+
+    _run(go())
+
+
 def test_a_lost_subscription_degrades_the_remote_channels_and_comes_back(redis_pair, monkeypatch):
     class Down:
         def pubsub(self, **_):
@@ -290,11 +372,48 @@ def test_the_route_is_503_when_the_stream_is_off(db_url):
         assert client.get("/api/stream/market").status_code == 503
 
 
+def test_concurrent_market_streams_share_the_session_limit(db_url, monkeypatch):
+    from threading import Barrier
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException, Request
+    from starlette.responses import StreamingResponse
+
+    from desk.auth import COOKIE
+    from tests.test_live import Prices
+    from tests.test_prices import _client
+
+    with _client(db_url, Prices(), fake_runs=True) as client:
+        owner_checks = Barrier(2, timeout=5)
+        monkeypatch.setattr(client.app.state.market_alerts, "owner", lambda: owner_checks.wait() + 10)
+        monkeypatch.setattr("desk.api.MARKET_STREAMS_PER_SESSION", 1)
+        endpoint = next(route.endpoint for route in client.app.routes if route.path == "/api/stream/market")
+
+        async def open_stream():
+            request = Request({"type": "http", "headers": [(b"cookie", f"{COOKIE}=same-session".encode())]})
+            request.state.user = SimpleNamespace(id=1)
+            return await endpoint(request, channels="alert")
+
+        async def go():
+            results = await asyncio.gather(open_stream(), open_stream(), return_exceptions=True)
+            responses = [result for result in results if isinstance(result, StreamingResponse)]
+            try:
+                assert len(responses) == 1
+                assert [r.status_code for r in results if isinstance(r, HTTPException)] == [429]
+            finally:
+                for response in responses:
+                    await anext(response.body_iterator)
+                    await response.body_iterator.aclose()
+
+        client.portal.call(go)
+
+
 def test_the_route_sends_the_latest_values_then_ready_then_events(db_url, monkeypatch):
     from tests.test_api import OWNER, PASSWORD
     from tests.test_live import Prices
     from tests.test_prices import _client
 
+    monkeypatch.setattr(market_bus, "HEARTBEAT_SEC", 0.05)
     with _client(db_url, Prices(), fake_runs=True) as client:
         client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
         market_bus.publish("futures", "view", {"price": 400.5}, "kis_futures")
@@ -308,6 +427,7 @@ def test_the_route_sends_the_latest_values_then_ready_then_events(db_url, monkey
             first = _frames(lines, "ready")
             market_bus.publish("alert", "flow_shift", {"text": "외국인 순매도 전환"}, "desk")
             after = _frames(lines, "alert")
+            assert _frames(lines, "heartbeat")[-1][0] == "heartbeat"
         status = client.get("/api/status").json()["market_stream"]
         monkeypatch.setattr("desk.api.MARKET_STREAMS_PER_SESSION", 0)
         assert client.get("/api/stream/market").status_code == 429

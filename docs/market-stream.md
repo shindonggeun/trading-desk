@@ -65,7 +65,8 @@ SSE 형식 그대로다: `event:` 가 종류, `data:` 가 JSON 한 줄, 데이�
 | `reset` | `{"v":1, "reason": "overflow"\|"shutdown"}` | 이 연결의 대기열이 넘쳤거나 서버가 내려갈 때. 바로 뒤에 스트림이 끝난다 | REST 로 다시 맞추고 재연결 |
 
 - **낡음(`stale`)**: 장중(수급 · 선물 세션)인데 그 채널의 마지막 이벤트가 3분보다 오래됐으면 `degraded` 에 든다. 구독 소켓이 살아 있어도 원천(collector)이 멈췄을 수 있어서다.
-- **버스 끊김(`bus_down`)**: api 가 Redis 구독을 잃으면 Redis 로 오는 채널(`flow` · `futures` · `alert`)이 `degraded` 다. 시세는 api 안(한투 실시간 · prewarm)에서도 오므로 `degraded` 에 넣지 않는다.
+- **시세 낡음(`stale`)**: 이 연결이 요청한 종목에 첫 시세가 없거나 마지막 발행이 30초보다 오래됐으면 `quote`를 `degraded`에 넣는다. 시세가 다시 들어오면 빠진다. 한투 실시간 관심 종목은 연결 시작과 heartbeat에서 갱신한다.
+- **버스 끊김(`bus_down`)**: 분리 모드의 api에서 Redis가 비활성이거나 구독이 끊기면 Redis로 오는 채널(`flow` · `futures` · `alert`)이 `degraded`다. 시세의 폴링 복귀는 이 연결이 요청한 종목의 시세 시각으로 판단한다.
 - 연결이 끊기면(네트워크 · 401 · 재배포) FE 는 바로 REST 한 번 → 기존 폴링 → 지터를 둔 재연결. REST 가 401 이면 로그인 처리.
 
 ## 3. 서버 구성

@@ -192,7 +192,8 @@ def is_activity(request: Request) -> bool:
     (a restart, a network change), while the screen that opens it has already made its own requests."""
     if request.headers.get(BACKGROUND_HEADER) == "1":
         return False
-    return not (request.method == "GET" and request.url.path.endswith("/stream"))
+    path = request.url.path
+    return not (request.method == "GET" and (path.endswith("/stream") or path == "/api/stream/market"))
 
 
 # #431 what a run cut off by a restart (a deploy) says on its failed screen
@@ -2114,11 +2115,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(422, f"at most {MARKET_STREAM_TICKERS} tickers")
         token = request.cookies.get(COOKIE)
         key = hash_token(token or "")
+        owner = await asyncio.to_thread(app.state.market_alerts.owner) == request.state.user.id
         if market_streams.get(key, 0) >= MARKET_STREAMS_PER_SESSION:
             raise HTTPException(429, f"at most {MARKET_STREAMS_PER_SESSION} market streams at once")
-        owner = await asyncio.to_thread(app.state.market_alerts.owner) == request.state.user.id
-        market_streams[key] = market_streams.get(key, 0) + 1
         sub = bus.subscribe(wanted, names, owner)
+        market_streams[key] = market_streams.get(key, 0) + 1
 
         def frame(event: str, data: dict, event_id: str | None = None) -> str:
             head = f"event: {event}\n" + (f"id: {event_id}\n" if event_id else "")
@@ -2126,33 +2127,40 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         async def frames():
             try:
+                watched_quotes = names if kis_feed is not None and "quote" in wanted else ()
+                for ticker in watched_quotes:
+                    kis_feed.want(ticker)
                 yield "retry: 3000" + NL2
                 for event in bus.snapshot(sub):
                     yield frame(event["kind"], event, event["event_id"])
-                degraded, _why = bus.degraded()
+                degraded, _why = bus.degraded(sub)
                 yield frame("ready", {"v": market_bus.VERSION, "channels": list(wanted), "bus": bus.mode,
                                       "degraded": degraded})
                 loop = asyncio.get_running_loop()
-                beat = loop.time()
+                next_check = loop.time() + market_bus.HEARTBEAT_SEC
                 while not await request.is_disconnected():
                     try:
-                        event = await asyncio.wait_for(sub.queue.get(), market_bus.HEARTBEAT_SEC)
+                        event = await asyncio.wait_for(sub.queue.get(), max(0, next_check - loop.time()))
                     except TimeoutError:
                         event = None
+                    heartbeat = loop.time() >= next_check
+                    if heartbeat:
+                        # Logout, revocation, or expiry takes effect before sending more market data.
+                        if await asyncio.to_thread(auth.resolve, token, touch=False) is None:
+                            return
+                        for ticker in watched_quotes:
+                            kis_feed.want(ticker)
+                        next_check = loop.time() + market_bus.HEARTBEAT_SEC
                     if sub.overflowed or not bus.on:
                         yield frame("reset", {"v": market_bus.VERSION, "reason": "overflow" if bus.on else "shutdown"})
                         return
                     if event is not None:
                         yield frame(event["kind"], event, event["event_id"])
-                    now_degraded, why = bus.degraded()
+                    now_degraded, why = bus.degraded(sub)
                     if now_degraded != degraded:
                         degraded = now_degraded
                         yield frame("degraded", {"v": market_bus.VERSION, "degraded": degraded, "reason": why})
-                    if loop.time() - beat >= market_bus.HEARTBEAT_SEC:
-                        beat = loop.time()
-                        # logout, revoke or expiry ends the stream; the check is not activity (an open tab idles)
-                        if await asyncio.to_thread(auth.resolve, token, False) is None:
-                            return
+                    if heartbeat:
                         yield frame("heartbeat", {"v": market_bus.VERSION,
                                                   "t": datetime.now(UTC).isoformat(timespec="seconds"),
                                                   "degraded": degraded})

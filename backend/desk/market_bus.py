@@ -37,6 +37,7 @@ KINDS = ("quote", "flow", "futures", "alert")
 DEFAULT_CHANNELS = ("flow", "futures", "alert")
 REMOTE_KINDS = ("flow", "futures", "alert")   # what an api process only learns over Redis when split
 QUOTE_GAP_SEC = 1.0          # one ticker's quote at most this often
+QUOTE_STALE_SEC = 30.0       # keep polling when a requested ticker has stopped moving
 STALE_SEC = 180.0            # a channel expected to move that has been quiet this long is degraded
 HEARTBEAT_SEC = 15.0
 LISTEN_POLL_SEC = 1.0        # one wait for a message on the subscription (then a ping when quiet)
@@ -80,6 +81,7 @@ class Bus:
         self.on = False
         self.mode = "local"            # local | redis
         self.subscribe_remote = False
+        self._remote_required = False
         self._clock = clock
         self._loop: asyncio.AbstractEventLoop | None = None
         self._origin = uuid.uuid4().hex[:12]
@@ -90,7 +92,7 @@ class Bus:
         self._expect: dict[str, Callable[[], bool]] = {}
         self._bus_down = False
         self._quote_sent: dict[str, float] = {}
-        self._quote_pending: dict[str, dict] = {}
+        self._quote_pending: dict[str, tuple[dict, bool]] = {}
         self._tasks: set[asyncio.Task] = set()
         self._listener = None
         self._counts = {k: 0 for k in KINDS} | {"published_remote": 0, "received_remote": 0, "dropped": 0,
@@ -108,6 +110,8 @@ class Bus:
         remote = self.on and role != "all" and shared_cache.enabled()
         self.mode = "redis" if remote else "local"
         self.subscribe_remote = remote and role == "api"
+        self._remote_required = role == "api"
+        self._bus_down = self._remote_required
         if self.subscribe_remote:
             self._listener = shared_cache.listener(settings)
             self._spawn(self._listen())
@@ -139,7 +143,7 @@ class Bus:
             return
         now = datetime.now(UTC)
         event = {"v": VERSION, "kind": kind, "key": str(key),
-                 "event_id": f"{kind}:{key}:{int(now.timestamp() * 1000)}:{self._origin[:6]}",
+                 "event_id": uuid.uuid4().hex,
                  "source": source, "source_at": source_at,
                  "observed_at": now.isoformat(timespec="milliseconds"), "payload": payload}
         if _on_loop(self._loop):
@@ -148,30 +152,36 @@ class Bus:
             with contextlib.suppress(RuntimeError):     # the loop is closing
                 self._loop.call_soon_threadsafe(self._admit, event)
 
-    def _admit(self, event: dict) -> None:
+    def _admit(self, event: dict, relay: bool = True) -> None:
         if event["kind"] != "quote":
-            self._emit(event)
+            self._emit(event, relay)
             return
         key, now = event["key"], self._clock()
+        latest = self._latest.get(("quote", key))
+        if latest is not None and event["observed_at"] < latest["observed_at"]:
+            return
+        pending = self._quote_pending.get(key)
+        if pending is not None:
+            if event["observed_at"] >= pending[0]["observed_at"]:
+                self._quote_pending[key] = event, relay
+            return
         wait = QUOTE_GAP_SEC - (now - self._quote_sent.get(key, -math.inf))
         if wait <= 0:
             self._quote_sent[key] = now
-            self._emit(event)
+            self._emit(event, relay)
             return
-        first = key not in self._quote_pending
-        self._quote_pending[key] = event                # the newest wins
-        if first:
-            self._loop.call_later(wait, self._flush_quote, key)
+        self._quote_pending[key] = event, relay
+        self._loop.call_later(wait, self._flush_quote, key)
 
     def _flush_quote(self, key: str) -> None:
-        event = self._quote_pending.pop(key, None)
-        if event is not None and self.on:
+        pending = self._quote_pending.pop(key, None)
+        if pending is not None and self.on:
             self._quote_sent[key] = self._clock()
-            self._emit(event)
+            self._emit(*pending)
 
-    def _emit(self, event: dict) -> None:
+    def _emit(self, event: dict, relay: bool) -> None:
         self._deliver(event)
-        if self.mode == "redis":
+        if relay and self.mode == "redis":
             self._spawn(self._publish_remote(event))
 
     def _deliver(self, event: dict) -> None:
@@ -254,7 +264,7 @@ class Bus:
         if event.pop("origin", None) == self._origin:      # our own, already delivered
             return
         self._counts["received_remote"] += 1
-        self._deliver(event)
+        self._admit(event, relay=False)
 
     # -- streams ---------------------------------------------------------------------------------------
     def subscribe(self, channels: tuple[str, ...], tickers: frozenset[str], owner: bool) -> Subscription:
@@ -269,12 +279,16 @@ class Bus:
         """The latest event of every key the stream asked for (alerts are not replayed: REST timeline)."""
         return [e for (kind, _key), e in list(self._latest.items()) if kind != "alert" and sub.wants(e)]
 
-    def degraded(self) -> tuple[list[str], str | None]:
+    def degraded(self, sub: Subscription | None = None) -> tuple[list[str], str | None]:
         """The channels a page should poll again, and why (``bus_down`` before ``stale``)."""
         out, reason = [], None
-        if self.subscribe_remote and self._bus_down:
+        if self._remote_required and self._bus_down:
             out, reason = list(REMOTE_KINDS), "bus_down"
         now = self._clock()
+        if sub is not None and "quote" in sub.channels and any(
+                now - self._quote_sent.get(ticker, -math.inf) > QUOTE_STALE_SEC for ticker in sub.tickers):
+            out.append("quote")
+            reason = reason or "stale"
         for kind, live in self._expect.items():
             if kind in out:
                 continue

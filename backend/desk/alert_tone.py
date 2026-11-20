@@ -52,6 +52,8 @@ def tone(alert: dict) -> str:
         return "caution" if rule == "nq_from_high" and severity != "strong" else "warning"
     if kind == "flow_warn":
         return "warning" if severity == "strong" else "caution"
+    if kind == "program_alert":          # #743 🟢 매수 전환 · 🟠 매도 전환
+        return "positive" if rule == "buy_turn" else "caution"
     if alert.get("who") == "individual":
         return "neutral"
     if rule == "sell_shrink":
@@ -81,6 +83,9 @@ def reading(alert: dict, t: str | None = None) -> str:
     if alert.get("kind") == "nq_alert":
         return ("나스닥 선물이 장중 고점에서 밀림 — 미국 기술주 약세 쪽" if t == "caution"
                 else "나스닥 선물 급락 — 국장 시초가 · 반도체에 부담")
+    if alert.get("kind") == "program_alert":
+        return ("프로그램 매수 유입 — 지수(대형주)에 우호적" if rule == "buy_turn"
+                else "프로그램 매도 출회 — 지수(대형주)에 부담")
     if alert.get("kind") == "flow_warn":
         if rule == "retail_alone":
             return "개인 혼자 받는 장 — 외인 · 기관이 빠져나가는 중, 하락 압력 경계"

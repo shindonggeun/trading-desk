@@ -3305,6 +3305,7 @@ class PushKindsIn(BaseModel):
     line_signal: bool = True        # #613 channel / trendline signals (the watch itself is off until set)
     holding_alert: bool = True      # #694 each holding's stop / take-profit (desk.holding_watch)
     sector_mover: bool = True       # #680 a sector's big day and the stocks that drove it (desk.sector_movers)
+    program_alert: bool = True      # #743 program trading buy / sell turns (desk.program_flow)
     # #641 the flow / NQ=F alerts by tone (desk.alert_tone)
     tone_positive: bool = True
     tone_neutral: bool = True

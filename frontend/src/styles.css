@@ -2882,3 +2882,10 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   .pattern-facts { grid-template-columns: minmax(0, 1fr); }
   .pattern-facts dd { margin-bottom: 4px; }
 }
+
+/* #654 분석 차트 실시간 이름표 — 실제 체결은 초록 점, 추정 · 마지막 값은 노란 점, 실패 중이면 흐리게 */
+.chart-live-tag { margin-left: 6px; white-space: nowrap; }
+.chart-live-tag::before { content: "●"; margin-right: 3px; font-size: 0.8em; color: var(--ok); }
+.chart-live-tag.chart-live-est::before { color: var(--warn); }
+.chart-live-tag.chart-live-stale { opacity: 0.6; }
+.chart-live-tag.chart-live-stale::before { color: var(--muted); }

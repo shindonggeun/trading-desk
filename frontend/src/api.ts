@@ -152,6 +152,27 @@ export interface Candles {
   truncated?: boolean;
   /** #559 일봉만: 마지막 봉의 장이 얼마나 지났는지(0~1). 끝난 봉 · 하루 장이 없는 시장은 null */
   session_elapsed?: number | null;
+  /** #653 이 봉 원천이 얼마나 늦는지(초) — 야후 국장 · CME 선물은 10~20분. 보이기만 한다 */
+  delay_sec?: number | null;
+}
+
+/** #653 GET /api/candles/live — 마지막 봉을 지금 값으로 이어 붙인 것. bar.at 은 봉 시작(UTC ISO).
+ *  state: updated(마지막 봉이 움직임) · appended(새 봉) · price_only(봉은 그대로, 값만 — 체결 · 추정이 없거나 추정이 실제 봉 칸에 듦) */
+export interface CandleLive {
+  ticker: string;
+  interval: string;
+  bar: (Candles["bars"][number] & { estimated?: boolean }) | null;
+  state: "updated" | "appended" | "price_only";
+  price: number | null;
+  /** kis · toss · yahoo · nxt · krx-overtime · binance-estimate */
+  source: string;
+  estimated: boolean;
+  live?: boolean;
+  session: "regular" | "pre" | "post" | "overnight" | "closed" | string;
+  price_at: string | null;
+  delay_sec: number | null;
+  series_source?: string | null;
+  fetched_at: string;
 }
 
 export type Alignment = "with_plan" | "against_plan" | "plan_flat" | "no_plan";
@@ -326,6 +347,9 @@ export const api = {
         (wanted.length ? `&indicators=${encodeURIComponent(wanted.join(","))}` : ""),
     );
   },
+  /** #653 마지막 봉 · 현재가(서버 2초 캐시) — 차트가 보일 때만 몇 초마다 */
+  candlesLive: (ticker: string, interval: CandleInterval) =>
+    call<CandleLive>(`/api/candles/live?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(interval)}`),
   /** #203 RSI · 스토캐스틱 과열 · 침체 판정과 과거 극단 뒤 통계(레버리지는 기초자산 판정도) */
   oscillator: (ticker: string, interval: "1d" | "1w" = "1d") =>
     call<OscillatorView>(`/api/oscillator?ticker=${encodeURIComponent(ticker)}&interval=${interval}`),

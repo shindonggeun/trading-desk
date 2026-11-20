@@ -16,8 +16,8 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { api, ApiError, type CandleInterval, type Candles, type OscillatorView, type OscReading, type ReviewRow } from "../api";
+import { type ReactNode, type RefObject, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { api, ApiError, type CandleInterval, type CandleLive, type Candles, type OscillatorView, type OscReading, type ReviewRow } from "../api";
 import { price } from "../format";
 import FillsTable from "./FillsTable";
 import { drawEntry, useEntryNow } from "./chartEntry";
@@ -42,6 +42,7 @@ import PatternCard, { patternKey } from "./PatternCard";
 import { clipPath, ConeShade, directionLabel, OUTLOOK_PERIODS, outlookCone } from "./chartOutlook";
 import { css, useColorScheme } from "../chartColors";
 import { usePoll } from "../poll";
+import { delayText, LIVE_NOTE, liveLabel, liveMs, useInView } from "../liveBar";
 
 export type Interval = Exclude<CandleInterval, "1m">;
 const INTERVALS: { iv: Interval; label: string; count: number }[] = [
@@ -328,6 +329,94 @@ type Drawn = {
   alive: { current: boolean };
 };
 
+const ohlc = (b: Row["bar"]) => ({ open: b.open, high: b.high, low: b.low, close: b.close });
+/** 봉 한 칸(초) — 실시간 값이 이보다 오래 끊겼다 오면(가린 탭 · 화면 밖) 그 사이 봉이 빠지므로 봉을 다시 받는다 */
+const STEP_SEC: Record<Interval, number> = {
+  "5m": 300, "15m": 900, "30m": 1800, "60m": 3600, "120m": 7200, "240m": 14400, "1d": 86400, "1w": 7 * 86400, "1M": 28 * 86400, "1y": 365 * 86400,
+};
+
+/**
+ * #654 마지막 봉 · 현재가를 몇 초마다(GET /api/candles/live, #653) — 차트가 화면에 보이고 탭이 보일 때만 묻는다.
+ * 차트를 다시 만들지 않고 series.update 로 마지막 봉만: 진행 중 봉은 반투명 몸통 + 테두리, 새 봉이 열리면 앞 봉은 보통 색으로.
+ * 추정 값이 실제 봉 칸에 들면(price_only) 봉은 그대로 두고 "추정" 점선만. 실패(503)면 그린 봉 그대로 둔다.
+ * 이 이름표만 몇 초마다 다시 그려진다(큰 차트 컴포넌트는 그대로).
+ */
+function LiveBarTag({ drawn, ticker, interval, watch, fallback, onStale }: {
+  drawn: Drawn | null;
+  ticker: string;
+  interval: Interval;
+  /** 이 요소가 화면 밖이면 쉰다 */
+  watch: RefObject<HTMLElement | null>;
+  /** 실시간 값이 아직 없을 때 적을 봉 원천 */
+  fallback: string;
+  /** 봉 한 칸보다 오래 쉬었다 돌아왔다 — 봉을 다시 받아 달라 */
+  onStale: () => void;
+}) {
+  const inView = useInView(watch);
+  const [live, setLive] = useState<CandleLive | null>(null);
+  useEffect(() => setLive(null), [ticker, interval]);
+  const poll = usePoll(drawn && inView ? `candle-live:${ticker}:${interval}` : null, () => api.candlesLive(ticker, interval),
+    liveMs(INTRADAY.has(interval)), { onData: setLive });
+  const painted = useRef<{ drawn: Drawn; key: Key; bar: Row["bar"] } | null>(null);
+  // 마지막으로 값을 받은 때(차트를 새로 그린 때부터) — 화면 밖 · 가린 탭에서는 묻지 않으므로 오래 비면 쉬다 온 것
+  const heard = useRef<{ drawn: Drawn | null; at: number }>({ drawn: null, at: 0 });
+  if (heard.current.drawn !== drawn) heard.current = { drawn, at: Date.now() };
+  useEffect(() => {
+    if (!drawn || !live || !drawn.alive.current || live.interval !== drawn.interval) return;
+    const away = Date.now() - heard.current.at > STEP_SEC[drawn.interval] * 1000;
+    heard.current = { drawn, at: Date.now() };
+    if (away) {   // 그 사이 끝난 봉들이 빠진다 — 이어 붙이지 말고 봉을 다시 받는다
+      onStale();
+      return;
+    }
+    const { series, volume, rows, intraday } = drawn;
+    const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
+    const prev = painted.current?.drawn === drawn ? painted.current : null;
+    const bar = live.state === "price_only" ? null : live.bar;
+    // 체결이 멈췄다(장 마감 · 추정만) — 진행 중으로 칠했던 봉을 보통 색으로(같은 봉이면 서버의 마지막 값으로)
+    if (!bar && prev) {
+      const same = live.bar && (intraday ? kstStamp(live.bar.at) : kstDay(live.bar.at)) === prev.key;
+      try {
+        series.update({ time: time(prev.key), ...ohlc(same && live.bar ? live.bar : prev.bar) });
+      } catch {
+        /* 이번만 버린다 */
+      }
+      painted.current = null;
+    }
+    if (bar && rows.length) {
+      const key: Key = intraday ? kstStamp(bar.at) : kstDay(bar.at);
+      const lastKey = prev?.key ?? rows[rows.length - 1].key;
+      if (key >= lastKey) {   // 더 앞 봉이면(원천이 막 바뀐 때 등) 건드리지 않는다 — update 가 throw 한다
+        try {
+          if (prev && prev.key < key) series.update({ time: time(prev.key), ...ohlc(prev.bar) }, true);
+          const c = css(bar.close >= bar.open ? "--up" : "--down");
+          series.update({ time: time(key), ...ohlc(bar), color: withAlpha(c, 0.35), borderColor: c, wickColor: c });
+          if (bar.volume > 0) volume.update({ time: time(key), value: bar.volume, color: withAlpha(c, 0.33) });
+          painted.current = { drawn, key, bar };
+        } catch {
+          /* 시간축과 맞지 않는 값은 이번만 버린다 */
+        }
+      }
+    }
+    if (live.state === "price_only" && live.estimated && live.price != null) {
+      const line = series.createPriceLine({ price: live.price, title: "추정", color: css("--muted"), lineWidth: 1,
+        lineStyle: LineStyle.Dashed, axisLabelVisible: true });
+      return () => {
+        if (drawn.alive.current) series.removePriceLine(line);
+      };
+    }
+    // onStale 은 부모의 useCallback — 값이 올 때만 다시 본다
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawn, live]);
+  if (!live || live.interval !== interval) return fallback ? <>{` · ${fallback}`}</> : null;
+  const real = live.live !== false && !live.estimated;
+  return (
+    <span className={`chart-live-tag${real ? "" : " chart-live-est"}${poll.failing ? " chart-live-stale" : ""}`} title={LIVE_NOTE}>
+      {liveLabel(live)}{poll.failing ? " · 다시 시도 중" : ""}
+    </span>
+  );
+}
+
 /** 계획의 진입 · 손절 · 목표 말고 더 그을 가로선(관망 계획의 롱 · 숏 진입 조건 등, #68). */
 export interface ExtraLine {
   price: number;
@@ -398,6 +487,9 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   const wanted = Math.min(COUNT[interval] * times, MAX_BARS);
   // 더 받은 뒤 새 차트에서 보던 자리를 지키려고: 받기 전 보이던 논리 범위와 봉 수
   const keepView = useRef<{ from: number; to: number; bars: number } | null>(null);
+  // #654 실시간 값이 오래 끊겼다 돌아오면 봉을 다시 받는다 — 지우지 않고 받은 뒤 갈아 끼운다
+  const [refreshed, setRefreshed] = useState(0);
+  const quietReload = useRef(false);
   const loadingOlder = useRef(false);
   const [fills, setFills] = useState<ReviewRow[]>([]);
   // #334 체결 표에서 고른 체결(filled_at) — 그 봉의 마커를 크게
@@ -424,6 +516,13 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     };
   }, [ticker, oscInterval, show.osc]);
   const [drawn, setDrawn] = useState<Drawn | null>(null);
+  const reloadBars = useCallback(() => {
+    // 보던 논리 범위 그대로(봉 수가 같으면 오른쪽 끝이 새 마지막 봉)
+    const r = drawn?.alive.current ? drawn.chart.timeScale().getVisibleLogicalRange() : null;
+    if (r && drawn) keepView.current = { from: r.from, to: r.to, bars: drawn.rows.length };
+    quietReload.current = true;
+    setRefreshed((n) => n + 1);
+  }, [drawn]);
   const box = useRef<HTMLDivElement>(null);
   // #550 이동평균 선마다 켜고 끄기(브라우저에 기억) · 보조 칸 이름표 위치 · 펼친 설명
   const [maOn, setMaOn] = useState<MaOn>(loadMaOn);
@@ -772,10 +871,11 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   useEffect(() => {
     let live = true;
     // 과거 봉을 더 받을 땐 지금 차트를 둔 채 받는다(깜빡임 없이)
-    if (times === 1) {
+    if (times === 1 && !quietReload.current) {
       keepView.current = null;
       setCandles(null);
     }
+    quietReload.current = false;
     setFailed(false);
     api
       .candles(ticker, interval, wanted,
@@ -789,7 +889,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       live = false;
       loadingOlder.current = false;
     };
-  }, [ticker, interval, wanted, show.rsi, show.stoch, show.bb]);
+  }, [ticker, interval, wanted, show.rsi, show.stoch, show.bb, refreshed]);
 
   // 이 종목 체결만. 브로커가 체결 내역을 안 주거나 실패하면 마커 없이 그린다.
   useEffect(() => {
@@ -1890,7 +1990,11 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       <div className="price-chart-head">
         <h3>
           {title ?? "가격 차트"}{" "}
-          <span className="muted small">{title !== ticker && `${ticker} · `}{currency}{candles ? ` · ${candles.source}` : ""}</span>
+          <span className="muted small">{title !== ticker && `${ticker} · `}{currency}</span>
+          <span className="muted small">
+            <LiveBarTag drawn={drawn} ticker={ticker} interval={interval} watch={section} onStale={reloadBars}
+              fallback={candles ? [candles.source, delayText(candles.delay_sec)].filter(Boolean).join(" · ") : ""} />
+          </span>
         </h3>
         <div className="chips chart-intervals" role="group" aria-label="봉 주기">
           {INTERVALS.map(({ iv, label }) => (

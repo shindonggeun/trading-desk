@@ -69,7 +69,7 @@ const MAX_BARS = 2000;
 // 보이는 범위의 왼쪽 끝이 첫 봉에서 이만큼 안쪽이면 더 받는다
 const OLDER_EDGE = 5;
 
-type Show = { levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; pattern: boolean; proj: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean; bz: boolean; entry: boolean; gaps: boolean; ma: boolean; chan: boolean; ltrend: boolean };
+type Show = { long: boolean; levels: boolean; pb: boolean; sr: boolean; all: boolean; vp: boolean; trend: boolean; pattern: boolean; proj: boolean; fib: boolean; fills: boolean; analysis: boolean; rsi: boolean; opt: boolean; stoch: boolean; bb: boolean; osc: boolean; bz: boolean; entry: boolean; gaps: boolean; ma: boolean; chan: boolean; ltrend: boolean };
 const SHOW_LABEL: Record<keyof Show, string> = {
   levels: "타점선", pb: "플레이북", sr: "지지 · 저항", all: "모든 지지 · 저항", vp: "매물대", trend: "추세선", pattern: "삼각수렴 · 쐐기", proj: "예상도", fib: "피보나치", fills: "매수 · 매도", analysis: "분석일", rsi: "RSI",
   opt: "옵션 벽 · 맥스 페인",
@@ -78,6 +78,7 @@ const SHOW_LABEL: Record<keyof Show, string> = {
   gaps: "안 메운 갭 · 메움 확률",
   chan: "평행 채널(분봉 · 일봉)",
   ltrend: "짧은 추세선 · 이탈 표시",
+  long: "긴 추세선(일봉 · 몇 달)",
   stoch: "스토캐스틱", bb: "볼린저밴드(20)", osc: "과열 · 침체 표시",
   ma: "이동평균(5 · 20 · 60 · 120)",
 };
@@ -86,16 +87,17 @@ const US_TICKER = /^[A-Z]{1,6}(?:[.-][A-Z])?$/;
 const WALL_RANGE = 0.15;
 const WALLS_SHOWN = 2;
 // #98: 지지 · 저항은 가까운 3개씩만, 피보나치는 켤 때만 — 차트가 선으로 덮이지 않게
-const DEFAULT_SHOW: Show = { levels: true, pb: true, sr: true, all: false, vp: true, trend: true, pattern: false, proj: false, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true, bz: true, entry: true, gaps: true, ma: true, chan: true, ltrend: true };
+const DEFAULT_SHOW: Show = { long: true, levels: true, pb: true, sr: true, all: false, vp: true, trend: true, pattern: false, proj: false, fib: false, fills: true, analysis: true, rsi: true, opt: true, stoch: true, bb: false, osc: true, bz: true, entry: true, gaps: true, ma: true, chan: true, ltrend: true };
 // #298 표시 묶음: 가격 칸 위의 선 · 표시만 한 번에 바꾼다(RSI · 스토캐스틱 칸 · #550 이동평균은 그대로). 체크를 손으로 바꾸면 "직접".
 // #313 "타점 보기" = 지금가 기준 최적 타점 + 분석 타점선 · 체결 · 분석일만(처음 여는 사람의 기본)
 type Preset = "entry" | "sr" | "trend" | "all" | "custom";
 const PRESET_LABEL: Record<Preset, string> = { entry: "타점 보기", sr: "지지·저항만", trend: "추세·패턴", all: "전부", custom: "직접" };
-const OVERLAYS: (keyof Show)[] = ["levels", "pb", "sr", "all", "vp", "trend", "pattern", "proj", "fib", "fills", "analysis", "opt", "bb", "osc", "bz", "entry", "gaps", "chan", "ltrend"];
+const OVERLAYS: (keyof Show)[] = ["levels", "pb", "sr", "all", "vp", "trend", "pattern", "proj", "fib", "fills", "analysis", "opt", "bb", "osc", "bz", "entry", "gaps", "chan", "ltrend", "long"];
 const PRESET_ON: Record<Exclude<Preset, "custom">, (keyof Show)[]> = {
-  entry: ["entry", "levels", "fills", "analysis", "gaps"],
-  sr: ["sr", "vp", "gaps"],
-  trend: ["sr", "trend", "pattern", "fib", "chan", "ltrend"],
+  // #701 긴 추세선은 몇 달 동안 지켜진 선이라 어느 묶음에서나(타점 · 지지저항 · 추세) 보인다
+  entry: ["entry", "levels", "fills", "analysis", "gaps", "long"],
+  sr: ["sr", "vp", "gaps", "long"],
+  trend: ["sr", "trend", "pattern", "fib", "chan", "ltrend", "long"],
   all: OVERLAYS,
 };
 function applyPreset(show: Show, p: Exclude<Preset, "custom">): Show {
@@ -141,7 +143,7 @@ function loadPrefs(): { interval: Interval; show: Show; preset: Preset; custom: 
     // #466 갭 표시가 생기기 전 설정: 고른 묶음을 따르고, "직접" 이면 켠다
     if (typeof raw.show?.gaps !== "boolean") show.gaps = preset === "custom" || PRESET_ON[preset].includes("gaps");
     // #612 평행 채널 · 짧은 추세선이 생기기 전 설정: 고른 묶음을 따르고, "직접" 이면 켠다
-    for (const k of ["chan", "ltrend"] as const) if (typeof raw.show?.[k] !== "boolean") show[k] = preset === "custom" || PRESET_ON[preset].includes(k);
+    for (const k of ["chan", "ltrend", "long"] as const) if (typeof raw.show?.[k] !== "boolean") show[k] = preset === "custom" || PRESET_ON[preset].includes(k);
     const custom = { ...show };
     for (const k of Object.keys(DEFAULT_SHOW) as (keyof Show)[]) if (typeof raw.custom?.[k] === "boolean") custom[k] = raw.custom[k];
     if (typeof raw.custom?.entry !== "boolean") custom.entry = false;
@@ -911,7 +913,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
 
   // #612 평행 채널 · 짧은 추세선 — 분봉은 1분마다 다시 받는다(서버는 같은 마지막 봉 · 종가면 다시 계산하지 않는다).
   // DEV 에서 API 가 없으면(#611 전) 그린 봉으로 만든 가짜를 쓴다
-  const wantLines = (show.chan || show.ltrend) && isLineTf(interval);
+  const wantLines = (show.chan || show.ltrend || (show.long && interval === "1d")) && isLineTf(interval);
   useEffect(() => {
     setLinesRep(null);
     setLinePick(null);
@@ -1515,7 +1517,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // 짧은 추세선은 다른 색(주황), 이탈한 선은 파선 + 이탈 봉에 화살표. 선은 로그 가격 × 봉 순서 직선(#611 과 같게),
   // 축 범위엔 넣지 않는다(바깥 선이 봉을 누르지 않게). 가격축 이름표는 첫 채널 상 · 하단과 추세선만.
   useEffect(() => {
-    if (!drawn || !lines || lines.timeframe !== drawn.interval || (!show.chan && !show.ltrend)) return;
+    if (!drawn || !lines || lines.timeframe !== drawn.interval || (!show.chan && !show.ltrend && !show.long)) return;
     const { chart, series, rows, intraday } = drawn;
     if (rows.length < 2) return;
     const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
@@ -1532,7 +1534,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, autoscaleInfoProvider: () => null };
     const made: { pick: LinePick; series: ISeriesApi<"Line"> }[] = [];
     const marks: { key: Key; m: Omit<SeriesMarker<Time>, "time"> }[] = [];
-    type Style = { color: string; lineWidth: 1 | 2 | 3; lineStyle: LineStyle; lastValueVisible?: boolean; title?: string };
+    type Style = { color: string; lineWidth: 1 | 2 | 3 | 4; lineStyle: LineStyle; lastValueVisible?: boolean; title?: string };
     // 두 점(또는 끝점 + 봉당 기울기)으로, 그 선이 시작한 봉(보는 기간 전이면 첫 봉)부터 마지막 봉까지
     const draw = (a: { at: string; price: number }, b: { at: string; price: number }, slopePct: number, style: Style, pick: LinePick) => {
       const ia = idxOf(a.at);
@@ -1586,6 +1588,49 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
           }
         }
       }
+      // #701 긴 추세선(일봉 차트, #679) — 굵게(4), 지지는 지지색 · 저항은 저항색, 이탈은 파선. 닿은 자리마다 ↑(지지) · ↓(저항),
+      // 거짓 이탈(종가가 잠깐 넘었다 돌아온 구간)은 시작 봉에 옅은 점. 좁은 차트는 가격축 이름표를 빼고 표식만
+      if (show.long && drawn.interval === "1d") {
+        const narrow = (box.current?.clientWidth ?? 1000) < 520;
+        for (const t of lines.long_lines ?? []) {
+          if (!t.anchors[0]) continue;
+          const sup = t.kind === "support";
+          const color = css(sup ? "--sr-support" : "--sr-resistance");
+          const broken = t.status === "broken";
+          const label = `${t.timeframe === "1w" ? "주봉 " : ""}장기 ${sup ? "지지" : "저항"}${t.status === "testing" ? " 시험 중" : broken ? " 이탈" : ""}`;
+          const style = { color: broken ? withAlpha(color, 0.6) : color, lineWidth: 4 as const, lineStyle: broken ? LineStyle.Dashed : LineStyle.Solid,
+            lastValueVisible: !narrow, title: narrow ? "" : label };
+          if (t.timeframe === "1w") {
+            // 주봉 선은 기울기가 주봉 한 봉 기준이고 첫 기준점이 일봉 차트(130봉) 앞인 일이 많다 — 봉 순서가 아니라 시각으로
+            // 두 점(첫 기준점 · 끝점)을 로그 가격 직선으로 잇는다(주봉은 시각 간격이 고르다)
+            const ta = Date.parse(t.anchors[0].at), te = Date.parse(t.end.at);
+            if (!(te > ta) || !(t.anchors[0].price > 0) || !(t.end.price > 0)) continue;
+            const kt = Math.log(t.end.price / t.anchors[0].price) / (te - ta);
+            const data = [];
+            for (const r of rows) {
+              const tr = Date.parse(r.bar.at);
+              if (tr < ta) continue;
+              const v = t.end.price * Math.exp(kt * (tr - te));
+              if (Number.isFinite(v) && v > 0) data.push({ time: time(r.key), value: v });
+            }
+            if (data.length >= 2) {
+              const s = chart.addSeries(LineSeries, { ...quiet, ...style });
+              s.setData(data);
+              made.push({ pick: { kind: "long", id: t.id }, series: s });
+            }
+          } else {
+            draw(t.anchors[0], t.end, t.slope_pct_per_bar, style, { kind: "long", id: t.id });
+          }
+          for (const tp of t.touch_points) {
+            const bi = idxOf(tp.at);
+            if (bi != null) marks.push({ key: keys[bi], m: { position: sup ? "belowBar" : "aboveBar", shape: sup ? "arrowUp" : "arrowDown", color, text: "" } });
+          }
+          for (const fb of t.false_breaks) {
+            const bi = idxOf(fb.from);
+            if (bi != null) marks.push({ key: keys[bi], m: { position: sup ? "belowBar" : "aboveBar", shape: "circle", color: withAlpha(color, 0.45), text: narrow ? "" : "거짓 이탈" } });
+          }
+        }
+      }
     } catch {
       /* 이상한 선 하나 때문에 차트가 깨지지 않게 — 그린 것까지만 */
     }
@@ -1598,7 +1643,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       breakMarks.detach();
       for (const { series: s } of made) chart.removeSeries(s);
     };
-  }, [drawn, lines, show.chan, show.ltrend]);
+  }, [drawn, lines, show.chan, show.ltrend, show.long]);
 
   // #672 번호 표식 — 설명 칸의 ①… 을 차트 오른쪽 끝(마지막 봉 위) 그 가격 높이에. 확대 · 이동 · 크기 변화 때 다시 놓는다
   const [markPos, setMarkPos] = useState<{ n: number; x: number; y: number }[]>([]);
@@ -1715,8 +1760,9 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
 
   // 그 종류를 끄면 열린 카드도 닫는다
   useEffect(() => {
-    if (linePick && ((linePick.kind === "channel" && !show.chan) || (linePick.kind === "trend" && !show.ltrend))) setLinePick(null);
-  }, [linePick, show.chan, show.ltrend]);
+    if (linePick && ((linePick.kind === "channel" && !show.chan) || (linePick.kind === "trend" && !show.ltrend)
+      || (linePick.kind === "long" && !show.long))) setLinePick(null);
+  }, [linePick, show.chan, show.ltrend, show.long]);
 
   // #531 고른 추세선 강조 · 나머지 흐리게. 먼 선(far)을 고르면 그 선 값까지 가격축을 넓혀 보이게 한다
   useEffect(() => {

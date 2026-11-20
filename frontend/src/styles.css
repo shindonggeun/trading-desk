@@ -2949,3 +2949,6 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
   .price-chart-expanded .chart-read-wrap.on > .chart-read { flex: none; max-height: 40vh; }
   .price-chart-expanded .chart-read-wrap.on > .chart-and-fills { flex: 1 0 300px; height: auto; }
 }
+
+/* #701 긴 추세선 카드 — 시험 중 · 이탈을 먼저 한 줄로 */
+.line-card-alert { margin: 4px 0; padding: 4px 8px; border-radius: 6px; background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); }

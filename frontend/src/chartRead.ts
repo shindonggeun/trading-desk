@@ -101,7 +101,8 @@ export function beginnerLines(lines: LinesReport, marks: ReadMark[]): LinesRepor
   if (!channels.length && wantChannel) channels = lines.channels.slice(0, 1);
   const trendPrices = refs.filter((x) => x.r.kind === "trendline").map((x) => x.price);
   const trendlines = lines.trendlines.filter((t) => ids.has(t.id) || trendPrices.some((p) => Math.abs(t.end.price / p - 1) <= 0.005));
-  return { ...lines, channels, trendlines };
+  // #701 긴 추세선은 지금 시험 중인 것만(가격이 그 선 가까이 — 초보자가 지금 볼 선)
+  return { ...lines, channels, trendlines, long_lines: lines.long_lines?.filter((t) => t.status === "testing") };
 }
 
 // 칸 켜기 · 초보 모드는 이 브라우저에 기억한다

@@ -36,8 +36,9 @@ LIGHT = 0.25
 
 def pytest_collection_modifyitems(config, items):
     """``DESK_TEST_SHARD=i/n`` (CI matrix, #748): keep the i-th (1-based) of n shards. Greedy by cost - the SLOW
-    tests first, then the rest in collected order - each to the least loaded shard; the kept tests stay in
-    collected order. Deterministic, so every xdist worker of a shard collects the same set."""
+    tests first, then the rest in collected order - each to the least loaded shard. In the shard the SLOW tests
+    come first, the rest in collected order: ``--dist load`` hands the first tests out one per worker, so a slow
+    one starts at once instead of trailing the run. Deterministic, so every xdist worker collects the same set."""
     shard = os.getenv("DESK_TEST_SHARD")
     if not shard:
         return
@@ -51,7 +52,7 @@ def pytest_collection_modifyitems(config, items):
         if s == i - 1:
             mine.add(k)
     config.hook.pytest_deselected(items=[item for k, item in enumerate(items) if k not in mine])
-    items[:] = [item for k, item in enumerate(items) if k in mine]
+    items[:] = [items[k] for k in sorted(mine, key=lambda k: (-cost[k], k))]
 
 
 @pytest.fixture(scope="session")

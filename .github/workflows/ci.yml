@@ -106,7 +106,7 @@ jobs:
           for i in $(seq 1 30); do docker exec pg pg_isready -U desk -q && exit 0; sleep 1; done
           docker logs pg; exit 1
       # 워커마다 DB 를 따로 쓴다(tests/conftest.py pg_url). 느린 테스트 10개를 로그 끝에 남긴다
-      - run: pytest -q -n auto --dist worksteal --durations=10
+      - run: pytest -q -n auto --dist load --durations=10
 
   frontend:
     needs: changes

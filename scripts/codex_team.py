@@ -353,27 +353,46 @@ def main():
     team = Team(state_path())
     try:
         thread = os.environ.get("CODEX_THREAD_ID")
-        if args.command in ("peers", "bind"):
-            from codex_live import Client, same_repo, independent
-            with closing(Client(codex())) as client:
-                if args.command == "peers":
-                    rows = []
+        if args.command == "peers":
+            from codex_live import Client, LiveError, independent, same_repo
+            rows = []
+            try:
+                with closing(Client(codex())) as client:
                     for tid in client.loaded():
-                        row = client.call("thread/read", {"threadId": tid, "includeTurns": False})["thread"]
+                        result = client.call("thread/read", {"threadId": tid, "includeTurns": False})
+                        row = result.get("thread") if isinstance(result, dict) else None
+                        if not isinstance(row, dict) or row.get("id") != tid:
+                            raise LiveError("공용 서버 thread/read 응답의 수신 ID를 확인할 수 없습니다")
                         if not independent(row):
                             continue
                         try:
                             same_repo(row["cwd"], ROOT)
-                        except (ValueError, OSError, RuntimeError):
+                        except (KeyError, ValueError, OSError, RuntimeError):
                             continue
-                        rows.append({k: row.get(k) for k in ("id", "name", "cwd", "status")})
-                    print(json.dumps(rows, ensure_ascii=False, indent=2))
-                else:
-                    team.actor("supervisor", thread)
-                    row = client.target(args.thread)
-                    same_repo(row["cwd"], ROOT)
-                    team.join(args.role, args.thread, row["cwd"], args.takeover)
-                    print(f"{args.role}에 로드된 thread를 연결했습니다. 화면 표시는 별도 확인하세요.")
+                        peer = {k: row.get(k) for k in ("id", "name", "cwd", "source", "status")}
+                        peer["effectivePolicy"] = "확인 불가"
+                        rows.append(peer)
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
+                # Wire errors use controlled messages. Malformed responses and OS errors may contain local data.
+                reason = str(exc) if isinstance(exc, LiveError) else "공용 서버 연결 또는 응답을 확인할 수 없습니다"
+                print(f"오류: {reason}", file=sys.stderr)
+                rows.clear()
+                exit_code = 1
+            else:
+                exit_code = 0
+            if not rows:
+                print("수신 창에서 기존 inbox <역할>로 저장된 배정을 확인하세요.", file=sys.stderr)
+            if exit_code == 0:
+                print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return exit_code
+        elif args.command == "bind":
+            from codex_live import Client, same_repo
+            with closing(Client(codex())) as client:
+                team.actor("supervisor", thread)
+                row = client.target(args.thread)
+                same_repo(row["cwd"], ROOT)
+                team.join(args.role, args.thread, row["cwd"], args.takeover)
+                print(f"{args.role}에 로드된 thread를 연결했습니다. 화면 표시는 별도 확인하세요.")
         elif args.command == "join":
             token = os.environ.get("CODEX_TEAM_TOKEN")
             if token and args.role != os.environ.get("CODEX_TEAM_ROLE"):

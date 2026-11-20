@@ -886,6 +886,10 @@ export interface FlowRecord {
   investors: Partial<Record<Investor, FlowSide>>;
   /** 토스가 빠뜨리면 일부만 온다 */
   institution_breakdown: Partial<Record<InstitutionKind, FlowSide>>;
+  /** #676 오늘 장중 값을 한투(거래소 잠정치)에서 받았으면 "kis" — 없으면 토스 */
+  source?: "kis";
+  /** #676 한투가 잠깐 실패해 직전 한투 값을 그대로 보이는 중(최대 5분) */
+  held?: boolean;
 }
 
 /** GET /api/market/flow (backend desk/market_flow.py, #76) — records 는 최신순. */

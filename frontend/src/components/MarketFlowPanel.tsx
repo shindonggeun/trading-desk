@@ -335,6 +335,7 @@ export default function MarketFlowPanel() {
               {today && data?.freshness
                 ? `${data.freshness.source_updated_at ? ` · 원천 갱신 ${shortTime(data.freshness.source_updated_at)}` : ""}${data.freshness.fetched_at ? ` · 확인 ${shortTime(data.freshness.fetched_at)}` : ""}`
                 : latest.updated_at ? ` · ${shortTime(latest.updated_at)} 갱신` : ""}
+              {latest.source === "kis" ? (latest.held ? " · 한투 잠정치(직전 값)" : " · 한투 잠정치") : ""}
               {data?.source === "mock" ? " · 샘플" : ""}
             </span>
           </p>

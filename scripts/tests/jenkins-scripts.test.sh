@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # scripts/jenkins/vault-env.sh · wait-ci.sh 를 가짜 curl 로 돌려 본다 (#692 · #691). 네트워크 · Vault · GitHub 에 닿지 않는다.
-# jq 가 있어야 한다(CI · Jenkins agent 에는 있다). 없으면 건너뛴다.
+# Jenkinsfile 의 sh 블록은 dash 로 검사한다(dash 가 없으면 건너뛴다). vault-env · wait-ci 는 jq 가 있어야 한다(CI · Jenkins agent 에는 있다). 없으면 건너뛴다.
 #
 #   bash scripts/tests/jenkins-scripts.test.sh
 set -uo pipefail
 
-command -v jq > /dev/null || { echo "jq 가 없어 건너뛴다"; exit 0; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 TMP="$(mktemp -d)"
@@ -35,6 +34,53 @@ esac
 FAKE
 chmod +x "$TMP/bin/curl"
 export PATH="$TMP/bin:$PATH" FAKE_DIR="$TMP/fake"
+
+# ================= Jenkinsfile 의 sh 블록은 /bin/sh(dash)로 돈다 (#692: `${running:0:12}` → Bad substitution)
+# 블록을 모두 뽑아 dash -n 과 bash 전용 문법 검사를 하고, 배포 대상 확인 블록은 dash 로 실제로 돌린다.
+if command -v dash > /dev/null; then
+  SHDIR="$TMP/sh"; mkdir -p "$SHDIR"
+  for f in "$REPO_ROOT"/Jenkinsfile*; do
+    b=$(basename "$f")
+    awk -v dir="$SHDIR" -v name="$b" -v q="'''" '
+      inblk { if (index($0, q)) { inblk = 0; close(out) } else print > out; next }
+      index($0, q) { n++; out = dir "/" name ".multi" n ".sh"; inblk = 1 }
+    ' "$f"
+    grep -v "'''" "$f" | grep -oE "(sh|script:) '[^']+'" | sed -E "s/^(sh|script:) '//; s/'\$//" \
+      | awk -v dir="$SHDIR" -v name="$b" '{ n++; print > (dir "/" name ".line" n ".sh") }'
+  done
+  check "sh 블록을 찾는다(여러 줄 1개 이상)" yes "$(ls "$SHDIR"/*.multi*.sh > /dev/null 2>&1 && echo yes)"
+  BASHISM='\[\[|\$\{[A-Za-z_][A-Za-z0-9_]*:[^-=?+}]|\$\{[A-Za-z_][A-Za-z0-9_]*//?|\$\{#?[A-Za-z_][A-Za-z0-9_]*\[|[A-Za-z_][A-Za-z0-9_]*=\(|<\(|>\(|pipefail|&>|\$'"'"'|^[[:space:]]*function[[:space:]]|\[ [^]]* == '
+  bad=""
+  for s in "$SHDIR"/*.sh; do
+    dash -n "$s" 2> /dev/null || bad="$bad $(basename "$s"):syntax"
+    grep -qE "$BASHISM" "$s" && bad="$bad $(basename "$s"):$(grep -nE "$BASHISM" "$s" | head -n 1 | cut -d: -f1)"
+  done
+  check "sh 블록에 dash 가 못 읽는 문법이 없다" "" "$bad"
+  printf '%s\n' 'echo "${x:0:12}"' '[[ a ]]' 'echo "${x:-ok}"' > "$TMP/bashism.sh"
+  check "검사가 bash 문법만 잡는다(\${x:-} 는 POSIX)" 2 "$(grep -cE "$BASHISM" "$TMP/bashism.sh")"
+
+  # 배포 대상 확인(needsDeploy): 가짜 docker 가 운영 라벨을 돌려주고, 임시 git 저장소에서 차이를 본다
+  ND=$(grep -l 'org.opencontainers.image.revision' "$SHDIR"/*.multi*.sh | head -n 1)
+  printf '#!/bin/sh\n[ -n "$FAKE_REV" ] && echo "$FAKE_REV"\nexit 0\n' > "$TMP/bin/docker"; chmod +x "$TMP/bin/docker"
+  G="$TMP/repo"; mkdir -p "$G/backend" "$G/frontend"
+  git_() { git -C "$G" -c core.autocrlf=false -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" > /dev/null; }
+  git_ init -q; echo 1 > "$G/backend/a"; git_ add -A; git_ commit -qm c1; C1=$(git -C "$G" rev-parse HEAD)
+  echo 1 > "$G/frontend/b"; git_ add -A; git_ commit -qm c2; C2=$(git -C "$G" rev-parse HEAD)
+  echo 2 > "$G/backend/a"; git_ add -A; git_ commit -qm c3; C3=$(git -C "$G" rev-parse HEAD)
+  needs() {  # $1 운영 라벨, $2 대상 → 종료 코드
+    (cd "$G" && env FAKE_REV="$1" CONTAINER=trading-desk-backend SHA="$2" WATCH=backend dash -e "$ND") > "$TMP/out" 2>&1
+    echo $?
+  }
+  check "라벨이 없으면 배포(10)" 10 "$(needs "" "$C3")"
+  check "기록에 없는 운영 커밋이면 배포(10)" 10 "$(needs 0123456789abcdef0123456789abcdef01234567 "$C3")"
+  check "감시 경로가 그대로면 배포하지 않는다(0)" 0 "$(needs "$C1" "$C2")"
+  check "감시 경로가 바뀌면 배포(10)" 10 "$(needs "$C1" "$C3")"
+  check "커밋은 12자로 찍는다" 1 "$(grep -c "운영 $(printf %.12s "$C1") → 대상 $(printf %.12s "$C3")\$" "$TMP/out")"
+else
+  echo "dash 가 없어 Jenkinsfile sh 블록 검사를 건너뛴다"
+fi
+
+command -v jq > /dev/null || { echo "jq 가 없어 vault-env · wait-ci 검사를 건너뛴다"; [ "$FAILS" = 0 ] && exit 0; echo "${FAILS}개 실패"; exit 1; }
 
 # ================= vault-env.sh
 vault_env() {  # $1 = secret.json 내용, 나머지 = 추가 env

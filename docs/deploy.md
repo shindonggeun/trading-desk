@@ -401,3 +401,60 @@ TradingAgents SHA 를 올려 이 잠금이 빠지면 여기서 깨진다. 전제
 4. **#760 · #690**: 화면과 run 메모가 함께 읽는 캐시(수급 · 선물 · 시세 …)를 Redis 로 나누고, collector 가 모은 시세 · 수급 · 알림을 화면 SSE 로 흘린다. 없으면 api 의 캐시가 collector 의 수집을 보지 못한다.
 
 켠 뒤 확인: `docker ps --filter name=trading-desk` 에 컨테이너 3개가 healthy, 로그의 브로커 토큰 발급 줄이 `collector` 에서만(`toss token issued (collector)`), `GET /api/status` 의 작업들이 오류 없이 도는지.
+
+## 13. 공유 캐시 — 홈랩 Redis (#689, 선택)
+
+api · collector · analyst(#688) 가 따로 뜨면 같은 수급 · 시세를 프로세스마다 다시 부른다. Redis 를 켜면 collector 가 읽은 값을 api 가 먼저 읽는다.
+**비워 두면 지금처럼 프로세스 메모리 캐시만** 쓴다(아무 키도 필수가 아니다). 넣는 것 · 넣지 않는 것은 [security.md](security.md) §5.2.
+
+| 키 | 값 |
+|----|----|
+| `DESK_REDIS_SENTINELS` | `192.168.0.11:26379,192.168.0.13:26379,192.168.0.12:26379` (Infra `redis/README.md`) |
+| `DESK_REDIS_MASTER` | 비우면 `master-redis` |
+| `DESK_REDIS_PASSWORD` | Redis `requirepass` — **Vault 에만** |
+| `DESK_REDIS_URL` | Sentinel 대신 단일 서버(`redis://host:6379/0`, 시험용). Sentinel 이 있으면 무시 |
+
+| 공유 이름(`td:<이름>:…`) | 쓰는 쪽 → 읽는 쪽 | TTL |
+|------|------|-----|
+| `market_flow` · `futures_flow` | collector 스냅샷 잡(`fresh`) → api 카드. 실패한 읽기는 넣지 않는다 | 각 캐시 TTL |
+| `quote` | 먼저 읽은 프로세스 → 나머지 | 10초 |
+| `sr` · `gap_fill` · `oscillator` | 계산한 프로세스 → 나머지(메모리 → Redis 2단) | 각 캐시 TTL |
+
+나머지 메모리 캐시(추정치 종가 · 바이낸스 추정 · 공시 · 실시간 봉 · 롱숏 · NQ 한도 · 종목 프로필 · 예상치)는 한 프로세스만 쓰거나 값이 JSON 으로 돌아오지 않아 그대로 둔다.
+
+### 켜기 (사람이 한 번)
+
+```bash
+# 1) Vault 에 키 3개를 더한다 — PATCH(merge) 라 다른 키는 그대로다(POST 는 secret 전체를 덮어쓴다).
+#    토큰 · 비밀번호는 read -s 로 받아 파이프로만 넘긴다(argv · 셸 기록 · 파일에 남기지 않는다). 토큰은 3절처럼 ui-trading-desk 계정에서
+read -rs -p 'vault token: ' VAULT_TOKEN; echo
+read -rs -p 'redis password: ' P; echo
+printf '%s' "$P" | jq -Rs '{data: {DESK_REDIS_SENTINELS: "192.168.0.11:26379,192.168.0.13:26379,192.168.0.12:26379",
+                                  DESK_REDIS_MASTER: "master-redis", DESK_REDIS_PASSWORD: .}}' \
+  | curl -sS --fail -o /dev/null -X PATCH --header 'Content-Type: application/merge-patch+json' \
+      --header @<(printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN") --data @- \
+      https://vault.8llow8llowme.com/v1/kv/data/trading-desk/backend/prod/env && echo 넣음
+curl -sS --fail --header @<(printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN") \
+  https://vault.8llow8llowme.com/v1/kv/data/trading-desk/backend/prod/env | jq -r '.data.data | keys[]' | grep REDIS   # 이름만 확인
+unset VAULT_TOKEN P
+# 2) Jenkins trading-desk-backend 를 FORCE_DEPLOY 로 (손 배포면 .env.runtime 에 같은 3줄 → scripts/deploy.sh HEAD backend)
+```
+
+### 연결 확인 (배포 뒤)
+
+```bash
+ssh homelab-backend-server 'docker logs trading-desk-backend-prod 2>&1 | grep -E "shared cache (on|unreachable)" | tail -3'
+#   shared cache on (sentinel master-redis via 3 hosts)   ← 켜짐
+#   shared cache unreachable (...) - memory only for 30s  ← 닿지 않음: 앱은 메모리 캐시로 계속 돈다
+```
+
+- `/api/status` 의 `shared_cache`: `on` · `down_sec`(건너뛰는 남은 초) · `hits` · `misses` · `writes` · `skipped` · `errors` — 이 프로세스 것.
+- 키 확인(Redis 서버에서, 값은 보지 않는다): `redis-cli --scan --pattern 'td:*' | head` 와 `redis-cli ttl <키>` (-1 이면 TTL 없음 — 버그).
+  비밀번호는 `REDISCLI_AUTH` 환경 변수로 넘긴다(`-a` 는 argv 에 남는다).
+
+### 전 · 후 측정 (#689 완료 기준)
+
+1. 켜기 **전**, 장중(09:00–15:30 KST)에 `GET /api/perf/timings?reset=1` 로 비우고 1시간 뒤 `GET /api/perf/timings` 와 `GET /api/status` 를 저장한다.
+2. 켠 **뒤** 같은 요일 · 같은 시간대에 똑같이 한다.
+3. 비교: `/api/market/flow` · `/api/market/futures` · `/api/quote` · `/api/levels` · `/api/gaps` · `/api/oscillator` 의 p95,
+   그리고 `/api/status` `outbound` 의 `toss` · `kis`(그 프로세스가 `since` 부터 부른 수). api 프로세스의 수가 0 에 가까우면 완료.

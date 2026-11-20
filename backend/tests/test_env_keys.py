@@ -9,8 +9,10 @@ ROOT = BACKEND.parent
 
 # read by the CLI as a one-off input (create-user without a prompt): never kept in a file
 CLI_ONLY = {"DESK_NEW_PASSWORD"}
-# compose interpolation only (ports, limits, the network) - the app itself never reads them
-COMPOSE_ONLY = {"DESK_WEB_BIND", "DESK_WEB_PORT", "DESK_BACKEND_MEM_LIMIT", "DESK_WEB_MEM_LIMIT", "DESK_DOCKER_NETWORK"}
+# compose interpolation only (ports, limits, the network) - the app itself never reads them. DESK_BACKEND_SPLIT (#688)
+# is the deploy switch scripts/deploy-compose.sh reads; the compose keeps it as a label so Vault hands it over
+COMPOSE_ONLY = {"DESK_WEB_BIND", "DESK_WEB_PORT", "DESK_BACKEND_MEM_LIMIT", "DESK_WEB_MEM_LIMIT", "DESK_DOCKER_NETWORK",
+                "DESK_COLLECTOR_MEM_LIMIT", "DESK_ANALYST_MEM_LIMIT", "DESK_BACKEND_SPLIT"}
 SECRET = re.compile(r"KEY|SECRET|TOKEN|PASSWORD|CHAT_ID")
 
 

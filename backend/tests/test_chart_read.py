@@ -86,8 +86,28 @@ def test_each_side_keeps_its_own_nearest_lines():
             {"fill_price": 140.0, "direction": "down", "formed_at": "2026-01-02"}]   # 20 ATR away: not near
     got = chart_read.levels(frame, bars, "1d", 100.0, 2.0, gaps)
     assert [x["price"] for x in got["above"]] == [100.2, 101.5]
-    assert got["below"][0]["price"] == 99.8 and got["below"][1]["price"] == 99.0
-    assert "대칭 삼각 윗선(돌파 후)" in got["below"][1]["name"] and "98.0" not in str(got["below"])
+    assert [x["price"] for x in got["below"]] == [99.8, 99.0, 98.0]      # 97.6 within a quarter ATR of 98.0
+    assert "대칭 삼각 윗선(돌파 후)" in got["below"][1]["name"] and "140" not in str(got)
+    assert got["below"][2]["refs"] == [{"kind": "gap", "direction": "up", "formed_at": "2026-10-02"},
+                                       {"kind": "gap", "direction": "up", "formed_at": "2026-10-01"}]
+    assert got["below"][1]["refs"][0] == {"kind": "pattern", "pattern": None, "state": "broke_up", "edge": "upper"}
+
+
+def test_far_lines_are_kept_apart_and_a_fresh_break_is_a_line():
+    """#672 the three nearest a side, the next three folded away; the trendline just broken is near."""
+    frame = {"channels": [], "patterns": [],
+             "trendlines": [{"id": "T1", "state": "broken", "fresh_break": True, "kind": "support", "end": {"price": 100.5}},
+                            {"id": "T2", "state": "broken", "fresh_break": False, "kind": "support", "end": {"price": 100.7}}]}
+    bars = [{"at": f"t{i}", "open": 89.5, "high": 90, "low": 89, "close": 89.5, "volume": 1} for i in range(30)]
+    gaps = [{"fill_price": 101.0 + i, "direction": "down", "formed_at": f"2026-11-0{i + 1}"} for i in range(7)]
+    got = chart_read.levels(frame, bars, "1d", 100.0, 2.0, gaps)
+    assert got["above"][0] == {"price": 100.5, "name": "방금 깨진 상승 추세선 · 하락 갭 메움(2026-11-01)",
+                               "distance_pct": 0.5, "refs": [
+                                   {"kind": "trendline", "id": "T1", "side": "support", "broken": True},
+                                   {"kind": "gap", "direction": "down", "formed_at": "2026-11-01"}]}
+    assert [x["price"] for x in got["above"]] == [100.5, 102.0, 103.0]
+    assert [x["price"] for x in got["far"]["above"]] == [104.0, 105.0, 106.0]
+    assert "T2" not in str(got)
 
 
 def test_the_whole_read_skips_a_failed_timeframe_and_says_it_is_no_advice():

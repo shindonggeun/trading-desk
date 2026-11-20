@@ -25,7 +25,7 @@ set -euo pipefail
 : "${CI_REPO:?CI_REPO}" "${CI_SHA:?CI_SHA}"
 WF="${CI_WORKFLOW:-ci}" BRANCH="${CI_BRANCH:-develop}" POLL="${CI_POLL_SEC:-10}" SUPERSEDE="${CI_SUPERSEDE:-0}"
 API="https://api.github.com/repos/$CI_REPO"
-NEWER= SEEN=unread
+NEWER='' SEEN=unread
 
 api() {
   local args=(-sS --fail --connect-timeout 10 --max-time 30 -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
@@ -55,7 +55,7 @@ run_state() {
 # 머리 커밋의 취소는 사람이 취소했거나 아주 짧은 경쟁뿐이다 — 뒤 커밋 push 로 취소됐다면 머리는 이미 그 뒤 커밋이다.
 superseded() {
   local body state
-  NEWER= SEEN=unread
+  NEWER='' SEEN=unread
   body="$(api "$API/git/ref/heads/$BRANCH")" || return 1     # SHA 만 (commits/<branch> 는 파일 목록 · patch 까지 준다)
   NEWER="$(printf '%s' "$body" | jq -r '.object.sha // empty' 2>/dev/null)" || return 1
   [ -n "$NEWER" ] || return 1

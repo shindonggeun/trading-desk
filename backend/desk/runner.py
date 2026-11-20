@@ -45,7 +45,7 @@ from .leverage_analyst import (
     parse_pair,
     strip_extras,
 )
-from .plan import BIAS, parse_plan, with_sides
+from .plan import BIAS, HORIZON_LABELS, parse_plan, with_sides
 from .prices import CRYPTO_SUFFIXES, PriceSource, is_market_symbol
 from .profile import desk_portfolio
 from .recent import prompt_note as recent_note
@@ -70,8 +70,6 @@ class RunRequest:
     ticker: str
     trade_date: str
     name: str | None = None
-    # desk.profile.PROFILES key: the owner's style, handed to the deciding agents.
-    profile: str | None = None
     # desk.horizons.HORIZONS key: how long the trade is meant to live. None (older runs) = swing.
     horizon: str | None = None
     analysts: list[str] = field(default_factory=lambda: list(ANALYSTS))
@@ -185,10 +183,27 @@ def run_tradingagents(request: RunRequest, emit: Emit, portfolio: Any) -> RunRes
 _FAKE_ATR = {"scalp": 0.4, "intraday": 0.9, "short_swing": 3.0}
 
 
+def _fake_lines(main: str, levels: tuple[float, float, float]) -> str:
+    """#696: the PM's four horizon lines (desk.plan.split_horizon_lines); the run's own repeats its levels."""
+    out = []
+    for hid in all_horizons.ORDER:
+        h = horizons.HORIZONS[hid]
+        if hid == main:
+            entry, stop, target = levels
+        else:
+            atr, entry = _FAKE_ATR.get(hid, 6.0), 182.5
+            stop, target = round(entry - h.stop_atr * atr, 2), round(entry + h.target_atr * atr, 2)
+        rating = "Hold" if hid == "scalp" and hid != main else "Overweight"
+        out.append(f"{HORIZON_LABELS[hid]} Plan: {rating} / Entry: {entry} / Stop: {stop} / Target: {target} / "
+                   f"Why: {h.label} 기준 대본 예시")
+    return "\n".join(out)
+
+
 def _fake_decision(request: RunRequest) -> dict:
     h = horizons.get(request.horizon)
-    if h.id not in _FAKE_ATR:   # swing: the original script, unchanged
+    if h.id not in _FAKE_ATR:   # swing: the original script, plus the four horizon lines (#696)
         text = ("**Rating**: Overweight\n\n**Executive Summary**: 182.5 부근 분할 진입, 171 손절, 목표 205.\n"
+                f"{_fake_lines(h.id, (182.5, 171, 205))}\n"
                 f"{verdict.FAKE_SUMMARY_LINE}\n{playbook.FAKE_LINES}\n\n"
                 f"**Investment Thesis**: 수주 모멘텀과 이익 성장, 밸류 부담은 비중으로 관리.\n{verdict.FAKE_THESIS_LINE}\n\n"
                 "**Price Target**: 205\n\n**Time Horizon**: 2-4주")
@@ -197,7 +212,8 @@ def _fake_decision(request: RunRequest) -> dict:
     stop, target = round(entry - h.stop_atr * atr, 2), round(entry + h.target_atr * atr, 2)
     text = (f"**Rating**: Overweight\n\n**Executive Summary**: {entry} 눌림 지정가 진입. "
             f"Entry Price: {entry} / Stop Loss: {stop} / Price Target: {target}\n"
-            f"Entry: limit / Invalidation: {stop} 아래 마감 / Exit by: {h.holding} 안에\n\n"
+            f"Entry: limit / Invalidation: {stop} 아래 마감 / Exit by: {h.holding} 안에\n"
+            f"{_fake_lines(h.id, (entry, stop, target))}\n\n"
             f"{verdict.FAKE_SUMMARY_LINE}\n{playbook.FAKE_LINES}\n\n"
             f"**Investment Thesis**: {h.label} 기준 구조상 지지 위.\n{verdict.FAKE_THESIS_LINE}\n\n"
             f"**Price Target**: {target}\n\n**Time Horizon**: {h.holding}")
@@ -651,6 +667,25 @@ class RunManager:
             log.warning("no support/resistance for %s: %s", ticker, exc)
             return None
 
+    @staticmethod
+    def _frame_lines(lines: dict, ticker: str, live: dict | None, sr: dict | None, start: dict | None) -> dict:
+        """#696: each horizon line with the instrument its prices are on (a leveraged run's: the underlying the
+        agents analysed), its entry window and how its entry sits against the live price (now · limit · stop,
+        a level already passed) - what desk.outcome.judge reads, as for the run's own plan."""
+        out = {}
+        for hid, line in lines.items():
+            framed = entry_vs_live({**line, "live_price": live}, None, sr and sr.get("last_close"))
+            framed.pop("live_price", None)
+            framed["ticker"] = ticker
+            framed["valid_until"] = horizons.valid_until(horizons.get(hid), start["fetched_at"] if start else None)
+            out[hid] = framed
+        return out
+
+    async def _horizons_note(self, request: RunRequest, horizon: horizons.Horizon) -> str | None:
+        """#696: the four horizons' deterministic map for the deciding agents (desk.all_horizons.prompt_note)."""
+        got = await all_horizons.maps(self.prices, request.ticker, horizon.id, None, same_day=True, risk=self.risk)
+        return all_horizons.prompt_note(got)
+
     async def _related(self, request: RunRequest) -> dict | None:
         """Underlying, peers, drivers and their headlines; None when Yahoo has nothing or is slow."""
         if self.related is None:
@@ -697,6 +732,8 @@ class RunManager:
             u_task.cancel()   # a no-op once it is done; else (the call above raised) it is not waited for
         plan["underlying"] = underlying
         plan["analysis_subject"] = base
+        if u_plan.get("horizon_lines"):
+            plan["horizon_lines"] = u_plan["horizon_lines"]   # #696: on the underlying (runner tags them)
         return plan
 
     async def _product_call(self, run_id: str, request: RunRequest, lever: tuple, result: RunResult, horizon,
@@ -739,6 +776,7 @@ class RunManager:
                                    "data": None})
             clean = strip_extras(text)   # the pair's and a holder's numbers are not the product's entry
             plan = parse_plan({"final_trade_decision": clean, "trader_investment_plan": clean})
+            plan.pop("horizon_lines", None)   # #696: the PM's (the underlying's) lines are the run's, not these
             plan.pop("underlying_levels", None)
             if plan["rating"] == "REVIEW":   # '**Rating**: 매수 (Buy)', '**Buy**' ...
                 loose = under.loose_rating(text)
@@ -975,6 +1013,10 @@ class RunManager:
                     notes["weekly"] = asyncio.ensure_future(_quiet("weekly", self.weekly(request.ticker)))
                 if self.tips and same_day:     # #330: the run's own ticker (a leveraged product is in a tip)
                     notes["tips"] = asyncio.ensure_future(_quiet("tips", asyncio.to_thread(self.tips, request.ticker)))
+                if self.prices is not None and same_day and not lever:
+                    # #696: the four horizons' levels and playbooks for the PM's four lines - a note like the
+                    # others (its budget). A leveraged run's agents read the underlying: no product map there.
+                    notes["horizons"] = asyncio.ensure_future(_quiet("horizons", self._horizons_note(request, horizon)))
                 # the levels and #146's selling score gate the playbooks: waited for in full
                 sr, sr_u, market = await asyncio.gather(
                     self._support_resistance(request, start),
@@ -987,9 +1029,11 @@ class RunManager:
                 if late:
                     log.info("run %s %s: starting without %s (horizon %s)", run_id, request.ticker,
                              ", ".join(late), horizon.id)
-                related, filings_note, positioning_note, futures_note, oscillator_note, weekly_note, gaps_note = (
+                (related, filings_note, positioning_note, futures_note, oscillator_note, weekly_note, gaps_note,
+                 horizons_note) = (
                     notes[name].result() if name in notes and notes[name].done() else None
-                    for name in ("related", "filings", "positioning", "futures", "oscillator", "weekly", "gaps"))
+                    for name in ("related", "filings", "positioning", "futures", "oscillator", "weekly", "gaps",
+                                 "horizons"))
                 # The run's own instrument: the underlying for a leveraged product.
                 main_live, main_sr = (start_u, sr_u) if lever else (start, sr)
                 lever_note = under.prompt_note(request.ticker, *lever) if lever else None
@@ -1012,16 +1056,19 @@ class RunManager:
                                                      lever_note,
                                                      related_note(related), macro_note, calendar_note, credit_note,
                                                      futures_note, weekly_note, filings_note, positioning_note, oscillator_note,
-                                                     gaps_note,
+                                                     gaps_note, horizons_note,
                                                      # the score stands for the agents with or without playbooks
                                                      risk_regime.prompt_note(market))
                                    if part) or None
                 mandate = horizons.horizon_mandate(horizon, main_sr and main_sr.get("atr"), frame=frame,
                                                    levels_below=bool(main_sr))
                 # #64: the symmetric checklist and high-probability filter, swing included
-                mandate = "\n\n".join(part for part in (mandate, verdict.mandate(horizon),
-                                                       playbook.mandate() if pb_note else None) if part)
-                portfolio = desk_portfolio(request.profile, book, note, horizon_mandate=mandate)
+                # #696: the instrument's class in place of a chosen style, and the four horizon lines
+                mandate = "\n\n".join(part for part in (
+                    mandate, verdict.mandate(horizon), playbook.mandate() if pb_note else None,
+                    all_horizons.class_note(all_horizons.instrument_class(request.ticker)),
+                    all_horizons.mandate(horizon.id, subject.ticker)) if part)
+                portfolio = desk_portfolio(book, note, horizon_mandate=mandate)
                 watch.mark("desk_pre")
                 result = await asyncio.to_thread(self.runner, subject, emit, portfolio)
                 watch.mark("graph")
@@ -1049,6 +1096,9 @@ class RunManager:
                 # The entry is valid from the price the agents saw, so the minutes spent analysing count.
                 plan["horizon"] = horizon.id
                 plan["valid_until"] = horizons.valid_until(horizon, start["fetched_at"] if start else None)
+                if plan.get("horizon_lines"):
+                    plan["horizon_lines"] = self._frame_lines(plan["horizon_lines"], subject.ticker,
+                                                              live_u if lever else live, sr_u if lever else sr, start)
                 # #151: a trigger beyond the horizon's reach is a watch level (the playbooks' cap)
                 plan = triggers_vs_live(plan, sr and sr.get("atr"), playbook.MAX_ZONE_PCT[horizon.id])
                 plan = verdict.apply(plan, horizon)   # opinion + filter; rating, bias and levels stay

@@ -78,16 +78,16 @@ def test_rejects_unknown_analyst_and_odd_ticker(db_url):
         assert client.post("/api/runs", json={"ticker": "../etc"}).status_code == 422
 
 
-def test_runs_default_to_the_servers_profile_and_reject_unknown_ones(db_url):
+def test_runs_have_no_profile_and_ignore_one_from_an_older_page(db_url):
+    # #696: no investing style to choose - an older page's ``profile`` is accepted and ignored
     with _client(db_url) as client:
         config = client.get("/api/config").json()
-        assert config["default_profile"] == "aggressive_leverage"
-        assert {p["id"] for p in config["profiles"]} == {"aggressive_leverage", "balanced"}
+        assert config["profiles"] == [] and config["default_profile"] is None
         run = client.post("/api/runs", json={"ticker": "NVDA"}).json()
-        assert run["options"]["profile"] == "aggressive_leverage"
+        assert "profile" not in run["options"]
         run = client.post("/api/runs", json={"ticker": "NVDA", "profile": "balanced"}).json()
-        assert run["options"]["profile"] == "balanced"
-        assert client.post("/api/runs", json={"ticker": "NVDA", "profile": "yolo"}).status_code == 422
+        assert "profile" not in run["options"]
+        assert client.post("/api/runs", json={"ticker": "NVDA", "profile": "yolo"}).status_code == 201
         done = _wait_done(client, run["id"])
         assert done["plan"]["levels_source"] == {"entry_price": "model", "stop_loss": "model",
                                                  "price_target": "model"}

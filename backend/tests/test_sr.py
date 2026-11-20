@@ -63,12 +63,9 @@ def test_prompt_note_lists_levels_and_is_empty_without_them():
     assert sr.prompt_note(None) is None and sr.prompt_note({"levels": []}) is None
 
 
-def test_note_reaches_the_portfolio_prompt_even_without_profile_or_book():
-    portfolio = desk_portfolio(None, None, "LEVELS")
-    assert portfolio is not None and portfolio.render("NVDA").endswith("LEVELS")
-    with_profile = desk_portfolio("balanced", None, "LEVELS")
-    assert "balanced swing investor" in with_profile.mandate and with_profile.mandate.endswith("LEVELS")
-    assert desk_portfolio(None, None) is None
+def test_note_reaches_the_portfolio_prompt_even_without_a_book():
+    portfolio = desk_portfolio(None, "LEVELS")
+    assert portfolio.render("NVDA").endswith("LEVELS") and "Investor mandate" in portfolio.mandate
 
 
 class _Bars(MockBroker):

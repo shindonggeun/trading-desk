@@ -150,10 +150,10 @@ def test_summary_closing_line_is_parsed():
     assert (bare["entry_type"], bare["invalidation"], bare["exit_by"]) == (None, None, None)
 
 
-def test_horizon_mandate_sits_between_the_style_and_the_levels_note():
-    portfolio = desk_portfolio("balanced", None, "LEVELS NOTE", horizon_mandate="HORIZON MANDATE")
+def test_horizon_mandate_sits_between_the_mandate_and_the_levels_note():
+    portfolio = desk_portfolio(None, "LEVELS NOTE", horizon_mandate="HORIZON MANDATE")
     text = portfolio.render("NVDA")
-    assert text.index("balanced swing investor") < text.index("HORIZON MANDATE") < text.index("LEVELS NOTE")
+    assert text.index("Investor mandate") < text.index("HORIZON MANDATE") < text.index("LEVELS NOTE")
 
 
 def test_runs_take_a_horizon_and_plans_carry_it(db_url):

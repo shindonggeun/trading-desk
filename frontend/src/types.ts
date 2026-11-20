@@ -156,6 +156,8 @@ export interface TradeMap {
   regime?: string | null;
   /** 이 레짐에서 과거 어느 진입이 나았나 한 줄(표본 · 나쁘면 그대로) */
   regime_note?: string | null;
+  /** #695 지도를 거스르는 읽기: 주봉 민스키형 '진입 조심' 단계, 방향을 거스르는 헤드앤숄더 */
+  cautions?: { kind: string; label: string; text: string; stage?: string; state?: string; reference_only: boolean }[];
 }
 
 export interface TradeScenarioRecord {
@@ -605,6 +607,10 @@ export interface SupportResistance {
   trend_error?: string;
   /** #297 삼각수렴 · 쐐기(주 · 보조 주기 각 최대 1개) — 예전 run 은 없다 */
   patterns?: ChartPattern[];
+  /** #695 헤드앤숄더 · 역헤드앤숄더(주기마다 최대 1개씩) */
+  hs?: HsPattern[];
+  /** #695 주봉 민스키형 버블 단계(주봉이 있는 분석만) */
+  bubble?: BubbleStage | null;
   patterns_error?: string;
 }
 
@@ -679,6 +685,36 @@ export interface PatternStats {
   edge_pct?: number | null;
   verdict?: "edge" | "no_edge" | "unstable" | "unmeasured";
 }
+/** #695 헤드앤숄더(천장) · 역헤드앤숄더(바닥) */
+export interface HsPattern {
+  kind: "head_shoulders" | "inverse_head_shoulders";
+  label: string;
+  timeframe: string;
+  state: "forming" | "broken" | "retest" | "failed";
+  state_label: string;
+  expected: "up" | "down";
+  points: Record<"left_shoulder" | "head" | "right_shoulder" | "neck_left" | "neck_right", { at: string; price: number }>;
+  neckline: { from: { at: string; price: number }; to: { at: string; price: number }; slope_pct_per_bar: number };
+  broke_at: string | null;
+  target: number;
+  height_pct: number;
+  volume_right_lower: boolean | null;
+  reference_only: boolean;
+  reference_label: string | null;
+  explain: string;
+}
+
+/** #695 주봉 민스키형 단계 — 숫자로만 판정, 과거 같은 단계 뒤 결과와 함께 */
+export interface BubbleStage {
+  stage: "quiet" | "awareness" | "mania" | "first_drop" | "bull_trap" | "fear" | "none";
+  label: string;
+  caution: boolean;
+  numbers: Record<string, number | boolean | null>;
+  reference_only: boolean;
+  reference_label: string | null;
+  explain: string;
+}
+
 export interface ChartPattern {
   kind: "symmetric" | "ascending" | "descending" | "rising_wedge" | "falling_wedge";
   label: string;
@@ -2365,7 +2401,7 @@ export interface LinesReport {
 
 /** #631 · #672 GET /api/chart-read — 선이 차트에서 무엇인지(채널 · 짧은 추세선은 /api/lines 와 같은 id) */
 export interface ChartReadRef {
-  kind: "channel" | "trendline" | "pattern" | "swing" | "fib" | "gap";
+  kind: "channel" | "trendline" | "pattern" | "swing" | "fib" | "gap" | "neckline";
   id?: string | null;
   /** 채널: upper · lower · mid · outer_upper · outer_lower, 삼각수렴: upper · lower */
   edge?: string;
@@ -2398,6 +2434,9 @@ export interface ChartReadFrame {
   levels?: { above: ChartReadLevel[]; below: ChartReadLevel[]; far?: { above: ChartReadLevel[]; below: ChartReadLevel[] } };
   volume?: { ratio: number; hot: boolean } | null;
   summary?: string;
+  /** #695 */
+  hs?: HsPattern[];
+  bubble?: BubbleStage | null;
   /** 이 시간봉을 읽지 못했다(봉을 못 받음 등) */
   error?: string;
 }
@@ -2409,5 +2448,7 @@ export interface ChartRead {
   /** 시간봉끼리 엇갈리는 곳 */
   conflicts: string[];
   summary: string;
+  /** #695 주봉 민스키형 단계(주봉을 읽었을 때) */
+  bubble?: BubbleStage | null;
   note: string;
 }

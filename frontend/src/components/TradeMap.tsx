@@ -216,6 +216,11 @@ export default function TradeMap({ plan, ticker }: { plan: Plan; ticker: string 
           </div>
         ))}
       </div>
+      {!!tm.cautions?.length && (
+        <ul className="tm-cautions" role="note">
+          {tm.cautions.map((c) => <li key={c.kind}><strong>{c.label}</strong> {c.text}</li>)}
+        </ul>
+      )}
       {!!tm.scenarios?.length && <Scenarios list={tm.scenarios} note={tm.regime_note ?? null} />}
       <p className="muted small">
         {ticker} 가격 기준 — 계획 값, 지지 · 저항 구역{tm.volume_profile ? ", 매물대" : ""}로 계산한 지도입니다(ATR {price(tm.atr)}).

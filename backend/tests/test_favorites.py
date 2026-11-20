@@ -1,3 +1,4 @@
+from contextlib import closing
 from datetime import timedelta
 
 from fastapi.testclient import TestClient
@@ -97,7 +98,7 @@ def test_cap_of_fifty(db_url):
 
 def test_accounts_are_separate_and_list_survives_a_restart(db_url):
     app = _app(db_url)
-    with _login(app) as owner, _login(app, OTHER) as other:
+    with _login(app) as owner, closing(_login(app, OTHER)) as other:
         owner.post("/api/favorites", json={"ticker": "NVDA"})
         other.post("/api/favorites", json={"ticker": "TSLA"})
         other.delete("/api/favorites/NVDA")                   # not theirs: nothing happens

@@ -1,3 +1,4 @@
+from contextlib import closing
 from datetime import timedelta
 
 from fastapi.testclient import TestClient
@@ -106,7 +107,7 @@ def test_accounts_are_separate_login_and_origin(db_url):
         assert anon.post("/api/sectors", json={"name": "x"}).status_code == 401
         assert anon.put("/api/sectors/order", json={"ids": []}).status_code == 401
         assert anon.delete("/api/sectors/1").status_code == 401
-    with _login(app) as owner, _login(app, OTHER) as other:
+    with _login(app) as owner, closing(_login(app, OTHER)) as other:
         mine = owner.post("/api/sectors", json={"name": "내 섹터"}).json()
         assert "내 섹터" not in _names(other)
         assert other.put(f"/api/sectors/{mine['id']}", json={"name": "뺏기"}).status_code == 404

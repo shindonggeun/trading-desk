@@ -3,6 +3,7 @@
 import asyncio
 import threading
 import time
+from contextlib import closing
 
 from desk import fear, halving, prewarm, risk_regime, tips
 from desk import weekly_map as wm
@@ -213,7 +214,7 @@ def test_a_pass_runs_the_jobs_side_by_side_and_one_failure_stops_nothing():
 
 def test_the_favorites_tickers_of_every_account_without_repeats(db_url):
     app = _app(db_url)
-    with _login(app) as owner, _login(app, OTHER) as other:
+    with _login(app) as owner, closing(_login(app, OTHER)) as other:
         for t in ("NVDA", "SOXL"):
             owner.post("/api/favorites", json={"ticker": t})
         for t in ("SOXL", "QQQ"):

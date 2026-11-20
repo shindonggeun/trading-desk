@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, batchGet } from "../api";
 import { price } from "../format";
 import type { BottomZone } from "../types";
 import { BottomStageBadge } from "./BottomZoneCard";
@@ -11,7 +11,6 @@ const INDICES: { ticker: string; name: string }[] = [
   { ticker: "^SOX", name: "필라델피아 반도체" },
 ];
 const RANK: Record<string, number> = { none: 0, watch: 1, approach: 2, bottom: 3 };
-const PARALLEL = 4;
 
 type Row = { ticker: string; name: string; z: BottomZone | null };
 
@@ -25,14 +24,9 @@ export default function BottomZoneBrief() {
       const favs = await api.favorites().catch(() => []);
       const wanted = [...INDICES, ...favs.filter((f) => !INDICES.some((i) => i.ticker === f.ticker))
         .map((f) => ({ ticker: f.ticker, name: f.name ?? f.ticker }))];
-      const out: Row[] = [];
-      for (let i = 0; i < wanted.length; i += PARALLEL) {
-        if (!alive) return;
-        const part = await Promise.all(wanted.slice(i, i + PARALLEL).map((w) =>
-          api.bottomZone(w.ticker).then((z) => ({ ...w, z }), () => ({ ...w, z: null }))));
-        out.push(...part);
-        if (alive) setRows([...out]);
-      }
+      // #705 지수 · 즐겨찾기 전부 한 번에(예전: 종목마다 1건, 즐겨찾기 14개면 17건)
+      const zs = await batchGet<BottomZone>("bottom-zone", wanted.map((w) => w.ticker), {}, (t) => api.bottomZone(t));
+      const out: Row[] = wanted.map((w) => ({ ...w, z: zs[w.ticker] ?? null }));
       if (alive) {
         setRows(out);
         setDone(true);

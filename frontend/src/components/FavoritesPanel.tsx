@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, batchGet, type Candles } from "../api";
 import { byAsked } from "../ticker";
 import { boardBadge, boardBadgeClass, boardReason, quoteSourceShort } from "../korean";
 import { clearFavoriteError, moveFavorite, removeFavorite, useFavorites } from "../favorites";
@@ -47,7 +47,6 @@ const POLL_MS = 15_000;      // 시세판과 같은 주기
 const SPARK_MS = 120_000;    // 작은 차트는 2분마다
 const MAX_QUOTES = 30;       // /api/estimates 한 번에 30종목
 const FOLD = 8;              // #636 넓은 화면 3열에서 처음 보이는 수 — 30개면 가운데 열만 1,800px 로 길어진다(styles.css 와 같이)
-const SPARK_STAGGER_MS = 250; // 타일 i 의 첫 차트는 i × 0.25초 뒤
 
 type Line = { real: number[]; est: number[] };
 
@@ -66,17 +65,38 @@ function useSeen<T extends Element>(): [(el: T | null) => void, boolean] {
   return [setEl, seen];
 }
 
-/** 최근 5분봉 종가 + 장외면 그 뒤의 추정 봉 종가. 타일마다 시작을 조금씩 늦춰 한꺼번에 몰리지 않게 한다.
+type SparkData = [Candles | null, EstimatedCandles | { ticker: string; supported: false } | null];
+// #705 같은 순간(50ms 안)에 보인 작은 차트들은 종목마다 2건 대신 일괄 2건으로 — 같은 주기라 다음 차례도 함께 모인다
+let sparkBatch: { tickers: Set<string>; p: Promise<Record<string, SparkData>> } | null = null;
+function sparkData(ticker: string): Promise<SparkData> {
+  if (!sparkBatch) {
+    const tickers = new Set<string>();
+    const p = new Promise((r) => window.setTimeout(r, 50)).then(async () => {
+      sparkBatch = null;
+      const list = [...tickers];
+      const [real, est] = await Promise.all([
+        batchGet<Candles>("candles", list, { interval: "5m", count: 78 }, (t) => api.candles(t, "5m", 78)),
+        batchGet<SparkData[1]>("estimate-candles", list, { interval: "5m" }, (t) => api.estimateCandles(t, "5m")),
+      ]);
+      return Object.fromEntries(list.map((t) => [t, [real[t] ?? null, est[t] ?? null] as SparkData]));
+    });
+    sparkBatch = { tickers, p };
+  }
+  sparkBatch.tickers.add(ticker);
+  return sparkBatch.p.then((all) => all[ticker] ?? [null, null]);
+}
+
+/** 최근 5분봉 종가 + 장외면 그 뒤의 추정 봉 종가.
  *  #644 타일이 보이기 전(접힌 즐겨찾기 · 화면 밖)에는 묻지 않는다 — 30종목이면 첫 화면 요청이 60개 줄어든다 */
 function useSpark(ticker: string, order: number, seen: boolean): Line | null | "none" {
   const [line, setLine] = useState<Line | null | "none">(null);
   // #626 작은 차트는 화면에 보인 뒤(#644)부터 2분마다, 카드마다 조금씩 늦춰 시작한다. 가려진 동안 건너뛴 차례는 다시 보일 때 훅이 바로 채운다
-  usePoll(seen ? `spark:${ticker}` : null, () => Promise.allSettled([api.candles(ticker, "5m", 78), api.estimateCandles(ticker, "5m")]), SPARK_MS, {
-    delay: order * SPARK_STAGGER_MS,
+  void order;   // #705 예전엔 타일마다 시작을 늦췄다 — 이제 같이 보인 타일은 한 번에 묻는다(sparkData)
+  usePoll(seen ? `spark:${ticker}` : null, () => sparkData(ticker), SPARK_MS, {
     onData: ([real, est]) => {
-      const bars = real.status === "fulfilled" ? real.value.bars : [];
+      const bars = real?.bars ?? [];
       const lastAt = bars.length ? new Date(bars[bars.length - 1].at).getTime() : 0;
-      const e = est.status === "fulfilled" && "bars" in est.value ? (est.value as EstimatedCandles) : null;
+      const e = est && "bars" in est ? (est as EstimatedCandles) : null;
       const estBars = e && e.market_state === "closed" ? e.bars.filter((b) => new Date(b.at).getTime() > lastAt).slice(-78) : [];
       const next = { real: bars.map((b) => b.close), est: estBars.map((b) => b.close) };
       setLine(next.real.length + next.est.length >= 2 ? next : "none");

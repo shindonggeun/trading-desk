@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import { api, type Candles } from "../api";
+import { api, batchGet, type Candles } from "../api";
 import { price } from "../format";
 import {
   type BoardMode, loadMarkets, loadMode, loadOpen, MARKETS_CHANGED, type MarketSymbol, saveMode, saveOpen,
@@ -132,19 +132,20 @@ function useTiles(all: MarketSymbol[], mode: BoardMode, enabled: boolean, seen: 
       }));
     // 새로 보인 타일만 바로, 이미 받은 타일은 다음 주기에(주기 · 모드가 바뀌면 다시 전부)
     if (priced.current.mode !== mode) priced.current = { mode, tickers: new Set() };
-    const loadPrices = (onlyNew = false) => {
-      const jobs: Promise<unknown>[] = [];
-      for (const { ticker } of markets) {
-        if (onlyNew && priced.current.tickers.has(ticker)) continue;
-        priced.current.tickers.add(ticker);
-        const daily = api.candles(ticker, "1d", BARS["1d"]);
-        const chart = mode === "1d" ? daily : api.candles(ticker, "5m", BARS["5m"]);
-        jobs.push(Promise.all([daily, chart]).then(
-          ([d, c]) => set(ticker, { bars: c.bars, last: c.bars.length ? c.bars[c.bars.length - 1].close : null, change: dailyChange(d.bars), error: false }),
-          () => set(ticker, { error: true }),
-        ));
+    // #705 보이는 타일 전부의 봉을 한 번에(예전: 타일마다 1 · 2건) — 일봉은 등락률, 차트는 그 모드의 봉
+    const loadPrices = async (onlyNew = false) => {
+      const want = markets.map((m) => m.ticker).filter((t) => !(onlyNew && priced.current.tickers.has(t)));
+      if (!want.length) return;
+      for (const t of want) priced.current.tickers.add(t);
+      const daily = batchGet<Candles>("candles", want, { interval: "1d", count: BARS["1d"] }, (t) => api.candles(t, "1d", BARS["1d"]));
+      const chart = mode === "1d" ? daily
+        : batchGet<Candles>("candles", want, { interval: "5m", count: BARS["5m"] }, (t) => api.candles(t, "5m", BARS["5m"]));
+      const [d, c] = await Promise.all([daily, chart]);
+      for (const t of want) {
+        const dd = d[t], cc = c[t];
+        if (dd && cc) set(t, { bars: cc.bars, last: cc.bars.length ? cc.bars[cc.bars.length - 1].close : null, change: dailyChange(dd.bars), error: false });
+        else set(t, { error: true });
       }
-      return Promise.allSettled(jobs);
     };
     load.current = loadPrices;
     loadPrices(true);
@@ -163,10 +164,14 @@ function useTiles(all: MarketSymbol[], mode: BoardMode, enabled: boolean, seen: 
       mounted.current && setTiles((cur) => ({ ...cur, [ticker]: { ...EMPTY, ...cur[ticker], ...patch } }));
     // #644 타일 아래 한 줄(지지 · 저항 · 장외 추정)은 시세보다 덜 급하다 — 첫 화면이 그려진 뒤 조금 있다가
     const go = () => {
-      for (const { ticker } of markets) {
-        if (!alive || asked.current.has(ticker)) continue;
+      const fresh = markets.map((m) => m.ticker).filter((t) => !asked.current.has(t));
+      if (!alive || !fresh.length) return;
+      // #705 지지 · 저항은 새로 보인 타일 전부 한 번에
+      batchGet<SupportResistance>("levels", fresh, {}, (t) => api.levels(t)).then((m) => {
+        for (const t of fresh) if (m[t]) set(t, { sr: m[t] as SupportResistance });
+      });
+      for (const ticker of fresh) {
         asked.current.add(ticker);
-        api.levels(ticker).then((sr) => set(ticker, { sr }), () => {});
         if (!NO_ESTIMATE.test(ticker))
           api.estimate(ticker).then(
             (e) => set(ticker, { est: e.supported && (e.market_state === "closed" || e.market_state === "nxt") ? e : null }),
@@ -201,9 +206,12 @@ export default function MarketBoard({ embedded = false }: { embedded?: boolean }
   useEffect(() => {
     if (!open || !futures) return;
     let alive = true;
-    for (const t of futures.split(",")) {
-      api.gaps(t).then((r) => alive && setGapOf((g) => ({ ...g, [t]: r })), () => {});
-    }
+    // #705 선물 칸 갭은 한 번에
+    batchGet<GapReport>("gaps", futures.split(","), {}, (t) => api.gaps(t)).then((m) => {
+      if (!alive) return;
+      const got = Object.fromEntries(Object.entries(m).filter((e): e is [string, GapReport] => e[1] != null));
+      setGapOf((g) => ({ ...g, ...got }));
+    });
     return () => { alive = false; };
   }, [open, futures]);
 

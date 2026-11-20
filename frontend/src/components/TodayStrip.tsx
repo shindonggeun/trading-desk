@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, batchGet } from "../api";
 import { byAsked } from "../ticker";
 import { useFavorites } from "../favorites";
 import type { BoardItem, LivePlaybooks, LongShortItem, MarketMonth, Projection } from "../types";
@@ -15,6 +15,7 @@ import { usePoll } from "../poll";
 
 const MAX = 10;                 // 즐겨찾기 앞 10종목만 — 종목마다 플레이북 · 예상도를 부른다
 const REFRESH_MS = 5 * 60_000;
+const BOARD_MAX = 30;   // 즐겨찾기 칸(FavoritesPanel MAX_QUOTES)과 같은 목록 — 같은 주소로 한 요청을 함께 쓴다
 // #644 종목마다 플레이북 · 예상도(최대 20개 요청)는 첫 화면이 그려진 뒤에 — 첫 방문 요청이 몰려 위 띠 · 카드가 늦던 것
 const PER_TICKER_AFTER_MS = 2_500;
 const LS_JUMP = 5;              // 롱 비율 24시간 변화 %p 이상이면 급변
@@ -69,7 +70,9 @@ export default function TodayStrip() {
   const list = (favs ?? []).slice(0, MAX);
   const key = list.map((f) => f.ticker).join(",");
   const [found, setFound] = useState<Record<string, Reason[]> | null>(null);
-  const fundCh = useFundChanges(list.map((x) => x.ticker));   // #484 기관 13F 배지
+  // #705 시세 · 롱숏 · 기관 배지는 즐겨찾기 칸(앞 30개)과 같은 목록으로 묻는다 — 같은 주소라 한 요청을 함께 쓴다(예전: 앞 10개로 따로)
+  const allKey = (favs ?? []).slice(0, BOARD_MAX).map((f) => f.ticker).join(",");
+  const fundCh = useFundChanges(allKey ? allKey.split(",") : []);   // #484 기관 13F 배지
   const report = useLatestReport();   // #496 최신 리포트 한 줄
   const firstRun = useRef(false);
   const keyNow = useRef(key);
@@ -89,11 +92,17 @@ export default function TodayStrip() {
     firstRun.current = true;
     const perP = (async () => {
       if (later) await new Promise((r) => window.setTimeout(r, PER_TICKER_AFTER_MS));
-      return Promise.allSettled(tickers.map((t) => Promise.allSettled([api.playbooksFor(t), api.projection(t, "swing")])));
+      // #705 종목마다 2건(10종목 20건) → 한 번씩
+      const [pbs, pjs] = await Promise.all([
+        batchGet<LivePlaybooks>("playbooks", tickers, {}, (t) => api.playbooksFor(t)),
+        batchGet<Projection>("projection", tickers, { horizon: "swing" }, (t) => api.projection(t, "swing")),
+      ]);
+      return tickers.map((t) => ({ pb: pbs[t] ?? null, proj: pjs[t] ?? null }));
     })();
+    const all = allKey ? allKey.split(",") : tickers;
     const [board, ls, cal] = await Promise.allSettled([
-      api.board(tickers),
-      api.longShort(tickers),
+      api.board(all),
+      api.longShort(all),
       Promise.all(months.map((m) => api.marketMonth(m))),
     ]);
     const quotes: Record<string, BoardItem> = {};
@@ -108,16 +117,15 @@ export default function TodayStrip() {
         for (const r of d.earnings) if (tickers.includes(r.ticker) && !earn[r.ticker]) earn[r.ticker] = left === 0 ? "오늘 실적" : `실적 D-${left}`;
       }
     }
-    const build = (per: PromiseSettledResult<unknown>[]) => {
+    const build = (per: { pb: LivePlaybooks | null; proj: Projection | null }[]) => {
     const out: Record<string, Reason[]> = {};
     tickers.forEach((t, i) => {
       const reasons: Reason[] = [];
       const got = per[i];
-      if (got?.status === "fulfilled") {
-        const [pb, proj] = got.value as [PromiseSettledResult<LivePlaybooks>, PromiseSettledResult<Projection>];
-        const z = pb.status === "fulfilled" ? zoneReason(pb.value) : null;
+      if (got) {
+        const z = got.pb ? zoneReason(got.pb) : null;
         if (z) reasons.push(z);
-        const r = proj.status === "fulfilled" ? rangeReason(proj.value, quotes[t]) : null;
+        const r = got.proj ? rangeReason(got.proj, quotes[t]) : null;
         if (r) reasons.push(r);
       }
       if (earn[t]) reasons.push({ kind: "earnings", text: earn[t] });

@@ -257,7 +257,11 @@ class HoldingWatch:
                 continue
             on, max_loss = for_ticker(cfg, ticker)
             try:
-                if not on or not await live.is_open(calendar, ticker, now):
+                if not on:
+                    continue
+                if not await live.is_open(calendar, ticker, now):
+                    if ticker in self.last:      # the other market's holding: its lines from its own session stay
+                        seen[ticker] = self.last[ticker]
                     continue
                 cls, bars = await self._bars(prices, ticker, now)
                 ln = lines(cls, bars, float(average), max_loss)

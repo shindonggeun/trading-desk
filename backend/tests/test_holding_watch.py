@@ -272,3 +272,24 @@ def test_settings_merge_a_tickers_fields_and_null_removes_it(watch):
     assert watch.settings()["tickers"]["AAA"] == {"enabled": False, "max_loss_pct": 6.0}
     watch.save({"tickers": {"AAA": None}})
     assert watch.settings()["tickers"] == {}
+
+
+def test_a_closed_markets_holding_keeps_its_lines_from_its_own_session(watch, monkeypatch):
+    is_us_open = {"v": True}
+
+    async def is_open(calendar, ticker, now=None):
+        return ticker.endswith(".KS") != is_us_open["v"]
+
+    monkeypatch.setattr(holding_watch.live, "is_open", is_open)
+    watch.save({"enabled": True})
+    bars = _range()
+    rows = [{"yahoo_ticker": "AAA", "last_price": 100.0, "average_price": 97.0},
+            {"yahoo_ticker": "005930.KS", "last_price": 100.0, "average_price": 97.0}]
+    asyncio.run(watch.run_pass(_Book(rows), _Prices(bars), None, lambda a: a, NOW))
+    assert set(watch.last) == {"AAA"}
+    is_us_open["v"] = False                                          # now Seoul trades, New York is shut
+    asyncio.run(watch.run_pass(_Book(rows), _Prices(bars), None, lambda a: a, NOW + timedelta(hours=10)))
+    assert set(watch.last) == {"AAA", "005930.KS"} and watch.last["AAA"]["at"] == NOW.isoformat(timespec="seconds")
+    watch.save({"tickers": {"AAA": {"enabled": False}}})              # turned off: gone, not kept
+    asyncio.run(watch.run_pass(_Book(rows), _Prices(bars), None, lambda a: a, NOW + timedelta(hours=10)))
+    assert set(watch.last) == {"005930.KS"}

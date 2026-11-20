@@ -2150,19 +2150,23 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             found = await asyncio.to_thread(channels.lines, bars, interval, lines_bt.rates(ticker, interval), live)
             # #679 a daily chart also gets the lines of months (daily) and years (weekly): long_lines
             found["long_lines"] = []
+            weekly_ok = True
             if interval == "1d":
                 try:
                     weeks = (await prices.candles(ticker, "1w", long_lines.SPEC["1w"]["window"] + 4))["bars"]
                 except Exception as exc:  # noqa: BLE001 - the daily long lines stand without the weekly
                     log.warning("weekly bars for %s failed: %s", ticker, type(exc).__name__)
-                    weeks = []
+                    weeks, weekly_ok = [], False
                 try:
                     found["long_lines"] = await asyncio.to_thread(long_lines.for_chart, bars, weeks, live)
                 except Exception as exc:  # noqa: BLE001 - the chart stands without them
                     log.warning("long lines for %s failed: %s", ticker, type(exc).__name__)
             if len(lines_memo) > 256:
                 lines_memo.clear()
-            lines_memo[key] = memo = (*stamp, found)
+            # without the weekly bars this answer is not kept: the next call tries them again
+            memo = (*stamp, found)
+            if weekly_ok:
+                lines_memo[key] = memo
         return {"ticker": ticker, "interval": interval, "source": got.get("source"), "live_bar": live, **memo[3],
                 "backtest": lines_bt.summary(ticker)}
 

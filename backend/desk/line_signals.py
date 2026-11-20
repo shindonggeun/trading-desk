@@ -161,7 +161,7 @@ def _long(usable: list[dict], add, lo: list[float], hi: list[float], cl: list[fl
     for ln in long_lines.find(usable, "1d", unit):
         lid = f"1d-long-{ln.kind}-{usable[ln.i]['at']}-{usable[ln.j]['at']}"
         support = ln.kind == "support"
-        since = datetime.fromisoformat(usable[ln.touches[0]]["at"])
+        since = datetime.fromisoformat(usable[ln.touches[0]]["at"]).astimezone(long_lines.KST)  # a KR day: KST
         name = f"{since.month}월 {since.day}일부터의 장기 {'상승 지지선' if support else '하락 저항선'}"
         if ln.broken_at is None:
             if support and lo[c] <= ln.at(c) + touch and cl[c] >= ln.at(c) - brk and lo[c - 1] > ln.at(c - 1) + touch:
@@ -256,7 +256,9 @@ class LineWatch:
     def settings(self) -> dict:
         with self.engine.connect() as conn:
             row = conn.execute(select(line_watch.c.body).where(line_watch.c.id == 1)).first()
-        return {**DEFAULT, **(row[0] if row else {})}
+        got = {**DEFAULT, **(row[0] if row else {})}
+        # an event added later (#679 long) reads as its default, not off, for a setting stored before it
+        return {**got, "events": {**DEFAULT["events"], **(got.get("events") or {})}}
 
     def save(self, body: dict) -> dict:
         """Write the setting: the fields ``body`` leaves out keep their value."""

@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-20T01:14:07+00:00",
+ "generated_at": "2026-11-20T01:37:26+00:00",
  "tickers": [
   "AMD",
   "NVDA",
@@ -18,35 +18,35 @@
  "bounce_atr": 1.0,
  "roles": {
   "long_support": {
-   "n": 752,
-   "bounce": 300,
-   "break": 445,
-   "none": 7,
-   "bounce_rate": 0.399,
-   "break_rate": 0.592,
+   "n": 861,
+   "bounce": 346,
+   "break": 507,
+   "none": 8,
+   "bounce_rate": 0.402,
+   "break_rate": 0.589,
    "baseline": {
-    "n": 634,
-    "bounce": 224,
-    "break": 403,
-    "none": 7,
-    "bounce_rate": 0.353,
-    "break_rate": 0.636
+    "n": 735,
+    "bounce": 263,
+    "break": 462,
+    "none": 10,
+    "bounce_rate": 0.358,
+    "break_rate": 0.629
    }
   },
   "long_resistance": {
-   "n": 419,
-   "bounce": 115,
-   "break": 298,
+   "n": 453,
+   "bounce": 133,
+   "break": 314,
    "none": 6,
-   "bounce_rate": 0.274,
-   "break_rate": 0.711,
+   "bounce_rate": 0.294,
+   "break_rate": 0.693,
    "baseline": {
-    "n": 374,
-    "bounce": 131,
-    "break": 237,
-    "none": 6,
-    "bounce_rate": 0.35,
-    "break_rate": 0.634
+    "n": 404,
+    "bounce": 124,
+    "break": 275,
+    "none": 5,
+    "bounce_rate": 0.307,
+    "break_rate": 0.681
    }
   }
  },
@@ -55,71 +55,71 @@
    "from": "2006-03-21T05:00:00+00:00",
    "to": "2026-11-18T05:00:00+00:00",
    "steps": 988,
-   "long_support": 74,
-   "long_resistance": 69
+   "long_support": 86,
+   "long_resistance": 74
   },
   "NVDA": {
    "from": "2006-03-21T05:00:00+00:00",
    "to": "2026-11-18T05:00:00+00:00",
    "steps": 988,
-   "long_support": 90,
+   "long_support": 103,
    "long_resistance": 46
   },
   "SOXX": {
    "from": "2006-03-21T05:00:00+00:00",
    "to": "2026-11-18T05:00:00+00:00",
    "steps": 988,
-   "long_support": 81,
-   "long_resistance": 46
+   "long_support": 91,
+   "long_resistance": 52
   },
   "KORU": {
    "from": "2013-04-10T04:00:00+00:00",
    "to": "2026-11-18T05:00:00+00:00",
    "steps": 633,
-   "long_support": 42,
-   "long_resistance": 43
+   "long_support": 45,
+   "long_resistance": 48
   },
   "SOXL": {
    "from": "2010-03-11T05:00:00+00:00",
    "to": "2026-11-18T05:00:00+00:00",
    "steps": 788,
-   "long_support": 70,
-   "long_resistance": 38
+   "long_support": 77,
+   "long_resistance": 42
   },
   "TQQQ": {
    "from": "2010-02-11T05:00:00+00:00",
    "to": "2026-11-18T05:00:00+00:00",
    "steps": 792,
-   "long_support": 60,
-   "long_resistance": 26
+   "long_support": 73,
+   "long_resistance": 27
   },
   "QQQ": {
    "from": "2006-03-21T05:00:00+00:00",
    "to": "2026-11-18T05:00:00+00:00",
    "steps": 988,
-   "long_support": 80,
-   "long_resistance": 29
+   "long_support": 95,
+   "long_resistance": 31
   },
   "SPY": {
    "from": "2006-03-21T05:00:00+00:00",
    "to": "2026-11-18T05:00:00+00:00",
    "steps": 988,
-   "long_support": 82,
-   "long_resistance": 33
+   "long_support": 99,
+   "long_resistance": 37
   },
   "AAPL": {
    "from": "2006-03-21T05:00:00+00:00",
    "to": "2026-11-18T05:00:00+00:00",
    "steps": 988,
-   "long_support": 84,
-   "long_resistance": 36
+   "long_support": 95,
+   "long_resistance": 39
   },
   "MSFT": {
    "from": "2006-03-21T05:00:00+00:00",
    "to": "2026-11-18T05:00:00+00:00",
    "steps": 988,
-   "long_support": 89,
-   "long_resistance": 53
+   "long_support": 97,
+   "long_resistance": 57
   }
  }
 }

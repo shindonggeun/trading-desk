@@ -8,7 +8,10 @@ one the price is on the right side of is watched for HORIZON bars:
   on that bar (desk.lines_bt._touch, its TOUCH_ATR · BREAK_ATR · BOUNCE_ATR);
 - after it, within HORIZON bars, a **bounce** is a close BOUNCE_ATR away on the line's side, a **break**
   a close BREAK_ATR beyond it - whichever first (neither: "none");
-- a line counts once: its first touch (the same line found at later steps is not a new case);
+- a line counts once, by its first anchor (the same line found at later steps is not a new case);
+- the touch is lines_bt's (TOUCH_ATR 0.35, no "close holds" or "arriving" condition), a little wider than
+  the alert's (desk.line_signals: 0.5 ATR, the close holding, the bar before not near): the rates are of
+  a close cousin of the alerted event, as for the short lines;
 - the **baseline** is a line of the same slope and distance (in ATR) set at another step of the same
   ticker drawn at random: how often any line so placed would have "held".
 
@@ -58,7 +61,8 @@ def backtest(bars: list[dict], step: int = STEP, seed: int = 0) -> dict:
             if ln.broken_at is not None:
                 continue
             sign = 1 if ln.kind == "support" else -1
-            # the line by its first anchor's date and its first touch: the same line at a later step is one
+            # the line by its first anchor (its first touch): the same line at a later step is one case - two
+            # lines from one low count once, and a line whose anchor left the window may come back as new
             key = f"{ln.kind}-{past[ln.i]['at']}-{past[ln.touches[0]]['at']}"
             cases.append((f"long_{ln.kind}", len(at) - 1, sign, sign * (close - ln.at(n - 1)) / unit,
                           ln.slope / unit, key))

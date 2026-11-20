@@ -85,7 +85,13 @@ def _kst(h, m, s=0, day=10):
 def test_snapshots_sit_on_the_clock_grid_from_the_open_and_close_once_after_the_bell():
     from desk.futures_history import seconds_to_next
 
-    assert seconds_to_next(_kst(8, 0), 15) == 45 * 60                 # wait for the 08:45 open
+    assert seconds_to_next(_kst(7, 30), 15) == 30 * 60                # #677 wait for the 08:00 pre-market
+    assert seconds_to_next(_kst(8, 0), 15) == 15 * 60                 # 08:00 taken -> 08:15 (the pre-market's grid)
+    assert seconds_to_next(_kst(8, 30), 15) == 15 * 60                # -> 08:45, the open
+    assert seconds_to_next(_kst(8, 30), 30) == 15 * 60                # not 09:00: the pre-market's grid stops at 08:45
+    assert seconds_to_next(_kst(8, 45), 30) == 30 * 60                # and the session's starts there (-> 09:15)
+    assert seconds_to_next(_kst(8, 44), 2) == 60                      # 08:46 on the 08:00 grid -> 08:45
+    assert seconds_to_next(_kst(8, 46), 2) == 60                      # -> 08:47 on the 08:45 grid (not 08:48)
     assert seconds_to_next(_kst(8, 45), 15) == 15 * 60                # 08:45 taken -> 09:00
     assert seconds_to_next(_kst(10, 7), 15) == 8 * 60                 # a restart at 10:07 -> 10:15
     assert seconds_to_next(_kst(15, 37), 15) == 8 * 60                # 15:45 is on the grid
@@ -123,3 +129,59 @@ def test_a_fresh_get_skips_the_cache():
     flow = Flow(None)
     assert asyncio.run(flow.get())["n"] == 1 and asyncio.run(flow.get())["n"] == 1
     assert asyncio.run(flow.get(fresh=True))["n"] == 2
+
+
+
+# #677 the pre-market -------------------------------------------------------------------------------
+
+
+def _spot_view(day: str, foreign: float):
+    record = {"date": day, "investors": {"foreigner": {"net": foreign * 1e8}, "institution": {"net": -100e8},
+                                         "individual": {"net": -foreign * 1e8 + 100e8}}}
+    return {"kospi": {"records": [record]}, "kosdaq": {"records": []}}
+
+
+def test_the_pre_market_keeps_spot_only_rows_that_the_session_readers_never_see(db_url):
+    from desk.db import make_engine, migrate
+    from desk.futures_history import FuturesHistory, premarket_window
+
+    migrate(db_url)
+    engine = make_engine(db_url)
+    history = FuturesHistory(engine)
+    day = "2026-11-10"
+    assert not premarket_window(_kst(7, 59)) and premarket_window(_kst(8, 0)) and not premarket_window(_kst(8, 45))
+    assert history.record_spot(_spot_view(day, -300), _kst(8, 10)) is True
+    assert history.record_spot(_spot_view(day, -500), _kst(8, 44)) is True
+    assert history.record_spot(_spot_view(day, -500), _kst(8, 45)) is False          # the session's own snapshot
+    assert history.record_spot(_spot_view("2026-11-09", -500), _kst(8, 20)) is False  # yesterday's record: nothing
+    assert history.record_spot(_spot_view(day, -500), _kst(8, 20, day=14)) is False  # Saturday
+    assert history.intraday(date(2026, 11, 10)) == []                                  # bars, turns, alerts: as before
+    assert history.daily(5) == []                                       # the futures' days: not before the open
+    pre = history.premarket(date(2026, 11, 10))
+    assert [p["spot"]["kospi"]["foreign"] for p in pre] == [-300.0, -500.0]
+    assert pre[0]["price"] is None and pre[0]["investors"]["foreign"]["net_contracts"] is None
+    assert history.record(_view(price=701.0), _kst(8, 45), _spot_view(day, -550))
+    assert history.record(_view(price=703.0), _kst(9, 0), _spot_view(day, -600))
+    assert [p["price"] for p in history.intraday(date(2026, 11, 10))] == [701.0, 703.0]
+    assert [p["spot"]["kospi"]["foreign"] for p in history.premarket(date(2026, 11, 10))] == [-300.0, -500.0, -550.0]
+    assert [d["price"] for d in history.daily(5)] == [703.0]
+    history.prune(now=_kst(10, 0, day=12), keep_days=0)                 # thinned: the last futures row stays
+    assert [p["price"] for p in history.intraday(date(2026, 11, 10))] == [703.0]
+    assert history.premarket(date(2026, 11, 10)) == []
+    engine.dispose()
+
+
+def test_the_pre_market_block_reads_first_last_and_the_move():
+    from desk import flow_intraday
+
+    def p(hm, foreign, day="2026-11-10"):
+        return {"at": f"{day}T{hm}:00+09:00", "price": None,
+                "investors": {c: {"net_contracts": None} for c in ("foreign", "institution", "individual")},
+                "spot": {"kospi": {"foreign": foreign, "institution": -100.0, "individual": -foreign + 100},
+                         "kosdaq": {}}}
+    pts = [p("08:01", -50.0), p("08:30", -300.0), p("08:59", -1168.8), p("09:00", -2000.0)]
+    got = flow_intraday.premarket(pts, "kospi")
+    assert got["from"].startswith("2026-11-10T08:01") and got["to"].startswith("2026-11-10T08:59") and got["n"] == 3
+    assert got["first"]["foreign"] == -50.0 and got["last"]["foreign"] == -1168.8 and got["change"]["foreign"] == -1118.8
+    assert flow_intraday.premarket(pts, "kosdaq") is None and flow_intraday.premarket([], "kospi") is None
+    assert flow_intraday.premarket(pts, "futures") is None

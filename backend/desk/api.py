@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, date, datetime, timedelta, timezone
+from datetime import time as dtime
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
@@ -104,7 +105,7 @@ from .futures_flow import FuturesFlow, futures_open
 from .futures_flow import make as make_kis_rest
 from .futures_flow import off_reason as futures_off
 from .futures_flow import prompt_note as futures_note
-from .futures_history import FuturesHistory, closing_window, interval_min, seconds_to_next
+from .futures_history import FuturesHistory, closing_window, interval_min, premarket_window, seconds_to_next
 from .futures_oi import FUT_API, OPT_API, FuturesOi
 from .futures_oi import MAX_DAYS as OI_MAX_DAYS
 from .indicators import normalize as normalize_indicators
@@ -357,6 +358,8 @@ def purge_expired_runs(store: Store, retention_days: int) -> int:
     return deleted
 
 
+PREMARKET_CACHE_SEC = 30.0   # #677 the pre-market block of /api/market/flow, read from the snapshots
+PREMARKET_FINAL = dtime(9, 1)   # read after this, the block is the day's
 SPOT_TIMEOUT_SEC = 10.0      # #359 the spot flows fetched with each futures snapshot
 
 
@@ -773,11 +776,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         async def snapshot_futures() -> float:
             # #254: the futures investor flows through the session, every DESK_FUTURES_SNAPSHOT_MIN
             # minutes (desk.futures_history); outside the session it only checks the clock
-            # on the wall clock's grid from 08:45, plus one closing snapshot just after 15:45 (the
+            # on the wall clock's grid from 08:45 (#677 spot only from 08:00), plus one closing snapshot just after 15:45 (the
             # day's final totals: its daily row); each one fetches fresh, never a cached pre-open value
             moment = datetime.now(UTC)
             today_kst = moment.astimezone(futures_kst).date()
-            if futures_open(moment) or (closing_window(moment) and snapshot_marks["closed_on"] != today_kst):
+
+            async def spot_now() -> dict | None:
                 # #359 the spot flows at the same moment (a broker failure is an ``error`` body)
                 # (bounded: a hung broker must not cost the futures snapshot); #673 fetched fresh, so the
                 # stored figures are the minute's and the card's cache is renewed - first, so the futures
@@ -786,10 +790,18 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     got = await asyncio.wait_for(asyncio.gather(
                         flow.get("KOSPI", "1d", 1, fresh=True), flow.get("KOSDAQ", "1d", 1, fresh=True)),
                         SPOT_TIMEOUT_SEC)
-                    spot = {"kospi": got[0], "kosdaq": got[1]}
+                    return {"kospi": got[0], "kosdaq": got[1]}
                 except TimeoutError:
                     log.warning("spot flow for the futures snapshot timed out")
-                    spot = None
+                    return None
+
+            if premarket_window(moment):
+                # #677 the pre-market: the spot only (no futures, no alerts - the session's rules start later)
+                await asyncio.to_thread(futures_history.record_spot, await spot_now(), moment)
+                if futures_open(datetime.now(UTC)):
+                    return 1.0               # woke just before 08:45 and it has passed: the open's snapshot
+            elif futures_open(moment) or (closing_window(moment) and snapshot_marks["closed_on"] != today_kst):
+                spot = await spot_now()
                 view = await futures.get(fresh=True)
                 await asyncio.to_thread(futures_history.record, view, None, spot)
                 try:                     # #361: a push problem never stops the snapshots
@@ -1666,14 +1678,29 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(503, "비트코인 가격을 받지 못했습니다. 잠시 뒤 다시 시도해 주세요")
         return got
 
+    premarket_cache: dict[str, tuple[float, list[dict], bool]] = {}
+
     @app.get("/api/market/flow")
     async def market_flow(market: str = "KOSPI", interval: str = "1d", count: int = 20):
         """KOSPI / KOSDAQ trading value by investor class, newest first (desk.market_flow). Read-only;
-        a broker failure comes back as ``error`` with no records, not as a 5xx."""
+        a broker failure comes back as ``error`` with no records, not as a 5xx. #677 the 1d answer carries
+        ``premarket``: today's spot flow before the bell (desk.flow_intraday.premarket) once there is one."""
         try:
-            return await flow.get(market.upper(), interval, count)
+            got = await flow.get(market.upper(), interval, count)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
+        if interval != "1d":
+            return got
+        local = datetime.now(UTC).astimezone(futures_kst)
+        day = local.date().isoformat()
+        hit = premarket_cache.get(day)
+        # one read a half minute for all markets; one read after 09:01 is the day's (nothing before 09:00 changes)
+        if not hit or not (hit[2] or time.monotonic() - hit[0] < PREMARKET_CACHE_SEC):
+            final = local.time() >= PREMARKET_FINAL
+            hit = (time.monotonic(), await asyncio.to_thread(futures_history.premarket, local.date()), final)
+            premarket_cache.clear()
+            premarket_cache[day] = hit
+        return {**got, "premarket": flow_intraday.premarket(hit[1], market.lower())}
 
     @app.get("/api/market/futures")
     async def market_futures():

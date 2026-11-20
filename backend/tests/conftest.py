@@ -19,6 +19,19 @@ from sqlalchemy import text
 from desk.db import make_engine, metadata
 
 
+def pytest_collection_modifyitems(config, items):
+    """``DESK_TEST_SHARD=i/n`` (CI matrix, #748): keep every n-th test from the i-th (1-based). Round-robin
+    over the collected order, so a module's heavy tests spread over the shards instead of landing on one."""
+    shard = os.getenv("DESK_TEST_SHARD")
+    if not shard:
+        return
+    i, n = (int(x) for x in shard.split("/"))
+    keep = [item for k, item in enumerate(items) if k % n == i - 1]
+    drop = [item for k, item in enumerate(items) if k % n != i - 1]
+    config.hook.pytest_deselected(items=drop)
+    items[:] = keep
+
+
 @pytest.fixture(scope="session")
 def pg_url():
     """DESK_TEST_DATABASE_URL, or None. Under pytest-xdist (#748, CI ``-n auto``) each worker gets its own

@@ -136,7 +136,11 @@ git branch -D <브랜치>                  # 리베이스 머지라 SHA 가 달�
 
 ## 8. 배포
 
-CI 는 GitHub Actions(`.github/workflows/ci.yml` — 백엔드 ruff · pytest, 프론트 빌드)다. 배포는 자동이 아니다.
+CI 는 GitHub Actions(`.github/workflows/ci.yml` — 백엔드 ruff · pytest, 프론트 빌드, 이미지, 배포 스크립트)다(#748).
+
+- **바뀐 영역만 돈다**: frontend 만 바꾼 PR 은 backend 테스트를, backend 만 바꾼 PR 은 프론트 빌드를 건너뛴다. 이미지 잡은 Dockerfile · 의존성 · nginx 템플릿 · compose 가 바뀔 때만. `ci.yml` 을 바꾸면 모두 돈다. 건너뛴 잡은 실패가 아니고, 묶음 판정은 `ci-ok` 잡이 한다.
+- **backend pytest 는 병렬**(`-n auto`, pytest-xdist). PostgreSQL 은 워커마다 `desk_test_gw<N>` 데이터베이스를 따로 쓴다(`tests/conftest.py` `pg_url`). 로컬은 지금처럼 `pytest -q`(SQLite, 직렬)로 돌린다 — 다른 무거운 실행과 겹치지 않게.
+- **취소**: PR 은 새 커밋이 오면 앞 실행을 취소한다. develop push 는 취소하지 않는다 — PR 을 몰아서 머지해도 커밋마다 CI 가 끝까지 돈다.
 
 | 브랜치 | 배포 |
 |--------|------|

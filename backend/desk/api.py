@@ -1646,11 +1646,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     async def market_futures_quote(session: str | None = None):
         """#443 KOSPI200 front month in the day (08:45~15:45) or night (18:00~06:00) session - the one
         trading now, or the last one, unless ``session`` asks for one. Change and rate are KIS'
-        against the previous settlement (day) or the day's close (night)."""
+        against the previous settlement (day) or the day's close (night). #713 without ``session`` it
+        also carries ``sessions`` (day and night, each open or closed with its last quote) and ``current``."""
         if session is not None and session not in futures_quote.SESSIONS:
             raise HTTPException(422, "session must be day or night")
         try:
-            return await futures_quotes.quote(session)
+            return await (futures_quotes.quote(session) if session else futures_quotes.both())
         except Exception as exc:  # noqa: BLE001 - KIS down with nothing cached: said, not a 5xx
             return {"supported": True, "error": f"선물 시세를 받지 못했습니다 — {futures_quote._short(exc)}",
                     "stale": False, "session": session}

@@ -34,7 +34,8 @@ import statistics
 import time
 from collections.abc import Callable, Iterable
 
-STAGES = ("desk_pre", "graph", "leverage", "desk_post", "consensus")   # leverage: leveraged products only
+# leverage: leveraged products only; horizons (#696): the four horizons' maps past the summary's overlap
+STAGES = ("desk_pre", "graph", "leverage", "desk_post", "horizons", "consensus")
 # The graph's analysts start together (TradingAgents graph/setup.py); everyone after them is in series.
 PARALLEL = {"market_analyst", "sentiment_analyst", "news_analyst", "fundamentals_analyst"}
 # A model turn takes seconds; serial messages closer than this came out of one graph step.

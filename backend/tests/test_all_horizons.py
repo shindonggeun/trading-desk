@@ -117,7 +117,7 @@ def test_a_fake_run_carries_four_scripted_horizons(db_url):
         assert run["status"] == "done", run["error"]
         plan = run["plan"]
         assert plan["horizons_fake"] is True and plan["instrument_class"]["id"] == "leverage"
-        assert list(plan["horizons"]) == list(all_horizons.ORDER)
+        assert set(plan["horizons"]) == set(all_horizons.ORDER)   # PostgreSQL's JSONB keeps no key order
         own = plan["horizons"]["short_swing"]
         assert own["source"] == "model" and own["model"]["entry_price"] == plan["entry_price"]
         assert all(plan["horizons"][h]["map"]["stop"] for h in all_horizons.ORDER)

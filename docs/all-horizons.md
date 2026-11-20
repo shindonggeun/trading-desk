@@ -58,6 +58,7 @@
 }
 ```
 
+- `horizons` 의 키 순서는 믿지 않는다(PostgreSQL JSONB 는 순서를 바꾼다). 화면은 scalp → intraday → short_swing → swing 순서로 그린다.
 - 옛 run 에는 이 필드들이 없다. 화면은 없으면 지금처럼 기간 하나만 보인다.
 - 만들다 실패하면 `instrument_class` 는 있고 `horizons` · `horizon_fit` 은 `null`, 이유는 `horizons_note` 에 있다.
 - **목록(`GET /api/runs`)의 plan 에는 `horizons` · `horizon_fit` 이 없다**(run 하나에 약 10 KB). `GET /api/runs/{id}` 에만 있다.

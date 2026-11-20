@@ -25,10 +25,10 @@ case "$url" in
   */auth/approle/login) [ -z "${FAKE_LOGIN_FAIL:-}" ] || exit 22; echo '{"auth":{"client_token":"tok-SECRET-123"}}' ;;
   */auth/token/revoke-self) touch "$FAKE_DIR/revoked" ;;
   */v1/kv/data/*) [ -z "${FAKE_READ_FAIL:-}" ] || exit 22; cat "$FAKE_DIR/secret.json" ;;
-  https://api.github.com/repos/*/commits/*)          # develop 머리(#752): 파일이 없으면 API 오류
+  https://api.github.com/repos/*/git/ref/heads/*)     # develop 머리(#752): 파일이 없으면 API 오류
     [ -f "$FAKE_DIR/head.json" ] || exit 22; cat "$FAKE_DIR/head.json" ;;
-  https://api.github.com/*head_sha=def456*)           # 더 새 커밋의 실행
-    cat "$FAKE_DIR/headruns.json" ;;
+  https://api.github.com/*head_sha=def456*)           # 더 새 커밋의 실행: FAIL 이면 API 오류
+    [ "$(cat "$FAKE_DIR/headruns.json")" != FAIL ] || exit 22; cat "$FAKE_DIR/headruns.json" ;;
   https://api.github.com/*)
     n=$(( $(cat "$FAKE_DIR/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_DIR/n"
     f="runs.$n.json"; [ -f "$FAKE_DIR/$f" ] || f=$(cd "$FAKE_DIR" && ls runs.*.json | sort -t. -k2 -n | tail -n 1)
@@ -155,7 +155,7 @@ check "웹 compose 키" "0 DESK_DOCKER_NETWORK='trading-desk-prod'|DESK_WEB_BIND
 wait_ci() {  # 인자 = 차례로 돌려줄 runs JSON. HEAD(develop 머리 SHA) · HEADRUNS(그 실행) · SUP(CI_SUPERSEDE) · MODE(인자)
   rm -rf "$FAKE_DIR"; mkdir -p "$FAKE_DIR"; local i=0 j
   for j in "$@"; do i=$((i + 1)); printf '%s' "$j" > "$FAKE_DIR/runs.$i.json"; done
-  [ -z "${HEAD:-}" ] || printf '{"sha":"%s"}' "$HEAD" > "$FAKE_DIR/head.json"
+  [ -z "${HEAD:-}" ] || printf '{"ref":"refs/heads/develop","object":{"sha":"%s","type":"commit"}}' "$HEAD" > "$FAKE_DIR/head.json"
   printf '%s' "${HEADRUNS:-$NONE}" > "$FAKE_DIR/headruns.json"
   CI_REPO=o/r CI_SHA=abc123 CI_POLL_SEC=0 CI_SUPERSEDE="${SUP:-0}" GITHUB_TOKEN=ghs_SECRET     bash "$REPO_ROOT/scripts/jenkins/wait-ci.sh" ${MODE:-} > "$TMP/out" 2>&1
   echo $?
@@ -176,12 +176,15 @@ check "취소(밀림)면 4" 4 "$(wait_ci "$CAN")"
 check "다시 돌린 마지막 시도를 본다" 0 "$(wait_ci "$RERUN")"
 
 # #752 밀림: 기다리는 동안 develop 머리가 더 새 커밋(def456)이 되면 4, 그 커밋의 CI 가 이미 실패면 밀림이 아니다
-check "밀림 검사를 켜지 않으면 머리를 읽지 않는다" "0 0" "$(HEAD=def456 wait_ci "$PROG" "$OK") $(grep -c /commits/ "$FAKE_DIR/calls")"
+check "밀림 검사를 켜지 않으면 머리를 읽지 않는다" "0 0" "$(HEAD=def456 wait_ci "$PROG" "$OK") $(grep -c /git/ref/ "$FAKE_DIR/calls")"
 check "머리가 더 새 커밋이고 그 CI 가 진행 중이면 밀림(4)" 4 "$(SUP=1 HEAD=def456 HEADRUNS="$PROG" wait_ci "$PROG" "$OK")"
 check "밀림 줄에 두 커밋" 1 "$(grep -c '^밀림: abc123 → 더 새 def456$' "$TMP/out")"
 check "더 새 커밋의 CI 가 성공이어도 밀림(4)" 4 "$(SUP=1 HEAD=def456 HEADRUNS="$OK" wait_ci "$PROG" "$OK")"
 check "더 새 커밋의 CI 가 실패면 이 커밋을 배포(0)" 0 "$(SUP=1 HEAD=def456 HEADRUNS="$BAD" wait_ci "$PROG" "$OK")"
 check "머리가 이 커밋이면 그대로 기다린다(0)" 0 "$(SUP=1 HEAD=abc123 wait_ci "$PROG" "$OK")"
+check "더 새 커밋의 CI 가 취소면 밀림이 아니다(0)" 0 "$(SUP=1 HEAD=def456 HEADRUNS="$CAN" wait_ci "$PROG" "$OK")"
+check "더 새 커밋의 실행을 못 읽으면 밀림이 아니다(0)" 0 "$(SUP=1 HEAD=def456 HEADRUNS=FAIL wait_ci "$PROG" "$OK")"
+check "머리를 못 읽어도 계속 기다린다(0)" 0 "$(SUP=1 wait_ci "$PROG" "$OK")"
 check "이 커밋이 이미 성공이면 머리를 보지 않고 배포(0)" 0 "$(SUP=1 HEAD=def456 HEADRUNS="$PROG" wait_ci "$OK")"
 check "밀림 검사 중에도 이 커밋의 실패는 1" 1 "$(SUP=1 HEAD=abc123 wait_ci "$BAD")"
 
@@ -191,6 +194,10 @@ check "배포 직전 — 실행 목록을 기다리지 않는다" 0 "$(grep -c h
 check "배포 직전 — 더 새 커밋 CI 실패면 배포(0)" 0 "$(MODE=--superseded-only HEAD=def456 HEADRUNS="$BAD" wait_ci "$OK")"
 check "배포 직전 — 머리가 이 커밋이면 배포(0)" 0 "$(MODE=--superseded-only HEAD=abc123 wait_ci "$OK")"
 check "배포 직전 — GitHub 를 못 읽으면 배포(0)" 0 "$(MODE=--superseded-only wait_ci "$OK")"
+check "배포 직전 — 못 읽었다고 적는다" 1 "$(grep -c '머리를 읽지 못했다' "$TMP/out")"
+check "배포 직전 — 더 새 커밋 실행을 못 읽으면 배포(0)" 0 "$(MODE=--superseded-only HEAD=def456 HEADRUNS=FAIL wait_ci "$OK")"
+check "배포 직전 — 더 새 커밋 실행이 JSON 이 아니면 배포(0)" 0 "$(MODE=--superseded-only HEAD=def456 HEADRUNS='<html>' wait_ci "$OK")"
+check "배포 직전 — 더 새 커밋 CI 취소면 배포(0)" 0 "$(MODE=--superseded-only HEAD=def456 HEADRUNS="$CAN" wait_ci "$OK")"
 check "배포 직전 — 토큰이 인자 · 출력에 없다" "0 0" "$(grep -c ghs_ "$FAKE_DIR/calls") $(grep -c ghs_ "$TMP/out")"
 
 if [ "$FAILS" = 0 ]; then echo "모두 통과"; else echo "${FAILS}개 실패"; exit 1; fi

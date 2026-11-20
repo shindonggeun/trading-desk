@@ -33,6 +33,7 @@ const CACHE_TTL: [RegExp, number][] = [
   [/^\/api\/stats\/plans\b/, 60_000],
   [/^\/api\/market\/weekly\b/, 60_000],
   [/^\/api\/bottom-zone\b/, 60_000],
+  [/^\/api\/batch\/bottom-zone\b/, 60_000],   // #705 대시보드 바닥권 칸(지수 + 즐겨찾기 한 번에)
   [/^\/api\/sector-news\b/, 60_000],            // 구역 갱신 10분
   [/^\/api\/macro\/brief$/, 30_000],
   // 모의 투자 요약은 설정 저장 뒤 서버가 다시 계산하는 동안 3초마다 다시 읽는다 — 기억하지 않는다
@@ -437,6 +438,45 @@ export const api = {
   saveLineWatch: (body: Partial<Pick<LineWatch, "enabled" | "tickers" | "timeframes" | "events">>) =>
     call<LineWatch>("/api/notify/line-watch", { method: "PUT", body: JSON.stringify(body) }),
 };
+
+/** #705 GET /api/batch/{kind} — 종목마다 같은 경로를 부르던 화면이 한 번에(최대 30종목, 서버가 4개씩 같은 핸들러로) */
+export type BatchKind = "bottom-zone" | "candles" | "levels" | "playbooks" | "projection" | "gaps" | "estimate-candles";
+const BATCH_MAX = 30;
+const batchFailed = (x: unknown): boolean =>
+  x != null && typeof x === "object" && typeof (x as { error?: unknown }).error === "number"
+  && Object.keys(x).every((k) => k === "error" || k === "detail");
+
+/**
+ * 종목 → 값(그 종목이 실패하면 null). 30개 넘으면 나눠 부른다. 일괄 경로가 없는 서버(배포 사이 404)면 single 로 하나씩.
+ * 묶음 자체가 실패하면(네트워크 · 5xx) 모두 null — 화면은 종목마다 실패로 그린다.
+ */
+export async function batchGet<T>(kind: BatchKind, tickers: string[], params: Record<string, string | number> = {},
+  single?: (ticker: string) => Promise<T>): Promise<Record<string, T | null>> {
+  const names = [...new Set(tickers.filter(Boolean))];
+  const out: Record<string, T | null> = {};
+  if (!names.length) return out;
+  const extra = Object.entries(params).map(([k, v]) => `&${k}=${encodeURIComponent(String(v))}`).join("");
+  const parts: string[][] = [];
+  for (let i = 0; i < names.length; i += BATCH_MAX) parts.push(names.slice(i, i + BATCH_MAX));
+  await Promise.all(parts.map(async (part) => {
+    try {
+      const got = await call<{ kind: string; items: Record<string, unknown> }>(
+        `/api/batch/${kind}?tickers=${encodeURIComponent(part.join(","))}${extra}`);
+      for (const t of part) {
+        const v = got.items?.[t];
+        out[t] = v == null || batchFailed(v) ? null : (v as T);
+      }
+    } catch (e) {
+      if (single && e instanceof ApiError && e.status === 404) {
+        const each = await Promise.allSettled(part.map((t) => single(t)));
+        part.forEach((t, i) => { const r = each[i]; out[t] = r.status === "fulfilled" ? r.value : null; });
+      } else {
+        for (const t of part) out[t] = null;
+      }
+    }
+  }));
+  return out;
+}
 
 /** #361 구독 알림 종류 — flow 는 전체 스위치, 나머지는 그 시장의 전향만(빠진 키는 서버가 켜짐으로) */
 export interface PushKinds {

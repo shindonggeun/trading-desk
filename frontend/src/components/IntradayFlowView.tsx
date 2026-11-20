@@ -101,7 +101,8 @@ function programPart(d: IntradayFlow, spot: Spot, foreign: number | null): strin
     const label = PROG.find((p) => p.key === key)!.label;
     const t = [...(d.program_turns ?? [])].reverse().find((x) => x.market === spot && x.who === key);
     let out = `${label} ${signed(v, "억")}${t ? `(${hhmm(t.t)} ${PROG_TURN_LABEL[t.kind]})` : ""}`;
-    if (foreign != null && foreign !== 0 && v !== 0) out += foreign > 0 === v > 0 ? " · 외인 현물과 같은 방향" : " · 외인 현물과 반대";
+    // 푸시 글(desk.program_flow.same_way)과 같은 말
+    if (foreign != null && foreign !== 0 && v !== 0) out += foreign > 0 === v > 0 ? " · 외인과 같은 방향" : " · 외인과 반대";
     return out;
   }
   return null;
@@ -334,7 +335,8 @@ function IntradayFlowViewInner() {
   // #581 오늘 알림 가운데 이 차트의 시장 · 날짜의 수급 흐름 변화(전향은 위의 전향 마커가 이미 그린다)
   const { data: alertDay } = useTodayAlerts();
   const shifts = useMemo(() => (alertDay && data && alertDay.date === data.date
-    ? alertDay.items.filter((a) => a.kind === "flow_shift" || a.kind === "program_alert") : []), [alertDay, data]);
+    // #743 프로그램 전환 알림도 같은 이유로 여기서 빼고(프로그램 선 위 화살표), 타임라인에만
+    ? alertDay.items.filter((a) => a.kind === "flow_shift") : []), [alertDay, data]);
 
   // #401 차트 2개(현물 · 선물). 십자선은 한쪽에서 가리킨 시각을 다른 쪽에도 그린다.
   useEffect(() => {
@@ -359,7 +361,7 @@ function IntradayFlowViewInner() {
       lines: on.map((w) => ({ who: w.key, color: css(w.color), points: data.futures.map((b) => ({ t: b.t, v: b[FUT_KEY[w.key]] as number | null })) })),
       deltas: data.futures.map((b) => ({ t: b.t, v: b.foreign_delta })),
       turns: data.turns.filter((t) => t.market === "futures"), unit: "계약",
-      alerts: shifts.filter((a) => a.market === "futures" && a.kind === "flow_shift"),
+      alerts: shifts.filter((a) => a.market === "futures"),
     });
     const link = (from: typeof spot, to: typeof spot) => from.chart.subscribeCrosshairMove((p) => {
       if (p.time === undefined) to.chart.clearCrosshairPosition();
@@ -371,6 +373,10 @@ function IntradayFlowViewInner() {
   }, [data, prefs.spot, prefs.who, prefs.prog, prefs.bar, shifts]);
 
   const supported = data?.supported !== false;
+  // #743 막대 = 프로그램일 때 어느 선인지 · 값이 아직 없는지(09:00 전, KIS 를 못 받은 날)
+  const rowsNow = data ? data.spot[prefs.spot] : [];
+  const barProg = PROG.find((p) => prefs.prog[p.key] && rowsNow.some((b) => b[p.key] != null)) ?? PROG[0];
+  const noProgram = prefs.bar === "program" && !rowsNow.some((b) => b[`${barProg.key}_delta` as const] != null);
 
   return (
     <div className="intraday-flow">
@@ -430,7 +436,8 @@ function IntradayFlowViewInner() {
           <PaneHead title="코스피200 선물" unit="계약"
             values={WHO.filter((w) => prefs.who[w.key]).map((w) => ({ who: w.key, v: lastValue(data.futures, (b) => b[FUT_KEY[w.key]] as number | null) }))} />
           <div className="intraday-chart intraday-chart-pane" ref={futBox} aria-label="오늘 장중 선물 수급 차트(계약)" />
-          <p className="muted small">선 = 주체별 오늘 누적 순매수(현물 억원 · 선물 계약, 점선 = 프로그램매매 KRX) · 막대 = {prefs.bar === "program" ? "프로그램" : "외국인"} {data.bucket_min}분 순매수(선물 차트는 외국인) · 화살표 = 외국인 전향 · 프로그램 전환 · ● ■ = 수급 흐름 · 프로그램 알림(■ 강함)</p>
+          <p className="muted small">선 = 주체별 오늘 누적 순매수(현물 억원 · 선물 계약, 점선 = 프로그램매매 KRX) · 막대 = {prefs.bar === "program" ? barProg.label : "외국인"} {data.bucket_min}분 순매수(선물 차트는 외국인) · 화살표 = 외국인 전향 · 프로그램 전환 · ● ■ = 수급 흐름 알림(■ 강함)</p>
+          {noProgram && <p className="muted small">프로그램매매 값이 아직 없습니다 — 09:00 부터 1분마다 쌓입니다.</p>}
         </>
       )}
       {!data && !failed && <p className="muted small">불러오는 중…</p>}

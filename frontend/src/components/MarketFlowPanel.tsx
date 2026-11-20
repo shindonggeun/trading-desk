@@ -320,6 +320,9 @@ export default function MarketFlowPanel() {
   const latest = data?.records[0];
   // 원천 · 확인 두 시각은 1d 의 오늘 기록에만(서버도 그때만 원천 시각을 준다)
   const today = prefs.interval === "1d" && !!latest?.in_progress;
+  const freshness = data?.freshness;
+  const delayLabel = !failed && data?.source !== "mock" && latest && prefs.interval === "1d"
+    && freshness && (today || !freshness.live) ? freshness.label : null;
   const max = latest ? Math.max(...INVESTORS.map((i) => Math.abs(latest.investors[i.key]?.net ?? 0)), 1) : 1;
   const kinds = latest ? KINDS.filter((k) => latest.institution_breakdown[k.key]) : [];
   const kindMax = latest ? Math.max(...kinds.map((k) => Math.abs(latest.institution_breakdown[k.key]!.net)), 1) : 1;
@@ -361,6 +364,7 @@ export default function MarketFlowPanel() {
             <strong>{periodLabel(latest, prefs.interval)}</strong>
             {latest.provisional && <span className="pill pill-warn flow-pill" title="장 마감 · 저녁 확정 전 값이라 바뀔 수 있습니다">잠정</span>}
             {today && data?.session === "pre" && <span className="pill flow-pill" title="09:00 전 — 장 시작 전 거래(시간외 · NXT 프리마켓)까지 들어간 값">프리장</span>}
+            {delayLabel && <span className="pill flow-pill">{delayLabel}</span>}
             <span className="muted">
               {today && data?.freshness
                 ? `${data.freshness.source_updated_at ? ` · 원천 갱신 ${shortTime(data.freshness.source_updated_at)}` : ""}${data.freshness.fetched_at ? ` · 확인 ${shortTime(data.freshness.fetched_at)}` : ""}`

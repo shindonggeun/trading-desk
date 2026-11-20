@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { sameTicker } from "./ticker";
 
 /**
  * #764 시장 실시간 스트림(GET /api/stream/market, #690 · docs/market-stream.md)을 탭 하나에 연결 하나로 나눠 쓴다.
@@ -80,7 +81,7 @@ function wanted(): string | null {
   }
   if (!channels.size) return null;
   const ch = CHANNELS.filter((c) => channels.has(c));
-  const tk = [...tickers].sort().slice(0, MAX_TICKERS);
+  const tk = [...tickers].sort().slice(0, MAX_TICKERS);   // 맨 코드도 그대로 — 서버가 표기를 맞춘다
   const q = new URLSearchParams({ channels: ch.join(",") });
   if (ch.includes("quote")) q.set("tickers", tk.join(","));
   return `${STREAM_PATH}?${q.toString()}`;
@@ -120,25 +121,39 @@ function parse(ev: MessageEvent): Record<string, unknown> | null {
   }
 }
 
+/** 시세 키를 구독자가 쓰는 표기로 — 서버는 맨 코드(005930)를 005930.KS 로 바꿔 보낸다(#477 전 즐겨찾기) */
+function quoteKeys(key: string): string[] {
+  const out = new Set<string>([key]);
+  for (const s of subs) if (s.channel === "quote") for (const t of s.tickers) if (sameTicker(t, key)) out.add(t);
+  return [...out];
+}
+
 function onData(ev: MessageEvent): void {
   st.lastAt = Date.now();
-  const m = parse(ev) as StreamMessage | null;
-  if (!m || !CHANNELS.includes(m.kind) || typeof m.key !== "string") return;
-  if (m.event_id) {
-    if (st.seenIds.has(m.event_id)) return;          // 재접속 스냅숏과 겹친 이벤트
-    st.seenIds.add(m.event_id);
-    if (st.seenIds.size > SEEN_MAX) st.seenIds = new Set([...st.seenIds].slice(-SEEN_MAX / 2));
-  }
-  const k = slot(m.kind, m.key);
-  const first = !st.seenKeys.has(k);
-  st.seenKeys.add(k);
-  st.last.set(k, m);
-  for (const s of [...subs]) {
-    if (s.channel !== m.kind) continue;
-    if (m.kind === "quote" && !s.tickers.some((t) => t.toUpperCase() === m.key.toUpperCase())) continue;
-    s.onMessage(m);
+  const raw = parse(ev) as StreamMessage | null;
+  if (!raw || !CHANNELS.includes(raw.kind) || typeof raw.key !== "string") return;
+  const keys = raw.kind === "quote" ? quoteKeys(raw.key) : [raw.key];
+  let first = false;
+  for (const key of keys) {
+    const k = slot(raw.kind, key);
+    first = first || !st.seenKeys.has(k);
+    st.seenKeys.add(k);   // 재접속 스냅숏이 이미 본 id 여도 이 연결에서 오는 키다
   }
   if (first && st.ready) notify();
+  if (raw.event_id) {
+    if (st.seenIds.has(raw.event_id)) return;          // 재접속 스냅숏과 겹친 이벤트 — 값은 이미 반영했다
+    st.seenIds.add(raw.event_id);
+    if (st.seenIds.size > SEEN_MAX) st.seenIds = new Set([...st.seenIds].slice(-SEEN_MAX / 2));
+  }
+  for (const key of keys) {
+    const m = key === raw.key ? raw : { ...raw, key };
+    st.last.set(slot(m.kind, key), m);
+    for (const s of [...subs]) {
+      if (s.channel !== m.kind) continue;
+      if (m.kind === "quote" && !s.tickers.includes(key)) continue;
+      s.onMessage(m);
+    }
+  }
 }
 
 function setDegraded(list: unknown): void {
@@ -226,7 +241,7 @@ export function subscribe(channel: StreamChannel, tickers: string[], onMessage: 
   // 이미 받은 마지막 값을 바로
   for (const m of st.last.values()) {
     if (m.kind !== channel || !st.seenKeys.has(slot(m.kind, m.key))) continue;
-    if (channel === "quote" && !tickers.some((t) => t.toUpperCase() === m.key.toUpperCase())) continue;
+    if (channel === "quote" && !tickers.includes(m.key)) continue;
     onMessage(m);
   }
   wantOpen();

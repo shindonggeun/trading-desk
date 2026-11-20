@@ -65,11 +65,14 @@ type Feed = { data: MarketAlertsDay | null; error: string | null; live: boolean 
 export const ALERTS_LIVE: LiveSpec<MarketAlertsDay> = {
   channel: "alert",
   keys: null,
+  // 스트림은 놓친 알림을 다시 보내지 않는다 — 쉬는 동안에도 5분마다 REST 로 맞춘다
+  reconcileMs: 5 * 60_000,
   apply: (prev, m) => {
     const a = m.payload as MarketAlert | null;
     // REST 와 같게: 섹터 급등락만 타임라인에 없다(GET /api/sectors/movers). 보유 알림은 서버가 주인 세션에만 보낸다
     if (!a || (a.kind as string) === "sector_mover" || typeof a.t !== "string") return undefined;
-    if (a.trade_date && prev.date && a.trade_date !== prev.date) return { ...prev, date: a.trade_date, items: [a] };
+    if (a.trade_date && prev.date && a.trade_date < prev.date) return undefined;   // 자정을 넘긴 늦은 알림
+    if (a.trade_date && prev.date && a.trade_date > prev.date) return { ...prev, date: a.trade_date, items: [a] };
     if (prev.items.some((x) => alertKey(x) === alertKey(a))) return undefined;
     return { ...prev, items: [...prev.items, a] };
   },

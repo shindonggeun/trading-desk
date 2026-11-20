@@ -138,6 +138,7 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
 }) {
   const onPriceRef = useRef(onPrice);
   onPriceRef.current = onPrice;
+  const lastPrice = useRef<Record<string, { p: number; at: number }>>({});
   const [bundle, setBundle] = useState<BoardTicker[]>(() => renamed(load(BUNDLE_KEY, WEEKEND_DEFAULT, isList)));
   const [bundleOpen, setBundleOpen] = useState<boolean>(() => load(OPEN_KEY, true, (v) => typeof v === "boolean"));
   const [items, setItems] = useState<Record<string, BoardItem>>({});
@@ -162,7 +163,14 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
   const boardPoll = useLivePoll(tickers.length ? `board:${key}` : null, () => api.board(tickers), POLL_MS, {
     onData: (r) => {
       setItems((cur) => ({ ...cur, ...byAsked(tickers, r.items) }));
-      for (const it of r.items) if (it.price != null) onPriceRef.current?.(askedOf(tickers, it.ticker), it.price);
+      for (const it of r.items) {
+        const t = askedOf(tickers, it.ticker);
+        // #764 스트림이 칸 하나를 바꿀 때마다 모든 종목을 다시 알리지 않게 — 바뀐 가격만(같은 값은 지금처럼 15초에 한 번)
+        const before = lastPrice.current[t];
+        if (it.price == null || (before && before.p === it.price && Date.now() - before.at < POLL_MS)) continue;
+        lastPrice.current[t] = { p: it.price, at: Date.now() };
+        onPriceRef.current?.(t, it.price);
+      }
       setFailedAt(null);
     },
     onError: () => setFailedAt(new Date().toISOString()),

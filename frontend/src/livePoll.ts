@@ -18,7 +18,7 @@ export type LiveSpec<T> = {
   apply: (prev: T, m: StreamMessage) => T | undefined;
   /** 받은 값으로 보아 쉬어도 되나(예: 시세판은 모든 칸이 장중일 때만) */
   pauseWhen?: (data: T | undefined) => boolean;
-  /** 쉬는 동안에도 이만큼마다 REST 로 한 번 맞춘다(서버가 정하는 상태가 바뀌는 패널) */
+  /** 쉬는 동안에도 이만큼마다 REST 로 한 번 맞춘다(서버가 정하는 상태가 바뀌는 패널 · 놓칠 수 있는 알림) */
   reconcileMs?: number;
 };
 
@@ -27,16 +27,15 @@ export function useLivePoll<T>(
 ): PollSnapshot<T> & { refresh: () => void; live: boolean } {
   const liveRef = useRef(live);
   liveRef.current = live;
-  const restAt = useRef(0);
-  const covered = (data: T | undefined): boolean => {
+  const covered = (data: T | undefined, restAt: number): boolean => {
     const l = liveRef.current;
     if (!l || !keysLive(l)) return false;
     if (l.pauseWhen && !l.pauseWhen(data)) return false;
-    return !(l.reconcileMs && Date.now() - restAt.current >= l.reconcileMs);
+    return !(l.reconcileMs && Date.now() - restAt >= l.reconcileMs);
   };
-  const poll = usePoll<T>(key, () => { restAt.current = Date.now(); return fetch(); }, ms, {
+  const poll = usePoll<T>(key, fetch, ms, {
     ...options,
-    paused: (data) => covered(data) || !!options.paused?.(data),
+    paused: (data, restAt) => covered(data, restAt) || !!options.paused?.(data, restAt),
   });
   const tickers = live?.channel === "quote" ? live.keys ?? [] : [];
   const { live: channelLive } = useMarketStream(live?.channel ?? "alert", tickers, (m) => {
@@ -44,11 +43,12 @@ export function useLivePoll<T>(
     if (!key || !l || (l.keys && !l.keys.includes(m.key))) return;
     pushPollData<T>(key, (prev) => l.apply(prev, m));
   }, !!key && !!live && (live.keys === null || live.keys.length > 0));
-  // 살아 있다가 끊기면(또는 degraded) REST 를 바로 한 번 — 그 패널만 폴링으로
-  const was = useRef(false);
+  // 스트림 상태가 바뀔 때마다 REST 를 바로 한 번 — 끊기면(degraded) 그 패널만 폴링으로, 다시 살아나면(ready · 회복)
+  // 그 사이 놓친 것(스트림은 알림을 다시 보내지 않는다)을 맞춘 뒤 쉰다. 처음 붙을 때는 usePoll 이 이미 부른다
+  const was = useRef<boolean | null>(null);
   const refresh = poll.refresh;
   useEffect(() => {
-    if (was.current && !channelLive) refresh();
+    if (was.current !== null && was.current !== channelLive) refresh();
     was.current = channelLive;
   }, [channelLive, refresh]);
   return { ...poll, live: !!live && channelLive && keysLive(live) };

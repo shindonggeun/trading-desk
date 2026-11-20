@@ -23,7 +23,7 @@ import type { DeskEvent, Plan, Run, RunOutlook } from "../types";
 import TipBadges from "../components/TipBadges";
 import { MarketTrendBadges } from "../components/TrendChips";
 import RetryRunButton from "../components/RetryRunButton";
-import { every } from "../poll";
+import { every, usePoll } from "../poll";
 import HorizonsBoard from "../components/HorizonsBoard";
 import { type AllHorizonsPlan, defaultHorizon, isOtherHorizon, planFor, slotTitle } from "../allHorizons";
 import type { HorizonId } from "../types";
@@ -118,18 +118,38 @@ export default function RunView({ runId }: { runId: string }) {
   const [chosen, setChosen] = useState<Tab | null>(() => tabInHash(runId));
   const tabs = useRef<HTMLDivElement>(null);
   const runBar = useRef<HTMLDivElement>(null);
+  const requested = useRef(0);
+  const applied = useRef(0);
+  const readRun = useCallback(async (signal?: AbortSignal) => {
+    const request = ++requested.current;
+    return { request, run: await api.run(runId, signal) };
+  }, [runId]);
+  const applyRun = useCallback((result: Awaited<ReturnType<typeof readRun>>) => {
+    // 대기 재조회와 SSE 갱신이 겹치면 먼저 요청한 응답이 최신 상태를 덮지 않게 한다.
+    if (result.request <= applied.current) return;
+    applied.current = result.request;
+    setRun(result.run);
+    setError(null);
+  }, []);
+
+  usePoll(run?.id === runId && run.status === "queued" ? `run-queue:${runId}` : null,
+    readRun, 5000, { delay: 5000, onData: applyRun });
 
   useEffect(() => {
-    api.run(runId).then(setRun).catch((e) => setError(String(e)));
+    // signal을 전달해 SSE 직후의 GET이 진행 중인 대기 재조회 응답을 공유하지 않게 한다.
+    const controller = new AbortController();
+    const { signal } = controller;
+    const update = (result: Awaited<ReturnType<typeof readRun>>) => { if (!signal.aborted) applyRun(result); };
+    readRun(signal).then(update).catch((e) => { if (!signal.aborted && applied.current === 0) setError(String(e)); });
     const seen = new Set<number>();
     const stop = followRun(runId, (e) => {
       if (seen.has(e.seq)) return;
       seen.add(e.seq);
       setEvents((cur) => [...cur, e]);
-      if (e.type === "done" || e.type === "status") api.run(runId).then(setRun).catch(() => {});
+      if (e.type === "done" || e.type === "status") readRun(signal).then(update).catch(() => {});
     });
-    return stop;
-  }, [runId]);
+    return () => { controller.abort(); stop(); };
+  }, [runId, applyRun, readRun]);
 
   // 뒤로 가기 · 주소 직접 수정
   useEffect(() => {

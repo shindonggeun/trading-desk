@@ -4,6 +4,7 @@ import { STATUS_LABEL, time } from "../format";
 import { HORIZON, OPINION, OUTCOME } from "../korean";
 import type { Run } from "../types";
 import { usePoll } from "../poll";
+import { queueReason } from "../runQueue";
 
 const COUNT = 6;
 const POLL_MS = 5000;
@@ -50,6 +51,7 @@ export default function RecentRuns() {
           const opinion = plan?.opinion;
           const horizon = plan?.horizon ?? r.options.horizon ?? "swing";
           const outcome = r.outcome_status ? OUTCOME[r.outcome_status]?.ko : null;
+          const waiting = queueReason(r, []);
           return (
             <li key={r.id}>
               <a className={`recent-run${opinion ? ` recent-${opinion}` : ""}`} href={`#/runs/${r.id}`}>
@@ -71,6 +73,7 @@ export default function RecentRuns() {
                   {HORIZON[horizon]?.ko ?? horizon} · {r.trade_date}
                   {outcome ? ` · ${outcome}` : r.status === "done" ? "" : ` · ${time(r.created_at)}`}
                 </span>
+                {waiting && <span className="run-queue-detail small" title={waiting.title}>{waiting.text}</span>}
               </a>
             </li>
           );

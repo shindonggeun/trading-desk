@@ -17,6 +17,7 @@ from decimal import Decimal, InvalidOperation
 
 import httpx
 
+from .. import outbound
 from ..token_store import Issued, TokenStore, TokenUnavailable
 from .base import INSTITUTION_KINDS, Bar, Broker, Fill, FlowRecord, Holding, IndexPrice, Listing, MarketDay
 
@@ -205,6 +206,7 @@ class TossBroker(Broker):
         renewed = False
         attempt = 0
         while True:
+            outbound.count("toss")   # #689 per-process broker calls, /api/status
             r = await self._http.get(path, params=params,
                                      headers={"Authorization": f"Bearer {token}", **(headers or {})})
             # 401: revoked by a token issued elsewhere, or expired early. Renew once and retry.

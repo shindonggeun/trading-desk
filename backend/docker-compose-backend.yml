@@ -46,6 +46,11 @@ x-backend-environment: &backend_environment
   DESK_REPORT_IMAGE_MODEL: ${DESK_REPORT_IMAGE_MODEL:-}
   DESK_FUTURES_SNAPSHOT_MIN: ${DESK_FUTURES_SNAPSHOT_MIN:-1}
   DESK_LOG_LEVEL: ${DESK_LOG_LEVEL:-}
+  # #689 공유 캐시(Redis, 선택). 비면 프로세스 메모리 캐시만. 비밀번호는 Vault(kv/trading-desk/backend/prod/env)
+  DESK_REDIS_SENTINELS: ${DESK_REDIS_SENTINELS:-}
+  DESK_REDIS_MASTER: ${DESK_REDIS_MASTER:-}
+  DESK_REDIS_URL: ${DESK_REDIS_URL:-}
+  DESK_REDIS_PASSWORD: ${DESK_REDIS_PASSWORD:-}
   # GDELT 테마 과거 파일 폴더(cli news-history · backtest, #390). 비우면 data/gdelt
   DESK_GDELT_CACHE: ${DESK_GDELT_CACHE:-}
   # 로그인 세션 (docs/security.md §2). 쿠키는 HTTPS 앞단 뒤에서만 쓰므로 Secure 를 끄지 않는다

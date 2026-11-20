@@ -20,13 +20,14 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from datetime import time as clock_time
 
-from . import market_calendar
+from . import market_calendar, shared_cache
 from .broker.base import Bar, Broker
 from .indicators import WARMUP, annotate, normalize
 
 log = logging.getLogger(__name__)
 
 QUOTE_TTL_SEC = 10.0
+SHARED_NS = "quote"   # #689 desk.shared_cache: a Quote dict per ticker, QUOTE_TTL_SEC
 CANDLE_TTL_SEC = 30.0
 CACHE_MAX = 256
 # 1M is a month, 1m a minute. 120m / 240m and 1y are built here from Yahoo's 60m and monthly bars.
@@ -330,6 +331,17 @@ class PriceSource:
         cached = self._quotes.get(ticker)
         if cached and self._clock() - cached[0] < QUOTE_TTL_SEC:
             return cached[1]
+        # #689 a quote another process (collector · analyst · api) read in the last QUOTE_TTL_SEC
+        hit = await shared_cache.aget(SHARED_NS, ticker)
+        if hit is not None:
+            try:
+                quote = Quote(**hit[0])
+            except TypeError:   # a shape from another version of this class
+                quote = None
+            if quote is not None:
+                _remember(self._quotes, ticker, (self._clock() - max(0.0, QUOTE_TTL_SEC - hit[2]), quote),
+                          QUOTE_TTL_SEC, self._clock)
+                return quote
         try:
             if off_broker(ticker):
                 raise NotImplementedError
@@ -341,6 +353,7 @@ class PriceSource:
             price, currency = await asyncio.to_thread(self._yahoo_quote, ticker)
             quote = Quote(ticker, _tidy(price), currency, "yahoo", _now())
         _remember(self._quotes, ticker, (self._clock(), quote), QUOTE_TTL_SEC, self._clock)
+        await shared_cache.aput(SHARED_NS, ticker, quote.to_dict(), QUOTE_TTL_SEC)
         return quote
 
     async def candles(self, ticker: str, interval: str = "1d", count: int = 120,

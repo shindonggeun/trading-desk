@@ -42,6 +42,12 @@ class Settings:
                               repr=False)   # #628 carries the PostgreSQL password
     # #688 which background jobs this process runs (desk.roles): all | api | collector | analyst. Empty = all.
     role: str = field(default_factory=lambda: roles.parse(os.getenv("DESK_ROLE")))
+    # #689 shared cache (desk.shared_cache). All empty = off: every cache stays in this process's memory.
+    # Sentinels "host:port,host:port" find the master by name; a URL (redis://host:6379/0) is for one plain server.
+    redis_sentinels: tuple[str, ...] = field(default_factory=lambda: tuple(_list("DESK_REDIS_SENTINELS")))
+    redis_master: str = field(default_factory=lambda: os.getenv("DESK_REDIS_MASTER", "") or "master-redis")
+    redis_url: str = field(default_factory=lambda: os.getenv("DESK_REDIS_URL", ""), repr=False)
+    redis_password: str = field(default_factory=lambda: os.getenv("DESK_REDIS_PASSWORD", ""), repr=False)
     # Fake runs replay a scripted debate: build the UI without spending the plan's quota.
     fake_runs: bool = field(default_factory=lambda: _bool("DESK_FAKE_RUNS"))
     fake_delay: float = field(default_factory=lambda: float(os.getenv("DESK_FAKE_DELAY", "0.6")))

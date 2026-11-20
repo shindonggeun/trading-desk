@@ -26,7 +26,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
-from . import freshness
+from . import freshness, outbound, shared_cache
 from .market_flow import KST, _ttl_until_open
 from .token_store import Issued, TokenStore, TokenUnavailable
 
@@ -56,6 +56,7 @@ TIMEOUT_SEC = 8.0
 CACHE_OPEN_SEC = 30.0
 CACHE_CLOSED_SEC = 600.0
 CACHE_FAIL_SEC = 30.0
+SHARED_NS = "futures_flow"   # #689 desk.shared_cache: the last good view, {"value", "ttl"}
 _EXPIRED_TOKEN = ("EGW00123", "EGW00121")
 MULTIPLIER_MN = 0.25             # KOSPI200 futures: 250,000 KRW a point = 0.25 million KRW
 # A foreign spot/futures split is shown only past noise: 10 billion KRW of stock, 500 contracts.
@@ -282,6 +283,7 @@ class KisRest:
         refused = None
         for attempt in (0, 1):
             token = await self.token(refused)
+            outbound.count("kis")   # #689 per-process broker calls, /api/status
             res = await (await self._client()).get(f"{self._url}{path}", params=params, headers={
                 "content-type": "application/json; charset=utf-8", "authorization": f"Bearer {token}",
                 "appkey": self._key, "appsecret": self._secret, "tr_id": tr_id, "custtype": "P"})
@@ -356,12 +358,23 @@ class FuturesFlow:
         async with self._lock:
             if not fresh and self._cache and self._clock() - self._cache[0] < self._cache[1]:
                 return self._with_freshness(self._cache[2], self._cache[1])
+            if not fresh:
+                # #689 the collector's snapshot job reads fresh every minute and shares it: the card's read
+                # takes that instead of calling KIS again from this process
+                hit = await shared_cache.aget(SHARED_NS, "view")
+                if hit is not None:
+                    (shared, _age, left) = hit
+                    ttl = float(shared["ttl"])
+                    self._cache = (self._clock() - max(0.0, ttl - left), ttl, shared["value"])
+                    return self._with_freshness(shared["value"], ttl)
             value, ok = await self._fetch()
             now = self._now()
             # any failed part (price, investors) is retried soon; the derivatives session sets the rest
             ttl = (CACHE_FAIL_SEC if not ok else CACHE_OPEN_SEC if futures_open(now)
                    else _ttl_until_open(now, CACHE_CLOSED_SEC))
             self._cache = (self._clock(), ttl, value)
+            if ok:   # a failure answers this caller only - the others keep the last good one
+                await shared_cache.aput(SHARED_NS, "view", {"value": value, "ttl": ttl}, ttl)
             return self._with_freshness(value, ttl)
 
     def _with_freshness(self, value: dict, ttl: float) -> dict:

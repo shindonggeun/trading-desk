@@ -69,6 +69,17 @@ def test_the_week_ahead_lists_the_calendar_and_the_option_expiries_in_kst():
     got = report_plan.week_events(now, [fomc, far])
     assert [e["label"] for e in got] == ["FOMC 금리 결정", "코스피200 옵션 만기"]
     assert got[0]["when"] == "12/10(목) 04:00" and got[1]["when"] == "12/10(목)"
+    # Sunday's slot written late on Monday is still about this week
+    late = report_plan.week_events(_kst(2026, 12, 7, 9, 0), [fomc, far])
+    assert [e["label"] for e in late] == ["FOMC 금리 결정", "코스피200 옵션 만기"]
+
+
+def test_the_weeks_day_call_record_reads_the_stats_shape():
+    def stats(market, days):
+        assert days == 7
+        return {"market": market, "calls": {"prev_close": {"n": 5 if market == "kr" else 0,
+                                                            "direction_hit_rate": 0.6 if market == "kr" else None}}}
+    assert rp.week_calls(stats) == {"kr": {"n": 5, "hit_pct": 60}, "us": {"n": 0, "hit_pct": None}}
 
 
 def _engine(db_url):
@@ -89,7 +100,8 @@ def test_a_days_report_leads_with_the_indexes_and_links_its_subject(db_url):
     assert 3 <= len(s) <= explain.MAX_SECTIONS and s[0]["title"].startswith("지수부터")
     assert "코스피" in s[0]["body"] and "나스닥100 선물" in s[0]["body"] and s[0]["chart"]["symbol"] in ("^KS11", "NQ=F")
     assert "이어지나" in s[-1]["title"] and all(x.get("term", {}).get("explain") for x in s)
-    assert all(x["chart"] is None or "symbol" in x["chart"] for x in s)       # #682 can draw from the spec
+    assert all(isinstance(x["chart"]["levels"], list) and isinstance(x["chart"]["marks"], list) for x in s)
+    assert all("symbol" in x["chart"] for x in s)                            # #682 can draw from the spec
     assert desk.done_slots() == {"daily:2026-11-20"} and out["subject"]["symbol"] in desk.recent_subjects()
     # the next day's subject is another one (the rotation)
     assert desk.choose("daily")["subject"]["symbol"] != out["subject"]["symbol"]
@@ -112,6 +124,8 @@ def test_the_weekly_and_the_week_ahead_reports(db_url):
     for r in (week, ahead):
         assert 3 <= len(r["sections"]) <= explain.MAX_SECTIONS and r["closing"] and r["checklist"]
         json.dumps(r, ensure_ascii=False)
+    assert all(s["chart"]["kind"] in ("levels", "none") and isinstance(s["chart"]["levels"], list)
+               for r in (week, ahead) for s in r["sections"])
     # a broken record or calendar never stops the report
     def boom(*_a):
         raise RuntimeError("x")
@@ -119,6 +133,20 @@ def test_the_weekly_and_the_week_ahead_reports(db_url):
     assert broken.finish(broken.choose("weekly"))["kind"] == "weekly"
     assert broken.finish(broken.choose("next_week"))["sections"][0]["title"] == "다음 주 일정"
     engine.dispose()
+
+
+def test_without_the_subjects_index_no_link_is_claimed(db_url):
+    engine = _engine(db_url)
+
+    def no_nq(symbol):
+        if symbol == "NQ=F":
+            raise KeyError("NQ=F")
+        return rp.fake_fetch(symbol)
+    desk = rp.Reports(engine, no_nq, topics=(("SOXL", "SOXL"),))
+    out = desk.finish(desk.choose("daily"))
+    engine.dispose()
+    assert out["subject"]["symbol"] == "SOXL" and out["sections"][0]["title"].startswith("지수부터")
+    assert not any("이어지나" in s["title"] for s in out["sections"])
 
 
 def test_the_models_words_with_a_number_of_its_own_are_dropped_in_every_kind(db_url):

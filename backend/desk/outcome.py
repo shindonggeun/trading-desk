@@ -13,6 +13,11 @@ analysed is replayed on its horizon's bars (desk.horizons primary interval):
 3. Bars that do not reach the end of a window yet leave the plan ``waiting`` (not filled) or
    ``open`` (filled) for the next pass.
 
+#696: the PM also writes one line per horizon (desk.plan.split_horizon_lines). Each line for a horizon
+other than the run's own is judged the same way on its own horizon's bars (``horizons`` in the
+outcome; a leveraged run's lines on the underlying they were written for), and counted apart in the
+statistics (``by_horizon_line``).
+
 TradingAgents' own settle step (an LLM reflection fed back into the PM prompt) is deliberately
 not called: it would feed the scores back into the decisions this module measures.
 """
@@ -321,13 +326,54 @@ def _score_playbooks(plan: dict, bars: list[dict], horizon: horizons.Horizon, pl
 
 
 def _sweep_status(result: dict) -> str:
-    """What the sweep keys on: the plan's own status while it is pending, else a playbook still
-    pending keeps the run in the sweep (a hold plan's playbooks outlive its 'invalid')."""
+    """What the sweep keys on: the plan's own status while it is pending, else a playbook or a horizon
+    line still pending keeps the run in the sweep (a hold plan's playbooks outlive its 'invalid')."""
     if result.get("status") in PB_PENDING:
         return result["status"]
     pbs = result.get("playbooks") or {}
     pending = [pbs[s]["status"] for s in ("long", "short") if s in pbs and pbs[s]["status"] in PB_PENDING]
+    pending += [r["status"] for r in (result.get("horizons") or {}).values() if r.get("status") in PB_PENDING]
     return pending[0] if pending else result.get("status")
+
+
+def horizon_lines(plan: dict) -> dict[str, dict]:
+    """#696: the PM's directional lines for the horizons other than the run's own (the plan is that one)."""
+    main = plan.get("horizon") or horizons.DEFAULT_HORIZON
+    return {h: line for h, line in (plan.get("horizon_lines") or {}).items()
+            if h != main and h in horizons.HORIZONS and isinstance(line, dict) and line.get("bias") in ("long", "short")}
+
+
+async def _score_lines(run: dict, plan: dict, plan_at: str, prices, now: datetime) -> dict | None:
+    """Each horizon line judged on its own horizon's bars; a settled one is kept as it was scored."""
+    lines = horizon_lines(plan)
+    if not lines:
+        return None
+    before = (run.get("outcome") or {}).get("horizons") or {}
+    bars: dict[tuple[str, str], list[dict]] = {}
+    age = now - _at(plan_at)
+    out = {}
+    for hid, line in lines.items():
+        h = horizons.get(hid)
+        ticker = line.get("ticker") or run["ticker"]
+        if (before.get(hid) or {}).get("status") in TERMINAL:
+            out[hid] = before[hid]
+            continue
+        base = {"rules_version": RULES_VERSION, "interval": h.primary, "ticker": ticker}
+        limit = HISTORY_LIMIT_DAYS.get(h.primary)
+        if limit and age > timedelta(days=limit):
+            out[hid] = {**base, "status": "unscorable", "detail": f"{h.primary} bars older than {limit} days"}
+            continue
+        try:
+            if (ticker, h.primary) not in bars:
+                bars[(ticker, h.primary)] = (await prices.candles(ticker, h.primary, BARS))["bars"]
+            got = {**judge(line, bars[(ticker, h.primary)], h, plan_at, session_open(ticker)), "ticker": ticker}
+        except Exception as exc:  # noqa: BLE001 - this line again next pass, until MAX_AGE
+            got = {**base, "status": "error", "detail": f"{type(exc).__name__}: {exc}"}
+        if age > MAX_AGE[hid] and got["status"] in ("waiting", "open", "error"):
+            got = {**got, "status": "unscorable",
+                   "detail": f"still {got['status']} after {MAX_AGE[hid].days} days: {got.get('detail', '')}"}
+        out[hid] = got
+    return out
 
 
 # After this long a plan still waiting or open is closed as unscorable: the entry and holding
@@ -337,17 +383,45 @@ MAX_AGE = {"scalp": timedelta(days=3), "intraday": timedelta(days=7), "short_swi
 
 
 async def score(run: dict, prices, now: datetime | None = None) -> dict:
-    """Fetch the bars and judge one run; ``unscorable`` once its bars are past reach."""
+    """Fetch the bars and judge one run; ``unscorable`` once its bars are past reach.
+
+    #696: a run stays in the sweep while a horizon line is pending, so what is already settled - the
+    plan's own result, a playbook's - is kept as it was scored, never judged again on newer bars (a scalp's
+    1m bars stop reaching back to the plan within two sessions)."""
     plan = run.get("plan") or {}
     horizon = horizons.get(plan.get("horizon") or (run.get("options") or {}).get("horizon"))
     base = {"rules_version": RULES_VERSION, "interval": horizon.primary}
     plan_at = plan_time(run)
     directional = plan.get("bias") in ("long", "short")
-    if not directional and not plan.get("playbooks"):
+    if not directional and not plan.get("playbooks") and not horizon_lines(plan):
         return {**base, "status": "invalid", "detail": "not a directional plan"}
     if not plan_at:
         return {**base, "status": "unscorable", "detail": "no live quote: a past-date run"}
     now = now or datetime.now(UTC)
+    before = run.get("outcome") or {}
+    kept = before.get("status") in TERMINAL and before.get("rules_version") == RULES_VERSION
+    before_pbs = before.get("playbooks") or {}
+    pending_pb = any((before_pbs.get(side) or {}).get("status") in PB_PENDING for side in ("long", "short"))
+    if kept and not pending_pb:
+        result = {k: v for k, v in before.items() if k not in ("horizons", "sweep_status")}
+    else:
+        result = await _score_own(run, plan, horizon, base, plan_at, prices, now, directional)
+        if kept:
+            result = {**{k: v for k, v in before.items() if k not in ("playbooks", "horizons", "sweep_status")},
+                      **({"playbooks": result["playbooks"]} if result.get("playbooks") else {})}
+        for side, pb in before_pbs.items():
+            if side in ("long", "short") and pb and pb.get("status") not in PB_PENDING and result.get("playbooks"):
+                result["playbooks"][side] = pb
+    lines = await _score_lines(run, plan, plan_at, prices, now)
+    if lines:
+        result["horizons"] = lines
+    result["sweep_status"] = _sweep_status(result)
+    return result
+
+
+async def _score_own(run: dict, plan: dict, horizon: horizons.Horizon, base: dict, plan_at: str, prices,
+                     now: datetime, directional: bool) -> dict:
+    """The run's own plan and its playbooks on the run's horizon's bars."""
     age = now - _at(plan_at)
     limit = HISTORY_LIMIT_DAYS.get(horizon.primary)
     if limit and age > timedelta(days=limit):
@@ -376,7 +450,6 @@ async def score(run: dict, prices, now: datetime | None = None) -> dict:
                                                        "marked at the last close"}
             elif pb and pb["status"] in PB_PENDING:
                 result["playbooks"][side] = {**pb, "status": "unscorable", "detail": f"still {pb['status']}"}
-    result["sweep_status"] = _sweep_status(result)
     return result
 
 
@@ -493,6 +566,16 @@ def stats(runs: list[dict]) -> dict:
         keys = sorted({row[key] for row in rows})
         return [{"key": k, **_group([row for row in rows if row[key] == k])} for k in keys]
 
+    # #696: the PM's lines for the other horizons, each on its own horizon's bars
+    line_rows = []
+    for run in runs:
+        scored = (run.get("outcome") or {}).get("horizons") or {}
+        for hid in horizon_lines(run.get("plan") or {}):
+            got = scored.get(hid) or {}
+            line_rows.append({"status": got.get("status"), "probability": None, "r": got.get("r"), "horizon": hid})
+    by_line = [{"key": h, **_group([row for row in line_rows if row["horizon"] == h])}
+               for h in horizons.HORIZONS if any(row["horizon"] == h for row in line_rows)]
+
     calibration = []
     for low in range(0, 100, 10):
         bucket = [row for row in rows if row["probability"] is not None
@@ -504,5 +587,5 @@ def stats(runs: list[dict]) -> dict:
                                 "hits": group["target"], "hit_rate": group["hit_rate"],
                                 "avg_probability": group["avg_probability_resolved"]})
     return {"rules_version": RULES_VERSION, "total": total, "by_playbook": playbooks,
-            "by_horizon": by("horizon"), "by_rating": by("rating"), "by_direction": by("direction"),
+            "by_horizon": by("horizon"), "by_horizon_line": by_line, "by_rating": by("rating"), "by_direction": by("direction"),
             "by_opinion": by("opinion"), "by_analysts": by("analysts"), "calibration": calibration}

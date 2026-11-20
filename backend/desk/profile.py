@@ -1,8 +1,8 @@
-"""The owner's investing style, handed to the agents that decide the trade.
+"""The owner's mandate, handed to the agents that decide the trade.
 
 TradingAgents puts ``PortfolioContext.render()`` into the trader's, the three risk
 debaters' and the portfolio manager's prompts. ``DeskPortfolio`` extends it with a
-mandate, so the style reaches exactly the agents that set levels and sizing — without
+mandate, so it reaches exactly the agents that set levels and sizing — without
 patching the fork. The mandate is written in English like the rest of the prompts;
 the output language setting still makes the agents answer in Korean.
 """
@@ -23,32 +23,17 @@ _LEVELS = (
     "debate revised the trader's entry or stop, give the revised numbers there."
 )
 
-PROFILES: dict[str, dict[str, str]] = {
-    "aggressive_leverage": {
-        "label": "공격형 · 레버리지",
-        "mandate": (
-            "Investor mandate (the account owner): an aggressive, leverage-focused short-term trader. "
-            "Trades the underlying with 2x-3x leveraged or inverse ETFs/ETNs or margin; holding period "
-            "from a few days to about three weeks. Acts in both directions: a bearish view is a short or "
-            "inverse entry, not merely trimming. "
-            + _LEVELS + " "
-            "Base the stop on volatility (ATR) and price structure and aim for reward:risk of at least 2. "
-            "In Position Sizing, state the suggested leverage (e.g. 2x) and the loss at the stop as a "
-            "percentage of capital (keep it within 2-3%). If you know a liquid leveraged or inverse "
-            "product on this underlying, name it; if unsure, say so instead of inventing one."
-        ),
-    },
-    "balanced": {
-        "label": "균형형",
-        "mandate": (
-            "Investor mandate (the account owner): a balanced swing investor without leverage, holding "
-            "weeks to a few months; reduces rather than shorts on bearish views. "
-            + _LEVELS + " "
-            "Aim for reward:risk of at least 2 and keep the loss at the stop within 1-2% of capital."
-        ),
-    },
-}
-DEFAULT_PROFILE = "aggressive_leverage"
+# #696: one mandate - the owner no longer picks a style (aggressive / balanced). The risk of a plan is
+# the instrument's (desk.all_horizons.class_note: leverage, inverse, bond, defensive), told beside this.
+MANDATE = (
+    "Investor mandate (the account owner): a short-term trader who acts in both directions - a bearish view "
+    "is a short or inverse entry, not merely trimming - and may trade the underlying through 2x-3x leveraged "
+    "or inverse ETFs. " + _LEVELS + " "
+    "Base the stop on volatility (ATR) and price structure and aim for reward:risk of at least 2. In Position "
+    "Sizing, state the loss at the stop as a percentage of capital (keep it within 2-3%); a leveraged product "
+    "is already leveraged, so size it smaller. If you know a liquid leveraged or inverse product on this "
+    "underlying, name it; if unsure, say so instead of inventing one."
+)
 
 
 class DeskPortfolio(PortfolioContext):
@@ -66,13 +51,11 @@ class DeskPortfolio(PortfolioContext):
         return f"{block}\n\n{self.mandate}" if self.mandate else block
 
 
-def desk_portfolio(profile: str | None, book: PortfolioContext | None,
-                   levels_note: str | None = None, *, horizon_mandate: str | None = None) -> DeskPortfolio | None:
+def desk_portfolio(book: PortfolioContext | None, levels_note: str | None = None, *,
+                   horizon_mandate: str | None = None) -> DeskPortfolio:
     """``levels_note`` is the desk's support/resistance reference (desk.sr.prompt_note);
-    ``horizon_mandate`` the run's trading horizon (desk.horizons), placed after the style."""
-    mandate = PROFILES.get(profile or "", {}).get("mandate")
-    mandate = "\n\n".join(part for part in (mandate, horizon_mandate, levels_note) if part) or None
-    if book is None and mandate is None:
-        return None
+    ``horizon_mandate`` the run's trading horizon (desk.horizons) and its four lines (desk.all_horizons),
+    placed after the mandate."""
+    mandate = "\n\n".join(part for part in (MANDATE, horizon_mandate, levels_note) if part)
     data = book.model_dump() if book is not None else {}
     return DeskPortfolio(**data, mandate=mandate, book_known=book is not None)

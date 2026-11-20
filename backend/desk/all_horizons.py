@@ -26,6 +26,7 @@ import logging
 import math
 
 from . import channels, chart_read, entry_now, horizons, regime_live
+from .plan import HORIZON_LABELS
 from .sr import support_resistance
 from .underlying import leverage_of
 
@@ -180,10 +181,43 @@ async def _one(prices, ticker: str, h: horizons.Horizon, sr_main: dict | None, m
             "atr": (sr or {}).get("atr"), "chart": _chart(ch), "errors": errors or None}
 
 
-def _model(plan: dict) -> dict:
-    """The model's own plan on the run's horizon."""
-    return {k: plan.get(k) for k in ("opinion", "rating", "bias", "entry_price", "entry_type", "stop_loss",
-                                     "price_target", "long_trigger", "short_trigger", "valid_until")}
+MODEL_KEYS = ("origin", "ticker", "opinion", "rating", "bias", "entry_price", "entry_type", "stop_loss",
+              "price_target", "reward_risk", "long_trigger", "short_trigger", "valid_until", "why")
+
+
+def _model(plan: dict, ticker: str) -> dict:
+    """The model's own plan on the run's horizon (``origin`` "plan"; ``why`` from its horizon line)."""
+    line = (plan.get("horizon_lines") or {}).get(plan.get("horizon") or "") or {}
+    return {**{k: plan.get(k) for k in MODEL_KEYS}, "origin": "plan", "ticker": ticker, "why": line.get("why")}
+
+
+def _line(line: dict, ticker: str) -> dict:
+    """The model's line for another horizon (desk.plan.split_horizon_lines, ``origin`` "line"): rating and
+    levels, no triggers. ``ticker``: the instrument its prices are on - a leveraged run's lines are the
+    underlying's, the one the agents analysed."""
+    return {**{k: line.get(k) for k in MODEL_KEYS}, "origin": "line", "ticker": line.get("ticker") or ticker}
+
+
+def finish(got: dict, plan: dict, main: str, ticker: str) -> dict:
+    """``got`` (``maps``) with the model on each horizon it spoke for: the plan on ``main``, the PM's line
+    (``plan["horizon_lines"]``) on the others. ``source`` "model" there, else "map"."""
+    rows = got.get("horizons")
+    if not rows:
+        return got
+    lines = plan.get("horizon_lines") or {}
+    for hid, row in rows.items():
+        line = lines.get(hid) or {}
+        spoke = bool(line.get("rating") or line.get("entry_price") is not None)
+        row["model"], row["underlying_line"] = None, None
+        if hid == main:
+            row["model"] = _model({**plan, "horizon": main}, ticker)
+        elif spoke and (line.get("ticker") or ticker) == ticker:
+            row["model"] = _line(line, ticker)
+        elif spoke:
+            # a leveraged run's line is on the underlying: its prices are not the product's (the board's)
+            row["underlying_line"] = _line(line, ticker)
+        row["source"] = "model" if row["model"] else "map"
+    return got
 
 
 def fake(ticker: str, plan: dict, main: str) -> dict:
@@ -224,24 +258,28 @@ def fake(ticker: str, plan: dict, main: str) -> dict:
                                  "distance_pct": round(-atr / price * 100, 2)}],
                       "patterns": []},
         }
-    out[main]["model"] = _model(plan)
-    out[main]["source"] = "model"
     view = {"regime": "range", "summary": "1시간봉 박스 · 일봉 박스(대본)",
             "frames": {"1d": {"regime": "range", "adx": 16.0, "as_of": None, "basis": ["대본 예시"],
                               "box": {"high": round(price * 1.06, 2), "low": round(price * 0.95, 2), "touches_high": 3,
                                       "touches_low": 2, "width_pct": 11.58, "width_atr": 4.2, "round_trips": 2}}}}
     fit = horizon_fit(view, cls, 3.0)
     fit["errors"] = None
-    return {"instrument_class": cls, "horizons": out, "horizon_fit": fit, "horizons_note": None, "horizons_fake": True}
+    got = {"instrument_class": cls, "horizons": out, "horizon_fit": fit, "horizons_note": None, "horizons_fake": True}
+    return finish(got, plan, main, ticker)
 
 
 async def build(prices, ticker: str, plan: dict, main: str, sr_main: dict | None, *, same_day: bool,
                 scripted: bool = False, risk=None) -> dict:
-    """``plan``'s horizons · instrument_class · horizon_fit (a dict to merge into the plan). ``scripted``: a
-    fake run with no prices gets ``fake``'s."""
-    cls = instrument_class(ticker)
+    """``plan``'s horizons · instrument_class · horizon_fit (a dict to merge into the plan): ``maps`` with
+    the model's plan and lines on them (``finish``). ``scripted``: a fake run with no prices gets ``fake``'s."""
     if prices is None and scripted:
         return fake(ticker, plan, main)
+    return finish(await maps(prices, ticker, main, sr_main, same_day=same_day, risk=risk), plan, main, ticker)
+
+
+async def maps(prices, ticker: str, main: str, sr_main: dict | None, *, same_day: bool, risk=None) -> dict:
+    """The four horizons' deterministic pieces, no model yet (``source`` "map")."""
+    cls = instrument_class(ticker)
     if prices is None or not same_day:
         why = "지난 날짜의 분석이라 지금 봉으로 만든 기간별 계획은 붙이지 않았어요" if prices is not None else "시세 원천 없음"
         return {"instrument_class": cls, "horizons": None, "horizon_fit": None, "horizons_note": why}
@@ -251,12 +289,82 @@ async def build(prices, ticker: str, plan: dict, main: str, sr_main: dict | None
         asyncio.gather(*(_one(prices, ticker, horizons.HORIZONS[h], sr_main, main, risk) for h in ORDER)),
         _bounded(regime_live.view(prices, ticker), "regime", regime_errors))
     out = {r["horizon"]: r for r in rows}
-    if main in out:
-        out[main]["model"] = _model(plan)
-        out[main]["source"] = "model"
     swing_atr = (out.get("swing") or {}).get("atr")
     ref = ((out.get("swing") or {}).get("map") or {}).get("price_now")
     atr_pct = swing_atr / ref * 100 if swing_atr and ref and not math.isnan(swing_atr) else None
     fit = horizon_fit(view or {}, cls, atr_pct)
     fit["errors"] = regime_errors or None
     return {"instrument_class": cls, "horizons": out, "horizon_fit": fit, "horizons_note": None}
+
+
+# ---------------------------------------------------------------- the deciding agents' prompt
+
+_CLASS_EN = {
+    "leverage": ("a daily-reset leveraged product ({basis}): its moves are a multiple of the underlying's and "
+                 "volatility decay erodes it in a sideways market - prefer the shorter horizons there and size smaller."),
+    "inverse": ("a daily-reset inverse product ({basis}): it gains when the underlying falls; volatility decay "
+                "erodes it over time - hold it only while the down move lasts."),
+    "bond": ("a bond / Treasury ETF: a slow mover driven by rates and a safe haven when stocks sell off - "
+             "short horizons have little room between stop and target."),
+    "defensive": ("a defensive stock or sector (staples, utilities, health care, telecom): low beta, slower moves, "
+                  "holds up when the market sells off."),
+}
+
+
+def class_note(cls: dict) -> str | None:
+    """The instrument's class for the deciding agents (#696: in place of the owner's chosen style)."""
+    text = _CLASS_EN.get(cls.get("id"))
+    if not text:
+        return None
+    basis = f"{cls.get('multiple'):g}x {cls.get('underlying')}" if cls.get("multiple") else ""
+    return "Instrument class: " + text.format(basis=basis)
+
+
+def mandate(main: str, subject: str) -> str:
+    """The PM's four horizon lines (desk.plan.split_horizon_lines reads them; fixed English labels)."""
+    rows = "\n".join(f"{HORIZON_LABELS[h]} Plan: <Buy|Overweight|Hold|Underweight|Sell> / Entry: <number> / "
+                     f"Stop: <number> / Target: <number> / Why: <one short clause>" for h in ORDER)
+    holds = "; ".join(f"{HORIZON_LABELS[h]} {horizons.HORIZONS[h].holding_en}" for h in ORDER)
+    return ("All four horizons, one decision - the portfolio manager only (the trader and the risk debaters do "
+            "not write these): after the final levels line (and the Entry line), end the decision with exactly "
+            f"these four lines, prices in {subject}'s quote currency, keeping the English labels and the English "
+            f"rating word in any output language:\n{rows}\n"
+            f"Holding: {holds}. The {HORIZON_LABELS[main]} line repeats the final levels above. Each horizon "
+            "is its own call on its own bars - a scalp may be a Buy while the swing is a Hold; Hold still gives "
+            "the level at which to act. Base each on that horizon's support/resistance and ATR (the desk's "
+            "per-horizon reference, when given) and keep reward:risk of at least 1.5.")
+
+
+def _num(x) -> str:
+    return f"{x:.4g}" if isinstance(x, (int, float)) else "?"
+
+
+def prompt_note(got: dict | None) -> str | None:
+    """``maps``' four horizons in a few lines for the deciding agents: levels, ATR and the live playbook's pick."""
+    rows = (got or {}).get("horizons")
+    if not rows:
+        return None
+    out = ["The desk's per-horizon reference (no model; each horizon's own bars):"]
+    for hid in ORDER:
+        r = rows.get(hid)
+        if not r:
+            continue
+        lv = r.get("levels") or {}
+        sup = ", ".join(_num(x["price"]) for x in lv.get("support") or []) or "none"
+        res = ", ".join(_num(x["price"]) for x in lv.get("resistance") or []) or "none"
+        bits = [(f"- {HORIZON_LABELS[hid]} ({CHART_TF[hid]} chart, ATR {_num(r.get('atr'))}): support {sup} / "
+                f"resistance {res}")]
+        m = r.get("map") or {}
+        if m.get("side"):
+            t1 = next((t["price"] for t in m.get("targets") or [] if t.get("role") == "t1"), None)
+            bits.append(f"playbook {m['side']} {m.get('kind') or ''} near {_num(m.get('first'))}, stop "
+                        f"{_num(m.get('stop'))}, T1 {_num(t1)}")
+        elif m.get("stand_aside"):
+            bits.append("playbook: stand aside")
+        if (r.get("chart") or {}).get("trend"):
+            bits.append(f"trend {r['chart']['trend'].get('state')}")
+        out.append("; ".join(bits))
+    fit = got.get("horizon_fit") or {}
+    if fit.get("best"):
+        out.append(f"Regime now: {fit.get('regime')} - suits {', '.join(HORIZON_LABELS[h] for h in fit['best'])}.")
+    return "\n".join(out)

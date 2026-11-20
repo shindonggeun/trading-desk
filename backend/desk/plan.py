@@ -136,7 +136,8 @@ def _split_underlying(text: str) -> tuple[dict[str, float], str]:
 
 def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
     trader = state.get("trader_investment_plan") or ""
-    original = state.get("final_trade_decision") or ""
+    # #696: the four horizon lines come off first - the rest is the run's own horizon, as before
+    lines, original = split_horizon_lines(state.get("final_trade_decision") or "")
     underlying, decision = _split_underlying(original)   # the stripped copy is only for parsing
     summary = _field(decision, "Executive Summary")
     rating = _rating(state)
@@ -190,6 +191,8 @@ def parse_plan(state: dict[str, Any]) -> dict[str, Any]:
         plan["trader_levels"] = trader_levels
     if underlying:
         plan["underlying_levels"] = underlying
+    if lines:
+        plan["horizon_lines"] = lines
     plan.update(_entry_terms(decision))
     plan.update(verdict.parse(decision))   # #64: win probability, checklist, triggers
     return plan
@@ -298,3 +301,46 @@ def _entry_terms(decision: str) -> dict[str, str | None]:
     entry_type = last(_ENTRY_TYPE)
     return {"entry_type": entry_type.lower() if entry_type else None,
             "invalidation": last(_INVALIDATION), "exit_by": last(_EXIT_BY)}
+
+
+# --- #696 one line per horizon ----------------------------------------------------------
+
+# desk.all_horizons.mandate asks the PM, after the levels line, for one line per horizon:
+# "Scalp Plan: Buy / Entry: 101.2 / Stop: 99.5 / Target: 103.4 / Why: <one short clause>"
+HORIZON_LABELS = {"scalp": "Scalp", "intraday": "Intraday", "short_swing": "Short Swing", "swing": "Swing"}
+_HORIZON_LINE = re.compile(
+    r"^[^\S\n]*(?:[-*•]\s+)?(?:\*\*)?\s*(Scalp|Intraday|Short[\s_-]*Swing|Swing)\s+Plan\s*(?:\*\*)?\s*:\s*(?:\*\*)?"
+    r"(.*)$", re.IGNORECASE | re.MULTILINE)
+_LINE_LEVELS = {"entry_price": "Entry", "stop_loss": "Stop", "price_target": "Target"}
+_WHY = re.compile(r"\bWhy\s*\**\s*:\s*\**\s*(.+?)\s*$", re.IGNORECASE)
+# a Korean run's PM may still translate the rating word
+_RATING_KO = (("비중확대", "Overweight"), ("비중축소", "Underweight"), ("매수", "Buy"), ("매도", "Sell"),
+              ("보유", "Hold"), ("관망", "Hold"), ("중립", "Hold"))
+
+
+def _horizon_line(body: str) -> dict:
+    head = re.match(r"[^\w가-힣]*([A-Za-z]+|[가-힣]+)", body)
+    word = head.group(1) if head else ""
+    rating = next((r for r in _RATINGS if word.lower() == r.lower()), None) or next(
+        (r for ko, r in _RATING_KO if word.startswith(ko)), None)
+    found: dict[str, float | None] = {}
+    for key, label in _LINE_LEVELS.items():
+        m = re.search(rf"\b{label}\s*\**\s*:\s*\**\s*[$₩]?\s*({_NUMBER.pattern})", body, re.IGNORECASE)
+        found[key] = _number(m.group(1)) if m else None
+    entry, stop, target, rejected = drop_contradiction(found["entry_price"], found["stop_loss"], found["price_target"])
+    why = _WHY.search(body)
+    line = {"rating": rating, "bias": BIAS.get(rating) if rating else None, "entry_price": entry, "stop_loss": stop,
+            "price_target": target, "reward_risk": reward_risk(entry, stop, target),
+            "why": (why.group(1).strip(" *") or None) if why else None}
+    if rejected:
+        line["levels_rejected"] = rejected
+    return line
+
+
+def split_horizon_lines(text: str) -> tuple[dict[str, dict], str]:
+    """The PM's horizon lines (``{horizon id: line}``, the last line of a horizon wins) and the text
+    without them, so their Entry · Stop · Target never pass for the run's own levels."""
+    found: dict[str, dict] = {}
+    for m in _HORIZON_LINE.finditer(text or ""):
+        found[re.sub(r"[\s_-]+", "_", m.group(1).strip().lower())] = _horizon_line(m.group(2))
+    return found, _HORIZON_LINE.sub("", text or "")

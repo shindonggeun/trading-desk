@@ -116,7 +116,6 @@ from .longshort import LongShort
 from .market_flow import MarketFlow
 from .portfolio import Portfolio
 from .prices import INTERVALS, PriceSource
-from .profile import PROFILES
 from .related import collect as collect_related
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
 from .runner import rate_limited as run_rate_limited
@@ -247,8 +246,8 @@ class RunIn(BaseModel):
     ticker: str = Field(min_length=1, max_length=20)
     # Display name from the search (엔비디아). Looked up from the listing when absent.
     name: str | None = Field(default=None, max_length=200)
-    # Investing style (desk.profile.PROFILES); the server default when absent.
-    profile: str | None = None
+    # #696: no investing style any more - still accepted from older pages, and ignored
+    profile: str | None = Field(default=None, max_length=40)
     # Trading horizon (desk.horizons.HORIZONS); swing when absent.
     horizon: str | None = None
     trade_date: date | None = None
@@ -262,13 +261,6 @@ class RunIn(BaseModel):
     @classmethod
     def _ticker(cls, v: str) -> str:
         return clean_ticker(v)
-
-    @field_validator("profile")
-    @classmethod
-    def _profile(cls, v: str | None) -> str | None:
-        if v is not None and v not in PROFILES:
-            raise ValueError(f"unknown profile; choose from {list(PROFILES)}")
-        return v
 
     @field_validator("horizon")
     @classmethod
@@ -1372,8 +1364,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             "output_language": os.getenv("TRADINGAGENTS_OUTPUT_LANGUAGE", "English"),
             "fake_runs": settings.fake_runs,
             "broker": broker.name,
-            "profiles": [{"id": key, "label": value["label"]} for key, value in PROFILES.items()],
-            "default_profile": settings.investor_profile,
+            # #696: no style to choose (the instrument's class says the risk); kept empty for older pages
+            "profiles": [],
+            "default_profile": None,
             "horizons": [h.to_dict() for h in horizons.HORIZONS.values()],
             "default_horizon": horizons.DEFAULT_HORIZON,
         }
@@ -1384,7 +1377,6 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         run_request = RunRequest(
             ticker=body.ticker,
             name=body.name or (listed or {}).get("name"),
-            profile=body.profile or settings.investor_profile,
             horizon=body.horizon or horizons.DEFAULT_HORIZON,   # stored explicitly, never left implicit
             trade_date=(body.trade_date or date.today()).isoformat(),
             analysts=body.analysts,

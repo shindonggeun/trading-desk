@@ -188,7 +188,8 @@ def fix_text(text: str, translate: Translate | None, same: Callable[[str, str], 
 
 STATE_FIELDS = ("final_trade_decision", "trader_investment_plan", "investment_plan")
 # parse_plan fields that are the model's prose - they are meant to change
-_PROSE = {"time_horizon", "position_sizing", "executive_summary", "levels_contradiction", "invalidation", "exit_by"}
+_PROSE = {"time_horizon", "position_sizing", "executive_summary", "levels_contradiction", "invalidation", "exit_by",
+          "why"}   # why: a horizon line's reason (#696)
 
 
 def _first_word(value: Any) -> Any:
@@ -285,7 +286,8 @@ def build_prompt(lines: list[str], language: str) -> str:
         "Rules:",
         f"- Answer with a JSON array of exactly {len(lines)} strings, in the same order, and nothing else.",
         "- Keep every number, price, percent, date and ticker exactly as written (same digits).",
-        ("- Keep English labels such as **Rating**:, **Executive Summary**:, Entry Price:, Win Probability: and "
+        ("- Keep English labels such as **Rating**:, **Executive Summary**:, Entry Price:, Win Probability:, "
+         "Scalp Plan:, Intraday Plan:, Short Swing Plan:, Swing Plan:, Entry:, Stop:, Target:, Why: and "
          "the rating words Buy, Overweight, Hold, Underweight, Sell exactly in English."),
         "- Keep markdown (**, -, #, |) as it is. Do not add, drop or explain anything. 종목명 · 지표명 · 숫자는 그대로.",
         "",

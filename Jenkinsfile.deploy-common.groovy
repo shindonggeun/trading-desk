@@ -152,6 +152,7 @@ String resolveCommit() {
 }
 
 // 운영 컨테이너 이미지의 커밋 라벨(org.opencontainers.image.revision)과 대상 커밋 사이에 watchPath 가 바뀌었을 때만 배포한다
+// Jenkins `sh` 는 /bin/sh(agent 에서 dash)로 돈다 — bash 문법(${v:0:12} · [[ ]] · 배열 등)은 쓰지 않는다. bash 가 필요하면 scripts/ 파일로 빼 `bash` 로 부른다(#692)
 boolean needsDeploy(Map config, String sha) {
     if (params.FORCE_DEPLOY || (params.DEPLOY_COMMIT ?: '').trim()) {
         echo 'FORCE_DEPLOY · DEPLOY_COMMIT — 차이를 보지 않고 배포한다'
@@ -163,7 +164,7 @@ boolean needsDeploy(Map config, String sha) {
             set +x
             running=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$CONTAINER" 2>/dev/null || true)
             if [ -z "$running" ]; then echo "운영 $CONTAINER 의 커밋을 모른다(첫 배포 · 라벨 없는 옛 이미지) — 배포한다"; exit 10; fi
-            echo "운영 ${running:0:12} → 대상 ${SHA:0:12}"
+            echo "운영 $(printf %.12s "$running") → 대상 $(printf %.12s "$SHA")"
             git cat-file -e "$running^{commit}" 2>/dev/null || { echo "운영 커밋이 기록에 없다 — 배포한다"; exit 10; }
             if git diff --quiet "$running" "$SHA" -- "$WATCH"; then echo "$WATCH/ 변경 없음 — 배포하지 않는다"; exit 0; fi
             git diff --stat "$running" "$SHA" -- "$WATCH" | tail -n 1

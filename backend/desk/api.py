@@ -426,6 +426,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     if not free and auto:
                         return "busy"
                     out = await asyncio.to_thread(report_desk.finish, got, report_model if free else None, slot)
+                # #682 the candle charts' price fetches out of the ChatGPT slot; before the push, so it opens whole
+                try:
+                    out = await asyncio.to_thread(report_desk.attach_charts, out)
+                except Exception as exc:  # noqa: BLE001 - a chart never costs the report
+                    log.warning("report charts failed: %s", type(exc).__name__)
             if out is not None and pictures.enabled:   # out of the ChatGPT slot; before the push, so it opens whole
                 try:
                     drawn = await asyncio.to_thread(pictures.draw, out)

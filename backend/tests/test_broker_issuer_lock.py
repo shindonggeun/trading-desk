@@ -98,3 +98,32 @@ def test_postgresql_sessions_contend_and_release():
         first.release()
         second.release()
         engine.dispose()
+
+
+@pytest.mark.parametrize("role", ["all", "collector"])
+def test_app_startup_denies_contending_minter(db_url, monkeypatch, role):
+    from desk import api
+    from tests.test_api import _client
+
+    owner = Mock()
+    owner.acquire.return_value = False
+    monkeypatch.setattr(api, "BrokerIssuerLock", Mock(return_value=owner))
+    with pytest.raises(RuntimeError, match="broker issuer lock unavailable"), _client(db_url, role=role):
+        pass
+    owner.acquire.assert_called_once()
+    owner.release.assert_called_once()
+
+
+@pytest.mark.parametrize("role", ["all", "collector", "api", "analyst"])
+def test_app_only_holds_issuer_lock_for_minter_lifespan(db_url, monkeypatch, role):
+    from desk import api
+    from tests.test_api import _client
+
+    owner = Mock()
+    owner.acquire.return_value = True
+    factory = Mock(return_value=owner)
+    monkeypatch.setattr(api, "BrokerIssuerLock", factory)
+    with _client(db_url, role=role):
+        assert owner.acquire.call_count == int(role in ("all", "collector"))
+        owner.release.assert_not_called()
+    assert owner.release.call_count == int(role in ("all", "collector"))

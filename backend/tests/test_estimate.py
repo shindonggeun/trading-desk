@@ -713,7 +713,7 @@ def test_off_hours_us_trades_from_kis_are_live_and_without_one_the_estimate_stay
     monkeypatch.setattr(live, "is_open", closed)
     monkeypatch.setattr(kis_stream, "us_session", lambda now=None: "overnight")
     fake = _FakeKis()
-    monkeypatch.setattr(kis_stream, "make", lambda settings: fake)
+    monkeypatch.setattr(kis_stream, "make", lambda _settings, _tokens: fake)
     # #257: the first trade of a new subscription arrives a moment after the board asks for it
     fake.on_want = lambda t: threading.Timer(0.3, lambda: fake.trades.setdefault(t, (12.0, 0))).start()         if t == "SOXS" else None
     with _client(db_url, est) as client:
@@ -745,7 +745,7 @@ def test_a_quiet_subscription_does_not_hold_the_board(db_url, monkeypatch):
     monkeypatch.setattr(kis_stream, "us_session", lambda now=None: "overnight")
     fake = _FakeKis()
     fake.subs.add("SOXS")                                     # subscribed already, no trade lately
-    monkeypatch.setattr(kis_stream, "make", lambda settings: fake)
+    monkeypatch.setattr(kis_stream, "make", lambda _settings, _tokens: fake)
     with _client(db_url, _wide()) as client:
         client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
         started = time.monotonic()
@@ -771,7 +771,7 @@ def test_a_ticker_that_never_subscribes_is_waited_for_once_not_every_poll(db_url
     fake = _FakeKis()
     fake.connected = False
     fake.subscribed = lambda t: False                        # never gets on the socket
-    monkeypatch.setattr(kis_stream, "make", lambda settings: fake)
+    monkeypatch.setattr(kis_stream, "make", lambda _settings, _tokens: fake)
     with _client(db_url, _wide()) as client:
         client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
         started = time.monotonic()

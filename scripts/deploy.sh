@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # backend-server(192.168.0.9)에 커밋 하나를 올리고 컨테이너를 다시 띄운다. PC 의 저장소 루트에서 실행한다 (docs/deploy.md).
+# 평소 배포는 Jenkins 가 develop 머지 뒤 자동으로 한다(#692). 이 스크립트는 Jenkins · Vault 를 쓸 수 없을 때의 대체 경로다.
+# 빌드 · 교체 · 확인 · 실패 시 되돌림은 Jenkins 와 같은 scripts/deploy-compose.sh 가 서버에서 한다. env 는 서버 .env.runtime 을 쓴다.
 #
 #   scripts/deploy.sh                 # HEAD
 #   scripts/deploy.sh <커밋|태그>
@@ -10,9 +12,11 @@
 # 백엔드를 다시 띄우면 진행 중인 분석이 끊긴다(#431). 그래서 백엔드를 바꾸기 전에 서버의 백엔드 컨테이너 안에서
 # `python -m desk.cli unfinished` 로 queued/running run 수를 묻고, 있으면 끝날 때까지
 # DESK_DEPLOY_WAIT_MIN 분(기본 30) 기다린다. 넘기면 멈춘다 — 그때는 --force 로만 진행.
+# 여기(PC)서 소스를 보내기 전에 한 번, 서버의 deploy-compose.sh 가 새 이미지를 빌드한 뒤 컨테이너를 바꾸기 직전에 한 번 더 묻는다.
 #
 # 서버에는 git 체크아웃 · 저장소 키를 두지 않는다. git archive 를 SSH 로 보내 서버에서 이미지를 빌드한다(x86_64).
-# 비밀은 서버 ~/deploy/trading-desk/.env.runtime(권한 600)에만 있다.
+# 비밀은 서버 ~/deploy/trading-desk/.env.runtime(권한 600)에 있다. Vault 로 옮긴 뒤에는 Vault 가 정본이라,
+# 이 경로를 쓰기 전에 .env.runtime 이 Vault 값과 같은지 먼저 맞춘다(docs/deploy.md 3절).
 set -euo pipefail
 
 HOST="${DESK_DEPLOY_HOST:-homelab-backend-server}"
@@ -35,14 +39,12 @@ if [ "$REF" = "HEAD" ] && [ -n "$(git status --porcelain --untracked-files=no)" 
   echo "커밋하지 않은 변경은 배포되지 않는다. 먼저 커밋하거나 ref 를 넘긴다" >&2
   exit 1
 fi
-SHA=$(git rev-parse --short "$REF^{commit}")
-echo "배포: $SHA → $HOST:~/$DIR ($TARGET)"
+SHA=$(git rev-parse "$REF^{commit}")
+echo "배포: ${SHA:0:12} → $HOST:~/$DIR ($TARGET)"
 
 # #431 진행 중인 분석. 백엔드 컨테이너 안의 `desk.cli unfinished` 는 첫 줄에 개수, 다음 줄부터 종목 · 상태 · 시각 · id 를
 # 낸다. 컨테이너가 없거나(첫 배포) 옛 이미지라 명령이 없으면 "?" — 확인할 수 없다고 알리고 그대로 진행한다.
-# 같은 함수를 PC(빌드 전에 미리)와 서버(새 이미지를 빌드한 뒤 컨테이너를 바꾸기 직전에 다시)에서 쓴다 —
-# 빌드하는 몇 분 사이에 새로 제출된 분석도 끊지 않게.
-WAIT_FN=$(cat <<'FN'
+# 여기서는 소스를 보내기 전에 미리 묻는다. 빌드한 뒤 컨테이너를 바꾸기 직전의 확인은 서버의 deploy-compose.sh 가 한다.
 wait_idle() {  # $1 = 개수를 묻는 명령, $2 = 1 이면 확인만(드라이런). 0 = 진행, 3 = 멈춤
   local deadline=$(( $(date +%s) + WAIT_MIN * 60 )) out n
   while :; do
@@ -62,50 +64,39 @@ wait_idle() {  # $1 = 개수를 묻는 명령, $2 = 1 이면 확인만(드라이
     sleep 30
   done
 }
-FN
-)
-eval "$WAIT_FN"
 UNFINISHED='docker exec trading-desk-backend-prod python -m desk.cli unfinished 2>/dev/null || echo "?"'
 if [ "$TARGET" != web ]; then
   wait_idle "ssh \"\$HOST\" $(printf '%q' "$UNFINISHED")" "$DRY" || exit 3
 fi
 if [ "$DRY" = 1 ]; then echo "드라이런: 배포하지 않는다"; exit 0; fi
 
-# 원격 스크립트는 인자로, 소스 tar 는 표준입력으로 보낸다
+# 원격 스크립트는 인자로, 소스 tar 는 표준입력으로 보낸다.
+# deploy-compose.sh 종료 코드: 0 배포됨 · 1 실패(되돌리지 못함) · 2 실패해서 직전 이미지로 되돌림 · 3 진행 중인 분석 때문에 멈춤
 REMOTE=$(cat <<'REMOTE'
 set -euo pipefail
 cd ~/"$DIR"
 test -f .env.runtime || { echo "~/$DIR/.env.runtime 가 없다 (docs/deploy.md 3절)"; exit 1; }
-set -a; . ./.env.runtime; set +a
-: "${DESK_DOCKER_NETWORK:?.env.runtime 에 DESK_DOCKER_NETWORK}"
 
 rm -rf src.new && mkdir src.new && tar -x -C src.new
 echo "$SHA" > src.new/REVISION
 rm -rf src.old && { [ ! -d src ] || mv src src.old; } && mv src.new src
 
-docker network inspect "$DESK_DOCKER_NETWORK" >/dev/null 2>&1 || docker network create "$DESK_DOCKER_NETWORK" >/dev/null
-
-if [ "$TARGET" != web ]; then
-  backend() { (cd src/backend && docker compose -p trading-desk-backend-prod --env-file ../../.env.runtime \
-     -f docker-compose-backend.yml "$@"); }
-  backend build backend-prod
-  # #431 빌드하는 동안 새로 제출된 분석이 있으면 컨테이너를 바꾸기 전에 다시 기다린다. 멈추면 소스를 되돌린다
-  eval "$WAIT_FN"
-  if ! wait_idle "$UNFINISHED"; then
+targets=()
+[ "$TARGET" = web ] || targets+=(backend)
+[ "$TARGET" = backend ] || targets+=(web)
+for t in "${targets[@]}"; do
+  rc=0
+  ENV_FILE=.env.runtime REVISION="$SHA" FORCE="$FORCE" WAIT_MIN="$WAIT_MIN" bash src/scripts/deploy-compose.sh "$t" src || rc=$?
+  if [ "$rc" = 3 ] && [ "$t" = "${targets[0]}" ]; then
+    # 아무것도 바꾸지 않았다 — src 를 직전 배포로 되돌린다
     [ ! -d src.old ] || { rm -rf src && mv src.old src; }
-    exit 3
   fi
-  backend up -d --wait --remove-orphans backend-prod
-fi
-if [ "$TARGET" != backend ]; then
-  (cd src/frontend && docker compose -p trading-desk-web-prod --env-file ../../.env.runtime \
-     -f docker-compose-frontend.yml up -d --build --wait --remove-orphans web-prod)
-fi
-docker image prune -f >/dev/null
+  [ "$rc" = 0 ] || exit "$rc"
+done
 docker ps --filter name=trading-desk --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 REMOTE
 )
 git archive --format=tar "$REF" | ssh "$HOST" "TARGET=$TARGET SHA=$SHA DIR=$DIR FORCE=$FORCE WAIT_MIN=$WAIT_MIN \
-  WAIT_FN=$(printf '%q' "$WAIT_FN") UNFINISHED=$(printf '%q' "$UNFINISHED") bash -c $(printf '%q' "$REMOTE")"
+  bash -c $(printf '%q' "$REMOTE")"
 
-echo "배포 완료: $SHA"
+echo "배포 완료: ${SHA:0:12}"

@@ -1,0 +1,182 @@
+// trading-desk 자동 배포 공통부 (docs/deploy.md 2절). Jenkinsfile-backend · Jenkinsfile-web 이 load 해 run(config) 을 부른다.
+// commerce-foundry 의 Jenkinsfile.*-common.groovy 와 같은 모양(얇은 Jenkinsfile + load)이고, 셸 단계는 scripts/ 의 파일로 뺐다 —
+// 손 배포(scripts/deploy.sh)와 Jenkins 가 같은 scripts/deploy-compose.sh 로 빌드 · 교체 · 확인 · 되돌림을 한다.
+//
+// develop 이 배포본이다(docs/git-workflow.md §8). develop 에 커밋이 들어오면:
+//   1. CI 확인   (builder)              GitHub Actions `ci` 가 그 커밋에서 성공할 때까지 기다린다. 실패면 멈추고, 취소(뒤 커밋에 밀림)면 건너뛴다
+//   2. 배포 대상 (deploy agent, lock)    운영 컨테이너의 커밋 라벨과 비교해 backend/ (web 은 frontend/) 가 바뀌었을 때만 배포한다
+//   3. 운영 배포 (deploy agent, lock)    Vault → 임시 env 파일(600) → scripts/deploy-compose.sh → env 파일 삭제
+// 다른 브랜치 · PR 빌드는 아무것도 하지 않는다. 이 저장소는 공개라 잡은 fork PR 을 발견하지 않게 둔다(docs/deploy.md 2절 잡 등록).
+//
+// 비밀값은 Groovy 변수로 들이지 않는다. Vault 로그인 · 읽기는 scripts/jenkins/vault-env.sh 셸 하나 안에서 하고, 토큰은 그 셸이 끝날 때 폐기한다.
+// 여기에는 credential 의 이름만 쓴다(Jenkins 폴더 trading-desk 범위). VAULT_ADDR 는 Jenkins 전역 env 다 — 잡 파라미터로 만들지 않는다.
+
+def run(Map config) {
+    properties([
+        buildDiscarder(logRotator(numToKeepStr: '30')),
+        disableConcurrentBuilds(),
+        parameters([
+            string(name: 'DEPLOY_COMMIT', defaultValue: '', trim: true,
+                   description: '비우면 이 빌드의 커밋. 이전 커밋으로 되돌릴 때 develop 에 있는 SHA(그 커밋의 CI 가 성공했어야 한다)'),
+            booleanParam(name: 'FORCE_DEPLOY', defaultValue: false,
+                         description: '운영 컨테이너와 소스 차이가 없어도 다시 빌드 · 배포한다'),
+            booleanParam(name: 'FORCE_STOP_RUNS', defaultValue: false,
+                         description: '(backend) 진행 중인 분석을 기다리지 않는다 — 그 분석은 실패로 끝난다(#431)'),
+            booleanParam(name: 'ROLLBACK_DRILL', defaultValue: false,
+                         description: '배포 뒤 확인을 일부러 실패시켜 직전 이미지로 돌아가는지 시험한다'),
+        ]),
+    ])
+
+    if (env.CHANGE_ID) {
+        echo 'PR 빌드는 하지 않는다 — PR 검사는 GitHub Actions ci 가 한다'
+        currentBuild.result = 'NOT_BUILT'
+        return
+    }
+    if (env.BRANCH_NAME != config.branch) {
+        echo "${env.BRANCH_NAME} 은 배포 브랜치(${config.branch})가 아니다 — 아무것도 하지 않는다"
+        currentBuild.result = 'NOT_BUILT'
+        return
+    }
+
+    String sha = null
+    stage('CI 확인') {
+        node(config.gateAgentLabel) {
+            try {
+                checkout scm
+                sha = resolveCommit()
+                currentBuild.description = "${config.target} ${shortSha(sha)}"
+                int rc
+                timeout(time: config.ciWaitMinutes, unit: 'MINUTES') {
+                    withCredentials([usernamePassword(credentialsId: config.githubCredentialId,
+                                                      usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN')]) {
+                        withEnv(["CI_REPO=${config.githubRepo}", "CI_SHA=${sha}", "CI_WORKFLOW=${config.ciWorkflow}",
+                                 "CI_BRANCH=${config.branch}"]) {
+                            rc = sh(returnStatus: true, script: 'bash scripts/jenkins/wait-ci.sh')
+                        }
+                    }
+                }
+                if (rc == 4) {
+                    sha = null
+                } else if (rc != 0) {
+                    error "CI 가 성공하지 않아 배포하지 않는다(${shortSha(sha)})"
+                }
+            } finally {
+                deleteDir()
+            }
+        }
+    }
+    if (sha == null) {
+        echo 'CI 가 뒤 커밋에 밀려 취소됐다 — 그 커밋의 빌드가 배포한다'
+        currentBuild.description += ' 밀림'
+        currentBuild.result = 'NOT_BUILT'
+        return
+    }
+
+    lock(resource: config.lockName) {
+        node(config.deployAgentLabel) {
+            try {
+                boolean changed
+                stage('배포 대상 확인') {
+                    checkout scm
+                    // 대상 커밋의 소스만 따로 푼다. 스크립트는 이 빌드(develop 끝)의 것을 쓴다 — 스크립트가 없던 옛 커밋으로도 되돌릴 수 있게
+                    withEnv(["SHA=${sha}"]) {
+                        sh 'set +x; rm -rf .deploy-src && mkdir .deploy-src && git archive "$SHA" | tar -x -C .deploy-src'
+                    }
+                    changed = needsDeploy(config, sha)
+                }
+                if (!changed) {
+                    currentBuild.description += ' 변경 없음'
+                    return
+                }
+                stage('운영 배포') {
+                    String envFile = "${env.WORKSPACE}/.deploy-secrets/env"
+                    withCredentials([string(credentialsId: config.vaultRoleIdCredentialId, variable: 'VAULT_ROLE_ID'),
+                                     string(credentialsId: config.vaultSecretIdCredentialId, variable: 'VAULT_SECRET_ID')]) {
+                        String vaultAddr = env.VAULT_ADDR?.trim()
+                        if (!vaultAddr) {
+                            error 'Jenkins 전역 env VAULT_ADDR 가 없다(Manage Jenkins → System → Global properties)'
+                        }
+                        withEnv(["VAULT_BASE=${vaultAddr}", "VAULT_PATH=${config.vaultPath}", "ENV_FILE=${envFile}",
+                                 "COMPOSE_FILES=.deploy-src/${config.composeFile}"]) {
+                            sh 'bash scripts/jenkins/vault-env.sh'
+                        }
+                    }
+                    int rc
+                    withEnv(["ENV_FILE=${envFile}", "REVISION=${sha}", "TARGET=${config.target}",
+                             "PRIMARY_SERVICE=${config.primaryService ?: ''}",
+                             "FORCE=${params.FORCE_STOP_RUNS ? 1 : 0}", "ROLLBACK_DRILL=${params.ROLLBACK_DRILL ? 1 : 0}"]) {
+                        rc = sh(returnStatus: true, script: 'bash scripts/deploy-compose.sh "$TARGET" .deploy-src')
+                    }
+                    sh 'rm -rf .deploy-secrets'
+                    if (rc == 0) {
+                        currentBuild.description += params.ROLLBACK_DRILL ? ' 배포됨(드릴 무시)' : ' 배포됨'
+                    } else if (rc == 2) {
+                        currentBuild.description += ' 되돌림'
+                        error "배포 확인이 실패해 직전 이미지로 되돌렸다(${shortSha(sha)}) — 로그의 '확인 실패' 줄을 본다"
+                    } else if (rc == 3) {
+                        currentBuild.description += ' 분석 대기로 멈춤'
+                        error '진행 중인 분석이 끝나지 않아 멈췄다. 운영은 그대로다 — 끊어도 되면 FORCE_STOP_RUNS 로 다시'
+                    } else {
+                        currentBuild.description += ' 실패'
+                        error "배포가 실패했고 되돌리지 못했다(${shortSha(sha)}) — docs/deploy.md 2절 '되돌림'"
+                    }
+                }
+            } finally {
+                sh 'rm -rf .deploy-secrets .deploy-src || true'
+                deleteDir()
+            }
+        }
+    }
+}
+
+// DEPLOY_COMMIT 이 비면 HEAD(develop 끝). 있으면 develop 에 있는 커밋인지 본다
+String resolveCommit() {
+    String head = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+    String wanted = (params.DEPLOY_COMMIT ?: '').trim()
+    if (!wanted) {
+        return head
+    }
+    if (!(wanted ==~ /[0-9a-f]{7,40}/)) {
+        error 'DEPLOY_COMMIT 는 커밋 SHA(16진수 7~40자)여야 한다'
+    }
+    String full
+    withEnv(["WANTED=${wanted}"]) {
+        full = sh(returnStdout: true, script: 'git rev-parse --verify --quiet "${WANTED}^{commit}" || true').trim()
+        if (!full || sh(returnStatus: true, script: 'git merge-base --is-ancestor "${WANTED}" HEAD') != 0) {
+            error "DEPLOY_COMMIT ${wanted} 가 develop 에 없다"
+        }
+    }
+    return full
+}
+
+// 운영 컨테이너 이미지의 커밋 라벨(org.opencontainers.image.revision)과 대상 커밋 사이에 watchPath 가 바뀌었을 때만 배포한다
+boolean needsDeploy(Map config, String sha) {
+    if (params.FORCE_DEPLOY || (params.DEPLOY_COMMIT ?: '').trim()) {
+        echo 'FORCE_DEPLOY · DEPLOY_COMMIT — 차이를 보지 않고 배포한다'
+        return true
+    }
+    int rc
+    withEnv(["CONTAINER=${config.container}", "SHA=${sha}", "WATCH=${config.watchPath}"]) {
+        rc = sh(returnStatus: true, script: '''
+            set +x
+            running=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$CONTAINER" 2>/dev/null || true)
+            if [ -z "$running" ]; then echo "운영 $CONTAINER 의 커밋을 모른다(첫 배포 · 라벨 없는 옛 이미지) — 배포한다"; exit 10; fi
+            echo "운영 ${running:0:12} → 대상 ${SHA:0:12}"
+            git cat-file -e "$running^{commit}" 2>/dev/null || { echo "운영 커밋이 기록에 없다 — 배포한다"; exit 10; }
+            if git diff --quiet "$running" "$SHA" -- "$WATCH"; then echo "$WATCH/ 변경 없음 — 배포하지 않는다"; exit 0; fi
+            git diff --stat "$running" "$SHA" -- "$WATCH" | tail -n 1
+            exit 10
+        ''')
+    }
+    if (rc != 0 && rc != 10) {
+        error "배포 대상을 확인하지 못했다(종료 코드 ${rc})"
+    }
+    return rc == 10
+}
+
+// 샌드박스에서 승인 없이 되는 String 메서드만 쓴다
+String shortSha(String sha) {
+    return sha.length() > 8 ? sha.substring(0, 8) : sha
+}
+
+return this

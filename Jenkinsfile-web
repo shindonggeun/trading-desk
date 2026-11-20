@@ -1,0 +1,29 @@
+// Jenkins 멀티브랜치 파이프라인 이름: trading-desk-web (폴더 trading-desk, Script Path: Jenkinsfile-web)
+// develop → 운영(backend-server). 흐름 · 잡 등록: docs/deploy.md 2절, 공통부: Jenkinsfile.deploy-common.groovy
+//
+// 웹 이미지는 nginx + React 정적 빌드다. 빌드 시점 비밀이 없어 Vault 의 frontend 경로에는 compose 보간 키(네트워크 · 바인드 · 포트)만 있다.
+// 백엔드 잡과 같은 lock 을 잡는다 — 같은 호스트 · 같은 docker 네트워크를 차례로 바꾼다.
+
+def deployPipeline
+node('builder') {
+    checkout scm
+    deployPipeline = load 'Jenkinsfile.deploy-common.groovy'
+}
+
+deployPipeline.run([
+    target                   : 'web',
+    branch                   : 'develop',
+    githubRepo               : 'shindonggeun/trading-desk',
+    githubCredentialId       : 'trading-desk-github',
+    ciWorkflow               : 'ci',
+    ciWaitMinutes            : 45,
+    gateAgentLabel           : 'builder',
+    deployAgentLabel         : 'deploy-frontend-prod',
+    lockName                 : 'trading-desk-prod-deploy',
+    vaultPath                : 'kv/trading-desk/frontend/prod/env',
+    vaultRoleIdCredentialId  : 'trading-desk-vault-role-id',
+    vaultSecretIdCredentialId: 'trading-desk-vault-secret-id',
+    composeFile              : 'frontend/docker-compose-frontend.yml',
+    container                : 'trading-desk-web-prod',
+    watchPath                : 'frontend',
+])

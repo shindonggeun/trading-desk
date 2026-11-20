@@ -118,8 +118,11 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli day-call backtest --mark
 `https://trading.8llow8llowme.com` — backend-server(`192.168.0.9`)에 컨테이너 둘(웹 · 백엔드), DB 는 홈랩 PostgreSQL.
 절차 · 서버 env · 첫 계정 · ChatGPT 로그인 · 토스 IP 등록 · 백업은 [docs/deploy.md](docs/deploy.md).
 
+develop 에 머지하면 Jenkins 가 CI 성공을 기다렸다가 바뀐 쪽(backend · web)을 올리고, 확인이 실패하면 직전 이미지로 되돌린다. 운영 env 는 Vault 에서 받는다.
+Jenkins · Vault 를 쓸 수 없을 때만:
+
 ```bash
-scripts/deploy.sh          # HEAD 를 git archive 로 보내 서버에서 빌드 · 기동
+scripts/deploy.sh          # HEAD 를 git archive 로 보내 서버에서 빌드 · 기동 (서버 .env.runtime)
 ```
 
 - 모든 경로가 로그인(ID/비밀번호 + 서버 세션 쿠키) 뒤에 있다 — [docs/security.md](docs/security.md).

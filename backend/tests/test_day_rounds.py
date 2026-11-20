@@ -55,7 +55,7 @@ def test_the_round_times_follow_new_york_and_the_session():
     assert dr.cutoff_of("us", date(2024, 3, 11), 3).astimezone(dc.KST).strftime("%m-%d %H:%M") == "03-11 23:30"
     assert dr.rounds_of("kr", DAY) == [3, 4, 5, 6, 7, 8] and dr.rounds_of("us", DAY) == [3, 4, 5, 6, 7, 8]
     assert dr.rounds_of("us", date(2024, 11, 29)) == [3, 4, 5]          # the half day after Thanksgiving: 13:00
-    assert dr.rounds_of("kr", date(2024, 11, 14)) == [4, 5, 6, 7, 8]    # the CSAT opens at 10:00
+    assert dr.rounds_of("kr", date(2024, 11, 14)) == []                 # the CSAT opens at 10:00: no rounds
     assert dr.rounds_of("kr", date(2024, 6, 15)) == [] and dr.rounds_of("kr", date(2024, 6, 6)) == []
     assert dr.left("kr", DAY, 8) == pytest.approx(30 / 390) and dr.left("us", date(2024, 11, 29), 5) == pytest.approx(30 / 210)
     assert dr.round_label("us", 3) == "3차 10:30" and dr.round_label("kr", 8) == "8차 15:00"
@@ -174,21 +174,33 @@ def _kst(d: date, h: int, m: int = 0) -> datetime:
 
 
 def test_a_round_is_due_inside_its_window_and_stored_with_its_anchor(desk):
-    assert desk.due(_kst(DAY, 10, 5)) == [("kr", 2, DAY), ("kr", 3, DAY)]
-    assert desk.due(_kst(DAY, 10, 41)) == [("kr", 2, DAY)]                 # 3차 window over
-    assert ("kr", 8, DAY) in desk.due(_kst(DAY, 15, 5)) and desk.due(_kst(DAY, 15, 45)) == []
+    # KR rounds wait 25 minutes for Yahoo's late KRX bars: 3차 (10:00) is called from 10:25 to 11:05
+    assert desk.due(_kst(DAY, 10, 5)) == [("kr", 2, DAY)]
+    assert desk.due(_kst(DAY, 10, 30)) == [("kr", 2, DAY), ("kr", 3, DAY)]
+    assert desk.due(_kst(DAY, 11, 6)) == []                                # 2차 and 3차 windows over
+    assert ("kr", 8, DAY) in desk.due(_kst(DAY, 15, 30)) and desk.due(_kst(DAY, 16, 6)) == []
+    assert desk.due(datetime.combine(date(2024, 11, 14), time(11, 30), dc.KST)) == []   # the CSAT: no rounds
     us = datetime.combine(date(2024, 11, 29), time(13, 35), dc.ET)         # a half day: no 13:30 round
     assert desk.due(us) == []
-    made = desk.run(_kst(DAY, 10, 5))
+    assert desk.due(datetime.combine(DAY, time(10, 31), dc.ET)) == [("us", 3, DAY)]
+    made = desk.run(_kst(DAY, 10, 30))
     mine = [r for r in made if r["call"] == "to_close"]
     assert len(mine) == 1 and mine[0]["round"] == 3 and mine[0]["features"]["anchor"] > 0
-    assert desk.run(_kst(DAY, 10, 20)) == []                               # stored once (and retried later only)
-    assert desk.due(_kst(DAY, 10, 20)) == [("kr", 2, DAY)] or desk.due(_kst(DAY, 10, 20)) == []
+    assert mine[0]["cutoff_at"] == dr.cutoff_of("kr", DAY, 3)              # the round's time, not the call's
+    assert desk.due(_kst(DAY, 10, 45)) == []                               # every call of both rounds stored
+    assert desk.run(_kst(DAY, 10, 50)) == []
+
+
+def test_a_missing_opening_bar_makes_no_round():
+    hours = [b for b in S[dr.HOURLY["kr"]] if not b.at.startswith(
+        datetime.combine(DAY, time(9), dc.KST).astimezone(UTC).isoformat())]
+    with pytest.raises(dc.NoData):
+        dr.features("kr", 5, DAY, {**S, dr.HOURLY["kr"]: hours})
 
 
 def test_the_rounds_are_scored_served_and_counted(desk):
     for h in (10, 11, 12, 13, 14, 15):
-        desk.run(_kst(DAY, h, 5))
+        desk.run(_kst(DAY, h, 30))
         desk._tried.clear()
     assert desk.score(_kst(DAY, 16, 30), force=True) >= 6
     view = desk.view("kr", _kst(DAY, 16, 40))
@@ -210,9 +222,9 @@ def test_the_rounds_are_scored_served_and_counted(desk):
 
 
 def test_a_missed_round_window_is_counted_per_call(desk):
-    desk.run(_kst(DAY, 10, 5))
-    stats = desk.stats("kr", now=_kst(DAY, 12, 50))
-    # 3차 called, 4차 (11:00-11:40) and 5차 (12:00-12:40) missed; the morning calls are their own count
+    desk.run(_kst(DAY, 10, 30))
+    stats = desk.stats("kr", now=_kst(DAY, 13, 10))
+    # 3차 called, 4차 (11:25-12:05) and 5차 (12:25-13:05) missed; the morning calls are their own count
     assert stats["calls"]["to_close"]["missed"] == 2
 
 
@@ -230,6 +242,9 @@ def test_only_a_jump_of_two_stages_is_pushed(desk):
     assert desk.push_of(row(4, "flat")) is None                            # one stage
     title, body = desk.push_of(row(5, "strong_short"))                     # flat -> strong_short: two
     assert title == "국장 장중 방향 바뀜" and "5차 12:00" in body and "4차 11:00 약보합에서 바뀜" in body
+    held = {"market": "kr", "trade_date": DAY, "round": 6, "call": "to_close", "stage": "weak_long", "verdict": "hold",
+            "probs": probs}
+    assert desk.push_of(held) is None                                       # three stages, but a hold is not news
     assert desk.push_of({**row(6, "strong_short"), "call": "open"}) is None
     first = {"market": "us", "round": 1, "call": "prev_close", "stage": "flat", "verdict": "long", "probs": probs,
              "model": "prev_close"}
@@ -248,6 +263,15 @@ def test_the_verdict_needs_every_baseline_beaten_and_a_brier_skill():
     assert dr.verdict_of({"direction_hit_rate": 0.59, "brier_skill": 0.02, "baselines": base}) == "no_edge"
     assert dr.verdict_of({"direction_hit_rate": 0.70, "brier_skill": -0.01, "baselines": base}) == "no_edge"
     assert dr.verdict_of({"n": 0}) == "no_edge"
+    assert dr.verdict_of({"direction_hit_rate": 0.60, "brier_skill": 0.02, "baselines": base}) == "edge"  # 0.55 + 0.05
+
+
+def test_the_history_keeps_the_rounds_apart(desk):
+    desk.run(_kst(DAY, 10, 30))
+    plain = desk.history("kr", now=_kst(DAY, 16))
+    rounds = desk.history("kr", now=_kst(DAY, 16), call="to_close")
+    assert plain["items"] and {i["call"] for i in plain["items"]} <= {"prev_close", "open"}
+    assert [i["call"] for i in rounds["items"]] == ["to_close"]
 
 
 def test_the_backfill_makes_the_rounds_after_the_round_model_training(desk):

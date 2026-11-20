@@ -81,8 +81,8 @@ def windows(market: str, day: date) -> dict[int, tuple[time, time]]:
         if mk == market and not (market == "kr" and round_ == 2 and dc.kr_late_open(day)):
             out[round_] = span
     for round_ in dr.rounds_of(market, day):
-        start = dr.round_time(market, round_)
-        out[round_] = (start, (datetime.combine(day, start) + ROUND_WINDOW).time())
+        start = datetime.combine(day, dr.round_time(market, round_)) + dr.READY[market]   # Yahoo's lag (KRX ~20 min)
+        out[round_] = (start.time(), (start + ROUND_WINDOW).time())
     return out
 
 
@@ -356,10 +356,15 @@ class DayCalls:
                 "always_short": (b.get("always_short") or {}).get("direction_hit_rate"),
                 "brier_skill": rep.get("brier_skill"), "basis": "backtest"}
 
-    def history(self, market: str, days: int = RECORD_DAYS, now: datetime | None = None) -> dict:
+    def history(self, market: str, days: int = RECORD_DAYS, now: datetime | None = None,
+                call: str | None = None) -> dict:
+        """The stored calls: the day call's two by default; ``call`` "to_close" (#619) the intraday rounds
+        alone - up to six a session, kept out of the default answer."""
         now = now or self.clock()
         since = now.astimezone(dc.MARKETS[market].zone).date() - timedelta(days=days)
-        return {"market": market, "days": days, "items": [self.entry(r) for r in self._rows(market, since)]}
+        names = {call} if call else set(SHOWN)
+        return {"market": market, "days": days,
+                "items": [self.entry(r) for r in self._rows(market, since) if r["call"] in names]}
 
     def stats(self, market: str, days: int = RECORD_DAYS, now: datetime | None = None) -> dict:
         """Hit rates, Brier, baselines, per stage, calibration, by round and source, per call."""
@@ -418,6 +423,8 @@ class DayCalls:
         if not live:
             return 0
         first = min(r["trade_date"] for r in live)
+        # #619 the intraday rounds count from the first live one's time (a deploy at 14:10 does not miss 3차~6차)
+        since = min(_aware(r["cutoff_at"]) for r in live) if name == dr.CALL else None
         have = {(r["trade_date"], r["round"]) for r in live}
         m = dc.MARKETS[market]
         missed, d = 0, first
@@ -427,7 +434,7 @@ class DayCalls:
                     if (name == dr.CALL) != (round_ in dr.ROUNDS[market]):
                         continue
                     end = datetime.combine(d, end_at, m.zone)
-                    if end <= now and (d, round_) not in have:
+                    if end <= now and (d, round_) not in have and (since is None or end > since):
                         missed += 1
             d += timedelta(days=1)
         return missed
@@ -439,8 +446,8 @@ class DayCalls:
         where = "국장" if row["market"] == "kr" else "미장"
         if row["call"] == "prev_close" and row["round"] == 1:
             return f"오늘 {where} 방향", push_text(row)
-        if row["call"] != dr.CALL or not self._edge(row["market"]):
-            return None                 # a round model with no hold-out edge is shown, never pushed
+        if row["call"] != dr.CALL or not self._edge(row["market"]) or row["verdict"] == "hold":
+            return None                 # a round model with no hold-out edge is shown, never pushed; nor a hold
         with self.engine.connect() as conn:
             before = conn.execute(
                 select(t.c.round, t.c.stage).where(and_(t.c.market == row["market"], t.c.trade_date == row["trade_date"],
@@ -555,6 +562,10 @@ def _summary(market: str, rows: list[dict], clim: dict[str, list[float] | None],
                        "actual": sum(1 for r in rows if r["outcome"]["stage"] == s)} for s in dc.DISPLAY_ORDER],
         "calibration": calib,
     }
+
+
+def _aware(v: datetime) -> datetime:
+    return v.replace(tzinfo=UTC) if v.tzinfo is None else v
 
 
 def _iso(v) -> str | None:

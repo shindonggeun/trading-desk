@@ -499,16 +499,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     day_desk = day_calls.DayCalls(engine, None if settings.fake_runs or settings.macro_interval_sec <= 0
                                   else (lambda *a: prices._yahoo_candles(*a)))
 
-    def week_calls() -> dict:
-        """#681 the week's day-call record for Saturday's report: scored calls and the direction hit share."""
-        out = {}
-        for market in ("kr", "us"):
-            s = (day_desk.stats(market, days=7) or {}).get("prev_close") or {}
-            rate = s.get("direction_hit_rate")
-            out[market] = {"n": s.get("n") or 0, "hit_pct": round(rate * 100) if rate is not None else None}
-        return out
-
-    report_desk.calls = week_calls
+    # #681 the week's day-call record for Saturday's report
+    report_desk.calls = lambda: reports.week_calls(lambda market, days: day_desk.stats(market, days=days))
     # the market-wide macro releases (FOMC, CPI, jobs) for Sunday's week ahead
     report_desk.events = lambda now: [{"label": e.label, "at": e.at}
                                       for e in events_calendar.CACHE.upcoming(now, days=14, importance=2)]

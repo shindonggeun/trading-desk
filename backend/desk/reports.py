@@ -407,6 +407,17 @@ def write_draft(draft: dict, f: dict, label: str, model: Callable[[str], str] | 
     return out
 
 
+def week_calls(stats: Callable[[str, int], dict], days: int = 7) -> dict:
+    """#681 the week's day-call record (desk.day_calls ``stats``: ``calls.prev_close``): the scored calls and the
+    share whose direction was right, per market."""
+    out = {}
+    for market in ("kr", "us"):
+        s = ((stats(market, days) or {}).get("calls") or {}).get("prev_close") or {}
+        rate = s.get("direction_hit_rate")
+        out[market] = {"n": s.get("n") or 0, "hit_pct": round(rate * 100) if rate is not None else None}
+    return out
+
+
 def model_config(cfg: dict, model: str = "", reasoning: str = "") -> dict:
     """#681 the TradingAgents config with the report's own deep model and reasoning effort (each provider's
     knob: OpenAI / ChatGPT ``reasoning_effort``, Anthropic ``effort``, Google ``thinking_level``)."""

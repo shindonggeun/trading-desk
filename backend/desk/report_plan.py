@@ -185,6 +185,13 @@ def _term(name: str, text: str) -> dict:
     return {"name": name, "explain": text}
 
 
+def _none(symbol: str | None = None) -> dict:
+    """No price picture (the page may put an explainer picture there, #497) - the same full shape as a levels
+    chart, so the page never reads a missing list."""
+    out = {"kind": "none", "levels": [], "labels": [], "marks": []}
+    return {**out, "symbol": symbol, "timeframe": "1d"} if symbol else out
+
+
 def _chart(f: dict) -> dict:
     """A levels chart for one subject - named, so #682 can draw candles from the same spec."""
     res, sup = (f.get("resistances") or [None])[0], (f.get("supports") or [None])[0]
@@ -241,12 +248,12 @@ def link_section(subject: dict, index: dict, link: dict | None) -> dict:
             "highlight": f"같은 방향 {link['same_pct']}%" if link else f"{index['name']} 저항 {_zone(res)}",
             "term": _term("같은 방향 비율", "두 가격이 하루 단위로 함께 오르거나 함께 내린 날의 비율이에요. 높을수록 지수를 따라가요."),
             # the index's levels are in the first section's chart: room here for an explainer picture (#497)
-            "chart": {"kind": "none", "symbol": index["symbol"], "timeframe": "1d"}, "image": None}
+            "chart": _none(index["symbol"]), "image": None}
 
 
 def daily(base: dict, subject: dict, indexes: list[dict], link: dict | None) -> dict:
     """The day's report: ① the indexes ② the subject's levels and stages (desk.reports.rules) ③ the link."""
-    index = next((f for f in indexes if f["symbol"] == link_of(subject["symbol"])), indexes[0] if indexes else None)
+    index = next((f for f in indexes if f["symbol"] == link_of(subject["symbol"])), None)
     sections = list(base["sections"])
     for s in sections:
         if isinstance(s.get("chart"), dict):
@@ -254,6 +261,8 @@ def daily(base: dict, subject: dict, indexes: list[dict], link: dict | None) -> 
     if index:
         sections = ([index_section(indexes, index["symbol"])] + sections[:explain.MAX_SECTIONS - 2]
                     + [link_section(subject, index, link)])
+    elif indexes:                       # the subject's own index is missing: the other one, and no link claimed
+        sections = [index_section(indexes)] + sections[:explain.MAX_SECTIONS - 1]
     return {**base, "kind": "daily", "sections": sections[:explain.MAX_SECTIONS]}
 
 
@@ -304,7 +313,7 @@ def weekly(indexes: list[dict], movers: list[dict], calls: dict | None, as_of: s
     if said:
         sections.append({"title": "오늘 방향 예측은 얼마나 맞았나", "body": said + " 맞힌 비율은 짧은 기간에는 크게 흔들려요.",
                          "highlight": said, "term": _term("오늘 방향", "데스크가 장 시작 전에 낸 그날 지수의 오름 · 내림 판단이에요."),
-                         "chart": None, "image": None})
+                         "chart": _none(), "image": None})
     sections.append({"title": "다음 주에 볼 자리", "body": " ".join(_where(f) for f in indexes),
                      "highlight": " · ".join(f"{f['name']} 저항 {_zone((f.get('resistances') or [None])[0])}" for f in indexes),
                      "term": _term("구역", "한 점이 아니라 폭이 있는 가격대예요. 그 안에서 종가가 어디서 끝나는지 봐요."),
@@ -337,7 +346,7 @@ def next_week(indexes: list[dict], watch: list[dict], events: list[dict], as_of:
                  else "다음 주에는 데스크가 아는 큰 일정이 없어요(실적 발표는 종목 화면에서 봐요)."),
         "highlight": events[0]["label"] if events else "큰 일정 없음",
         "term": _term("옵션 만기", "옵션 계약이 끝나는 날이에요. 큰 물량이 정리되며 지수가 흔들리기 쉬워요."),
-        "chart": None, "image": None}]
+        "chart": _none(), "image": None}]
     for f in indexes:
         sections.append({"title": f"{f['name']} 볼 자리", "body": _where(f),
                          "highlight": f"저항 {_zone((f.get('resistances') or [None])[0])} · 지지 {_zone((f.get('supports') or [None])[0])}",
@@ -364,7 +373,8 @@ def week_events(now: datetime, calendar_events: list[dict]) -> list[dict]:
     """The next Monday-Friday's events: the macro calendar's (``{"label", "at"}`` UTC) and the option expiries,
     as "11/25(화) 04:00" in KST."""
     today = now.astimezone(market_calendar.KST).date()
-    monday = today + timedelta(days=(7 - today.weekday()) % 7 or 7)
+    # Sunday's slot may be written late, on Monday (a run held the slot): still this week, not the next
+    monday = today + timedelta(days=(7 - today.weekday()) % 7)
     friday = monday + timedelta(days=4)
     out = []
     for e in calendar_events:

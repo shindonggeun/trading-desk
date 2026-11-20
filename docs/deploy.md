@@ -52,7 +52,7 @@ develop push ─▶ Jenkins 폴더 trading-desk
 
 | 단계 | 하는 일 | 멈추면 |
 |------|---------|--------|
-| CI 확인 | `scripts/jenkins/wait-ci.sh` 가 Actions API 로 그 커밋의 push 실행(워크플로 `ci`)을 30초마다 본다. 다시 돌린 실행이 있으면 마지막 시도 | 실패 → 빌드 실패, 운영 그대로. 취소(`ci.yml` concurrency 가 뒤 커밋에 밀어냄) → NOT_BUILT, 뒤 커밋의 빌드가 배포 |
+| CI 확인 | `scripts/jenkins/wait-ci.sh` 가 Actions API 로 그 커밋의 push 실행(워크플로 `ci`)을 10초마다 본다. 다시 돌린 실행이 있으면 마지막 시도 | 실패 → 빌드 실패, 운영 그대로. **밀림** → NOT_BUILT(실패 아님), 뒤 커밋의 빌드가 배포. 밀림 = CI 취소, 또는 기다리는 동안 develop 머리가 실패하지 않은 더 새 커밋(아래) |
 | 배포 대상 | 운영 컨테이너 이미지 라벨의 커밋과 대상 커밋 사이 `git diff -- backend`(웹 `frontend`). 라벨이 없는 옛 이미지면 배포 | 차이가 없으면 아무것도 하지 않는다("변경 없음") |
 | Vault | `scripts/jenkins/vault-env.sh` 가 `kv/trading-desk/{backend,frontend}/prod/env` 를 읽어 compose 가 쓰는 키만 `KEY='value'` 로 쓴다(3절) | 봉인 · 네트워크 · 권한 · 필수 키 없음 → **아무것도 바꾸기 전에** 멈춘다. 운영 그대로 |
 | 빌드 | `<이름>:<커밋 12자>` 이미지, 라벨에 커밋 | 빌드 실패 → 운영 그대로 |
@@ -71,6 +71,27 @@ develop push ─▶ Jenkins 폴더 trading-desk
 
 - 같은 커밋에서 backend/ · frontend/ 가 함께 바뀌면 두 잡이 lock 을 차례로 잡는다 — 어느 쪽이 먼저 바뀔지 정해져 있지 않으니 API 를 바꾸는 PR 은 이전 · 다음 화면 둘 다와 맞게 둔다.
 - Jenkins 는 `~/deploy/trading-desk/src` 를 고치지 않는다. 운영 커밋은 컨테이너 라벨로 본다(2-3).
+
+#### PR 은 몰아서 머지해도 된다 — 마지막 초록 커밋만 배포 (#752)
+
+develop 에 커밋이 연달아 들어오면 앞 빌드는 실패가 아니라 **밀림(NOT_BUILT)** 으로 끝나고, 가장 새 커밋의 빌드 하나가 배포한다.
+
+```
+머지 A ─▶ 빌드 A: CI 대기 … develop 머리가 B 로 바뀜, B 의 CI 는 진행 중 → "밀림: A → 더 새 B", NOT_BUILT
+머지 B ─▶ 빌드 B: (A 가 끝날 때까지 대기열) CI 대기 … 머리가 C → "밀림: B → 더 새 C", NOT_BUILT
+머지 C ─▶ 빌드 C: CI 성공 → lock → 배포 직전 다시 확인(머리 = C) → 배포
+```
+
+- 잡은 동시에 두 빌드를 돌리지 않는다(`disableConcurrentBuilds()`). 대기열은 Jenkins 가 하나로 합친다.
+- 밀림 검사는 두 번이다.
+  - CI 를 기다리는 동안 매 바퀴(`wait-ci.sh`, `CI_SUPERSEDE=1`)
+  - lock 을 잡고 배포하기 직전 한 번(`wait-ci.sh --superseded-only`). GitHub 를 못 읽으면 배포를 계속한다.
+- **더 새 커밋의 CI 가 이미 실패로 끝났으면 밀림이 아니다.** 지금 커밋을 계속 기다려 배포한다. 실패한 커밋 하나 때문에 배포가 영영 막히지 않게 하려는 것이다.
+- 더 새 커밋의 CI 가 진행 중일 때 밀린 뒤 그 CI 가 실패하면, 밀린 초록 커밋은 자동으로 다시 배포되지 않는다. develop 을 고치는 커밋이 배포하거나, `DEPLOY_COMMIT` 으로 그 초록 커밋을 올린다.
+- `DEPLOY_COMMIT`(되돌리기)은 일부러 옛 커밋이라 밀림 검사를 하지 않는다.
+- `disableConcurrentBuilds(abortPrevious: true)` 는 쓰지 않는다. 앞 빌드를 '운영 배포' 단계(`deploy-compose.sh` 의 이미지 교체 · compose up 사이)에서도 끊어 서비스가 내려간 채 남을 수 있다. 밀림 검사로 같은 결과(밀린 빌드 실패 0, 마지막 초록 커밋만 배포)를 끊김 없이 얻는다.
+- 콘솔에는 `밀림: <커밋 12자> → 더 새 <커밋 12자>` 한 줄이 남고, 빌드 설명 끝에 `밀림` 이 붙는다.
+- GitHub API 요청은 한 바퀴에 최대 3회(10초 간격이면 45분에 810회)로, 토큰 한도(시간당 5000회) 안이다.
 
 ### 2-2. 되돌림
 
@@ -93,7 +114,7 @@ ssh homelab-backend-server "docker inspect -f '{{.Name}} {{index .Config.Labels 
 curl -s https://trading.8llow8llowme.com/api/health        # {"ok":true}
 ```
 
-라벨이 비면 이 변경 전 손 배포로 올린 이미지다 — 그때만 `cat ~/deploy/trading-desk/src/REVISION`.
+**운영 커밋의 정본은 컨테이너 라벨이다**(Jenkins 의 '배포 대상' 비교도 이 라벨을 본다). 서버 `~/deploy/trading-desk/src/REVISION` 은 마지막 **손 배포** 소스의 표시라, 그 뒤 Jenkins 가 올렸으면 라벨과 다른 게 정상이다(#752). 라벨이 비면 이 변경 전 손 배포로 올린 이미지다 — 그때만 `src/REVISION` 을 본다. `scripts/deploy.sh` 는 시작할 때 둘이 다르면 한 줄 알린다.
 
 ### 2-4. 손 배포 — `scripts/deploy.sh` (대체 경로)
 
@@ -125,7 +146,7 @@ queued/running run 을 묻는다(SSH 와 `docker exec` 만 쓰고 세션 · 비�
 
 ```
 .env.runtime   손 배포용 비밀 · 설정 (권한 600) — 저장소에 없다. Vault 로 옮긴 뒤에는 Vault 와 맞춰 둔 사본
-src/           손 배포로 마지막에 올린 소스 (REVISION 에 커밋). Jenkins 배포는 이 폴더를 쓰지 않는다
+src/           손 배포로 마지막에 올린 소스 (REVISION 에 커밋 — 운영 커밋 표시가 아니다, 2-3). Jenkins 배포는 이 폴더를 쓰지 않는다
 src.old/       그 직전 손 배포
 ```
 

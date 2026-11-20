@@ -3,7 +3,8 @@
 // 손 배포(scripts/deploy.sh)와 Jenkins 가 같은 scripts/deploy-compose.sh 로 빌드 · 교체 · 확인 · 되돌림을 한다.
 //
 // develop 이 배포본이다(docs/git-workflow.md §8). develop 에 커밋이 들어오면:
-//   1. CI 확인   (builder)              GitHub Actions `ci` 가 그 커밋에서 성공할 때까지 기다린다. 실패면 멈추고, 취소(뒤 커밋에 밀림)면 건너뛴다
+//   1. CI 확인   (builder)              GitHub Actions `ci` 가 그 커밋에서 성공할 때까지 기다린다. 실패면 멈추고, 밀림(CI 취소, 또는
+//                                       develop 에 실패하지 않은 더 새 커밋)이면 NOT_BUILT 로 건너뛴다. 배포 직전(lock 안)에도 한 번 더 본다(#752)
 //   2. 배포 대상 (deploy agent, lock)    운영 컨테이너의 커밋 라벨과 비교해 backend/ (web 은 frontend/) 가 바뀌었을 때만 배포한다
 //   3. 운영 배포 (deploy agent, lock)    Vault → 임시 env 파일(600) → scripts/deploy-compose.sh → env 파일 삭제
 // 다른 브랜치 · PR 빌드는 아무것도 하지 않는다. 이 저장소는 공개라 잡은 fork PR 을 발견하지 않게 둔다(docs/deploy.md 2절 잡 등록).
@@ -14,6 +15,9 @@
 def run(Map config) {
     properties([
         buildDiscarder(logRotator(numToKeepStr: '30')),
+        // 동시 빌드는 막는다(대기열은 Jenkins 가 하나로 합친다). abortPrevious 는 쓰지 않는다 — 앞 빌드를 '운영 배포' 단계
+        // (deploy-compose.sh 의 이미지 교체 · compose up 사이)에서도 끊어 서비스가 내려간 채 남을 수 있다(#752).
+        // 밀린 빌드는 wait-ci.sh 의 밀림 검사(기다리는 동안 · 배포 직전)가 NOT_BUILT 로 건너뛴다.
         disableConcurrentBuilds(),
         parameters([
             string(name: 'DEPLOY_COMMIT', defaultValue: '', trim: true,
@@ -39,6 +43,9 @@ def run(Map config) {
     }
 
     String sha = null
+    // 이 빌드의 커밋(develop 끝)을 배포할 때만 밀림 검사를 한다. DEPLOY_COMMIT(되돌리기)은 일부러 옛 커밋이다
+    boolean followHead = !(params.DEPLOY_COMMIT ?: '').trim()
+    String newer = null
     stage('CI 확인') {
         node(config.gateAgentLabel) {
             try {
@@ -50,7 +57,7 @@ def run(Map config) {
                     withCredentials([usernamePassword(credentialsId: config.githubCredentialId,
                                                       usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN')]) {
                         withEnv(["CI_REPO=${config.githubRepo}", "CI_SHA=${sha}", "CI_WORKFLOW=${config.ciWorkflow}",
-                                 "CI_BRANCH=${config.branch}"]) {
+                                 "CI_BRANCH=${config.branch}", "CI_SUPERSEDE=${followHead ? '1' : '0'}"]) {
                             rc = sh(returnStatus: true, script: 'bash scripts/jenkins/wait-ci.sh')
                         }
                     }
@@ -66,7 +73,7 @@ def run(Map config) {
         }
     }
     if (sha == null) {
-        echo 'CI 가 뒤 커밋에 밀려 취소됐다 — 그 커밋의 빌드가 배포한다'
+        echo 'CI 가 취소됐거나 develop 에 더 새 배포 후보가 있다(위 "밀림:" 줄) — 그 커밋의 빌드가 배포한다'
         currentBuild.description += ' 밀림'
         currentBuild.result = 'NOT_BUILT'
         return
@@ -84,7 +91,14 @@ def run(Map config) {
                     withEnv(["SHA=${sha}"]) {
                         sh 'set +x; rm -rf .deploy-src && mkdir .deploy-src && git archive "$SHA" | tar -x -C .deploy-src'
                     }
-                    changed = needsDeploy(config, sha)
+                    // lock 을 기다리는 동안 더 새 커밋이 들어왔으면 그 빌드가 배포한다(그 커밋의 CI 가 이미 실패면 이 커밋을 배포)
+                    newer = followHead ? supersededBy(config, sha) : null
+                    changed = newer == null && needsDeploy(config, sha)
+                }
+                if (newer != null) {
+                    currentBuild.description += ' 밀림'
+                    currentBuild.result = 'NOT_BUILT'
+                    return
                 }
                 if (!changed) {
                     currentBuild.description += ' 변경 없음'
@@ -129,6 +143,20 @@ def run(Map config) {
             }
         }
     }
+}
+
+// 배포 직전 밀림 검사(scripts/jenkins/wait-ci.sh --superseded-only): 밀렸으면 더 새 커밋 쪽을 알리는 문자열, 아니면 null.
+// GitHub 를 못 읽으면 스크립트가 0 을 돌려 배포를 계속한다
+String supersededBy(Map config, String sha) {
+    int rc
+    withCredentials([usernamePassword(credentialsId: config.githubCredentialId,
+                                      usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN')]) {
+        withEnv(["CI_REPO=${config.githubRepo}", "CI_SHA=${sha}", "CI_WORKFLOW=${config.ciWorkflow}",
+                 "CI_BRANCH=${config.branch}"]) {
+            rc = sh(returnStatus: true, script: 'bash scripts/jenkins/wait-ci.sh --superseded-only')
+        }
+    }
+    return rc == 4 ? 'develop 머리' : null
 }
 
 // DEPLOY_COMMIT 이 비면 HEAD(develop 끝). 있으면 develop 에 있는 커밋인지 본다

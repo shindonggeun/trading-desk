@@ -10,6 +10,7 @@ SCRIPT="$HERE/../deploy-compose.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 FAILS=0
+REAL_DOCKER="$(command -v docker || true)"     # 맨 끝의 compose 파일 검사용(가짜 docker 를 PATH 에 넣기 전)
 
 # ---- 가짜 docker: 상태는 $STATE 아래 파일로 둔다
 mkdir -p "$TMP/bin"
@@ -153,5 +154,25 @@ rc=$(FAKE_SERVICES="backend-prod collector-prod" deploy rev10)
 check "껐는데 profile 없이 collector 가 있으면 멈춘다" "1 rev9" "$rc $(prod_rev)"
 
 rc=$(PRIMARY_SERVICE=api deploy rev11); check "없는 PRIMARY_SERVICE 는 바꾸기 전에 멈춘다" "1 rev9" "$rc $(prod_rev)"
+
+# ---- 실제 compose 파일(#688): 진짜 docker compose 가 있을 때(CI)만. 스위치에 따라 서비스 · api 역할이 맞게 풀리는지
+if [ -n "$REAL_DOCKER" ] && "$REAL_DOCKER" compose version > /dev/null 2>&1; then
+  CF="$HERE/../../backend/docker-compose-backend.yml"
+  printf '%s\n' "DESK_DATABASE_URL=postgresql://u:p@db/x" "DESK_DOCKER_NETWORK=trading-desk-prod" > "$TMP/compose.env"
+  real() { "$REAL_DOCKER" compose -p trading-desk-backend-prod --env-file "$TMP/compose.env" -f "$CF" "$@" 2> "$TMP/out"; }
+  check "compose: 꺼짐은 backend-prod 하나" "backend-prod" "$(real config --services | sort | paste -sd' ')"
+  check "compose: 켜짐은 서비스 3개" "analyst-prod backend-prod collector-prod" "$(real --profile split config --services | sort | paste -sd' ')"
+  check "compose: 꺼짐의 backend-prod 역할은 all" 1 "$(real config backend-prod | grep -c 'DESK_ROLE: all')"
+  DESK_API_ROLE=api real --profile split config --format json > "$TMP/split.json"
+  if command -v jq > /dev/null; then
+    check "compose: 켜짐의 역할 · 네트워크" \
+      "backend-prod api desk|collector-prod collector default|analyst-prod analyst default" \
+      "$(jq -r '["backend-prod","collector-prod","analyst-prod"][] as $s | .services[$s] | "\($s) \(.environment.DESK_ROLE) \(.networks | keys | join(","))"' "$TMP/split.json" | paste -sd'|')"
+    check "compose: collector · analyst 는 api 가 healthy 가 된 뒤" "service_healthy service_healthy" \
+      "$(jq -r '.services["collector-prod","analyst-prod"].depends_on["backend-prod"].condition' "$TMP/split.json" | paste -sd' ')"
+  fi
+else
+  echo "docker compose 가 없어 compose 파일 검사는 건너뛴다(CI 에서 돈다)"
+fi
 
 if [ "$FAILS" = 0 ]; then echo "모두 통과"; else echo "${FAILS}개 실패"; exit 1; fi

@@ -116,11 +116,11 @@ def test_the_text_follows_the_issue_example():
 
 def test_the_setting_is_checked():
     assert line_signals.clean({"timeframes": ["1h", "2h", "60m"]})["timeframes"] == ["60m", "120m"]
-    for bad in ({"timeframes": ["1d"]}, {"events": {"cross": True}},
+    for bad in ({"timeframes": ["1w"]}, {"events": {"cross": True}},
                 {"tickers": [f"T{i}" for i in range(line_signals.MAX_TICKERS + 1)]}):
         with pytest.raises(ValueError):
             line_signals.clean(bad)
-    assert line_signals.clean({})["events"] == {"touch": True, "break": True, "retest": True}
+    assert line_signals.clean({})["events"] == {"touch": True, "break": True, "retest": True, "long": True}
 
 
 @pytest.fixture
@@ -205,7 +205,7 @@ def test_api_line_watch(db_url):
         body = client.get("/api/notify/line-watch").json()
         assert body["enabled"] is False and body["can_edit"] is True and body["recent"] == []
         assert body["allowed"]["timeframes"] == list(line_signals.TIMEFRAMES)
-        assert client.put("/api/notify/line-watch", json={"timeframes": ["1d"]}).status_code == 422
+        assert client.put("/api/notify/line-watch", json={"timeframes": ["1w"]}).status_code == 422
         assert client.put("/api/notify/line-watch", json={"tickers": ["bad ticker!"]}).status_code == 422
         too_many = {"tickers": [f"T{i}" for i in range(line_signals.MAX_TICKERS + 1)]}
         assert client.put("/api/notify/line-watch", json=too_many).status_code == 422
@@ -214,7 +214,7 @@ def test_api_line_watch(db_url):
         assert got.status_code == 200, got.text
         got = got.json()
         assert (got["enabled"], got["tickers"], got["timeframes"]) == (True, ["NQ=F", "SOXL"], ["60m", "5m"])
-        assert got["events"] == {"touch": True, "break": True, "retest": False}
+        assert got["events"] == {"touch": True, "break": True, "retest": False, "long": True}
         engine = make_engine(db_url)
         Auth(engine, td(hours=1), td(hours=1)).create_user("other@example.com", PASSWORD)
         engine.dispose()
@@ -276,7 +276,7 @@ def test_a_partial_setting_keeps_the_rest(watch):
     watch.save({"enabled": False, "tickers": ["NQ=F", "SOXL"], "timeframes": ["5m"], "events": {"touch": False}})
     got = watch.save({"enabled": True, "events": {"retest": False}})
     assert (got["enabled"], got["tickers"], got["timeframes"]) == (True, ["NQ=F", "SOXL"], ["5m"])
-    assert got["events"] == {"touch": False, "break": True, "retest": False}
+    assert got["events"] == {"touch": False, "break": True, "retest": False, "long": True}
     with pytest.raises(ValueError):
         watch.save({"enabled": True, "tickers": []})
 

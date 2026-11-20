@@ -26,12 +26,12 @@ import logging
 import threading
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import insert, select
+from sqlalchemy import func, insert, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from . import alert_tone, flow_shift, notify, nq_watch
-from .db import market_alerts, now
+from . import alert_tone, flow_shift, holding_watch, notify, nq_watch
+from .db import market_alerts, now, users
 from .futures_flow import KST
 
 log = logging.getLogger(__name__)
@@ -40,12 +40,18 @@ COOLDOWN_MIN = 20
 REPEAT_MIN = 60
 DAILY_MAX = 10
 STRONG_EXTRA = 3
-ONCE_A_DAY = {"open_buy_reversal", "open_sell_reversal", "nq_from_high"}
-NO_COOLDOWN = {"buy_turn", "sell_turn"}
+ONCE_A_DAY = {"open_buy_reversal", "open_sell_reversal", "nq_from_high",
+              # #694 each holding rule once a KST day per holding (market = the ticker)
+              "hold_stop", "hold_near_stop", "hold_trend_down", "hold_take_profit"}
+NO_COOLDOWN = {"buy_turn", "sell_turn", "hold_stop"}      # a stop is said at once, past the cooldown
+UNCAPPED = {"hold_stop"}                          # #694 and past the day's cap: other holdings' cautions never hold it
+CROSS_MIDNIGHT = {"nq_alert", "holding_alert"}    # the waits read the KST day before too (a US session spans it)
 PUSHED = {"caution", "strong"}
 HISTORY_DAYS = 20                 # trading days of snapshots behind the flow thresholds
 ALERT_URL = "/#/market"
-TITLE = {"flow_shift": "수급 흐름 변화", "nq_alert": "나스닥 선물 이상 징후"}
+URLS = {"holding_alert": "/#/"}                  # #694 the dashboard's holdings
+OWNER_ONLY = {"holding_alert"}                   # #694 the owner's holdings: web push to the owner's devices only
+TITLE = {"flow_shift": "수급 흐름 변화", "nq_alert": "나스닥 선물 이상 징후", "holding_alert": "보유 종목 손절 · 익절"}
 
 
 def _session(alert: dict) -> str:
@@ -55,9 +61,9 @@ def _session(alert: dict) -> str:
 def admit(alert: dict, day: list[dict], before: list[dict] = ()) -> bool:
     """Whether ``alert`` goes through, given the day's alerts so far (any order) and, for NQ=F's
     once-a-session rule, the KST day before's."""
-    # #674 NQ=F's waits look across the KST midnight too (10:00 ET in winter - QQQ's busiest hour):
-    # the 1-minute alarm at 23:58 and Yahoo's late one at 00:00 are the same move
-    pool = [*day, *before] if alert["kind"] == "nq_alert" else day
+    # #674 · #694 NQ=F's and a holding's waits look across the KST midnight too (10:00 ET in winter, and a
+    # US session runs over it): the 1-minute alarm at 23:58 and Yahoo's late one at 00:00 are the same move
+    pool = [*day, *before] if alert["kind"] in CROSS_MIDNIGHT else day
     market = [a for a in pool if a["kind"] == alert["kind"] and a["market"] == alert["market"]]
     same = [a for a in market if a["who"] == alert["who"]]
     if any(a["rule"] == alert["rule"] and a["t"] == alert["t"] for a in same):
@@ -67,8 +73,14 @@ def admit(alert: dict, day: list[dict], before: list[dict] = ()) -> bool:
             earlier = [a for a in [*day, *before] if a["kind"] == "nq_alert" and a["rule"] == alert["rule"]]
             if any(_session(a) == _session(alert) for a in earlier):
                 return False
+        elif alert["kind"] == "holding_alert":     # #694 once a day of the holding's own market
+            earlier = [a for a in same if a["rule"] == alert["rule"]]
+            if any(holding_watch.session_day(a) == holding_watch.session_day(alert) for a in earlier):
+                return False
         elif any(a["rule"] == alert["rule"] for a in same):
             return False
+    if alert["rule"] in UNCAPPED:
+        return True                              # #694 a stop is said whatever else the day held
     pushed = alert["severity"] in PUSHED
     turn = alert["rule"] in NO_COOLDOWN
     if not turn:
@@ -93,6 +105,8 @@ def admit(alert: dict, day: list[dict], before: list[dict] = ()) -> bool:
 
 def text(alert: dict) -> str:
     """The stored and pushed text: the tone's mark, the rule's words, one line of reading (#641)."""
+    if alert["kind"] == "holding_alert":
+        return alert_tone.headline(alert, holding_watch.text(alert))
     return alert_tone.headline(alert, nq_watch.text(alert) if alert["kind"] == "nq_alert" else flow_shift.text(alert))
 
 
@@ -122,7 +136,7 @@ class MarketAlerts:
             try:
                 with self._lock, self.engine.begin() as conn:
                     before = (self.list_in(conn, (date.fromisoformat(day) - timedelta(days=1)).isoformat())
-                              if alert["kind"] == "nq_alert" else [])
+                              if alert["kind"] in CROSS_MIDNIGHT else [])
                     if not admit(alert, self.list_in(conn, day), before):
                         continue
                     conn.execute(insert(market_alerts).values(
@@ -133,11 +147,17 @@ class MarketAlerts:
                 continue
             out.append(row)
             if row["pushed"]:
-                notify.send(self.pusher, alert["kind"], f"tone_{row['tone']}", payload={
-                    "title": TITLE[alert["kind"]], "body": row["text"], "tag": f"{alert['kind']}-{alert['market']}",
-                    "url": ALERT_URL, "kind": alert["kind"], "rule": alert["rule"], "market": alert["market"],
+                owner = self._owner() if alert["kind"] in OWNER_ONLY else None
+                notify.send(self.pusher, alert["kind"], f"tone_{row['tone']}", user_id=owner, payload={
+                    "title": TITLE[alert["kind"]], "body": row["text"], "tag": f"{alert['kind']}-{alert['market']}" + (f"-{alert['rule']}" if alert["kind"] in OWNER_ONLY else ""),
+                    "url": URLS.get(alert["kind"], ALERT_URL), "kind": alert["kind"], "rule": alert["rule"], "market": alert["market"],
                     "severity": alert["severity"], "tone": row["tone"]})
         return out
+
+    def _owner(self) -> int | None:
+        """The desk's owner: the first account (as api.owner_id)."""
+        with self.engine.connect() as conn:
+            return conn.execute(select(func.min(users.c.id))).scalar()
 
     @staticmethod
     def list_in(conn, day: str) -> list[dict]:

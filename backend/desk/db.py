@@ -368,6 +368,15 @@ line_watch = Table(
     Column("updated_at", Timestamp, nullable=False),
 )
 
+# #694 the holding stop / take-profit watch (desk.holding_watch): one row (id 1) - tickers and settings only,
+# never a quantity or an amount
+holding_watch = Table(
+    "holding_watch", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=False),
+    Column("body", Json, nullable=False),                         # enabled · max_loss_pct · tickers{}
+    Column("updated_at", Timestamp, nullable=False),
+)
+
 # #613 the signals sent: the same line · signal on the same bar never twice; the day's count and cooldowns
 line_signals = Table(
     "line_signals", metadata,

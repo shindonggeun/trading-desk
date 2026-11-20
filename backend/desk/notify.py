@@ -93,13 +93,15 @@ def _submit(ch, payload: dict, what: str) -> Future | None:
     return future
 
 
-def send(pusher, *kinds: str, payload: dict) -> int:
+def send(pusher, *kinds: str, payload: dict, user_id: int | None = None) -> int:
     """Deliver ``payload`` ({title, body, tag, url, ...}) to the web push subscriptions and the channels
-    that have all of ``kinds`` on; the number of web pushes delivered (the channels go on afterwards)."""
+    that have all of ``kinds`` on; the number of web pushes delivered (the channels go on afterwards).
+    #694 ``user_id``: web push to that user's devices only (the channels are the owner's own)."""
     sent = 0
     if pusher is not None:
         try:
-            sent += pusher.broadcast(*kinds, payload=payload)
+            sent += (pusher.broadcast(*kinds, payload=payload) if user_id is None
+                     else pusher.broadcast(*kinds, payload=payload, user_id=user_id))
         except Exception as exc:  # noqa: BLE001 - a push never stops recording
             log.warning("push of %s failed: %s", "/".join(kinds), type(exc).__name__)
     store, channels = _store, list(_channels.values())

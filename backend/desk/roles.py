@@ -39,6 +39,7 @@ JOBS: tuple[tuple[str, str, str, str | None, str], ...] = (
     ("nq_watch", "나스닥 선물 이상 징후", "야후", None, COLLECTOR),
     ("nq_fast", "나스닥 선물 1분 판정", "QQQ 실시간 · 바이낸스 추정", None, COLLECTOR),
     ("line_signals", "채널 · 추세선 신호", "야후 · 토스", None, COLLECTOR),
+    ("holding_watch", "보유 종목 손절 · 익절", "토스 · 야후", None, COLLECTOR),   # #694
     ("credit", "빚투 · 예탁금", "금융투자협회(KOFIA)", None, COLLECTOR),
     ("news", "뉴스 흐름", "GDELT · 구글 뉴스", None, COLLECTOR),
     ("macro_news", "거시 · 정책 뉴스", "GDELT · 구글 뉴스", "news", COLLECTOR),

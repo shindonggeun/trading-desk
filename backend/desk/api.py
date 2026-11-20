@@ -47,6 +47,7 @@ from . import (
     futures_quote,
     gap_fill,
     halving,
+    holding_watch,
     horizons,
     krx,
     krx_etp,
@@ -76,6 +77,7 @@ from . import (
     primary_trend,
     projection,
     regime,
+    regime_live,
     report_images,
     report_plan,
     reports,
@@ -813,6 +815,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 jobs.get("nq_fast").note = nq_fast_watch.last
             return nq_fast.TICK_SEC
 
+        async def watch_holdings() -> float:
+            # #694 each holding's stop / take-profit by its regime, while its market trades
+            await app.state.holding_watch.run_pass(book, prices, calendar, app.state.market_alerts.dispatch)
+            return holding_watch.TICK_SEC
+
         async def watch_lines() -> float:
             # #613 channel / trendline signals on the watched tickers, each just after its bar closes
             await line_signals.run_pass(app.state.line_watch, prices, app.state.pusher)
@@ -1004,6 +1011,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         start("nq_fast", feeds_on and estimator is not None, watch_nq_fast, nq_fast.TICK_SEC * 3,
               "NQ 1-minute alarms failed")
         start("line_signals", feeds_on, watch_lines, line_signals.TICK_SEC, "line signals failed")
+        start("holding_watch", feeds_on, watch_holdings, holding_watch.TICK_SEC, "holding watch failed")
         start("credit", feeds_on, refresh_credit, CREDIT_RETRY_SEC, "KOFIA credit refresh failed")
         if feeds_on:
             # #428: the pass saved before a restart answers until the first one here finishes
@@ -3012,9 +3020,17 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         _sector_call(sectors.remove, request.state.user.id, sector_id)
 
     @app.get("/api/regime")
-    async def regime_view():
+    async def regime_view(ticker: str | None = None):
         """semibot's live regime when it is connected (the PC), and #409 the desk's own regime always -
-        on the server semibot does not run, so ``desk`` is what the card shows. Fields are only added."""
+        on the server semibot does not run, so ``desk`` is what the card shows. Fields are only added.
+        #694 with ``ticker``: that ticker's regime instead - trend · range · turning on the daily and the
+        hourly bars, with its numbers and box (desk.regime_live.view)."""
+        if ticker is not None:
+            try:
+                ticker, _ = resolve_ticker(ticker)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
+            return await regime_live.view(prices, ticker)
         out = regime.snapshot(settings.semibot_db_path)
         out["source"] = "semibot" if out.get("enabled") else "desk"
         out["desk"] = await asyncio.to_thread(regime.desk_view, risk, tip_cache.regime)
@@ -3044,6 +3060,7 @@ class PushKindsIn(BaseModel):
     nq_alert: bool = True           # #579 the NQ=F selling alarms
     day_call: bool = True           # #572 each market's first direction call of the day
     line_signal: bool = True        # #613 channel / trendline signals (the watch itself is off until set)
+    holding_alert: bool = True      # #694 each holding's stop / take-profit (desk.holding_watch)
     # #641 the flow / NQ=F alerts by tone (desk.alert_tone)
     tone_positive: bool = True
     tone_neutral: bool = True
@@ -3131,7 +3148,8 @@ def _push_routes(app: FastAPI, engine, settings: Settings) -> None:
         turns = [{"trade_date": a["trade_date"], "kind": "flow_turn", "rule": a["kind"], "market": a["market"],
                   "who": "foreign", "severity": "caution", "t": a["t"], "value": a["value"], "prev": None,
                   "text": a["text"], "pushed": True} for a in app.state.flow_alerts.list(day)]
-        items = turns + app.state.market_alerts.list(day)
+        # #694 a holding's alerts are its own (GET /api/holding-watch), not the market's timeline
+        items = turns + [a for a in app.state.market_alerts.list(day) if a["kind"] != holding_watch.KIND]
         for a in items:     # #641 the direction beside the size, worked out from what each one stores
             a["tone"] = alert_tone.tone(a)
         items.sort(key=lambda a: datetime.fromisoformat(a["t"]))
@@ -3149,6 +3167,19 @@ class LineWatchIn(BaseModel):
     tickers: list[str] = Field(default_factory=list, max_length=line_signals.MAX_TICKERS)
     timeframes: list[str] = Field(default_factory=list, max_length=len(line_signals.TIMEFRAMES))
     events: dict[str, bool] = Field(default_factory=dict, max_length=len(line_signals.EVENTS))
+
+
+class HoldingTickerIn(BaseModel):
+    enabled: bool = True
+    max_loss_pct: float | None = Field(default=None, ge=holding_watch.MAX_LOSS_RANGE[0], le=holding_watch.MAX_LOSS_RANGE[1])
+
+
+class HoldingWatchIn(BaseModel):
+    """#694 the holding stop / take-profit watch (desk.holding_watch)."""
+    enabled: bool = True
+    max_loss_pct: float = Field(default=holding_watch.MAX_LOSS_PCT, ge=holding_watch.MAX_LOSS_RANGE[0],
+                                le=holding_watch.MAX_LOSS_RANGE[1])
+    tickers: dict[str, HoldingTickerIn | None] = Field(default_factory=dict, max_length=holding_watch.MAX_TICKERS)
 
 
 class KakaoCallbackIn(BaseModel):
@@ -3245,6 +3276,32 @@ def _notify_routes(app: FastAPI, engine, settings: Settings) -> None:
         except nc.ChannelError as exc:         # the worker busy past the wait: it may still go later
             error = str(exc)
         return {"ok": error is None, "error": error}
+
+    holdings_watch = holding_watch.HoldingWatch(engine)
+    app.state.holding_watch = holdings_watch
+
+    def holding_view(request: Request) -> dict:
+        return {**holdings_watch.settings(), "can_edit": request.state.user.id == owner_id(),
+                "limits": {"max_loss_pct": list(holding_watch.MAX_LOSS_RANGE), "max_tickers": holding_watch.MAX_TICKERS},
+                "holdings": list(holdings_watch.last.values())}
+
+    @app.get("/api/holding-watch")
+    def holding_watch_get(request: Request):
+        """#694 the holding watch: its setting and each holding's lines on the last pass (ticker, regime,
+        stop, take profit, %) - no quantity, no amount."""
+        return holding_view(request)
+
+    @app.put("/api/holding-watch")
+    def holding_watch_set(body: HoldingWatchIn, request: Request):
+        must_own(request)
+        try:
+            given = body.model_dump(exclude_unset=True)     # what is left out keeps its value
+            if "tickers" in given:
+                given["tickers"] = {clean_ticker(t): v for t, v in given["tickers"].items()}
+            holdings_watch.save(given)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return holding_view(request)
 
     watch = line_signals.LineWatch(engine)
     app.state.line_watch = watch

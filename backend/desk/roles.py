@@ -16,10 +16,9 @@ The backend is one image run as up to three processes, each with its own event l
 parent (a part read inside its parent's pass) and the role that runs it. A new job is one line here; the
 lifespan in ``desk.api`` starts a job only when ``runs(role, name)`` - and its own switch - says so.
 
-Production stays on ``all`` until the later steps of #688 land, because these still live in one process's memory:
-- broker tokens: the Toss token (``broker/toss.py``), the KIS REST token (``futures_flow.KisRest``) and the KIS
-  approval key (``broker/kis_stream.py``) - a second process would mint its own and revoke the first one's
-  (with ``api`` keeping the KIS stream and the prewarm, that step decides who mints for whom);
+The broker tokens are shared already (desk.token_store: only ``all`` | ``collector`` issue, the ``tokens`` job
+below). Production stays on ``all`` until the later steps of #688 land, because these still live in one
+process's memory:
 - caches read both by the screens and by a run's notes: credit, the economic calendar, macro news, market /
   futures flow, tips (prewarm) and ``calibration.TABLE``'s live record (scoring);
 - the KIS live quotes (``kis_stream``, api) that ``nq_fast`` (collector) reads for QQQ;
@@ -34,6 +33,7 @@ API, COLLECTOR, ANALYST = "api", "collector", "analyst"
 
 # (name, label, source, parent, role). A part (parent set) runs inside its parent's pass, so it has its parent's role.
 JOBS: tuple[tuple[str, str, str, str | None, str], ...] = (
+    ("tokens", "브로커 토큰", "토스 · 한투(KIS)", None, COLLECTOR),
     ("listing", "종목 목록", "토스", None, COLLECTOR),
     ("futures_snapshot", "코스피200 선물 수급 스냅숏", "한투(KIS)", None, COLLECTOR),
     ("futures_close_quote", "코스피200 선물 세션 마감가", "한투(KIS)", None, COLLECTOR),

@@ -291,6 +291,8 @@ docker run --rm -it -p 127.0.0.1:1455:1455 -v trading-desk-tradingagents-home:/h
   컨테이너 안 스크립트에서 `TossBroker` 를 직접 만들지 않는다. PC 로컬 개발은 `DESK_BROKER=mock`(또는 별도 키)로 띄운다 —
   PC 와 서버가 같은 공인 IP 라 허용 IP(403)로도 막히지 않는다. 다른 앱(semibot 등)에 토스를 붙일 때는 키를 따로 발급받는다.
   두 곳이 같은 키를 계속 쓰면 서로 무효화를 반복한다(핑퐁) — 서버는 재발급을 1분에 한 번으로 묶고 로그에 `toss token revoked` 를 남긴다.
+- 토큰은 DB `broker_tokens` 에 봉인해 프로세스 · 재배포를 넘어 함께 쓴다(#688, docs/security.md §5.1). 재배포해도 유효한 토큰을 다시 쓰고,
+  발급은 `DESK_ROLE` all · collector 만 한다 — 로그 `toss token issued (all)` 이 발급 한 번이다. `python -m desk.cli flow-history` 는 저장소의 토큰만 읽는다.
 - 시세 · 보유 정보를 다른 사람에게 보여주지 않는다(재배포 금지). 로그인이 소유자 한 명으로 막는 이유다.
 
 ## 7. 백업

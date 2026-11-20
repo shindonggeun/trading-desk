@@ -124,12 +124,15 @@ from .sr import frame_bars, support_resistance
 from .stock_profile import MAX_TICKERS as PROFILE_MAX
 from .stock_profile import Profiles
 from .store import TERMINAL, Store, iso
+from .token_store import TokenStore
 from .universe import KR_SUFFIX, Universe
 
 MAX_BOARD = 30          # tickers per /api/estimates call
 CALENDAR_INTERVAL_SEC = 6 * 3600   # economic calendar re-read (#148)
 POSITIONING_PARALLEL = 3   # Cboe chains are ~2 MB each (#154)
 POSITIONING_QUOTE_SEC = 5.0
+TOKEN_TICK_SEC = 5.0       # #688 the minting process looks at the shared broker tokens this often
+TOKEN_AHEAD_SEC = 600.0    # and renews one this long before it expires (readers trim 300 s)
 CREDIT_INTERVAL_SEC = 6 * 3600   # KOFIA posts the day's numbers the next business day (#155)
 CREDIT_RETRY_SEC = 15 * 60
 BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
@@ -368,6 +371,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     migrate(settings.database_url)
     engine = make_engine(settings.database_url)
     store = Store(engine)
+    # #688 broker tokens shared by the desk's processes: issued only where DESK_ROLE is all | collector
+    tokens = TokenStore(engine, role=settings.role)
     futures_history = FuturesHistory(engine)    # #254
     futures_oi = FuturesOi(engine)              # #603 KRX open interest · basis · put/call per day
     auth = Auth(engine, timedelta(hours=settings.session_max_hours), timedelta(hours=settings.session_idle_hours))
@@ -505,8 +510,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return "made"
     sectors = Sectors(engine)
     hub = Hub()
-    broker = make_broker(settings)
-    kis_feed = kis_stream.make(settings) if prices is None else None   # tests bring their own prices
+    broker = make_broker(settings, tokens)
+    kis_feed = kis_stream.make(settings, tokens) if prices is None else None   # tests bring their own prices
     prices = prices or PriceSource(broker, stream=kis_feed)
     # #572 today's direction calls: made in their windows from Yahoo bars. Off (stored calls still served)
     # with the same switch as the news flow and the prewarm: scripted runs and tests fetch nothing
@@ -559,7 +564,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     profiles = Profiles(prices, universe.lookup)   # #295 the stock card
     flow = flow or MarketFlow(broker)
     # KOSPI200 futures from KIS REST (#160); without the KIS keys it answers supported: false
-    futures = futures or FuturesFlow(make_kis_rest(settings) if not settings.fake_runs else None, flow,
+    futures = futures or FuturesFlow(make_kis_rest(settings, tokens) if not settings.fake_runs else None, flow,
                                      off=futures_off(settings))
     # #443 day / night session price and minute bars on the same KIS client (one token)
     futures_quotes = futures_quote.FuturesQuote(getattr(futures, "rest", None), off=futures_off(settings))
@@ -682,6 +687,18 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         # #623 every loop below is a step that returns its next wait, run by jobs.run_forever: an exception
         # is logged and the loop goes on after its retry wait; GET /api/status shows each one's state
+        token_rest = getattr(futures, "rest", None)
+        token_owners = [o for o in (broker, token_rest) if callable(getattr(o, "keep_token", None))]
+
+        async def keep_tokens() -> float:
+            # #688 the minting process renews the shared broker tokens ahead of expiry and answers the
+            # other processes' requests (desk.token_store); the KIS approval key only when one was asked for
+            for owner in token_owners:
+                await owner.keep_token(TOKEN_AHEAD_SEC)
+            if kis_feed is not None:
+                await kis_feed.keep_approval(TOKEN_AHEAD_SEC)
+            return TOKEN_TICK_SEC
+
         async def keep_listing_fresh() -> float:
             await universe.refresh_if_stale(broker)
             return 3600
@@ -1011,6 +1028,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             if here(name) and on:
                 started.append(jobs.spawn(name, jobs.run_forever(name, step, retry, failed)))
 
+        start("tokens", tokens.minter and bool(token_owners or kis_feed), keep_tokens, TOKEN_TICK_SEC,
+              "broker token renewal failed")
         start("listing", True, keep_listing_fresh, 3600, "listing refresh failed")
         start("futures_snapshot", interval_min(settings.futures_snapshot_min) > 0
               and getattr(futures, "rest", None) is not None,

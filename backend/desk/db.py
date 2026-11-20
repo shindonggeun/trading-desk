@@ -397,6 +397,22 @@ line_signals = Table(
 )
 
 
+# #688 broker tokens shared by the desk's processes (desk.token_store): one row per token, issued only by a
+# minter process (DESK_ROLE all | collector) under the row's lease. The value is Fernet-sealed with a key
+# derived from that provider's own secret; nothing here is usable without it.
+broker_tokens = Table(
+    "broker_tokens", metadata,
+    Column("name", String(16), primary_key=True),                  # toss | kis_rest | kis_approval
+    Column("sealed", Text),                                        # the token, sealed (None = never issued)
+    Column("expires_at", Timestamp),                               # the provider's expiry (UTC)
+    Column("issued_at", Timestamp),
+    Column("issued_by", String(16)),                               # the DESK_ROLE that issued it
+    Column("asked_at", Timestamp),                                 # the last issue attempt (the gap counts from it)
+    Column("refusals", Integer, nullable=False, default=0),         # issues refused in a row (the backoff step)
+    Column("refresh_for", String(64)),                             # a reader's request: the refused token's hash
+    Column("lease_until", Timestamp),                              # a minter is issuing until then
+)
+
 def now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 

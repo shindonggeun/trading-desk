@@ -20,7 +20,8 @@
 # 종료 코드: 0 배포됨 · 1 실패, 되돌리지 못함(사람이 본다) · 2 실패해서 직전 이미지로 되돌림 · 3 진행 중인 분석 때문에 멈춤(운영은 그대로)
 #
 # 이미지 태그: <이름>:<커밋 12자> 로 빌드 → 지금 운영 이미지를 <이름>:rollback 으로 남김 → <이름>:prod 로 바꿔 compose 를 다시 띄운다.
-# 손으로 되돌릴 때: docker tag <이름>:rollback <이름>:prod 후 compose up -d --no-build --force-recreate.
+# 손으로 되돌릴 때: docker tag <이름>:rollback <이름>:prod 후 이 스크립트가 쓰는 것과 같은 인자로 compose 를 부른다 — 백엔드는
+#   나누기가 켜져 있으면 DESK_API_ROLE=api 와 --profile split 을 함께, 꺼져 있으면 collector · analyst 를 먼저 rm -f 한 뒤(docs/deploy.md 12절).
 #
 # 값은 출력하지 않는다. 실패 때 찍는 컨테이너 로그는 env 파일의 값을 가린 뒤 찍는다.
 set +x
@@ -89,7 +90,10 @@ if [ "$TARGET" = backend ]; then
     1|true) SPLIT=1 ;;
     *) echo "DESK_BACKEND_SPLIT 는 0 | 1 이어야 한다" >&2; exit 1 ;;
   esac
+  # 역할은 이 스크립트만 정한다 — env 파일에 있으면 손으로 compose 를 부를 때 그 값이 쓰여 경로마다 역할이 갈린다
+  [ -z "$(env_value DESK_API_ROLE)" ] || { echo "DESK_API_ROLE 는 env 파일에 두지 않는다(deploy-compose.sh 가 정한다)" >&2; exit 1; }
   if [ "$SPLIT" = 1 ]; then PROFILE=(--profile split); export DESK_API_ROLE=api; else export DESK_API_ROLE=all; fi
+  export DESK_BACKEND_SPLIT="$SPLIT"      # 컨테이너 라벨 desk.backend-split 이 늘 이 결정과 같게
   echo "백엔드 나누기: $([ "$SPLIT" = 1 ] && echo '켜짐 — api · collector · analyst' || echo '꺼짐 — all 하나')"
 fi
 # 필수 키(\${KEY:?})가 비면 여기서 멈춘다. -q 라 값은 출력하지 않는다
@@ -178,7 +182,9 @@ drop_split() {
   [ "$TARGET" = backend ] && [ "$SPLIT" = 0 ] || return 0
   local s ids
   for s in "${SPLIT_SERVICES[@]}"; do
-    ids=$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=$s")
+    # compose 라벨로, 그리고 -p 없이 손으로 띄운 것까지 컨테이너 이름으로
+    ids=$( { docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=$s"
+             docker ps -aq --filter "name=^/?trading-desk-${s}\$"; } | sort -u)
     [ -n "$ids" ] || continue
     echo "백엔드 나누기를 껐다 — $s 를 멈추고 지운다"
     printf '%s\n' "$ids" | xargs docker rm -f >/dev/null

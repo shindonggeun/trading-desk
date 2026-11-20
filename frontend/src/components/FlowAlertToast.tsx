@@ -37,7 +37,7 @@ export function saveToastMarkets(m: ToastMarkets) {
 /** #573 수급 전향 말고 받을 알림 종류 — 아침 시황(#571) · 오늘 방향(#572), #581 수급 흐름 변화 · 나스닥 선물 이상 징후(#579).
  *  이 브라우저에 기억하고 기본은 켬. 수급 흐름 · 나스닥 선물 · 보유 종목은 앱 안 토스트에도 같이 적용된다. */
 export type ExtraKinds = { flow_shift: boolean; flow_warn: boolean; nq_alert: boolean; morning_brief: boolean; day_call: boolean; line_signal: boolean;
-  holding_alert: boolean;
+  holding_alert: boolean; sector_mover: boolean;
   tone_positive: boolean; tone_neutral: boolean; tone_caution: boolean; tone_warning: boolean };
 const TONE_KEYS = ["tone_positive", "tone_neutral", "tone_caution", "tone_warning"] as const;
 export const EXTRA_KINDS: { key: keyof ExtraKinds; label: string; note: string }[] = [
@@ -47,12 +47,13 @@ export const EXTRA_KINDS: { key: keyof ExtraKinds; label: string; note: string }
   { key: "morning_brief", label: "아침 시황", note: "평일 오전 7시쯤" },
   { key: "day_call", label: "오늘 방향", note: "국장 · 미장 판정이 나올 때" },
   { key: "line_signal", label: "차트 선", note: "고른 종목 · 시간봉의 채널 · 추세선 닿음 · 이탈(설정 → 차트 선 알림에서 켬). 참고 등급이라 '· 참고' 도 켜져 있어야 받음" },
+  { key: "sector_mover", label: "섹터 급등락 주범", note: "미국 반도체 · 나스닥100 · 국장 반도체가 ±2% 이상 움직인 날, 가장 크게 끌어내리거나 끌어올린 종목과 원인(그 시장 정규장, 섹터 · 방향마다 하루 한 번)" },
   { key: "holding_alert", label: "보유 종목 손절 · 익절", note: "보유 종목이 손절선에 가까워지거나 넘을 때, 하락 추세로 바뀔 때, 박스권 위 끝일 때(설정 → 보유 종목 알림에서 켬, 데스크 주인 기기로만)" },
   // #642 알림의 뜻(#641) — 끄면 그 등급은 보내지 않는다(예: 경고만 받기). #613 차트 선 알림은 모두 '참고'
-  { key: "tone_positive", label: "◎ 호재", note: "외인 · 기관 매수 전향 · 확대, 매도 축소" },
+  { key: "tone_positive", label: "◎ 호재", note: "외인 · 기관 매수 전향 · 확대, 매도 축소, 섹터 급등" },
   { key: "tone_neutral", label: "· 참고", note: "개인 수급 · 작은 움직임, 차트 선 알림" },
   { key: "tone_caution", label: "! 주의", note: "매도 확대 · 매수 축소, 나스닥 선물 고점 대비 밀림" },
-  { key: "tone_warning", label: "⚠ 경고", note: "매수→매도 전향 · 강한 매도 확대 · 나스닥 선물 급락" },
+  { key: "tone_warning", label: "⚠ 경고", note: "매수→매도 전향 · 강한 매도 확대 · 나스닥 선물 급락 · 섹터 급락" },
 ];
 const EXTRA_KEY = "desk.pushKinds.extra";
 
@@ -61,10 +62,10 @@ export function loadExtraKinds(): ExtraKinds {
     const raw = JSON.parse(localStorage.getItem(EXTRA_KEY) ?? "{}");
     return { flow_shift: raw.flow_shift !== false, flow_warn: raw.flow_warn !== false, nq_alert: raw.nq_alert !== false,
              morning_brief: raw.morning_brief !== false, day_call: raw.day_call !== false, line_signal: raw.line_signal !== false,
-             holding_alert: raw.holding_alert !== false,
+             holding_alert: raw.holding_alert !== false, sector_mover: raw.sector_mover !== false,
              ...Object.fromEntries(TONE_KEYS.map((k) => [k, raw[k] !== false])) as Record<(typeof TONE_KEYS)[number], boolean> };
   } catch {
-    return { flow_shift: true, flow_warn: true, nq_alert: true, morning_brief: true, day_call: true, line_signal: true, holding_alert: true,
+    return { flow_shift: true, flow_warn: true, nq_alert: true, morning_brief: true, day_call: true, line_signal: true, holding_alert: true, sector_mover: true,
              tone_positive: true, tone_neutral: true, tone_caution: true, tone_warning: true };
   }
 }
@@ -114,9 +115,10 @@ export default function FlowAlertToast() {
     }
     const fresh = pushed.filter((a) => !seenShift.current!.has(alertKey(a)));
     fresh.forEach((a) => seenShift.current!.add(alertKey(a)));
-    // #581 보유 종목 알림은 그 종류 설정을, 화면이 아직 모르는 종류는 등급(tone) 설정만 따른다
+    // #581 보유 종목 · #740 섹터 급등락 알림은 그 종류 설정을, 화면이 아직 모르는 종류는 등급(tone) 설정만 따른다
     const on = (a: MarketAlert) => (a.kind === "flow_shift" ? extra.flow_shift : a.kind === "flow_warn" ? extra.flow_warn
-      : a.kind === "nq_alert" ? extra.nq_alert : a.kind === "holding_alert" ? extra.holding_alert : true);
+      : a.kind === "nq_alert" ? extra.nq_alert : a.kind === "holding_alert" ? extra.holding_alert
+      : a.kind === "sector_mover" ? extra.sector_mover : true);
     const wanted = fresh.filter((a) => on(a) && (!a.tone || extra[`tone_${a.tone}`]));
     if (wanted.length) {
       const until = Date.now() + SHOW_MS;

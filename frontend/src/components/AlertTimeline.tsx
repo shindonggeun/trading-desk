@@ -13,6 +13,7 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: "flow_shift", label: KIND_LABEL.flow_shift },
   { key: "flow_warn", label: KIND_LABEL.flow_warn },
   { key: "nq_alert", label: KIND_LABEL.nq_alert },
+  { key: "sector_mover", label: KIND_LABEL.sector_mover },
   { key: "line_signal", label: "차트 선" },
 ];
 /** #581 보유 종목 칩은 그 알림이 있을 때만(주인 계정에만 온다) */

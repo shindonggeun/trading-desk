@@ -364,6 +364,8 @@ export const api = {
   playbooksFor: (ticker: string, horizon?: string) =>
     call<LivePlaybooks>(`/api/playbooks?ticker=${encodeURIComponent(ticker)}${horizon ? `&horizon=${encodeURIComponent(horizon)}` : ""}`),
   /** #148 다가오는 FOMC · 주요 BLS 발표(공식 일정, 서버가 백그라운드로 갱신)와 지금 열린 진입 보류 창 */
+  /** #740 섹터 급등락 주범(#680) — 서버 60초 캐시 */
+  sectorMovers: (sector: SectorMoverKey) => call<SectorMovers>(`/api/sectors/movers?sector=${sector}`),
   /** #244 섹터 · 인물 이슈(기사 급증) — 헤드라인에 한글 판정 */
   sectorNews: (sector?: string) => call<SectorNewsView>(`/api/sector-news${sector ? `?sector=${encodeURIComponent(sector)}` : ""}`),
   econCalendar: (days = 14) => call<EconCalendar>(`/api/events/calendar?days=${days}`),
@@ -497,6 +499,7 @@ export interface PushKinds {
   flow_warn?: boolean;       // #699 수급 경고(개미 홀로 받치기 · 과도한 매도)
   line_signal?: boolean;     // #614 차트 선 닿음 · 이탈(#613)
   holding_alert?: boolean;   // #714 보유 종목 손절 · 익절(#694)
+  sector_mover?: boolean;    // #740 섹터 급등락 주범(#680)
   tone_positive?: boolean;   // #642 수급 알림의 뜻(#641) — 끈 tone 은 이 기기로 보내지 않는다
   tone_neutral?: boolean;
   tone_caution?: boolean;
@@ -507,10 +510,10 @@ export interface PushKinds {
 export interface MarketAlert {
   trade_date: string;
   /** #581 holding_alert(#694 보유 종목 손절 · 익절)은 주인 계정에만 온다. 서버가 새 종류를 먼저 내도 화면은 "알림" 으로 보인다 */
-  kind: "flow_turn" | "flow_shift" | "flow_warn" | "nq_alert" | "holding_alert";
+  kind: "flow_turn" | "flow_shift" | "flow_warn" | "nq_alert" | "holding_alert" | "sector_mover";
   rule: string;
-  /** 지수 시장, holding_alert 은 그 종목 코드 */
-  market: "kospi" | "kosdaq" | "futures" | "nq" | (string & {});
+  /** 지수 시장, holding_alert 은 그 종목 코드, sector_mover(#740)는 섹터 키(SectorMoverKey) */
+  market: "kospi" | "kosdaq" | "futures" | "nq" | SectorMoverKey | (string & {});
   who: "foreign" | "institution" | "individual" | "all";
   severity: "info" | "caution" | "strong";
   /** #642 지수에 어떤 뜻인지(#641) — 크기(severity)와 따로. 예전 서버 · 예전 알림에는 없다 */
@@ -521,6 +524,35 @@ export interface MarketAlert {
   text: string;            // 서버가 만든 한국어 한 줄
   pushed: boolean;         // 푸시로 나간 것(info 는 타임라인에만)
 }
+/** #740 섹터 급등락 주범(#680 GET /api/sectors/movers) — 기여도 = 비중 ÷ 적힌 종목 비중 합 × 등락(%p) */
+export type SectorMoverKey = "sox" | "ndx" | "kr_semi";
+export interface SectorMoverRow {
+  ticker: string;
+  name: string;
+  weight: number;            // 적힌 종목 안에서의 비중(%)
+  return_pct: number;
+  contribution_pp: number;
+  cause?: string;            // down · up 행에만: "실적 발표" · "전날 실적 발표" · "원인 미확인"
+}
+export interface SectorMovers {
+  sector: SectorMoverKey;
+  name: string;
+  label: string;             // 문장의 이름, 예: "미국 반도체"
+  market: "US" | "KR";
+  index: string;
+  date: string | null;       // 그 시장의 날짜
+  move_pct: number;
+  index_pct: number | null;
+  members_pct: number;
+  members: SectorMoverRow[];
+  down: SectorMoverRow[];    // 가장 크게 끌어내린 3종목
+  up: SectorMoverRow[];
+  big: boolean;              // 지수 ±2% 이상
+  sentence: string | null;   // 큰 날의 한 줄
+  weights_as_of: string | null;
+  method: string | null;
+}
+
 /** #641 호재 · 참고 · 주의 · 경고 */
 export type AlertTone = "positive" | "neutral" | "caution" | "warning";
 export interface MarketAlertsDay {

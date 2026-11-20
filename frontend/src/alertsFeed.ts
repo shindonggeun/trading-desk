@@ -11,6 +11,7 @@ export const KIND_LABEL: Record<MarketAlert["kind"], string> = {
   flow_warn: "수급 경고",
   nq_alert: "나스닥 선물",
   holding_alert: "보유 종목",
+  sector_mover: "섹터 급등락",   // #740 섹터 급등락 주범 · 주역(#680)
 };
 /** 종류 이름 — 화면이 아직 모르는 종류(서버가 먼저 낸 새 kind)는 "알림" 으로, undefined 가 보이지 않게 */
 export const kindLabel = (kind: string): string => (KIND_LABEL as Record<string, string>)[kind] ?? "알림";
@@ -47,6 +48,7 @@ export function hhmm(iso: string): string {
 /** 수급이 가리키는 쪽 — 매수 확대 · 전향은 up, 매도 확대 · 전향 · 나스닥 하락은 down. "축소" 는 반대 쪽이다
  *  (매수 축소 = 사던 힘이 줄어 아래, 매도 축소 = 팔던 힘이 줄어 위). 색과 함께 ▲▼ 글자로도 쓴다 */
 export function sideOf(a: MarketAlert): "up" | "down" | null {
+  if (a.rule === "sector_jump") return "up";     // #740 섹터 급등(급락 sector_drop 은 아래 drop)
   // 장초 매수 뒤 매도 반전(open_buy_reversal) 도 이제 파는 쪽이라 반대
   const shrink = /shrink|reversal/.test(a.rule);
   if (/buy/.test(a.rule)) return shrink ? "down" : "up";
@@ -90,6 +92,8 @@ export function fakeAlerts(): MarketAlertsDay {
           text: "🟢 호재 · 외국인 코스피 순매수 전향 +312억 (예시)\n외인 매수 유입 — 지수에 우호적" }),
       a({ kind: "flow_shift", rule: "buy_grow", market: "kospi", who: "individual", severity: "info", tone: "neutral", t: at("11:10"),
           text: "⚪ 참고 · 개인 코스피 현물 매수 확대 — 30분 +420억 (예시)\n개인은 대개 반대편 — 참고만" }),
+      a({ kind: "sector_mover", rule: "sector_drop", market: "sox", who: "all", severity: "strong", tone: "warning", t: at("00:40"),
+          text: "🔴 경고 · 미국 반도체 급락(−3.4%) 주범: AMD −10.0%(기여 −0.86%p · 전날 실적 발표) · NVDA −3.0%(기여 −0.39%p · 원인 미확인) (예시)\n섹터 전체보다 몇 종목이 끌어내렸는지 — 주범 종목의 원인부터 확인" }),
       a({ kind: "flow_shift", rule: "sell_grow", market: "kospi", severity: "strong", t: at("13:25"),
           text: "🔴 외인 코스피 현물 매도 확대 — 30분 -2,850억 (예시 · tone 없는 예전 알림)" }),
     ],

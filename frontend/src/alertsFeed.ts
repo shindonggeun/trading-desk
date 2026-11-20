@@ -8,6 +8,7 @@ const POLL_MS = 60_000;
 export const KIND_LABEL: Record<MarketAlert["kind"], string> = {
   flow_turn: "수급 전향",
   flow_shift: "수급 흐름",
+  flow_warn: "수급 경고",
   nq_alert: "나스닥 선물",
 };
 export const SEVERITY_LABEL: Record<MarketAlert["severity"], string> = { info: "참고", caution: "주의", strong: "강함" };

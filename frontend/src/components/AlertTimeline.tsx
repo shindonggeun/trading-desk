@@ -11,6 +11,7 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: "warning", label: "⚠ 경고만" },
   { key: "flow_turn", label: KIND_LABEL.flow_turn },
   { key: "flow_shift", label: KIND_LABEL.flow_shift },
+  { key: "flow_warn", label: KIND_LABEL.flow_warn },
   { key: "nq_alert", label: KIND_LABEL.nq_alert },
   { key: "line_signal", label: "차트 선" },
 ];

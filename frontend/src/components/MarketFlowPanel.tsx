@@ -6,6 +6,8 @@ import FuturesFlowView from "./FuturesFlowView";
 // #644 오늘 장중(차트 라이브러리 160KB)은 그 탭을 열 때만 받는다 — 대시보드 첫 화면은 현물 탭이라 차트가 없다
 const IntradayFlowView = lazy(() => import("./IntradayFlowView"));
 import { usePoll } from "../poll";
+import { alertLines, badgeOf, hhmm, useTodayAlerts } from "../alertsFeed";
+import type { MarketAlert } from "../api";
 
 // 메인 화면 "시장 수급"(#78): 코스피 · 코스닥에서 개인 · 외국인 · 기관 · 기타법인이 얼마를 사고팔았는지.
 // 막대 색은 극성(순매수 빨강 · 순매도 파랑, 한국식), 추이 선 색은 주체(외국인 · 기관 · 개인) —
@@ -76,6 +78,33 @@ function periodLabel(r: FlowRecord, interval: FlowInterval): string {
   if (interval === "1w") return r.in_progress ? "이번 주" : `${md(r.date)} 주`;
   if (interval === "1mo") return r.in_progress ? "이번 달" : `${y}. ${Number(m)}월`;
   return r.in_progress ? "올해" : `${y}년`;
+}
+
+/** #699 오늘 수급 경고(개미 홀로 받치기 · 과도한 매도) — 규칙 · 시장마다 마지막 것, 카드 위 띠로. 없으면 아무것도 안 그린다 */
+function FlowWarnBand() {
+  const { data } = useTodayAlerts();
+  const last = new Map<string, MarketAlert>();
+  for (const a of data?.items ?? []) if (a.kind === "flow_warn") last.set(`${a.rule}:${a.market}`, a);
+  const shown = [...last.values()].sort((x, y) => y.t.localeCompare(x.t)).slice(0, 3);
+  if (!shown.length) return null;
+  return (
+    <div className="alert-strip flow-warn-band" role="status" aria-label="오늘 수급 경고">
+      <span className="alert-strip-title">수급 경고</span>
+      <ul>
+        {shown.map((a) => {
+          const b = badgeOf(a);
+          const { head, reading } = alertLines(a.text);
+          return (
+            <li key={`${a.rule}:${a.market}`}>
+              <span className={`alert-sev ${b.cls}`}>{b.mark && <span aria-hidden="true">{b.mark} </span>}{b.label}</span>{" "}
+              <time dateTime={a.t}>{hhmm(a.t)}</time> <span className="alert-strip-text">{head}</span>
+              {reading && <span className="flow-warn-reading muted small">{reading}</span>}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }
 
 function shortTime(iso: string | null): string {
@@ -307,6 +336,7 @@ export default function MarketFlowPanel() {
           ))}
         </div>
       </div>
+      <FlowWarnBand />
       {prefs.market === "INTRADAY" ? <Suspense fallback={<p className="muted small">불러오는 중…</p>}><IntradayFlowView /></Suspense> : !spotMarket ? <FuturesFlowView /> : <>
       <div className="flow-sub">
         <div className="flow-index">

@@ -33,6 +33,7 @@ WEEKLY_AT = time(10, 0)            # Saturday, KST: the week's wrap-up
 NEXT_WEEK_AT = time(18, 0)         # Sunday, KST: the week ahead
 STALE = timedelta(hours=20)        # a slot missed by more than this (the desk was down) is skipped, not written late
 KIND_KO = {"daily": "오늘의 리포트", "weekly": "주간 정리", "next_week": "다음 주 관점"}
+STATE_KO = {"converging": "수렴 중", "broke_up": "위로 깸", "broke_down": "아래로 깸"}
 WEEKDAY_KO = market_calendar.WEEKDAY_KO
 
 
@@ -201,11 +202,17 @@ def _chart(f: dict) -> dict:
 def _where(f: dict) -> str:
     """One index's place: the close, the nearest resistance and support zones, the converging pattern."""
     res, sup = (f.get("resistances") or [None])[0], (f.get("supports") or [None])[0]
-    text = (f"{f['name']}은(는) {_p(f['close'])}(1주 {_pct(f['week_pct'])})이에요. "
-            f"가장 가까운 저항은 {_zone(res)}, 지지는 {_zone(sup)}예요.")
+    text = f"{f['name']}은(는) {_p(f['close'])}(1주 {_pct(f['week_pct'])})이에요."
+    if res and sup:
+        text += f" 가장 가까운 저항은 {_zone(res)}, 지지는 {_zone(sup)}예요."
+    elif res:
+        text += f" 가장 가까운 저항은 {_zone(res)}이고, 아래로 가까운 지지 구역은 없어요."
+    elif sup:
+        text += f" 가장 가까운 지지는 {_zone(sup)}이고, 위로 가까운 저항 구역은 없어요."
     pat = f.get("pattern")
     if pat:
-        text += (f" 일봉에서는 {pat['label']} 모양({pat['status'] or pat['state']})으로 "
+        status = pat["status"] or STATE_KO.get(pat["state"], pat["state"])
+        text += (f" 일봉에서는 {pat['label']} 모양({status})으로 "
                  f"윗선 {_p(pat['upper'])} · 아랫선 {_p(pat['lower'])}이에요.")
     return text
 
@@ -286,10 +293,10 @@ def weekly(indexes: list[dict], movers: list[dict], calls: dict | None, as_of: s
         "chart": _chart(nq or indexes[0]), "image": None}]
     if ranked:
         top, bottom = ranked[:2], ranked[-2:] if len(ranked) > 2 else []
-        body = "많이 오른 쪽은 " + ", ".join(f"{m['name']} {_pct(m['week_pct'])}" for m in top) + "이에요."
+        body = "가장 강했던 쪽은 " + ", ".join(f"{m['name']} {_pct(m['week_pct'])}" for m in top) + "이에요."
         if bottom:
-            body += " 많이 내린 쪽은 " + ", ".join(f"{m['name']} {_pct(m['week_pct'])}" for m in bottom) + "이에요."
-        sections.append({"title": "이번 주 많이 움직인 종목", "body": body,
+            body += " 가장 약했던 쪽은 " + ", ".join(f"{m['name']} {_pct(m['week_pct'])}" for m in bottom) + "이에요."
+        sections.append({"title": "이번 주 순환 종목의 강약", "body": body,
                          "highlight": f"{top[0]['name']} {_pct(top[0]['week_pct'])}",
                          "term": _term("레버리지 ETF", "지수의 하루 등락을 2~3배로 따라가는 상품이에요. 한 주가 길어질수록 지수와 차이가 벌어져요."),
                          "chart": _chart(top[0]), "image": None})

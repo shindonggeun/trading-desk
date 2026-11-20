@@ -49,7 +49,8 @@ REVS=$(ssh "$HOST" "echo \"\$(cat ~/$DIR/src/REVISION 2>/dev/null)\"; docker ins
 SRC_REV=$(printf '%s\n' "$REVS" | sed -n 1p | tr -d '\r')
 RUN_REV=$(printf '%s\n' "$REVS" | sed -n 2p | tr -d '\r')
 if [ -n "$RUN_REV" ] && [ "$SRC_REV" != "$RUN_REV" ]; then
-  echo "참고: 운영 백엔드는 ${RUN_REV:0:12}(컨테이너 라벨 — Jenkins 배포 포함), 서버 src/REVISION ${SRC_REV:0:12} 는 마지막 손 배포 소스다"
+  SRC_SHOWN=${SRC_REV:0:12}
+  echo "참고: 운영 백엔드는 ${RUN_REV:0:12}(컨테이너 라벨 — Jenkins 배포 포함), 서버 src/REVISION ${SRC_SHOWN:-없음} 는 마지막 손 배포 소스다"
 fi
 
 # #431 진행 중인 분석. 백엔드 컨테이너 안의 `desk.cli unfinished` 는 첫 줄에 개수, 다음 줄부터 종목 · 상태 · 시각 · id 를

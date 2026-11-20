@@ -8,8 +8,8 @@
 # 종료 코드: 0 성공 · 1 실패(실패 · 시간 초과 · 건너뜀 등) · 4 밀림 — 이 커밋의 빌드는 배포하지 않고 뒤 커밋의 빌드가 배포한다(#752).
 #   밀림은 둘이다.
 #   - CI 가 취소됐다(ci.yml 의 concurrency 가 뒤 커밋에 밀려 취소).
-#   - CI_SUPERSEDE=1 이고, 기다리는 동안 develop 머리가 더 새 커밋이 됐고, 그 커밋의 CI 가 실패로 끝나지 않았다(진행 중 · 없음 · 성공).
-#   더 새 커밋의 CI 가 이미 실패면 밀림이 아니다. 실패한 커밋 때문에 배포가 영영 막히지 않게 이 커밋을 계속 기다린다.
+#   - CI_SUPERSEDE=1 이고, 기다리는 동안 develop 머리가 더 새 커밋이 됐고, 그 커밋의 CI 가 아직 돌거나(없음 · 대기 · 진행 중) 성공했다.
+#   더 새 커밋의 CI 가 실패 · 취소로 끝났거나 읽지 못했으면 밀림이 아니다. 실패한 커밋이나 일시 오류 때문에 배포가 막히지 않게 이 커밋을 계속 본다.
 #   develop 은 rebase 머지만 하므로 "머리가 이 커밋과 다르다" 를 "더 새 커밋" 으로 읽는다.
 # --superseded-only: CI 를 기다리지 않고 밀림 검사만 한 번 한다(배포 직전, lock 안 — Jenkinsfile.deploy-common.groovy).
 #   0 배포 계속 · 4 밀림. GitHub 를 읽지 못하면 0 이다(검사 실패로 배포를 막지 않는다).
@@ -25,7 +25,7 @@ set -euo pipefail
 : "${CI_REPO:?CI_REPO}" "${CI_SHA:?CI_SHA}"
 WF="${CI_WORKFLOW:-ci}" BRANCH="${CI_BRANCH:-develop}" POLL="${CI_POLL_SEC:-10}" SUPERSEDE="${CI_SUPERSEDE:-0}"
 API="https://api.github.com/repos/$CI_REPO"
-NEWER=
+NEWER= SEEN=unread
 
 api() {
   local args=(-sS --fail --connect-timeout 10 --max-time 30 -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
@@ -49,22 +49,30 @@ run_state() {
   fi
 }
 
-# develop 머리가 이 커밋이 아니고 그 커밋의 CI 가 실패로 끝나지 않았으면 0(밀림). 그 머리를 NEWER 에 둔다.
+# develop 머리가 이 커밋이 아니고 그 커밋의 CI 가 아직 돌고 있거나(없음 · 대기 · 진행 중) 성공했으면 0(밀림).
+# 그 머리를 NEWER 에, 무엇을 봤는지를 SEEN(unread · same · newer)에 둔다. 밀림으로 볼 상태만 나열한다 — 못 읽은 응답
+# (API 오류 · JSON 아님)이나 실패 · 취소로 끝난 머리는 밀림이 아니다(일시 오류 한 번이 초록 커밋의 배포를 막지 않게).
+# 머리 커밋의 취소는 사람이 취소했거나 아주 짧은 경쟁뿐이다 — 뒤 커밋 push 로 취소됐다면 머리는 이미 그 뒤 커밋이다.
 superseded() {
   local body state
-  body="$(api "$API/commits/$BRANCH")" || return 1
-  NEWER="$(printf '%s' "$body" | jq -r '.sha // empty' 2>/dev/null)" || return 1
-  if [ -z "$NEWER" ] || [ "$NEWER" = "$CI_SHA" ]; then
+  NEWER= SEEN=unread
+  body="$(api "$API/git/ref/heads/$BRANCH")" || return 1     # SHA 만 (commits/<branch> 는 파일 목록 · patch 까지 준다)
+  NEWER="$(printf '%s' "$body" | jq -r '.object.sha // empty' 2>/dev/null)" || return 1
+  [ -n "$NEWER" ] || return 1
+  if [ "$NEWER" = "$CI_SHA" ]; then
+    SEEN=same
     return 1
   fi
+  SEEN=newer
   state="$(run_state "$NEWER")"
   case "$state" in
-    "completed success "* | "completed cancelled "*) return 0 ;;
+    none | "queued "* | "in_progress "* | "waiting "* | "requested "* | "pending "* | "completed success "*) return 0 ;;
     completed\ *)
-      echo "develop 머리 ${NEWER:0:12} 의 CI 가 실패로 끝났다($state) — 밀림이 아니다, ${CI_SHA:0:12} 를 본다"
-      return 1 ;;
+      echo "develop 머리 ${NEWER:0:12} 의 CI 가 성공하지 않고 끝났다($state) — 밀림이 아니다, ${CI_SHA:0:12} 를 본다" ;;
+    *)
+      echo "develop 머리 ${NEWER:0:12} 의 CI 를 읽지 못했다 — 밀림으로 보지 않는다" ;;
   esac
-  return 0
+  return 1
 }
 
 pushed_back() {
@@ -74,7 +82,11 @@ pushed_back() {
 
 if [ "${1:-}" = "--superseded-only" ]; then
   if superseded; then pushed_back; fi
-  echo "배포 직전 확인: develop 머리에 더 새 배포 후보가 없다 — ${CI_SHA:0:12} 를 배포한다"
+  case "$SEEN" in
+    unread) echo "배포 직전 확인: develop 머리를 읽지 못했다 — ${CI_SHA:0:12} 배포를 계속한다" ;;
+    same) echo "배포 직전 확인: develop 머리가 이 커밋이다 — ${CI_SHA:0:12} 를 배포한다" ;;
+    *) echo "배포 직전 확인: 더 새 커밋은 배포 후보가 아니다 — ${CI_SHA:0:12} 를 배포한다" ;;
+  esac
   exit 0
 fi
 

@@ -19,9 +19,30 @@ from sqlalchemy import text
 from desk.db import make_engine, metadata
 
 
-@pytest.fixture
-def db_url(tmp_path):
+@pytest.fixture(scope="session")
+def pg_url():
+    """DESK_TEST_DATABASE_URL, or None. Under pytest-xdist (#748, CI ``-n auto``) each worker gets its own
+    database ``<name>_<worker>`` next to that one, made once, so workers never wipe each other's tables."""
     url = os.getenv("DESK_TEST_DATABASE_URL")
+    worker = os.getenv("PYTEST_XDIST_WORKER")
+    if not url or not worker:
+        return url
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+
+    base = make_url(url)
+    name = f"{base.database}_{worker}"
+    admin = create_engine(base, isolation_level="AUTOCOMMIT")
+    with admin.connect() as conn:
+        if conn.execute(text("SELECT 1 FROM pg_database WHERE datname = :n"), {"n": name}).scalar() is None:
+            conn.execute(text(f'CREATE DATABASE "{name}"'))
+    admin.dispose()
+    return base.set(database=name).render_as_string(hide_password=False)
+
+
+@pytest.fixture
+def db_url(tmp_path, pg_url):
+    url = pg_url
     if not url:
         return f"sqlite:///{(tmp_path / 'desk.db').as_posix()}"
     engine = make_engine(url)

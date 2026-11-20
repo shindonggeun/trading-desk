@@ -1,0 +1,1135 @@
+{
+ "version": "dr-20260821-5dcbb12b",
+ "market": "kr",
+ "call": "to_close",
+ "code": "f880344e4664",
+ "format": 1,
+ "made_at": "2026-11-20T05:54:23+00:00",
+ "holdout_from": "2026-08-23",
+ "verdict": "no_edge",
+ "edges": [
+  0.3,
+  1.0
+ ],
+ "features": [
+  "t_ret1",
+  "t_ret5",
+  "t_ma20",
+  "t_rv",
+  "t_atrp",
+  "vix_lvl",
+  "vix_chg",
+  "gap",
+  "expiry",
+  "i_move",
+  "i_last",
+  "i_range",
+  "i_pos",
+  "i_left",
+  "gap_open",
+  "nq_day"
+ ],
+ "l2": 0.1,
+ "lambda": 0.5,
+ "cv": {
+  "folds": [
+   2025,
+   2026
+  ],
+  "brier": 0.6335
+ },
+ "train": {
+  "n": 2976,
+  "sessions": 496,
+  "from": "2024-07-03",
+  "to": "2026-08-21",
+  "stage_share": [
+   0.024,
+   0.241,
+   0.523,
+   0.189,
+   0.024
+  ]
+ },
+ "holdout": {
+  "n": 340,
+  "from": "2026-08-24",
+  "to": "2026-11-18",
+  "direction_hit_rate": 0.529,
+  "called_long_share": 0.5,
+  "direction_ci95": [
+   0.476,
+   0.582
+  ],
+  "stage_hit_rate": 0.553,
+  "brier": 0.5958,
+  "log_loss": 1.071,
+  "margins": [
+   {
+    "margin": 0.0,
+    "coverage": 1.0,
+    "direction_hit_rate": 0.529
+   },
+   {
+    "margin": 0.05,
+    "coverage": 0.326,
+    "direction_hit_rate": 0.432
+   },
+   {
+    "margin": 0.1,
+    "coverage": 0.047,
+    "direction_hit_rate": 0.188
+   },
+   {
+    "margin": 0.15,
+    "coverage": 0.0,
+    "direction_hit_rate": null
+   },
+   {
+    "margin": 0.2,
+    "coverage": 0.0,
+    "direction_hit_rate": null
+   }
+  ],
+  "baselines": {
+   "always_long": {
+    "direction_hit_rate": 0.465
+   },
+   "always_short": {
+    "direction_hit_rate": 0.535
+   },
+   "climatology": {
+    "brier": 0.605,
+    "stage_hit_rate": 0.553
+   },
+   "follow_trend": {
+    "direction_hit_rate": 0.568
+   }
+  },
+  "brier_skill": 0.0151,
+  "per_stage": [
+   {
+    "stage": "strong_long",
+    "label": "강한 롱",
+    "called": 0,
+    "called_hit": 0,
+    "actual": 3
+   },
+   {
+    "stage": "weak_long",
+    "label": "약한 롱",
+    "called": 0,
+    "called_hit": 0,
+    "actual": 72
+   },
+   {
+    "stage": "flat",
+    "label": "약보합",
+    "called": 340,
+    "called_hit": 188,
+    "actual": 188
+   },
+   {
+    "stage": "weak_short",
+    "label": "약한 숏",
+    "called": 0,
+    "called_hit": 0,
+    "actual": 74
+   },
+   {
+    "stage": "strong_short",
+    "label": "강한 숏",
+    "called": 0,
+    "called_hit": 0,
+    "actual": 3
+   }
+  ],
+  "calibration": [
+   {
+    "lo": 0,
+    "hi": 10,
+    "n": 680,
+    "mean_prob": 2.0,
+    "actual_rate": 0.9
+   },
+   {
+    "lo": 10,
+    "hi": 20,
+    "n": 245,
+    "mean_prob": 18.3,
+    "actual_rate": 20.8
+   },
+   {
+    "lo": 20,
+    "hi": 30,
+    "n": 435,
+    "mean_prob": 22.2,
+    "actual_rate": 21.8
+   },
+   {
+    "lo": 40,
+    "hi": 50,
+    "n": 34,
+    "mean_prob": 47.3,
+    "actual_rate": 20.6
+   },
+   {
+    "lo": 50,
+    "hi": 60,
+    "n": 302,
+    "mean_prob": 55.1,
+    "actual_rate": 58.6
+   },
+   {
+    "lo": 60,
+    "hi": 70,
+    "n": 4,
+    "mean_prob": 60.4,
+    "actual_rate": 100.0
+   }
+  ],
+  "sessions": 57
+ },
+ "rounds": {
+  "3": {
+   "time": "10:00",
+   "label": "3차 10:00",
+   "holdout": {
+    "n": 56,
+    "from": "2026-08-24",
+    "to": "2026-11-18",
+    "direction_hit_rate": 0.589,
+    "called_long_share": 0.357,
+    "direction_ci95": [
+     0.46,
+     0.718
+    ],
+    "stage_hit_rate": 0.554,
+    "brier": 0.5934,
+    "log_loss": 1.0372,
+    "margins": [
+     {
+      "margin": 0.0,
+      "coverage": 1.0,
+      "direction_hit_rate": 0.589
+     },
+     {
+      "margin": 0.05,
+      "coverage": 0.321,
+      "direction_hit_rate": 0.556
+     },
+     {
+      "margin": 0.1,
+      "coverage": 0.054,
+      "direction_hit_rate": 0.333
+     },
+     {
+      "margin": 0.15,
+      "coverage": 0.0,
+      "direction_hit_rate": null
+     },
+     {
+      "margin": 0.2,
+      "coverage": 0.0,
+      "direction_hit_rate": null
+     }
+    ],
+    "baselines": {
+     "always_long": {
+      "direction_hit_rate": 0.446
+     },
+     "always_short": {
+      "direction_hit_rate": 0.554
+     },
+     "climatology": {
+      "brier": 0.6022,
+      "stage_hit_rate": 0.554
+     },
+     "follow_trend": {
+      "direction_hit_rate": 0.589
+     }
+    },
+    "brier_skill": 0.0145,
+    "per_stage": [
+     {
+      "stage": "strong_long",
+      "label": "강한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 0
+     },
+     {
+      "stage": "weak_long",
+      "label": "약한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 10
+     },
+     {
+      "stage": "flat",
+      "label": "약보합",
+      "called": 56,
+      "called_hit": 31,
+      "actual": 31
+     },
+     {
+      "stage": "weak_short",
+      "label": "약한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 15
+     },
+     {
+      "stage": "strong_short",
+      "label": "강한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 0
+     }
+    ],
+    "calibration": [
+     {
+      "lo": 0,
+      "hi": 10,
+      "n": 112,
+      "mean_prob": 2.0,
+      "actual_rate": 0.0
+     },
+     {
+      "lo": 10,
+      "hi": 20,
+      "n": 48,
+      "mean_prob": 18.9,
+      "actual_rate": 20.8
+     },
+     {
+      "lo": 20,
+      "hi": 30,
+      "n": 64,
+      "mean_prob": 22.4,
+      "actual_rate": 23.4
+     },
+     {
+      "lo": 40,
+      "hi": 50,
+      "n": 6,
+      "mean_prob": 47.5,
+      "actual_rate": 33.3
+     },
+     {
+      "lo": 50,
+      "hi": 60,
+      "n": 50,
+      "mean_prob": 55.0,
+      "actual_rate": 58.0
+     }
+    ]
+   },
+   "verdict": "no_edge"
+  },
+  "4": {
+   "time": "11:00",
+   "label": "4차 11:00",
+   "holdout": {
+    "n": 56,
+    "from": "2026-08-24",
+    "to": "2026-11-18",
+    "direction_hit_rate": 0.554,
+    "called_long_share": 0.375,
+    "direction_ci95": [
+     0.423,
+     0.684
+    ],
+    "stage_hit_rate": 0.518,
+    "brier": 0.6206,
+    "log_loss": 1.1129,
+    "margins": [
+     {
+      "margin": 0.0,
+      "coverage": 1.0,
+      "direction_hit_rate": 0.554
+     },
+     {
+      "margin": 0.05,
+      "coverage": 0.304,
+      "direction_hit_rate": 0.471
+     },
+     {
+      "margin": 0.1,
+      "coverage": 0.054,
+      "direction_hit_rate": 0.0
+     },
+     {
+      "margin": 0.15,
+      "coverage": 0.0,
+      "direction_hit_rate": null
+     },
+     {
+      "margin": 0.2,
+      "coverage": 0.0,
+      "direction_hit_rate": null
+     }
+    ],
+    "baselines": {
+     "always_long": {
+      "direction_hit_rate": 0.464
+     },
+     "always_short": {
+      "direction_hit_rate": 0.536
+     },
+     "climatology": {
+      "brier": 0.6245,
+      "stage_hit_rate": 0.518
+     },
+     "follow_trend": {
+      "direction_hit_rate": 0.589
+     }
+    },
+    "brier_skill": 0.0062,
+    "per_stage": [
+     {
+      "stage": "strong_long",
+      "label": "강한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 0
+     },
+     {
+      "stage": "weak_long",
+      "label": "약한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 14
+     },
+     {
+      "stage": "flat",
+      "label": "약보합",
+      "called": 56,
+      "called_hit": 29,
+      "actual": 29
+     },
+     {
+      "stage": "weak_short",
+      "label": "약한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 12
+     },
+     {
+      "stage": "strong_short",
+      "label": "강한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 1
+     }
+    ],
+    "calibration": [
+     {
+      "lo": 0,
+      "hi": 10,
+      "n": 112,
+      "mean_prob": 2.1,
+      "actual_rate": 0.9
+     },
+     {
+      "lo": 10,
+      "hi": 20,
+      "n": 36,
+      "mean_prob": 18.7,
+      "actual_rate": 27.8
+     },
+     {
+      "lo": 20,
+      "hi": 30,
+      "n": 76,
+      "mean_prob": 22.2,
+      "actual_rate": 21.1
+     },
+     {
+      "lo": 40,
+      "hi": 50,
+      "n": 7,
+      "mean_prob": 47.4,
+      "actual_rate": 28.6
+     },
+     {
+      "lo": 50,
+      "hi": 60,
+      "n": 49,
+      "mean_prob": 54.6,
+      "actual_rate": 55.1
+     }
+    ]
+   },
+   "verdict": "no_edge"
+  },
+  "5": {
+   "time": "12:00",
+   "label": "5차 12:00",
+   "holdout": {
+    "n": 57,
+    "from": "2026-08-24",
+    "to": "2026-11-18",
+    "direction_hit_rate": 0.509,
+    "called_long_share": 0.474,
+    "direction_ci95": [
+     0.379,
+     0.639
+    ],
+    "stage_hit_rate": 0.544,
+    "brier": 0.6026,
+    "log_loss": 1.0788,
+    "margins": [
+     {
+      "margin": 0.0,
+      "coverage": 1.0,
+      "direction_hit_rate": 0.509
+     },
+     {
+      "margin": 0.05,
+      "coverage": 0.281,
+      "direction_hit_rate": 0.438
+     },
+     {
+      "margin": 0.1,
+      "coverage": 0.035,
+      "direction_hit_rate": 0.0
+     },
+     {
+      "margin": 0.15,
+      "coverage": 0.0,
+      "direction_hit_rate": null
+     },
+     {
+      "margin": 0.2,
+      "coverage": 0.0,
+      "direction_hit_rate": null
+     }
+    ],
+    "baselines": {
+     "always_long": {
+      "direction_hit_rate": 0.439
+     },
+     "always_short": {
+      "direction_hit_rate": 0.561
+     },
+     "climatology": {
+      "brier": 0.6166,
+      "stage_hit_rate": 0.544
+     },
+     "follow_trend": {
+      "direction_hit_rate": 0.614
+     }
+    },
+    "brier_skill": 0.0227,
+    "per_stage": [
+     {
+      "stage": "strong_long",
+      "label": "강한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 1
+     },
+     {
+      "stage": "weak_long",
+      "label": "약한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 9
+     },
+     {
+      "stage": "flat",
+      "label": "약보합",
+      "called": 57,
+      "called_hit": 31,
+      "actual": 31
+     },
+     {
+      "stage": "weak_short",
+      "label": "약한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 16
+     },
+     {
+      "stage": "strong_short",
+      "label": "강한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 0
+     }
+    ],
+    "calibration": [
+     {
+      "lo": 0,
+      "hi": 10,
+      "n": 114,
+      "mean_prob": 2.0,
+      "actual_rate": 0.9
+     },
+     {
+      "lo": 10,
+      "hi": 20,
+      "n": 37,
+      "mean_prob": 18.3,
+      "actual_rate": 24.3
+     },
+     {
+      "lo": 20,
+      "hi": 30,
+      "n": 77,
+      "mean_prob": 22.1,
+      "actual_rate": 20.8
+     },
+     {
+      "lo": 40,
+      "hi": 50,
+      "n": 5,
+      "mean_prob": 46.7,
+      "actual_rate": 20.0
+     },
+     {
+      "lo": 50,
+      "hi": 60,
+      "n": 51,
+      "mean_prob": 54.9,
+      "actual_rate": 56.9
+     },
+     {
+      "lo": 60,
+      "hi": 70,
+      "n": 1,
+      "mean_prob": 60.0,
+      "actual_rate": 100.0
+     }
+    ]
+   },
+   "verdict": "no_edge"
+  },
+  "6": {
+   "time": "13:00",
+   "label": "6차 13:00",
+   "holdout": {
+    "n": 57,
+    "from": "2026-08-24",
+    "to": "2026-11-18",
+    "direction_hit_rate": 0.544,
+    "called_long_share": 0.526,
+    "direction_ci95": [
+     0.415,
+     0.673
+    ],
+    "stage_hit_rate": 0.632,
+    "brier": 0.5498,
+    "log_loss": 1.0028,
+    "margins": [
+     {
+      "margin": 0.0,
+      "coverage": 1.0,
+      "direction_hit_rate": 0.544
+     },
+     {
+      "margin": 0.05,
+      "coverage": 0.298,
+      "direction_hit_rate": 0.294
+     },
+     {
+      "margin": 0.1,
+      "coverage": 0.035,
+      "direction_hit_rate": 0.0
+     },
+     {
+      "margin": 0.15,
+      "coverage": 0.0,
+      "direction_hit_rate": null
+     },
+     {
+      "margin": 0.2,
+      "coverage": 0.0,
+      "direction_hit_rate": null
+     }
+    ],
+    "baselines": {
+     "always_long": {
+      "direction_hit_rate": 0.456
+     },
+     "always_short": {
+      "direction_hit_rate": 0.544
+     },
+     "climatology": {
+      "brier": 0.5563,
+      "stage_hit_rate": 0.632
+     },
+     "follow_trend": {
+      "direction_hit_rate": 0.544
+     }
+    },
+    "brier_skill": 0.0116,
+    "per_stage": [
+     {
+      "stage": "strong_long",
+      "label": "강한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 1
+     },
+     {
+      "stage": "weak_long",
+      "label": "약한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 10
+     },
+     {
+      "stage": "flat",
+      "label": "약보합",
+      "called": 57,
+      "called_hit": 36,
+      "actual": 36
+     },
+     {
+      "stage": "weak_short",
+      "label": "약한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 10
+     },
+     {
+      "stage": "strong_short",
+      "label": "강한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 0
+     }
+    ],
+    "calibration": [
+     {
+      "lo": 0,
+      "hi": 10,
+      "n": 114,
+      "mean_prob": 2.0,
+      "actual_rate": 0.9
+     },
+     {
+      "lo": 10,
+      "hi": 20,
+      "n": 41,
+      "mean_prob": 18.2,
+      "actual_rate": 19.5
+     },
+     {
+      "lo": 20,
+      "hi": 30,
+      "n": 73,
+      "mean_prob": 22.2,
+      "actual_rate": 16.4
+     },
+     {
+      "lo": 40,
+      "hi": 50,
+      "n": 5,
+      "mean_prob": 46.4,
+      "actual_rate": 40.0
+     },
+     {
+      "lo": 50,
+      "hi": 60,
+      "n": 52,
+      "mean_prob": 55.3,
+      "actual_rate": 65.4
+     }
+    ]
+   },
+   "verdict": "no_edge"
+  },
+  "7": {
+   "time": "14:00",
+   "label": "7차 14:00",
+   "holdout": {
+    "n": 57,
+    "from": "2026-08-24",
+    "to": "2026-11-18",
+    "direction_hit_rate": 0.526,
+    "called_long_share": 0.614,
+    "direction_ci95": [
+     0.397,
+     0.656
+    ],
+    "stage_hit_rate": 0.561,
+    "brier": 0.5922,
+    "log_loss": 1.0958,
+    "margins": [
+     {
+      "margin": 0.0,
+      "coverage": 1.0,
+      "direction_hit_rate": 0.526
+     },
+     {
+      "margin": 0.05,
+      "coverage": 0.386,
+      "direction_hit_rate": 0.455
+     },
+     {
+      "margin": 0.1,
+      "coverage": 0.053,
+      "direction_hit_rate": 0.0
+     },
+     {
+      "margin": 0.15,
+      "coverage": 0.0,
+      "direction_hit_rate": null
+     },
+     {
+      "margin": 0.2,
+      "coverage": 0.0,
+      "direction_hit_rate": null
+     }
+    ],
+    "baselines": {
+     "always_long": {
+      "direction_hit_rate": 0.421
+     },
+     "always_short": {
+      "direction_hit_rate": 0.579
+     },
+     "climatology": {
+      "brier": 0.6052,
+      "stage_hit_rate": 0.561
+     },
+     "follow_trend": {
+      "direction_hit_rate": 0.596
+     }
+    },
+    "brier_skill": 0.0215,
+    "per_stage": [
+     {
+      "stage": "strong_long",
+      "label": "강한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 0
+     },
+     {
+      "stage": "weak_long",
+      "label": "약한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 12
+     },
+     {
+      "stage": "flat",
+      "label": "약보합",
+      "called": 57,
+      "called_hit": 32,
+      "actual": 32
+     },
+     {
+      "stage": "weak_short",
+      "label": "약한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 11
+     },
+     {
+      "stage": "strong_short",
+      "label": "강한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 2
+     }
+    ],
+    "calibration": [
+     {
+      "lo": 0,
+      "hi": 10,
+      "n": 114,
+      "mean_prob": 1.9,
+      "actual_rate": 1.8
+     },
+     {
+      "lo": 10,
+      "hi": 20,
+      "n": 41,
+      "mean_prob": 17.9,
+      "actual_rate": 12.2
+     },
+     {
+      "lo": 20,
+      "hi": 30,
+      "n": 73,
+      "mean_prob": 22.1,
+      "actual_rate": 24.7
+     },
+     {
+      "lo": 40,
+      "hi": 50,
+      "n": 5,
+      "mean_prob": 47.7,
+      "actual_rate": 0.0
+     },
+     {
+      "lo": 50,
+      "hi": 60,
+      "n": 50,
+      "mean_prob": 55.5,
+      "actual_rate": 60.0
+     },
+     {
+      "lo": 60,
+      "hi": 70,
+      "n": 2,
+      "mean_prob": 60.3,
+      "actual_rate": 100.0
+     }
+    ]
+   },
+   "verdict": "no_edge"
+  },
+  "8": {
+   "time": "15:00",
+   "label": "8차 15:00",
+   "holdout": {
+    "n": 57,
+    "from": "2026-08-24",
+    "to": "2026-11-18",
+    "direction_hit_rate": 0.456,
+    "called_long_share": 0.649,
+    "direction_ci95": [
+     0.327,
+     0.585
+    ],
+    "stage_hit_rate": 0.509,
+    "brier": 0.6167,
+    "log_loss": 1.0989,
+    "margins": [
+     {
+      "margin": 0.0,
+      "coverage": 1.0,
+      "direction_hit_rate": 0.456
+     },
+     {
+      "margin": 0.05,
+      "coverage": 0.368,
+      "direction_hit_rate": 0.381
+     },
+     {
+      "margin": 0.1,
+      "coverage": 0.053,
+      "direction_hit_rate": 0.667
+     },
+     {
+      "margin": 0.15,
+      "coverage": 0.0,
+      "direction_hit_rate": null
+     },
+     {
+      "margin": 0.2,
+      "coverage": 0.0,
+      "direction_hit_rate": null
+     }
+    ],
+    "baselines": {
+     "always_long": {
+      "direction_hit_rate": 0.561
+     },
+     "always_short": {
+      "direction_hit_rate": 0.439
+     },
+     "climatology": {
+      "brier": 0.6254,
+      "stage_hit_rate": 0.509
+     },
+     "follow_trend": {
+      "direction_hit_rate": 0.474
+     }
+    },
+    "brier_skill": 0.014,
+    "per_stage": [
+     {
+      "stage": "strong_long",
+      "label": "강한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 1
+     },
+     {
+      "stage": "weak_long",
+      "label": "약한 롱",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 17
+     },
+     {
+      "stage": "flat",
+      "label": "약보합",
+      "called": 57,
+      "called_hit": 29,
+      "actual": 29
+     },
+     {
+      "stage": "weak_short",
+      "label": "약한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 10
+     },
+     {
+      "stage": "strong_short",
+      "label": "강한 숏",
+      "called": 0,
+      "called_hit": 0,
+      "actual": 0
+     }
+    ],
+    "calibration": [
+     {
+      "lo": 0,
+      "hi": 10,
+      "n": 114,
+      "mean_prob": 1.9,
+      "actual_rate": 0.9
+     },
+     {
+      "lo": 10,
+      "hi": 20,
+      "n": 42,
+      "mean_prob": 17.8,
+      "actual_rate": 21.4
+     },
+     {
+      "lo": 20,
+      "hi": 30,
+      "n": 72,
+      "mean_prob": 22.3,
+      "actual_rate": 25.0
+     },
+     {
+      "lo": 40,
+      "hi": 50,
+      "n": 6,
+      "mean_prob": 47.9,
+      "actual_rate": 0.0
+     },
+     {
+      "lo": 50,
+      "hi": 60,
+      "n": 50,
+      "mean_prob": 55.5,
+      "actual_rate": 56.0
+     },
+     {
+      "lo": 60,
+      "hi": 70,
+      "n": 1,
+      "mean_prob": 61.1,
+      "actual_rate": 100.0
+     }
+    ]
+   },
+   "verdict": "no_edge"
+  }
+ },
+ "coefficients": [
+  {
+   "feature": "t_ret1",
+   "label": "전일 등락",
+   "beta": 0.0024,
+   "gamma": -0.0461
+  },
+  {
+   "feature": "t_ret5",
+   "label": "5일 흐름",
+   "beta": -0.0344,
+   "gamma": -0.0097
+  },
+  {
+   "feature": "t_ma20",
+   "label": "20일선 이격",
+   "beta": 0.0812,
+   "gamma": 0.0787
+  },
+  {
+   "feature": "t_rv",
+   "label": "최근 변동성(5일/20일)",
+   "beta": 0.0034,
+   "gamma": 0.0429
+  },
+  {
+   "feature": "t_atrp",
+   "label": "ATR 수준",
+   "beta": -0.0103,
+   "gamma": -0.001
+  },
+  {
+   "feature": "vix_lvl",
+   "label": "VIX 수준",
+   "beta": 0.0011,
+   "gamma": -0.0136
+  },
+  {
+   "feature": "vix_chg",
+   "label": "VIX 변화",
+   "beta": -0.0067,
+   "gamma": 0.025
+  },
+  {
+   "feature": "gap",
+   "label": "오늘 시가 갭",
+   "beta": 0.0477,
+   "gamma": -0.044
+  },
+  {
+   "feature": "expiry",
+   "label": "만기일",
+   "beta": 0.026,
+   "gamma": 0.0333
+  },
+  {
+   "feature": "i_move",
+   "label": "시가 이후 흐름",
+   "beta": 0.0005,
+   "gamma": -0.0226
+  },
+  {
+   "feature": "i_last",
+   "label": "최근 1시간",
+   "beta": 0.0012,
+   "gamma": -0.0211
+  },
+  {
+   "feature": "i_range",
+   "label": "오늘 고저 폭",
+   "beta": -0.0036,
+   "gamma": 0.1598
+  },
+  {
+   "feature": "i_pos",
+   "label": "오늘 범위 안 위치",
+   "beta": 0.0115,
+   "gamma": -0.0137
+  },
+  {
+   "feature": "i_left",
+   "label": "남은 시간",
+   "beta": -0.0216,
+   "gamma": 0.0509
+  },
+  {
+   "feature": "gap_open",
+   "label": "메우지 않은 시가 갭",
+   "beta": -0.0005,
+   "gamma": 0.0185
+  },
+  {
+   "feature": "nq_day",
+   "label": "장중 나스닥 선물",
+   "beta": 0.0124,
+   "gamma": 0.0061
+  }
+ ],
+ "notes": [
+  "한 세션의 회차들은 서로 독립이 아니다. 묶음 적중률의 95% 구간은 실제보다 좁다 — 회차별 표를 본다",
+  "단계 경계는 남은 시간에 맞춘 ATR(ATR × √남은 비율)이다. 마감 가까운 회차가 '약보합' 으로 쉬워 보이지 않게",
+  "장중 외국인 · 기관 수급(#579)은 과거 기록이 없어 확률에 넣지 않았다"
+ ]
+}

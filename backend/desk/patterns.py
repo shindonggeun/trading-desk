@@ -20,6 +20,15 @@ down / no-break shares - by the trend before when there are enough cases - the f
 whether the held-out cases differed from the same prices shuffled) and a plain ``explain``. Past
 shares, not a forecast.
 
+#664 the rules traders use, added beside those fields: ``quality`` (touches, closes poking outside the
+lines, a trend before the pattern, volume drying up - a weak pattern says so), ``breakout`` (a wick only
+is an attempt, a close outside is the break, a close back inside is a false break, a break past 80% of
+the way to the apex is late, at the apex the pattern is spent), the window's ``mid`` (the measured
+median place of the breaks, else the textbook one), ``targets.stages`` (first 60% of the height, then the
+whole; a rising wedge's downside the pattern's lowest trough; a late break only the first), ``retest``
+(the entry on a pullback to the broken line with its stop on a close back inside, and how often a
+pullback came and won in the past) and ``reference_only`` (no edge over the shuffled baseline).
+
 Arithmetic on price history, not a forecast.
 """
 
@@ -62,6 +71,20 @@ SHAPE_KO = {"symmetric": "고점은 낮아지고 저점은 높아지는 중", "a
             "descending": "고점은 낮아지고 저점은 비슷한 중",
             "rising_wedge": "고점 · 저점이 함께 오르지만 폭이 좁아지는 중",
             "falling_wedge": "고점 · 저점이 함께 내리지만 폭이 좁아지는 중"}
+# #664
+LATE_SHARE = 0.8           # a break past this share of start -> apex is late (weak; the first target only)
+EXPIRED_BARS = 1.0         # the apex this close ahead: the pattern is spent
+FIRST_SHARE = 0.6          # the first target: this share of the height (practice: 0.5 - 0.66)
+TEXTBOOK_MID = {"symmetric": 0.74, "ascending": 0.64}   # Bulkowski's median break place; others 0.65
+RETEST_STOP_ATR = 0.5      # a retest entry's stop: a close this far back inside the broken line
+TREND_BARS = 20            # the move over this many bars before the start ...
+TREND_ATR = 3.0            # ... at least this many ATR: a trend the pattern pauses
+VOLUME_DRY = 0.85          # the second half's volume under this share of the first half's: drying up
+GRADE_STRONG, GRADE_WEAK = 75, 55   # the minimum clean pattern (5 touches, no trend, no volume) scores 45
+GRADE_KO = {"strong": "선명", "normal": "보통", "weak": "약함"}
+STATUS_KO = {"converging": "수렴 중", "attempt": "돌파 시도(꼬리만)", "broken": "돌파(종가 확인)",
+             "false": "거짓 돌파", "late": "늦은 돌파", "expired": "만료(꼭짓점 도달)"}
+NO_EDGE_KO = "참고용 · 통계적 우위 없음"
 _stats_cache: dict | None = None
 
 
@@ -112,6 +135,108 @@ def _prior_trend(bars: list[dict], start: int, n: int = 20) -> str:
     if start < n:
         return "none"
     return "up" if bars[start]["close"] > bars[start - n]["close"] else "down"
+
+
+def quality(bars: list[dict], up: _Line, low: _Line, start: int, end: int, unit: float) -> dict:
+    """#664 how clean a pattern is, 0-100: touches (30: 15 for the minimum two a line and five in all, 5 for
+    each more), closes inside both lines from the start to ``end`` (30, less 1.5 for each percent outside),
+    a trend before it (20, by the move over TREND_BARS in ATR) and volume drying up (20; 10 if only lower)."""
+    total = len(up.touches) + len(low.touches)
+    touch = min(30, 15 + 5 * (total - MIN_TOTAL))
+    xs = range(start, end + 1)
+    outside = sum(not low.at(x) <= math.log(bars[x]["close"]) <= up.at(x) for x in xs) / max(1, len(xs))
+    inside = round(30 * max(0.0, 1 - 5 * outside))
+    trend_atr = (abs(math.log(bars[start]["close"] / bars[start - TREND_BARS]["close"])) / unit
+                 if start >= TREND_BARS and unit else None)
+    trend = round(min(20.0, 20 * trend_atr / TREND_ATR)) if trend_atr is not None else 0
+    vols = [b.get("volume") or 0 for b in bars[start:end + 1]]
+    half = len(vols) // 2
+    ratio = (sum(vols[half:]) / (len(vols) - half)) / (sum(vols[:half]) / half) if half >= 3 and all(vols) else None
+    volume = 0 if ratio is None else 20 if ratio < VOLUME_DRY else 10 if ratio < 1 else 0
+    score = touch + inside + trend + volume
+    grade = "strong" if score >= GRADE_STRONG else "normal" if score >= GRADE_WEAK else "weak"
+    return {"score": score, "grade": grade, "label": GRADE_KO[grade],
+            "touches": [len(up.touches), len(low.touches)], "outside_close_pct": round(outside * 100, 1),
+            "trend_before_atr": round(trend_atr, 1) if trend_atr is not None else None,
+            "volume_ratio": round(ratio, 2) if ratio is not None else None,
+            "points": {"touches": touch, "inside": inside, "trend": trend, "volume": volume}}
+
+
+def breakout(bars: list[dict], up: _Line, low: _Line, start: int, apex: float, unit: float,
+             price: float | None = None) -> dict:
+    """#664 what the last STATE_BARS bars did with the lines (``price``, live, stands for the last close):
+    a close beyond a line (by BREAK_ATR) is the break - false when the last close is back inside, late past
+    LATE_SHARE of the way to the apex; without one a wick beyond is an attempt, the apex at hand spent."""
+    last = len(bars) - 1
+    tol = BREAK_ATR * unit
+    closes = [math.log(b["close"]) for b in bars]
+    if price and price > 0:
+        closes[last] = math.log(price)
+    side, xb = None, None
+    for x in range(max(start, last - STATE_BARS + 1), last + 1):
+        if closes[x] > up.at(x) + tol:
+            side, xb = "up", x
+            break
+        if closes[x] < low.at(x) - tol:
+            side, xb = "down", x
+            break
+    share = None
+    if side is None:
+        for x in range(max(start, last - STATE_BARS + 1), last + 1):
+            if math.log(bars[x]["high"]) > up.at(x) + tol:
+                side = "up"
+            elif math.log(bars[x]["low"]) < low.at(x) - tol:
+                side = "down"
+        status = "attempt" if side else "expired" if apex - last <= EXPIRED_BARS else "converging"
+    else:
+        share = round((xb - start) / (apex - start), 2)
+        line, sign = (up, 1) if side == "up" else (low, -1)
+        if sign * (closes[last] - line.at(last)) <= tol:       # the last close (live price) back inside
+            status = "false"
+        else:
+            status = "late" if share > LATE_SHARE else "broken"
+    return {"status": status, "label": STATUS_KO[status], "side": side,
+            "at": bars[xb]["at"] if xb is not None else None, "share": share}
+
+
+def _extremes(bars: list[dict], start: int) -> tuple[float, float]:
+    """The pattern's lowest trough and highest peak (log)."""
+    return (min(math.log(b["low"]) for b in bars[start:]), max(math.log(b["high"]) for b in bars[start:]))
+
+
+def retest(p: dict, up: _Line, low: _Line, last: int, xb: float, unit: float, stats: dict | None) -> dict:
+    """#664 the entry most traders take: not the chase but a pullback to the broken line, the stop a close
+    RETEST_STOP_ATR back inside it, the staged targets - in the trade map's (#652) shape. A pattern broken
+    (or late) gives that side's scenario at the next bar; a converging one (or an attempt) both sides at the
+    likeliest break place; a false break or a spent pattern none."""
+    status, side = p["breakout"]["status"], p["breakout"]["side"]
+    stats = stats or {}
+    stages = p["targets"].get("stages") or []
+    if status in ("broken", "late"):
+        sides, x, when = [side], last + 1, "after_break"
+    elif status in ("converging", "attempt"):
+        sides, x, when = ["up", "down"], xb, "if_break"
+    else:
+        sides, x, when = [], None, None
+    out = []
+    for s in sides:
+        sign = 1 if s == "up" else -1
+        line = up if s == "up" else low
+        entry = math.exp(line.at(x))
+        stop = entry * math.exp(-sign * RETEST_STOP_ATR * unit)
+        risk = abs(entry - stop)
+        targets = []
+        for st in stages:
+            price = st["up"] if s == "up" else st["down"]
+            if price is not None and sign * (price - entry) > 0:
+                targets.append({"stage": st["stage"], "price": price, "rr": round(abs(price - entry) / risk, 2)})
+        out.append({"side": "long" if s == "up" else "short", "kind": "retest", "when": when,
+                    "entry": _round(entry), "entry_type": "limit", "stop": _round(stop),
+                    "stop_atr": RETEST_STOP_ATR, "stop_pct": round(risk / entry * 100, 1),
+                    "targets": targets, "rr": targets[0]["rr"] if targets else None})
+    note = {"false": "거짓 돌파 뒤라 리테스트 진입은 없어요", "expired": "꼭짓점에 다다라 진입 근거가 약해요"}.get(status)
+    return {"scenarios": out, "pullback_pct": stats.get("pullback_pct"), "win_pct": stats.get("retest_win_pct"),
+            "r_avg": stats.get("retest_r_avg"), "n": stats.get("retest_n"), "note": note}
 
 
 def best(bars: list[dict], k: int, atr: float):
@@ -174,6 +299,7 @@ def find(bars: list[dict], k: int, atr: float, timeframe: str = "1d", price: flo
                 "slope_pct_per_bar": round((math.exp(line.slope) - 1) * 100, 3)}
 
     stats = stats_for(timeframe, kind)
+    brk = breakout(bars, up, low, start, apex, unit, price)
     out = {
         "kind": kind, "label": KIND_KO[kind], "timeframe": timeframe, "state": state,
         "expected": expected,
@@ -182,9 +308,16 @@ def find(bars: list[dict], k: int, atr: float, timeframe: str = "1d", price: flo
         "width_pct": round((math.exp(up.at(last) - low.at(last)) - 1) * 100, 2),
         "narrowed": round((up.at(last) - low.at(last)) / (up.at(start) - low.at(start)), 2),
         "stats": stats,
+        "quality": quality(bars, up, low, start, last - STATE_BARS, unit),
+        "breakout": brk,
     }
     out.update(outlook(bars, up, low, start, apex, timeframe, stats, _prior_trend(bars, start), state, every,
-                       unit))
+                       unit, kind=kind, late=brk["status"] == "late", extremes=_extremes(bars, start)))
+    out["retest"] = retest(out, up, low, last, out.pop("_xb"), unit, stats)
+    verdict = (stats or {}).get("verdict")
+    out["reference_only"] = verdict != "edge"
+    out["reference_label"] = (NO_EDGE_KO if verdict in ("no_edge", "unstable") else
+                              "참고용 · 과거 통계 없음" if verdict != "edge" else None)
     out["explain"] = explain(out)
     return [out]
 
@@ -255,7 +388,8 @@ def _fill(clocks: list, times: list[datetime]) -> list:
 
 def outlook(bars: list[dict], up: _Line, low: _Line, start: int, apex: float, timeframe: str,
             stats: dict | None, prior: str, state: str = "converging", every: list[dict] | None = None,
-            unit: float | None = None) -> dict:
+            unit: float | None = None, kind: str | None = None, late: bool = False,
+            extremes: tuple[float, float] | None = None) -> dict:
     """#629 when a side is usually chosen, how far a break usually carries and the measured odds.
     ``every``: the bars the future times are read from (more than the pattern's)."""
     last = len(bars) - 1
@@ -273,13 +407,19 @@ def outlook(bars: list[dict], up: _Line, low: _Line, start: int, apex: float, ti
     def when(n: int) -> str | None:
         return times[min(n, len(times)) - 1] if times else None
 
+    # #664 the median break place inside the window (measured, else Bulkowski's for the kind)
+    fm = stats.get("frac_q50") if measured and stats.get("frac_q50") is not None else TEXTBOOK_MID.get(kind or "", 0.65)
+    fm = min(max(fm, f0), f1)
+    mid = max(1, math.ceil(start + fm * whole - last))
     window = {"from": when(lo), "to": when(hi), "bars_ahead": [lo, hi], "share": [round(f0, 2), round(f1, 2)],
-              "basis": "measured" if measured else "textbook", "passed": x1 <= last}
+              "basis": "measured" if measured else "textbook", "passed": x1 <= last,
+              "mid": {"at": when(mid), "bars_ahead": mid, "share": round(fm, 2), "passed": start + fm * whole <= last}}
     # the measured move: the height at the start added where a break is likeliest (the window's middle)
     height = up.at(start) - low.at(start)
     # (a pattern already broken: at the break, the last bars - as desk.patterns_bt measures the reach)
     xb = last if state != "converging" else min(max((x0 + x1) / 2, last), apex)
-    targets = _targets(up, low, start, xb, height, unit, stats.get("reach_pct"))
+    targets = _targets(up, low, start, xb, height, unit, stats.get("reach_pct"), kind=kind, late=late,
+                       extremes=extremes, stats=stats)
     odds = None
     if stats:
         by = (stats.get("by_prior") or {}).get(prior)
@@ -290,21 +430,48 @@ def outlook(bars: list[dict], up: _Line, low: _Line, start: int, apex: float, ti
                 "false_break_pct": stats.get("false_break_pct"), "verdict": stats.get("verdict"),
                 "edge_pct": stats.get("edge_pct")}
     return {"apex_at": times[ahead_apex - 1] if len(times) >= ahead_apex else None, "breakout_window": window,
-            "targets": targets, "odds": odds}
+            "targets": targets, "odds": odds, "_xb": xb}
 
 
 def _too_wide(height: float, unit: float | None) -> bool:
     return (math.exp(height) - 1) * 100 > MAX_HEIGHT_PCT or bool(unit and height > MAX_HEIGHT_ATR * unit)
 
 
+def _stages(up: _Line, low: _Line, xb: float, h: float, full: dict, kind: str | None, late: bool,
+            extremes: tuple[float, float] | None, stats: dict) -> list[dict]:
+    """#664 the first target (FIRST_SHARE of the height from the break) and the second (the whole height, or
+    for a rising wedge's downside the pattern's lowest trough - a falling wedge's upside its highest peak);
+    a late break keeps the first only."""
+    measured = full["basis"] == "measured_move"
+    first = {"stage": 1, "share": FIRST_SHARE, "up": _round(math.exp(up.at(xb) + FIRST_SHARE * h)),
+             "down": _round(math.exp(low.at(xb) - FIRST_SHARE * h)),
+             "reach_pct": stats.get("reach1_pct") if measured else None}
+    second = {"stage": 2, "share": 1.0, "up": full["up"], "down": full["down"], "up_basis": "height",
+              "down_basis": "height", "reach_pct": full["reach_pct"]}
+    if extremes and kind == "rising_wedge" and extremes[0] < low.at(xb):
+        second.update(down=_round(math.exp(extremes[0])), down_basis="pattern_low")
+        if extremes[0] > low.at(xb) - FIRST_SHARE * h:              # the trough nearer than the first target
+            first["down"] = _round(math.exp((low.at(xb) + extremes[0]) / 2))
+    if extremes and kind == "falling_wedge" and extremes[1] > up.at(xb):
+        second.update(up=_round(math.exp(extremes[1])), up_basis="pattern_high")
+        if extremes[1] < up.at(xb) + FIRST_SHARE * h:
+            first["up"] = _round(math.exp((up.at(xb) + extremes[1]) / 2))
+    if kind in ("rising_wedge", "falling_wedge"):
+        second["extreme_reach_pct"] = stats.get("extreme_reach_pct") if measured else None
+    return [first] if late else [first, second]
+
+
 def _targets(up: _Line, low: _Line, start: int, xb: float, height: float, unit: float | None,
-             reach: float | None) -> dict:
+             reach: float | None, kind: str | None = None, late: bool = False,
+             extremes: tuple[float, float] | None = None, stats: dict | None = None) -> dict:
     """The measured move from ``xb``; a starting height too wide (MAX_HEIGHT_PCT / MAX_HEIGHT_ATR) gives
     way to the width at the last touch (``basis`` recent_swing - the measured reach then no longer
     applies), and with that too wide the targets are left out with the reason."""
     def at(h: float, basis: str, reached: float | None) -> dict:
-        return {"up": _round(math.exp(up.at(xb) + h)), "down": _round(math.exp(low.at(xb) - h)),
+        full = {"up": _round(math.exp(up.at(xb) + h)), "down": _round(math.exp(low.at(xb) - h)),
                 "height_pct": round((math.exp(h) - 1) * 100, 2), "reach_pct": reached, "basis": basis}
+        full["stages"] = _stages(up, low, xb, h, full, kind, late, extremes, stats or {})
+        return full
 
     if not _too_wide(height, unit):
         return at(height, "measured_move", reach)
@@ -313,7 +480,7 @@ def _targets(up: _Line, low: _Line, start: int, xb: float, height: float, unit: 
     if recent > 0 and not _too_wide(recent, unit):
         return at(recent, "recent_swing", None)
     return {"up": None, "down": None, "height_pct": round((math.exp(height) - 1) * 100, 2), "reach_pct": None,
-            "basis": "omitted",
+            "basis": "omitted", "stages": [],
             "omitted": f"패턴 처음 높이가 {(math.exp(height) - 1) * 100:.0f}% 로 너무 넓어 목표는 생략했어요"}
 
 
@@ -381,7 +548,24 @@ def explain(p: dict) -> str:
         record += "."
     else:
         record = " 과거 통계는 아직 없어요."
-    return head + middle + record + " 예측 아님."
+    return head + middle + record + _rules_said(p) + " 예측 아님."
+
+
+def _rules_said(p: dict) -> str:
+    """#664 the break's status, the weak pattern, the retest entry, no edge."""
+    out = ""
+    b, q, r = p.get("breakout") or {}, p.get("quality") or {}, p.get("retest") or {}
+    out += {"attempt": " 꼬리만 선 밖으로 나갔어요 — 종가로 확인되기 전이에요.",
+            "false": " 선 밖으로 나갔다가 다시 안으로 들어왔어요(거짓 돌파).",
+            "late": " 꼭짓점 가까이 나온 늦은 돌파라 1차 목표만 봐요.",
+            "expired": " 꼭짓점에 다다라 패턴이 힘을 잃었어요."}.get(b.get("status"), "")
+    if b.get("status") in ("broken", "late") and r.get("pullback_pct") is not None:
+        out += f" 바로 따라가기보다 선 근처 되돌림에서 진입을 봐요(과거 되돌림 {r['pullback_pct']:.0f}%)."
+    if q.get("grade") == "weak":
+        out += f" 선이 약한 패턴이에요(점수 {q['score']})."
+    if p.get("reference_label") == NO_EDGE_KO:
+        out += f" {NO_EDGE_KO}."
+    return out
 
 
 def stats_for(timeframe: str, kind: str) -> dict | None:

@@ -40,6 +40,24 @@ def _bucket_end(at: datetime, minutes: int) -> datetime:
     return min(open_at + n * step, datetime.combine(at.date(), CLOSE, KST))
 
 
+def premarket(points: list[dict], market: str) -> dict | None:
+    """#677 a spot market's flow before the 09:00 bell (desk.futures_history.premarket's points): the first
+    and the last running totals (100 million KRW) with their times, and how much it moved between; None
+    without any. The 08:00 ~ 08:45 rows are spot only; the KRX pre-open off-hours (08:30 ~ 08:40) and the NXT
+    pre-market (08:00 ~ 08:50) are in them."""
+    if market not in ("kospi", "kosdaq"):
+        return None
+    s = [(at, vals) for at, vals in series(points, market) if at.time() < time(9, 0)]
+    if not s:
+        return None
+    (first_at, first), (last_at, last) = s[0], s[-1]
+    pick = {c: first.get(c) for c in CLASSES}, {c: last.get(c) for c in CLASSES}
+    return {"from": first_at.isoformat(timespec="minutes"), "to": last_at.isoformat(timespec="minutes"),
+            "first": pick[0], "last": pick[1], "n": len(s),
+            "change": {c: (None if pick[1][c] is None or pick[0][c] is None else round(pick[1][c] - pick[0][c], 2))
+                       for c in CLASSES}}
+
+
 def series(points: list[dict], market: str) -> list[tuple[datetime, dict]]:
     """(time, {class: running total}) per snapshot for one market, skipping empty snapshots."""
     out = []

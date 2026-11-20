@@ -8,6 +8,12 @@ the day), the price, open interest and basis. The day's last snapshot is its dai
 starts the day this runs - there is no backfill.
 
 Intraday snapshots older than ``KEEP_INTRADAY_DAYS`` are thinned to the last one of their day.
+
+#677 the pre-market (``PREOPEN`` 08:00 ~ 08:45, weekdays): a spot-only row a minute - Toss' today record
+already carries the trades before the bell (NXT pre-market, the pre-open off-hours; #673) - with the
+futures columns left empty (before 08:45 KIS' futures figures are the day before's: their reset at the
+open would read as turns). ``intraday`` leaves those rows out, so the bars, turns, shifts and warnings
+read the session as before; ``premarket`` reads them (with the session's first quarter hour to 09:00).
 """
 
 from __future__ import annotations
@@ -26,6 +32,8 @@ log = logging.getLogger(__name__)
 
 KEEP_INTRADAY_DAYS = 60
 OPEN, CLOSE = time(8, 45), time(15, 45)
+PREOPEN = time(8, 0)             # #677 the spot pre-market snapshots from here
+SPOT_OPEN = time(9, 0)           # ``premarket`` reads up to the spot bell
 CLOSING_UNTIL = time(16, 0)      # the closing snapshot is taken once between CLOSE and this
 CLOSING_AT = time(15, 46)
 MAX_SLEEP_SEC = 3600.0           # outside the session the loop still wakes hourly (clock changes, restarts)
@@ -67,6 +75,24 @@ def row_of(view: dict, now: datetime, spot: dict | None = None) -> dict | None:
     return row
 
 
+def premarket_window(now: datetime) -> bool:
+    """#677 weekdays PREOPEN ~ OPEN KST: the spot-only snapshots."""
+    local = now.astimezone(KST)
+    return local.weekday() < 5 and PREOPEN <= local.time() < OPEN
+
+
+def spot_row(now: datetime, spot: dict | None) -> dict | None:
+    """#677 a pre-market row: the spot columns only, None when no market has today's figures yet."""
+    row = {"at": now.astimezone(UTC), "trade_date": now.astimezone(KST).date().isoformat(), "code": "",
+           "price": None, "open_interest": None, "market_basis": None,
+           **{f"{c}_{k}": None for c in CLASSES for k in ("contracts", "value_mn")}}
+    cols = spot_cols(spot, row["trade_date"])
+    if all(v is None for v in cols.values()):
+        return None
+    row.update(cols)
+    return row
+
+
 def _point(r) -> dict:
     return {"at": r["at"].astimezone(UTC).isoformat(timespec="seconds") if r["at"].tzinfo else
             r["at"].replace(tzinfo=UTC).isoformat(timespec="seconds"),
@@ -89,19 +115,23 @@ def closing_window(now: datetime) -> bool:
 
 
 def seconds_to_next(now: datetime, every_min: float) -> float:
-    """Until the next snapshot on the wall clock: the session's grid from 08:45 every ``every_min``
-    minutes (08:45, 09:00, ...), then the closing snapshot at 15:46, then the next weekday's open -
-    capped at MAX_SLEEP_SEC."""
+    """Until the next snapshot on the wall clock: every ``every_min`` minutes on the pre-market's grid from
+    08:00 (#677) up to 08:45, then on the session's grid from 08:45 (08:45, 09:00, ...), then the closing
+    snapshot at 15:46, then the next weekday's 08:00 - capped at MAX_SLEEP_SEC."""
     local = now.astimezone(KST)
     day = local.date()
+    pre_at = datetime.combine(day, PREOPEN, KST)
     open_at = datetime.combine(day, OPEN, KST)
     close_at = datetime.combine(day, CLOSE, KST)
-    if local.weekday() < 5 and local < open_at:
-        target = open_at
+    if local.weekday() < 5 and local < pre_at:
+        target = pre_at
     elif local.weekday() < 5 and local <= close_at:
+        base = pre_at if local < open_at else open_at
         step = every_min * 60
-        n = math.floor((local - open_at).total_seconds() / step) + 1
-        target = open_at + timedelta(seconds=n * step)
+        n = math.floor((local - base).total_seconds() / step) + 1
+        target = base + timedelta(seconds=n * step)
+        if base == pre_at and target > open_at:
+            target = open_at
         if target > close_at:
             target = datetime.combine(day, CLOSING_AT, KST)
     elif local.weekday() < 5 and local < datetime.combine(day, CLOSING_AT, KST):
@@ -110,7 +140,7 @@ def seconds_to_next(now: datetime, every_min: float) -> float:
         nxt = day + timedelta(days=1)
         while nxt.weekday() >= 5:
             nxt += timedelta(days=1)
-        target = datetime.combine(nxt, OPEN, KST)
+        target = datetime.combine(nxt, PREOPEN, KST)
     return max(1.0, min((target - local).total_seconds(), MAX_SLEEP_SEC))
 
 
@@ -131,17 +161,42 @@ class FuturesHistory:
             conn.execute(insert(futures_snapshots).values(**row))
         return True
 
-    def intraday(self, day: date) -> list[dict]:
-        """A trading day's snapshots, oldest first."""
+    def record_spot(self, spot: dict | None, now: datetime | None = None) -> bool:
+        """#677 a pre-market snapshot (spot only) inside ``premarket_window``."""
+        now = now or datetime.now(UTC)
+        if not premarket_window(now):
+            return False
+        row = spot_row(now, spot)
+        if row is None:
+            return False
+        with self.engine.begin() as conn:
+            conn.execute(insert(futures_snapshots).values(**row))
+        return True
+
+    def _day(self, day: date, start: time | None, end: time | None) -> list[dict]:
+        q = select(futures_snapshots).where(futures_snapshots.c.trade_date == day.isoformat())
+        if start is not None:
+            q = q.where(futures_snapshots.c.at >= datetime.combine(day, start, KST).astimezone(UTC))
+        if end is not None:
+            q = q.where(futures_snapshots.c.at < datetime.combine(day, end, KST).astimezone(UTC))
         with self.engine.connect() as conn:
-            rows = conn.execute(select(futures_snapshots).where(futures_snapshots.c.trade_date == day.isoformat())
-                                .order_by(futures_snapshots.c.at)).mappings().all()
+            rows = conn.execute(q.order_by(futures_snapshots.c.at)).mappings().all()
         return [_point(r) for r in rows]
 
+    def intraday(self, day: date) -> list[dict]:
+        """A trading day's snapshots from the 08:45 open, oldest first (#677 the pre-market rows left out)."""
+        return self._day(day, OPEN, None)
+
+    def premarket(self, day: date) -> list[dict]:
+        """#677 a day's snapshots before the spot bell (08:00 ~ 09:00): the pre-market's spot-only rows and the
+        futures session's first quarter hour."""
+        return self._day(day, None, SPOT_OPEN)
+
     def daily(self, days: int = 20) -> list[dict]:
-        """The last snapshot of each of the latest ``days`` trading days, newest first."""
+        """The last futures snapshot of each of the latest ``days`` trading days, newest first."""
         days = max(1, min(days, MAX_DAYS))
         last = (select(futures_snapshots.c.trade_date, func.max(futures_snapshots.c.at).label("at"))
+                .where(futures_snapshots.c.price.isnot(None))     # #677 not the pre-market's spot-only rows
                 .group_by(futures_snapshots.c.trade_date)
                 .order_by(futures_snapshots.c.trade_date.desc()).limit(days).subquery())
         q = (select(futures_snapshots)
@@ -159,8 +214,8 @@ class FuturesHistory:
     def prune(self, now: datetime | None = None, keep_days: int = KEEP_INTRADAY_DAYS) -> int:
         """Thin days older than ``keep_days`` to their last snapshot; returns rows deleted."""
         cutoff = ((now or datetime.now(UTC)).astimezone(KST).date() - timedelta(days=keep_days)).isoformat()
-        last = (select(func.max(futures_snapshots.c.id))
-                .where(futures_snapshots.c.trade_date < cutoff)
+        last = (select(func.max(futures_snapshots.c.id))      # #677 a day of spot-only rows goes whole
+                .where(futures_snapshots.c.trade_date < cutoff, futures_snapshots.c.price.isnot(None))
                 .group_by(futures_snapshots.c.trade_date))
         with self.engine.begin() as conn:
             keep = {r[0] for r in conn.execute(last)}

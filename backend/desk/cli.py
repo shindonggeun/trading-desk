@@ -447,7 +447,9 @@ def _lead_lag(engine, args) -> int:
 
     first = (now() - timedelta(days=args.days)).date().isoformat()
     with engine.connect() as conn:
-        rows = [dict(r) for r in conn.execute(select(futures_snapshots).where(futures_snapshots.c.trade_date >= first)
+        # #677 the futures rows only: a day of pre-market (spot-only) rows is no day of the measure
+        rows = [dict(r) for r in conn.execute(select(futures_snapshots).where(futures_snapshots.c.trade_date >= first,
+                                                                              futures_snapshots.c.price.isnot(None))
                                               .order_by(futures_snapshots.c.at)).mappings()]
     rep = lead_lag.report(rows)
     print(f"{rep['days']} day(s) {rep['from']} ~ {rep['to']}, |t| >= {rep['t_min']}, at least {rep['min_days']} days")

@@ -257,3 +257,20 @@ def test_kis_figures_moving_set_the_source_time_and_toss_is_still_watched(caplog
     lines = [r.getMessage() for r in caplog.records]
     assert any(m.startswith("kis flow KOSPI: updatedAt - figures changed") for m in lines)
     assert any(m.startswith("toss flow KOSPI: updatedAt 10:00:30") for m in lines)   # #673 cadence still logged
+
+
+def test_the_desk_loggers_info_lines_reach_one_handler():
+    import logging
+
+    from desk import log_setup
+    desk = logging.getLogger("desk")
+    before = (desk.level, list(desk.handlers))
+    try:
+        assert log_setup.configure("") == logging.INFO           # compose passes an empty value
+        assert log_setup.configure("warning") == logging.WARNING
+        assert log_setup.configure("nonsense") == logging.INFO
+        assert sum(getattr(h, "desk_handler", False) for h in desk.handlers) == 1   # once, however often
+        assert logging.getLogger("desk.market_flow").isEnabledFor(logging.INFO)
+    finally:
+        desk.setLevel(before[0])
+        desk.handlers[:] = before[1]

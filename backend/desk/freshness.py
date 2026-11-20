@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 PUBLISH_SEC: dict[str, float | None] = {
     "kis_futures_investors": None,
     "toss_investors": None,
+    "kis_spot_investors": None,     # #676 KIS spot investors (desk.kis_spot_flow); its changes are watched too
 }
 
 

@@ -23,6 +23,11 @@ Before the bell (PREMARKET_FROM ~ 09:00) today's record already carries the trad
 session (the server's snapshots: non-zero 08:45 figures that differ day to day and move again by 09:01 -
 the pre-open off-hours and NXT pre-market trades). It is cached as in the session and marked
 ``session: "pre"`` so the screens can say 프리장.
+
+#676 with a KIS client (``kis``: desk.futures_flow's, one token) today's 1d record comes from KIS first
+during the pre-market and the session (desk.kis_spot_flow, ``source: "kis"`` on the record): Toss' history
+stays behind it, Toss' own today record is the fallback (KIS failing, empty or disagreeing), and with Toss
+failing the KIS record alone still shows (a short-lived answer carrying Toss' error).
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ import logging
 import time
 from datetime import UTC, date, datetime, timedelta, timezone
 
-from . import freshness
+from . import freshness, kis_spot_flow
 from .broker.base import INSTITUTION_KINDS, INVESTORS, Broker, FlowRecord
 
 log = logging.getLogger(__name__)
@@ -131,6 +136,10 @@ def normalize(record: FlowRecord, interval: str, now: datetime) -> dict:
     }
 
 
+async def _none():
+    return None
+
+
 def _later(a: str | None, b: str | None) -> str | None:
     """The later of two ISO times (either may be missing)."""
     if not a or not b:
@@ -149,13 +158,17 @@ def _short_error(exc: Exception) -> str:
 class MarketFlow:
     """Cached market-wide investor flow for the dashboard."""
 
-    def __init__(self, broker: Broker, clock=time.monotonic, now=lambda: datetime.now(UTC)) -> None:
+    def __init__(self, broker: Broker, clock=time.monotonic, now=lambda: datetime.now(UTC), kis=None) -> None:
         self.broker = broker
+        self.kis = kis                                   # #676 desk.futures_flow.KisRest (shared token) or None
+        self._kis_noted: dict[str, str] = {}             # market:why -> the day a KIS fallback was last logged
+        self._kis_verified: dict[str, str] = {}          # market -> the day KIS last passed a real check
+        self._last_kis: dict[str, tuple[dict, datetime]] = {}   # market -> (last KIS record shown, when)
         self._clock = clock
         self._now = now
         self._cache: dict[tuple, tuple[float, float, dict]] = {}   # key -> (stamp, ttl, value)
         self._locks: dict[tuple, asyncio.Lock] = {}
-        # market -> (date, updatedAt, figures, fetched at, figures first seen changed at or None)
+        # market:source -> (date, updatedAt, figures, fetched at, figures first seen changed at or None)
         self._seen: dict[str, tuple[str, str | None, tuple, datetime, datetime | None]] = {}
 
     async def get(self, market: str, interval: str, count: int, fresh: bool = False) -> dict:
@@ -190,7 +203,7 @@ class MarketFlow:
         today = interval == "1d" and latest.get("date") == now.astimezone(KST).date().isoformat()
         stamp = freshness.stamp(value.get("fetched_at"), now, cached[1], live=session(now) != "closed",
                                 source_at=_later(latest.get("updated_at"), value.get("changed_at")) if today else None,
-                                source="toss_investors")
+                                source="kis_spot_investors" if latest.get("source") == "kis" else "toss_investors")
         return {**value, "records": value["records"][:count], "freshness": stamp, "session": session(now)}
 
     def _watch(self, market: str, record: dict, now: datetime) -> str | None:
@@ -198,7 +211,9 @@ class MarketFlow:
         an INFO line on each change of the figures or of ``updatedAt``."""
         figures = tuple(sorted((k, v["net"]) for k, v in (record.get("investors") or {}).items()))
         day, updated = record.get("date"), record.get("updated_at")
-        before = self._seen.get(market)
+        source = record.get("source") or "toss"
+        market_key = f"{market}:{source}"                # a source switch is not a change of the figures
+        before = self._seen.get(market_key)
         changed_at = before[4] if before and before[0] == day else None
         if before and before[0] == day and (before[1], before[2]) != (updated, figures):
             moved = before[2] != figures
@@ -207,23 +222,66 @@ class MarketFlow:
                 changed_at = before[3]
             else:
                 gap = "-"
-            log.info("toss flow %s: updatedAt %s figures %s (since last change %s)", market,
-                     (updated or "-")[11:19], "changed" if moved else "same", gap)
-        self._seen[market] = (day, updated, figures, now, changed_at)
+            log.info("%s flow %s: updatedAt %s figures %s (since last change %s)", source, market,
+                     updated[11:19] if updated else "-", "changed" if moved else "same", gap)
+        self._seen[market_key] = (day, updated, figures, now, changed_at)
         return changed_at.astimezone(KST).isoformat(timespec="seconds") if changed_at else None
+
+    def _kis_record(self, market: str, answer, today: str, now: datetime) -> dict | None:
+        """#676 today's KIS record, or None (failed or empty: noted once a day, Toss then serves)."""
+        if isinstance(answer, BaseException):
+            why = "timed out" if isinstance(answer, TimeoutError) else (
+                _short_error(answer) if isinstance(answer, Exception) else "failed")
+            self._note(market, today, f"failed: {why}")
+            return None
+        got = kis_spot_flow.record((answer or {}).get("output"), today)
+        if got is None and session(now) == "regular":      # before the bell nothing traded yet is normal
+            self._note(market, today, "no figures in the answer")
+        return got
+
+    def _held(self, market: str, today: str, now: datetime) -> dict | None:
+        """The last KIS record shown, for HOLD_SEC after it (``held``), when KIS fails in between."""
+        last = self._last_kis.get(market)
+        if last and last[0]["date"] == today and (now - last[1]).total_seconds() <= kis_spot_flow.HOLD_SEC:
+            return {**last[0], "held": True}
+        return None
+
+    def _changed_at(self, market: str, source: str) -> str | None:
+        """When the figures of ``source`` were last seen to change (no new observation)."""
+        seen = self._seen.get(f"{market}:{source}")
+        return seen[4].astimezone(KST).isoformat(timespec="seconds") if seen and seen[4] else None
+
+    def _note(self, market: str, today: str, why: str) -> None:
+        """One INFO line a market a day for each kind of KIS fallback (each failure would be one a minute)."""
+        key = f"{market}:{why.split()[0]}"               # a failure and a disagreement are noted apart
+        if self._kis_noted.get(key) != today:
+            self._kis_noted[key] = today
+            log.info("kis spot flow %s: %s - Toss serves today's record", market, why)
 
     async def _fetch(self, market: str, interval: str) -> tuple[dict, bool]:
         now = self._now()
         base = {"market": market, "interval": interval, "source": self.broker.name,
                 "fetched_at": now.astimezone(KST).isoformat(timespec="seconds")}
-        flow, index = await asyncio.gather(self.broker.investor_flow(market, interval, MAX_COUNT),
-                                           self.broker.index_prices([market]), return_exceptions=True)
+        today = now.astimezone(KST).date().isoformat()
+        use_kis = (interval == "1d" and self.kis is not None and self.broker.name != "mock"   # no real figures
+                   and market in kis_spot_flow.CODES and kis_spot_flow.hours(now))          # over the sample
+        flow, index, kis = await asyncio.gather(
+            self.broker.investor_flow(market, interval, MAX_COUNT), self.broker.index_prices([market]),
+            asyncio.wait_for(kis_spot_flow.fetch(self.kis, market), kis_spot_flow.TIMEOUT_SEC) if use_kis else _none(),
+            return_exceptions=True)
         if isinstance(flow, NotImplementedError):
             return {**base, "supported": False, "index": None, "records": [], "error": None}, True
+        kis_row = self._kis_record(market, kis, today, now) if use_kis else None
         if isinstance(flow, BaseException):
             log.warning("market flow %s %s failed: %s", market, interval, flow)   # full text stays in the log
-            return {**base, "supported": True, "index": None, "records": [],
-                    "error": _short_error(flow) if isinstance(flow, Exception) else "failed"}, False
+            error = _short_error(flow) if isinstance(flow, Exception) else "failed"
+            # #676 Toss down: today's KIS figures still show (only once KIS passed a real check today -
+            # nothing to check them against now), retried soon
+            if kis_row is not None and self._kis_verified.get(market) == today:
+                self._last_kis[market] = (kis_row, now)
+                return {**base, "supported": True, "index": None, "records": [kis_row], "error": error,
+                        "changed_at": self._watch(market, kis_row, now)}, False
+            return {**base, "supported": True, "index": None, "records": [], "error": error}, False
         records, _next_until = flow   # paging past 100 records is not offered (yet)
         level = None
         if isinstance(index, BaseException):
@@ -232,7 +290,29 @@ class MarketFlow:
         else:
             level = next(({"price": p.price, "at": p.at} for p in index if p.symbol == market), None)
         rows = [normalize(r, interval, now) for r in records]
-        changed_at = (self._watch(market, rows[0], now) if interval == "1d" and rows
-                      and rows[0]["date"] == now.astimezone(KST).date().isoformat() else None)
+        toss_today = rows[0] if interval == "1d" and rows and rows[0]["date"] == today else None
+        # Toss' today record is watched even under KIS (its ``toss flow`` cadence lines, #673)
+        changed_at = self._watch(market, toss_today, now) if toss_today else None
+        held = None
+        if kis_row is not None:
+            toss_before = next((r for r in rows if r["date"] != today), None)
+            why = kis_spot_flow.check(kis_row, toss_today, toss_before, premarket(now))
+            if why:                          # a wrong code, unit or day: Toss, and no held KIS either
+                self._note(market, today, f"not shown: {why}")
+                self._last_kis.pop(market, None)
+                kis_row = None
+            elif kis_spot_flow.verified(kis_row, toss_today) and self._kis_verified.get(market) != today:
+                self._kis_verified[market] = today
+                log.info("kis spot flow %s: individual buy KIS %s vs Toss %s - shown", market,
+                         kis_row["investors"]["individual"]["buy"], toss_today["investors"]["individual"]["buy"])
+        elif use_kis:
+            held = self._held(market, today, now)        # a brief KIS failure: not 10-30 minutes back to Toss
+        if kis_row is not None:
+            self._last_kis[market] = (kis_row, now)
+            rows = [kis_row, *(rows[1:] if toss_today else rows)]
+            changed_at = self._watch(market, kis_row, now)
+        elif held is not None:
+            rows = [held, *(rows[1:] if toss_today else rows)]
+            changed_at = self._changed_at(market, "kis")
         return {**base, "supported": True, "index": level, "records": rows, "error": None,
                 "changed_at": changed_at}, True

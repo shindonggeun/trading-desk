@@ -2740,6 +2740,12 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .alert-strip li a:hover .alert-strip-text { text-decoration: underline; }
 .alert-strip time { font-variant-numeric: tabular-nums; }
 .alert-strip-all { margin-left: auto; white-space: nowrap; }
+.flow-warn-band { margin: 8px 0 10px; border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.flow-warn-band li { white-space: normal; }
+.flow-warn-reading { display: block; }
+@media (max-width: 560px) {
+  .alert-strip.flow-warn-band li:nth-child(n + 2) { display: list-item; }   /* the strip shows one on a phone; warnings show all */
+}
 @media (max-width: 560px) {
   .alert-strip ul { flex-direction: column; flex-wrap: nowrap; width: 100%; }
   .alert-strip li:nth-child(n + 2) { display: none; }

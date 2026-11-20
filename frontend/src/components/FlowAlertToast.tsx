@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { alertKey, useTodayAlerts } from "../alertsFeed";
-import { api, type FlowAlert, type PushKinds } from "../api";
+import { api, type FlowAlert, type MarketAlert, type PushKinds } from "../api";
 
 /** #362 앱 안 토스트 — 장중에 수급 전향 목록(/api/alerts/flow)을 폴링해 새로 온 것만 화면 위에 띄운다.
  * 푸시가 꺼진 기기 · 지원하지 않는 브라우저에서도 앱을 열어 두면 볼 수 있게. */
@@ -36,11 +36,12 @@ export function saveToastMarkets(m: ToastMarkets) {
 
 /** #573 수급 전향 말고 받을 알림 종류 — 아침 시황(#571) · 오늘 방향(#572), #581 수급 흐름 변화 · 나스닥 선물 이상 징후(#579).
  *  이 브라우저에 기억하고 기본은 켬. 수급 흐름 · 나스닥 선물은 앱 안 토스트에도 같이 적용된다. */
-export type ExtraKinds = { flow_shift: boolean; nq_alert: boolean; morning_brief: boolean; day_call: boolean; line_signal: boolean;
+export type ExtraKinds = { flow_shift: boolean; flow_warn: boolean; nq_alert: boolean; morning_brief: boolean; day_call: boolean; line_signal: boolean;
   tone_positive: boolean; tone_neutral: boolean; tone_caution: boolean; tone_warning: boolean };
 const TONE_KEYS = ["tone_positive", "tone_neutral", "tone_caution", "tone_warning"] as const;
 export const EXTRA_KINDS: { key: keyof ExtraKinds; label: string; note: string }[] = [
   { key: "flow_shift", label: "수급 흐름 변화", note: "외국인 · 기관의 매수 · 매도 확대 · 축소(장중)" },
+  { key: "flow_warn", label: "수급 경고", note: "개인 혼자 받치고 외국인 · 기관이 던질 때, 외국인 · 기관 매도가 과할 때(장중)" },
   { key: "nq_alert", label: "나스닥 선물 이상", note: "나스닥100 선물의 급한 매도세(거의 24시간)" },
   { key: "morning_brief", label: "아침 시황", note: "평일 오전 7시쯤" },
   { key: "day_call", label: "오늘 방향", note: "국장 · 미장 판정이 나올 때" },
@@ -56,11 +57,11 @@ const EXTRA_KEY = "desk.pushKinds.extra";
 export function loadExtraKinds(): ExtraKinds {
   try {
     const raw = JSON.parse(localStorage.getItem(EXTRA_KEY) ?? "{}");
-    return { flow_shift: raw.flow_shift !== false, nq_alert: raw.nq_alert !== false,
+    return { flow_shift: raw.flow_shift !== false, flow_warn: raw.flow_warn !== false, nq_alert: raw.nq_alert !== false,
              morning_brief: raw.morning_brief !== false, day_call: raw.day_call !== false, line_signal: raw.line_signal !== false,
              ...Object.fromEntries(TONE_KEYS.map((k) => [k, raw[k] !== false])) as Record<(typeof TONE_KEYS)[number], boolean> };
   } catch {
-    return { flow_shift: true, nq_alert: true, morning_brief: true, day_call: true, line_signal: true,
+    return { flow_shift: true, flow_warn: true, nq_alert: true, morning_brief: true, day_call: true, line_signal: true,
              tone_positive: true, tone_neutral: true, tone_caution: true, tone_warning: true };
   }
 }
@@ -109,7 +110,8 @@ export default function FlowAlertToast() {
     }
     const fresh = pushed.filter((a) => !seenShift.current!.has(alertKey(a)));
     fresh.forEach((a) => seenShift.current!.add(alertKey(a)));
-    const wanted = fresh.filter((a) => (a.kind === "flow_shift" ? extra.flow_shift : extra.nq_alert) && (!a.tone || extra[`tone_${a.tone}`]));
+    const on = (a: MarketAlert) => (a.kind === "flow_shift" ? extra.flow_shift : a.kind === "flow_warn" ? extra.flow_warn : extra.nq_alert);
+    const wanted = fresh.filter((a) => on(a) && (!a.tone || extra[`tone_${a.tone}`]));
     if (wanted.length) {
       const until = Date.now() + SHOW_MS;
       setShown((s) => [...wanted.map((a): Shown => ({ key: alertKey(a), text: a.text.split("\n")[0], tone: "warn", until })), ...s]

@@ -448,6 +448,7 @@ export interface PushKinds {
   day_call?: boolean;        // #573 오늘 방향(#572)
   flow_shift?: boolean;      // #581 수급 흐름 변화(#579)
   nq_alert?: boolean;        // #581 나스닥 선물 이상 징후(#579)
+  flow_warn?: boolean;       // #699 수급 경고(개미 홀로 받치기 · 과도한 매도)
   line_signal?: boolean;     // #614 차트 선 닿음 · 이탈(#613)
   tone_positive?: boolean;   // #642 수급 알림의 뜻(#641) — 끈 tone 은 이 기기로 보내지 않는다
   tone_neutral?: boolean;
@@ -458,7 +459,7 @@ export interface PushKinds {
 /** #581 알림 타임라인 한 건(GET /api/alerts/today) — flow_turn 은 #361 의 수급 전향 */
 export interface MarketAlert {
   trade_date: string;
-  kind: "flow_turn" | "flow_shift" | "nq_alert";
+  kind: "flow_turn" | "flow_shift" | "flow_warn" | "nq_alert";
   rule: string;
   market: "kospi" | "kosdaq" | "futures" | "nq";
   who: "foreign" | "institution" | "individual" | "all";

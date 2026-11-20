@@ -1,4 +1,4 @@
-import { activityHeaders } from "./activity";
+import { activityHeaders, BACKGROUND_HEADER } from "./activity";
 import type { DayCallSectorsResponse } from "./components/DayCallSectors";
 import type { ChartRead, GapReport, LinesReport, LineTf } from "./types";
 import type { DayCallHistory, DayCallMarket, DayCallStats, DayCallToday, MorningBrief, MorningBriefList } from "./types";
@@ -611,10 +611,14 @@ export type StreamState = "live" | "lost";
 
 /** Live "내 투자" snapshots every few seconds (GET /api/portfolio/stream).
  * EventSource retries a dropped connection by itself, but any non-200 answer (a 502 while
- * the backend is redeployed, a 401 after logout) ends it for good. Then: ask the API once -
- * a 401 shows the login screen through call(); anything else opens a new stream after a
- * growing pause. ``onState`` lets the panel say it is reconnecting while it keeps the last numbers. */
-export function followPortfolio(onSnapshot: (p: Portfolio) => void, onState: (s: StreamState) => void): () => void {
+ * the backend is redeployed, a 401 after logout) ends it for good. Recheck access with
+ * the current cookie: 401 shows the login screen, 403 clears the panel, and temporary
+ * failures retry with a growing pause. */
+export function followPortfolio(
+  onSnapshot: (p: Portfolio) => void,
+  onState: (s: StreamState) => void,
+  onAccessDenied: () => void,
+): () => void {
   let source: EventSource | null = null;
   let timer: number | undefined;
   let stopped = false;
@@ -637,8 +641,13 @@ export function followPortfolio(onSnapshot: (p: Portfolio) => void, onState: (s:
     es.onerror = () => {
       onState("lost");
       if (es.readyState !== EventSource.CLOSED) return; // the browser is retrying
-      api.me().then(retry, (e) => {
-        if (!(e instanceof Unauthorized)) retry();
+      request<Portfolio>("/api/portfolio", { cache: "no-store", headers: { [BACKGROUND_HEADER]: "1" } }).then(retry, (e) => {
+        if (stopped || e instanceof Unauthorized) return;
+        if (e instanceof ApiError && e.status === 403) {
+          onAccessDenied();
+          return;
+        }
+        retry();
       });
     };
   }

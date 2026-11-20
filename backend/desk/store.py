@@ -112,7 +112,7 @@ class Store:
             rows = conn.execute(
                 select(runs).order_by(runs.c.created_at.desc(), runs.c.id).limit(limit).offset(offset)
             ).mappings().all()
-        return [_run(row) for row in rows]
+        return [_light(_run(row)) for row in rows]
 
     def done_runs_for(self, tickers: list[str], since: str) -> list[dict]:
         """Finished runs of these tickers with trade_date >= since (YYYY-MM-DD), newest first —
@@ -125,7 +125,7 @@ class Store:
                                    runs.c.trade_date >= since)
                 .order_by(runs.c.trade_date.desc(), runs.c.created_at.desc())
             ).mappings().all()
-        return [_run(row) for row in rows]
+        return [_light(_run(row)) for row in rows]
 
     def runs_to_score(self, limit: int) -> list[dict]:
         """Finished directional-or-not runs without a final outcome yet (desk.outcome.RETRY),
@@ -212,6 +212,17 @@ class Store:
                 .order_by(events.c.ts.desc())
             ).mappings().all()
         return [{**row, "ts": aware(row["ts"])} for row in rows]
+
+
+LIST_HEAVY = ("horizons", "horizon_fit")   # #696: about 10 KB a run - read on the run's own page only
+
+
+def _light(run: dict) -> dict:
+    """A run for a list: its plan without the four horizons' maps (GET /api/runs/{id} has them)."""
+    plan = run.get("plan")
+    if isinstance(plan, dict) and any(k in plan for k in LIST_HEAVY):
+        run = {**run, "plan": {k: v for k, v in plan.items() if k not in LIST_HEAVY}}
+    return run
 
 
 def _run(row: RowMapping) -> dict:

@@ -60,10 +60,11 @@ def instrument_class(ticker: str) -> dict:
     """What the ticker is, for the plan's risk: leverage · inverse · bond · defensive · general."""
     t = ticker.upper()
     lev = leverage_of(t)
+    near = " (근사 기초자산 — 자기 지수를 따른다)" if lev and lev[2] else ""
     if lev and lev[1] < 0:
-        cid, basis = "inverse", f"{lev[0]} 의 하루 {lev[1]}배(인버스)"
+        cid, basis = "inverse", f"{lev[0]} 의 하루 {lev[1]:g}배(인버스){near}"
     elif lev and abs(lev[1]) > 1:
-        cid, basis = "leverage", f"{lev[0]} 의 하루 {lev[1]}배"
+        cid, basis = "leverage", f"{lev[0]} 의 하루 {lev[1]:g}배{near}"
     elif t in BOND:
         cid, basis = "bond", "국채 · 채권 ETF 목록"
     elif t in DEFENSIVE:
@@ -158,7 +159,7 @@ async def _bounded(coro, what: str, errors: dict):
         return None
 
 
-async def _one(prices, ticker: str, h: horizons.Horizon, sr_main: dict | None, main: str) -> dict:
+async def _one(prices, ticker: str, h: horizons.Horizon, sr_main: dict | None, main: str, risk=None) -> dict:
     errors: dict[str, str] = {}
     tf = CHART_TF[h.id]
 
@@ -170,7 +171,9 @@ async def _one(prices, ticker: str, h: horizons.Horizon, sr_main: dict | None, m
     sr_task = (asyncio.sleep(0, sr_main) if h.id == main and sr_main
                else support_resistance(prices, ticker, None, horizon=h.id))
     sr, en, ch = await asyncio.gather(_bounded(sr_task, "levels", errors),
-                                      _bounded(entry_now.entry_now(prices, ticker, h.id), "entry", errors),
+                                      # the market's score as the entry page reads it: the live playbooks'
+                                      # cache is shared (desk.playbook_live), an ungated build must not land there
+                                      _bounded(entry_now.entry_now(prices, ticker, h.id, risk=risk), "entry", errors),
                                       _bounded(chart(), "chart", errors))
     return {"horizon": h.id, "label": h.label, "holding": h.holding, "flat_by_close": h.flat_by_close,
             "source": "map", "model": None, "map": _map(en), "levels": _levels(sr),
@@ -201,32 +204,39 @@ def fake(ticker: str, plan: dict, main: str) -> dict:
         out[hid] = {
             "horizon": hid, "label": h.label, "holding": h.holding, "flat_by_close": h.flat_by_close,
             "source": "map", "model": None, "atr": round(atr, 4), "errors": None,
-            "map": {"stand_aside": None, "regime": "range", "price_now": price, "atr": round(atr, 4),
+            "map": {"regime": "range", "price_now": price, "atr": round(atr, 4),
                     "side": "long" if up else "short", "side_ko": "롱" if up else "숏", "setup": "pullback",
                     "kind": "limit", "kind_ko": "지정가", "zone": sorted([first, round(first + sign * 0.3 * atr, 2)]),
                     "first": first, "avg_entry": first, "stop": stop, "stop_pct": round((stop / first - 1) * 100, 2),
                     "targets": targets, "from_now_pct": round((first / price - 1) * 100, 2), "expected_r": None,
-                    "ev_r": None, "p_t1": None, "n": 0, "thin": True, "why": ["대본(가짜 실행) 예시 값"]},
+                    "ev_r": None, "p_t1": None, "n": 0, "thin": True, "why": ["대본(가짜 실행) 예시 값"],
+                    "stand_aside": "대본 예시 — 기록이 얇아 기대값 없음(참고용)"},
             "levels": {"support": [{"price": round(price - k * atr, 2), "strength": 3.0 - k, "basis": "대본 지지"}
                                    for k in (1, 2)],
                        "resistance": [{"price": round(price + k * atr, 2), "strength": 3.0 - k, "basis": "대본 저항"}
                                       for k in (1, 2)]},
             "chart": {"timeframe": CHART_TF[hid], "summary": f"{channels.TF_KO[CHART_TF[hid]]} — 대본 차트 읽기 예시.",
-                      "trend": "sideways", "above": [], "below": [], "patterns": []},
+                      "trend": {"state": "sideways", "ema20": round(price, 2), "ema50": round(price * 1.002, 2),
+                                "basis": "대본 예시"},
+                      "above": [{"price": round(price + atr, 2), "name": "대본 저항", "refs": [{"kind": "sr", "side": "high", "at": None}],
+                                 "distance_pct": round(atr / price * 100, 2)}],
+                      "below": [{"price": round(price - atr, 2), "name": "대본 지지", "refs": [{"kind": "sr", "side": "low", "at": None}],
+                                 "distance_pct": round(-atr / price * 100, 2)}],
+                      "patterns": []},
         }
     out[main]["model"] = _model(plan)
     out[main]["source"] = "model"
     view = {"regime": "range", "summary": "1시간봉 박스 · 일봉 박스(대본)",
             "frames": {"1d": {"regime": "range", "adx": 16.0, "as_of": None, "basis": ["대본 예시"],
                               "box": {"high": round(price * 1.06, 2), "low": round(price * 0.95, 2), "touches_high": 3,
-                                      "touches_low": 2, "width_pct": 11.58}}}}
+                                      "touches_low": 2, "width_pct": 11.58, "width_atr": 4.2, "round_trips": 2}}}}
     fit = horizon_fit(view, cls, 3.0)
     fit["errors"] = None
     return {"instrument_class": cls, "horizons": out, "horizon_fit": fit, "horizons_note": None, "horizons_fake": True}
 
 
 async def build(prices, ticker: str, plan: dict, main: str, sr_main: dict | None, *, same_day: bool,
-                scripted: bool = False) -> dict:
+                scripted: bool = False, risk=None) -> dict:
     """``plan``'s horizons · instrument_class · horizon_fit (a dict to merge into the plan). ``scripted``: a
     fake run with no prices gets ``fake``'s."""
     cls = instrument_class(ticker)
@@ -238,7 +248,7 @@ async def build(prices, ticker: str, plan: dict, main: str, sr_main: dict | None
 
     regime_errors: dict[str, str] = {}
     rows, view = await asyncio.gather(
-        asyncio.gather(*(_one(prices, ticker, horizons.HORIZONS[h], sr_main, main) for h in ORDER)),
+        asyncio.gather(*(_one(prices, ticker, horizons.HORIZONS[h], sr_main, main, risk) for h in ORDER)),
         _bounded(regime_live.view(prices, ticker), "regime", regime_errors))
     out = {r["horizon"]: r for r in rows}
     if main in out:

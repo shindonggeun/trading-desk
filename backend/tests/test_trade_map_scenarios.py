@@ -132,3 +132,72 @@ def test_one_scenario_only_is_not_called_a_thin_sample():
     only = [s for s in trade_map.scenarios(KORU, 6.93, 0.6, "long", 7.73) if s["kind"] == "breakout"]
     got = trade_map_record.lookup("downtrend", only, table)
     assert got["regime_note"] is None and only[0]["record"]["n"] == 120
+
+
+def test_the_breakout_stop_is_under_the_level_it_broke_not_a_support_under_the_price():
+    # #671 a support 6.9 under the price (6.93) is within 1.5 ATR of the 7.73 trigger: not what it broke
+    sr = {**KORU, "levels": [*KORU["levels"], {"price": 6.9, "kind": "support", "strength": 1.0, "basis": "5일선"}]}
+    brk = _sc(trade_map.build(HOLD, sr), "long", "breakout")
+    assert brk["stop"] == 7.3 and brk["level"] == 7.6 and "아래" in brk["basis"]
+
+
+def test_a_short_breakout_stops_above_the_level_it_broke_and_says_so():
+    brk = _sc(trade_map.build(HOLD, KORU), "short", "breakout")
+    assert brk["entry"] == 5.92 and brk["level"] == 6.4                  # nearest the trigger
+    assert brk["stop"] == round(6.51 + 0.3, 2)                           # past the zone's far edge (6.51)
+    assert "이탈한 레벨" in brk["basis"] and brk["basis"].endswith("위")
+
+
+def test_the_support_entry_is_dimmed_on_its_first_targets_reward():
+    # the user's call (#671): low reward/risk is judged on the first target (KORU: 7.6, not 9.02)
+    sup = _sc(trade_map.build(HOLD, KORU), "long", "support")
+    assert sup["rr"] == sup["targets"][0]["rr"] < trade_map.LOW_RR and sup["low_rr"]
+    assert sup["targets"][1]["rr"] >= trade_map.LOW_RR
+
+
+def test_a_limit_gapped_through_its_stop_is_a_scratch_stop_not_dropped():
+    from desk import trade_map_bt as bt
+
+    sc = {"side": "long", "kind": "support", "entry": 10.0, "entry_type": "limit", "stop": 9.0,
+          "targets": [{"price": 12.0, "rr": 2.0}]}
+    got = bt.play(sc, [_bar(8.5, 8.8, 8.2, 8.6)], cost_bps=10)
+    assert got["exit"] == "stop" and got["fill"] == 8.5 and -0.02 < got["r"] < 0
+    now = {**sc, "entry_type": "now"}
+    assert bt.play(now, [_bar(8.5, 8.8, 8.2, 8.6)]) is None              # a "now" opening past its stop: no plan
+
+
+def test_overlapping_trades_are_counted_once_in_n_indep():
+    from desk import trade_map_bt as bt
+
+    base = {"ticker": "X", "side": "long", "kind": "support", "regime": "range", "r": 1.0, "exit": "target"}
+    trades = [{**base, "day": "2026-01-01", "t0": 1, "t1": 10}, {**base, "day": "2026-01-03", "t0": 3, "t1": 12},
+              {**base, "day": "2026-01-12", "t0": 11, "t1": 14}, {**base, "ticker": "Y", "day": "2026-01-03",
+                                                                  "t0": 3, "t1": 12}]
+    row = bt.summarize(trades, {})["long:support:range"]
+    assert (row["n"], row["n_indep"]) == (4, 3)
+
+
+def test_a_tiny_gap_is_no_better_one_and_no_minus_zero():
+    table = {"rows": {"long:breakout:downtrend": {"n": 300, "n_indep": 90, "win_rate": 0.41, "avg_r": 0.012},
+                      "long:support:downtrend": {"n": 280, "n_indep": 80, "win_rate": 0.45, "avg_r": -0.003}}}
+    found = trade_map.scenarios(KORU, 6.93, 0.6, "long", 7.73)
+    note = trade_map_record.lookup("downtrend", found, table)["regime_note"]
+    assert "차이가 없었어요" in note and "나았어요" not in note
+    assert "-0.00" not in note and "+0.00R" in note and "90 · 80번" in note
+
+
+def test_the_record_is_for_swing_runs_only():
+    table = {"rows": {"long:breakout:downtrend": {"n": 120, "win_rate": 0.41, "avg_r": -0.05}}}
+    found = trade_map.scenarios(KORU, 6.93, 0.6, "long", 7.73)
+    got = trade_map_record.lookup("downtrend", found, table, horizon="intraday")
+    assert got == {"regime_note": None, "record_meta": None} and all(s["record"] is None for s in found)
+    assert trade_map_record.lookup("downtrend", found, table)["record_meta"]["horizon"] == "swing"
+    assert trade_map.build({**HOLD, "horizon": "scalp"}, KORU)["regime_note"] is None
+
+
+def test_short_notes_use_the_short_names():
+    table = {"rows": {"short:breakout:uptrend": {"n": 200, "n_indep": 60, "win_rate": 0.3, "avg_r": -0.3},
+                      "short:support:uptrend": {"n": 200, "n_indep": 60, "win_rate": 0.4, "avg_r": -0.1}}}
+    found = trade_map.scenarios(KORU, 6.93, 0.6, "short", 5.92)
+    note = trade_map_record.lookup("uptrend", found, table)["regime_note"]
+    assert "저항 근처 진입" in note and "이탈 확인 진입" in note and "지지 근처" not in note

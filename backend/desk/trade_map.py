@@ -118,7 +118,7 @@ def side_map(side: str, entry: float, stop: float | None, target: float | None, 
         p_stop = stop
     elif origin == "trigger":
         # #652 a breakout fails when the price falls back under the level it broke - not two supports down
-        stop_zone, p_stop = _breakout_stop(cands, entry, atr, sign)
+        stop_zone, p_stop, _ = _breakout_stop(cands, entry, atr, sign, (sr or {}).get("reference_price"))
     else:
         stop_zone = None
         last = guards[1] if len(guards) > 1 else guards[0] if guards else None
@@ -155,21 +155,31 @@ def _clamp_stop(entry: float, stop: float, atr: float, sign: int) -> float:
     return entry - sign * min(sign * (entry - stop), MAX_STOP_ATR * atr)
 
 
-def _breakout_stop(cands: list[dict], entry: float, atr: float, sign: int) -> tuple[dict | None, float]:
-    """A breakout's stop: BREAKOUT_STOP_ATR back under the level it broke - the furthest-back level within
-    BROKEN_REACH_ATR behind the entry (the broken zone's far edge), else the entry itself."""
-    broken = [c for c in cands if c["source"] != "plan" and 0 <= sign * (entry - c["price"]) <= BROKEN_REACH_ATR * atr]
-    level = min(broken, key=lambda c: sign * c["price"]) if broken else None
-    base = level["price"] if level else entry
-    zone = None
-    if level:
-        what = level["basis"] or "지지 · 저항"
-        zone = {"source": level["source"], "sources": [level["source"]], "strength": level["strength"],
-                "basis": f"돌파한 레벨({what}) 아래"}
+def _breakout_stop(cands: list[dict], entry: float, atr: float, sign: int,
+                   ref: float | None = None) -> tuple[dict | None, float, float | None]:
+    """A breakout's stop: BREAKOUT_STOP_ATR back past the level it broke - the zone right behind the entry
+    (within BROKEN_REACH_ATR; levels within MERGE_ATR of its nearest one are that zone, its far edge is the
+    base), else the entry itself. A level on the price's other side (a support under the price for a long)
+    is not what a breakout breaks. Returns (the stop's zone, the stop, the broken level's price)."""
+    broken = sorted((c for c in cands if c["source"] != "plan"
+                     and 0 <= sign * (entry - c["price"]) <= BROKEN_REACH_ATR * atr
+                     and (ref is None or sign * (c["price"] - ref) >= 0)),
+                    key=lambda c: -sign * c["price"])                # nearest the entry first
+    zone_lv = [c for c in broken if abs(c["price"] - broken[0]["price"]) <= MERGE_ATR * atr] if broken else []
+    zone = level = None
+    base = entry
+    if zone_lv:
+        level = broken[0]["price"]
+        base = min(zone_lv, key=lambda c: sign * c["price"])["price"]  # the zone's far edge
+        what = " · ".join(dict.fromkeys(c["basis"] for c in zone_lv if c["basis"])) or "지지 · 저항"
+        head = max(zone_lv, key=lambda c: c["strength"] or 0)
+        zone = {"source": head["source"], "sources": sorted({c["source"] for c in zone_lv}),
+                "strength": max((c["strength"] or 0) for c in zone_lv) or None,
+                "basis": f"돌파한 레벨({what}) 아래" if sign > 0 else f"이탈한 레벨({what}) 위"}
     stop = base - sign * BREAKOUT_STOP_ATR * atr
     if sign * (entry - stop) < BREAKOUT_STOP_ATR * atr:         # at least half an ATR of room
         stop = entry - sign * BREAKOUT_STOP_ATR * atr
-    return zone, _clamp_stop(entry, stop, atr, sign)
+    return zone, _clamp_stop(entry, stop, atr, sign), level
 
 
 def _strong(c: dict) -> bool:
@@ -220,8 +230,8 @@ def scenarios(sr: dict | None, ref: float, atr: float, side: str, trigger: float
             nearest = min(ahead, key=lambda c: sign * c["price"])
             entry = nearest["price"] + sign * BREAKOUT_ATR * atr
     if entry is not None:
-        zone, stop = _breakout_stop(cands, entry, atr, sign)
-        broken = {"price": stop + sign * BREAKOUT_STOP_ATR * atr, "basis": (zone or {}).get("basis")}
+        zone, stop, level = _breakout_stop(cands, entry, atr, sign, ref)
+        broken = {"price": level, "basis": (zone or {}).get("basis")} if level is not None else None
         sc = _scenario(side, "breakout", entry, "stop", stop, broken, cands, ref, atr)
         if sc:
             out.append(sc)
@@ -230,7 +240,8 @@ def scenarios(sr: dict | None, ref: float, atr: float, side: str, trigger: float
             if _strong(c) and 0 <= sign * (ref - c["price"]) <= SUPPORT_REACH_ATR * atr]
     if near:
         top = max(near, key=lambda c: sign * c["price"])            # the one nearest the price
-        zone = [c for c in cands if c["source"] != "plan" and abs(c["price"] - top["price"]) <= MERGE_ATR * atr]
+        zone = [c for c in cands if c["source"] != "plan" and abs(c["price"] - top["price"]) <= MERGE_ATR * atr
+                and sign * (ref - c["price"]) >= 0]                 # the zone stays on its side of the price
         edge = max(zone, key=lambda c: sign * c["price"])["price"]  # the zone's near edge (its top for a long)
         far = min(zone, key=lambda c: sign * c["price"])["price"]   # its far edge
         if sign * (ref - edge) <= AT_ZONE_ATR * atr:
@@ -282,7 +293,8 @@ def build(plan: dict, sr: dict | None) -> dict | None:
         if side and entry is not None:
             trigger = entry if plan.get("entry_type") == "stop" else None
         found += scenarios(sr, ref, atr, s_, trigger) if ref else []
-    record = trade_map_record.lookup(regime, found)
+    # the record is of daily bars (swing): a scalp · intraday · short-swing run gets none of it
+    record = trade_map_record.lookup(regime, found, horizon=plan.get("horizon") or trade_map_record.HORIZON)
     return {"maps": maps, "reference_price": _round(ref) if ref else None, "atr": _round(atr),
             "volume_profile": bool(vp), "levels": bool((sr or {}).get("levels")),
             "scenarios": found, "regime": regime, **record}

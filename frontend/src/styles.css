@@ -866,6 +866,7 @@ span.cs-hold-text { color: var(--warn); }
 .recent-status-queued, .recent-status-running { color: var(--warn); }
 .recent-status-failed { color: var(--danger, var(--up)); }
 .recent-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-queue-detail { color: var(--muted); white-space: normal; }
 .recent-more { margin: 8px 0 0; font-size: 13px; }
 
 .history { padding: 20px; max-width: 1320px; margin: 0 auto; box-sizing: border-box; width: 100%; }
@@ -898,6 +899,7 @@ span.cs-hold-text { color: var(--warn); }
 .run-bar .lv-stop { color: var(--short); }
 .run-bar .lv-target { color: var(--long); }
 .run-bar-now { color: var(--muted); }
+.run-bar-now.run-bar-queue-warn { color: var(--warn); }
 .run-bar-more { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 0 14px 10px; }
 .run-tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
 .run-tab { position: relative; background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted);

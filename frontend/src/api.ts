@@ -249,7 +249,7 @@ export const api = {
   config: () => call<DeskConfig>("/api/config"),
   runs: (page = 1, size = 50) => call<RunPage>(`/api/runs?page=${page}&size=${size}`),
   deleteRun: (id: string) => call<void>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  run: (id: string) => call<Run>(`/api/runs/${encodeURIComponent(id)}`),
+  run: (id: string, signal?: AbortSignal) => call<Run>(`/api/runs/${encodeURIComponent(id)}`, signal ? { signal, cache: "no-store" } : undefined),
   // #528 모의 투자(#527) — 실제 주문 없음. 설정을 바꾸면 다음 읽기에서 settings_version 이 따라온다
   paperSettings: () => call<PaperSettings>("/api/paper/settings"),
   savePaperSettings: (patch: PaperSettingsPatch) =>

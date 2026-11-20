@@ -787,6 +787,8 @@ export interface Run {
   outcome?: Outcome | null;
   outcome_status?: OutcomeStatus | null;
   scored_at?: string | null;
+  /** #801 대기 중일 때 제공되는 대기열 스냅숏 */
+  queue?: { ahead: number; running: number; analyst: "up" | "down" | null } | null;
   /** #437 run 이 끝날 때 고정한 1주 · 1개월 방향 전망 — 옛 run · 만들지 못한 run 은 null */
   outlook?: RunOutlook | null;
 }

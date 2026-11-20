@@ -6,6 +6,7 @@ import { listLevels } from "../listLevels";
 import type { Plan, Run, RunPage } from "../types";
 import { BiasBadge, RatingText } from "./PlanCard";
 import { usePoll } from "../poll";
+import { queueReason } from "../runQueue";
 
 /** #387 판단 칸에서 같은 말을 거듭 쓰지 않는다 — "보유 · 관망" 등급이면 "관망" 배지 · 의견 이름은 뺀다. */
 const ratingKo = (plan: Plan) => term(RATING, plan.rating)?.ko ?? "";
@@ -173,7 +174,7 @@ export default function RunsCard() {
                   <td role="cell" className="num" data-label="손절">{price(lv.stop)}</td>
                   <td role="cell" className="num" data-label="목표">{price(lv.target)}</td>
                   <td role="cell" className="num" data-label="손익비">{lv.rr ?? "—"}</td>
-                  <td role="cell" data-label="상태"><span className={`status status-${r.status}`}>{STATUS_LABEL[r.status]}</span></td>
+                  <td role="cell" data-label="상태"><span className={`status status-${r.status}`} title={queueReason(r, [])?.text}>{STATUS_LABEL[r.status]}</span></td>
                   <td role="cell" className="muted" data-label="요청">{time(r.created_at)}</td>
                   <td role="cell" className="stack-action">
                     <button

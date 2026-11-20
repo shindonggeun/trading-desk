@@ -15,6 +15,15 @@ and its change / change rate are against it.
 
 A failed refresh hands back the last good answer marked ``stale``. Secrets stay in desk.futures_flow
 (KisRest never logs or returns the key, secret or token); errors here carry its short code only.
+
+#713 both sessions, always (``both``): ``sessions.day`` and ``sessions.night`` each with ``state`` open or
+closed, the top level the session trading now or, with both closed (06:00 ~ 08:44, 15:45 ~ 17:59,
+weekends), the one that ended last - so the night's close shows until the day opens. A closed session
+keeps the last good quote of that very session (``held``) when KIS answers it empty, and with none kept
+(a restart) its last minute bar's close stands in (``from_bars``: no change against the base). Its
+minute bars likewise: KIS answers a closed night's minutes empty, so the ones taken while it traded
+stay (``held``). A new session is a new cache key (its opening day), so 08:45 and 18:00 are read fresh.
+What is kept lives in this process: after a restart a closed session shows what KIS still gives.
 """
 
 from __future__ import annotations
@@ -147,6 +156,8 @@ class FuturesQuote:
         self._now, self._clock, self._is_open = now, clock, is_open
         self._cache: dict[tuple, tuple[float, float, dict]] = {}
         self._locks: dict[tuple, asyncio.Lock] = {}   # one per answer: a paging candle fetch does not hold the quote
+        # #713 (session, opening day) -> its last quote with a price; ("bars", session, day) -> its minutes
+        self._good: dict[tuple, dict | list] = {}
 
     def _session(self, kind: str | None) -> dict:
         now = self._now()
@@ -192,12 +203,52 @@ class FuturesQuote:
                                                              "FID_INPUT_ISCD": front["code"]})
             q = normalize_quote(res.get("output1") or {}, s["shown"])
             if q["price"] is None:
+                kept = await self._closed_stand_in(s, front)
+                if kept is not None:
+                    return kept
                 raise RuntimeError(f"빈 시세(종목 {front['code']})")
             name = q.pop("name")
             out = self._base(s, front)
-            return {**out, "contract": {**out["contract"], "name": name}, **q}
+            got = {**out, "contract": {**out["contract"], "name": name}, **q}
+            self._good[(s["shown"], s["date"])] = got
+            return got
 
         return await self._cached(("quote", s["shown"], s["date"]), s["now"] == s["shown"], fetch)
+
+    async def _closed_stand_in(self, s: dict, front: dict) -> dict | None:
+        """#713 a closed session answered empty: its last good quote (``held``), else its last minute bar's
+        close (``from_bars``); None while it trades (an empty quote then is a real fault) or with neither."""
+        if s["now"] == s["shown"]:
+            return None
+        kept = self._good.get((s["shown"], s["date"]))
+        if kept is not None:
+            return {**kept, **self._base(s, front), "contract": kept["contract"], "held": True}
+        try:
+            bars = (await self.candles(s["shown"]))["bars"]
+        except Exception as exc:   # noqa: BLE001 - no stand-in then; the caller says the quote is empty
+            log.info("futures %s stand-in bars failed: %s", s["shown"], _short(exc))
+            return None
+        if not bars:
+            return None
+        last = bars[-1]
+        return {**self._base(s, front), "price": last["c"], "change": None, "change_pct": None, "prev_close": None,
+                "prev_close_basis": BASE_LABEL[s["shown"]], "open": bars[0]["o"], "high": max(b["h"] for b in bars),
+                "low": min(b["l"] for b in bars), "volume": sum(b["v"] for b in bars), "open_interest": None,
+                "open_interest_change": None, "from_bars": True, "bar_at": last["t"]}
+
+    async def both(self) -> dict:
+        """#713 the session shown now at the top level, and ``sessions`` day and night each with its ``state``
+        (a session failing alone carries its error)."""
+        current = futures_session(self._now(), self._is_open)
+        sessions: dict[str, dict] = {}
+        for kind in SESSIONS:
+            try:
+                got = await self.quote(kind)
+            except Exception as exc:   # noqa: BLE001 - the other session still shows
+                got = {"supported": True, "error": f"선물 시세를 받지 못했습니다 — {_short(exc)}", "stale": False,
+                       "session": kind, "market": current["now"]}
+            sessions[kind] = {**got, "state": "open" if current["now"] == kind else "closed"}
+        return {**sessions[current["shown"]], "current": current["shown"], "sessions": sessions}
 
     async def candles(self, session: str | None = None, interval: str = "1m") -> dict:
         if interval not in INTERVALS:
@@ -223,7 +274,15 @@ class FuturesQuote:
                 if len(page) < PAGE_ROWS or not times or min(times) <= s["start"]:
                     break
                 end = min(times) - timedelta(minutes=1)
-            return {**self._base(s, front), "bars": normalize_bars(rows, s)}
+            bars = normalize_bars(rows, s)
+            key = ("bars", s["shown"], s["date"])
+            if bars:
+                self._good[key] = bars
+            elif s["now"] != s["shown"] and key in self._good:
+                # #713 KIS answers a closed session's minutes empty (night bars at 11:37, 2026-11-20): the
+                # ones taken while it traded
+                return {**self._base(s, front), "bars": self._good[key], "held": True}
+            return {**self._base(s, front), "bars": bars}
 
         # the one-minute bars are fetched once a session; each interval is cut from them
         one = await self._cached(("candles", s["shown"], s["date"]), s["now"] == s["shown"], fetch)

@@ -138,3 +138,109 @@ def test_the_routes_need_a_session_and_say_unsupported_without_kis(db_url):
         assert client.get("/api/market/futures/candles?interval=5m").json()["bars"] == []
         assert client.get("/api/market/futures/quote?session=evening").status_code == 422
         assert client.get("/api/market/futures/candles?interval=2m").status_code == 422
+
+
+# #713 both sessions, always ------------------------------------------------------------------------
+
+
+class ClosedEmpty(FakeRest):
+    """KIS answering a closed session's quote empty (``empty``: the divisions doing so)."""
+
+    def __init__(self, empty=("CM",), fail=False):
+        super().__init__(fail)
+        self.empty = set(empty)
+
+    async def get(self, path, tr_id, params):
+        if tr_id == fq.PRICE_TR and params["FID_COND_MRKT_DIV_CODE"] in self.empty:
+            self.calls.append((tr_id, params))
+            return {"rt_cd": "0", "output1": {"futs_prpr": ""}}
+        return await super().get(path, tr_id, params)
+
+
+@pytest.mark.parametrize(("when", "current", "day_state", "night_state", "night_date"), [
+    (at("2026-11-17", "05:59"), "night", "closed", "open", "2026-11-16"),
+    (at("2026-11-17", "06:30"), "night", "closed", "closed", "2026-11-16"),    # both closed: the night's close
+    (at("2026-11-17", "09:00"), "day", "open", "closed", "2026-11-16"),
+    (at("2026-11-17", "16:30"), "day", "closed", "closed", "2026-11-16"),      # the day's close until 18:00
+    (at("2026-11-17", "18:01"), "night", "closed", "open", "2026-11-17"),
+    (at("2026-11-16", "07:30"), "night", "closed", "closed", "2026-11-13"),    # Monday morning: Friday's night
+    (at("2026-11-18", "07:30"), "night", "closed", "closed", "2026-11-17"),    # a holiday morning
+])
+def test_both_sessions_always_with_their_state(when, current, day_state, night_state, night_date):
+    got = asyncio.run(fq.FuturesQuote(FakeRest(), now=lambda: when, is_open=is_open).both())
+    assert got["current"] == current and got["session"] == current
+    assert (got["sessions"]["day"]["state"], got["sessions"]["night"]["state"]) == (day_state, night_state)
+    assert got["sessions"]["night"]["session_date"] == night_date
+    assert got["sessions"]["night"]["price"] == 782.75 and got["sessions"]["day"]["price"] == 789.35
+
+
+def test_a_closed_night_answered_empty_keeps_its_last_good_quote():
+    now, clock = [at("2026-11-17", "05:59")], [0.0]
+    rest = ClosedEmpty()
+    rest.empty = set()                                       # open: KIS answers
+    quotes = fq.FuturesQuote(rest, now=lambda: now[0], clock=lambda: clock[0], is_open=is_open)
+    live = asyncio.run(quotes.both())
+    assert live["sessions"]["night"]["price"] == 782.75
+    rest.empty, now[0], clock[0] = {"CM"}, at("2026-11-17", "06:30"), 1860.0   # closed: KIS answers empty
+    got = asyncio.run(quotes.both())
+    night = got["sessions"]["night"]
+    assert got["current"] == "night" and night["held"] is True and night["state"] == "closed"
+    assert (night["price"], night["change_pct"], night["market"]) == (782.75, -0.84, "closed")
+    assert got["price"] == 782.75                            # the top level: the night's close before 08:45
+
+
+def test_with_no_quote_kept_the_closed_nights_last_bar_stands_in():
+    rest = ClosedEmpty()
+    quotes = fq.FuturesQuote(rest, now=lambda: at("2026-11-17", "06:30"), is_open=is_open)   # e.g. after a restart
+    night = asyncio.run(quotes.both())["sessions"]["night"]
+    assert night["from_bars"] is True and night["price"] == 780.0 and night["change_pct"] is None
+    assert night["bar_at"].startswith("2026-11-17T06:00") and night["error"] is None
+
+
+def test_an_empty_quote_while_the_session_trades_is_still_an_error():
+    rest = ClosedEmpty(empty=("CM",))
+    got = asyncio.run(fq.FuturesQuote(rest, now=lambda: at("2026-11-16", "22:23"), is_open=is_open).both())
+    assert got["sessions"]["night"]["error"] and "price" not in got["sessions"]["night"]
+    assert got["sessions"]["day"]["price"] == 789.35         # the other session still shows
+
+
+def test_a_new_session_is_read_fresh_at_its_opening():
+    clock = [0.0]
+    now = [at("2026-11-17", "08:44")]
+    rest = FakeRest()
+    quotes = fq.FuturesQuote(rest, now=lambda: now[0], clock=lambda: clock[0], is_open=is_open)
+    before = asyncio.run(quotes.both())["sessions"]["day"]
+    calls = len(rest.calls)
+    now[0], clock[0] = at("2026-11-17", "08:45"), 60.0        # well inside the closed cache's 600 s
+    after = asyncio.run(quotes.both())["sessions"]["day"]
+    assert (before["session_date"], after["session_date"]) == ("2026-11-16", "2026-11-17")
+    assert after["state"] == "open" and len(rest.calls) > calls
+
+
+def test_the_route_carries_both_sessions_without_kis(db_url):
+    with _client(db_url) as client:
+        q = client.get("/api/market/futures/quote").json()
+        assert q["supported"] is False and set(q["sessions"]) == {"day", "night"} and q["current"] in ("day", "night")
+        one = client.get("/api/market/futures/quote?session=night").json()
+        assert "sessions" not in one and one["session"] == "night"
+
+
+def test_a_closed_nights_empty_minutes_keep_the_ones_taken_while_it_traded():
+    class NoBarsWhenClosed(FakeRest):
+        closed = False
+
+        async def get(self, path, tr_id, params):
+            if tr_id == fq.CANDLE_TR and self.closed:
+                self.calls.append((tr_id, params))
+                return {"rt_cd": "0", "output2": []}
+            return await super().get(path, tr_id, params)
+
+    now, clock = [at("2026-11-17", "05:59")], [0.0]
+    rest = NoBarsWhenClosed()
+    quotes = fq.FuturesQuote(rest, now=lambda: now[0], clock=lambda: clock[0], is_open=is_open)
+    live = asyncio.run(quotes.candles("night", "5m"))["bars"]
+    rest.closed, now[0], clock[0] = True, at("2026-11-17", "11:37"), 3600.0
+    held = asyncio.run(quotes.candles("night", "5m"))
+    assert held["held"] is True and held["bars"] == live and held["market"] == "day"
+    fresh = fq.FuturesQuote(rest, now=lambda: at("2026-11-17", "11:37"), is_open=is_open)   # a restart
+    assert asyncio.run(fresh.candles("night"))["bars"] == []

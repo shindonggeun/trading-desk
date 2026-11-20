@@ -2264,6 +2264,8 @@ export interface MorningBrief {
   day_call: string | null;
   missing: string[];
   fallback?: string | null;
+  /** #571 모델 문장 중 숫자 대조에 걸려 빠진 수(칸별) — 없으면 빠진 것 없음. 화면은 아직 쓰지 않는다 */
+  dropped?: Record<string, number>;
   version: number;
   generating: boolean;
   next_due: string | null;

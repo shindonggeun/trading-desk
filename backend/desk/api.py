@@ -85,6 +85,7 @@ from . import (
     review,
     risk_regime,
     roles,
+    sector_movers,
     sector_news,
     session_progress,
     sessions,
@@ -125,6 +126,7 @@ from .stock_profile import MAX_TICKERS as PROFILE_MAX
 from .stock_profile import Profiles
 from .store import TERMINAL, Store, iso
 from .token_store import TokenStore
+from .ttl_cache import TTLCache
 from .universe import KR_SUFFIX, Universe
 
 MAX_BOARD = 30          # tickers per /api/estimates call
@@ -472,7 +474,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             day_call=morning_brief.day_call_source(),
             extra=morning_brief.hand_kept,
             krx=lambda: krx_etp.summary(engine, datetime.now(krx.KST).date()),
-            sectors=(lambda: sector_cache.read("kr", sector_candles)) if sector_candles is not None else None)
+            sectors=(lambda: sector_cache.read("kr", sector_candles)) if sector_candles is not None else None,
+            # #680 the US sectors' big days of the last session and the stocks that drove them
+            movers=(lambda: asyncio.gather(*(sector_movers.read(k, prices, mover_causes, mover_name)
+                                             for k, sec in sector_movers.SECTORS.items() if sec["market"] == "US")))
+            if sector_candles is not None else None)
 
     async def make_brief(trigger: str, desk_only: bool = False, taken: bool = False) -> str:
         """One brief (#571): ``made`` or ``busy`` (one being written, or - automatic only - no free ChatGPT
@@ -526,6 +532,16 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # #620 today's strong / weak sectors per market, from the sector ETFs' daily bars (the same switch)
     sector_candles = None if settings.fake_runs or settings.macro_interval_sec <= 0 else day_sectors.yahoo_adjusted
     sector_cache = day_sectors.Cache()
+    # #680 a big day's culprits: a Korean member's listed name, and why a member moved (an earnings report)
+
+    def mover_name(t: str) -> str | None:
+        return listing_name(t) if t.upper().endswith((".KS", ".KQ")) else None
+
+    def mover_causes(tickers: set[str], day) -> dict[str, str]:
+        rows = earnings.CACHE.for_days(day - timedelta(days=1), day, set(tickers))
+        return sector_movers.causes_from_earnings(rows, set(tickers), day)
+
+    movers_cache: TTLCache[str, dict] = TTLCache(len(sector_movers.SECTORS) + 2, 60.0)
     sector_tasks: dict[str, asyncio.Task] = {}
     # #601 KRX OPEN API end-of-day history: only with a key, and off in scripted runs and tests
     krx_desk = (krx.KrxDaily(engine, krx.Client(settings.krx_api_key))
@@ -848,6 +864,22 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 jobs.get("nq_fast").note = nq_fast_watch.last
             return nq_fast.TICK_SEC
 
+        movers_said: set[tuple[str, str, str]] = set()     # (sector, date, rule) alerted: not read again
+
+        async def watch_sector_movers() -> float:
+            # #680 each sector's big day while its market trades: the index first, the members only then
+            now_ = datetime.now(UTC)
+            for key, sector in sector_movers.SECTORS.items():
+                if not await live.is_open(calendar, next(iter(sector["members"])), now_):
+                    continue
+                m = await sector_movers.big_day(key, prices, mover_causes, mover_name, now_, movers_said)
+                if m is not None:
+                    await asyncio.to_thread(app.state.market_alerts.dispatch, sector_movers.alerts(m, now_))
+                    movers_said.add((key, m["date"], sector_movers.rule_of(m["move_pct"])))
+            week_ago = (now_ - timedelta(days=7)).date().isoformat()
+            movers_said.difference_update({s for s in movers_said if s[1] < week_ago})
+            return sector_movers.SCAN_SEC
+
         async def watch_holdings() -> float:
             # #694 each holding's stop / take-profit by its regime, while its market trades
             await app.state.holding_watch.run_pass(book, prices, calendar, app.state.market_alerts.dispatch)
@@ -1055,6 +1087,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         start("futures_close_quote", getattr(futures, "rest", None) is not None, read_futures_close,
               futures_quote.CLOSE_READ_SEC, "futures close quote failed")
+        start("sector_movers", feeds_on, watch_sector_movers, sector_movers.SCAN_SEC, "sector movers failed")
         start("credit", feeds_on, refresh_credit, CREDIT_RETRY_SEC, "KOFIA credit refresh failed")
         if feeds_on:
             # #428: the pass saved before a restart answers until the first one here finishes
@@ -3084,6 +3117,19 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
 
+    @app.get("/api/sectors/movers")
+    async def sector_movers_view(sector: str = "sox"):
+        """#680 the sector's move since the last close and the stocks that drove it (weight x return), with
+        the "주범" sentence on a big day (±2%) - approximate weights (desk/data/sector_weights.json)."""
+        if sector not in sector_movers.SECTORS:
+            raise HTTPException(422, f"sector must be one of {', '.join(sector_movers.SECTORS)}")
+        hit = movers_cache.get(sector)
+        if hit is not None:
+            return hit
+        got = await sector_movers.read(sector, prices, mover_causes, mover_name)
+        movers_cache.put(sector, got)
+        return got
+
     @app.get("/api/sectors")
     def list_sectors(request: Request):
         """The account's sector tabs in order; a new account gets the default sectors."""
@@ -3150,6 +3196,7 @@ class PushKindsIn(BaseModel):
     day_call: bool = True           # #572 each market's first direction call of the day
     line_signal: bool = True        # #613 channel / trendline signals (the watch itself is off until set)
     holding_alert: bool = True      # #694 each holding's stop / take-profit (desk.holding_watch)
+    sector_mover: bool = True       # #680 a sector's big day and the stocks that drove it (desk.sector_movers)
     # #641 the flow / NQ=F alerts by tone (desk.alert_tone)
     tone_positive: bool = True
     tone_neutral: bool = True
@@ -3237,8 +3284,10 @@ def _push_routes(app: FastAPI, engine, settings: Settings) -> None:
         turns = [{"trade_date": a["trade_date"], "kind": "flow_turn", "rule": a["kind"], "market": a["market"],
                   "who": "foreign", "severity": "caution", "t": a["t"], "value": a["value"], "prev": None,
                   "text": a["text"], "pushed": True} for a in app.state.flow_alerts.list(day)]
-        # #694 a holding's alerts are its own (GET /api/holding-watch), not the market's timeline
-        items = turns + [a for a in app.state.market_alerts.list(day) if a["kind"] != holding_watch.KIND]
+        # #694 a holding's alerts are its own (GET /api/holding-watch), not the market's timeline; #680 a
+        # sector's big day has its own line (GET /api/sectors/movers) until the timeline shows that kind
+        items = turns + [a for a in app.state.market_alerts.list(day)
+                         if a["kind"] not in (holding_watch.KIND, sector_movers.KIND)]
         for a in items:     # #641 the direction beside the size, worked out from what each one stores
             a["tone"] = alert_tone.tone(a)
         items.sort(key=lambda a: datetime.fromisoformat(a["t"]))

@@ -160,5 +160,40 @@ def test_a_futures_session_dated_the_day_before_is_the_next_weekdays():
     assert last["day"] == "2026-05-22" and last["cause"] == "other"   # Thursday's date: Friday's session
 
 
+def _evening_row() -> list[dict]:
+    """Thursday 2026-05-21's bar replaced by the next session's live row (Yahoo dates it Thursday from 18:00
+    New York, yfinance drops the Thursday session that ended at 17:00): it opens 1.5 ATR under the close
+    two sessions back - a whole day's fall, not a gap."""
+    bars = series()[:-1]
+    assert bars[-1]["at"].startswith("2026-05-21") and bars[-2]["close"] == 99.0
+    bars[-1] = _bar(date(2026, 5, 21), 97.5, 97.8, 97.0, 97.2)
+    return bars
+
+
+@pytest.mark.parametrize(("ticker", "now", "counted"), [
+    ("NQ=F", datetime(2026, 5, 21, 20, 0, tzinfo=ET), False),    # Thursday evening: the live row opens no gap
+    ("NQ=F", datetime(2026, 5, 21, 18, 0, tzinfo=ET), False),    # from the reopen
+    ("NQ=F", datetime(2026, 5, 21, 17, 30, tzinfo=ET), True),    # the hour the market is shut: Thursday's own bar
+    ("NQ=F", datetime(2026, 5, 22, 0, 30, tzinfo=ET), True),     # after midnight the live row is dated Friday
+    ("QQQ", datetime(2026, 5, 21, 20, 0, tzinfo=ET), True),      # an ETF's daily bar is its own session
+])
+def test_the_evening_live_row_of_a_futures_session_opens_no_gap(ticker, now, counted):
+    """#741: 2026-11-19 23:54 ET showed NQ=F / ES=F down gaps of -2.16% / -2.01% that were the day's moves."""
+    rep = gap_fill.report(lambda t: _evening_row(), ticker, now=now)
+    days = [(g["day"], g["direction"]) for g in rep["open"]]
+    assert (("2026-05-21", "down") in days) is counted
+    assert ("2026-05-11", "down") in days    # the older open gap stays, and the live row still trades
+    assert rep["last_close"] == 97.2
+
+
+def test_a_sunday_evening_row_still_opens_the_weekend_gap():
+    """No session is dated Sunday, so nothing was dropped: Friday's close to Sunday's open is a real gap."""
+    bars = series() + [_bar(date(2026, 5, 24), 97.5, 97.8, 97.0, 97.2)]
+    now = datetime(2026, 5, 24, 20, 0, tzinfo=ET)
+    assert not gap_fill.evening_session(bars, "ES=F", now)
+    gaps = gap_fill.report(lambda t: bars, "ES=F", now=now)["open"]
+    assert ("2026-05-24", "down") in [(g["day"], g["direction"]) for g in gaps]
+
+
 def test_futures_say_their_daily_gaps_are_mostly_the_weekends():
     assert "주말 · 휴장 뒤" in gap_fill.basis_of("NQ=F")["note"] and gap_fill.basis_of("SPY")["note"] is None

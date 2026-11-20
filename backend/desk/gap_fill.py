@@ -29,7 +29,8 @@ import statistics
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, is_dataclass
-from datetime import date
+from datetime import UTC, date, datetime
+from datetime import time as clock_time
 from typing import Any
 
 from . import market_calendar
@@ -130,22 +131,40 @@ def _cause(day: date, prev_day: date, events: dict[date, str]) -> str:
 
 def _session_day(day: date, prev_day: date) -> date:
     """#568: Yahoo dates a futures session opened at 18:00 New York with the day before until midnight, so
-    the newest bar can carry the previous bar's date - it is the next weekday's session."""
+    the newest bar can carry the previous bar's date - it is the next weekday's session. (Through
+    yfinance the two same-date rows come back as one - the newer - see ``evening_session``, #741.)"""
     return day if day > prev_day else market_calendar.next_weekday(prev_day)
+
+
+FUTURES_REOPEN = clock_time(18)   # CME reopens 18:00 New York for the next session
+
+
+def evening_session(bars: Bars, symbol: str, now: datetime) -> bool:
+    """#741: Monday to Thursday from 18:00 New York, Yahoo dates the next session's live daily row with
+    that evening's date and yfinance keeps only the newer of two same-date rows - so the session that
+    ended at 17:00 is missing and the last bar is the new one, two sessions after the bar before it.
+    Its open against that close is a whole day's move, not a gap. (Sunday evening drops nothing: no
+    session is dated Sunday, and Friday's close to Sunday's open is a real gap.)"""
+    if not symbol.upper().endswith("=F") or not bars:
+        return False
+    local = now.astimezone(market_calendar.ET)
+    return (local.weekday() <= 3 and local.time() >= FUTURES_REOPEN
+            and _local_day(bars[-1]["at"], symbol) == local.date())
 
 
 def _size(atr_multiple: float) -> str:
     return next(name for name, lo, hi in SIZES if lo <= atr_multiple < hi)
 
 
-def measure(bars: Bars, ticker: str, events: dict[date, str] | None = None) -> list[dict]:
+def measure(bars: Bars, ticker: str, events: dict[date, str] | None = None, *, last_unpaired: bool = False) -> list[dict]:
     """Every gap in ``bars`` (oldest first): when, which way, how big, why, the trend before it, and
-    when it filled (sessions, the opening one = 1) - None while not yet."""
+    when it filled (sessions, the opening one = 1) - None while not yet. ``last_unpaired``: the last
+    bar does not follow the bar before it (``evening_session``) - it fills gaps but opens none."""
     events = events or {}
     atrs = _atrs(bars)
     closes = [b["close"] for b in bars]
     out = []
-    for i in range(1, len(bars)):
+    for i in range(1, len(bars) - 1 if last_unpaired else len(bars)):
         prev, bar, atr = bars[i - 1], bars[i], atrs[i]
         gap = bar["open"] - prev["close"]
         if not atr or prev["close"] <= 0 or abs(gap) < MIN_GAP_ATR * atr or abs(gap) < MIN_GAP_PCT * prev["close"]:
@@ -256,14 +275,15 @@ def calendar_days(events: Iterable[Any]) -> dict[date, str]:
     return out
 
 
-def report(fetch: Fetch, ticker: str, events: Events | None = None) -> dict:
+def report(fetch: Fetch, ticker: str, events: Events | None = None, now: datetime | None = None) -> dict:
     """GET /api/gaps: the open gaps, the odds table and how many gaps it rests on."""
     b = basis_of(ticker)
     bars = fetch(b["symbol"])
     if len(bars) < 80:
         raise ValueError(f"too few daily bars for {b['symbol']} ({len(bars)})")
     days = calendar_days(events() if events else [])
-    gaps = measure(bars, b["symbol"], days)
+    gaps = measure(bars, b["symbol"], days,
+                   last_unpaired=evening_session(bars, b["symbol"], now or datetime.now(UTC)))
     opened = open_gaps(gaps, bars)
     if b["leverage"]:
         own = fetch(b["ticker"])

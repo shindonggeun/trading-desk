@@ -387,8 +387,8 @@ docker run --rm -it -p 127.0.0.1:1455:1455 -v trading-desk-tradingagents-home:/h
 ### 켜기 전 선행 조건 (모두 머지 · 배포된 뒤, 사용자 승인으로 켠다)
 
 1. **ChatGPT 로그인 토큰 동시 갱신(#766)**: `chatgpt-auth.json`(볼륨 공유)을 AI 채팅(api)과 run · 리포트(analyst)가 함께 쓴다. 두 프로세스가 동시에 갱신하면 refresh token 회전으로 로그인이 끊길 수 있다.
-2. **run 대기열**: api 는 `queued` 만 쓰고 analyst 가 가져가 실행한다(#688 3단계 analyst 큐). 없으면 켜진 상태의 run 이 `queued` 로 남는다.
-3. **#750**: run 이벤트를 PostgreSQL `LISTEN/NOTIFY` 로 알려 analyst 가 쓴 이벤트로 api 의 SSE 가 깨어난다.
+2. ~~**run 대기열**~~ 머지됨(cd85df1): api 는 `queued` 만 쓰고 analyst 가 가져가 실행한다. analyst 가 없으면 run 이 `queued` 로 남는다.
+3. ~~**#750**~~ 머지됨(2cde3c3): run 이벤트를 PostgreSQL `LISTEN/NOTIFY` 로 알려 analyst 가 쓴 이벤트로 api 의 SSE 가 깨어난다.
 4. **#760 · #690**: 화면과 run 메모가 함께 읽는 캐시(수급 · 선물 · 시세 …)를 Redis 로 나누고, collector 가 모은 시세 · 수급 · 알림을 화면 SSE 로 흘린다. 없으면 api 의 캐시가 collector 의 수집을 보지 못한다.
 
 켠 뒤 확인: `docker ps --filter name=trading-desk` 에 컨테이너 3개가 healthy, 로그의 브로커 토큰 발급 줄이 `collector` 에서만(`toss token issued (collector)`), `GET /api/status` 의 작업들이 오류 없이 도는지.

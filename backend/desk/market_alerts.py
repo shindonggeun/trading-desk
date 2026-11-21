@@ -179,12 +179,17 @@ class MarketAlerts:
             day = datetime.fromisoformat(alert["t"]).astimezone(KST).date().isoformat()
             row = {**alert, "trade_date": day, "text": text(alert), "pushed": alert["severity"] in PUSHED,
                    "tone": alert_tone.tone(alert)}
+            owner = None
             try:
                 with self._lock, self.engine.begin() as conn:
                     before = (self.list_in(conn, (date.fromisoformat(day) - timedelta(days=1)).isoformat())
                               if alert["kind"] in CROSS_MIDNIGHT else [])
                     if not admit(alert, self.list_in(conn, day), before):
                         continue
+                    if row["pushed"] and alert["kind"] in OWNER_ONLY:
+                        owner = self.owner()
+                        # notify.send treats a missing recipient as a public broadcast.
+                        row["pushed"] = owner is not None
                     conn.execute(insert(market_alerts).values(
                         trade_date=day, kind=alert["kind"], rule=alert["rule"], market=alert["market"],
                         who=alert["who"], severity=alert["severity"], at=alert["t"], value=alert.get("value"),
@@ -201,7 +206,6 @@ class MarketAlerts:
                 line["value"] = line["prev"] = None
             publish_market_event("alert", alert["kind"], line, "desk", alert["t"])
             if row["pushed"]:
-                owner = self.owner() if alert["kind"] in OWNER_ONLY else None
                 notify.send(self.pusher, alert["kind"], f"tone_{row['tone']}", user_id=owner, payload={
                     "title": TITLE[alert["kind"]], "body": row["text"], "tag": _tag(alert),
                     "url": URLS.get(alert["kind"], ALERT_URL), "kind": alert["kind"], "rule": alert["rule"], "market": alert["market"],

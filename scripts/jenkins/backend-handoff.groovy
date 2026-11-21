@@ -11,31 +11,44 @@ def runHandoff(String revision, Map adapter) {
         }
 
         Map release = adapter.prepare(revision)
-        validateRelease(release)
         if (release.revision != revision) {
             throw new IllegalArgumentException('준비된 이미지의 커밋이 요청과 다르다')
         }
-
-        for (String role in ['api', 'collector', 'analyst']) {
-            String name = "/trading-desk/trading-desk-backend-${role}"
-            // start는 알려진 핸들을 반환하거나 하위 작업이 생기지 않은 상태에서만 실패한다.
-            def child = adapter.start(name, release.subMap(['revision', 'imageId', 'agent', 'daemon']))
-            int status
-            try {
-                // 반환 값은 #808 배포 스크립트의 종료 코드다. 잡이 종료된 뒤에만 반환한다.
-                status = adapter.await(child)
-            } catch (Exception failure) {
-                // 정상 반환의 조건은 하위 작업 종료(또는 배포 권한 격리)다.
-                adapter.cancelAndAwait(child)
-                throw failure
-            }
-            if (status != 0) {
-                String result = [2: 'RECOVERED', 3: 'DRAIN_TIMEOUT'].get(status, 'FAILED')
-                return [result: result, role: role, status: status]
-            }
-        }
-        return [result: 'SUCCESS']
+        return dispatchRelease(release, rolesFor('all'), adapter)
     }
+}
+
+List rolesFor(String selection) {
+    List roles = ['api', 'collector', 'analyst']
+    if (selection == 'all') {
+        return roles
+    }
+    if (!(selection in roles)) {
+        throw new IllegalArgumentException('SERVICES는 all, api, collector, analyst 중 하나여야 한다')
+    }
+    return [selection]
+}
+
+def dispatchRelease(Map release, List roles, Map adapter) {
+    validateRelease(release)
+    for (String role in roles) {
+        String name = "/trading-desk/trading-desk-backend-${role}"
+        // 핸들을 얻기 전에 실패하면 호출자가 열린 배포 인계를 그대로 둔다.
+        def child = adapter.start(name, release.subMap(['revision', 'imageId', 'agent', 'daemon']))
+        int status
+        try {
+            // 반환 값은 하위 잡의 #808 배포 스크립트 종료 코드다.
+            status = adapter.await(child)
+        } catch (Exception failure) {
+            adapter.cancelAndAwait(child)
+            throw failure
+        }
+        if (status != 0) {
+            String result = [2: 'RECOVERED', 3: 'DRAIN_TIMEOUT'].get(status, 'FAILED')
+            return [result: result, role: role, status: status]
+        }
+    }
+    return [result: 'SUCCESS']
 }
 
 def consume(String role, Map release, Map actual, Closure deploy) {

@@ -1,0 +1,28 @@
+// Disabled single Pipeline jobs use this trusted develop definition (#776).
+String role = ['trading-desk/trading-desk-backend-api': 'api',
+               'trading-desk/trading-desk-backend-collector': 'collector',
+               'trading-desk/trading-desk-backend-analyst': 'analyst'][env.JOB_NAME]
+String parent = params.TD_PARENT_BUILD ?: ''
+List causes = currentBuild.getBuildCauses()
+if (!role || env.TD_SPLIT_JOBS_ENABLED != 'true' || !(parent ==~ /[1-9][0-9]*/) || causes.size() != 1 ||
+    !(causes[0]._class in ['hudson.model.Cause$UpstreamCause',
+                           'org.jenkinsci.plugins.workflow.support.steps.build.BuildUpstreamCause']) ||
+    causes[0].upstreamProject != 'trading-desk/trading-desk-backend/develop' ||
+    causes[0].upstreamBuild?.toString() != parent) {
+    error '승인된 상위 백엔드 잡에서만 실행한다'
+}
+String agent = env.TD_SPLIT_DEPLOY_NODE ?: ''
+if (!(agent ==~ /[a-zA-Z0-9_.-]{1,128}/) || params.TD_AGENT != agent) {
+    error '전용 배포 노드가 필요하다'
+}
+node(agent) {
+    try {
+        if (env.NODE_NAME != agent) { error '전용 배포 노드가 다르다' }
+        checkout scm
+        def backend = load 'scripts/jenkins/backend-production.groovy'
+        def handoff = load 'scripts/jenkins/backend-handoff.groovy'
+        backend.runRole(handoff, role)
+    } finally {
+        deleteDir()
+    }
+}

@@ -1,11 +1,56 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <flow-definition>
-  <description>백엔드 api 배포 잡 (#785). #776 배포 계약과 비운영 리허설 확인 전까지 비활성입니다.</description>
+  <description>백엔드 api 배포 잡 (#785). 비운영 검증과 승인 전까지 비활성입니다.</description>
   <keepDependencies>false</keepDependencies>
-  <properties/>
-  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition">
-    <script>error('TD-785: api deployment is not wired')</script>
-    <sandbox>true</sandbox>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.StringParameterDefinition>
+          <name>TD_RELEASE</name>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>TD_PARENT_BUILD</name>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>TD_SHA</name>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>TD_IMAGE_ID</name>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>TD_AGENT</name>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>TD_DAEMON</name>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition">
+    <scm class="hudson.plugins.git.GitSCM">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <url>https://github.com/shindonggeun/trading-desk</url>
+          <credentialsId>trading-desk-github</credentialsId>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>refs/heads/develop</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <extensions/>
+    </scm>
+    <scriptPath>Jenkinsfile-backend-role</scriptPath>
+    <lightweight>true</lightweight>
   </definition>
   <triggers/>
   <disabled>true</disabled>

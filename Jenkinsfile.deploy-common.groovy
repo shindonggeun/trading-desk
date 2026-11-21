@@ -28,7 +28,10 @@ def run(Map config) {
                          description: '(backend) 진행 중인 분석을 기다리지 않는다 — 그 분석은 실패로 끝난다(#431)'),
             booleanParam(name: 'ROLLBACK_DRILL', defaultValue: false,
                          description: '배포 뒤 확인을 일부러 실패시켜 직전 이미지로 돌아가는지 시험한다'),
-        ]),
+        ] + (config.target == 'backend' ? [
+            choice(name: 'SERVICES', choices: ['all', 'api', 'collector', 'analyst'],
+                   description: '분리 배포가 준비된 백엔드에서 교체할 역할'),
+        ] : [])),
     ])
 
     if (env.CHANGE_ID) {
@@ -40,6 +43,16 @@ def run(Map config) {
         echo "${env.BRANCH_NAME} 은 배포 브랜치(${config.branch})가 아니다 — 아무것도 하지 않는다"
         currentBuild.result = 'NOT_BUILT'
         return
+    }
+    String selection = config.target == 'backend' ? (params.SERVICES ?: 'all') : 'all'
+    boolean splitEnabled = config.target == 'backend' && env.TD_SPLIT_JOBS_ENABLED == 'true'
+    String splitNode = config.target == 'backend' ? (env.TD_SPLIT_DEPLOY_NODE ?: '') : ''
+    boolean fenceRequired = splitEnabled || splitNode != ''
+    if (fenceRequired && !(splitNode ==~ /[a-zA-Z0-9_.-]{1,128}/)) {
+        error '분리 배포 또는 활성 잠금에 전용 백엔드 배포 노드 설정이 필요하다'
+    }
+    if (!(selection in ['all', 'api', 'collector', 'analyst']) || (!splitEnabled && selection != 'all')) {
+        error '서비스 선택에는 승인된 분리 배포 설정이 필요하다'
     }
 
     String sha = null
@@ -80,8 +93,13 @@ def run(Map config) {
     }
 
     lock(resource: config.lockName) {
-        node(config.deployAgentLabel) {
+        Map release = null
+        List roles = null
+        def production
+        def handoff
+        node(fenceRequired ? splitNode : config.deployAgentLabel) {
             try {
+                if (fenceRequired && env.NODE_NAME != splitNode) { error '전용 백엔드 배포 노드가 다르다' }
                 boolean changed
                 stage('배포 대상 확인') {
                     // 앞 빌드가 강제로 끊겨(agent 재시작 등) finally 가 못 돌았으면 비밀 폴더가 남아 있을 수 있다
@@ -93,7 +111,7 @@ def run(Map config) {
                     }
                     // lock 을 기다리는 동안 더 새 커밋이 들어왔으면 그 빌드가 배포한다(그 커밋의 CI 가 이미 실패면 이 커밋을 배포)
                     newer = followHead ? supersededBy(config, sha) : null
-                    changed = newer == null && needsDeploy(config, sha)
+                    changed = newer == null && (splitEnabled || needsDeploy(config, sha))
                 }
                 if (newer != null) {
                     currentBuild.description += ' 밀림'
@@ -117,12 +135,47 @@ def run(Map config) {
                             sh 'bash scripts/jenkins/vault-env.sh'
                         }
                     }
-                    int rc
+                    Integer rc = null
                     withEnv(["ENV_FILE=${envFile}", "REVISION=${sha}", "TARGET=${config.target}",
                              "PRIMARY_SERVICE=${config.primaryService ?: ''}",
+                             "TD_DEPLOY_FENCE_REQUIRED=${fenceRequired ? 1 : 0}",
                              "FORCE=${params.FORCE_STOP_RUNS ? 1 : 0}", "ROLLBACK_DRILL=${params.ROLLBACK_DRILL ? 1 : 0}"]) {
-                        rc = sh(returnStatus: true, script: 'bash scripts/deploy-compose.sh "$TARGET" .deploy-src')
+                        if (splitEnabled) {
+                            int route = sh(returnStatus: true, script: 'bash scripts/jenkins/backend-deploy-lease.sh route')
+                            if (route == 0) {
+                                production = load 'scripts/jenkins/backend-production.groovy'
+                                handoff = load 'scripts/jenkins/backend-handoff.groovy'
+                                roles = handoff.rolesFor(selection)
+                                if (followHead && !confirmSplitHead(config, sha)) { return }
+                                release = production.prepare(sha, roles)
+                                // No child has been queued yet. If the image preparation took
+                                // long enough for a new head, retire this unused release.
+                                boolean stillLatest
+                                try {
+                                    stillLatest = !followHead || confirmSplitHead(config, sha)
+                                } catch (Exception failure) {
+                                    production.finish(release)
+                                    throw failure
+                                }
+                                if (!stillLatest) {
+                                    production.finish(release)
+                                    release = null
+                                }
+                                return
+                            }
+                            if (route != 10 || selection != 'all') {
+                                error '현재 상태에서 선택한 백엔드 서비스를 배포할 수 없다'
+                            }
+                            if (!needsDeploy(config, sha)) {
+                                currentBuild.description += ' 변경 없음'
+                                return
+                            }
+                        }
+                        withEnv(["TD_LEGACY_SPLIT_FALLBACK=${splitEnabled ? 1 : 0}"]) {
+                            rc = sh(returnStatus: true, script: 'bash scripts/deploy-compose.sh "$TARGET" .deploy-src')
+                        }
                     }
+                    if (release != null || rc == null) { return }
                     sh 'rm -rf .deploy-secrets'
                     if (rc == 0) {
                         currentBuild.description += params.ROLLBACK_DRILL ? ' 배포됨(드릴 무시)' : ' 배포됨'
@@ -142,7 +195,40 @@ def run(Map config) {
                 deleteDir()
             }
         }
+        if (release != null) {
+            // Synchronous child build, with the parent lock held but without
+            // holding the production node's executor.
+            Map result = production.dispatch(handoff, release, roles)
+            node(release.agent) {
+                try {
+                    checkout scm
+                    production.finish(release)
+                } finally {
+                    deleteDir()
+                }
+            }
+            currentBuild.description += result.result == 'SUCCESS' ? ' 배포됨' : " ${result.role} ${result.result}"
+            if (result.result != 'SUCCESS') { error "서비스 배포 실패: ${result.role} ${result.result}" }
+        }
     }
+}
+
+boolean confirmSplitHead(Map config, String sha) {
+    int rc
+    withCredentials([usernamePassword(credentialsId: config.githubCredentialId,
+                                      usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN')]) {
+        withEnv(["CI_REPO=${config.githubRepo}", "CI_SHA=${sha}", "CI_BRANCH=${config.branch}",
+                 "CI_WORKFLOW=${config.ciWorkflow}"]) {
+            rc = sh(returnStatus: true, script: 'bash scripts/jenkins/wait-ci.sh --require-head')
+        }
+    }
+    if (rc == 4) {
+        currentBuild.description += ' 밀림'
+        currentBuild.result = 'NOT_BUILT'
+        return false
+    }
+    if (rc != 0) { error '분리 배포 전에 develop 머리를 확인하지 못했다' }
+    return true
 }
 
 // 배포 직전 밀림 검사(scripts/jenkins/wait-ci.sh --superseded-only): 밀렸으면 더 새 커밋 쪽을 알리는 문자열, 아니면 null.
@@ -187,7 +273,10 @@ boolean needsDeploy(Map config, String sha) {
         return true
     }
     int rc
-    withEnv(["CONTAINER=${config.container}", "SHA=${sha}", "WATCH=${config.watchPath}"]) {
+    List dockerEnv = config.target == 'backend' && env.TD_SPLIT_DEPLOY_NODE ? [
+        'DOCKER_HOST=unix:///var/run/docker.sock', 'DOCKER_CONTEXT=', 'DOCKER_TLS_VERIFY=', 'DOCKER_CERT_PATH=',
+    ] : []
+    withEnv(["CONTAINER=${config.container}", "SHA=${sha}", "WATCH=${config.watchPath}"] + dockerEnv) {
         rc = sh(returnStatus: true, script: '''
             set +x
             running=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$CONTAINER" 2>/dev/null || true)

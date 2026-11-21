@@ -8,6 +8,44 @@ from xml.etree import ElementTree
 FOLDER = "trading-desk"
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "deploy" / "jenkins" / FOLDER
 ROLES = ("api", "collector", "analyst")
+PARAMETERS = ("TD_RELEASE", "TD_PARENT_BUILD", "TD_SHA", "TD_IMAGE_ID", "TD_AGENT", "TD_DAEMON")
+
+
+def expected_job(role):
+    parameters = "".join(
+        f"<hudson.model.StringParameterDefinition><name>{name}</name><defaultValue/>"
+        "</hudson.model.StringParameterDefinition>" for name in PARAMETERS
+    )
+    return ElementTree.fromstring(f"""
+    <flow-definition>
+      <description>백엔드 {role} 배포 잡 (#785). 비운영 검증과 승인 전까지 비활성입니다.</description>
+      <keepDependencies>false</keepDependencies>
+      <properties><hudson.model.ParametersDefinitionProperty>
+        <parameterDefinitions>{parameters}</parameterDefinitions>
+      </hudson.model.ParametersDefinitionProperty></properties>
+      <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition">
+        <scm class="hudson.plugins.git.GitSCM">
+          <configVersion>2</configVersion>
+          <userRemoteConfigs><hudson.plugins.git.UserRemoteConfig>
+            <url>https://github.com/shindonggeun/trading-desk</url>
+            <credentialsId>trading-desk-github</credentialsId>
+          </hudson.plugins.git.UserRemoteConfig></userRemoteConfigs>
+          <branches><hudson.plugins.git.BranchSpec><name>refs/heads/develop</name></hudson.plugins.git.BranchSpec></branches>
+          <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+          <extensions/>
+        </scm>
+        <scriptPath>Jenkinsfile-backend-role</scriptPath>
+        <lightweight>true</lightweight>
+      </definition>
+      <triggers/>
+      <disabled>true</disabled>
+    </flow-definition>
+    """)
+
+
+def signature(element):
+    return (element.tag, element.attrib, (element.text or "").strip(), (element.tail or "").strip(),
+            tuple(signature(child) for child in element))
 
 
 def read_configs():
@@ -16,23 +54,8 @@ def read_configs():
         job = f"trading-desk-backend-{role}"
         config = (CONFIG_DIR / job / "config.xml").read_bytes()
         root = ElementTree.fromstring(config)
-        definition = root.find("definition")
-        if (
-            root.tag != "flow-definition"
-            or [node.tag for node in root] != [
-                "description", "keepDependencies", "properties", "definition", "triggers", "disabled"
-            ]
-            or root.findtext("disabled") != "true"
-            or root.findtext("keepDependencies") != "false"
-            or any(node.attrib for node in root.iter() if node is not definition)
-            or any(len(node) for node in root if node is not definition)
-            or definition.attrib != {"class": "org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition"}
-            or [node.tag for node in definition] != ["script", "sandbox"]
-            or any(len(node) for node in definition)
-            or definition.findtext("sandbox") != "true"
-            or definition.findtext("script") != f"error('TD-785: {role} deployment is not wired')"
-        ):
-            raise ValueError(f"{job}: expected a disabled, triggerless, error-only Pipeline")
+        if signature(root) != signature(expected_job(role)):
+            raise ValueError(f"{job}: expected a disabled, triggerless, trusted develop Pipeline")
         configs[job] = config
     return configs
 

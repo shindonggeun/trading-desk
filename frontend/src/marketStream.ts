@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { sameTicker } from "./ticker";
 
 /**
@@ -223,6 +223,11 @@ export function streamLive(channel: StreamChannel, key?: string): boolean {
   return key == null || st.seenKeys.has(slot(channel, key));
 }
 
+export function streamCovers(channel: StreamChannel, keys: string[] | null): boolean {
+  if (keys === null) return streamLive(channel);
+  return keys.length > 0 && keys.every((key) => streamLive(channel, key));
+}
+
 /** 그 채널 · 키의 마지막 메시지(지연 표시용) */
 export function lastMessage(channel: StreamChannel, key: string): StreamMessage | undefined {
   return st.last.get(slot(channel, key));
@@ -255,17 +260,14 @@ export function subscribe(channel: StreamChannel, tickers: string[], onMessage: 
  * 화면용: channel(quote 는 tickers)을 구독해 메시지를 onMessage 로 넘기고, 그 채널이 살아 있는지 돌려준다.
  * enabled 가 false 면 구독하지 않는다.
  */
-export function useMarketStream(channel: StreamChannel, tickers: string[], onMessage: Listener, enabled = true): { live: boolean } {
+export function useMarketStream(channel: StreamChannel, keys: string[] | null, onMessage: Listener, enabled = true): { live: boolean } {
   const cb = useRef(onMessage);
   cb.current = onMessage;
-  const [live, setLive] = useState(() => streamLive(channel));
-  const tk = tickers.join(",");
+  const live = useSyncExternalStore(watchStream, () => enabled && streamCovers(channel, keys));
+  const tk = channel === "quote" ? keys?.join(",") ?? "" : "";
   useEffect(() => {
     if (!enabled) return;
-    const stop = subscribe(channel, tk ? tk.split(",") : [], (m) => cb.current(m));
-    const unwatch = watchStream(() => setLive(streamLive(channel)));
-    setLive(streamLive(channel));
-    return () => { stop(); unwatch(); };
+    return subscribe(channel, tk ? tk.split(",") : [], (m) => cb.current(m));
   }, [channel, tk, enabled]);
-  return { live: enabled && live };
+  return { live };
 }

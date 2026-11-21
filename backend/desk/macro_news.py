@@ -341,10 +341,15 @@ async def fetch_theme(gdelt: Gdelt, theme: Theme, now: datetime, *, headlines_to
                       previous: dict | None = None, keep=None) -> dict:
     """One theme from GDELT. ``headlines_too=False`` (#485, outside market hours) skips the article
     list and keeps the previous pass's headlines; ``keep(theme_id, volume, tones)`` gets the raw
-    timelines to record (desk.macro_history)."""
+    timelines to record (desk.macro_history) before the optional article list."""
     try:
         volume = _rows(await gdelt.get(theme.query, "TimelineVolRaw", "7d"), "article")
         tones = _rows(await gdelt.get(theme.query, "TimelineTone", "72h"), "tone")
+        if keep is not None:
+            try:
+                keep(theme.id, volume, tones)
+            except Exception as exc:  # noqa: BLE001 - a full disk must not cost the brief
+                log.warning("macro news history not kept for %s: %s", theme.id, exc)
         articles = (await gdelt.get(theme.query, "ArtList", "72h", maxrecords=str(HEADLINES * 4), sort="HybridRel")
                     if headlines_too else None)
     except httpx.HTTPStatusError as exc:
@@ -355,11 +360,6 @@ async def fetch_theme(gdelt: Gdelt, theme: Theme, now: datetime, *, headlines_to
         if "limit" in str(exc).lower():
             raise RateLimited from exc
         raise
-    if keep is not None:
-        try:
-            keep(theme.id, volume, tones)
-        except Exception as exc:  # noqa: BLE001 - a full disk must not cost the brief
-            log.warning("macro news history not kept for %s: %s", theme.id, exc)
     count, ratio = spike(volume, now)
     if articles is None:
         prev = previous if previous and previous.get("source") == "gdelt" else {}

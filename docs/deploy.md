@@ -405,21 +405,38 @@ TradingAgents SHA 를 올려 이 잠금이 빠지면 여기서 깨진다. 전제
 
 - **스위치**: Vault `kv/trading-desk/backend/prod/env` 의 `DESK_BACKEND_SPLIT` — `0`(기본) | `1`. `scripts/deploy-compose.sh` 가 읽어 `1` 이면 compose profile `split` 을 켜고 `backend-prod` 를 `api` 로 띄운다(셸 환경 `DESK_API_ROLE`). 다른 값이면 바꾸기 전에 멈춘다. compose 를 손으로 부르지 않는다 — 스위치와 역할을 맞추는 것이 이 스크립트다.
 - **순서**: api 를 먼저 `up --wait`(기동 시 Alembic `upgrade head`), healthy 가 된 뒤 collector · analyst(`--no-deps`, 이미 head 라 upgrade 는 아무것도 하지 않는다). 확인 · 되돌림은 2-1 · 2-2 그대로 — 세 컨테이너 모두 커밋 라벨 · 재시작 없음 · health 를 보고, 실패하면 셋 다 직전 이미지로.
-- **끄기**: `DESK_BACKEND_SPLIT=0` 으로 바꾸고 다시 배포한다(Jenkins `FORCE_DEPLOY` 또는 `scripts/deploy.sh HEAD backend`). 스크립트가 남은 collector · analyst 를 **api 를 `all` 로 바꾸기 전에** 지운다 — `all` 과 `collector` 가 함께 떠 브로커 토큰을 둘이 발급하지 않게.
-- **진행 중인 분석**: 배포 전 확인(`desk.cli unfinished`)은 DB 를 읽으므로 그대로다. 켜진 상태에서 api 재시작은 run 을 끊지 않고, analyst 재시작은 `running` 만 실패로 바꾸며 `queued` 는 남는다.
+- **진행 중인 분석**: 종합 배포는 `desk.cli unfinished`로 확인하고 분석이 끝나기를 기다린다. split에서 API만 교체하면 분석은 analyst에서 계속된다. analyst를 재시작하면 `running`만 실패로 바뀌고 `queued`는 남는다.
 
 ### 켜기 전 선행 조건 (모두 머지 · 배포된 뒤, 사용자 승인으로 켠다)
 
-1. **ChatGPT 로그인 토큰 동시 갱신(#766)**: `chatgpt-auth.json`(볼륨 공유)을 AI 채팅(api)과 run · 리포트(analyst)가 함께 쓴다. 두 프로세스가 동시에 갱신하면 refresh token 회전으로 로그인이 끊길 수 있다.
-2. ~~**run 대기열**~~ 머지됨(cd85df1): api 는 `queued` 만 쓰고 analyst 가 가져가 실행한다. analyst 가 없으면 run 이 `queued` 로 남는다.
-3. ~~**#750**~~ 머지됨(2cde3c3): run 이벤트를 PostgreSQL `LISTEN/NOTIFY` 로 알려 analyst 가 쓴 이벤트로 api 의 SSE 가 깨어난다.
-4. **#760 · #690**: 화면과 run 메모가 함께 읽는 캐시(수급 · 선물 · 시세 …)를 Redis 로 나누고, collector 가 모은 시세 · 수급 · 알림을 화면 SSE 로 흘린다. 없으면 api 의 캐시가 collector 의 수집을 보지 못한다.
+1. 전환할 develop SHA의 CI 성공 및 운영 반영을 확인한다. 해당 SHA에 Compose 역할과 스위치(#769), analyst 대기열(#771), PostgreSQL 이벤트 알림 및 관련 검증(#750 · #772), API와 analyst 사이의 OAuth 갱신 직렬화(#766), 브로커 단일 발급자 잠금(#776)이 포함돼야 한다.
+2. collector가 모은 시세·수급·알림을 API와 화면이 읽을 수 있도록 공유 캐시(#760)와 시장 SSE(#690)의 운영 준비를 확인한다.
+3. [#818 비운영 리허설](../deploy/jenkins/README.md#비운영-jenkins-어댑터-검증-절차)의 실측 기록을 확인한다. 큐 대기와 실행 중 취소 모두에서 자식 종료나 큐 제거가 공통 잠금 해제와 경쟁 잡 진입보다 앞서야 한다. 실측 기록이 없거나 순서가 어긋나면 전환을 보류한다.
 
-켠 뒤 확인: `docker ps --filter name=trading-desk` 에 컨테이너 3개가 healthy, 로그의 브로커 토큰 발급 줄이 `collector` 에서만(`toss token issued (collector)`), `GET /api/status` 의 작업들이 오류 없이 도는지.
+### 전환과 첫 1시간 관찰 (#776)
 
-독립 잡을 연결하려면 #776의 공통 스크립트에 이미지 빌드와 서비스 단독 배포·검증·되돌림 진입점이 먼저 필요하다. 현재 스크립트는 이미지를 한 번 빌드한 뒤 API를 먼저 올리고 split 서비스를 일괄 배포·되돌린다. #776에서 반영된 PostgreSQL 발급자 잠금은 all과 collector의 중복 발급을 막는다.
+1. 현재 백엔드 커밋 라벨과 서비스 상태를 [2-3절](#2-3-운영-커밋--상태-확인)로 기록한다. 전환 전 1시간의 브로커 토큰 발급, 429, 분석 대기열과 컨테이너 메모리도 비교 기준으로 남긴다.
+2. 기존 종합 잡 `trading-desk-backend/develop`에서 승인된 SHA 하나로 전환한다. [3절](#3-운영-env--vault-정본--envruntime-손-배포-대체)에 따라 Vault의 `DESK_BACKEND_SPLIT`만 `1`로 바꾸고, Build with Parameters에서 `DEPLOY_COMMIT=<승인된 SHA>`, `FORCE_DEPLOY=true`로 실행한다. `FORCE_STOP_RUNS`는 기본값 `false`로 두고 진행 중인 분석이 끝날 때까지 기다린다. 작업 중에는 백엔드 배포와 손 배포를 겹쳐 실행하지 않는다.
+3. 배포 직후 세 컨테이너가 `healthy`이고 모두 승인된 SHA인지 확인한다. `backend-prod`의 `desk.backend-split` 라벨이 `1`이고 `/api/health`가 정상이어야 한다. 이어서 1시간 동안 아래 신호를 전환 전 기록과 비교한다.
 
-연결 시에는 기존 백엔드 잡이 develop의 CI 성공을 확인하고 공통 배포 락 안에서 빌드한 불변 이미지를 역할 잡에 전달한다. 역할 잡은 직접 SCM 트리거 없이 호출하고, 서비스 하나의 재실행도 기존 백엔드 잡을 통해 같은 락으로 직렬화한다. API 마이그레이션과 헬스 확인이 실패하면 후속 잡을 호출하지 않는다. #776의 서비스 진입점에서 커밋 라벨·헬스·무재시작·서비스별 되돌림을 확인하고, analyst의 분석 대기와 collector의 발급자 조건을 검증한다. split 전환과 운영 잡 활성화는 비운영 리허설 이후 진행한다.
+토큰 발급과 429는 각 컨테이너 로그에서 시각·역할·건수만 기록한다. 분석 상태는 화면에서, 메모리는 `docker stats --no-stream`에서 확인한다.
+
+| 확인 | 정상 상태 | 장애 판단 |
+| --- | --- | --- |
+| 브로커 발급 | 발급이 있으면 collector에서만 기록된다. 공유 토큰을 재사용하면 발급 로그가 없을 수 있다. | 다른 역할에서 발급하거나 잠금 충돌·반복 발급과 함께 브로커 호출이 실패한다. |
+| 429 · OAuth | 새 429가 대기열이나 화면 지연을 유발하지 않고 기존 ChatGPT 로그인으로 채팅·분석이 동작한다. | 전환 전보다 429가 지속적으로 늘고 분석 또는 수집이 지연되거나, OAuth 갱신 실패로 채팅·분석이 중단된다. |
+| run 대기열 · 화면 | 승인된 분석이 `queued`에서 analyst의 `running`으로 넘어가고 결과가 화면에 보인다. `GET /api/status`의 작업과 화면 시세·수급 갱신도 정상이다. | 대기열이 줄지 않고 analyst가 가져가지 않거나, 결과·시세가 화면까지 전달되지 않는다. |
+| 메모리 · 재시작 | 컨테이너별 메모리 사용량이 한도 안에서 안정되고 재시작 횟수가 증가하지 않는다. | 메모리 한도에 닿아 OOM이 나거나 재시작·헬스 실패가 반복된다. |
+
+API 헬스 실패, 발급자 중복, OOM 재시작 등 명확한 장애는 관찰 종료를 기다리지 않고 복귀 절차로 간다. 관찰 구간에 분석이나 수집이 없었으면 해당 항목을 미확인으로 남긴다. 전환 결과에 배포 SHA, Jenkins 빌드, 관찰 시간과 각 항목의 상태를 기록한다.
+
+### 기존 `all` 경로로 복귀
+
+1. 새 백엔드 배포 요청을 멈추고 진행 중인 배포의 종료를 확인한다. 실패한 빌드의 자동 이미지 되돌림 결과와 현재 컨테이너 라벨을 확인한다. 자동 이미지 되돌림은 split 스위치를 복원하지 않는다.
+2. Vault에서 `DESK_BACKEND_SPLIT=0`으로 되돌리고 기존 종합 잡을 `FORCE_DEPLOY=true`로 실행한다. 역할만 되돌릴 때는 현재 DB 스키마와 호환됨을 확인하고 전환에 사용한 SHA를 `DEPLOY_COMMIT`으로 지정한다. 이전 이미지로도 돌아가야 하는 경우에는 적용된 Alembic 리비전과 이미지 호환성을 먼저 확인하고 [2-2절](#2-2-되돌림)을 따른다. Jenkins·Vault를 쓸 수 없으면 [2-4절](#2-4-손-배포--scriptsdeploysh-대체-경로)에 따라 `.env.runtime`도 `0`으로 맞추고 호환되는 SHA로 백엔드를 배포한다.
+3. 빌드 로그에서 collector · analyst를 지운 뒤 `backend-prod`를 올린 순서를 확인한다. `backend-prod` 하나만 남고 `desk.backend-split=0`, 커밋 라벨과 헬스가 정상이어야 한다. 다시 run 대기열, 화면 갱신, 토큰 발급 역할을 확인한다. 복귀 후 발급이 있으면 `toss token issued (all)`로 기록된다.
+
+#808은 이미지 준비와 서비스 단독 배포·되돌림을 제공한다. #814는 독립 잡 인계 계약의 대역 시험이며, #818은 비운영 어댑터와 실측 절차다. 운영 독립 잡 연결과 활성화는 이 종합 잡 전환 절차와 별도로 검증하고 승인받는다.
 
 ## 13. 공유 캐시 — 홈랩 Redis (#689, 선택)
 

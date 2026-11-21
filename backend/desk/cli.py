@@ -132,6 +132,26 @@ def _entry_backtest(args) -> int:
     and the fill-by-distance table the live page reads (every date, like the calibration prior)."""
     from . import backtest, entry_now, horizons
 
+    if args.check_input is not None or args.through is not None:
+        from datetime import date
+        from pathlib import Path
+
+        from . import entry_backtest_inputs
+
+        if args.check_input is None or args.through is None:
+            print("--check-input과 --through를 함께 지정하세요", file=sys.stderr)
+            return 2
+        names = list(dict.fromkeys(args.horizon or horizons.HORIZONS))
+        if any(name not in horizons.HORIZONS for name in names):
+            print(f"horizon must be one of {', '.join(horizons.HORIZONS)}", file=sys.stderr)
+            return 2
+        try:
+            start, end = date.fromisoformat(args.start), date.fromisoformat(args.through)
+            return entry_backtest_inputs.check(Path(args.check_input), names, start, end)
+        except (ValueError, OverflowError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+
     reach = entry_now.Reach.load()
     for name in args.horizon or ["swing"]:
         if name not in horizons.HORIZONS:
@@ -615,6 +635,8 @@ def main(argv: list[str] | None = None) -> int:
         "rewrites desk/data/entry_reach.json"))
     eb.add_argument("--horizon", action="append", default=None, help="repeatable; default swing")
     eb.add_argument("--from", dest="start", default="2019-01-01", help="first plan date, YYYY-MM-DD")
+    eb.add_argument("--check-input", metavar="DIR", help="offline OHLCV coverage check; defaults to all horizons")
+    eb.add_argument("--through", metavar="YYYY-MM-DD", help="inclusive final date for --check-input")
     wl = sub.add_parser("weekly-lines", help=(
         "compare the weekly map's black / red line pairs on the indices' weekly history (#216)"))
     wl.add_argument("--out", default=None, help="write the full JSON report here")

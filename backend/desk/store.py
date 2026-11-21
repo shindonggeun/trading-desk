@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.engine import Engine, RowMapping
 
-from .db import aware, events, now, runs
+from .db import aware, events, now, run_submissions, runs
 from .plan import with_sides
 from .run_access import shared_run_rows, visibility_for_new_run
 from .run_events import CHANNEL, shared
@@ -45,10 +45,24 @@ class Store:
 
     def create_run(
         self, ticker: str, trade_date: str, options: dict, first_event: dict | None = None, *,
-        guarded_writer: bool = False,
+        guarded_writer: bool = False, authenticated_submitter_id: int | None = None,
     ) -> str:
-        """A queued run; with ``first_event`` (#688 its ``queued`` event) written in the same transaction, so a
-        run another process can claim always has its first event already (seq 1)."""
+        """Save a queued run, its first event, and any verified submission together.
+
+        The caller must obtain the submitter ID from the authenticated session.
+        The server's effective portfolio option determines the submission proof.
+        """
+        non_account_submission = None
+        if authenticated_submitter_id is not None:
+            if (
+                type(authenticated_submitter_id) is not int or authenticated_submitter_id < 1
+                or guarded_writer is not True
+                or not isinstance(options, dict) or type(options.get("use_portfolio")) is not bool
+                or not first_event or first_event.get("type") != "status"
+                or first_event.get("agent") != "system" or first_event.get("content") != "queued"
+            ):
+                raise ValueError("submission provenance requires an authenticated queued run")
+            non_account_submission = options["use_portfolio"] is False
         if isinstance(options, dict):
             options = {key: value for key, value in options.items() if key != _VISIBILITY_WRITER}
             if guarded_writer is True:
@@ -59,6 +73,11 @@ class Store:
                 id=run_id, ticker=ticker, trade_date=trade_date, status="queued",
                 options=options, created_at=now(),
             ))
+            if authenticated_submitter_id is not None:
+                conn.execute(run_submissions.insert().values(
+                    run_id=run_id, submitted_by_user_id=authenticated_submitter_id,
+                    non_account_submission=non_account_submission,
+                ))
             if first_event is not None:
                 self._insert_event(conn, run_id, first_event)
         return run_id

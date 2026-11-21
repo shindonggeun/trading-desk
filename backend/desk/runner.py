@@ -623,13 +623,14 @@ class RunManager:
             log.exception("macro note for %s failed", ticker)
             return None
 
-    def submit(self, request: RunRequest) -> str:
+    def submit(self, request: RunRequest, *, authenticated_submitter_id: int | None = None) -> str:
         # #688 the run and its first event in one transaction: an analyst can claim the run the moment it is
         # committed, and its own events must come after this one. Queued for the analyst: the screen says so.
         queued = {"type": "status", "agent": "system", "content": "queued",
                   **({} if self.direct else {"data": {"waiting_for": "analyst"}})}
         run_id = self.store.create_run(
             request.ticker, request.trade_date, asdict(request), first_event=queued, guarded_writer=True,
+            authenticated_submitter_id=authenticated_submitter_id,
         )
         self.hub.notify(run_id)
         if self.direct:

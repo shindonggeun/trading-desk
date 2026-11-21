@@ -13,24 +13,73 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 ROLES = re.compile(r"supervisor|S[1-9][0-9]*")
 STATES = ("received", "started", "completed")
+STATE_DIR = ".trading-desk-codex-team"
 
 
-def state_path() -> Path:
-    # 메시지 원문은 저장소 밖에 둔다. 기본은 저장소 옆 `.<저장소>-codex-team/`, CODEX_TEAM_STATE_DIR 로 바꿀 수 있다.
-    override = os.environ.get("CODEX_TEAM_STATE_DIR")
-    if override:
-        return Path(override).expanduser().resolve() / "team.sqlite"
+def repository_root() -> Path:
+    """Return the shared checkout root, also when ROOT is a linked worktree."""
     common = Path(subprocess.check_output(
         ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
         cwd=ROOT, text=True, encoding="utf-8").strip()).resolve()
-    repo = common.parent if common.name == ".git" else ROOT
+    if common.name != ".git":
+        raise ValueError("Git 공통 디렉터리를 확인할 수 없습니다")
+    return common.parent
+
+
+def state_override() -> Path | None:
+    override = os.environ.get("CODEX_TEAM_STATE_DIR")
+    return Path(override).expanduser().resolve() / "team.sqlite" if override else None
+
+
+def state_path() -> Path:
+    if override := state_override():
+        return override
+    repo = repository_root()
+    current = repo / STATE_DIR / "team.sqlite"
+    legacy = legacy_state_path(repo)
+    if legacy.exists():
+        if current.exists():
+            raise ValueError("기존 팀 DB와 새 팀 DB가 모두 있습니다. "
+                             "모든 실행기에 같은 CODEX_TEAM_STATE_DIR을 지정하세요")
+        return legacy
+    return current
+
+
+def legacy_state_path(repo: Path) -> Path:
     return repo.parent / f".{repo.name}-codex-team" / "team.sqlite"
+
+
+def migrate_state(source: Path, destination: Path) -> None:
+    """Copy a legacy SQLite snapshot without replacing an initialized store."""
+    source, destination = source.resolve(), destination.resolve()
+    if source == destination or not source.is_file():
+        raise ValueError("기존 팀 DB 파일을 확인할 수 없습니다")
+    if destination.exists():
+        raise ValueError("새 팀 DB가 이미 있습니다. 덮어쓰지 않고 수동 대조가 필요합니다")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix="team-migrate-", suffix=".sqlite", dir=destination.parent)
+    os.close(fd)
+    staged = Path(name)
+    try:
+        with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as old:
+            if old.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                raise ValueError("기존 팀 DB 무결성 검사가 실패했습니다")
+            with closing(sqlite3.connect(staged)) as new:
+                old.backup(new)
+                if new.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                    raise ValueError("복사한 팀 DB 무결성 검사가 실패했습니다")
+        # A hard link publishes only when the destination does not exist. The
+        # staging file stays on the same filesystem, so no partial DB is exposed.
+        os.link(staged, destination)
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 class Team:
@@ -346,8 +395,17 @@ def main():
     ack.add_argument("role")
     ack.add_argument("id")
     ack.add_argument("state", choices=STATES)
+    migrate = sub.add_parser("migrate-state", help="중지된 기존 팀 DB를 새 경로로 복사")
+    migrate.add_argument("--source", type=Path)
     sub.add_parser("status")
     args = parser.parse_args()
+    if args.command == "migrate-state":
+        source = args.source or legacy_state_path(repository_root())
+        destination = state_override() or repository_root() / STATE_DIR / "team.sqlite"
+        migrate_state(source, destination)
+        print(f"팀 DB 인계 완료: {destination}")
+        print(f"기존 DB 보존: {source}")
+        return 0
     if args.command not in ("status", "launch", "peers") and not os.environ.get("CODEX_THREAD_ID"):
         parser.error("Codex 세션 안에서 실행하세요: CODEX_THREAD_ID가 필요합니다")
     team = Team(state_path())

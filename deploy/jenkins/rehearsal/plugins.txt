@@ -1,0 +1,8 @@
+workflow-aggregator
+pipeline-build-step
+lockable-resources
+git
+cloudbees-folder
+matrix-auth
+authorize-project
+timestamper

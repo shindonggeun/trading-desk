@@ -42,6 +42,8 @@ XML 구조는 Jenkins [Pipeline Job](https://javadoc.jenkins.io/plugin/workflow-
 
 ### 비운영 설정
 
+로컬 Docker의 포트·볼륨·플러그인 준비와 정적 검증은 [격리 Compose 템플릿](rehearsal/README.md)을 참고한다.
+
 1. 격리된 Jenkins 컨트롤러에 별도 Docker 데몬을 쓰는 전용 에이전트 `trading-desk-rehearsal`을 둔다. 노드 이름과 라벨을 모두 이 이름으로 맞춘다.
 2. 비운영 컨트롤러의 `trading-desk-rehearsal` 폴더에 `coordinator`, `api`, `collector`, `analyst` Pipeline을 만든다. 네 잡 모두 sandbox Pipeline script from SCM, 동일한 신뢰 저장소의 develop 브랜치, Script Path `Jenkinsfile.backend-rehearsal`로 둔다. 자동 트리거, 폴링과 자동 재실행 설정은 비운영 잡에서도 비워 둔다.
 3. 부모 잡에는 문자열 파라미터 `TD_CASE`를 두고 기본값은 `success`로 한다. 세 자식 잡에는 빈 기본값의 문자열 파라미터 `TD_SHA`, `TD_IMAGE_ID`, `TD_AGENT`, `TD_DAEMON`, `TD_PARENT_BUILD`, `TD_CASE`를 둔다. 부모 실행 주체에만 자식 잡 읽기·실행·취소 권한을 부여하고 자식 설정·Replay·설명 수정 권한은 검증 관리자까지로 제한한다. 부모의 동시 실행은 두 번째 빌드가 공통 잠금을 기다리는 장면을 확인할 수 있도록 비운영에서 허용한다.

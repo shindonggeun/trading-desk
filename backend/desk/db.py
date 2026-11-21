@@ -104,6 +104,13 @@ users = Table(
     Column("totp_last_step", Integer),                   # last accepted 30 s step: a code works once
 )
 
+account_owner_binding = Table(
+    "account_owner_binding", metadata,
+    Column("id", Integer, CheckConstraint("id = 1"), primary_key=True, autoincrement=False),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+    Column("generation", String(32), nullable=False),
+)
+
 # One-time codes for when the phone is gone. Only SHA-256 is stored; used_at marks a spent code.
 recovery_codes = Table(
     "recovery_codes", metadata,

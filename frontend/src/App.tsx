@@ -1,5 +1,5 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { api, setUnauthorizedHandler, Unauthorized } from "./api";
+import { api, clearApiCache, setUnauthorizedHandler, Unauthorized } from "./api";
 import type { DeskConfig } from "./types";
 import LoginForm from "./components/LoginForm";
 import Dashboard from "./pages/Dashboard";
@@ -43,6 +43,16 @@ function useHashRoute(): string {
   return hash;
 }
 
+const SESSION_CHANGE_KEY = "desk-session-change";
+
+function announceSessionChange() {
+  try {
+    localStorage.setItem(SESSION_CHANGE_KEY, `${Date.now()}-${Math.random()}`);
+  } catch {
+    // The current tab still updates when browser storage is unavailable.
+  }
+}
+
 export default function App() {
   const route = useHashRoute();
   // undefined = still asking the server; null = signed out.
@@ -51,15 +61,29 @@ export default function App() {
   const [offline, setOffline] = useState(false);
 
   useEffect(() => {
-    setUnauthorizedHandler(() => setUser(null));
+    let stale = false;
+    const onSessionChange = (event: StorageEvent) => {
+      if (event.key !== SESSION_CHANGE_KEY || !event.newValue) return;
+      stale = true;
+      clearApiCache();
+      resetFavorites();
+      setUser(undefined);
+      window.location.reload();
+    };
+    window.addEventListener("storage", onSessionChange);
+    setUnauthorizedHandler(() => { if (!stale) setUser(null); });
     api
       .me()
-      .then((me) => setUser(me.username))
+      .then((me) => { if (!stale) setUser(me.username); })
       .catch((err) => {
-        if (err instanceof Unauthorized) return; // the handler already showed the login screen
+        if (stale || err instanceof Unauthorized) return;
         setOffline(true);
         setUser(null);
       });
+    return () => {
+      stale = true;
+      window.removeEventListener("storage", onSessionChange);
+    };
   }, []);
 
   // 로그아웃 · 세션 만료면 즐겨찾기를 비운다 — 다음 로그인(다른 계정이어도)이 처음부터 읽는다(#135).
@@ -74,7 +98,7 @@ export default function App() {
   }, [user]);
 
   const logout = useCallback(async () => {
-    await api.logout().catch(() => {});
+    await api.logout().then(announceSessionChange).catch(() => {});
     setUser(null);
     window.location.hash = "#/";
   }, []);
@@ -190,7 +214,11 @@ export default function App() {
       <SectionBoundary key={route.split("?")[0]} fallback={<main className="page-loading"><ChunkFailed /></main>}>
       <Suspense fallback={<main className="page-loading"><p className="empty-state">화면 불러오는 중…</p></main>}>
       {user === undefined ? null : user === null ? (
-        <LoginForm onLoggedIn={(name) => { setOffline(false); setUser(name); }} />
+        <LoginForm onLoggedIn={(name) => {
+          setOffline(false);
+          setUser(name);
+          announceSessionChange();
+        }} />
       ) : chartMatch ? (
         <ChartView key={route} ticker={safeDecode(chartMatch[1])} query={new URLSearchParams(chartMatch[2] ?? "")} />
       ) : onHistory ? (

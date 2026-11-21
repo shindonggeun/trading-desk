@@ -336,7 +336,7 @@ def _apply(pb: dict, daily: list[dict], weekly: list[dict] | None, horizon: str,
     if calibrate:
         from . import calibration
 
-        edge = calibration.TABLE.look(horizon, "long", "value_swing", (pb.get("regime") or {}).get("id"),
+        edge = calibration.current_table().look(horizon, "long", "value_swing", (pb.get("regime") or {}).get("id"),
                                       conviction(ev, None)["score"])
     side = plan(ev, edge)
     if not side:

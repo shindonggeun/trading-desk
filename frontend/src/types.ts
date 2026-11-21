@@ -773,6 +773,7 @@ export interface RunPage {
 
 export interface Run {
   id: string;
+  can_delete?: boolean;
   ticker: string;
   trade_date: string;
   status: RunStatus;

@@ -27,6 +27,8 @@ from __future__ import annotations
 import json
 import logging
 import math
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -270,6 +272,20 @@ def reliability(cells_train: dict, trades_valid, horizon: str) -> list[dict]:
 
 
 TABLE = Table.load()
+_SCOPED_TABLE: ContextVar[Table | None] = ContextVar("calibration_table", default=None)
+
+
+def current_table() -> Table:
+    return _SCOPED_TABLE.get() or TABLE
+
+
+@contextmanager
+def use_table(table: Table | None):
+    token = _SCOPED_TABLE.set(table)
+    try:
+        yield
+    finally:
+        _SCOPED_TABLE.reset(token)
 
 
 PROMPT_RULE = ("Desk record = this setup's past trades (backtest + live, after costs): base any win "

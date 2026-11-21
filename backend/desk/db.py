@@ -119,6 +119,7 @@ run_submissions = Table(
     Column("submitted_by_user_id", Integer, ForeignKey("users.id", ondelete="SET NULL"), index=True),
     Column("non_account_submission", Boolean, CheckConstraint("non_account_submission IN (FALSE, TRUE)"),
            nullable=False),
+    Column("owner_generation", String(32)),
 )
 
 # One-time codes for when the phone is gone. Only SHA-256 is stored; used_at marks a spent code.

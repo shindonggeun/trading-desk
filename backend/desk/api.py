@@ -103,6 +103,7 @@ from . import (
     web_search,
     weekly_map,
 )
+from .account_owner import AccountOwnerStore, OwnerBinding
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
 from .broker import kis_stream, make_broker
 from .broker_issuer_lock import BrokerIssuerLock
@@ -134,7 +135,7 @@ from .settings import Settings, load
 from .sr import frame_bars, support_resistance
 from .stock_profile import MAX_TICKERS as PROFILE_MAX
 from .stock_profile import Profiles
-from .store import TERMINAL, Store, iso
+from .store import TERMINAL, AccountBindingChanged, Store, iso
 from .token_store import TokenStore
 from .ttl_cache import TTLCache
 from .universe import KR_SUFFIX, Universe
@@ -401,6 +402,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     engine = make_engine(settings.database_url)
     store = Store(engine)
     run_reader = RunReader(engine) if protect_run_reads else None
+    owners = AccountOwnerStore(engine) if protect_run_reads else None
+    public_calibration = calibration.Table.load() if protect_run_reads else None
     # #688 broker tokens shared by the desk's processes: issued only where DESK_ROLE is all | collector
     active_issuer: BrokerIssuerLock | None = None
 
@@ -752,7 +755,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        # #171: recent news/fundamentals reports taken over (0 = off)
                                        reuse_minutes=settings.reuse_reports_min,
                                        rate_limit_cooldown_min=settings.rate_limit_cooldown_min,
-                                       direct=settings.role == "all")   # #688 elsewhere: queue for the analyst
+                                       direct=settings.role == "all", protect_account_runs=protect_run_reads,
+                                       calibration_table=public_calibration)   # #688 split queues for the analyst
 
         # #623 every loop below is a step that returns its next wait, run by jobs.run_forever: an exception
         # is logged and the loop goes on after its retry wait; GET /api/status shows each one's state
@@ -796,8 +800,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             if scored or scoring["fresh"]:
                 # #147: the playbooks' live record on top of the backtest prior
                 since = now() - timedelta(days=calibration.LIVE_DAYS)
-                runs_scored = await asyncio.to_thread(store.scored_since, since)
-                calibration.TABLE.set_live(runs_scored)
+                runs_scored = await asyncio.to_thread(store.scored_since, since, public_only=protect_run_reads)
+                (public_calibration or calibration.TABLE).set_live(runs_scored)
                 scoring["fresh"] = False
             return settings.score_interval_sec
 
@@ -1122,7 +1126,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 if not trading_soon(ticker, now):           # closed: its levels and price stand still
                     continue
                 try:
-                    await playbook_live.current(prices, ticker, risk=risk, ahead=ahead)
+                    with calibration.use_table(public_calibration):
+                        await playbook_live.current(prices, ticker, risk=risk, ahead=ahead)
                     done += 1
                 except Exception as exc:  # noqa: BLE001 - that ticker only (its failure is cached briefly)
                     log.info("prewarm playbooks %s failed: %s", ticker, type(exc).__name__)
@@ -1158,7 +1163,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         start("nq_fast", feeds_on and estimator is not None, watch_nq_fast, nq_fast.TICK_SEC * 3,
               "NQ 1-minute alarms failed")
         start("line_signals", feeds_on, watch_lines, line_signals.TICK_SEC, "line signals failed")
-        start("holding_watch", feeds_on, watch_holdings, holding_watch.TICK_SEC, "holding watch failed")
+        start("holding_watch", feeds_on and owners is None, watch_holdings, holding_watch.TICK_SEC, "holding watch failed")
 
         async def read_futures_close() -> float:
             # #713 each futures session's quote read 30 s before it ends: its close is what stays (held)
@@ -1287,11 +1292,20 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             if user is None:
                 return JSONResponse({"detail": "login required"}, status_code=401)
             request.state.user = user
-        return await call_next(request)
+        with calibration.use_table(public_calibration):
+            return await call_next(request)
+
+    async def session_is_current(request: Request) -> bool:
+        user = await asyncio.to_thread(auth.resolve, request.cookies.get(COOKIE), touch=False)
+        return user is not None and user.id == request.state.user.id
+
+    def owner_binding(request: Request) -> OwnerBinding | None:
+        binding = owners.binding() if owners is not None else None
+        return binding if binding is not None and binding.user_id == request.state.user.id else None
 
     def owns(request: Request) -> bool:
-        """#775 the session is the owner's (desk.auth.owner_id): the account's holdings, fills and the runs
-        that read them are the owner's alone - another account is refused the same way whatever is held."""
+        if owners is not None:
+            return owner_binding(request) is not None
         return request.state.user.id == auth.owner_id()
 
     def must_own_account(request: Request) -> None:
@@ -1510,20 +1524,33 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         }
 
     @app.post("/api/runs", status_code=201)
-    async def create_run(body: RunIn, request: Request):
+    async def create_run(body: RunIn, request: Request, response: Response):
         listed = None if body.name else universe.lookup(body.ticker)
+        binding = owner_binding(request) if body.use_portfolio and owners is not None else None
+        use_portfolio = body.use_portfolio and (
+            binding is not None if owners is not None else owns(request)
+        )
         run_request = RunRequest(
             ticker=body.ticker,
             name=body.name or (listed or {}).get("name"),
             horizon=body.horizon or horizons.DEFAULT_HORIZON,   # stored explicitly, never left implicit
             trade_date=(body.trade_date or date.today()).isoformat(),
             analysts=body.analysts,
-            use_portfolio=body.use_portfolio and owns(request),   # #775 another account's run never reads it
+            use_portfolio=use_portfolio,
             output_language=body.output_language,
             max_debate_rounds=body.max_debate_rounds,
             max_risk_rounds=body.max_risk_rounds,
         )
-        run_id = request.app.state.manager.submit(run_request, authenticated_submitter_id=request.state.user.id)
+        try:
+            run_id = request.app.state.manager.submit(
+                run_request, authenticated_submitter_id=request.state.user.id,
+                owner_generation=binding.generation if binding is not None else None,
+            )
+        except AccountBindingChanged:
+            raise HTTPException(409, "account authorization changed", headers=_RUN_READ_CACHE) from None
+        if run_reader is not None:
+            response.headers.update(_RUN_READ_CACHE)
+            return guarded_detail(request, run_id)
         return with_queue([store.get_run(run_id)])[0]
 
     def with_queue(items: list[dict]) -> list[dict]:
@@ -1553,26 +1580,44 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 "page": page, "size": size}
 
     @app.delete("/api/runs/{run_id}", status_code=204)
-    async def delete_run(run_id: str):
+    async def delete_run(run_id: str, request: Request):
         # async on purpose: runs on the loop thread, so it cannot land between RunManager's
         # mark_done() and its last plan/done events (no await between them), and Hub is touched
         # from the loop only.
-        result = store.delete_run(run_id)
+        scope = run_reader.change_scope(request.state.user.id) if run_reader is not None else None
+        cache = _RUN_READ_CACHE if run_reader is not None else None
+        result = store.delete_run(run_id, scope=scope)
         if result == "missing":
-            raise HTTPException(404, "run not found")
+            raise HTTPException(404, "run not found", headers=cache)
         if result == "active":
-            raise HTTPException(409, "run is still in progress")
+            raise HTTPException(409, "run is still in progress", headers=cache)
         hub.notify(run_id)   # wake any open stream so it sees the run is gone and closes
-        return Response(status_code=204)
+        return Response(status_code=204, headers=cache)
+
+    def guarded_detail(request: Request, run_id: str) -> dict:
+        assert run_reader is not None
+        visible = run_reader.detail(request.state.user.id, run_id)
+        if visible is None:
+            raise HTTPException(404, "run not found", headers=_RUN_READ_CACHE)
+        return visible
+
+    def full_run(request: Request, run_id: str) -> dict | None:
+        if run_reader is not None:
+            return run_reader.full_run(request.state.user.id, run_id)
+        return store.get_run(run_id)
+
+    async def verify_full_run(request: Request, run_id: str) -> None:
+        if run_reader is not None:
+            if not await session_is_current(request):
+                raise HTTPException(401, "login required", headers=_RUN_READ_CACHE)
+            if not run_reader.has_full_read(request.state.user.id, run_id):
+                raise HTTPException(404, "run not found", headers=_RUN_READ_CACHE)
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str, request: Request, response: Response):
         if run_reader is not None:
-            visible = run_reader.detail(request.state.user.id, run_id)
-            if visible is None:
-                raise HTTPException(404, "run not found", headers=_RUN_READ_CACHE)
             response.headers.update(_RUN_READ_CACHE)
-            return visible
+            return guarded_detail(request, run_id)
         run = store.get_run(run_id)
         if not run:
             raise HTTPException(404, "run not found")
@@ -1582,18 +1627,26 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     explain_locks: dict[str, asyncio.Lock] = {}
 
     @app.get("/api/runs/{run_id}/explain")
-    async def run_explain(run_id: str, refresh: bool = False):
+    async def run_explain(run_id: str, request: Request, response: Response, refresh: bool = False):
         """#493: the analysis for a beginner (desk.explain) - written once, kept as the run's ``explain``
         event and reused; ``refresh=1`` writes it again. The model words it only while a run slot is
         free; otherwise (or when it fails) the desk's own wording comes back, not kept, so a later call
         tries again."""
-        run = store.get_run(run_id)
+        run = full_run(request, run_id)
+        cache = _RUN_READ_CACHE if run_reader is not None else None
         if not run:
-            raise HTTPException(404, "run not found")
+            raise HTTPException(404, "run not found", headers=cache)
+        if cache is not None:
+            response.headers.update(cache)
         if run.get("status") != "done" or not run.get("plan"):
-            raise HTTPException(409, "the analysis has no plan yet")
+            raise HTTPException(409, "the analysis has no plan yet", headers=cache)
         lock = explain_locks.setdefault(run_id, asyncio.Lock())
         async with lock:
+            await verify_full_run(request, run_id)
+            viewer_id = request.state.user.id
+            can_cache = run_reader is None or run_reader.may_change(viewer_id, run_id)
+            if refresh and not can_cache:
+                raise HTTPException(403, "cannot change this analysis", headers=_RUN_READ_CACHE)
             kept = None if refresh else store.last_event_data(run_id, "explain")
             if kept:
                 return kept
@@ -1603,21 +1656,32 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     fear_items = (await asyncio.wait_for(fear_gauges.get(), 10))["items"]
                 except Exception:  # noqa: BLE001 - the explanation goes without the market mood
                     fear_items = None
-            if settings.fake_runs:
+            if settings.fake_runs or not can_cache:
+                await verify_full_run(request, run_id)
                 out = await asyncio.to_thread(explain.build, run, fear_items, None)
             else:
                 async def work():
                     async with app.state.manager.spare_slot() as free:
+                        await verify_full_run(request, run_id)
                         return free, await asyncio.to_thread(explain.build, run, fear_items,
                                                              projection.llm_note if free else None)
                 # shielded: a client that goes away mid-call must not free the slot while the model call runs
                 free, out = await asyncio.shield(asyncio.create_task(work()))
+                await verify_full_run(request, run_id)
                 if not free:
                     return {**out, "pending": True}
-            if out.get("fallback"):
+            await verify_full_run(request, run_id)
+            if out.get("fallback") or not can_cache:
                 return out
-            await asyncio.to_thread(store.append_event, run_id, {"type": "explain", "agent": "explain", "content": None,
-                                                                  "data": out})
+            event = {"type": "explain", "agent": "explain", "content": None, "data": out}
+            if run_reader is None:
+                await asyncio.to_thread(store.append_event, run_id, event)
+            else:
+                stored = await asyncio.to_thread(store.append_scoped_event, run_id, event,
+                                                 run_reader.change_scope(viewer_id))
+                await verify_full_run(request, run_id)
+                if refresh and not stored:
+                    raise HTTPException(403, "cannot change this analysis", headers=_RUN_READ_CACHE)
             return out
 
     @app.get("/api/reports")
@@ -1817,6 +1881,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         """Executions of the last ``days`` (max 180, KST dates) next to the plan of the time. Read-only.
         #775 the owner's only."""
         must_own_account(request)
+        # Historical broker fills carry no verified desk owner generation.
+        if owners is not None:
+            raise HTTPException(403, "historical account data is unavailable", headers=_RUN_READ_CACHE)
         days = min(max(days, 1), review.MAX_DAYS)
         today = datetime.now(KST).date()
         start = today - timedelta(days=days)
@@ -2061,39 +2128,67 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(422, str(exc)) from None
         return {"symbol": symbol, "weeks": await asyncio.to_thread(weekly.history, symbol, min(max(weeks, 1), 52))}
 
+    bound_book: tuple[str, Portfolio] | None = None
+
+    def account_book(binding: OwnerBinding | None) -> Portfolio:
+        nonlocal bound_book
+        if binding is None:
+            return book
+        if bound_book is None or bound_book[0] != binding.generation:
+            bound_book = (binding.generation, Portfolio(broker, prices))
+        return bound_book[1]
+
+    def same_binding(request: Request, binding: OwnerBinding | None) -> bool:
+        return owners is None or (binding is not None and owner_binding(request) == binding)
+
     @app.get("/api/portfolio")
-    async def portfolio(request: Request):
+    async def portfolio(request: Request, response: Response):
         """Holdings at live prices in KRW and USD (desk.portfolio). Failures land in ``error``. #775 the
         owner's only."""
-        must_own_account(request)
-        return await book.snapshot()
+        binding = owner_binding(request)
+        if not same_binding(request, binding) or (owners is None and not owns(request)):
+            raise HTTPException(403, "only the desk's owner sees the account", headers=_RUN_READ_CACHE)
+        result = await account_book(binding).snapshot()
+        if owners is not None:
+            if not await session_is_current(request):
+                raise HTTPException(401, "login required", headers=_RUN_READ_CACHE)
+            if not same_binding(request, binding):
+                raise HTTPException(403, "only the desk's owner sees the account", headers=_RUN_READ_CACHE)
+            response.headers.update(_RUN_READ_CACHE)
+        return result
 
     @app.get("/api/portfolio/stream")
     async def portfolio_stream(request: Request):
         """The same snapshot every DESK_PORTFOLIO_STREAM_SEC seconds, as SSE. #775 the owner's only."""
-        must_own_account(request)
-        token = request.cookies.get(COOKIE)
+        binding = owner_binding(request)
+        if not same_binding(request, binding) or (owners is None and not owns(request)):
+            raise HTTPException(403, "only the desk's owner sees the account", headers=_RUN_READ_CACHE)
         interval = min(max(settings.portfolio_stream_sec, 2.0), 60.0)
+
+        async def still_allowed() -> bool:
+            return await session_is_current(request) and same_binding(request, binding)
 
         async def frames():
             yield f"retry: {int(interval * 1000)}\n\n"
             while not await request.is_disconnected():
                 # Re-check every round: logout, revoke or expiry ends an open stream too.
-                if await asyncio.to_thread(auth.resolve, token, touch=False) is None:
+                if not await still_allowed():
                     return
-                snap = await book.snapshot()
+                snap = await account_book(binding).snapshot()
+                if owners is not None and not await still_allowed():
+                    return
                 yield f"data: {json.dumps(snap, ensure_ascii=False)}\n\n"
                 # #762 a round up to 60 s still re-checks the session within STREAM_RECHECK_SEC
                 waited = 0.0
                 while (step := min(STREAM_RECHECK_SEC, interval - waited)) > 0:
                     await asyncio.sleep(step)
                     waited += step
-                    if waited < interval and (await request.is_disconnected()
-                                              or await asyncio.to_thread(auth.resolve, token, touch=False) is None):
+                    if waited < interval and (await request.is_disconnected() or not await still_allowed()):
                         return
 
+        cache = _RUN_READ_CACHE if owners is not None else {"Cache-Control": "no-cache"}
         return StreamingResponse(frames(), media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                                 headers={**cache, "X-Accel-Buffering": "no"})
 
     @app.get("/api/live/stream")
     async def live_stream(request: Request, ticker: str):
@@ -2175,7 +2270,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(422, f"at most {MARKET_STREAM_TICKERS} tickers")
         token = request.cookies.get(COOKIE)
         key = hash_token(token or "")
-        owner = await asyncio.to_thread(app.state.market_alerts.owner) == request.state.user.id
+        # Existing holding alerts have no verified owner generation, including Redis snapshots.
+        owner = owners is None and await asyncio.to_thread(app.state.market_alerts.owner) == request.state.user.id
         if market_streams.get(key, 0) >= MARKET_STREAMS_PER_SESSION:
             raise HTTPException(429, f"at most {MARKET_STREAMS_PER_SESSION} market streams at once")
         sub = bus.subscribe(wanted, names, owner)
@@ -2413,7 +2509,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return news_digest.DIGEST.annotate(macro_news.CACHE.brief(ticker))
 
     # #527 the paper account: the scored plans traded with won on paper (no orders, no LLM)
-    paper_desk = paper.Paper(engine, (dict) if settings.fake_runs else paper.yahoo_rates, listing_name)
+    paper_desk = paper.Paper(engine, dict if settings.fake_runs else paper.yahoo_rates, listing_name,
+                            public_only=protect_run_reads)
     app.state.paper = paper_desk
 
     @app.get("/api/paper/settings")
@@ -2421,7 +2518,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return paper_desk.settings()
 
     @app.put("/api/paper/settings")
-    def paper_settings_put(body: PaperSettingsIn):
+    def paper_settings_put(body: PaperSettingsIn, request: Request):
+        if owners is not None:
+            must_own_account(request)
         patch = body.model_dump(exclude_unset=True)
         if "start_date" in patch and patch["start_date"] == "":
             patch["start_date"] = None
@@ -2452,13 +2551,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         limit = settings.retention_days if settings.retention_days > 0 else 365
         days = min(max(days, 1), limit)
         since = now() - timedelta(days=days)
-        result = outcome.stats(store.scored_since(since))
+        result = outcome.stats(store.scored_since(since, public_only=protect_run_reads))
         return {"days": days, "from": iso(since), "to": iso(now()),
                 "thresholds": {"win_probability": verdict.MIN_PROBABILITY, "agreeing": verdict.MIN_AGREEING},
                 **result}
 
     @app.get("/api/levels")
-    async def levels(ticker: str, horizon: str | None = None, run: str | None = None):
+    async def levels(ticker: str, request: Request, response: Response,
+                     horizon: str | None = None, run: str | None = None):
         """Support/resistance zones (desk.sr) from the horizon's bars - daily and weekly by
         default - cached a minute or a few. #465: ``gaps`` (the unfilled daily / weekly gaps, from
         the swing frame's bars) and ``explain`` (plain sentences on the price now); with ``run``
@@ -2470,9 +2570,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             if horizon is not None and horizon not in horizons.HORIZONS:
                 raise ValueError(f"horizon must be one of {', '.join(horizons.HORIZONS)}")
             if run is not None:
-                found = store.get_run(run)
+                found = full_run(request, run)
                 if not found:
-                    raise HTTPException(404, "no such run")
+                    raise HTTPException(404, "no such run", headers=_RUN_READ_CACHE if run_reader else None)
+                if run_reader is not None:
+                    response.headers.update(_RUN_READ_CACHE)
                 if found["ticker"] != ticker:
                     raise ValueError("the run is of another ticker")
                 # the plan's lines are matched against the levels of the run's own frame (as /api/playbooks)
@@ -2500,6 +2602,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             except Exception as exc:  # noqa: BLE001 - the levels stand without the gaps
                 log.info("gaps for %s failed: %s", ticker, exc)
                 found_gaps, gaps_error = (0.0, []), f"{type(exc).__name__}"
+        if run is not None:
+            await verify_full_run(request, run)
         gap_rows = line_basis.place(found_gaps[1], sr["reference_price"])
         lines = line_basis.basis((found or {}).get("plan"), sr, gap_rows) if found else []
         # a new dict: the levels are a cached object shared with other callers
@@ -2779,14 +2883,17 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(503, f"no projection for {ticker}") from None
 
     @app.get("/api/playbooks")
-    async def live_playbooks(ticker: str | None = None, horizon: str | None = None, run: str | None = None):
+    async def live_playbooks(request: Request, response: Response, ticker: str | None = None,
+                             horizon: str | None = None, run: str | None = None):
         """Long and short playbooks on the bars and the price now (#128). With ``run`` the
         analysis' zones, ladder, stop and targets stay and only conditions, score and state move."""
         run_pb = None
         if run is not None:
-            found = store.get_run(run)
+            found = full_run(request, run)
             if not found:
-                raise HTTPException(404, "no such run")
+                raise HTTPException(404, "no such run", headers=_RUN_READ_CACHE if run_reader else None)
+            if run_reader is not None:
+                response.headers.update(_RUN_READ_CACHE)
             plan = found.get("plan") or {}
             run_pb = plan.get("playbooks")
             # the analysis' levels are in its own instrument's prices on its own horizon
@@ -2803,18 +2910,21 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         try:
-            return await playbook_live.current(prices, ticker, horizon, run, run_pb,
-                                               risk=risk)
+            result = await playbook_live.current(prices, ticker, horizon, run, run_pb, risk=risk)
         except Exception as exc:  # noqa: BLE001 - no bars, too few, or a source down
             log.warning("live playbooks for %s failed: %s", ticker, exc)
             raise HTTPException(503, f"no playbooks for {ticker}") from None
+        if run is not None:
+            await verify_full_run(request, run)
+        return result
 
     # one gate a kind for the whole app: two pages batching at once do not double the load on the sources
     batch_gates = {k: asyncio.Semaphore(BATCH_PARALLEL_BARS if k in ("candles", "estimate-candles") else BATCH_PARALLEL)
                    for k in ("bottom-zone", "candles", "levels", "playbooks", "projection", "gaps", "estimate-candles")}
 
     @app.get("/api/batch/{kind}")
-    async def batch(kind: str, tickers: str, horizon: str | None = None, interval: str | None = None, count: int = 120):
+    async def batch(kind: str, tickers: str, request: Request, response: Response,
+                    horizon: str | None = None, interval: str | None = None, count: int = 120):
         """#705 one call for a page that asked the same per-ticker path for many tickers (the dashboard's
         first visit: bottom zones, the market tiles' bars, levels and futures gaps, the today strip's
         playbooks and projections, the favourites' sparks - about 60 of its ~100 requests). ``kind``:
@@ -2825,8 +2935,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         handlers = {
             "bottom-zone": lambda t: bottom_zone_of(t),
             "candles": lambda t: candles(t, interval=interval or "1d", count=count),
-            "levels": lambda t: levels(t, horizon=horizon),
-            "playbooks": lambda t: live_playbooks(ticker=t, horizon=horizon),
+            "levels": lambda t: levels(t, request, response, horizon=horizon),
+            "playbooks": lambda t: live_playbooks(request, response, ticker=t, horizon=horizon),
             "projection": lambda t: projection_view(t, horizon=horizon),
             "gaps": lambda t: gaps_view(t),
             "estimate-candles": lambda t: estimate_candles(t, interval=interval or "5m"),   # the single path's default
@@ -3203,7 +3313,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         async def recent_runs(a: dict):
             want = clean_ticker(a["ticker"]) if a.get("ticker") else None
-            rows = [r for r in store.list_runs(40) if not want or r["ticker"] == want][:8]
+            rows = [r for r in store.list_runs(40, public_only=protect_run_reads)
+                    if not want or r["ticker"] == want][:8]
             return [{**keep(r, "id", "ticker", "created_at", "status"),
                      **keep(r.get("plan"), "rating", "bias", "entry_price", "stop_loss", "price_target",
                             "levels_side", "horizon")} for r in rows]
@@ -3244,12 +3355,19 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     def chat_models_of():
         return chat_models
 
+    def require_chat_provenance() -> None:
+        # Thread histories can contain tool output stored before scoped reads.
+        if owners is not None:
+            raise HTTPException(403, "chat history is unavailable", headers=_RUN_READ_CACHE)
+
     @app.get("/api/chat/threads")
     def chat_threads_of(request: Request):
+        require_chat_provenance()
         return {"items": chats.threads(request.state.user.id)}
 
     @app.post("/api/chat/threads", status_code=201)
     def chat_new_thread(body: ChatThreadIn, request: Request):
+        require_chat_provenance()
         try:
             return chats.create(request.state.user.id, body.title)
         except chat.TooMany as exc:
@@ -3257,10 +3375,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     @app.delete("/api/chat/threads/{thread_id}", status_code=204)
     def chat_delete_thread(thread_id: str, request: Request):
+        require_chat_provenance()
         chats.delete(request.state.user.id, thread_id)       # another account's: nothing, the same 204
 
     @app.get("/api/chat/threads/{thread_id}/messages")
     def chat_messages_of(thread_id: str, request: Request):
+        require_chat_provenance()
         user_id = request.state.user.id
         items = chats.messages(user_id, thread_id, chat.READ_LAST)
         if items is None:
@@ -3271,6 +3391,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     async def chat_send(thread_id: str, body: ChatMessageIn, request: Request):
         """The answer as SSE: token · tool_call · tool_result · done · error. One answer at a time per
         account; during the runs' rate-limit cooldown (the same model plan) a 429 says when."""
+        require_chat_provenance()
         user_id = request.state.user.id
         model = body.model or chat_models["default"]
         if body.model is not None and body.model not in {m["id"] for m in chat_models["items"]}:
@@ -3498,8 +3619,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         out["desk"] = await asyncio.to_thread(regime.desk_view, risk, tip_cache.regime)
         return out
 
-    _push_routes(app, engine, settings)
-    _notify_routes(app, engine, settings)
+    _push_routes(app, engine, settings, hide_holding_alerts=protect_run_reads)
+    _notify_routes(app, engine, settings, owners=owners)
     # outermost (added last): the session check and every other middleware count in the time
     app.add_middleware(req_timing.TimingMiddleware, timings=timings)
     return app
@@ -3558,7 +3679,7 @@ class PushEndpointIn(BaseModel):
     endpoint: str = Field(min_length=1, max_length=1024)
 
 
-def _push_routes(app: FastAPI, engine, settings: Settings) -> None:
+def _push_routes(app: FastAPI, engine, settings: Settings, *, hide_holding_alerts: bool = False) -> None:
     """Subscriptions are the caller's own only. ``app.state.pusher`` is read per request (tests swap it)."""
     from . import flow_alerts, market_alerts, push
 
@@ -3616,7 +3737,7 @@ def _push_routes(app: FastAPI, engine, settings: Settings) -> None:
                   "text": a["text"], "pushed": True} for a in app.state.flow_alerts.list(day)]
         # #740 a sector's big day (#680) is the market's; a holding's alerts (#694) its owner's only
         hidden = set()
-        if request.state.user.id != app.state.market_alerts.owner():
+        if hide_holding_alerts or request.state.user.id != app.state.market_alerts.owner():
             hidden.add(holding_watch.KIND)
         items = turns + [a for a in app.state.market_alerts.list(day) if a["kind"] not in hidden]
         for a in items:     # #694 the % against the average stays in GET /api/holding-watch (docs/holding-watch.md)
@@ -3669,7 +3790,7 @@ KAKAO_STATE_TTL_SEC = 600
 NOTIFY_TEST_GAP_SEC = 5.0
 
 
-def _notify_routes(app: FastAPI, engine, settings: Settings) -> None:
+def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountOwnerStore | None = None) -> None:
     """#580 Telegram · KakaoTalk beside web push (desk.notify_channels), sent through desk.notify.
 
     One set of channels for the desk (the alerts go to every account's devices, as web push does), so
@@ -3695,7 +3816,10 @@ def _notify_routes(app: FastAPI, engine, settings: Settings) -> None:
     last_test = {"at": 0.0}
 
     def owner_id() -> int | None:
-        return account_owner(engine)     # #775 the one rule (desk.auth.owner_id)
+        if owners is None:
+            return account_owner(engine)
+        binding = owners.binding()
+        return binding.user_id if binding is not None else None
 
     def must_own(request: Request) -> None:
         if request.state.user.id != owner_id():
@@ -3752,7 +3876,7 @@ def _notify_routes(app: FastAPI, engine, settings: Settings) -> None:
     def holding_view(request: Request) -> dict:
         """#762 the owner's holdings are the owner's: another account gets the default setting and no lines -
         not which tickers are held, their per-ticker limits or their returns, nor that any exist."""
-        mine = request.state.user.id == owner_id()
+        mine = owners is None and request.state.user.id == owner_id()
         return {**(holdings_watch.settings() if mine else holding_watch.clean(dict(holding_watch.DEFAULT))),
                 "can_edit": mine,
                 "limits": {"max_loss_pct": list(holding_watch.MAX_LOSS_RANGE), "max_tickers": holding_watch.MAX_TICKERS},
@@ -3767,6 +3891,8 @@ def _notify_routes(app: FastAPI, engine, settings: Settings) -> None:
     @app.put("/api/holding-watch")
     def holding_watch_set(body: HoldingWatchIn, request: Request):
         must_own(request)
+        if owners is not None:
+            raise HTTPException(403, "historical account data is unavailable", headers=_RUN_READ_CACHE)
         try:
             given = body.model_dump(exclude_unset=True)     # what is left out keeps its value
             if "tickers" in given:

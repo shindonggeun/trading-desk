@@ -4,7 +4,7 @@ import type { ChartRead, GapReport, LinesReport, LineTf } from "./types";
 import type { RunRead } from "./types";
 import type { DayCallHistory, DayCallMarket, DayCallStats, DayCallToday, MorningBrief, MorningBriefList } from "./types";
 import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, PaperEquity, PaperSettings, PaperSettingsPatch, PaperSummary, PaperTrades, RunExplain, TipsView } from "./types";
-import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, ReportDetail, ReportList, Halving, FundBrief, FundChanges, FundDetail, FearIndex, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
+import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, RunPage, SupportResistance, BottomZone, ReportDetail, ReportList, Halving, FundBrief, FundChanges, FundDetail, FearIndex, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
 
 // Auth is an HttpOnly session cookie (docs/security.md): scripts never see it, the
 // browser sends it with every same-origin fetch and with EventSource.
@@ -240,7 +240,7 @@ export const api = {
   loginCode: (challenge: string, code: string) =>
     call<void>("/api/auth/login", { method: "POST", body: JSON.stringify({ challenge, code }) }),
   logout: () => call<void>("/api/auth/logout", { method: "POST" }),
-  me: () => call<Me>("/api/auth/me"),
+  me: () => call<Me>("/api/auth/me", { cache: "no-store" }),
   otpSetup: (password: string) =>
     call<{ secret: string; uri: string }>("/api/auth/otp/setup", { method: "POST", body: JSON.stringify({ password }) }),
   otpEnable: (code: string) =>
@@ -266,7 +266,7 @@ export const api = {
   // #494 초보자 해설(#493) — 처음 한 번은 모델이 쓰는 동안 수십 초
   runExplain: (id: string, refresh = false, signal?: AbortSignal) =>
     request<RunExplain>(`/api/runs/${encodeURIComponent(id)}/explain${refresh ? "?refresh=1" : ""}`, { signal, cache: "no-store" }),
-  createRun: (body: NewRun) => call<Run>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
+  createRun: (body: NewRun) => call<RunRead>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
   // 계좌 응답은 진행 중인 GET과 공유하지 않고 현재 세션으로 다시 확인한다.
   portfolio: () => request<Portfolio>("/api/portfolio", { cache: "no-store" }),
   regime: () => call<RegimeSnapshot>("/api/regime"),

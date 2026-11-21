@@ -62,14 +62,34 @@ def test_migration_chain_preserves_legacy_and_new_runs_without_changing_the_owne
             ).where(run_submissions.c.run_id == submitted)).one()
             assert tuple(proof) == (2, True)
 
+        command.upgrade(config, "0029")
+        with engine.connect() as conn:
+            assert conn.execute(select(run_submissions.c.owner_generation).where(
+                run_submissions.c.run_id == submitted,
+            )).one() == (None,)
+        account = store.create_run(
+            "TEST", _DATE, {"use_portfolio": True}, first_event=_QUEUED,
+            guarded_writer=True, authenticated_submitter_id=2, owner_generation=bound.generation,
+        )
+        with engine.connect() as conn:
+            proof = conn.execute(select(run_submissions).where(run_submissions.c.run_id == account)).one()
+            assert proof.non_account_submission is False and proof.owner_generation == bound.generation
+
+        command.downgrade(config, "0028")
+        assert "owner_generation" not in {column["name"] for column in inspect(engine).get_columns("run_submissions")}
+        with engine.connect() as conn:
+            retained = conn.execute(select(run_submissions.c.run_id, run_submissions.c.non_account_submission)).all()
+            assert dict(retained) == {
+                submitted: True, account: False,
+            }
         command.downgrade(config, "0027")
         assert not inspect(engine).has_table("run_submissions")
         assert owners.binding() == bound
         with engine.connect() as conn:
             assert dict(conn.execute(select(runs.c.id, runs.c.is_shareable)).all()) == {
-                **old_visibility, submitted: None,
+                **old_visibility, submitted: None, account: None,
             }
-        for run_id in (*old_visibility, submitted):
+        for run_id in (*old_visibility, submitted, account):
             assert [row["content"] for row in store.events_after(run_id)] == ["queued"]
     finally:
         engine.dispose()
@@ -187,7 +207,7 @@ def test_referencing_an_unknown_submitter_rejects_the_submission(db_url):
 def test_submission_revision_emits_postgresql_ddl_in_order_without_connecting():
     config = alembic_config("postgresql+psycopg://fixture.invalid/fixture")
     config.output_buffer = StringIO()
-    command.upgrade(config, "0026:0028", sql=True)
+    command.upgrade(config, "0026:0029", sql=True)
     upgrade = config.output_buffer.getvalue()
     assert upgrade.index("CREATE TABLE account_owner_binding") < upgrade.index("CREATE TABLE run_submissions")
     assert "CREATE TABLE run_submissions" in upgrade
@@ -195,7 +215,13 @@ def test_submission_revision_emits_postgresql_ddl_in_order_without_connecting():
     assert "REFERENCES users (id) ON DELETE SET NULL" in upgrade
     assert "non_account_submission BOOLEAN" in upgrade
     assert "REFERENCES runs (id) ON DELETE CASCADE" in upgrade
-    assert "UPDATE runs" not in upgrade
+    marker = "ALTER TABLE run_submissions ADD COLUMN owner_generation VARCHAR(32)"
+    assert upgrade.index("CREATE TABLE run_submissions") < upgrade.index(marker)
+    assert "UPDATE runs" not in upgrade and "UPDATE run_submissions" not in upgrade
+
+    config.output_buffer = StringIO()
+    command.downgrade(config, "0029:0028", sql=True)
+    assert "ALTER TABLE run_submissions DROP COLUMN owner_generation" in config.output_buffer.getvalue()
 
     config.output_buffer = StringIO()
     command.downgrade(config, "0028:0027", sql=True)

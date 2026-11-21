@@ -11,10 +11,11 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, literal, select, update
 from sqlalchemy.engine import Engine, RowMapping
+from sqlalchemy.sql import ColumnElement
 
-from .db import aware, events, now, run_submissions, runs
+from .db import account_owner_binding, aware, events, now, run_submissions, runs, users
 from .plan import with_sides
 from .run_access import shared_run_rows, visibility_for_new_run
 from .run_events import CHANNEL, shared
@@ -29,6 +30,10 @@ def iso(value: datetime | None) -> str | None:
 
 _VISIBILITY_WRITER = "_run_visibility_writer"
 _GUARDED_WRITER_VERSION = "1"
+
+
+class AccountBindingChanged(Exception):
+    """The confirmed account binding is no longer current."""
 
 
 class Store:
@@ -46,6 +51,7 @@ class Store:
     def create_run(
         self, ticker: str, trade_date: str, options: dict, first_event: dict | None = None, *,
         guarded_writer: bool = False, authenticated_submitter_id: int | None = None,
+        owner_generation: str | None = None,
     ) -> str:
         """Save a queued run, its first event, and any verified submission together.
 
@@ -63,6 +69,8 @@ class Store:
             ):
                 raise ValueError("submission provenance requires an authenticated queued run")
             non_account_submission = options["use_portfolio"] is False
+        if owner_generation is not None and non_account_submission is not False:
+            raise ValueError("account provenance requires a verified account submission")
         if isinstance(options, dict):
             options = {key: value for key, value in options.items() if key != _VISIBILITY_WRITER}
             if guarded_writer is True:
@@ -73,14 +81,44 @@ class Store:
                 id=run_id, ticker=ticker, trade_date=trade_date, status="queued",
                 options=options, created_at=now(),
             ))
+            if owner_generation is not None:
+                # Lock the user before the binding, matching account deletion's FK update order.
+                user = conn.scalar(select(users.c.id).where(
+                    users.c.id == authenticated_submitter_id,
+                ).with_for_update(read=True, key_share=True))
+                if user is None:
+                    raise AccountBindingChanged
+                bound = conn.scalar(select(account_owner_binding.c.id).where(
+                    account_owner_binding.c.id == 1,
+                    account_owner_binding.c.user_id == user,
+                    account_owner_binding.c.generation == owner_generation,
+                ).with_for_update(read=True))
+                if bound is None:
+                    raise AccountBindingChanged
             if authenticated_submitter_id is not None:
-                conn.execute(run_submissions.insert().values(
+                submission = run_submissions.insert().values(
                     run_id=run_id, submitted_by_user_id=authenticated_submitter_id,
                     non_account_submission=non_account_submission,
-                ))
+                )
+                if owner_generation is not None:
+                    submission = submission.values(owner_generation=owner_generation)
+                conn.execute(submission)
             if first_event is not None:
                 self._insert_event(conn, run_id, first_event)
         return run_id
+
+    def account_run_is_current(self, run_id: str) -> bool | None:
+        """None denotes a legacy run with no recorded binding generation."""
+        with self.engine.connect() as conn:
+            row = conn.execute(select(
+                run_submissions.c.owner_generation, account_owner_binding.c.id,
+            ).select_from(run_submissions.outerjoin(account_owner_binding, (
+                (account_owner_binding.c.id == 1)
+                & (account_owner_binding.c.user_id == run_submissions.c.submitted_by_user_id)
+                & (account_owner_binding.c.generation == run_submissions.c.owner_generation)
+                & run_submissions.c.non_account_submission.is_(False)
+            ))).where(run_submissions.c.run_id == run_id)).one_or_none()
+        return None if row is None or row.owner_generation is None else row.id is not None
 
     def mark_running(self, run_id: str) -> None:
         self._update(run_id, status="running", started_at=now())
@@ -179,7 +217,7 @@ class Store:
         with self.engine.connect() as conn:
             return conn.execute(select(runs.c.status).where(runs.c.id == run_id)).scalar()
 
-    def delete_run(self, run_id: str) -> str:
+    def delete_run(self, run_id: str, *, scope: ColumnElement[bool] | None = None) -> str:
         """Delete one finished run with its events. Returns ``deleted``, ``missing`` or
         ``active`` (queued/running stay: the worker still writes to them). The status
         condition sits on both deletes, so a run cannot slip from active to gone between
@@ -189,11 +227,17 @@ class Store:
         writes its last events right after mark_done() without yielding."""
         finished = select(runs.c.id).where(runs.c.id == run_id, runs.c.status.in_(TERMINAL))
         with self.engine.begin() as conn:
-            conn.execute(delete(events).where(events.c.run_id.in_(finished)))
+            if scope is None:
+                conn.execute(delete(events).where(events.c.run_id.in_(finished)))
+            else:
+                # With a changing authorization scope, delete the parent once
+                # and let its FK cascade remove events under the same decision.
+                finished = finished.where(scope)
             if conn.execute(delete(runs).where(runs.c.id.in_(finished))).rowcount:
                 self._announce(conn, run_id)    # an open stream sees the run is gone and closes
                 return "deleted"
-            exists = conn.execute(select(runs.c.id).where(runs.c.id == run_id)).first()
+            query = select(runs.c.id).where(runs.c.id == run_id)
+            exists = conn.execute(query if scope is None else query.where(scope)).first()
         return "active" if exists else "missing"
 
     def queue_view(self) -> tuple[list[str], int]:
@@ -205,10 +249,13 @@ class Store:
                                    .where(runs.c.status == "running")).scalar_one()
         return list(queued), running
 
-    def list_runs(self, limit: int = 50, offset: int = 0) -> list[dict]:
+    def list_runs(self, limit: int = 50, offset: int = 0, *, public_only: bool = False) -> list[dict]:
+        query = select(runs)
+        if public_only:
+            query = query.where(shared_run_rows(runs.c.is_shareable))
         with self.engine.connect() as conn:
             rows = conn.execute(
-                select(runs).order_by(runs.c.created_at.desc(), runs.c.id).limit(limit).offset(offset)
+                query.order_by(runs.c.created_at.desc(), runs.c.id).limit(limit).offset(offset)
             ).mappings().all()
         return [_light(_run(row)) for row in rows]
 
@@ -242,11 +289,14 @@ class Store:
         self._update(run_id, outcome=outcome, outcome_status=outcome.get("sweep_status") or outcome.get("status"),
                      scored_at=now())
 
-    def scored_since(self, since: datetime) -> list[dict]:
+    def scored_since(self, since: datetime, *, public_only: bool = False) -> list[dict]:
         """Finished runs created since ``since`` with their outcomes, for the statistics."""
+        query = select(runs).where(runs.c.status == "done", runs.c.created_at >= since)
+        if public_only:
+            query = query.where(shared_run_rows(runs.c.is_shareable))
         with self.engine.connect() as conn:
             rows = conn.execute(
-                select(runs).where(runs.c.status == "done", runs.c.created_at >= since)
+                query
                 .order_by(runs.c.created_at.desc())
             ).mappings().all()
         return [_run(row) for row in rows]
@@ -268,9 +318,15 @@ class Store:
     def append_event(self, run_id: str, event: dict) -> dict:
         with self.engine.begin() as conn:
             stored = self._insert_event(conn, run_id, event)
+        assert stored is not None
         return {**stored, "ts": iso(stored["ts"])}
 
-    def _insert_event(self, conn, run_id: str, event: dict) -> dict:
+    def append_scoped_event(self, run_id: str, event: dict, scope: ColumnElement[bool]) -> bool:
+        with self.engine.begin() as conn:
+            return self._insert_event(conn, run_id, event, scope=scope) is not None
+
+    def _insert_event(self, conn, run_id: str, event: dict, *,
+                      scope: ColumnElement[bool] | None = None) -> dict | None:
         seq = conn.execute(
             select(func.coalesce(func.max(events.c.seq), 0) + 1).where(events.c.run_id == run_id)
         ).scalar_one()
@@ -283,7 +339,14 @@ class Store:
             "content": event.get("content"),
             "data": event.get("data"),
         }
-        conn.execute(events.insert().values(**stored))
+        if scope is None:
+            conn.execute(events.insert().values(**stored))
+        else:
+            values = select(*(literal(value, type_=events.c[key].type) for key, value in stored.items())).where(
+                runs.c.id == run_id, scope,
+            )
+            if not conn.execute(events.insert().from_select(list(stored), values)).rowcount:
+                return None
         self._announce(conn, run_id)
         return stored
 

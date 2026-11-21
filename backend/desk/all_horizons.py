@@ -25,7 +25,7 @@ import asyncio
 import logging
 import math
 
-from . import channels, chart_read, entry_now, horizons, regime_live
+from . import channels, chart_read, direction_stats, entry_now, horizons, regime_live
 from .plan import HORIZON_LABELS
 from .sr import support_resistance
 from .underlying import leverage_of
@@ -151,6 +151,53 @@ def _chart(frame: dict | None) -> dict | None:
             "patterns": [p.get("kind") or p.get("name") for p in frame.get("patterns") or []][:2]}
 
 
+_CLOSE_CHECKS = {"reclaim", "rejection_wick", "rejection_bar", "higher_low", "lower_high", "volume_on_break"}
+
+
+def _scenarios(got: dict | None, h: horizons.Horizon, *, scripted: bool = False) -> dict:
+    got = got or {}
+    regime = got.get("regime")
+    fallback = got.get("scenario_timeframe", h.primary) != h.primary
+    candidates = {c["side"]: c for c in (got.get("best"), got.get("other")) if c and not fallback}
+    details = {} if fallback else got.get("scenario_details") or {}
+    rows = {}
+    for side in entry_now.SIDE_KO:
+        candidate = candidates.get(side) or {}
+        detail = details.get(side) or {}
+        setup = candidate.get("setup")
+        state = detail.get("state")
+        checks = (detail.get("conditions") or []) if candidate else []
+        entries = candidate.get("entries") or []
+        ready = (state == "confirmed" and candidate.get("kind") == "now" and not got.get("stale")
+                 and (candidate.get("ev_r") or 0) > 0
+                 and all(c["id"] != "event_clear" or c["met"] for c in checks))
+        reason = detail.get("reason")
+        if not candidate and not reason:
+            reason = ("이 기간의 봉이 부족해 진입을 검토할 수 없어요" if fallback else
+                      "손절 기준을 지나 진입이 무효예요" if state == "invalid" else
+                      "이 방향으로 진입을 검토할 가격 근거가 부족해요")
+        trigger = detail.get("trigger") if candidate else None
+        rows[side] = {
+            "status": ("consider_entry" if ready else "wait_for_conditions") if candidate else "no_setup",
+            "reason": reason, "regime": regime, "setup": setup,
+            "direction": candidate.get("direction"), "basis": detail.get("basis") or [],
+            "entry_type": candidate.get("kind"),
+            "entry_price": candidate.get("first"), "entry_zone": candidate.get("zone"),
+            "stop_loss": candidate.get("stop"), "targets": candidate.get("targets") or [],
+            "confirmation": {
+                "timeframe": h.primary,
+                "intrabar": [c for c in checks if c["id"] not in _CLOSE_CHECKS],
+                "bar_close": [c for c in checks if c["id"] in _CLOSE_CHECKS],
+                "trigger_price": (trigger or {}).get("price") or
+                next((e["price"] for e in entries if e["kind"] == "stop"), None),
+                "trigger_text": (trigger or {}).get("text"),
+                "lower_trigger": detail.get("lower_trigger") if candidate else None,
+            },
+            "history": direction_stats.lookup(entry_now.REPORT_DIR, h.id, side, None if scripted else setup, regime),
+        }
+    return rows
+
+
 async def _bounded(coro, what: str, errors: dict):
     try:
         return await asyncio.wait_for(coro, TIMEOUT_SEC)
@@ -174,10 +221,11 @@ async def _one(prices, ticker: str, h: horizons.Horizon, sr_main: dict | None, m
     sr, en, ch = await asyncio.gather(_bounded(sr_task, "levels", errors),
                                       # the market's score as the entry page reads it: the live playbooks'
                                       # cache is shared (desk.playbook_live), an ungated build must not land there
-                                      _bounded(entry_now.entry_now(prices, ticker, h.id, risk=risk), "entry", errors),
+                                      _bounded(entry_now.entry_now(prices, ticker, h.id, risk=risk,
+                                                                   scenario_details=True), "entry", errors),
                                       _bounded(chart(), "chart", errors))
     return {"horizon": h.id, "label": h.label, "holding": h.holding, "flat_by_close": h.flat_by_close,
-            "source": "map", "model": None, "map": _map(en), "levels": _levels(sr),
+            "source": "map", "model": None, "map": _map(en), "scenarios": _scenarios(en, h), "levels": _levels(sr),
             "atr": (sr or {}).get("atr"), "chart": _chart(ch), "errors": errors or None}
 
 
@@ -258,6 +306,13 @@ def fake(ticker: str, plan: dict, main: str) -> dict:
                                  "distance_pct": round(-atr / price * 100, 2)}],
                       "patterns": []},
         }
+        primary = out[hid]["map"]
+        opposite = "short" if up else "long"
+        other = {**primary, "side": opposite, "first": round(2 * price - first, 2),
+                 "zone": sorted(round(2 * price - z, 2) for z in primary["zone"]),
+                 "stop": round(2 * price - stop, 2),
+                 "targets": [{**t, "price": round(2 * price - t["price"], 2)} for t in targets]}
+        out[hid]["scenarios"] = _scenarios({"best": primary, "other": other, "regime": "range"}, h, scripted=True)
     view = {"regime": "range", "summary": "1시간봉 박스 · 일봉 박스(대본)",
             "frames": {"1d": {"regime": "range", "adx": 16.0, "as_of": None, "basis": ["대본 예시"],
                               "box": {"high": round(price * 1.06, 2), "low": round(price * 0.95, 2), "touches_high": 3,

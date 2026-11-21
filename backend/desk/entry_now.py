@@ -33,7 +33,7 @@ import logging
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from . import backtest, calibration, horizons, playbook, playbook_live, summary
+from . import backtest, calibration, direction_stats, horizons, playbook, playbook_live, summary
 
 log = logging.getLogger(__name__)
 
@@ -264,13 +264,23 @@ def _bottom_note(best: dict | None, other: dict | None, z: dict | None, atr: flo
 
 
 async def entry_now(prices, ticker: str, horizon: str | None = None, risk=None, bottoms=None,
-                    reach: Reach | None = None) -> dict:
+                    reach: Reach | None = None, *, scenario_details: bool = False) -> dict:
     """The entry now on the live playbooks (desk.playbook_live, cached per horizon)."""
     h = horizons.get(horizon)
     pb = await playbook_live.current(prices, ticker, h.id, risk=risk)
     got = choose(pb, h.id, reach)
     live = pb.get("live") or {}
     frame = pb.get("frame") or {}
+    if scenario_details:
+        got["scenario_timeframe"] = frame.get("primary")
+        got["scenario_details"] = {}
+        for side in SIDE_KO:
+            play = pb.get(side) or {}
+            members = (play.get("zone") or {}).get("members") or []
+            got["scenario_details"][side] = {
+                **{k: play.get(k) for k in ("state", "reason", "conditions", "trigger", "lower_trigger")},
+                "basis": list(dict.fromkeys(m["basis"] for m in members if m.get("basis")))[:4],
+            }
     bottom = None
     if bottoms is not None:
         try:
@@ -403,6 +413,7 @@ def replay(snaps, h: horizons.Horizon, costs: backtest.Costs | None = None, prog
             continue
         sides = {name: _side_row(pb, name, h.id, trades.get(name)) for name in ("long", "short")}
         rows.append({"ticker": snap.ticker, "day": snap.day, "pb": pb, "trades": trades,
+                     "full_window": len(future) == backtest.LOOKAHEAD[h.id],
                      "sides": {k: v for k, v in sides.items() if v}})
         if progress and i % 500 == 0:
             progress(f"{snap.ticker} {snap.day} ({i})")
@@ -440,7 +451,8 @@ def compare(rows: list[dict], h: horizons.Horizon) -> dict:
             arms.setdefault(arm, {})[split_name] = _arm(p)
     return {"cut": cut, "embargo_days": backtest.EMBARGO_DAYS[h.id],
             "plans": {"train": len(train), "valid": len(valid)},
-            "arms": arms, "reliability_valid": _reliability(valid, reach, table, h.id)}
+            "arms": arms, "reliability_valid": _reliability(valid, reach, table, h.id),
+            "direction_stats": direction_stats.summarize([r for r in valid if r.get("full_window")])}
 
 
 def full_reach(rows: list[dict], h: horizons.Horizon) -> Reach:

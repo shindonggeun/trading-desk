@@ -88,6 +88,7 @@ def test_build_gives_the_four_horizons_with_the_model_on_the_runs_own():
     for h, r in rows.items():
         assert r["label"] and r["holding"] and set(r["levels"]) == {"support", "resistance"}
         assert r["chart"] is None or r["chart"]["timeframe"] == all_horizons.CHART_TF[h]
+        assert set(r["scenarios"]) == {"long", "short"}
     assert got["horizon_fit"]["regime"] in all_horizons.REGIME_KO and got["horizon_fit"]["sentence"]
     assert got["instrument_class"]["id"] == "general" and got["horizons_note"] is None
 
@@ -121,6 +122,11 @@ def test_a_fake_run_carries_four_scripted_horizons(db_url):
         own = plan["horizons"]["short_swing"]
         assert own["source"] == "model" and own["model"]["entry_price"] == plan["entry_price"]
         assert all(plan["horizons"][h]["map"]["stop"] for h in all_horizons.ORDER)
+        for row in plan["horizons"].values():
+            long, short = (row["scenarios"][s] for s in ("long", "short"))
+            assert long["stop_loss"] < long["entry_price"] < long["targets"][0]["price"]
+            assert short["targets"][0]["price"] < short["entry_price"] < short["stop_loss"]
+            assert long["history"]["win_rate"] is short["history"]["win_rate"] is None
         assert plan["horizon_fit"]["best"] == ["scalp", "intraday"] and "변동성 끌림" in plan["horizon_fit"]["sentence"]
 
 
@@ -163,7 +169,8 @@ def test_the_entry_reads_the_markets_score_like_the_entry_page(monkeypatch):
     # review #696: the live playbooks' cache is shared - the run must build them gated as /api/entry does
     seen = []
 
-    async def entry(prices, ticker, horizon=None, risk=None, bottoms=None, reach=None):
+    async def entry(prices, ticker, horizon=None, risk=None, bottoms=None, reach=None, *, scenario_details=False):
+        assert scenario_details
         seen.append((horizon, risk))
         return {"best": None, "stand_aside": {"reason": "x"}}
 
@@ -171,6 +178,31 @@ def test_the_entry_reads_the_markets_score_like_the_entry_page(monkeypatch):
     marker = object()
     asyncio.run(all_horizons.build(_Prices(), "ZZZT", {}, "swing", None, same_day=True, risk=marker))
     assert sorted(h for h, _ in seen) == sorted(all_horizons.ORDER) and all(r is marker for _, r in seen)
+
+
+@pytest.mark.parametrize("regime", ["uptrend", "range"])
+def test_stand_aside_does_not_discard_either_direction(regime):
+    from desk import horizons
+
+    h = horizons.get("intraday")
+    long = {"side": "long", "setup": "pullback", "kind": "limit", "first": 100, "zone": [99, 100],
+            "stop": 98, "targets": [{"price": 104, "rr": 2}]}
+    short = {"side": "short", "setup": "breakdown", "kind": "now", "first": 96, "stop": 98, "ev_r": 0.2}
+    condition = {"id": "reclaim", "met": False, "how": "computed"}
+    got = {"best": short, "other": long, "regime": regime, "stand_aside": {"reason": "wait"},
+           "scenario_details": {"long": {"state": "near", "conditions": [condition]},
+                                "short": {"state": "confirmed"}}}
+    rows = all_horizons._scenarios(got, h)
+    assert rows["long"]["status"] == "wait_for_conditions"
+    assert rows["long"]["confirmation"]["bar_close"] == [condition]
+    assert rows["long"]["entry_zone"] == [99, 100] and rows["long"]["stop_loss"] == 98
+    assert rows["long"]["targets"][0]["rr"] == 2 and rows["long"]["regime"] == regime
+    assert rows["short"]["status"] == "consider_entry"
+
+    got["scenario_timeframe"] = "1d"
+    for row in all_horizons._scenarios(got, h).values():
+        assert row["status"] == "no_setup"
+        assert row["entry_price"] is row["history"]["win_rate"] is None
 
 
 def test_a_failed_build_still_says_the_class_and_nulls(db_url, monkeypatch):

@@ -122,8 +122,22 @@ def _board(db_url, monkeypatch, est, session, tickers):
         return {r["ticker"]: r for r in client.get(f"/api/estimates?tickers={tickers}").json()["items"]}
 
 
-def test_a_krx_stock_without_a_contract_shows_its_nxt_trade_after_the_close(db_url, monkeypatch):
-    now = datetime.now(UTC)
+@pytest.fixture
+def krx_after_close(monkeypatch):
+    # A weekday at 17:03 KST, so the app and its mock trades agree on today's session.
+    now = datetime(2026, 11, 11, 8, 3, tzinfo=UTC)
+
+    class TestClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz is not None else now.astimezone().replace(tzinfo=None)
+
+    monkeypatch.setattr("desk.api.datetime", TestClock)
+    return now
+
+
+def test_a_krx_stock_without_a_contract_shows_its_nxt_trade_after_the_close(db_url, monkeypatch, krx_after_close):
+    now = krx_after_close
     est = Estimator(nxt={"000660": (612000.0, now - timedelta(minutes=2), True),
                          "035420": (180000.0, now - timedelta(days=1), False)})   # yesterday's: not live
     rows = _board(db_url, monkeypatch, est, "post", "000660.KS,035420.KS")
@@ -184,18 +198,18 @@ def test_naver_overtime_refuses_a_malformed_code():
     assert naver_overtime("../x?y") is None and naver_overtime("12345") is None
 
 
-def test_a_krx_stock_not_on_nxt_shows_its_krx_after_hours_trade(db_url, monkeypatch):
+def test_a_krx_stock_not_on_nxt_shows_its_krx_after_hours_trade(db_url, monkeypatch, krx_after_close):
     from desk.estimate import Overtime
 
-    at = datetime(2026, 11, 11, 8, 1, tzinfo=UTC)
-    est = Estimator(nxt={"000660": (612000.0, datetime.now(UTC) - timedelta(minutes=2), True)},
+    at = krx_after_close - timedelta(minutes=2)
+    est = Estimator(nxt={"000660": (612000.0, at, True)},
                     overtime={"035720": Overtime(31900.0, at, 32000.0, "single"),
                               "000660": Overtime(600000.0, at, 610000.0, "single")})
     rows = _board(db_url, monkeypatch, est, "post", "035720.KS,000660.KS,035420.KS")
     kakao, hynix, naver = rows["035720.KS"], rows["000660.KS"], rows["035420.KS"]
     assert (kakao["state"], kakao["price"], kakao["quote_source"], kakao["overtime"]) ==         ("live", 31900.0, "krx-overtime", "single")
     assert kakao["close"] == 32000.0 and kakao["change_pct"] == -0.31 and kakao["traded_at"] == at.isoformat()
-    assert kakao["close_date"] == datetime.now(UTC).astimezone(sessions.KST).date().isoformat()
+    assert kakao["close_date"] == krx_after_close.astimezone(sessions.KST).date().isoformat()
     assert hynix["quote_source"] == "nxt" and hynix["price"] == 612000.0          # NXT first
     assert naver["state"] == "unavailable"                                          # neither: as before
 

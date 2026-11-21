@@ -19,6 +19,10 @@ class LiveError(RuntimeError):
     pass
 
 
+def _field(value, key):
+    return value.get(key) if isinstance(value, dict) else None
+
+
 class Client:
     def __init__(self, executable, timeout=8):
         self.timeout = timeout
@@ -175,7 +179,10 @@ class Client:
         while True:
             if time.monotonic() >= deadline:
                 raise LiveError("공용 서버 응답 시간 초과")
-            message = self.receive(deadline)
+            try:
+                message = self.receive(deadline)
+            except ValueError as exc:
+                raise LiveError("JSON-RPC 응답 형식 오류") from exc
             if not isinstance(message, dict):
                 raise LiveError("JSON-RPC 응답 형식 오류")
             if message.get("id") != request_id:
@@ -190,39 +197,55 @@ class Client:
             return message["result"]
 
     def loaded(self):
-        ids = self.call("thread/loaded/list", {})["data"]
-        if not isinstance(ids, list) or len(ids) > 100:
+        ids = _field(self.call("thread/loaded/list", {}), "data")
+        if not isinstance(ids, list) or len(ids) > 100 or any(not isinstance(tid, str) or not tid for tid in ids):
             raise LiveError("로드된 세션 목록 범위를 확인하세요")
         return ids
 
-    def target(self, thread):
-        if thread not in self.loaded():
-            raise LiveError("현재 공용 서버에 로드되지 않은 세션입니다. 자동 resume하지 않습니다")
-        result = self.call("thread/read", {"threadId": thread, "includeTurns": False})
-        row = result.get("thread") if isinstance(result, dict) else None
+    def read_thread(self, thread):
+        row = _field(self.call("thread/read", {"threadId": thread, "includeTurns": False}), "thread")
         if not isinstance(row, dict) or row.get("id") != thread:
             raise LiveError("공용 서버 thread/read 응답의 수신 ID를 확인할 수 없습니다")
+        return row
+
+    def target(self, thread):
+        row = self.read_thread(thread) if thread in self.loaded() else None
+        if row is None or not_loaded(row):
+            raise LiveError("현재 공용 서버에 로드되지 않은 세션입니다. 자동 resume하지 않습니다")
         if not independent(row):
             raise LiveError("독립 사용자 세션만 연결할 수 있습니다")
         return row
 
     def push(self, thread, text, repo=None):
+        """Return the accepted turn ID and evidence from the last checked recipient."""
         row = self.target(thread)
         if repo is not None:
-            same_repo(row["cwd"], repo)
-        status = row["status"]["type"]
+            same_repo(recipient_cwd(row), repo)
+        status = _field(row.get("status"), "type")
         if status == "idle":
             result = self.call("turn/start", {"threadId": thread,
                 "input": [{"type": "text", "text": text}]})
-            return result["turn"]["id"]
+            turn_id = _field(_field(result, "turn"), "id")
+            if not isinstance(turn_id, str) or not turn_id.strip():
+                raise LiveError("공용 서버 turn/start 응답의 turn ID를 확인할 수 없습니다")
+            return turn_id, recipient_evidence(row)
         if status == "active":
-            turns = self.call("thread/turns/list", {"threadId": thread,
-                "limit": 1, "sortDirection": "desc", "itemsView": "notLoaded"})["data"]
-            active = [t for t in turns if t["status"] == "inProgress"]
-            if len(active) == 1:
+            result = self.call("thread/turns/list", {"threadId": thread,
+                "limit": 1, "sortDirection": "desc", "itemsView": "notLoaded"})
+            turns = _field(result, "data")
+            if not isinstance(turns, list) or len(turns) > 1:
+                raise LiveError("공용 서버 thread/turns/list 응답에서 실행 상태를 확인할 수 없습니다")
+            if turns and not isinstance(_field(turns[0], "status"), str):
+                raise LiveError("공용 서버 thread/turns/list 응답에서 실행 상태를 확인할 수 없습니다")
+            if turns and turns[0]["status"] == "inProgress":
+                turn_id = turns[0].get("id")
+                if not isinstance(turn_id, str) or not turn_id.strip():
+                    raise LiveError("공용 서버 응답의 실행 중 turn ID를 확인할 수 없습니다")
                 result = self.call("turn/steer", {"threadId": thread,
-                    "expectedTurnId": active[0]["id"], "input": [{"type": "text", "text": text}]})
-                return result["turnId"]
+                    "expectedTurnId": turn_id, "input": [{"type": "text", "text": text}]})
+                if _field(result, "turnId") != turn_id:
+                    raise LiveError("공용 서버 turn/steer 응답의 turn ID가 일치하지 않습니다")
+                return turn_id, recipient_evidence(row)
         raise LiveError("세션 상태가 변경됐거나 입력을 받을 수 없습니다. 자동 재전송하지 않습니다")
 
     def close(self):
@@ -237,15 +260,36 @@ class Client:
 
 def independent(row):
     source = row.get("source", "")
-    return not (row.get("ephemeral") or
+    return not (row.get("ephemeral") or row.get("parentThreadId") or
                 (isinstance(source, str) and source.startswith("subAgent")) or
                 (isinstance(source, dict) and "subAgent" in source))
 
 
+def not_loaded(row):
+    return _field(row.get("status"), "type") == "notLoaded"
+
+
+def recipient_evidence(row):
+    evidence = {key: row.get(key) for key in ("id", "name", "cwd", "source", "status")}
+    evidence["effectivePolicy"] = "확인 불가"
+    return evidence
+
+
+def recipient_cwd(row):
+    cwd = row.get("cwd")
+    if not isinstance(cwd, str) or "\0" in cwd or not Path(cwd).is_absolute():
+        raise LiveError("공용 서버 응답의 수신 작업 경로를 확인할 수 없습니다")
+    return cwd
+
+
 def same_repo(cwd, expected):
     def common(path):
-        result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            cwd=Path(str(path).removeprefix("\\\\?\\")), capture_output=True, text=True, encoding="utf-8")
+        try:
+            result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                cwd=Path(str(path).removeprefix("\\\\?\\")), capture_output=True, check=False,
+                text=True, encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            raise LiveError("세션의 Git 저장소를 확인할 수 없습니다") from exc
         if result.returncode:
             raise LiveError("세션의 Git 저장소를 확인할 수 없습니다")
         return Path(result.stdout.strip()).resolve()

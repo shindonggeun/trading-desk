@@ -1,4 +1,4 @@
-from contextlib import closing
+from contextlib import closing, redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -51,7 +51,7 @@ class WireTests(unittest.TestCase):
             yield json.loads(bytes(value ^ mask[i % 4] for i, value in enumerate(payload)))
 
     def test_live_dispatch_and_inbox_via_framed_rpc(self):
-        for mode in ("idle", "active", "unsupported"):
+        for mode in ("idle", "active", "unsupported", "mismatched-turn"):
             with self.subTest(mode=mode), TemporaryDirectory() as tmp, closing(
                 team.Team(Path(tmp) / "team.sqlite")
             ) as store:
@@ -64,10 +64,10 @@ class WireTests(unittest.TestCase):
                 replies = [{"result": {"data": [other, worker]}}, {"result": {"thread": row}}] * 2
                 if mode == "idle":
                     replies.append({"result": {"turn": {"id": "test-turn"}}})
-                elif mode == "active":
+                elif mode != "unsupported":
                     replies.extend((
                         {"result": {"data": [{"id": "test-turn", "status": "inProgress"}]}},
-                        {"result": {"turnId": "test-turn"}},
+                        {"result": {"turnId": "other-turn" if mode == "mismatched-turn" else "test-turn"}},
                     ))
                 else:
                     replies.append({"error": {"code": -32601, "message": "private server details"}})
@@ -81,11 +81,14 @@ class WireTests(unittest.TestCase):
                     with self.assertRaisesRegex(live.LiveError, "thread/turns/list.*지원하지") as error:
                         store.deliver_live(mid, self.client)
                     self.assertNotIn("private server details", str(error.exception))
+                elif mode == "mismatched-turn":
+                    with self.assertRaisesRegex(live.LiveError, "turn/steer.*일치"):
+                        store.deliver_live(mid, self.client)
                 else:
-                    self.assertEqual("test-turn", store.deliver_live(mid, self.client))
+                    self.assertEqual(("test-turn", live.recipient_evidence(row)), store.deliver_live(mid, self.client))
 
                 received = store.inbox("S1", worker)[0]
-                transport = "unknown" if mode == "unsupported" else "live_accepted"
+                transport = "live_accepted" if mode in ("idle", "active") else "unknown"
                 self.assertEqual((mid, "시험용 배정", "pending", transport),
                                  (received["id"], received["body"], received["state"], received["transport"]))
                 with self.assertRaisesRegex(ValueError, "다시 보내지"):
@@ -112,7 +115,7 @@ class WireTests(unittest.TestCase):
                     expected_method = "turn/start" if mode == "idle" else "turn/steer"
                     self.assertEqual(expected_method, request["method"])
                     expected_params = {"threadId": worker, "input": request["params"]["input"]}
-                    if mode == "active":
+                    if mode != "idle":
                         expected_params["expectedTurnId"] = "test-turn"
                     self.assertEqual(expected_params, request["params"])
                     message, = request["params"]["input"]
@@ -218,7 +221,8 @@ class RoutingTests(unittest.TestCase):
             "threadId": "selected", "includeTurns": False})
 
     def test_ephemeral_and_subagent_are_not_independent_targets(self):
-        for field in ({"ephemeral": True}, {"source": {"subAgent": {}}}, {"source": "subAgent"}):
+        for field in ({"ephemeral": True}, {"source": {"subAgent": {}}}, {"source": "subAgent"},
+                      {"parentThreadId": "parent"}):
             self.client.loaded = Mock(return_value=["id"])
             self.client.call = Mock(return_value={"thread": {"id": "id", **field}})
             with self.assertRaisesRegex(live.LiveError, "독립"):
@@ -228,15 +232,26 @@ class RoutingTests(unittest.TestCase):
     def test_idle_starts_without_policy_or_cwd_override(self):
         self.client.target = Mock(return_value={"status": {"type": "idle"}})
         self.client.call = Mock(return_value={"turn": {"id": "new"}})
-        self.assertEqual("new", self.client.push("id", "hello"))
+        self.assertEqual(("new", live.recipient_evidence(self.client.target.return_value)),
+                         self.client.push("id", "hello"))
         self.client.call.assert_called_once_with("turn/start", {
             "threadId": "id", "input": [{"type": "text", "text": "hello"}]})
+
+    def test_idle_rejects_unverifiable_turn_id(self):
+        self.client.target = Mock(return_value={"status": {"type": "idle"}})
+        for response in ({}, {"turn": {"id": None}}, {"turn": {"id": " "}}):
+            with self.subTest(response=response):
+                self.client.call = Mock(return_value=response)
+                with self.assertRaisesRegex(live.LiveError, "turn/start.*turn ID"):
+                    self.client.push("id", "hello")
+                self.client.call.assert_called_once()
 
     def test_active_steers_exact_turn_and_ambiguous_state_fails(self):
         self.client.target = Mock(return_value={"status": {"type": "active"},
             "turns": [{"id": "active", "status": "inProgress"}]})
         self.client.call = Mock(side_effect=[{"data": self.client.target.return_value["turns"]}, {"turnId": "active"}])
-        self.assertEqual("active", self.client.push("id", "hello"))
+        self.assertEqual(("active", live.recipient_evidence(self.client.target.return_value)),
+                         self.client.push("id", "hello"))
         self.assertEqual("active", self.client.call.call_args.args[1]["expectedTurnId"])
         self.client.target.return_value["turns"] = []
         self.client.call = Mock(return_value={"data": []})
@@ -245,24 +260,115 @@ class RoutingTests(unittest.TestCase):
         self.client.call.assert_called_once_with("thread/turns/list", {
             "threadId": "id", "limit": 1, "sortDirection": "desc", "itemsView": "notLoaded"})
 
+    def test_active_rejects_malformed_turn_list_without_steering(self):
+        self.client.target = Mock(return_value={"status": {"type": "active"}})
+        for turns in (None, [None], [{"status": "inProgress"}],
+                      [{"status": "completed"}, {"id": "old", "status": "inProgress"}]):
+            with self.subTest(turns=turns):
+                self.client.call = Mock(return_value={"data": turns})
+                with self.assertRaises(live.LiveError):
+                    self.client.push("id", "hello")
+                self.client.call.assert_called_once()
+
     def test_different_repository_fails_closed(self):
         with patch.object(live.subprocess, "run", side_effect=[
                 Mock(returncode=0, stdout="/repo-a/.git"), Mock(returncode=0, stdout="/repo-b/.git")]):
             with self.assertRaisesRegex(live.LiveError, "다른 저장소"):
                 live.same_repo("a", "b")
 
+    def test_cli_reports_consistent_evidence_for_the_validated_target(self):
+        with TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "team.sqlite"
+            owner, worker = str(uuid.uuid4()), str(uuid.uuid4())
+            with closing(team.Team(db_path)) as store:
+                store.join("supervisor", owner, tmp)
+            row = {"id": worker, "name": "수신", "cwd": tmp, "source": "vscode",
+                   "status": {"type": "idle"}, "approvalPolicy": "never",
+                   "sandboxPolicy": {"type": "dangerFullAccess"}}
+            final_row = {**row, "source": "cli"}
+            self.client.close = Mock()
+            self.client.call = Mock(side_effect=[
+                {"data": [worker]}, {"thread": row},
+                {"data": [worker]}, {"thread": row},
+                {"data": [worker]}, {"thread": row},
+                {"data": [worker]}, {"thread": final_row}, {"turn": {"id": "new-turn"}},
+            ])
+            with patch.object(team, "state_path", return_value=db_path), \
+                 patch.object(live, "Client", return_value=self.client), \
+                 patch.object(live, "same_repo"), \
+                 patch.object(team, "codex", return_value="codex"), \
+                 patch.dict(os.environ, {"CODEX_THREAD_ID": owner}):
+                def run(*argv):
+                    out = io.StringIO()
+                    with patch.object(team.sys, "argv", ["codex_team.py", *argv]), redirect_stdout(out):
+                        self.assertEqual(0, team.main())
+                    return out.getvalue()
+
+                peer, = json.loads(run("peers"))
+                binding = run("bind", "S1", "--thread", worker).splitlines()
+                sent = run("send", "S1", "--from-role", "supervisor", "--live", "--message", "시험").splitlines()
+            expected = {"id": worker, "name": "수신", "cwd": tmp, "source": "vscode",
+                        "status": {"type": "idle"}, "effectivePolicy": "확인 불가"}
+            self.assertEqual(expected, peer)
+            self.assertEqual(expected, json.loads(binding[1].removeprefix("수신 thread: ")))
+            uuid.UUID(sent[0])
+            self.assertEqual("공용 서버 수락: new-turn. 수신은 상대 ack로 확인합니다.", sent[1])
+            self.assertEqual({**expected, "source": "cli"},
+                             json.loads(sent[2].removeprefix("수신 thread: ")))
+
+    def test_live_cli_failure_guides_to_the_same_saved_message(self):
+        for mode in ("preflight", "dispatch"):
+            with self.subTest(mode=mode), TemporaryDirectory() as tmp:
+                db_path = Path(tmp) / "team.sqlite"
+                owner, worker = str(uuid.uuid4()), str(uuid.uuid4())
+                with closing(team.Team(db_path)) as store:
+                    store.join("supervisor", owner, tmp)
+                    store.join("S1", worker, tmp)
+                row = {"id": worker, "cwd": tmp}
+                replies = ([{"data": [worker]}, {"thread": {"id": worker}}] if mode == "preflight"
+                           else [{"data": [worker]}, {"thread": row}] * 2)
+                self.client.close = Mock()
+                self.client.call = Mock(side_effect=replies)
+                out, err = io.StringIO(), io.StringIO()
+                with patch.object(team, "state_path", return_value=db_path), \
+                     patch.object(live, "Client", return_value=self.client), \
+                     patch.object(live, "same_repo"), \
+                     patch.object(team, "codex", return_value="codex"), \
+                     patch.dict(os.environ, {"CODEX_THREAD_ID": owner}), \
+                     patch.object(team.sys, "argv", ["codex_team.py", "send", "S1",
+                                  "--from-role", "supervisor", "--live", "--message", "시험"]), \
+                     redirect_stdout(out), redirect_stderr(err):
+                    self.assertEqual(1, team.main())
+                mid = out.getvalue().strip()
+                self.assertIn(mid, err.getvalue())
+                self.assertIn("inbox S1", err.getvalue())
+                self.assertIn("작업 경로" if mode == "preflight" else "상태", err.getvalue())
+                self.assertEqual(len(replies), self.client.call.call_count)
+                with closing(team.Team(db_path)) as store:
+                    saved, = store.inbox("S1", worker)
+                    self.assertEqual((mid, "pending" if mode == "preflight" else "unknown", "pending"),
+                                     (saved["id"], saved["transport"], saved["state"]))
+                    store.ack("S1", worker, mid, "received")
+                    with self.assertRaisesRegex(ValueError, "다시 보내지"):
+                        store.deliver_live(mid, self.client)
+                self.assertEqual(len(replies), self.client.call.call_count)
+
     def test_peers_filters_subagent_and_ephemeral_metadata(self):
         with TemporaryDirectory() as tmp:
-            client = Mock()
+            client = self.client
+            client.close = Mock()
             cli, ide = str(uuid.uuid4()), str(uuid.uuid4())
-            client.loaded.return_value = [cli, ide, "legacy", "sub", "ephemeral"]
-            client.call.side_effect = [{"thread": row} for row in (
+            unloaded = {"id": "unloaded", "cwd": tmp, "status": {"type": "notLoaded"}}
+            client.loaded = Mock(return_value=[cli, ide, "legacy", "sub", "ephemeral", "child", "unloaded"])
+            client.call = Mock(side_effect=[{"thread": row} for row in (
                 {"id": cli, "cwd": tmp, "source": "cli", "status": {"type": "idle"},
                  "approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}},
                 {"id": ide, "cwd": tmp, "source": "vscode", "status": {"type": "active"}},
                 {"id": "legacy", "cwd": tmp},
                 {"id": "sub", "cwd": tmp, "source": {"subAgent": {}}},
-                {"id": "ephemeral", "cwd": tmp, "ephemeral": True})]
+                {"id": "ephemeral", "cwd": tmp, "ephemeral": True},
+                {"id": "child", "cwd": tmp, "parentThreadId": cli},
+                unloaded)])
             with patch.object(team, "state_path", return_value=Path(tmp)/"state.sqlite"), \
                  patch.object(live, "Client", return_value=client), \
                  patch.object(live, "same_repo"), \
@@ -277,14 +383,18 @@ class RoutingTests(unittest.TestCase):
             self.assertEqual({"확인 불가"}, {r["effectivePolicy"] for r in rows})
             self.assertTrue(all("approvalPolicy" not in r and "sandboxPolicy" not in r for r in rows))
             self.assertTrue(all(not call.args[1]["includeTurns"] for call in client.call.call_args_list))
+            client.call = Mock(return_value={"thread": unloaded})
+            with self.assertRaisesRegex(live.LiveError, "로드되지"):
+                client.target("unloaded")
+            client.call.assert_called_once_with("thread/read", {"threadId": "unloaded", "includeTurns": False})
 
     def test_peers_failure_and_empty_results_point_to_existing_inbox(self):
-        from contextlib import redirect_stderr, redirect_stdout
-
         for mode in ("empty", "unsupported", "mismatched-id"):
             with self.subTest(mode=mode), TemporaryDirectory() as tmp:
-                client = Mock()
-                client.loaded.return_value = [] if mode == "empty" else ["expected"]
+                client = self.client
+                client.close = Mock()
+                client.loaded = Mock(return_value=[] if mode == "empty" else ["expected"])
+                client.call = Mock()
                 if mode == "unsupported":
                     client.call.side_effect = live.LiveError("공용 서버가 thread/read 메서드를 지원하지 않습니다")
                 else:
@@ -321,9 +431,9 @@ class RoutingTests(unittest.TestCase):
                 mid = store.send("supervisor", owner, "S1", "한국어", "test")
                 client = Mock()
                 client.target.return_value = {"cwd": tmp}
-                client.push.return_value = "turn"
+                client.push.return_value = ("turn", live.recipient_evidence({"cwd": tmp}))
                 with patch.object(live, "same_repo"):
-                    self.assertEqual("turn", store.deliver_live(mid, client))
+                    self.assertEqual(client.push.return_value, store.deliver_live(mid, client))
                     with self.assertRaises(ValueError):
                         store.deliver_live(mid, client)
                 self.assertEqual(1, client.push.call_count)

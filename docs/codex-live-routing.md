@@ -17,9 +17,9 @@ OpenAI [App Server 문서](https://learn.chatgpt.com/docs/app-server)는 `thread
 
 ## 사용법
 
-감독 세션이 등록된 뒤 실행한다. `peers`의 JSON 목록은 현재 공용 서버에서 로드된 같은 저장소의 독립 사용자 thread를 보여준다. `id`는 바인딩에 사용하는 수신 thread UUID, `source`는 서버가 기록한 출처(예: `cli`, `vscode`), `status`는 서버의 실행 상태다. 서버가 생략한 출처나 상태는 `null`로 표시한다. 수신 창은 사용자가 직접 대조한다.
+감독 세션이 등록된 뒤 실행한다. `peers`의 JSON 목록은 현재 공용 서버에서 로드된 같은 저장소의 독립 사용자 thread를 보여준다. `id`는 바인딩에 사용하는 수신 thread UUID, `source`는 서버가 기록한 출처(예: `cli`, `vscode`), `status`는 서버의 실행 상태다. 서버가 생략한 출처나 상태는 `null`로 표시한다. 목록을 읽은 뒤 확인한 상태가 `notLoaded`라면 후보에서 제외한다. 수신 창은 사용자가 직접 대조한다.
 
-`effectivePolicy`는 항상 `확인 불가`로 표시한다. 이 조회에는 대상 turn의 유효 승인·샌드박스 정책 필드가 없다. CLI 실행 인자, 디스크 설정이나 발신자의 권한으로 수신 정책을 추정하지 않는다. 대상이 없으면 빈 JSON 목록을 반환하고, 연결 실패나 조회 API 미지원은 종료 코드 1로 알린다. 두 경우 모두 표준 오류에 기존 `inbox <역할>` 확인 경로를 표시한다.
+`effectivePolicy`는 항상 `확인 불가`로 표시한다. 이 조회에는 대상 turn의 유효 승인·샌드박스 정책 필드가 없다. CLI 실행 인자, 디스크 설정이나 발신자의 권한으로 수신 정책을 추정하지 않는다. 대상이 없으면 빈 JSON 목록을 반환하고, 연결 실패나 조회 API 미지원은 종료 코드 1로 알린다. 두 경우 모두 표준 오류에 기존 `inbox <역할>` 확인 경로를 표시한다. `bind`와 `send --live`가 성공하면 같은 형식의 수신 정보를 `수신 thread:` 줄에 표시한다. 발송 정보는 RPC 전송 직전에 다시 확인한 수신 정보를 기준으로 한다.
 
 ```powershell
 python -B -X utf8 scripts/codex_team.py peers
@@ -48,6 +48,6 @@ python -B -X utf8 scripts/codex_team.py send S1 --from-role supervisor --live --
 
 `peers`의 `source`는 App Server가 기록한 출처다. `vscode`와 `cli`가 표시되더라도 실제로 열려 있는 창과 수신 turn의 유효 승인·샌드박스 정책은 각 수신 창에서 확인한다. 사용자가 선택한 창의 UUID와 대조할 수 없거나 표시와 기대가 다르면 배정을 보류한다. 공용 서버 목록에 나타나지 않는 전경 창은 [단독 실행 절차](codex-team.md#작업자-터미널-연결)의 연결 상태를 확인한다.
 
-실패하면 출력된 메시지 ID를 기준으로 수신 창의 `inbox <역할>`에서 원문을 찾는다. 수신 대상 확인이나 proxy 연결이 배정 저장 뒤에 실패하면 전송 상태가 `pending`으로 남을 수 있다. 실행 중 turn을 찾는 API가 지원되지 않거나 전달 응답을 잃으면 `unknown`으로 남을 수 있다. 수신자는 찾은 기존 원문에 대해 `ack`를 남긴다.
+실패하면 출력된 메시지 ID를 기준으로 수신 창의 `inbox <역할>`에서 원문을 찾는다. 수신 대상 확인이나 proxy 연결이 배정 저장 뒤에 실패하면 전송 상태가 `pending`으로 남을 수 있다. 별도 전경 실행기가 연결돼 있으면 이 `pending` 메시지는 기존 큐 경로에서 처리할 수 있다. 실행 중 turn을 찾는 API가 지원되지 않거나 전달 응답으로 수락 여부를 확인하지 못하면 `unknown`으로 남을 수 있다. `unknown`은 자동 재전송 대상이 아니다. 수신자는 찾은 기존 원문에 대해 `ack`를 남긴다.
 
 `scripts`에서 `python -B -X utf8 -m unittest test_codex_live test_codex_team -q`로 가짜 App Server 프레임을 사용하는 회귀를 실행할 수 있다. 이 검사는 유휴 `turn/start`, 실행 중 `turn/steer`, 미지원 API의 원인과 inbox 상태, 수신 ack 및 중복 차단을 확인한다. 실제 창에서의 파일 쓰기와 승인 요청 비교에는 사용자가 지정한 Windows IDE·CLI 테스트 창이 필요하다.

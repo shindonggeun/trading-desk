@@ -413,6 +413,7 @@ def test_the_route_sends_the_latest_values_then_ready_then_events(db_url, monkey
     from tests.test_live import Prices
     from tests.test_prices import _client
 
+    monkeypatch.setattr(market_bus, "BUS", Bus())
     monkeypatch.setattr(market_bus, "HEARTBEAT_SEC", 0.05)
     with _client(db_url, Prices(), fake_runs=True) as client:
         client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})

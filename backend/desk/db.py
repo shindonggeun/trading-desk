@@ -10,6 +10,7 @@ from pathlib import Path
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Column,
     Date,
     DateTime,
@@ -59,6 +60,7 @@ runs = Table(
     Column("outcome", Json),
     Column("outcome_status", String(16)),
     Column("scored_at", Timestamp),
+    Column("is_shareable", Boolean, CheckConstraint("is_shareable IN (FALSE, TRUE)"), nullable=True),
     Index("ix_runs_created_at", "created_at"),
     Index("ix_runs_outcome_status", "outcome_status"),
 )

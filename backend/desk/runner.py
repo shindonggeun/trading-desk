@@ -628,7 +628,9 @@ class RunManager:
         # committed, and its own events must come after this one. Queued for the analyst: the screen says so.
         queued = {"type": "status", "agent": "system", "content": "queued",
                   **({} if self.direct else {"data": {"waiting_for": "analyst"}})}
-        run_id = self.store.create_run(request.ticker, request.trade_date, asdict(request), first_event=queued)
+        run_id = self.store.create_run(
+            request.ticker, request.trade_date, asdict(request), first_event=queued, guarded_writer=True,
+        )
         self.hub.notify(run_id)
         if self.direct:
             self.start(run_id, request)
@@ -1023,6 +1025,8 @@ class RunManager:
                                    "data": {"analysts": subject.selected_analysts(), "models": models}})
             # #171: the reused reports go into the chat now, marked, and into the graph's first state
             reused = self._reusable(request, subject.selected_analysts())
+            # Only the reports selected by Store.recent_reports carry established provenance.
+            source_visibility = None if request.reused else tuple(row["is_shareable"] for row in reused)
             for row in reused:
                 minutes = max(0, int((dt.datetime.now(dt.UTC) - row["ts"]).total_seconds() // 60))
                 self._publish(run_id, {"type": "message", "agent": row["agent"], "content": row["content"],
@@ -1222,7 +1226,10 @@ class RunManager:
                 plan = with_sides(plan)     # #311: long / short view of the levels, conflicts, trigger warnings
                 # #437 first: a run read as done already carries its outlook
                 self._publish_outlook(run_id, request, plan, await ahead)
-                self.store.mark_done(run_id, plan, result.report_path)
+                self.store.mark_done(
+                    run_id, plan, result.report_path, executed_use_portfolio=request.use_portfolio,
+                    source_visibility=source_visibility,
+                )
                 self._publish(run_id, {"type": "plan", "agent": "portfolio_manager", "data": plan})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "done"})
             except Exception as exc:   # surface every failure to the page, not just the log

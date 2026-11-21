@@ -16,6 +16,7 @@ from sqlalchemy.engine import Engine, RowMapping
 
 from .db import aware, events, now, runs
 from .plan import with_sides
+from .run_access import shared_run_rows, visibility_for_new_run
 from .run_events import CHANNEL, shared
 
 TERMINAL = ("done", "failed")
@@ -24,6 +25,10 @@ TERMINAL = ("done", "failed")
 def iso(value: datetime | None) -> str | None:
     value = aware(value)
     return value.isoformat(timespec="seconds") if value else None
+
+
+_VISIBILITY_WRITER = "_run_visibility_writer"
+_GUARDED_WRITER_VERSION = "1"
 
 
 class Store:
@@ -38,9 +43,16 @@ class Store:
 
     # --- runs -----------------------------------------------------------------------
 
-    def create_run(self, ticker: str, trade_date: str, options: dict, first_event: dict | None = None) -> str:
+    def create_run(
+        self, ticker: str, trade_date: str, options: dict, first_event: dict | None = None, *,
+        guarded_writer: bool = False,
+    ) -> str:
         """A queued run; with ``first_event`` (#688 its ``queued`` event) written in the same transaction, so a
         run another process can claim always has its first event already (seq 1)."""
+        if isinstance(options, dict):
+            options = {key: value for key, value in options.items() if key != _VISIBILITY_WRITER}
+            if guarded_writer is True:
+                options[_VISIBILITY_WRITER] = _GUARDED_WRITER_VERSION
         run_id = uuid.uuid4().hex[:12]
         with self.engine.begin() as conn:
             conn.execute(runs.insert().values(
@@ -54,8 +66,24 @@ class Store:
     def mark_running(self, run_id: str) -> None:
         self._update(run_id, status="running", started_at=now())
 
-    def mark_done(self, run_id: str, plan: dict, report_path: str | None) -> None:
-        self._update(run_id, status="done", plan=plan, report_path=report_path, finished_at=now())
+    def mark_done(
+        self, run_id: str, plan: dict, report_path: str | None, *,
+        executed_use_portfolio: bool | None = None, source_visibility: tuple[object, ...] | None = None,
+    ) -> None:
+        with self.engine.begin() as conn:
+            is_shareable = None
+            if type(executed_use_portfolio) is bool:
+                options = conn.scalar(select(runs.c.options).where(runs.c.id == run_id))
+                if (
+                    isinstance(options, dict)
+                    and options.get(_VISIBILITY_WRITER) == _GUARDED_WRITER_VERSION
+                    and options.get("use_portfolio") is executed_use_portfolio
+                ):
+                    is_shareable = visibility_for_new_run(executed_use_portfolio, source_visibility=source_visibility)
+            # A completed result and its classification become visible together.
+            conn.execute(update(runs).where(runs.c.id == run_id).values(
+                status="done", plan=plan, report_path=report_path, finished_at=now(), is_shareable=is_shareable,
+            ))
 
     def mark_failed(self, run_id: str, error: str) -> None:
         self._update(run_id, status="failed", error=error, finished_at=now())
@@ -261,10 +289,11 @@ class Store:
         with self.engine.connect() as conn:
             rows = conn.execute(
                 select(events.c.run_id, events.c.ts, events.c.agent, events.c.content, events.c.data,
-                       runs.c.options)
+                       runs.c.options, runs.c.is_shareable)
                 .select_from(events.join(runs, events.c.run_id == runs.c.id))
                 .where(runs.c.ticker == ticker, runs.c.trade_date == trade_date, runs.c.status == "done",
-                       events.c.type == "message", events.c.agent.in_(agents), events.c.ts >= since)
+                       events.c.type == "message", events.c.agent.in_(agents), events.c.ts >= since,
+                       shared_run_rows(runs.c.is_shareable))
                 .order_by(events.c.ts.desc())
             ).mappings().all()
         return [{**row, "ts": aware(row["ts"])} for row in rows]
@@ -282,12 +311,15 @@ def _light(run: dict) -> dict:
 
 
 def _run(row: RowMapping) -> dict:
+    options = row["options"]
+    if isinstance(options, dict) and _VISIBILITY_WRITER in options:
+        options = {key: value for key, value in options.items() if key != _VISIBILITY_WRITER}
     return {
         "id": row["id"],
         "ticker": row["ticker"],
         "trade_date": row["trade_date"],
         "status": row["status"],
-        "options": row["options"],
+        "options": options,
         "plan": with_sides(row["plan"]),     # #311: worked out again on read, older runs included
         "error": row["error"],
         "report_path": row["report_path"],

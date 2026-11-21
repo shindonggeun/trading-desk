@@ -48,13 +48,13 @@ _REQUEST_FIELDS = {f.name for f in fields(RunRequest)} - {"reused"}
 
 def held(engine: Engine) -> bool | None:
     """Whether some process holds the run queue's lock on this database right now (PostgreSQL), None on SQLite.
-    ``pg_try_advisory_lock(bigint)`` files the key as classid (high 32 bits, 0 here) · objid (low) · objsubid 1."""
+    ``pg_try_advisory_lock(bigint)`` files the key as classid (high 32 bits) · objid (low) · objsubid 1."""
     if not run_events.shared(engine):
         return None
     with engine.connect() as conn:
         return bool(conn.execute(text(
-            "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted AND classid = 0 "
-            "AND objid = CAST(:k AS oid) AND objsubid = 1 "
+            "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted AND objsubid = 1 "
+            "AND ((classid::bigint << 32) | objid::bigint) = :k "
             "AND database = (SELECT oid FROM pg_database WHERE datname = current_database()))"),
             {"k": LOCK_KEY}).scalar())
 

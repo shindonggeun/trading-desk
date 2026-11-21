@@ -102,9 +102,11 @@ def test_postgresql_sessions_contend_and_release():
 
 @pytest.mark.parametrize("role", ["all", "collector"])
 def test_app_startup_denies_contending_minter(db_url, monkeypatch, role):
-    from desk import api
+    from desk import api, db
     from tests.test_api import _client
 
+    if role == "collector":
+        db.migrate(db_url)  # the API already prepared the shared database
     owner = Mock()
     owner.acquire.return_value = False
     monkeypatch.setattr(api, "BrokerIssuerLock", Mock(return_value=owner))
@@ -116,9 +118,11 @@ def test_app_startup_denies_contending_minter(db_url, monkeypatch, role):
 
 @pytest.mark.parametrize("role", ["all", "collector", "api", "analyst"])
 def test_app_only_holds_issuer_lock_for_minter_lifespan(db_url, monkeypatch, role):
-    from desk import api
+    from desk import api, db
     from tests.test_api import _client
 
+    if role in ("collector", "analyst"):
+        db.migrate(db_url)  # the API already prepared the shared database
     owner = Mock()
     owner.acquire.return_value = True
     factory = Mock(return_value=owner)

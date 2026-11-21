@@ -63,8 +63,11 @@ def test_a_job_switched_off_without_its_line_stops_the_start(db_url, monkeypatch
 
 @pytest.mark.parametrize(("role", "listing"), [("all", True), ("api", False), ("collector", True), ("analyst", False)])
 def test_status_names_the_role_and_a_job_of_another_role_stays_off(db_url, role, listing):
+    from desk.db import migrate
     from tests.test_api import _client
 
+    if role in ("collector", "analyst"):
+        migrate(db_url)  # the API has already prepared the shared database
     with _client(db_url, role=role) as client:
         body = client.get("/api/status").json()
     assert body["role"] == role

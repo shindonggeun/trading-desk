@@ -170,7 +170,7 @@ services:
     # (docs/security.md §4). 이미지 CMD 와 다른 것은 --host 와 프록시 헤더 옵션뿐이다
     command: ["uvicorn", "desk.api:create_app", "--factory", "--host", "127.0.0.1", "--port", "8000",
               "--timeout-graceful-shutdown", "20"]
-    # api 가 Alembic upgrade head 를 끝내고 healthy 가 된 뒤에 뜬다(여기서는 이미 head 라 아무것도 하지 않는다)
+    # api가 Alembic upgrade head를 마치고 healthy가 되면, 워커는 같은 head인지 읽기 전용으로 확인한다.
     depends_on:
       backend-prod:
         condition: service_healthy

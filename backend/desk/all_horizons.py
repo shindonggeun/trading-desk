@@ -24,8 +24,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from datetime import UTC, datetime
 
-from . import channels, chart_read, direction_stats, entry_now, horizons, regime_live
+from . import accumulation_live, channels, chart_read, direction_stats, entry_now, horizons, regime_live
 from .plan import HORIZON_LABELS
 from .sr import support_resistance
 from .underlying import leverage_of
@@ -36,6 +37,7 @@ TIMEOUT_SEC = 20.0
 CHART_TF = {"scalp": "5m", "intraday": "15m", "short_swing": "60m", "swing": "1d"}
 LEVELS_EACH = 2
 ORDER = ("scalp", "intraday", "short_swing", "swing")
+ACCUMULATION_VIEW = {"scalp": "short", "intraday": "short", "short_swing": "mid", "swing": "long"}
 
 # safe havens: Treasuries and short bills, investment-grade bond funds (KR: 국고채 · 단기채권 ETF)
 BOND = frozenset({"TLT", "IEF", "SHY", "BND", "AGG", "GOVT", "EDV", "VGLT", "VGIT", "TLH", "IEI", "SGOV", "BIL",
@@ -285,7 +287,7 @@ def fake(ticker: str, plan: dict, main: str) -> dict:
                    for r, m in (("t1", h.target_atr), ("t2", 1.6 * h.target_atr))]
         out[hid] = {
             "horizon": hid, "label": h.label, "holding": h.holding, "flat_by_close": h.flat_by_close,
-            "source": "map", "model": None, "atr": round(atr, 4), "errors": None,
+            "source": "map", "model": None, "atr": round(atr, 4), "errors": None, "accumulation": None,
             "map": {"regime": "range", "price_now": price, "atr": round(atr, 4),
                     "side": "long" if up else "short", "side_ko": "롱" if up else "숏", "setup": "pullback",
                     "kind": "limit", "kind_ko": "지정가", "zone": sorted([first, round(first + sign * 0.3 * atr, 2)]),
@@ -323,13 +325,42 @@ def fake(ticker: str, plan: dict, main: str) -> dict:
     return finish(got, plan, main, ticker)
 
 
+async def _accumulation_inputs(prices, ticker: str):
+    errors: dict[str, str] = {}
+
+    async def short():
+        for tf in ("240m", "60m"):
+            result = await _bounded(prices.candles(ticker, tf, channels.BARS[tf]), tf, errors)
+            if result and result.get("bars"):
+                return tf, result
+        return "240m", None
+
+    short_result, daily, weekly = await asyncio.gather(
+        _bounded(short(), "short accumulation", errors),
+        _bounded(prices.candles(ticker, "1d", accumulation_live.DAILY_BARS), "mid accumulation", errors),
+        _bounded(prices.candles(ticker, "1w", accumulation_live.WEEKLY_BARS), "long accumulation", errors),
+    )
+    tf, hourly = short_result or ("240m", None)
+    return (tf, "1d"), (hourly, daily), weekly.get("bars") if weekly else None
+
+
 async def build(prices, ticker: str, plan: dict, main: str, sr_main: dict | None, *, same_day: bool,
                 scripted: bool = False, risk=None) -> dict:
     """``plan``'s horizons · instrument_class · horizon_fit (a dict to merge into the plan): ``maps`` with
     the model's plan and lines on them (``finish``). ``scripted``: a fake run with no prices gets ``fake``'s."""
     if prices is None and scripted:
         return fake(ticker, plan, main)
-    return finish(await maps(prices, ticker, main, sr_main, same_day=same_day, risk=risk), plan, main, ticker)
+    base = maps(prices, ticker, main, sr_main, same_day=same_day, risk=risk)
+    if prices is None or not same_day:
+        return finish(await base, plan, main, ticker)
+    got, inputs = await asyncio.gather(base, _accumulation_inputs(prices, ticker))
+    rows = got["horizons"]
+    price = next((value for row in rows.values() if (value := (row.get("map") or {}).get("price_now"))), None)
+    read = await _bounded(accumulation_live.read(*inputs, datetime.now(UTC), price), "accumulation", {})
+    views = (read or (None, None))[0] or {}
+    for hid, row in rows.items():
+        row["accumulation"] = views.get(ACCUMULATION_VIEW[hid])
+    return finish(got, plan, main, ticker)
 
 
 async def maps(prices, ticker: str, main: str, sr_main: dict | None, *, same_day: bool, risk=None) -> dict:

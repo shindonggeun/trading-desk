@@ -232,12 +232,10 @@ def test_api_chart_read_has_the_bands_and_legs_by_view(db_url):
 
 
 def test_api_chart_read_stands_without_the_bands(db_url, monkeypatch):
-    from desk import api as api_mod
-
     def broken(*a, **k):
         raise RuntimeError("bad bars")
 
-    monkeypatch.setattr(api_mod.accumulation, "views", broken)
+    monkeypatch.setattr(accumulation, "views", broken)
     client, (user, password) = _client(db_url, [])
     with client:
         client.post("/api/auth/login", json={"username": user, "password": password})

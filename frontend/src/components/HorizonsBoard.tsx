@@ -98,6 +98,9 @@ export default function HorizonsBoard({ plan, selected, selectedSide, onSelect, 
                   <span><span className="hz-k">과거 R</span><span>{r != null ? rText(r) : "기록 없음"}</span></span>
                 </span>
               )}
+              {s.accumulation?.sentence && (
+                <span className="muted small hz-aside">{s.accumulation.sentence}</span>
+              )}
               {s.errors && Object.keys(s.errors).length > 0 && (
                 <span className="muted small">일부 계산 빠짐({Object.keys(s.errors).join(" · ")})</span>
               )}

@@ -219,12 +219,13 @@ python -B -X utf8 scripts/jenkins/register-disabled-backend-jobs.py --apply -- j
 **정본은 홈랩 Vault(KV v2, ai-host)다(#691).** Jenkins 가 배포 때마다 읽어 임시 파일로 compose 에 넘기고 지운다. 앱은 env 를 그대로 읽는다(Vault SDK 없음).
 
 ```text
-kv/trading-desk/backend/prod/env    # 백엔드 compose 가 쓰는 키 전부(api · collector · analyst 공용) — 키 목록 정본: 루트 .env.example
+kv/trading-desk/backend/prod/env    # 백엔드 compose 의 운영 env(api · collector · analyst 공용) — 키 목록 정본: 루트 .env.example
 kv/trading-desk/frontend/prod/env   # 웹 compose 보간 키만: DESK_DOCKER_NETWORK · DESK_WEB_BIND · DESK_WEB_PORT (· DESK_WEB_MEM_LIMIT)
 ```
 
 - 환경당 secret 하나, **키 하나에 값 하나**(`.env` 통째로 한 키에 넣지 않는다). 값에 작은따옴표 · 줄바꿈을 넣지 않는다 — 파이프라인이 `KEY='value'` 로 쓰고, 걸리면 키 이름만 알리고 멈춘다.
 - compose 가 쓰지 않는 키는 env 파일에 넣지 않는다(이름만 알린다). Vault 에 없는 선택 키는 compose 기본값(`${KEY:-기본}`)을 쓴다.
+- `DESK_API_ROLE`은 `scripts/deploy-compose.sh`가 `DESK_BACKEND_SPLIT`에 따라 설정하는 내부 셸 변수다. Vault 와 `.env.runtime`에 넣지 않는다. env 파일에 비어 있지 않은 값이 있으면 배포 스크립트가 컨테이너 교체 전에 중단한다.
 - 키를 더하면 compose · `.env.example` 을 같은 PR 에서 고치고(`tests/test_env_keys.py`), 값은 Vault 에 `vault kv patch` 로 더한 뒤 `FORCE_DEPLOY` 로 배포한다. `kv put` 은 secret 전체를 덮어쓴다.
 - 아래 절들(4 · 5 · 6 · 9 · 10 · 11)과 `security.md` 의 "`.env.runtime` 에 넣고 `scripts/deploy.sh HEAD backend`" 는 옮긴 뒤에는
   "Vault `kv/trading-desk/backend/prod/env` 에 `kv patch` 하고 `trading-desk-backend` 를 `FORCE_DEPLOY` 로" 로 읽는다. `.env.runtime` 사본도 같이 고쳐 둔다.
@@ -287,7 +288,9 @@ unset VAULT_TOKEN TO_JSON
 |----|-----|
 | `DESK_DATABASE_URL` | `postgresql+psycopg://trading_desk:<비밀번호>@192.168.0.11:5432/trading_desk?options=-csearch_path%3Ddesk` |
 | `DESK_DOCKER_NETWORK` | `trading-desk-prod` |
-| `DESK_WEB_BIND` · `DESK_WEB_PORT` | `192.168.0.9` · `10088` |
+| `DESK_WEB_PORT` | `10088` |
+
+`DESK_WEB_BIND`를 생략하면 compose 는 `127.0.0.1`에 바인딩한다. 홈랩처럼 인그레스가 배포 호스트의 LAN 주소로 접속하는 구성에서는 해당 주소(홈랩은 `192.168.0.9`)를 웹 Vault 경로와 손 배포용 `.env.runtime`에 명시한다.
 
 DB · 계정은 Infra 저장소의 `PostgreSQL/scripts/create-project-db.sh trading_desk trading_desk desk` 로 만들었다(2026-11-04).
 비밀번호를 바꿀 때는 같은 스크립트를 새 값으로 다시 돌리고 `.env.runtime` 을 고친 뒤 `scripts/deploy.sh HEAD backend`.

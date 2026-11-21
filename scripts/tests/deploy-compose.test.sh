@@ -19,12 +19,27 @@ cat > "$TMP/bin/docker" <<'FAKE'
 set -u
 S="$STATE"; mkdir -p "$S/tags" "$S/img" "$S/ctr" "$S/net"
 key() { printf '%s' "$1" | tr ':/' '__'; }
-resolve() { case "$1" in img-*) printf '%s' "$1" ;; *) cat "$S/tags/$(key "$1")" 2>/dev/null ;; esac; }
+resolve() {
+  case "$1" in
+    img-*) printf '%s' "$1" ;;
+    sha256:*) printf 'img-%d' "0x${1#sha256:}" ;;
+    *) cat "$S/tags/$(key "$1")" 2>/dev/null ;;
+  esac
+}
+digest() { printf 'sha256:%064x\n' "${1#img-}"; }
 label() { cat "$S/img/$1.label" 2>/dev/null || true; }
 echo "docker $*" >> "$S/calls"
 if [ "$1" = compose ]; then
-  prof=''
-  shift; while [ "$#" -gt 0 ]; do case "$1" in -p|--env-file|-f) shift 2 ;; --profile) prof=$2; shift 2 ;; *) break ;; esac; done
+  prof='' source='' override=''
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -p|--env-file) shift 2 ;;
+      -f) if [ -z "$source" ]; then source=$2; else override=$2; fi; shift 2 ;;
+      --profile) prof=$2; shift 2 ;;
+      *) break ;;
+    esac
+  done
   sub=$1; shift
   case "$sub" in
     config)
@@ -36,8 +51,14 @@ if [ "$1" = compose ]; then
     ps) svc=${*: -1}; [ -f "$S/ctr/$svc" ] && echo "cid-$svc"; exit 0 ;;
     up)
       svcs=()
-      for a in "$@"; do case "$a" in -*|[0-9]*) ;; *) svcs+=("$a") ;; esac; done
-      id=$(resolve "$FAKE_IMAGE"); rc=0
+      for a in "$@"; do case "$a" in -*|[0-9]*|never) ;; *) svcs+=("$a") ;; esac; done
+      image=$FAKE_IMAGE
+      if [ -n "$override" ]; then
+        [ "${#svcs[@]}" = 1 ] || exit 1
+        grep -qx "  ${svcs[0]}:" "$override" || exit 1
+        image=$(awk '/image:/ {print $2}' "$override")
+      fi
+      id=$(resolve "$image"); [ -n "$id" ] || exit 1; rc=0
       for svc in "${svcs[@]}"; do
         h=healthy; [ "$(label "$id")" != "${FAKE_BAD_REV:-}" ] || { h=unhealthy; rc=1; }
         echo "$id $h" > "$S/ctr/$svc"
@@ -52,11 +73,16 @@ case "$1" in
   inspect)
     fmt=$3; svc=${4#cid-}; read -r id h < "$S/ctr/$svc"
     case "$fmt" in
+      *desk.backend-split*) if [ "$(cat "$S/role/$svc")" = api ]; then echo "1 running $h"; else echo "0 running $h"; fi ;;
       *Labels*) label "$id" ;;
-      '{{.Image}}') echo "$id" ;;
+      '{{.Image}}') digest "$id" ;;
+      '{{.Image}} '*State.Health.Status*) printf '%s running %s\n' "$(digest "$id")" "$h" ;;
       '{{.RestartCount}}') echo 0 ;;
+      *State.Health.Status*RestartCount*) echo "running $h 0" ;;
+      *State.Health.Status*) echo "running $h" ;;
       *State.Status*) echo "running $h 0" ;;
     esac ;;
+  image) id=$(resolve "${*: -1}") || exit 1; printf '%s %s\n' "$(digest "$id")" "$(label "$id")" ;;
   build)
     shift; while [ "$#" -gt 1 ]; do case "$1" in -t) t=$2; shift 2 ;; --label) l=${2#*=}; shift 2 ;; *) shift ;; esac; done
     id="img-$(( $(ls "$S/img" | wc -l) + 1 ))"
@@ -68,11 +94,14 @@ case "$1" in
   exec)
     svc=${2#cid-}; read -r id h < "$S/ctr/$svc"
     case "$*" in
+      *MigrationContext*) [ "${FAKE_SCHEMA_UNAPPLIED:-}" != "$svc" ] || exit 1 ;;
       *unfinished*) printf '%b\n' "${FAKE_UNFINISHED:-0}" ;;
-      *api/health*) [ "$(label "$id")" != "${FAKE_BAD_REV:-}" ] ;;
+      *api/health*) [ "$(label "$id")" != "${FAKE_PROBE_BAD_REV:-}" ] || exit 1 ;;
       *) exit 0 ;;
     esac ;;
-  logs) echo "boot ok, db=${FAKE_LOG_SECRET:-none}" ;;
+  logs)
+    echo "boot ok, db=${FAKE_LOG_SECRET:-none}"
+    if [ "${FAKE_TOKEN_ISSUE:-}" = 1 ]; then echo 'toss token issued (collector)'; fi ;;
   ps) case "$*" in *-aq*) svc=${*: -1}; svc=${svc##*=}; [ ! -f "$S/ctr/$svc" ] || echo "cid-$svc" ;; esac ;;
   rm) shift; for c in "$@"; do case "$c" in cid-*) rm -f "$S/ctr/${c#cid-}" ;; esac; done ;;
   images) for f in "$S"/tags/*; do b=$(basename "$f"); echo "${b%_*}:${b##*_}"; done ;;
@@ -155,7 +184,91 @@ check "켰는데 compose 에 analyst 가 없으면 멈춘다" "1 rev9" "$rc $(pr
 rc=$(FAKE_SERVICES="backend-prod collector-prod" deploy rev10)
 check "껐는데 profile 없이 collector 가 있으면 멈춘다" "1 rev9" "$rc $(prod_rev)"
 
-rc=$(PRIMARY_SERVICE=api deploy rev11); check "없는 PRIMARY_SERVICE 는 바꾸기 전에 멈춘다" "1 rev9" "$rc $(prod_rev)"
+# ---- #776 준비된 커밋 이미지와 서비스 단독 교체
+one() {
+  local revision=$1; shift
+  ENV_FILE="$SPLITF" REVISION="$revision" bash "$SCRIPT" backend "$SRC" "$@" > "$TMP/out" 2>&1
+  echo $?
+}
+current_revs() { echo "$(ctr_rev backend-prod) $(ctr_rev collector-prod) $(ctr_rev analyst-prod)"; }
+up_services() { awk '/^docker compose .* up / {print $NF}' "$STATE/calls" | paste -sd ' ' -; }
+
+stable_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+next_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+schema_sha=cccccccccccccccccccccccccccccccccccccccc
+
+rc=$(one "$stable_sha" --service collector)
+check "대상 이미지가 없으면 서비스에서 빌드하지 않는다" "1 rev9" "$rc $(ctr_rev backend-prod)"
+rc=$(ENV_FILE="$SPLITF" deploy rev11)
+check "단독 모드 시험의 기존 split 배포" "0 rev11 rev11 rev11" "$rc $(current_revs)"
+: > "$STATE/calls"
+rc=$(one "$stable_sha" --build-only)
+retry=$(one "$stable_sha" --build-only)
+check "전체 SHA 이미지는 재실행해도 한 번만 준비한다" "0 0 1" "$rc $retry $(grep -c '^docker build ' "$STATE/calls")"
+check "이미지 준비는 컨테이너를 교체하지 않는다" "" "$(up_services)"
+
+: > "$STATE/calls"
+rc=$(one "$stable_sha" --service api)
+check "API만 같은 스키마로 교체한다" "0 $stable_sha rev11 rev11" "$rc $(current_revs)"
+check "API 교체에서 의존 서비스를 올리거나 분석을 기다리지 않는다" "backend-prod 0" "$(up_services) $(grep -c unfinished "$STATE/calls")"
+check "대상 이미지는 로컬 ID로 고정하고 pull과 의존성 기동을 막는다" 1 "$(grep -c -- '--no-deps --pull never backend-prod$' "$STATE/calls")"
+check "단독 교체는 다시 빌드하거나 공유 태그를 이동하지 않는다" "0 rev11" "$(grep -cE '^docker (build|tag) ' "$STATE/calls") $(prod_rev)"
+
+: > "$STATE/calls"
+rc=$(one "$stable_sha" --service api)
+check "정상 컨테이너에 같은 이미지가 올라 있으면 건너뛴다" "0 " "$rc $(up_services)"
+rc=$(FAKE_SCHEMA_UNAPPLIED=backend-prod one "$stable_sha" --service collector)
+check "API 적용 상태를 증명할 수 없으면 worker를 교체하지 않는다" "1 " "$rc $(up_services)"
+rc=$(one "$stable_sha" --service collector)
+check "같은 스키마의 collector만 교체한다" "0 collector-prod $stable_sha $stable_sha rev11" "$rc $(up_services) $(current_revs)"
+
+: > "$STATE/calls"
+rc=$(FAKE_UNFINISHED=1 one "$stable_sha" --service analyst)
+check "analyst는 분석을 기다리고 시간이 다 되면 그대로 둔다" "3 rev11" "$rc $(ctr_rev analyst-prod)"
+rc=$(one "$stable_sha" --service analyst)
+check "분석이 없으면 analyst만 교체한다" "0 analyst-prod $stable_sha" "$rc $(up_services) $(ctr_rev analyst-prod)"
+
+one "$next_sha" --build-only >/dev/null
+: > "$STATE/calls"
+rc=$(FAKE_PROBE_BAD_REV="$next_sha" one "$next_sha" --service api)
+check "같은 스키마의 API 검증 실패 시 API만 복구한다" \
+  "2 backend-prod backend-prod $stable_sha $stable_sha $stable_sha" "$rc $(up_services) $(current_revs)"
+: > "$STATE/calls"
+rc=$(FAKE_PROBE_BAD_REV="$next_sha" one "$next_sha" --service collector)
+check "health 실패 시 collector만 이전 이미지로 복구한다" \
+  "2 collector-prod collector-prod $stable_sha $stable_sha $stable_sha" "$rc $(up_services) $(current_revs)"
+: > "$STATE/calls"
+rc=$(FAKE_TOKEN_ISSUE=1 one "$next_sha" --service collector)
+check "collector 신규 토큰 발급 시 이전 이미지로 복구한다" \
+  "2 collector-prod collector-prod $stable_sha" "$rc $(up_services) $(ctr_rev collector-prod)"
+
+touch "$SRC/backend/desk/migrations/versions/0100_next.py"
+one "$schema_sha" --build-only >/dev/null
+: > "$STATE/calls"
+rc=$(one "$schema_sha" --service analyst)
+check "스키마가 다르면 API 선행 전 worker를 교체하지 않는다" "1 " "$rc $(up_services)"
+rc=$(one "$schema_sha" --service api)
+check "새 스키마는 API에서 먼저 적용한다" "0 backend-prod $schema_sha $stable_sha $stable_sha" \
+  "$rc $(up_services) $(current_revs)"
+: > "$STATE/calls"
+rc=$(ROLLBACK_DRILL=1 one "$schema_sha" --service collector)
+check "이전 worker의 스키마가 호환되지 않으면 자동 복구하지 않는다" \
+  "1 collector-prod $schema_sha $schema_sha $stable_sha" "$rc $(up_services) $(current_revs)"
+
+touch "$SRC/backend/desk/migrations/versions/0101_later.py"
+later_sha=dddddddddddddddddddddddddddddddddddddddd
+one "$later_sha" --build-only >/dev/null
+: > "$STATE/calls"
+rc=$(FAKE_BAD_REV="$later_sha" one "$later_sha" --service api)
+check "새 스키마 API가 실패하면 API를 자동 복구하지 않는다" "1 backend-prod $later_sha" "$rc $(up_services) $(ctr_rev backend-prod)"
+: > "$STATE/calls"
+rc=$(one "$later_sha" --service analyst)
+check "API가 실패한 뒤 worker를 교체하지 않는다" "1 " "$rc $(up_services)"
+: > "$STATE/calls"
+rc=$(REVISION="$schema_sha" bash "$SCRIPT" backend "$SRC" --service api > "$TMP/out" 2>&1; echo $?)
+check "split이 꺼져 있으면 단독 전환을 막는다" "1 " "$rc $(up_services)"
+
+rc=$(PRIMARY_SERVICE=api deploy rev11); check "없는 PRIMARY_SERVICE 는 바꾸기 전에 멈춘다" "1 rev11" "$rc $(prod_rev)"
 
 # ---- 실제 compose 파일(#688): 진짜 docker compose 가 있을 때(CI)만. 스위치에 따라 서비스 · api 역할이 맞게 풀리는지
 if [ -n "$REAL_DOCKER" ] && "$REAL_DOCKER" compose version > /dev/null 2>&1; then
@@ -165,6 +278,11 @@ if [ -n "$REAL_DOCKER" ] && "$REAL_DOCKER" compose version > /dev/null 2>&1; the
   check "compose: 꺼짐은 backend-prod 하나" "backend-prod" "$(real config --services | sort | paste -sd' ')"
   check "compose: 켜짐은 서비스 3개" "analyst-prod backend-prod collector-prod" "$(real --profile split config --services | sort | paste -sd' ')"
   check "compose: 꺼짐의 backend-prod 역할은 all" 1 "$(real config backend-prod | grep -c 'DESK_ROLE: all')"
+  pinned="sha256:${stable_sha}${stable_sha:0:24}"
+  printf 'services:\n  collector-prod:\n    image: %s\n' "$pinned" > "$TMP/service.yml"
+  check "compose: overlay는 대상 서비스 이미지 ID만 바꾼다" \
+    "$pinned trading-desk-backend:prod" \
+    "$(real -f "$TMP/service.yml" --profile split config --images | sort -u | paste -sd' ')"
   DESK_API_ROLE=api real --profile split config --format json > "$TMP/split.json"
   if command -v jq > /dev/null; then
     check "compose: 켜짐의 역할 · 네트워크" \

@@ -1,0 +1,80 @@
+name: td-jenkins-rehearsal
+
+x-rehearsal: &rehearsal
+  profiles: [rehearsal]
+  pull_policy: never
+
+services:
+  controller:
+    <<: *rehearsal
+    image: "${TD_REHEARSAL_CONTROLLER_IMAGE:?전용 컨트롤러 이미지 ID가 필요하다}"
+    user: "1000:1000"
+    security_opt: ["no-new-privileges:true"]
+    networks: [control]
+    ports:
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - controller-home:/var/jenkins_home
+
+  agent:
+    <<: *rehearsal
+    image: "${TD_REHEARSAL_AGENT_IMAGE:?전용 에이전트 이미지 ID가 필요하다}"
+    user: "1000:1000"
+    security_opt: ["no-new-privileges:true"]
+    networks: [control, scratch]
+    environment:
+      DOCKER_HOST: tcp://scratch-docker:2376
+      DOCKER_TLS_VERIFY: "1"
+      DOCKER_CERT_PATH: /run/scratch-docker-tls
+    command:
+      - -url
+      - http://controller:8080/
+      - -webSocket
+      - -name
+      - trading-desk-rehearsal
+      - -secret
+      - "@/run/rehearsal-agent/secret"
+      - -workDir
+      - /home/jenkins/agent
+    volumes:
+      - agent-work:/home/jenkins/agent
+      - agent-auth:/run/rehearsal-agent:ro
+      - scratch-client:/run/scratch-docker-tls:ro
+
+  scratch-docker:
+    <<: *rehearsal
+    image: "${TD_REHEARSAL_DOCKER_IMAGE:?전용 DinD 이미지 ID가 필요하다}"
+    privileged: ${TD_REHEARSAL_PRIVILEGED:-false}
+    networks: [scratch]
+    environment:
+      DOCKER_TLS_CERTDIR: /certs
+    volumes:
+      - scratch-data:/var/lib/docker
+      - scratch-certs:/certs
+      - scratch-client:/certs/client
+
+  scm:
+    <<: *rehearsal
+    image: "${TD_REHEARSAL_SCM_IMAGE:?전용 SCM 이미지 ID가 필요하다}"
+    user: "65534:65534"
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    networks: [control]
+    command: ["python", "-m", "http.server", "8081", "--bind", "0.0.0.0", "--directory", "/srv/git"]
+    volumes:
+      - scm-data:/srv/git:ro
+
+networks:
+  control:
+    internal: true
+  scratch:
+    internal: true
+
+volumes:
+  controller-home:
+  agent-work:
+  agent-auth:
+  scratch-data:
+  scratch-certs:
+  scratch-client:
+  scm-data:

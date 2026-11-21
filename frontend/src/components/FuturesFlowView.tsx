@@ -3,7 +3,8 @@ import { api } from "../api";
 import { krwShort, price } from "../format";
 import type { FuturesFlow, FuturesInvestor } from "../types";
 import FuturesHistoryView from "./FuturesHistoryView";
-import { usePoll } from "../poll";
+import { useLivePoll } from "../livePoll";
+import LiveBadge from "./LiveBadge";
 
 // 시장 수급의 "선물" 보기(#161): 코스피200 근월물의 투자자별 순매수(계약 · 금액), 미결제약정, 베이시스,
 // 외국인 현물 · 선물 엇갈림. 막대 색은 현물 보기와 같은 극성(순매수 빨강 · 순매도 파랑).
@@ -59,7 +60,7 @@ export default function FuturesFlowView() {
 
   // #626 장중 30초 · 장외 5분(가려진 탭은 쉰다). 겹친 요청 · 늦은 응답은 훅이 막는다
   const [refreshMs, setRefreshMs] = useState(REFRESH_LIVE_MS);
-  usePoll("market-futures", () => api.marketFutures(), refreshMs, {
+  const futuresPoll = useLivePoll("market-futures", () => api.marketFutures(), refreshMs, {
     onData: (d) => {
       // 시세를 못 받은 응답은 마지막 값을 두고 알림만(처음이면 그 응답을 그대로 보여 준다)
       setData((old) => (d.price == null && old?.price ? old : d));
@@ -70,6 +71,15 @@ export default function FuturesFlowView() {
       }
     },
     onError: (e) => setFailed(e instanceof Error ? e.message : "불러오지 못했습니다."),
+  }, {
+    channel: "futures",
+    keys: ["view"],
+    apply: (_prev, m) => {
+      const next = m.payload as FuturesFlow | null;
+      return next && typeof next.market_open === "boolean" ? next : undefined;
+    },
+    pauseWhen: (d) => !!d?.supported && !!d.market_open && d.price != null,
+    reconcileMs: 5 * 60_000,
   });
 
   const p = data?.price;
@@ -81,6 +91,7 @@ export default function FuturesFlowView() {
 
   return (
     <div className="fut">
+      <LiveBadge channel="futures" keys={["view"]} on={futuresPoll.live} />
       {failed && <p className="error small" role="alert">{p ? "갱신하지 못했습니다 — 마지막 값을 보여 줍니다." : failed}</p>}
       {data && !data.supported && <p className="muted small">{data.error}</p>}
       {!data && !failed && <p className="muted small">불러오는 중…</p>}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * #626 주기적으로 다시 읽기는 모두 여기서 — 화면 코드는 setInterval 을 직접 쓰지 않는다.
@@ -72,7 +72,7 @@ function schedule(e: Entry<unknown>, wait?: number) {
   e.timer = window.setTimeout(() => run(e), delay);
 }
 
-function run(e: Entry<unknown>) {
+function run(e: Entry<unknown>, force = false) {
   if (!e.subs.size || e.inflight) return;
   if (hidden() && pauses(e)) {
     e.missed = true;   // 보이게 되면 바로 채운다
@@ -80,7 +80,7 @@ function run(e: Entry<unknown>) {
     return;
   }
   e.missed = false;
-  if (e.snap.at != null && [...e.subs].some((s) => s.opts.current.paused?.(e.snap.data, e.restAt))) {
+  if (!force && e.snap.at != null && [...e.subs].every((s) => s.opts.current.paused?.(e.snap.data, e.restAt))) {
     schedule(e);   // #764 스트림이 채우는 중 — 끊기면 livePoll 이 바로 다시 부른다
     return;
   }
@@ -121,7 +121,7 @@ if (typeof document !== "undefined") {
  * key 의 요청을 ms 마다 다시 부른다. key 가 null 이면 쉰다(조건이 안 맞을 때).
  * 받은 값은 돌려주는 data 로 쓰거나 onData 로 그 화면의 상태에 옮긴다.
  */
-export function usePoll<T>(key: string | null, fetch: () => Promise<T>, ms: number, options: PollOptions<T> = {}): PollSnapshot<T> & { refresh: () => void } {
+export function usePoll<T>(key: string | null, fetch: () => Promise<T>, ms: number, options: PollOptions<T> = {}): PollSnapshot<T> & { refresh: (force?: boolean) => void } {
   const fetchRef = useRef(fetch);
   fetchRef.current = fetch;
   const optsRef = useRef(options);
@@ -180,10 +180,10 @@ export function usePoll<T>(key: string | null, fetch: () => Promise<T>, ms: numb
     if (e && !e.inflight) schedule(e);
   }, [key, ms]);
 
-  const refresh = () => {
+  const refresh = useCallback((force = false) => {
     const e = key ? entries.get(key) : undefined;
-    if (e && !e.inflight) { window.clearTimeout(e.timer); run(e); }
-  };
+    if (e && !e.inflight) { window.clearTimeout(e.timer); run(e, force); }
+  }, [key]);
   return { ...snap, refresh };
 }
 

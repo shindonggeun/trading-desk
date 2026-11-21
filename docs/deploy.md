@@ -218,6 +218,8 @@ python -B -X utf8 scripts/jenkins/register-disabled-backend-jobs.py --apply -- j
 
 **정본은 홈랩 Vault(KV v2, ai-host)다(#691).** Jenkins 가 배포 때마다 읽어 임시 파일로 compose 에 넘기고 지운다. 앱은 env 를 그대로 읽는다(Vault SDK 없음).
 
+기존 AppRole의 Secret ID 교체는 [Vault AppRole 회전 절차](vault-approle-rotation.md)를 따른다.
+
 ```text
 kv/trading-desk/backend/prod/env    # 백엔드 compose 의 운영 env(api · collector · analyst 공용) — 키 목록 정본: 루트 .env.example
 kv/trading-desk/frontend/prod/env   # 웹 compose 보간 키만: DESK_DOCKER_NETWORK · DESK_WEB_BIND · DESK_WEB_PORT (· DESK_WEB_MEM_LIMIT)

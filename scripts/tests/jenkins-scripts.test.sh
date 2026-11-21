@@ -22,7 +22,13 @@ url=${*: -1}
 echo "curl $*" >> "$FAKE_DIR/calls"
 cat >> "$FAKE_DIR/stdin" 2>/dev/null || true
 case "$url" in
-  */auth/approle/login) [ -z "${FAKE_LOGIN_FAIL:-}" ] || exit 22; echo '{"auth":{"client_token":"tok-SECRET-123"}}' ;;
+  */auth/approle/login)
+    [ -z "${FAKE_LOGIN_FAIL:-}" ] || exit 22
+    if [ -n "${FAKE_EXPECT_SECRET_ID:-}" ]; then
+      jq -e '.role_id == "role-SECRET" and .secret_id == env.FAKE_EXPECT_SECRET_ID' "$FAKE_DIR/stdin" >/dev/null || exit 22
+    fi
+    echo '{"auth":{"client_token":"tok-SECRET-123"}}'
+    ;;
   */auth/token/revoke-self) touch "$FAKE_DIR/revoked" ;;
   */v1/kv/data/*) [ -z "${FAKE_READ_FAIL:-}" ] || exit 22; cat "$FAKE_DIR/secret.json" ;;
   https://api.github.com/repos/*/git/ref/heads/*)     # develop 머리(#752): 파일이 없으면 API 오류
@@ -145,11 +151,28 @@ rc=$(vault_env "$GOOD" FAKE_LOGIN_FAIL=1); check "로그인 실패면 멈추고 
 rc=$(vault_env "$GOOD" FAKE_READ_FAIL=1); check "읽기 실패면 멈추고 토큰은 폐기" "1 yes" "$rc $([ -f "$FAKE_DIR/revoked" ] && echo yes)"
 rc=$(vault_env '{"data":{"data":{}}}'); check "빈 secret 은 멈춘다" 1 "$rc"
 
-FRONT=$(rm -rf "$FAKE_DIR"; mkdir -p "$FAKE_DIR"; echo '{"data":{"data":{"DESK_DOCKER_NETWORK":"trading-desk-prod","DESK_WEB_BIND":"192.168.0.9","DESK_WEB_PORT":"10088"}}}' > "$FAKE_DIR/secret.json"
+FRONT_GOOD='{"data":{"data":{"DESK_DOCKER_NETWORK":"trading-desk-prod","DESK_WEB_BIND":"192.168.0.9","DESK_WEB_PORT":"10088"}}}'
+FRONT=$(rm -rf "$FAKE_DIR"; mkdir -p "$FAKE_DIR"; printf '%s' "$FRONT_GOOD" > "$FAKE_DIR/secret.json"
   env VAULT_BASE=https://vault.example VAULT_PATH=kv/trading-desk/frontend/prod/env ENV_FILE="$TMP/web.env" \
       COMPOSE_FILES="$REPO_ROOT/frontend/docker-compose-frontend.yml" VAULT_ROLE_ID=r VAULT_SECRET_ID=s \
       bash "$REPO_ROOT/scripts/jenkins/vault-env.sh" > /dev/null 2>&1; echo $?; paste -sd'|' "$TMP/web.env")
 check "웹 compose 키" "0 DESK_DOCKER_NETWORK='trading-desk-prod'|DESK_WEB_BIND='192.168.0.9'|DESK_WEB_PORT='10088'" "$(echo $FRONT)"
+
+# #691 회전 후에는 같은 role의 새 Secret ID만 허용하는 Vault 대역으로 두 배포 소비 경로를 확인한다.
+rm -f "$TMP/out.env"
+rc=$(vault_env "$GOOD" FAKE_EXPECT_SECRET_ID=sid-SECRET-new)
+check "회전 전 자격 거절 시 KV를 읽거나 env 파일을 쓰지 않는다" "1 0 no" \
+  "$rc $(grep -c '/v1/kv/data/' "$FAKE_DIR/calls") $([ -f "$TMP/out.env" ] && echo yes || echo no)"
+rc=$(vault_env "$GOOD" VAULT_SECRET_ID=sid-SECRET-new FAKE_EXPECT_SECRET_ID=sid-SECRET-new)
+check "새 자격으로 백엔드 KV를 읽고 토큰 폐기를 요청한다" "0 1 yes yes" \
+  "$rc $(grep -c '/v1/kv/data/trading-desk/backend/prod/env' "$FAKE_DIR/calls") $([ -f "$FAKE_DIR/revoked" ] && echo yes) $([ -s "$TMP/out.env" ] && echo yes)"
+rm -f "$TMP/out.env"
+rc=$(vault_env "$FRONT_GOOD" VAULT_SECRET_ID=sid-SECRET-new FAKE_EXPECT_SECRET_ID=sid-SECRET-new \
+  VAULT_PATH=kv/trading-desk/frontend/prod/env COMPOSE_FILES="$REPO_ROOT/frontend/docker-compose-frontend.yml")
+check "새 자격으로 웹 KV를 읽고 토큰 폐기를 요청한다" "0 1 yes yes" \
+  "$rc $(grep -c '/v1/kv/data/trading-desk/frontend/prod/env' "$FAKE_DIR/calls") $([ -f "$FAKE_DIR/revoked" ] && echo yes) $([ -s "$TMP/out.env" ] && echo yes)"
+check "새 자격이 curl 인자와 출력에 없다" "0 0" \
+  "$(grep -c sid-SECRET-new "$FAKE_DIR/calls") $(grep -c sid-SECRET-new "$TMP/out")"
 
 # ================= wait-ci.sh
 wait_ci() {  # 인자 = 차례로 돌려줄 runs JSON. HEAD(develop 머리 SHA) · HEADRUNS(그 실행) · SUP(CI_SUPERSEDE) · MODE(인자)

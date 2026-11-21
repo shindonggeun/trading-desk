@@ -3,6 +3,9 @@
 # 배포 호스트(backend-server)에서 돈다. Jenkins(Jenkinsfile.deploy-common.groovy)와 손 배포(scripts/deploy.sh)가 같은 이 스크립트를 부른다.
 #
 #   ENV_FILE=<env 파일> REVISION=<커밋 SHA> scripts/deploy-compose.sh <backend|web> [소스 루트, 기본 이 저장소]
+#   split 단독 배포 계약: backend [소스 루트] --build-only | --service api|collector|analyst
+#   두 모드는 배포 작업 준비용이다. 기존 Jenkins · 손 배포 진입점은 호출하지 않는다.
+#   연동 시 호출자가 기존 전체 배포와 동일한 락을 잡은 상태에서 사용한다.
 #
 #   ENV_FILE         compose --env-file. Jenkins 는 Vault 에서 받은 임시 파일(600), 손 배포는 ~/deploy/trading-desk/.env.runtime
 #   REVISION         배포할 커밋(40자 SHA). 이미지 라벨 org.opencontainers.image.revision 에 남기고, 확인 단계가 컨테이너의 이 값을 본다
@@ -28,7 +31,23 @@ set +x
 set -euo pipefail
 
 TARGET="${1:?대상: backend | web}"
-ROOT="${2:-$(cd "$(dirname "$0")/.." && pwd)}"
+shift
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ "$#" -gt 0 ] && [[ $1 != --* ]]; then ROOT=$1; shift; fi
+MODE=all SERVICE=''
+case "${1:-}" in
+  --build-only) MODE=build; shift ;;
+  --service)
+    MODE=service
+    case "${2:-}" in
+      api) SERVICE=backend-prod ;;
+      collector) SERVICE=collector-prod ;;
+      analyst) SERVICE=analyst-prod ;;
+      *) echo "--service 는 api | collector | analyst 이어야 한다" >&2; exit 1 ;;
+    esac
+    shift 2 ;;
+esac
+[ "$#" = 0 ] || { echo "지원하지 않는 배포 옵션" >&2; exit 1; }
 : "${ENV_FILE:?ENV_FILE (compose --env-file)}" "${REVISION:?REVISION (배포할 커밋 SHA)}"
 [ -r "$ENV_FILE" ] || { echo "ENV_FILE 를 읽을 수 없다: $ENV_FILE" >&2; exit 1; }
 ENV_FILE="$(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
@@ -45,9 +64,12 @@ case "$TARGET" in
   *) echo "대상은 backend | web" >&2; exit 1 ;;
 esac
 
-PROFILE=() SPLIT=0 SPLIT_SERVICES=(collector-prod analyst-prod)
+PROFILE=() OVERRIDE=() SPLIT=0 SPLIT_SERVICES=(collector-prod analyst-prod)
 # -p 를 빼지 않는다 — 빠지면 디렉터리 이름이 프로젝트가 돼 --remove-orphans 가 남의 컨테이너를 지울 수 있다
-compose() { docker compose -p "$PROJECT" --env-file "$ENV_FILE" ${PROFILE[@]+"${PROFILE[@]}"} -f "$ROOT/$DIR/$FILE" "$@"; }
+compose() {
+  docker compose -p "$PROJECT" --env-file "$ENV_FILE" ${PROFILE[@]+"${PROFILE[@]}"} \
+    -f "$ROOT/$DIR/$FILE" ${OVERRIDE[@]+"${OVERRIDE[@]}"} "$@"
+}
 cid() { compose ps -a -q "$1" 2>/dev/null | head -n 1; }
 rev_of() { docker inspect -f "{{index .Config.Labels \"$LABEL\"}}" "$1" 2>/dev/null || true; }
 env_value() {  # env 파일의 값 하나(따옴표를 벗긴다). 파일을 셸로 읽지 않는다
@@ -96,6 +118,11 @@ if [ "$TARGET" = backend ]; then
   export DESK_BACKEND_SPLIT="$SPLIT"      # 컨테이너 라벨 desk.backend-split 이 늘 이 결정과 같게
   echo "백엔드 나누기: $([ "$SPLIT" = 1 ] && echo '켜짐 — api · collector · analyst' || echo '꺼짐 — all 하나')"
 fi
+if [ "$MODE" != all ]; then
+  [ "$TARGET" = backend ] && [ "$SPLIT" = 1 ] && [ "$PRIMARY" = backend-prod ] \
+    || { echo "단독 배포 모드는 split 백엔드에서만 사용한다" >&2; exit 1; }
+  [[ $REVISION =~ ^[0-9a-f]{40}$ ]] || { echo "단독 배포에는 전체 커밋 SHA가 필요하다" >&2; exit 1; }
+fi
 # 필수 키(\${KEY:?})가 비면 여기서 멈춘다. -q 라 값은 출력하지 않는다
 compose config -q
 
@@ -118,39 +145,16 @@ fi
 
 NET=$(env_value DESK_DOCKER_NETWORK)
 [ -n "$NET" ] || { echo "env 파일에 DESK_DOCKER_NETWORK 가 없다" >&2; exit 1; }
-docker network inspect "$NET" >/dev/null 2>&1 || docker network create "$NET" >/dev/null
-
-PREV_CID=$(cid "$PRIMARY")
-PREV_IMAGE='' PREV_REV=''
-if [ -n "$PREV_CID" ]; then
-  PREV_IMAGE=$(docker inspect -f '{{.Image}}' "$PREV_CID")
-  PREV_REV=$(rev_of "$PREV_CID")
-  echo "지금 운영: ${PREV_REV:-(커밋 라벨 없음 — 옛 이미지)}"
-else
-  echo "지금 운영 컨테이너 없음(첫 배포) — 실패해도 되돌릴 이미지가 없다"
-fi
-
-echo "== 이미지 빌드 $REPO:$SHORT"
-docker build -f "$ROOT/$DIR/$DOCKERFILE" -t "$REPO:$SHORT" --label "$LABEL=$REVISION" "$ROOT/$DIR"
+build_image() {
+  echo "== 이미지 빌드 $1"
+  docker build -f "$ROOT/$DIR/$DOCKERFILE" -t "$1" --label "$LABEL=$REVISION" "$ROOT/$DIR"
+}
 
 # 새 Alembic 리비전이 들어간 배포는 자동으로 되돌리지 않는다. 옛 이미지는 기동 시 upgrade head 에서 모르는 리비전을 만나 뜨지 못한다.
-MIGRATES=0
 versions() {
-  docker run --rm --network none --entrypoint python "$1" -c \
+  docker run --rm --pull never --network none --entrypoint python "$1" -c \
     'import pathlib, desk.migrations.versions as v; print("\n".join(sorted(p.name for p in pathlib.Path(v.__file__).parent.glob("*.py") if p.name != "__init__.py")))'
 }
-if [ "$TARGET" = backend ] && [ -n "$PREV_IMAGE" ]; then
-  if old=$(versions "$PREV_IMAGE") && new=$(versions "$REPO:$SHORT"); then
-    added=$(comm -13 <(printf '%s\n' "$old") <(printf '%s\n' "$new") | grep -v '^$' || true)
-    if [ -n "$added" ]; then
-      MIGRATES=1
-      echo "새 마이그레이션: ${added//$'\n'/ } — 실패하면 자동으로 되돌리지 않는다"
-    fi
-  else
-    MIGRATES=1
-    echo "마이그레이션 목록을 비교하지 못했다 — 실패하면 자동으로 되돌리지 않는다"
-  fi
-fi
 
 # #431 백엔드를 다시 띄우면 진행 중인 분석이 끊긴다. 빌드가 끝난 지금(컨테이너를 바꾸기 직전) 묻고, 있으면 기다린다
 wait_idle() {
@@ -161,7 +165,12 @@ wait_idle() {
   while :; do
     out=$(docker exec "$PREV_CID" python -m desk.cli unfinished 2>/dev/null) || out="?"
     n=${out%%$'\n'*}; n=${n%$'\r'}
-    if [ "$n" = "?" ]; then echo "진행 중인 분석을 확인하지 못했다(컨테이너가 멈춤 · 옛 이미지) — 그대로 진행"; return 0; fi
+    if [ "$n" = "?" ]; then
+      if [ "$MODE" = service ] && [ "$FORCE" != 1 ]; then
+        echo "진행 중인 분석을 확인하지 못했다 — 멈춘다" >&2; return 3
+      fi
+      echo "진행 중인 분석을 확인하지 못했다(컨테이너가 멈춤 · 옛 이미지) — 그대로 진행"; return 0
+    fi
     if [ "$n" = 0 ]; then echo "진행 중인 분석 없음"; return 0; fi
     echo "진행 중인 분석 ${n}개 — 백엔드를 다시 띄우면 실패로 끝난다:"
     printf '%s\n' "$out" | tail -n +2 | sed 's/^/  /'
@@ -174,7 +183,6 @@ wait_idle() {
     sleep 30
   done
 }
-wait_idle || exit 3
 
 # #688 스위치를 끈 배포: 남은 collector · analyst 를 api 가 all 로 뜨기 전에 지운다 — all 과 collector 가 함께 떠 브로커 토큰을
 # 둘이 발급하지 않게. 꺼진 profile 의 컨테이너는 --remove-orphans 로 지워진다고 기대하지 않는다
@@ -190,7 +198,6 @@ drop_split() {
     printf '%s\n' "$ids" | xargs docker rm -f >/dev/null
   done
 }
-drop_split
 
 up() { compose up -d --no-build --force-recreate --wait --wait-timeout "$WAIT_TIMEOUT" "$@"; }
 # api 를 먼저(Alembic upgrade head), 나머지는 그다음. --no-deps: depends_on 으로 api 를 한 번 더 다시 만들지 않는다
@@ -198,7 +205,7 @@ up_all() { up --remove-orphans "$PRIMARY" && { [ "${#OTHERS[@]}" = 0 ] || up --n
 
 probe() {  # 컨테이너 안에서 본다 — 백엔드는 호스트 포트를 열지 않는다
   local c
-  c=$(cid "$PRIMARY")
+  c=$(cid "${SERVICE:-$PRIMARY}")
   if [ "$TARGET" = backend ]; then
     docker exec "$c" python -c "import json, urllib.request; r = urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5); assert json.load(r).get('ok') is True"
   else
@@ -208,26 +215,28 @@ probe() {  # 컨테이너 안에서 본다 — 백엔드는 호스트 포트를 
 
 verify() {  # $1 = 기대 커밋(비면 보지 않음), $2 = 1 이면 드릴(일부러 실패)
   local want=$1 drill=${2:-0} s c got state
-  declare -A before=()
+  declare -A before=() checked=()
   for s in "${SERVICES[@]}"; do
     c=$(cid "$s")
     [ -n "$c" ] || { echo "확인 실패: $s 컨테이너가 없다"; return 1; }
     got=$(rev_of "$c")
     if [ -n "$want" ] && [ "$got" != "$want" ]; then echo "확인 실패: $s 커밋이 ${got:-(없음)} — 기대 $want"; return 1; fi
-    before[$s]=$(docker inspect -f '{{.RestartCount}}' "$c")
+    checked[$s]=$c
+    before[$s]=$(docker inspect -f '{{.RestartCount}}' "$c") || return 1
   done
-  probe || { echo "확인 실패: $PRIMARY 상태 확인(health) 응답이 없다"; return 1; }
+  probe || { echo "확인 실패: ${SERVICE:-$PRIMARY} 상태 확인(health) 응답이 없다"; return 1; }
   echo "기동 확인 — ${STABLE_SEC}초 동안 재시작 없이 버티는지 본다"
   sleep "$STABLE_SEC"
   for s in "${SERVICES[@]}"; do
     c=$(cid "$s")
-    state=$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}}' "$c")
+    [ "$c" = "${checked[$s]}" ] || { echo "확인 실패: $s 확인 중 컨테이너가 바뀌었다"; return 1; }
+    state=$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}}' "$c") || return 1
     case "$state" in
       "running healthy ${before[$s]}"|"running none ${before[$s]}") ;;
       *) echo "확인 실패: $s 상태 $state (재시작 전 ${before[$s]})"; return 1 ;;
     esac
   done
-  probe || { echo "확인 실패: $PRIMARY 상태 확인(health) 응답이 없다"; return 1; }
+  probe || { echo "확인 실패: ${SERVICE:-$PRIMARY} 상태 확인(health) 응답이 없다"; return 1; }
   if [ "$drill" = 1 ]; then echo "ROLLBACK_DRILL: 확인을 일부러 실패시킨다"; return 1; fi
   return 0
 }
@@ -251,6 +260,179 @@ rollback() {
   docker tag "$REPO:rollback" "$IMAGE"
   up_all && verify "$PREV_REV" 0
 }
+
+image_id() {
+  local details id revision
+  details=$(docker image inspect -f "{{.Id}} {{index .Config.Labels \"$LABEL\"}}" "$1" 2>/dev/null) || return 1
+  read -r id revision <<< "$details"
+  if [[ ! $id =~ ^sha256:[0-9a-f]{64}$ ]] || [ "$revision" != "$REVISION" ]; then
+    echo "이미지의 ID 또는 전체 커밋 라벨이 일치하지 않는다: $1" >&2
+    return 2
+  fi
+  printf '%s\n' "$id"
+}
+
+schema_at_head() {
+  # 실행 중인 API와 같은 DB 설정을 사용한다. 연결 오류에는 비밀이 포함될 수 있어 출력하지 않는다.
+  docker exec "$1" python -c '
+import os
+import sys
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from desk.db import alembic_config, make_engine
+
+url = os.environ["DESK_DATABASE_URL"]
+with make_engine(url).connect() as connection:
+    applied = set(MigrationContext.configure(connection).get_current_heads())
+expected = set(ScriptDirectory.from_config(alembic_config(url)).get_heads())
+sys.exit(applied != expected)
+' >/dev/null 2>&1
+}
+
+up_one() {
+  # 파일 경로와 서비스·이미지 ID만 기록한다. 이전 이미지로 복구할 때도 같은 서비스만 바꾼다.
+  printf 'services:\n  %s:\n    image: %s\n' "$SERVICE" "$1" > "${OVERRIDE[1]}" || return 1
+  COMPOSE_REMOVE_ORPHANS=false up --no-deps --pull never "$SERVICE"
+}
+
+verify_one() {
+  local revision=$1 image=$2 drill=$3 container
+  verify "$revision" "$drill" || return 1
+  container=$(cid "$SERVICE") || return 1
+  if [ "$(docker inspect -f '{{.Image}} {{.State.Status}} {{.State.Health.Status}}' "$container" 2>/dev/null)" != "$image running healthy" ]; then
+    echo "확인 실패: $SERVICE 의 이미지 ID 또는 health가 일치하지 않는다"
+    return 1
+  fi
+  if [ "$SERVICE" = "$PRIMARY" ]; then
+    schema_at_head "$container" || { echo "확인 실패: API의 적용된 마이그레이션을 확인하지 못했다"; return 1; }
+  fi
+}
+
+deploy_one() {
+  local next=$1 api api_image current_schema next_schema previous_schema override
+  api=$(cid "$PRIMARY")
+  if [ -z "$api" ] \
+    || [ "$(docker inspect -f '{{index .Config.Labels "desk.backend-split"}} {{.State.Status}} {{.State.Health.Status}}' "$api" 2>/dev/null)" != "1 running healthy" ] \
+    || ! schema_at_head "$api"; then
+    echo "적용된 스키마를 확인할 수 있는 정상 split API가 필요하다 — 교체하지 않았다" >&2
+    return 1
+  fi
+  api_image=$(docker inspect -f '{{.Image}}' "$api")
+  if ! current_schema=$(versions "$api_image") || ! next_schema=$(versions "$next") \
+    || [ -z "$current_schema" ] || [ -z "$next_schema" ]; then
+    echo "마이그레이션 목록을 확인하지 못했다 — 교체하지 않았다" >&2
+    return 1
+  fi
+  if [ "$current_schema" != "$next_schema" ]; then
+    if [ "$SERVICE" != "$PRIMARY" ]; then
+      echo "API에 대상 마이그레이션을 먼저 적용해야 한다 — $SERVICE 를 교체하지 않았다" >&2
+      return 1
+    fi
+    if [ -n "$(LC_ALL=C comm -23 <(printf '%s\n' "$current_schema") <(printf '%s\n' "$next_schema"))" ]; then
+      echo "API 대상 이미지에 이미 적용된 마이그레이션 파일이 없다 — 교체하지 않았다" >&2
+      return 1
+    fi
+  fi
+  PREV_CID=$(cid "$SERVICE")
+  PREV_IMAGE='' PREV_REV=''
+  if [ -n "$PREV_CID" ]; then
+    PREV_IMAGE=$(docker inspect -f '{{.Image}}' "$PREV_CID")
+    PREV_REV=$(rev_of "$PREV_CID")
+    if [[ ! $PREV_IMAGE =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      echo "직전 이미지 ID를 확인하지 못했다 — 교체하지 않았다" >&2
+      return 1
+    fi
+    if [ "$DRILL" != 1 ] && [ "$PREV_IMAGE" = "$next" ] && [ "$PREV_REV" = "$REVISION" ] \
+      && [ "$(docker inspect -f '{{.State.Status}} {{.State.Health.Status}}' "$PREV_CID" 2>/dev/null)" = "running healthy" ]; then
+      echo "변경 없음: $SERVICE $REVISION"
+      return 0
+    fi
+  fi
+  if [ "$SERVICE" = analyst-prod ]; then wait_idle || return 3; fi
+  docker network inspect "$NET" >/dev/null
+  override=$(mktemp)
+  trap 'rm -f -- "${OVERRIDE[1]}"' EXIT
+  OVERRIDE=(-f "$override")
+  SERVICES=("$SERVICE")
+  echo "== 교체 시도: $SERVICE → $REVISION ($next)"
+  if up_one "$next" && verify_one "$REVISION" "$next" "$DRILL" && collector_tokens_unchanged; then
+    echo "== 배포됨: $SERVICE $REVISION"
+    return 0
+  fi
+
+  echo "== 배포 확인 실패: $SERVICE $REVISION"
+  show_logs
+  if [ -z "$PREV_IMAGE" ]; then
+    echo "$SERVICE 의 직전 컨테이너 없음 — 자동 복구 불가" >&2
+  elif [ "$SERVICE" = "$PRIMARY" ] && [ "$current_schema" != "$next_schema" ]; then
+    echo "$SERVICE 의 스키마가 바뀌었을 수 있다 — 자동 복구 금지" >&2
+  elif ! previous_schema=$(versions "$PREV_IMAGE") || [ "$previous_schema" != "$current_schema" ]; then
+    echo "$SERVICE 의 직전 이미지와 적용 스키마가 일치하지 않는다 — 자동 복구 금지" >&2
+  elif up_one "$PREV_IMAGE" && verify_one "$PREV_REV" "$PREV_IMAGE" 0; then
+    echo "== $SERVICE 만 직전 이미지($PREV_IMAGE)로 복구됨"
+    return 2
+  else
+    echo "$SERVICE 의 직전 이미지 복구를 확인하지 못했다" >&2
+  fi
+  echo "$SERVICE 의 현재 컨테이너와 DB 상태를 확인해야 한다 — 다른 서비스를 교체하지 않았다" >&2
+  return 1
+}
+
+collector_tokens_unchanged() {
+  [ "$SERVICE" = collector-prod ] || return 0
+  local count container
+  container=$(cid "$SERVICE") || return 1
+  count=$(docker logs "$container" 2>&1 | awk '/token issued \(collector\)/ {n++} END {print n+0}') || {
+    echo "확인 실패: collector 토큰 발급 로그를 읽지 못했다"; return 1
+  }
+  [ "$count" = 0 ] || { echo "확인 실패: collector 신규 토큰 발급 $count 건"; return 1; }
+}
+
+if [ "$MODE" != all ]; then
+  candidate="$REPO:$REVISION"
+  if [ "$MODE" = build ]; then
+    if id=$(image_id "$candidate"); then
+      echo "이미 준비됨: $candidate ($id)"
+    else
+      [ "$?" = 1 ] || exit 1
+      build_image "$candidate"
+      id=$(image_id "$candidate")
+      echo "준비됨: $candidate ($id)"
+    fi
+    exit 0
+  fi
+  id=$(image_id "$candidate") || { echo "먼저 --build-only 로 대상 이미지를 준비해야 한다" >&2; exit 1; }
+  deploy_one "$id"
+  exit 0
+fi
+
+docker network inspect "$NET" >/dev/null 2>&1 || docker network create "$NET" >/dev/null
+PREV_CID=$(cid "$PRIMARY")
+PREV_IMAGE='' PREV_REV=''
+if [ -n "$PREV_CID" ]; then
+  PREV_IMAGE=$(docker inspect -f '{{.Image}}' "$PREV_CID")
+  PREV_REV=$(rev_of "$PREV_CID")
+  echo "지금 운영: ${PREV_REV:-(커밋 라벨 없음 — 옛 이미지)}"
+else
+  echo "지금 운영 컨테이너 없음(첫 배포) — 실패해도 되돌릴 이미지가 없다"
+fi
+build_image "$REPO:$SHORT"
+
+MIGRATES=0
+if [ "$TARGET" = backend ] && [ -n "$PREV_IMAGE" ]; then
+  if old=$(versions "$PREV_IMAGE") && new=$(versions "$REPO:$SHORT"); then
+    added=$(comm -13 <(printf '%s\n' "$old") <(printf '%s\n' "$new") | grep -v '^$' || true)
+    if [ -n "$added" ]; then
+      MIGRATES=1
+      echo "새 마이그레이션: ${added//$'\n'/ } — 실패하면 자동으로 되돌리지 않는다"
+    fi
+  else
+    MIGRATES=1
+    echo "마이그레이션 목록을 비교하지 못했다 — 실패하면 자동으로 되돌리지 않는다"
+  fi
+fi
+wait_idle || exit 3
+drop_split
 
 echo "== 교체: $IMAGE ← $REPO:$SHORT"
 [ -z "$PREV_IMAGE" ] || docker tag "$PREV_IMAGE" "$REPO:rollback"

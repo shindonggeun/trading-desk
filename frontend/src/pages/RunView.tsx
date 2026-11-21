@@ -25,7 +25,8 @@ import { MarketTrendBadges } from "../components/TrendChips";
 import RetryRunButton from "../components/RetryRunButton";
 import { every, usePoll } from "../poll";
 import HorizonsBoard from "../components/HorizonsBoard";
-import { type AllHorizonsPlan, defaultHorizon, isOtherHorizon, planFor, slotTitle } from "../allHorizons";
+import { type AllHorizonsPlan, defaultHorizon, HORIZON_ORDER, isOtherHorizon, planFor, slotTitle } from "../allHorizons";
+import { DIRECTIONS, hasScenarios, scenarioAt, scenarioPlan, SIDE_KO, type ScenarioSide } from "../directionScenarios";
 import type { HorizonId } from "../types";
 
 // 백엔드 desk/profile.py 의 label 과 같다. 옛 분석(성향 없음)은 표시하지 않는다
@@ -185,10 +186,22 @@ export default function RunView({ runId }: { runId: string }) {
 
   const plan: Plan | null = run?.plan ?? (events.find((e) => e.type === "plan")?.data as Plan | undefined) ?? null;
   // #697 네 기간 중 차트에 그릴 기간 — 처음은 지금 장세에 맞는 기간(옛 run 은 그 기간 하나)
-  const [pickedHorizon, setPickedHorizon] = useState<HorizonId | null>(null);
-  const shownHorizon = pickedHorizon ?? defaultHorizon(plan as AllHorizonsPlan | null);
-  const chartPlan = useMemo(() => planFor(plan as AllHorizonsPlan | null, shownHorizon), [plan, shownHorizon]);
-  const otherHorizon = isOtherHorizon(plan as AllHorizonsPlan | null, shownHorizon);
+  const horizonPlan = plan as AllHorizonsPlan | null;
+  const [selection, setSelection] = useState<{ horizon: HorizonId; side: ScenarioSide | null } | null>(null);
+  const shownHorizon = selection?.horizon ?? defaultHorizon(horizonPlan);
+  const side = selection?.side ?? null;
+  const scenario = scenarioAt(horizonPlan, shownHorizon, side);
+  const chartPlan = useMemo(() => plan && shownHorizon && side && scenario
+    ? scenarioPlan(plan, shownHorizon, side, scenario) : planFor(horizonPlan, shownHorizon),
+  [plan, horizonPlan, shownHorizon, side, scenario]);
+  const scenarioSlots = HORIZON_ORDER.flatMap((h) => {
+    const slot = horizonPlan?.horizons?.[h];
+    return slot ? [slot] : [];
+  });
+  const activeSlot = scenarioSlots.find((slot) => slot.horizon === shownHorizon);
+  const selectHorizon = (horizon: HorizonId) => setSelection({ horizon, side: null });
+  const selectDirection = (horizon: HorizonId, direction: ScenarioSide) => setSelection({ horizon, side: direction });
+  const otherHorizon = isOtherHorizon(horizonPlan, shownHorizon);
   // #438 방향 전망 — 상세의 outlook, 없으면 방금 온 outlook 이벤트(마지막 것)
   const outlook: RunOutlook | null = useMemo(() => {
     if (run?.outlook) return run.outlook;
@@ -284,7 +297,8 @@ export default function RunView({ runId }: { runId: string }) {
             plan ? (
               <div className="run-summary">
                 {/* #697 결과 맨 위 — 네 기간(스캘핑 · 단타 · 짧은 스윙 · 스윙)을 나란히. 옛 run 에는 없다 */}
-                <HorizonsBoard plan={plan as AllHorizonsPlan} selected={shownHorizon} onSelect={setPickedHorizon} />
+                <HorizonsBoard plan={plan as AllHorizonsPlan} selected={shownHorizon} selectedSide={scenario ? side : null}
+                  onSelect={selectHorizon} onDirection={selectDirection} />
                 {plan.summary && (
                   <SummaryCard summary={plan.summary} runId={run.id} live={stillOpen(run.trade_date)}
                     horizon={plan.horizon ?? run.options.horizon ?? undefined} />
@@ -333,9 +347,31 @@ export default function RunView({ runId }: { runId: string }) {
             )
           )}
           {tab === "chart" && (
-            // #697 분석 기간이 아닌 칸이면 그 칸의 선만 — 분석 기간의 근거 해설(/api/levels?run=)은 붙이지 않는다
-            <ResultChart plan={chartPlan} ticker={run.ticker} tradeDate={run.trade_date} outlook={outlook}
-              runId={otherHorizon ? undefined : run.id} label={slotTitle(plan as AllHorizonsPlan | null, shownHorizon)} />
+            <>
+              {activeSlot && scenarioSlots.some(hasScenarios) && (
+                <div className="hz-chart-picker">
+                  <label>기간 <select aria-label="차트 시나리오 기간" value={activeSlot.horizon}
+                    onChange={(e) => {
+                      const horizon = e.currentTarget.value as HorizonId;
+                      setSelection({ horizon, side: scenarioAt(horizonPlan, horizon, side) ? side : null });
+                    }}>
+                    {scenarioSlots.map((slot) => <option key={slot.horizon} value={slot.horizon}>{slot.label}</option>)}
+                  </select></label>
+                  <div className="chips" role="group" aria-label="차트 시나리오 방향">
+                    <button type="button" className={`chip${!scenario ? " chip-on" : ""}`}
+                      aria-pressed={!scenario} onClick={() => selectHorizon(activeSlot.horizon)}>기간 종합</button>
+                    {DIRECTIONS.filter((direction) => activeSlot.scenarios?.[direction]).map((direction) => (
+                      <button key={direction} type="button" className={`chip${side === direction ? " chip-on" : ""}`}
+                        aria-pressed={side === direction} onClick={() => selectDirection(activeSlot.horizon, direction)}>{SIDE_KO[direction]}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <ResultChart key={scenario ? `${shownHorizon}:${side}` : "combined"} plan={chartPlan} ticker={run.ticker}
+                tradeDate={run.trade_date} outlook={scenario ? null : outlook} scenario={scenario}
+                runId={scenario || otherHorizon ? undefined : run.id}
+                label={scenario && activeSlot && side ? `${activeSlot.label} · ${SIDE_KO[side]} 시나리오` : slotTitle(horizonPlan, shownHorizon)} />
+            </>
           )}
           {tab === "debate" && (
             <div className="run-body has-glossary">

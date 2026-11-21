@@ -1,5 +1,6 @@
 import { price as fmt } from "./format";
 import type { HorizonId, Plan } from "./types";
+import type { DirectionScenario, ScenarioSide } from "./directionScenarios";
 
 /**
  * #697 분석 한 번에 네 기간(#696 desk/all_horizons.py, docs/all-horizons.md) — 스캘핑 · 단타 · 짧은 스윙 · 스윙.
@@ -44,6 +45,7 @@ export interface HorizonMap {
 
 export interface HorizonModel {
   opinion?: string; rating?: string; bias?: "long" | "short" | "flat" | string;
+  why?: string | null;
   entry_price?: number | null; entry_type?: string | null; stop_loss?: number | null; price_target?: number | null;
   long_trigger?: number | null; short_trigger?: number | null; valid_until?: string | null;
 }
@@ -56,6 +58,7 @@ export interface HorizonSlot {
   source: "model" | "map";
   model: HorizonModel | null;
   map: HorizonMap | null;
+  scenarios?: Partial<Record<ScenarioSide, DirectionScenario>> | null;
   levels?: { support: { price: number; strength?: number; basis?: string }[]; resistance: { price: number; strength?: number; basis?: string }[] } | null;
   atr?: number | null;
   chart?: {

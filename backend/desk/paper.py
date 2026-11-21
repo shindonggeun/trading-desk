@@ -41,6 +41,7 @@ from sqlalchemy.engine import Engine
 from desk.db import now as db_now
 from desk.db import paper_settings as settings_t
 from desk.db import runs as runs_t
+from desk.run_access import shared_run_rows
 
 log = logging.getLogger(__name__)
 
@@ -446,8 +447,11 @@ class Paper:
     the plan scores change (one computation at a time; the others wait for it)."""
 
     def __init__(self, engine: Engine, rates: Callable[[], dict[str, float]] = yahoo_rates,
-                 name_of: Callable[[str], str | None] | None = None) -> None:
+                 name_of: Callable[[str], str | None] | None = None, *, public_only: bool = False) -> None:
         self.engine, self.fetch_rates, self.name_of = engine, rates, name_of
+        self._source = (runs_t.c.status == "done",)
+        if public_only:
+            self._source += (shared_run_rows(runs_t.c.is_shareable),)
         self.lock = threading.Lock()           # the settings row
         self.fx_lock = threading.Lock()        # one rate fetch at a time
         self.compute_lock = threading.Lock()   # one computation at a time
@@ -501,7 +505,7 @@ class Paper:
         or deleted run changes it."""
         q = select(func.count(), func.max(runs_t.c.scored_at), func.max(runs_t.c.finished_at),
                    func.min(runs_t.c.created_at), func.max(runs_t.c.created_at),
-                   func.sum(func.length(runs_t.c.id))).where(runs_t.c.status == "done")
+                   func.sum(func.length(runs_t.c.id))).where(*self._source)
         with self.engine.connect() as conn:
             return tuple(conn.execute(q).one())
 
@@ -509,7 +513,7 @@ class Paper:
         cols = (runs_t.c.id, runs_t.c.ticker, runs_t.c.options, runs_t.c.plan, runs_t.c.outcome,
                 runs_t.c.created_at, runs_t.c.scored_at)
         with self.engine.connect() as conn:
-            rows = conn.execute(select(*cols).where(runs_t.c.status == "done")).mappings().all()
+            rows = conn.execute(select(*cols).where(*self._source)).mappings().all()
         return [dict(r) for r in rows]
 
     def result(self, now: datetime | None = None) -> dict:

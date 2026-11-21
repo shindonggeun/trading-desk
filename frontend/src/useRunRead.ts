@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { api, ApiError } from "./api";
+import { api, ApiError, Unauthorized } from "./api";
 import { usePoll } from "./poll";
 import { isFullRun } from "./runRead";
 import type { RunRead } from "./types";
@@ -33,7 +33,8 @@ export function useRunRead(runId: string | null, pollQueue = false) {
       setView({ id: runId, response, error: null, epoch: scope.epoch });
     } catch (error) {
       if (signal.aborted || request <= scope.applied) return;
-      if (scope.applied === 0 || (error instanceof ApiError && error.status === 404)) {
+      const denied = error instanceof Unauthorized || (error instanceof ApiError && [403, 404].includes(error.status));
+      if (scope.applied === 0 || denied) {
         scope.applied = request;
         scope.full = false;
         setView({ id: runId, response: null, error: String(error), epoch: scope.epoch });
@@ -46,8 +47,15 @@ export function useRunRead(runId: string | null, pollQueue = false) {
     if (!runId) return;
     const controller = new AbortController();
     scopeRef.current = { id: runId, controller, requested: 0, applied: 0, full: false, epoch: 0 };
+    const recheck = () => {
+      if (document.visibilityState === "visible") void read().catch(() => {});
+    };
     void read().catch(() => {});
-    return () => controller.abort();
+    document.addEventListener("visibilitychange", recheck);
+    return () => {
+      controller.abort();
+      document.removeEventListener("visibilitychange", recheck);
+    };
   }, [read, runId]);
 
   const current = view?.id === runId ? view : undefined;

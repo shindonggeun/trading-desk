@@ -19,7 +19,17 @@ import time
 from collections import OrderedDict
 from datetime import UTC, datetime
 
-from . import horizons, playbook, risk_regime, session_progress, setup_filter, summary, trigger, value_swing
+from . import (
+    calibration,
+    horizons,
+    playbook,
+    risk_regime,
+    session_progress,
+    setup_filter,
+    summary,
+    trigger,
+    value_swing,
+)
 from .sr import frame_bars, support_resistance
 
 log = logging.getLogger(__name__)
@@ -28,7 +38,7 @@ TIMEOUT_SEC = 25.0           # the whole computation, not each step
 RISK_TIMEOUT_SEC = 6.0       # the market's selling score (#146), inside the whole
 FAIL_TTL_SEC = 10.0         # a failure is remembered briefly so a poll does not pile up retries
 _CACHE: OrderedDict[tuple, tuple[float, dict | Exception]] = OrderedDict()
-_SINCE: OrderedDict[tuple, tuple[str, str]] = OrderedDict()   # (ticker, horizon, run, side) -> (state, since)
+_SINCE: OrderedDict[tuple, tuple[str, str]] = OrderedDict()   # cache key plus side -> (state, since)
 _LOCKS: dict[tuple, asyncio.Lock] = {}
 
 
@@ -140,6 +150,9 @@ async def current(prices, ticker: str, horizon: str | None = None, run_id: str |
     now. A page (``ahead`` 0) reads a fresh value without the lock, so it never waits for that refresh."""
     h = horizons.get(horizon)
     key = (ticker, h.id, run_id)
+    table = calibration.current_table()
+    if table is not calibration.TABLE:
+        key = (table, *key)  # A scoped playbook cannot reuse a legacy calibration result.
     cached = _CACHE.get(key)
     if cached and ahead <= 0:
         at, value = cached

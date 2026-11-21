@@ -78,6 +78,7 @@ export default function RunsCard() {
   usePoll(`runs-card:${page}`, load, 5000);
 
   async function remove(r: Run) {
+    if (r.can_delete === false) return;
     const name = r.options.name ? `${r.options.name}(${r.ticker})` : r.ticker;
     if (!window.confirm(`${name} ${r.trade_date} 분석 기록을 지울까요? 되돌릴 수 없습니다.`)) return;
     setDeleting(r.id);
@@ -187,7 +188,7 @@ export default function RunsCard() {
                   <td role="cell" data-label="상태"><span className={`status status-${r.status}`} title={queueReason(r, [])?.text}>{STATUS_LABEL[r.status]}</span></td>
                   <td role="cell" className="muted" data-label="요청">{time(r.created_at)}</td>
                   <td role="cell" className="stack-action">
-                    <button
+                    {r.can_delete !== false && <button
                       type="button"
                       className="link run-delete"
                       disabled={isActive(r) || deleting !== null}
@@ -199,7 +200,7 @@ export default function RunsCard() {
                       }}
                     >
                       {deleting === r.id ? "지우는 중…" : "삭제"}
-                    </button>
+                    </button>}
                   </td>
                 </tr>
                 );

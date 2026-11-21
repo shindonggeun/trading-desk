@@ -15,6 +15,7 @@ from typing import Any
 
 from . import (
     all_horizons,
+    calibration,
     horizons,
     language,
     macro_news,
@@ -433,10 +434,13 @@ class RunManager:
                  risk: Callable[[str, str | None], dict | None] | None = None,
                  outlook: Callable[[str, str, float | None, dict | None], Awaitable[dict | None]] | None = None,
                  reuse_minutes: float = 0, rate_limit_cooldown_min: float = RATE_LIMIT_COOLDOWN_MIN,
-                 direct: bool = True) -> None:
+                 direct: bool = True, protect_account_runs: bool = False,
+                 calibration_table: calibration.Table | None = None) -> None:
         # #688 direct (DESK_ROLE=all): a submitted run runs here. Otherwise submit only queues it and the
         # analyst's desk.run_queue claims it (start), calling on_free when one of its runs ends
         self.direct = direct
+        self.protect_account_runs = protect_account_runs
+        self.calibration_table = calibration_table
         self.on_free: Callable[[], None] | None = None
         self.levels = levels
         # #171: news and fundamentals reports this fresh are taken over from an earlier run (0 = off)
@@ -623,23 +627,36 @@ class RunManager:
             log.exception("macro note for %s failed", ticker)
             return None
 
-    def submit(self, request: RunRequest, *, authenticated_submitter_id: int | None = None) -> str:
+    def submit(self, request: RunRequest, *, authenticated_submitter_id: int | None = None,
+               owner_generation: str | None = None) -> str:
         # #688 the run and its first event in one transaction: an analyst can claim the run the moment it is
         # committed, and its own events must come after this one. Queued for the analyst: the screen says so.
         queued = {"type": "status", "agent": "system", "content": "queued",
                   **({} if self.direct else {"data": {"waiting_for": "analyst"}})}
         run_id = self.store.create_run(
             request.ticker, request.trade_date, asdict(request), first_event=queued, guarded_writer=True,
-            authenticated_submitter_id=authenticated_submitter_id,
+            authenticated_submitter_id=authenticated_submitter_id, owner_generation=owner_generation,
         )
         self.hub.notify(run_id)
         if self.direct:
             self.start(run_id, request)
         return run_id
 
+    def _require_current_binding(self, run_id: str) -> None:
+        current = self.store.account_run_is_current(run_id)
+        if current is False or (self.protect_account_runs and current is not True):
+            raise RuntimeError("account authorization changed")
+
+    async def _run_portfolio(self, run_id: str):
+        self._require_current_binding(run_id)
+        book = await self.broker.portfolio()
+        self._require_current_binding(run_id)
+        return book
+
     def start(self, run_id: str, request: RunRequest) -> None:
         """Run a queued run here (submit's own, or one desk.run_queue claimed)."""
-        task = asyncio.create_task(self._execute(run_id, request))
+        with calibration.use_table(self.calibration_table):
+            task = asyncio.create_task(self._execute(run_id, request))
         self._tasks.add(task)
         self._run_ids[task] = run_id
         task.add_done_callback(self._ended)
@@ -1046,7 +1063,7 @@ class RunManager:
             try:
                 # The agents set levels against the price now, not only a close days old.
                 book, start, start_u = await asyncio.gather(
-                    self.broker.portfolio() if request.use_portfolio else _none(),
+                    self._run_portfolio(run_id) if request.use_portfolio else _none(),
                     self._live_quote(request), self._live_quote(request, base) if base else _none())
                 same_day = request.trade_date == dt.date.today().isoformat()
                 horizon = horizons.get(request.horizon)
@@ -1125,6 +1142,8 @@ class RunManager:
                     mandate, verdict.mandate(horizon), playbook.mandate() if pb_note else None,
                     all_horizons.class_note(all_horizons.instrument_class(request.ticker)),
                     all_horizons.mandate(horizon.id, subject.ticker)) if part)
+                if request.use_portfolio:
+                    self._require_current_binding(run_id)
                 portfolio = desk_portfolio(book, note, horizon_mandate=mandate)
                 watch.mark("desk_pre")
                 result = await asyncio.to_thread(self.runner, subject, emit, portfolio)

@@ -1,4 +1,4 @@
-from desk import playbook, playbook_live
+from desk import calibration, playbook, playbook_live
 from desk.broker.base import Bar
 from desk.prices import PriceSource
 from tests.test_api import OWNER, PASSWORD
@@ -152,3 +152,25 @@ def test_a_fresh_playbook_is_read_without_the_lock_and_ahead_computes_it_again(m
     again = asyncio.run(playbook_live.current(_source(), "NVDA", "swing", clock=lambda: t[0], ahead=ttl))
     assert again is not first
     assert asyncio.run(playbook_live.current(_source(), "NVDA", "swing", clock=lambda: t[0])) is again
+
+
+
+def test_scoped_calibration_cannot_reuse_legacy_playbook_cache(monkeypatch):
+    import asyncio
+
+    async def compute(*_args):
+        return {"long": {}, "short": {}, "fixture": calibration.current_table()}, None
+
+    monkeypatch.setattr(playbook_live, "_compute", compute)
+    protected = calibration.Table()
+
+    async def read():
+        legacy = await playbook_live.current(None, "SYNTHETIC-CACHE")
+        with calibration.use_table(protected):
+            scoped = await playbook_live.current(None, "SYNTHETIC-CACHE")
+            assert scoped["fixture"] is protected
+            assert await playbook_live.current(None, "SYNTHETIC-CACHE") is scoped
+        assert legacy["fixture"] is calibration.TABLE
+        assert await playbook_live.current(None, "SYNTHETIC-CACHE") is legacy
+
+    asyncio.run(read())

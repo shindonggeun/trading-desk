@@ -828,7 +828,7 @@ def calibrate_sides(pb: dict, h: horizons.Horizon, table: calibration.Table | No
     """#147: each side's score as the desk's record - T1 rate, expected R, sample (``p_t1``,
     ``exp_r``, ``n``, the rest under ``calibration``). A thin sample gives no numbers. A setup
     negative on enough trades is only marked unless calibration.DISABLE turns it off."""
-    table = table or calibration.TABLE
+    table = table or calibration.current_table()
     regime = (pb.get("regime") or {}).get("id")
     for side in ("long", "short"):
         s = pb.get(side) or {}

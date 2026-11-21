@@ -1,3 +1,4 @@
+from contextlib import closing
 import io
 import json
 import os
@@ -35,6 +36,89 @@ class WireTests(unittest.TestCase):
     def receive(self, data):
         self.client.buffer = data
         return self.client.receive(time.monotonic() + 1)
+
+    def sent_requests(self):
+        stream = io.BytesIO(self.client.process.stdin.getvalue())
+        while header := stream.read(2):
+            self.assertEqual(129, header[0])
+            self.assertTrue(header[1] & 128)
+            size = header[1] & 127
+            if size == 126:
+                size = struct.unpack("!H", stream.read(2))[0]
+            mask = stream.read(4)
+            payload = stream.read(size)
+            self.assertEqual(size, len(payload))
+            yield json.loads(bytes(value ^ mask[i % 4] for i, value in enumerate(payload)))
+
+    def test_live_dispatch_and_inbox_via_framed_rpc(self):
+        for mode in ("idle", "active", "unsupported"):
+            with self.subTest(mode=mode), TemporaryDirectory() as tmp, closing(
+                team.Team(Path(tmp) / "team.sqlite")
+            ) as store:
+                owner, worker, other = (str(uuid.uuid4()) for _ in range(3))
+                store.join("supervisor", owner, team.ROOT)
+                store.join("S1", worker, team.ROOT)
+                mid = store.send("supervisor", owner, "S1", "시험용 배정", "test")
+                row = {"id": worker, "cwd": str(team.ROOT),
+                       "status": {"type": "idle" if mode == "idle" else "active"}}
+                replies = [{"result": {"data": [other, worker]}}, {"result": {"thread": row}}] * 2
+                if mode == "idle":
+                    replies.append({"result": {"turn": {"id": "test-turn"}}})
+                elif mode == "active":
+                    replies.extend((
+                        {"result": {"data": [{"id": "test-turn", "status": "inProgress"}]}},
+                        {"result": {"turnId": "test-turn"}},
+                    ))
+                else:
+                    replies.append({"error": {"code": -32601, "message": "private server details"}})
+                self.client.counter = 0
+                self.client.process.stdin = io.BytesIO()
+                self.client.buffer = b"".join(
+                    frame(1, json.dumps({"id": i, **reply}).encode())
+                    for i, reply in enumerate(replies, 1)
+                )
+                if mode == "unsupported":
+                    with self.assertRaisesRegex(live.LiveError, "thread/turns/list.*지원하지") as error:
+                        store.deliver_live(mid, self.client)
+                    self.assertNotIn("private server details", str(error.exception))
+                else:
+                    self.assertEqual("test-turn", store.deliver_live(mid, self.client))
+
+                received = store.inbox("S1", worker)[0]
+                transport = "unknown" if mode == "unsupported" else "live_accepted"
+                self.assertEqual((mid, "시험용 배정", "pending", transport),
+                                 (received["id"], received["body"], received["state"], received["transport"]))
+                with self.assertRaisesRegex(ValueError, "다시 보내지"):
+                    store.deliver_live(mid, self.client)
+                for state in ("received", "started", "completed"):
+                    store.ack("S1", worker, mid, state)
+                    self.assertEqual(state, store.inbox("S1", worker, include_completed=True)[0]["state"])
+
+                requests = list(self.sent_requests())
+                lookup = [("thread/loaded/list", {}), ("thread/read", {
+                    "threadId": worker, "includeTurns": False})]
+                self.assertEqual(lookup * 2, [(r["method"], r["params"]) for r in requests[:4]])
+                delivery = requests[4:]
+                if mode != "idle":
+                    self.assertEqual({
+                        "id": 5, "method": "thread/turns/list", "params": {
+                            "threadId": worker, "limit": 1, "sortDirection": "desc",
+                            "itemsView": "notLoaded"},
+                    }, delivery.pop(0))
+                if mode == "unsupported":
+                    self.assertEqual([], delivery)
+                else:
+                    request, = delivery
+                    expected_method = "turn/start" if mode == "idle" else "turn/steer"
+                    self.assertEqual(expected_method, request["method"])
+                    expected_params = {"threadId": worker, "input": request["params"]["input"]}
+                    if mode == "active":
+                        expected_params["expectedTurnId"] = "test-turn"
+                    self.assertEqual(expected_params, request["params"])
+                    message, = request["params"]["input"]
+                    self.assertEqual("text", message["type"])
+                    self.assertIn(mid, message["text"])
+                    self.assertIn("시험용 배정", message["text"])
 
     def test_split_chunks_fragmentation_and_ping_pong(self):
         data = frame(1, b'{"a":', False) + frame(9, b"ping") + frame(0, b'1}')

@@ -1,0 +1,19 @@
+// 전용 비운영 폴더에서만 로드한다. 운영 멀티브랜치의 Script Path는 그대로 둔다.
+if (!(env.JOB_NAME ==~ /trading-desk-rehearsal\/(coordinator|api|collector|analyst)/)) {
+    error '전용 리허설 폴더의 잡에서만 실행할 수 있다'
+}
+
+def adapter
+def handoff
+String revision
+node('trading-desk-rehearsal') {
+    if (env.NODE_NAME != 'trading-desk-rehearsal') {
+        error '전용 리허설 노드가 필요하다'
+    }
+    checkout scm
+    revision = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+    adapter = load 'scripts/jenkins/backend-rehearsal.groovy'
+    handoff = load 'scripts/jenkins/backend-handoff.groovy'
+}
+
+adapter.runRehearsal(handoff, revision)

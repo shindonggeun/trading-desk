@@ -87,7 +87,9 @@ case "$1" in
     shift; while [ "$#" -gt 1 ]; do case "$1" in -t) t=$2; shift 2 ;; --label) l=${2#*=}; shift 2 ;; *) shift ;; esac; done
     id="img-$(( $(ls "$S/img" | wc -l) + 1 ))"
     echo "$l" > "$S/img/$id.label"
-    ls "$1/desk/migrations/versions" > "$S/img/$id.migs"
+    if [ -d "$1/desk/migrations/versions" ]; then
+      ls "$1/desk/migrations/versions" > "$S/img/$id.migs"
+    fi
     echo "$id" > "$S/tags/$(key "$t")" ;;
   tag) id=$(resolve "$2"); [ -n "$id" ] || exit 1; echo "$id" > "$S/tags/$(key "$3")" ;;
   run) img=${*: -3:1}; cat "$S/img/$(resolve "$img").migs" ;;
@@ -96,7 +98,7 @@ case "$1" in
     case "$*" in
       *MigrationContext*) [ "${FAKE_SCHEMA_UNAPPLIED:-}" != "$svc" ] || exit 1 ;;
       *unfinished*) printf '%b\n' "${FAKE_UNFINISHED:-0}" ;;
-      *api/health*) [ "$(label "$id")" != "${FAKE_PROBE_BAD_REV:-}" ] || exit 1 ;;
+      *api/health*|*wget*http://127.0.0.1/*) [ "$(label "$id")" != "${FAKE_PROBE_BAD_REV:-}" ] || exit 1 ;;
       *) exit 0 ;;
     esac ;;
   logs)
@@ -276,6 +278,32 @@ rc=$(REVISION="$schema_sha" bash "$SCRIPT" backend "$SRC" --service api > "$TMP/
 check "split이 꺼져 있으면 단독 전환을 막는다" "1 " "$rc $(up_services)"
 
 rc=$(PRIMARY_SERVICE=api deploy rev11); check "없는 PRIMARY_SERVICE 는 바꾸기 전에 멈춘다" "1 rev11" "$rc $(prod_rev)"
+
+# ---- #692 웹 종합 배포: compose up은 성공하고 새 이미지의 HTTP 확인만 실패한다.
+WEB_STATE="$TMP/web-state"
+deploy_web() {
+  STATE="$WEB_STATE" FAKE_IMAGE=trading-desk-web:prod FAKE_SERVICES=web-prod \
+    REVISION="$1" bash "$SCRIPT" web "$SRC" > "$TMP/out" 2>&1
+  echo $?
+}
+
+rc=$(deploy_web web1)
+check "웹 복구 시험의 직전 배포" 0 "$rc"
+previous_web_image=$(cat "$WEB_STATE/tags/trading-desk-web_prod")
+: > "$WEB_STATE/calls"
+rc=$(FAKE_PROBE_BAD_REV=web2 deploy_web web2)
+check "웹 HTTP 확인 실패는 종료 2와 직전 이미지 ID를 남긴다" \
+  "2 $previous_web_image $previous_web_image healthy" \
+  "$rc $(cat "$WEB_STATE/tags/trading-desk-web_prod") $(cat "$WEB_STATE/ctr/web-prod")"
+web_steps=$(awk '
+  /^docker compose .* up / {print "up:" $NF}
+  /^docker exec cid-web-prod wget / {print "probe:web-prod"}
+' "$WEB_STATE/calls" | paste -sd ' ' -)
+check "웹 교체, HTTP 실패, 같은 서비스 복구와 재확인 순서" \
+  "up:web-prod probe:web-prod up:web-prod probe:web-prod probe:web-prod" "$web_steps"
+check "웹 HTTP 실패와 직전 커밋 복구를 차례로 기록한다" \
+  $'확인 실패: web-prod 상태 확인(health) 응답이 없다\n== 직전 이미지로 되돌렸다(web1). 실패한 이미지는 trading-desk-web:web2 로 남아 있다' \
+  "$(grep -E '확인 실패: web-prod|직전 이미지로 되돌렸다' "$TMP/out")"
 
 # ---- 실제 compose 파일(#688): 진짜 docker compose 가 있을 때(CI)만. 스위치에 따라 서비스 · api 역할이 맞게 풀리는지
 if [ -n "$REAL_DOCKER" ] && "$REAL_DOCKER" compose version > /dev/null 2>&1; then

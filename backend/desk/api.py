@@ -126,6 +126,7 @@ from .market_flow import MarketFlow
 from .portfolio import Portfolio
 from .prices import INTERVALS, PriceSource, kis_quote
 from .related import collect as collect_related
+from .run_read import RunReader
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
 from .runner import rate_limited as run_rate_limited
 from .sectors import Duplicate, NotFound, Sectors, clean_name, clean_tickers
@@ -175,6 +176,7 @@ NL2 = "\n\n"   # ends an SSE frame
 MARKET_STREAMS_PER_SESSION = 3    # #690 open market streams per session (one per tab)
 MARKET_STREAM_TICKERS = 50        # quote channel tickers per stream
 HEARTBEAT_SEC = 15
+_RUN_READ_CACHE = {"Cache-Control": "private, no-store"}
 OPEN_PATHS = frozenset({"/api/health", "/api/auth/login"})
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # #762 a request the screen sent with no one at it (the client marks it - frontend/src/activity.ts): it is
@@ -389,7 +391,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                flow: MarketFlow | None = None, futures: FuturesFlow | None = None,
                weekly: weekly_map.Maps | None = None, bottoms: bottom_zone.Zones | None = None,
                longshort: LongShort | None = None, chatter: chat.Chatter | None = None,
-               pictures: report_images.ReportImages | None = None) -> FastAPI:
+               pictures: report_images.ReportImages | None = None, *, protect_run_reads: bool = False) -> FastAPI:
     settings = settings or load()
     log_setup.configure(settings.log_level)     # #676 the desk.* INFO lines reach the container log
     if settings.role in ("all", "api"):
@@ -398,6 +400,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         require_schema_at_head(settings.database_url)
     engine = make_engine(settings.database_url)
     store = Store(engine)
+    run_reader = RunReader(engine) if protect_run_reads else None
     # #688 broker tokens shared by the desk's processes: issued only where DESK_ROLE is all | collector
     active_issuer: BrokerIssuerLock | None = None
 
@@ -1539,9 +1542,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 if r["status"] == "queued" else r for r in items]
 
     @app.get("/api/runs")
-    def list_runs(page: int = 1, size: int = 20):
+    def list_runs(request: Request, response: Response, page: int = 1, size: int = 20):
         # Clamp both: a huge page would overflow the OFFSET bigint and surface as a 500.
         page, size = min(max(page, 1), 100_000), min(max(size, 1), 100)
+        if run_reader is not None:
+            items, total = run_reader.page(request.state.user.id, limit=size, offset=(page - 1) * size)
+            response.headers.update(_RUN_READ_CACHE)
+            return {"items": items, "total": total, "page": page, "size": size}
         return {"items": with_queue(store.list_runs(size, (page - 1) * size)), "total": store.count_runs(),
                 "page": page, "size": size}
 
@@ -1559,7 +1566,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return Response(status_code=204)
 
     @app.get("/api/runs/{run_id}")
-    def get_run(run_id: str):
+    def get_run(run_id: str, request: Request, response: Response):
+        if run_reader is not None:
+            visible = run_reader.detail(request.state.user.id, run_id)
+            if visible is None:
+                raise HTTPException(404, "run not found", headers=_RUN_READ_CACHE)
+            response.headers.update(_RUN_READ_CACHE)
+            return visible
         run = store.get_run(run_id)
         if not run:
             raise HTTPException(404, "run not found")
@@ -1698,14 +1711,24 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return {"generating": True}
 
     @app.get("/api/runs/{run_id}/events")
-    def get_events(run_id: str, after: int = 0):
+    def get_events(run_id: str, request: Request, response: Response, after: int = 0):
+        if run_reader is not None:
+            batch = run_reader.event_batch(request.state.user.id, run_id, after=after)
+            if batch is None:
+                raise HTTPException(404, "run not found", headers=_RUN_READ_CACHE)
+            response.headers.update(_RUN_READ_CACHE)
+            return batch.items
         if not store.get_run(run_id):
             raise HTTPException(404, "run not found")
         return store.events_after(run_id, after)
 
     @app.get("/api/runs/{run_id}/stream")
     async def stream(run_id: str, request: Request, after: int = 0):
-        if not store.get_run(run_id):
+        viewer_id = request.state.user.id
+        if run_reader is not None:
+            if not await asyncio.to_thread(run_reader.has_full_read, viewer_id, run_id):
+                raise HTTPException(404, "run not found", headers=_RUN_READ_CACHE)
+        elif not store.get_run(run_id):
             raise HTTPException(404, "run not found")
         last_id = request.headers.get("last-event-id")
         start = int(last_id) if last_id and last_id.isdigit() else after
@@ -1716,25 +1739,39 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             seq = start
             while not await request.is_disconnected():
                 # Re-check every round: logout, revoke or expiry ends an open stream too.
-                if await asyncio.to_thread(auth.resolve, token, touch=False) is None:
+                user = await asyncio.to_thread(auth.resolve, token, touch=False)
+                if user is None or (run_reader is not None and user.id != viewer_id):
                     return
                 waiter = hub.listen(run_id)          # before reading, so nothing slips between
-                events = store.events_after(run_id, seq)
+                batch = None
+                if run_reader is not None:
+                    batch = await asyncio.to_thread(run_reader.event_batch, viewer_id, run_id, after=seq, limit=100)
+                    if batch is None:
+                        return
+                    events = batch.items
+                else:
+                    events = store.events_after(run_id, seq)
                 for event in events:
                     seq = event["seq"]
                     yield f"id: {seq}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if events:
                     continue
-                status = store.run_status(run_id)
-                if status is None or status in TERMINAL:   # None: deleted while streaming
+                if batch is not None and batch.terminal_seq is not None and seq >= batch.terminal_seq:
+                    return
+                status = batch.status if batch is not None else store.run_status(run_id)
+                if status is None or (batch is None and status in TERMINAL):
                     return
                 try:
                     await asyncio.wait_for(waiter.wait(), HEARTBEAT_SEC)
                 except TimeoutError:
+                    # A terminal row is written before the terminal event. Keep
+                    # its listener until that event arrives or one heartbeat passes.
+                    if batch is not None and status in TERMINAL:
+                        return
                     yield ": ping\n\n"
 
-        return StreamingResponse(frames(), media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        cache = _RUN_READ_CACHE if run_reader is not None else {"Cache-Control": "no-cache"}
+        return StreamingResponse(frames(), media_type="text/event-stream", headers={**cache, "X-Accel-Buffering": "no"})
 
     @app.get("/api/instruments")
     def search_instruments(q: str = "", limit: int = 20):

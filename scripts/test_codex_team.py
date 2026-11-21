@@ -1,6 +1,7 @@
 import concurrent.futures
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
@@ -23,6 +24,113 @@ class TeamTests(unittest.TestCase):
 
     def send(self, **kwargs):
         return self.store.send("supervisor", self.supervisor, "S1", "한국어 인계", **kwargs)
+
+    def test_default_state_path_is_shared_by_real_git_worktrees(self):
+        repo = Path(self.temp.name) / "renamed-clone"
+        linked = Path(self.temp.name) / "linked"
+        subprocess.run(["git", "init", "-b", "develop", str(repo)], check=True, capture_output=True)
+        (repo / ".gitignore").write_bytes((team.ROOT / ".gitignore").read_bytes())
+        subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                        "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "worktree", "add", "--no-track", "-b", "linked", str(linked)],
+                       cwd=repo, check=True, capture_output=True)
+        with patch.dict(os.environ, {"CODEX_TEAM_STATE_DIR": ""}):
+            with patch.object(team, "ROOT", repo):
+                primary = team.state_path()
+            with patch.object(team, "ROOT", linked):
+                self.assertEqual(primary, team.state_path())
+        self.assertEqual(repo / ".trading-desk-codex-team" / "team.sqlite", primary)
+        ignored = [".trading-desk-codex-team/team.sqlite", ".trading-desk-codex-team/team.sqlite-wal"]
+        for checkout in (repo, linked):
+            result = subprocess.run(["git", "check-ignore", "--", *ignored],
+                                    cwd=checkout, check=True, capture_output=True, text=True)
+            self.assertEqual(ignored, result.stdout.splitlines())
+
+    def test_mixed_versions_share_legacy_then_require_explicit_cutover(self):
+        repo = Path(self.temp.name) / "renamed-clone"
+        legacy = repo.parent / ".renamed-clone-codex-team" / "team.sqlite"
+        current = repo / ".trading-desk-codex-team" / "team.sqlite"
+        legacy.parent.mkdir()
+        legacy.write_bytes(self.path.read_bytes())
+        with patch.object(team, "repository_root", return_value=repo), \
+             patch.dict(os.environ, {"CODEX_TEAM_STATE_DIR": ""}):
+            self.assertEqual(legacy, team.state_path())
+            with patch.object(team.sys, "argv", ["codex_team.py", "migrate-state"]), \
+                 patch("builtins.print"):
+                self.assertEqual(0, team.main())
+            self.assertTrue(current.is_file())
+            self.assertTrue(legacy.is_file())
+            with self.assertRaisesRegex(ValueError, "CODEX_TEAM_STATE_DIR"):
+                team.state_path()
+            with patch.dict(os.environ, {"CODEX_TEAM_STATE_DIR": str(current.parent)}):
+                self.assertEqual(current, team.state_path())
+
+    def test_migrate_state_preserves_messages_and_source(self):
+        self.store.db.execute("PRAGMA journal_mode=WAL")
+        mid = self.send(task_key="#734")
+        self.store.ack("S1", self.worker, mid, "received")
+        self.assertTrue(self.path.with_name("team.sqlite-wal").is_file())
+        destination = Path(self.temp.name) / "new" / "team.sqlite"
+        team.migrate_state(self.path, destination)
+        copied = team.Team(destination)
+        try:
+            row = copied.inbox("S1", self.worker)[0]
+            self.assertEqual((mid, "한국어 인계", "received"),
+                             (row["id"], row["body"], row["state"]))
+            self.assertEqual(self.supervisor, copied.member("supervisor")["thread"])
+        finally:
+            copied.close()
+        self.assertTrue(self.path.is_file())
+
+    def test_migrate_state_refuses_existing_destination(self):
+        self.send()
+        destination = Path(self.temp.name) / "new" / "team.sqlite"
+        other = team.Team(destination)
+        other.close()
+        with self.assertRaisesRegex(ValueError, "이미"):
+            team.migrate_state(self.path, destination)
+        self.assertTrue(self.path.is_file())
+        untouched = team.Team(destination)
+        try:
+            self.assertEqual(0, untouched.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+        finally:
+            untouched.close()
+
+    def test_migrate_state_rejects_corrupt_source_without_destination(self):
+        source = Path(self.temp.name) / "broken.sqlite"
+        source.write_bytes(b"not a database")
+        destination = Path(self.temp.name) / "new" / "team.sqlite"
+        with self.assertRaises(sqlite3.DatabaseError):
+            team.migrate_state(source, destination)
+        self.assertFalse(destination.exists())
+        self.assertEqual([], list(destination.parent.iterdir()))
+
+    def test_migrate_state_cleans_staging_on_windows_publication_failure(self):
+        self.send()
+        before = self.path.read_bytes()
+        destination = Path(self.temp.name) / "new" / "team.sqlite"
+        with patch.object(team.os, "link", side_effect=PermissionError(13, "Access is denied")):
+            with self.assertRaises(PermissionError):
+                team.migrate_state(self.path, destination)
+        self.assertEqual(before, self.path.read_bytes())
+        self.assertEqual([], list(destination.parent.iterdir()))
+
+    def test_migrate_state_preserves_a_destination_created_during_copy(self):
+        before = self.path.read_bytes()
+        destination = Path(self.temp.name) / "new" / "team.sqlite"
+        link = os.link
+
+        def publish(staged, target):
+            target.write_bytes(b"other writer")
+            link(staged, target)
+
+        with patch.object(team.os, "link", side_effect=publish):
+            with self.assertRaises(FileExistsError):
+                team.migrate_state(self.path, destination)
+        self.assertEqual(b"other writer", destination.read_bytes())
+        self.assertEqual(before, self.path.read_bytes())
+        self.assertEqual([destination], list(destination.parent.iterdir()))
 
     def test_takeover_preserves_tasks_and_blocks_old_supervisor(self):
         mid = self.send(task_key="#582")

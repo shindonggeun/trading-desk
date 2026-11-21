@@ -3,13 +3,16 @@ caching, and the API."""
 
 import asyncio
 from datetime import UTC, datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
 
+from desk import shared_cache
 from desk.broker import MockBroker, TossBroker
 from desk.broker.base import INSTITUTION_KINDS, INVESTORS, FlowRecord, IndexPrice
-from desk.market_flow import MarketFlow, market_open, normalize
+from desk.market_flow import SHARED_NS, MarketFlow, market_open, normalize
 from tests.test_api import _client
 
 KST = timezone(timedelta(hours=9))
@@ -167,6 +170,126 @@ class CountingBroker(MockBroker):
         if self.fail:
             raise RuntimeError("Toss GET /api/v1/market-indicators failed 500: {'secret': 'body'}")
         return await super().investor_flow(market, interval, count, until)
+
+
+@pytest.fixture
+def shared_flow(monkeypatch):
+    clock = [datetime(2026, 11, 5, 10, tzinfo=KST)]
+    now = lambda: clock[0].timestamp()
+    monkeypatch.setattr(shared_cache, "time", SimpleNamespace(time=now, monotonic=now))
+    entries = {}
+    redis = Mock()
+
+    async def store(key, value, *, px):
+        entries[key] = (value, now() + px / 1000)
+
+    async def read():
+        key = pipe.get.call_args.args[0]
+        value, expires = entries.get(key, (None, now()))
+        return value, max(0, round((expires - now()) * 1000))
+
+    pipe = redis.pipeline.return_value
+    pipe.execute = AsyncMock(side_effect=read)
+    redis.set = AsyncMock(side_effect=store)
+    shared_cache.use(None, redis)
+    try:
+        yield clock, redis
+    finally:
+        shared_cache.use(None, None)
+
+
+@pytest.mark.parametrize(("at", "session_after"), [((10, 0, 0), "regular"), ((15, 40, 30), "closed")])
+def test_a_shared_flow_hit_keeps_its_timestamps_and_skips_the_api_broker(shared_flow, at, session_after):
+    clock, redis = shared_flow
+    clock[0] = clock[0].replace(hour=at[0], minute=at[1], second=at[2])
+
+    class SnapshotBroker(CountingBroker):
+        async def investor_flow(self, market, interval, count, until=None):
+            self.calls += 1
+            updated = clock[0] - timedelta(seconds=12)
+            return [_record(updated.date().isoformat(), updated.isoformat())], None
+
+    collector, api = SnapshotBroker(), SnapshotBroker()
+    collect = MarketFlow(collector, now=lambda: clock[0])
+    card = MarketFlow(api, clock=lambda: clock[0].timestamp(), now=lambda: clock[0])
+
+    async def scenario():
+        fetched_at = clock[0]
+        snap = await collect.get("KOSPI", "1d", 5, fresh=True)
+        clock[0] += timedelta(seconds=50)
+        got = await card.get("KOSPI", "1d", 5)
+        assert got["records"] == snap["records"] and got["fetched_at"] == fetched_at.isoformat()
+        stamp = got["freshness"]
+        assert stamp["source_updated_at"] == (fetched_at - timedelta(seconds=12)).astimezone(UTC).isoformat()
+        assert stamp["fetched_at"] == fetched_at.astimezone(UTC).isoformat() and stamp["age_sec"] == 50
+        assert got["session"] == session_after
+        if session_after == "regular":
+            assert stamp["live"] and stamp["source_delay_sec"] == 62
+        else:
+            assert not stamp["live"] and stamp["source_delay_sec"] is None
+        assert collector.calls == 1 and api.calls == 0
+
+        redis.pipeline.return_value.execute.side_effect = ConnectionError("offline fake Redis")
+        clock[0] += timedelta(seconds=39)
+        assert (await card.get("KOSPI", "1d", 5))["records"] == snap["records"]
+        assert api.calls == 0
+        clock[0] += timedelta(seconds=2)
+        assert (await card.get("KOSPI", "1d", 5))["fetched_at"] == clock[0].isoformat()
+        await card.get("KOSPI", "1d", 5)
+        assert api.calls == 1 and shared_cache.stats()["errors"] == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(("when", "session_after"), [((7, 59, 50), "pre"), ((23, 59, 50), "closed")])
+def test_shared_flow_expires_at_premarket_and_kst_midnight(shared_flow, when, session_after):
+    clock, _ = shared_flow
+    clock[0] = clock[0].replace(hour=when[0], minute=when[1], second=when[2])
+    collector, api = CountingBroker(), CountingBroker()
+    collect = MarketFlow(collector, now=lambda: clock[0])
+    card = MarketFlow(api, clock=lambda: clock[0].timestamp(), now=lambda: clock[0])
+
+    async def scenario():
+        snap = await collect.get("KOSPI", "1d", 5, fresh=True)
+        assert snap["session"] == "closed"
+        clock[0] += timedelta(seconds=5)
+        assert (await card.get("KOSPI", "1d", 5))["fetched_at"] == snap["fetched_at"]
+        assert api.calls == 0
+        clock[0] += timedelta(seconds=5)
+        got = await card.get("KOSPI", "1d", 5)
+        assert got["fetched_at"] == clock[0].isoformat() and got["session"] == session_after
+        assert api.calls == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("defect", ["wrong_market", "bad_records", "bad_amounts", "stale_fetched_at", "old_today_row"])
+def test_invalid_shared_public_flow_is_a_miss(shared_flow, defect):
+    clock, _ = shared_flow
+    api = CountingBroker()
+    card = MarketFlow(api, now=lambda: clock[0])
+
+    async def scenario():
+        collect = MarketFlow(CountingBroker(), now=lambda: clock[0])
+        await collect.get("KOSPI", "1d", 5, fresh=True)
+        key = ("KOSPI", "1d")
+        wrapped, _, _ = await shared_cache.aget(SHARED_NS, key)
+        page = wrapped["value"]
+        if defect == "wrong_market":
+            page["market"] = "KOSDAQ"
+        elif defect == "bad_records":
+            page["records"] = {"date": "2026-11-05"}
+        elif defect == "bad_amounts":
+            page["records"][0]["investors"] = {"foreigner": {"buy": "bad", "sell": 1, "net": 2}}
+        elif defect == "stale_fetched_at":
+            page["fetched_at"] = (clock[0] - timedelta(hours=2)).isoformat()
+        elif defect == "old_today_row":
+            page["records"][0].update(date="2026-11-04", in_progress=True)
+        await shared_cache.aput(SHARED_NS, key, wrapped, shared_cache.LATEST_KEEP_SEC)
+        assert (await card.get("KOSPI", "1d", 5))["market"] == "KOSPI"
+        assert api.calls == 1
+
+    asyncio.run(scenario())
 
 
 def test_one_broker_call_per_key_while_cached_even_when_requests_overlap():

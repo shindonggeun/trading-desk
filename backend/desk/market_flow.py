@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from datetime import UTC, date, datetime, timedelta, timezone
 
@@ -158,6 +159,68 @@ def _short_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: {str(exc).split(':')[0]}"
 
 
+def _valid_flow_record(row: object, interval: str, fetched_day: date) -> bool:
+    if not isinstance(row, dict) or not isinstance(row.get("date"), str):
+        return False
+    try:
+        day = date.fromisoformat(row["date"])
+    except ValueError:
+        return False
+    if day.isoformat() != row["date"] or row.get("in_progress") is not _same_period(day, fetched_day, interval):
+        return False
+    if type(row.get("provisional")) is not bool or (row["provisional"] and not row["in_progress"]):
+        return False
+    if "updated_at" not in row or (row["updated_at"] is not None and _parse_time(row["updated_at"]) is None):
+        return False
+    return all(
+        isinstance(sides, dict) and all(
+            isinstance(side, dict) and all(type(side.get(field)) is int for field in ("buy", "sell", "net"))
+            for side in sides.values()
+        )
+        for sides in (row.get("investors"), row.get("institution_breakdown"))
+    )
+
+
+def _shared_flow(hit, market: str, interval: str, now: datetime) -> tuple[dict, float, float] | None:
+    """Adopt a public page only while its observation and trading date are still usable."""
+    latest = shared_cache.latest(hit)
+    if latest is None:
+        return None
+    value, ttl, left = latest
+    if (value.get("market") != market or value.get("interval") != interval
+            or not isinstance(value.get("source"), str) or type(value.get("supported")) is not bool
+            or "error" not in value or value["error"] is not None or not isinstance(value.get("records"), list)):
+        return None
+    index = value.get("index")
+    if "index" not in value or (index is not None and (
+        not isinstance(index, dict) or type(index.get("price")) not in (int, float)
+        or (type(index["price"]) is float and not math.isfinite(index["price"]))
+        or "at" not in index or (index["at"] is not None and _parse_time(index["at"]) is None)
+    )):
+        return None
+    fetched = _parse_time(value.get("fetched_at"))
+    changed = value.get("changed_at")
+    if fetched is None or (changed is not None and _parse_time(changed) is None) or ttl > CACHE_CLOSED_SEC:
+        return None
+
+    age = (now - fetched).total_seconds()
+    if age < -shared_cache.SKEW_SEC:
+        return None
+    left = min(left, max(ttl, shared_cache.LATEST_KEEP_SEC) + shared_cache.SKEW_SEC - age)
+    local, seen = now.astimezone(KST), fetched.astimezone(KST)
+    if interval == "1d":
+        if seen.date() != local.date():
+            return None
+        deadline = seen.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        pre = seen.replace(hour=PREMARKET_FROM[0], minute=PREMARKET_FROM[1], second=0, microsecond=0)
+        if seen.weekday() < 5 and seen < pre:
+            deadline = pre
+        left = min(left, (deadline - local).total_seconds())
+    if left <= 0 or not all(_valid_flow_record(row, interval, seen.date()) for row in value["records"]):
+        return None
+    return value, ttl, left
+
+
 class MarketFlow:
     """Cached market-wide investor flow for the dashboard."""
 
@@ -186,7 +249,7 @@ class MarketFlow:
             cached = self._cache.get(key)
             if not fresh and (not cached or self._clock() - cached[0] >= cached[1]):
                 # #689 another process (the collector's snapshot job reads fresh) may have it already
-                hit = shared_cache.latest(await shared_cache.aget(SHARED_NS, key))
+                hit = _shared_flow(await shared_cache.aget(SHARED_NS, key), market, interval, self._now())
                 if hit is not None:
                     shared, ttl, left = hit
                     cached = self._cache[key] = (self._clock() - max(0.0, ttl - left), ttl, shared)

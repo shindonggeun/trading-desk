@@ -54,6 +54,12 @@ class EventBatch:
     items: list[dict]
 
 
+def last_done_seq(engine: Engine, run_id: str) -> int | None:
+    """Read only the completion cursor for the legacy, unfiltered stream."""
+    with engine.connect() as conn:
+        return conn.scalar(select(func.max(events.c.seq)).where(events.c.run_id == run_id, events.c.type == "done"))
+
+
 class RunReader:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine

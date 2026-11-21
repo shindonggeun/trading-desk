@@ -11,13 +11,14 @@ from desk.db import account_owner_binding, events, make_engine, now, run_submiss
 from desk.run_read import RunReader
 from desk.runner import make_fake_runner
 from desk.settings import Settings
+from desk.store import Store
 from tests.test_api import PASSWORD
 
 
 @pytest.fixture
-def fixture_desk(db_url):
+def fixture_desk(db_url, request):
     settings = Settings(database_url=db_url, fake_runs=True, fake_delay=0, role="api")
-    app = create_app(settings, runner=make_fake_runner(0), protect_run_reads=True)
+    app = create_app(settings, runner=make_fake_runner(0), protect_run_reads=getattr(request, "param", True))
     engine = make_engine(db_url)
     try:
         auth = Auth(engine, timedelta(hours=1), timedelta(hours=1))
@@ -139,27 +140,48 @@ def test_sse_drains_batches_that_include_events_after_done(fixture_desk):
     assert [int(line[4:]) for line in response.text.splitlines() if line.startswith("id: ")] == list(range(1, 106))
 
 
-def test_sse_keeps_listener_when_done_status_precedes_done_event(fixture_desk, monkeypatch):
+@pytest.mark.parametrize(("fixture_desk", "protected"), [(True, True), (False, False)], indirect=["fixture_desk"])
+@pytest.mark.parametrize("notify_waiter", [True, False], ids=["wake", "missed-notification"])
+def test_sse_keeps_listener_when_done_status_precedes_done_event(fixture_desk, monkeypatch, protected, notify_waiter):
     client, engine, _ = fixture_desk
     _login(client, "author")
+    if not notify_waiter:
+        monkeypatch.setattr("desk.api.HEARTBEAT_SEC", 0.01)
     with engine.begin() as conn:
         conn.execute(delete(events).where(events.c.run_id == "b-shared", events.c.seq == 3))
-    original = RunReader.event_batch
     observed_terminal_gap = []
 
-    def append_after_read(reader, viewer_id, run_id, *, after, limit=None):
-        batch = original(reader, viewer_id, run_id, after=after, limit=limit)
-        if not observed_terminal_gap and batch is not None and not batch.items and batch.terminal_seq is None:
-            assert batch.status == "done"
-            observed_terminal_gap.append(True)
-            with engine.begin() as conn:
-                conn.execute(events.insert().values(
-                    run_id=run_id, seq=3, ts=now(), type="done", content="done",
-                ))
-            client.portal.call(client.app.state.manager.hub.notify, run_id)
-        return batch
+    def append_done(run_id):
+        observed_terminal_gap.append(True)
+        with engine.begin() as conn:
+            conn.execute(events.insert().values(run_id=run_id, seq=3, ts=now(), type="done", content="done"))
 
-    monkeypatch.setattr(RunReader, "event_batch", append_after_read)
+    if protected:
+        original_batch = RunReader.event_batch
+
+        def append_after_batch(reader, viewer_id, run_id, *, after, limit=None):
+            batch = original_batch(reader, viewer_id, run_id, after=after, limit=limit)
+            if not observed_terminal_gap and batch is not None and not batch.items and batch.terminal_seq is None:
+                assert batch.status == "done"
+                append_done(run_id)
+                if notify_waiter:
+                    client.portal.call(client.app.state.manager.hub.notify, run_id)
+            return batch
+
+        monkeypatch.setattr(RunReader, "event_batch", append_after_batch)
+    else:
+        original_events = Store.events_after
+
+        def append_after_events(store, run_id, after=0):
+            items = original_events(store, run_id, after)
+            if not observed_terminal_gap and not items:
+                assert store.run_status(run_id) == "done"
+                append_done(run_id)
+                if notify_waiter:
+                    client.app.state.manager.hub.notify(run_id)
+            return items
+
+        monkeypatch.setattr(Store, "events_after", append_after_events)
     response = client.get("/api/runs/b-shared/stream", headers={"Last-Event-ID": "2"})
     assert response.status_code == 200
     assert observed_terminal_gap == [True]

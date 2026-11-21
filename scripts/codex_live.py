@@ -198,7 +198,10 @@ class Client:
     def target(self, thread):
         if thread not in self.loaded():
             raise LiveError("현재 공용 서버에 로드되지 않은 세션입니다. 자동 resume하지 않습니다")
-        row = self.call("thread/read", {"threadId": thread, "includeTurns": False})["thread"]
+        result = self.call("thread/read", {"threadId": thread, "includeTurns": False})
+        row = result.get("thread") if isinstance(result, dict) else None
+        if not isinstance(row, dict) or row.get("id") != thread:
+            raise LiveError("공용 서버 thread/read 응답의 수신 ID를 확인할 수 없습니다")
         if not independent(row):
             raise LiveError("독립 사용자 세션만 연결할 수 있습니다")
         return row

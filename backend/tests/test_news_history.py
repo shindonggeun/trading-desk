@@ -77,6 +77,24 @@ def test_a_plain_text_limit_note_is_a_refusal_too(tmp_path):
     assert not list(tmp_path.glob("*.json"))                                 # nothing half-written
 
 
+def test_an_invalid_cache_file_is_fetched_again(tmp_path):
+    theme = THEMES[0]
+    damaged = news_history.path_for(tmp_path, theme.id, "tone", 2025)
+    damaged.write_text("{", encoding="utf-8")
+    for mode, year in (("tone", 2026), ("vol", 2025), ("vol", 2026)):
+        news_history.path_for(tmp_path, theme.id, mode, year).write_text("{}", encoding="utf-8")
+    calls = []
+
+    def get(url, params, timeout):
+        calls.append((params["mode"], params["startdatetime"][:4]))
+        return Response(200, _timeline({"2025-03-02": 1.5}))
+
+    result = news_history.collect(tmp_path, (theme,), first_year=2025, get=get, today=TODAY)
+    assert calls == [("TimelineTone", "2025")]
+    assert result == {"fetched": 1, "kept": 3, "missing": [], "refused": None}
+    assert json.loads(damaged.read_text(encoding="utf-8")) == {"2025-03-02": 1.5}
+
+
 def test_the_brief_reads_only_the_days_before_the_plan():
     tone = {f"2024-03-{d:02d}": float(d) for d in range(1, 16)}
     vol = {f"2024-03-{d:02d}": 10.0 for d in range(1, 16)}
@@ -178,6 +196,30 @@ def test_the_command_waits_out_a_refusal_and_carries_on(tmp_path, monkeypatch, c
     assert cli._news_history(args, sleep=waits.append) == 2 and waits == [960.0]
 
 
+def test_a_short_retry_respects_the_request_gap_between_batches(tmp_path, monkeypatch):
+    import argparse
+
+    from desk import cli
+
+    clock = Clock()
+    calls = []
+    collect = news_history.collect
+
+    def get(url, params, timeout):
+        calls.append(clock())
+        if len(calls) == 1:
+            return Response(429, "Please limit requests to one every 5 seconds")
+        return Response(200, _timeline({"2026-03-02": 1.5}))
+
+    def collect_offline(root, **kwargs):
+        return collect(root, themes=THEMES[:1], get=get, sleep=clock.sleep, clock=clock, today=TODAY, **kwargs)
+
+    monkeypatch.setattr(news_history, "collect", collect_offline)
+    args = argparse.Namespace(out_dir=str(tmp_path), first_year=2026, retry_after_min=0.1, max_rounds=1)
+    assert cli._news_history(args, sleep=clock.sleep) == 0
+    assert calls == [0.0, 20.0, 40.0]
+
+
 def test_a_batch_stops_at_max_files_without_asking_more(tmp_path):
     asked = []
 
@@ -214,3 +256,25 @@ def test_the_hourly_loop_waits_for_its_minute_and_runs_until_nothing_is_missing(
     assert sizes == [8, 8, 8] and waits == [720.0] * 3
     out = capsys.readouterr().out
     assert "GDELT 거절" in out and "이번 시간 8개" in out
+
+
+def test_an_hourly_batch_respects_the_gap_when_the_previous_batch_ends_near_its_minute(tmp_path, monkeypatch):
+    import argparse
+    from datetime import datetime
+
+    from desk import cli
+
+    clock = Clock()
+    start = datetime(2026, 11, 17, 10, 16, 55)
+    results = [{"fetched": 2, "kept": 0, "missing": ["a"], "refused": None},
+               {"fetched": 1, "kept": 2, "missing": [], "refused": None}]
+
+    def collect(root, **kwargs):
+        if len(results) == 2:
+            clock.now += 3595
+        return results.pop(0)
+
+    monkeypatch.setattr(news_history, "collect", collect)
+    args = argparse.Namespace(out_dir=str(tmp_path), first_year=2017, max_files=2, hourly_at=17)
+    assert cli._news_history(args, sleep=clock.sleep, clock=lambda: start + timedelta(seconds=clock())) == 0
+    assert clock.slept == [5.0, 20.0]

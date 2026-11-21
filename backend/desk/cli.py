@@ -227,9 +227,11 @@ def _news_history(args, sleep=time.sleep, clock=datetime.now) -> int:
     hourly = getattr(args, "hourly_at", None)
     max_files = getattr(args, "max_files", None)
     rounds = 0
+    minimum_batch_gap = 0.0
     while True:
         if hourly is not None:
-            sleep(seconds_to_minute(clock(), hourly))
+            sleep(max(seconds_to_minute(clock(), hourly), minimum_batch_gap))
+            minimum_batch_gap = news_history.REQUEST_GAP_SEC
         got = news_history.collect(out_dir, first_year=args.first_year, max_files=max_files,
                                    progress=lambda msg: print(msg, file=sys.stderr, flush=True))
         total = got["fetched"] + got["kept"] + len(got["missing"])
@@ -247,9 +249,10 @@ def _news_history(args, sleep=time.sleep, clock=datetime.now) -> int:
         if args.retry_after_min <= 0 or rounds > args.max_rounds:
             print(f"GDELT 가 거절해 멈춤({got['refused'][:80]}) — 15분쯤 뒤 같은 명령으로 이어 받기", flush=True)
             return 2
-        print(f"GDELT 가 거절함({got['refused'][:80]}) — {args.retry_after_min:g}분 쉬고 이어 받기 "
+        retry_wait = max(news_history.REQUEST_GAP_SEC, args.retry_after_min * 60)
+        print(f"GDELT 가 거절함({got['refused'][:80]}) — {retry_wait / 60:g}분 쉬고 이어 받기 "
               f"({rounds}/{args.max_rounds})", flush=True)
-        sleep(args.retry_after_min * 60)
+        sleep(retry_wait)
 
 
 def _backtest(args) -> int:
@@ -655,7 +658,8 @@ def main(argv: list[str] | None = None) -> int:
     nh.add_argument("--out-dir", default=None,
                     help="directory of the files (default DESK_GDELT_CACHE, else data/gdelt)")
     nh.add_argument("--retry-after-min", type=float, default=0.0,
-                    help="after a refusal wait this many minutes and carry on (default 0 = stop; GDELT blocks ~15 min)")
+                    help="wait this many minutes after a refusal (default 0 = stop; minimum wait 20 s; "
+                    "GDELT blocks ~15 min)")
     nh.add_argument("--max-rounds", type=int, default=12, help="most refusals to wait out with --retry-after-min (default 12)")
     nh.add_argument("--max-files", type=int, default=None, help="fetch at most this many files per batch")
     nh.add_argument("--hourly-at", type=int, default=None, choices=range(60), metavar="MINUTE",

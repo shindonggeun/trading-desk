@@ -122,7 +122,7 @@ def collect(root: Path | str, themes: tuple[Theme, ...] = THEMES, first_year: in
             for year in range(first_year, today.year + 1):
                 path = path_for(root, theme.id, mode, year)
                 fresh = path.exists() and (year < today.year or time.time() - path.stat().st_mtime < CURRENT_TTL_SEC)
-                if fresh:
+                if fresh and _read(path) is not None:
                     kept += 1
                     continue
                 if refused or (max_files is not None and fetched >= max_files):

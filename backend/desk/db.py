@@ -111,6 +111,14 @@ account_owner_binding = Table(
     Column("generation", String(32), nullable=False),
 )
 
+run_submissions = Table(
+    "run_submissions", metadata,
+    Column("run_id", String(32), ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True),
+    Column("submitted_by_user_id", Integer, ForeignKey("users.id", ondelete="SET NULL"), index=True),
+    Column("non_account_submission", Boolean, CheckConstraint("non_account_submission IN (FALSE, TRUE)"),
+           nullable=False),
+)
+
 # One-time codes for when the phone is gone. Only SHA-256 is stored; used_at marks a spent code.
 recovery_codes = Table(
     "recovery_codes", metadata,

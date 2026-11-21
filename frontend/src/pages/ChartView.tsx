@@ -5,6 +5,8 @@ import { navigation } from "../nav";
 import type { Interval } from "../components/PriceChart";
 import { sameTicker } from "../ticker";
 import type { Plan, Run } from "../types";
+import { isFullRun, statusOnlyNotice } from "../runRead";
+import { useRunRead } from "../useRunRead";
 
 const PriceChart = lazy(() => import("../components/PriceChart"));
 
@@ -24,23 +26,18 @@ export default function ChartView({ ticker, query }: { ticker: string; query: UR
   const runId = query.get("run");
   const iv = query.get("interval");
   const interval = INTERVALS.includes(iv as Interval) ? (iv as Interval) : undefined;
-  const [run, setRun] = useState<Run | null>(null);
-  const [failed, setFailed] = useState(false);
+  const { response, error } = useRunRead(runId);
+  const run = response && isFullRun(response) ? response : null;
   const [recent, setRecent] = useState<Run | null>(null);
   const [asking, setAsking] = useState(false);
   const stopAsking = useCallback(() => setAsking(false), []);
-
-  useEffect(() => {
-    if (!runId) return;
-    api.run(runId).then(setRun, () => setFailed(true));
-  }, [runId]);
 
   // 이 종목의 최근 끝난 분석(분석 기록을 주소로 열었으면 그것이 이미 보인다)
   useEffect(() => {
     if (runId) return;
     let alive = true;
     api.runs(1, 50).then(
-      (p) => alive && setRecent(p.items.find((r) => sameTicker(r.ticker, ticker) && r.status === "done") ?? null),
+      (p) => alive && setRecent(p.items.filter(isFullRun).find((r) => sameTicker(r.ticker, ticker) && r.status === "done") ?? null),
       () => {},
     );
     return () => { alive = false; };
@@ -68,7 +65,10 @@ export default function ChartView({ ticker, query }: { ticker: string; query: UR
       {asking && <DeepRunConfirm ticker={shown} name={name} onCancel={stopAsking} />}
     </div>
   );
-  if (runId && !run && !failed) return <main className="chart-view"><p className="muted">불러오는 중…</p></main>;
+  if (response && !isFullRun(response)) {
+    return <main className="chart-view"><p role="status">{statusOnlyNotice(response)}</p></main>;
+  }
+  if (runId && !run && !error) return <main className="chart-view"><p className="muted">불러오는 중…</p></main>;
   return (
     <main className="chart-view">
       <Suspense fallback={<p className="muted">차트를 여는 중…</p>}>
@@ -81,7 +81,7 @@ export default function ChartView({ ticker, query }: { ticker: string; query: UR
           lists={false}
           startExpanded
           onClose={close}
-          notice={failed ? "분석 기록을 찾지 못해 타점선 없이 보여 줍니다." : undefined}
+          notice={error ? "분석 기록을 찾지 못해 타점선 없이 보여 줍니다." : undefined}
           banner={banner}
           readable
           readOpen={query.get("read") === "1"}

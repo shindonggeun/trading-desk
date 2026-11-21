@@ -7,6 +7,7 @@ import type { Plan, Run, RunPage } from "../types";
 import { BiasBadge, RatingText } from "./PlanCard";
 import { usePoll } from "../poll";
 import { queueReason } from "../runQueue";
+import { isFullRun, statusOnlyNotice } from "../runRead";
 
 /** #387 판단 칸에서 같은 말을 거듭 쓰지 않는다 — "보유 · 관망" 등급이면 "관망" 배지 · 의견 이름은 뺀다. */
 const ratingKo = (plan: Plan) => term(RATING, plan.rating)?.ko ?? "";
@@ -95,7 +96,7 @@ export default function RunsCard() {
   }
 
   const all = data?.items ?? [];
-  const runs = horizon === "all" ? all : all.filter((r) => horizonOf(r) === horizon);
+  const runs = horizon === "all" ? all : all.filter((r) => isFullRun(r) && horizonOf(r) === horizon);
   const pages = data ? Math.max(1, Math.ceil(data.total / data.size)) : 1;
   const stale = data !== null && data.page !== page; // 쪽을 바꾼 뒤 응답 전
 
@@ -139,6 +140,15 @@ export default function RunsCard() {
             </thead>
             <tbody role="rowgroup">
               {runs.map((r) => {
+                if (!isFullRun(r)) {
+                  return (
+                    <tr role="row" key={r.id}>
+                      <td role="cell" colSpan={11} className="stack-wide">
+                        <a href={`#/runs/${r.id}`}>{statusOnlyNotice(r)}</a>
+                      </td>
+                    </tr>
+                  );
+                }
                 const label = r.options.name ? `${r.options.name}(${r.ticker})` : r.ticker;
                 const lv = listLevels(r.plan);
                 return (

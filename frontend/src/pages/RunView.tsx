@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { api, followRun } from "../api";
+import { followRun } from "../api";
 import AgentRail from "../components/AgentRail";
 import { RelatedTable, ResultChart, type Related } from "../components/AnalysisResult";
 import { ChatMessage, SystemLine, ToolRow } from "../components/ChatMessage";
@@ -23,7 +23,9 @@ import type { DeskEvent, Plan, Run, RunOutlook } from "../types";
 import TipBadges from "../components/TipBadges";
 import { MarketTrendBadges } from "../components/TrendChips";
 import RetryRunButton from "../components/RetryRunButton";
-import { every, usePoll } from "../poll";
+import { every } from "../poll";
+import { isFullRun, statusOnlyNotice } from "../runRead";
+import { useRunRead } from "../useRunRead";
 import HorizonsBoard from "../components/HorizonsBoard";
 import { type AllHorizonsPlan, defaultHorizon, HORIZON_ORDER, isOtherHorizon, planFor, slotTitle } from "../allHorizons";
 import { DIRECTIONS, hasScenarios, scenarioAt, scenarioPlan, SIDE_KO, type ScenarioSide } from "../directionScenarios";
@@ -106,10 +108,25 @@ function tabInHash(runId: string): Tab | null {
 }
 
 export default function RunView({ runId }: { runId: string }) {
+  const { response, error, epoch, read, canRead } = useRunRead(runId, true);
+  const canReadBody = useCallback(() => canRead(epoch), [canRead, epoch]);
+
+  if (error) return <main className="run"><p className="error">{error}</p></main>;
+  if (!response) return <main className="run"><p className="muted">불러오는 중…</p></main>;
+  if (!isFullRun(response)) {
+    return <main className="run"><p role="status">{statusOnlyNotice(response)}</p></main>;
+  }
+  return <FullRunView key={epoch} run={response} read={read} canReadBody={canReadBody} />;
+}
+
+function FullRunView({ run, read, canReadBody }: {
+  run: Run;
+  read: () => Promise<void>;
+  canReadBody: () => boolean;
+}) {
+  const runId = run.id;
   const [cameFrom] = useState(() => navigation.prev);   // #435 들어온 곳(분석 기록이면 뒤로 링크가 그 목록)
-  const [run, setRun] = useState<Run | null>(null);
   const [events, setEvents] = useState<DeskEvent[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [, tick] = useState(0);
   const bottom = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -119,38 +136,18 @@ export default function RunView({ runId }: { runId: string }) {
   const [chosen, setChosen] = useState<Tab | null>(() => tabInHash(runId));
   const tabs = useRef<HTMLDivElement>(null);
   const runBar = useRef<HTMLDivElement>(null);
-  const requested = useRef(0);
-  const applied = useRef(0);
-  const readRun = useCallback(async (signal?: AbortSignal) => {
-    const request = ++requested.current;
-    return { request, run: await api.run(runId, signal) };
-  }, [runId]);
-  const applyRun = useCallback((result: Awaited<ReturnType<typeof readRun>>) => {
-    // 대기 재조회와 SSE 갱신이 겹치면 먼저 요청한 응답이 최신 상태를 덮지 않게 한다.
-    if (result.request <= applied.current) return;
-    applied.current = result.request;
-    setRun(result.run);
-    setError(null);
-  }, []);
-
-  usePoll(run?.id === runId && run.status === "queued" ? `run-queue:${runId}` : null,
-    readRun, 5000, { delay: 5000, onData: applyRun });
-
   useEffect(() => {
-    // signal을 전달해 SSE 직후의 GET이 진행 중인 대기 재조회 응답을 공유하지 않게 한다.
-    const controller = new AbortController();
-    const { signal } = controller;
-    const update = (result: Awaited<ReturnType<typeof readRun>>) => { if (!signal.aborted) applyRun(result); };
-    readRun(signal).then(update).catch((e) => { if (!signal.aborted && applied.current === 0) setError(String(e)); });
+    let active = true;
     const seen = new Set<number>();
-    const stop = followRun(runId, (e) => {
-      if (seen.has(e.seq)) return;
-      seen.add(e.seq);
-      setEvents((cur) => [...cur, e]);
-      if (e.type === "done" || e.type === "status") readRun(signal).then(update).catch(() => {});
-    });
-    return () => { controller.abort(); stop(); };
-  }, [runId, applyRun, readRun]);
+    const recheck = () => { if (active && canReadBody()) void read().catch(() => {}); };
+    const stop = followRun(runId, (event) => {
+      if (!active || !canReadBody() || seen.has(event.seq)) return;
+      seen.add(event.seq);
+      setEvents((cur) => [...cur, event]);
+      if (event.type === "done" || event.type === "status") recheck();
+    }, recheck);
+    return () => { active = false; stop(); };
+  }, [runId, read, canReadBody]);
 
   // 뒤로 가기 · 주소 직접 수정
   useEffect(() => {
@@ -161,7 +158,6 @@ export default function RunView({ runId }: { runId: string }) {
 
   // 결론 줄은 상단 바 바로 아래에 붙고, 토론 탭의 에이전트 목록 · 용어 사전은 그 아래에 붙는다 —
   // 두 높이(좁은 화면은 상단 바가 두 줄, 결론 줄은 펼침에 따라)를 재서 CSS 로 넘긴다.
-  const ready = !!run;
   useEffect(() => {
     const top = document.querySelector<HTMLElement>(".topbar");
     const bar = runBar.current;
@@ -176,15 +172,15 @@ export default function RunView({ runId }: { runId: string }) {
     if (top) ro.observe(top);
     if (bar) ro.observe(bar);
     return () => ro.disconnect();
-  }, [ready]);
+  }, []);
 
   // Elapsed time ticks while running.
   useEffect(() => {
-    if (run?.status !== "running") return;
+    if (run.status !== "running") return;
     return every(() => tick((n) => n + 1), 1000);
-  }, [run?.status]);
+  }, [run.status]);
 
-  const plan: Plan | null = run?.plan ?? (events.find((e) => e.type === "plan")?.data as Plan | undefined) ?? null;
+  const plan: Plan | null = run.plan ?? (events.find((e) => e.type === "plan")?.data as Plan | undefined) ?? null;
   // #697 네 기간 중 차트에 그릴 기간 — 처음은 지금 장세에 맞는 기간(옛 run 은 그 기간 하나)
   const horizonPlan = plan as AllHorizonsPlan | null;
   const [selection, setSelection] = useState<{ horizon: HorizonId; side: ScenarioSide | null } | null>(null);
@@ -204,11 +200,11 @@ export default function RunView({ runId }: { runId: string }) {
   const otherHorizon = isOtherHorizon(horizonPlan, shownHorizon);
   // #438 방향 전망 — 상세의 outlook, 없으면 방금 온 outlook 이벤트(마지막 것)
   const outlook: RunOutlook | null = useMemo(() => {
-    if (run?.outlook) return run.outlook;
+    if (run.outlook) return run.outlook;
     for (let i = events.length - 1; i >= 0; i--) if (events[i].type === "outlook") return events[i].data as RunOutlook;
     return null;
-  }, [run?.outlook, events]);
-  const status = run ? ((events.some((e) => e.type === "done") && run.status === "running") ? "done" : run.status) : null;
+  }, [run.outlook, events]);
+  const status = events.some((e) => e.type === "done") && run.status === "running" ? "done" : run.status;
   const working = status === "running" || status === "queued";
   const tab: Tab = chosen ?? (working ? "debate" : easyRemembered() ? "easy" : "summary");
 
@@ -250,9 +246,6 @@ export default function RunView({ runId }: { runId: string }) {
     pick(next);
     tabs.current?.querySelector<HTMLButtonElement>(`#run-tab-${next}`)?.focus();
   };
-
-  if (error) return <main className="run"><p className="error">{error}</p></main>;
-  if (!run || !status) return <main className="run"><p className="muted">불러오는 중…</p></main>;
 
   const related = (plan as (Plan & { related?: Related }) | null)?.related;
   const ticker = run.options.name ? `${run.options.name} (${run.ticker})` : run.ticker;

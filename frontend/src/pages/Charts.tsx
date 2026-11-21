@@ -7,6 +7,7 @@ import { useFavorites } from "../favorites";
 import { price } from "../format";
 import type { Run, WeeklyMap, WeeklyMapError } from "../types";
 import { sameTicker } from "../ticker";
+import { isFullRun } from "../runRead";
 import { nextLines, WEEKLY_WORDS, weeklyLink } from "../weekly";
 import { css, useColorScheme } from "../chartColors";
 
@@ -116,7 +117,7 @@ export default function Charts({ query }: { query: URLSearchParams }) {
     if (!ticker) return;
     let alive = true;
     api.oscillator(ticker, "1d").then((v) => alive && setUnderlying(v.underlying?.ticker ?? null), () => {});
-    api.runs(1, 50).then((p) => alive && setLastRun(p.items.find((r) => sameTicker(r.ticker, ticker)) ?? null), () => {});
+    api.runs(1, 50).then((p) => alive && setLastRun(p.items.filter(isFullRun).find((r) => sameTicker(r.ticker, ticker)) ?? null), () => {});
     return () => { alive = false; };
   }, [ticker]);
 

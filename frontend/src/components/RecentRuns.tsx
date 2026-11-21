@@ -2,18 +2,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { STATUS_LABEL, time } from "../format";
 import { HORIZON, OPINION, OUTCOME } from "../korean";
-import type { Run } from "../types";
+import type { RunRead } from "../types";
 import { usePoll } from "../poll";
 import { queueReason } from "../runQueue";
+import { isFullRun, statusOnlyNotice } from "../runRead";
 
 const COUNT = 6;
 const POLL_MS = 5000;
 
-const active = (r: Run) => r.status === "queued" || r.status === "running";
+const active = (r: RunRead) => r.status === "queued" || r.status === "running" || r.status === "progress";
 
 /** 최근 분석 카드 줄(#100) — 종목 · 의견 · 승률 · 상태 · 채점. 전체 목록 · 삭제는 "분석 기록" 화면. */
 export default function RecentRuns() {
-  const [runs, setRuns] = useState<Run[] | null>(null);
+  const [runs, setRuns] = useState<RunRead[] | null>(null);
   const [total, setTotal] = useState(0);
   const [failed, setFailed] = useState(false);
   const seq = useRef(0);
@@ -47,6 +48,9 @@ export default function RecentRuns() {
     <>
       <ul className="recent-runs">
         {runs.map((r) => {
+          if (!isFullRun(r)) {
+            return <li key={r.id}><a className="recent-run" href={`#/runs/${r.id}`}>{statusOnlyNotice(r)}</a></li>;
+          }
           const plan = r.plan;
           const opinion = plan?.opinion;
           const horizon = plan?.horizon ?? r.options.horizon ?? "swing";

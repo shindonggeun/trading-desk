@@ -757,8 +757,15 @@ export interface Fibonacci {
   levels: FibLevel[];
 }
 
+export interface RunStatusOnly {
+  id: string;
+  status: "progress" | "completed" | "failed";
+}
+
+export type RunRead = Run | RunStatusOnly;
+
 export interface RunPage {
-  items: Run[];
+  items: RunRead[];
   total: number;
   page: number;
   size: number;

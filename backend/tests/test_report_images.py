@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from desk import report_images as ri
+from desk import report_plan
 from desk import reports as rp
 
 KEY = "sk-test-0123456789abcdefSECRET"
@@ -227,10 +228,18 @@ def _made(client) -> dict:
 
 
 @pytest.mark.parametrize("ok", [True, False])
-def test_a_new_report_gets_its_pictures_before_the_push_and_keeps_going_without(db_url, tmp_path, ok):
+def test_a_new_report_gets_its_pictures_before_the_push_and_keeps_going_without(db_url, tmp_path, monkeypatch, ok):
     from desk.db import make_engine
 
-    transport = _ok() if ok else httpx.MockTransport(lambda _r: httpx.Response(500))
+    # The Saturday wrap-up fixture has charts on every section. Exercise the image path on any day.
+    monkeypatch.setattr(report_plan, "kind_for", lambda _now: "daily")
+    requests: list[httpx.Request] = []
+
+    def fail(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(500)
+
+    transport = _ok(requests) if ok else httpx.MockTransport(fail)
     pics = ri.ReportImages(KEY, tmp_path, transport=transport)
     pushed: list = []
     with _client_with(db_url, pics) as client:
@@ -248,6 +257,7 @@ def test_a_new_report_gets_its_pictures_before_the_push_and_keeps_going_without(
             assert time.monotonic() < deadline, "the report was not pushed"
             time.sleep(0.05)
         images = [s["image"] for s in full["sections"] if s["image"]]
+        assert requests
         if ok:
             assert 1 <= len(images) <= 2 and pushed and [i for i in pushed[0] if i] == images
             for img in images:

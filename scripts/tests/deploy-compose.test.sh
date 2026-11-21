@@ -208,7 +208,14 @@ check "전체 SHA 이미지는 재실행해도 한 번만 준비한다" "0 0 1" 
 check "이미지 준비는 컨테이너를 교체하지 않는다" "" "$(up_services)"
 
 : > "$STATE/calls"
-rc=$(one "$stable_sha" --service api)
+stable_id=$(printf 'sha256:%064x' "$(sed 's/^img-//' "$STATE/tags/trading-desk-backend_$stable_sha")")
+wrong_id=$(printf 'sha256:%064x' 0)
+rc=$(one "$stable_sha" --service api --image-id "$wrong_id")
+check "전달한 이미지 ID가 일치하지 않으면 교체·스키마 조회 전에 멈춘다" \
+  "1 0 rev11 rev11 rev11" "$rc $(grep -cE '^docker (compose .* up |exec )' "$STATE/calls") $(current_revs)"
+rc=$(one "$stable_sha" --service api --image-id)
+check "전달할 이미지 ID가 비어 있으면 거부한다" "1 " "$rc $(up_services)"
+rc=$(one "$stable_sha" --service api --image-id "$stable_id")
 check "API만 같은 스키마로 교체한다" "0 $stable_sha rev11 rev11" "$rc $(current_revs)"
 check "API 교체에서 의존 서비스를 올리거나 분석을 기다리지 않는다" "backend-prod 0" "$(up_services) $(grep -c unfinished "$STATE/calls")"
 check "대상 이미지는 로컬 ID로 고정하고 pull과 의존성 기동을 막는다" 1 "$(grep -c -- '--no-deps --pull never backend-prod$' "$STATE/calls")"

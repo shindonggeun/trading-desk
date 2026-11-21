@@ -128,10 +128,18 @@ function quoteKeys(key: string): string[] {
   return [...out];
 }
 
+/** watchdog 이 닫기 전에 프레임이 다시 오면 같은 연결에서 실시간 상태를 복구한다. */
+function markActivity(): boolean {
+  const now = Date.now();
+  const recovered = st.ready && now - st.lastAt > DEAD_MS;
+  st.lastAt = now;
+  return recovered;
+}
+
 function onData(ev: MessageEvent): void {
-  st.lastAt = Date.now();
   const raw = parse(ev) as StreamMessage | null;
   if (!raw || !CHANNELS.includes(raw.kind) || typeof raw.key !== "string") return;
+  const recovered = markActivity();
   const keys = raw.kind === "quote" ? quoteKeys(raw.key) : [raw.key];
   let first = false;
   for (const key of keys) {
@@ -139,7 +147,7 @@ function onData(ev: MessageEvent): void {
     first = first || !st.seenKeys.has(k);
     st.seenKeys.add(k);   // 재접속 스냅숏이 이미 본 id 여도 이 연결에서 오는 키다
   }
-  if (first && st.ready) notify();
+  if (st.ready && (first || recovered)) notify();
   if (raw.event_id) {
     if (st.seenIds.has(raw.event_id)) return;          // 재접속 스냅숏과 겹친 이벤트 — 값은 이미 반영했다
     st.seenIds.add(raw.event_id);
@@ -156,11 +164,14 @@ function onData(ev: MessageEvent): void {
   }
 }
 
-function setDegraded(list: unknown): void {
-  const next = new Set(Array.isArray(list) ? list.map(String) : []);
+function onHealth(ev: MessageEvent): void {
+  const d = parse(ev);
+  if (!d || !Array.isArray(d.degraded)) return;
+  const recovered = markActivity();
+  const next = new Set(d.degraded.map(String));
   const same = next.size === st.degraded.size && [...next].every((c) => st.degraded.has(c));
   st.degraded = next;
-  if (!same) notify();
+  if (!same || recovered) notify();
 }
 
 function open(url: string): void {
@@ -171,24 +182,16 @@ function open(url: string): void {
   st.lastAt = Date.now();
   for (const c of CHANNELS) es.addEventListener(c, onData as EventListener);
   es.addEventListener("ready", ((ev: MessageEvent) => {
-    st.lastAt = Date.now();
     const d = parse(ev);
     if (!d) return;
+    st.lastAt = Date.now();
     st.ready = true;
     st.fails = 0;
     st.degraded = new Set(Array.isArray(d.degraded) ? (d.degraded as unknown[]).map(String) : []);
     notify();
   }) as EventListener);
-  es.addEventListener("degraded", ((ev: MessageEvent) => {
-    st.lastAt = Date.now();
-    const d = parse(ev);
-    if (d) setDegraded(d.degraded);
-  }) as EventListener);
-  es.addEventListener("heartbeat", ((ev: MessageEvent) => {
-    st.lastAt = Date.now();
-    const d = parse(ev);
-    if (d && Array.isArray(d.degraded)) setDegraded(d.degraded);
-  }) as EventListener);
+  es.addEventListener("degraded", onHealth as EventListener);
+  es.addEventListener("heartbeat", onHealth as EventListener);
   es.addEventListener("reset", () => drop());
   // 401 · 503 · 네트워크 — 브라우저의 자동 재연결 대신 백오프(그동안은 폴링)
   es.onerror = () => { if (st.es === es) drop(); };

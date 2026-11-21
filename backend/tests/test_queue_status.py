@@ -4,6 +4,7 @@ holds the queue. The analyst's lock is PostgreSQL only (CI); SQLite answers None
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import text
 
 from desk import run_events, run_queue, store
 from desk.db import make_engine, migrate
@@ -42,12 +43,14 @@ def test_a_run_that_is_not_queued_has_no_queue_and_all_says_nothing_of_an_analys
     assert "queue" not in run and all("queue" not in r for r in listed)
 
 
-def test_the_api_sees_whether_an_analyst_holds_the_queue(db_url):
+def test_the_api_sees_whether_an_analyst_holds_the_queue(db_url, monkeypatch):
     migrate(db_url)
     engine = make_engine(db_url)
     if not run_events.shared(engine):
         engine.dispose()
         pytest.skip("PostgreSQL only (CI sets DESK_TEST_DATABASE_URL)")
+    lock_key = 0x1234_5678_89AB_CDEF
+    monkeypatch.setattr(run_queue, "LOCK_KEY", lock_key)
     holder = run_queue.Holder(engine)
     try:
         assert run_queue.held(engine) is False
@@ -58,6 +61,10 @@ def test_the_api_sees_whether_an_analyst_holds_the_queue(db_url):
         assert run["queue"]["analyst"] == "up"
         holder.release()
         assert run_queue.held(engine) is False
+        with engine.begin() as conn:
+            # The same low 32 bits belong to a different key when the high bits differ.
+            conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key ^ (1 << 32)})
+            assert run_queue.held(engine) is False
     finally:
         holder.release()
         engine.dispose()

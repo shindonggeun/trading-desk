@@ -107,7 +107,7 @@ from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
 from .broker import kis_stream, make_broker
 from .broker_issuer_lock import BrokerIssuerLock
 from .consensus import fake_summariser, llm_summariser
-from .db import make_engine, migrate, now
+from .db import make_engine, migrate, now, require_schema_at_head
 from .estimate import CANDLE_INTERVALS, BinanceEstimator, naver_overtime, trading_soon
 from .favorites import Conflict, Favorites, TooMany
 from .futures_flow import KST as futures_kst
@@ -392,7 +392,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                pictures: report_images.ReportImages | None = None) -> FastAPI:
     settings = settings or load()
     log_setup.configure(settings.log_level)     # #676 the desk.* INFO lines reach the container log
-    migrate(settings.database_url)
+    if settings.role in ("all", "api"):
+        migrate(settings.database_url)
+    else:
+        require_schema_at_head(settings.database_url)
     engine = make_engine(settings.database_url)
     store = Store(engine)
     # #688 broker tokens shared by the desk's processes: issued only where DESK_ROLE is all | collector

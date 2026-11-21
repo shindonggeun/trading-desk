@@ -1,6 +1,6 @@
 """Database schema and engine. SQLAlchemy Core, so the same code runs on SQLite
 (local dev, tests) and PostgreSQL (the homelab). Alembic owns schema changes:
-``migrate()`` brings any database to head and runs on every start."""
+The all/api roles migrate on startup, while split workers check the applied heads."""
 
 from __future__ import annotations
 
@@ -28,6 +28,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.pool import NullPool
 
 MIGRATIONS = Path(__file__).parent / "migrations"
 
@@ -472,3 +474,34 @@ def migrate(url: str) -> None:
     from alembic import command
 
     command.upgrade(alembic_config(url), "head")
+
+
+def require_schema_at_head(url: str) -> None:
+    """Check the exact applied Alembic heads before starting a split worker."""
+    from alembic.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+
+    try:
+        parsed = make_url(url)
+        if parsed.get_backend_name() == "sqlite":
+            path = parsed.database
+            if not path or path in (":memory:", "file::memory:") or parsed.query.get("mode") == "memory":
+                raise ValueError("worker schema requires a shared file")
+            uri = path if path.startswith("file:") and parsed.query.get("uri") == "true" else Path(path).resolve().as_uri()
+            parsed = parsed.set(database=uri).update_query_dict({"mode": "ro", "uri": "true"})
+        # The normal SQLite connection hook can create directories and set WAL mode.
+        # A dedicated probe uses the same database and PostgreSQL search path without that hook.
+        engine = create_engine(parsed, poolclass=NullPool, hide_parameters=True)
+        try:
+            with engine.connect() as connection:
+                if connection.dialect.name == "postgresql":
+                    connection.exec_driver_sql("SET TRANSACTION READ ONLY")
+                applied = set(MigrationContext.configure(connection).get_current_heads())
+        finally:
+            engine.dispose()
+    except (OSError, SQLAlchemyError, ValueError):
+        raise RuntimeError("워커 DB 스키마를 읽을 수 없습니다. DB 연결과 all/api 기동 상태를 확인하세요.") from None
+
+    expected = set(ScriptDirectory(str(MIGRATIONS)).get_heads())
+    if not applied or applied != expected:
+        raise RuntimeError("워커 DB 스키마가 이미지와 일치하지 않습니다. all/api에서 같은 스키마를 먼저 준비하세요.")

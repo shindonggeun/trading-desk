@@ -181,6 +181,8 @@ def test_status_shows_the_listener_off_on_sqlite_and_on_for_the_api_role_on_post
     def state(client):
         return {j["name"]: j for j in client.get("/api/status").json()["jobs"]}["run_events"]["state"]
 
+    if role == "analyst":
+        migrate(db_url)  # the API has already prepared the shared database
     with _client(db_url, role=role) as client:
         if not (listens and db_url.startswith("postgresql")):
             assert state(client) == "off"

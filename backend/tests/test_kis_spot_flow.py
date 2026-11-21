@@ -7,7 +7,7 @@ import pytest
 from desk import kis_spot_flow
 from desk.broker import MockBroker
 from desk.broker.base import FlowRecord
-from desk.futures_flow import INVESTOR_PATH, INVESTOR_TR, KisError
+from desk.futures_flow import KisError
 from desk.market_flow import MarketFlow
 
 KST = timezone(timedelta(hours=9))
@@ -98,10 +98,21 @@ def test_a_kis_answer_without_a_main_class_or_trades_is_no_record():
     assert kis_spot_flow.record(None, "2026-11-05") is None
 
 
-def test_kis_is_asked_with_the_markets_codes_on_the_futures_tr():
-    kis = FakeKis()
-    asyncio.run(kis_spot_flow.fetch(kis, "KOSDAQ"))
-    assert kis.calls == [(INVESTOR_PATH, INVESTOR_TR, {"FID_INPUT_ISCD": "KSQ", "FID_INPUT_ISCD_2": "1001"})]
+@pytest.mark.parametrize(("market", "code", "sector", "buy_mn", "sell_mn", "won"), [
+    ("KOSPI", "KSP", "0001", 1, 0, {"buy": 1_000_000, "sell": 0, "net": 1_000_000}),
+    ("KOSDAQ", "KSQ", "1001", 0, 1, {"buy": 0, "sell": 1_000_000, "net": -1_000_000}),
+])
+def test_kis_spot_market_request_and_amount_boundary(market, code, sector, buy_mn, sell_mn, won):
+    row = {**_row(), **_cols("frgn", buy_mn, sell_mn), "frgn_ntby_qty": "42"}
+    kis = FakeKis({"rt_cd": "0", "output": [row]})
+
+    answer = asyncio.run(kis_spot_flow.fetch(kis, market))
+
+    # The published [0403] TR, using the repository's spot market/sector mappings.
+    assert kis.calls == [("/uapi/domestic-stock/v1/quotations/inquire-investor-time-by-market",
+                          "FHPTJ04030000", {"FID_INPUT_ISCD": code, "FID_INPUT_ISCD_2": sector})]
+    got = kis_spot_flow.record(answer["output"], "2026-11-05")
+    assert got["investors"]["foreigner"] == won
 
 
 def test_the_check():
@@ -282,10 +293,11 @@ def test_the_desk_loggers_info_lines_reach_one_handler():
         desk.handlers[:] = before[1]
 
 
-def test_off_kis_is_not_asked_and_toss_serves_today(monkeypatch):
+@pytest.mark.parametrize("market", ["KOSPI", "KOSDAQ"])
+def test_off_kis_is_not_asked_and_toss_serves_today(monkeypatch, market):
     """#711: KIS' [0403] is KRX regular-market stocks only, Toss' record wider (NXT; ETFs on KOSPI)."""
     monkeypatch.setattr(kis_spot_flow, "ENABLED", False)
     kis = FakeKis()
-    got = asyncio.run(MarketFlow(TossBroker(), now=lambda: _at(10, 0), kis=kis).get("KOSDAQ", "1d", 5))
+    got = asyncio.run(MarketFlow(TossBroker(), now=lambda: _at(10, 0), kis=kis).get(market, "1d", 5))
     assert kis.calls == []
     assert got["records"][0]["date"] == "2026-11-05" and got["records"][0].get("source") is None

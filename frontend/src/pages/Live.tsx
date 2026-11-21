@@ -11,6 +11,7 @@ import { price, time } from "../format";
 import type { Run } from "../types";
 import StockProfileCard from "../components/StockProfileCard";
 import { findTicker, sameTicker } from "../ticker";
+import { isFullRun } from "../runRead";
 
 /** #/live?t=NVDA — 대시보드 즐겨찾기 타일에서 넘어온 종목 */
 function linkedTicker(): string | null {
@@ -101,7 +102,10 @@ export default function Live() {
 
   // re-read on every tab switch: an analysis that finished meanwhile brings its levels
   useEffect(() => {
-    api.runs(1, 100).then((p) => setRuns(p.items)).catch(() => setRuns([]));
+    let alive = true;
+    api.runs(1, 100).then((p) => { if (alive) setRuns(p.items.filter(isFullRun)); },
+      () => { if (alive) setRuns([]); });
+    return () => { alive = false; };
   }, [tab?.ticker]);
   const livePrice = tick && sameTicker(tick.ticker, tab?.ticker) ? tick.price : null;
 

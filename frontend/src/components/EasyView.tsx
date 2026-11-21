@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { RunExplain } from "../types";
 import ExplainArticle from "./ExplainArticle";
@@ -11,16 +11,26 @@ export default function EasyView({ runId }: { runId: string }) {
   const [data, setData] = useState<RunExplain | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
+  const pending = useRef<AbortController | null>(null);
 
   const load = useCallback((refresh = false) => {
+    pending.current?.abort();
+    const controller = new AbortController();
+    pending.current = controller;
+    const { signal } = controller;
     setBusy(true);
     setFailed(null);
-    api.runExplain(runId, refresh)
-      .then((d) => setData(d))
-      .catch((e: unknown) => setFailed(e instanceof Error ? e.message : "불러오지 못했습니다"))
-      .finally(() => setBusy(false));
+    api.runExplain(runId, refresh, signal)
+      .then((d) => { if (!signal.aborted) setData(d); })
+      .catch((e: unknown) => {
+        if (!signal.aborted) setFailed(e instanceof Error ? e.message : "불러오지 못했습니다");
+      })
+      .finally(() => { if (!signal.aborted) setBusy(false); });
   }, [runId]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    return () => pending.current?.abort();
+  }, [load]);
 
   if (!data) {
     return (

@@ -9,6 +9,7 @@ import SectorNews from "../components/SectorNews";
 import PositioningView, { CreditSummary, positioningBadges } from "../components/PositioningView";
 import { price, time } from "../format";
 import { byAsked, sameTicker } from "../ticker";
+import { isFullRun } from "../runRead";
 import type { BoardItem, CreditView, DeskConfig, Positioning, Run, Sector } from "../types";
 import { usePoll } from "../poll";
 
@@ -45,9 +46,12 @@ function TickerSheet({ ticker, name, item, p, onClose }: {
   const [error, setError] = useState<string | null>(null);
   const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    api.runs(1, 100).then((page) => setRun(page.items.find((r) => sameTicker(r.ticker, ticker) && r.status === "done" && r.plan) ?? null))
-      .catch(() => setRun(null));
-    api.config().then(setConfig, () => {});
+    let alive = true;
+    api.runs(1, 100).then((page) => {
+      if (alive) setRun(page.items.filter(isFullRun).find((r) => sameTicker(r.ticker, ticker) && r.status === "done" && r.plan) ?? null);
+    }, () => { if (alive) setRun(null); });
+    api.config().then((data) => { if (alive) setConfig(data); }, () => {});
+    return () => { alive = false; };
   }, [ticker]);
   // 모달: 초점은 시트 안에서만 돌고, 닫으면 연 타일로 돌아간다. 뒤 페이지는 스크롤하지 않는다.
   useEffect(() => {

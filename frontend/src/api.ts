@@ -1,6 +1,7 @@
 import { activityHeaders, BACKGROUND_HEADER } from "./activity";
 import type { DayCallSectorsResponse } from "./components/DayCallSectors";
 import type { ChartRead, GapReport, LinesReport, LineTf } from "./types";
+import type { RunRead } from "./types";
 import type { DayCallHistory, DayCallMarket, DayCallStats, DayCallToday, MorningBrief, MorningBriefList } from "./types";
 import type { EarningsPreview, FuturesCandles, FuturesInterval, FuturesQuote, FuturesSession, PaperEquity, PaperSettings, PaperSettingsPatch, PaperSummary, PaperTrades, RunExplain, TipsView } from "./types";
 import type { BacktestReport, BacktestSummary, WeeklyHistoryRow, WeeklyMap, WeeklyMapError, CreditView, DeskConfig, EconCalendar, Favorite, Positioning, Sector, DeskEvent, BoardItem, Estimate, EstimatedCandles, FlowInterval, FuturesFlow, FlowMarket, Instrument, LivePlaybooks, MacroBrief, MarketFlow, PlanStats, Portfolio, RegimeSnapshot, Run, RunPage, SupportResistance, BottomZone, ReportDetail, ReportList, Halving, FundBrief, FundChanges, FundDetail, FearIndex, FuturesDaily, FuturesIntraday, IntradayBucket, IntradayFlow, MarketMonth, SectorNewsView, LongShortItem, Projection, StockProfile } from "./types";
@@ -247,9 +248,9 @@ export const api = {
   otpDisable: (password: string, code: string) =>
     call<void>("/api/auth/otp/disable", { method: "POST", body: JSON.stringify({ password, code }) }),
   config: () => call<DeskConfig>("/api/config"),
-  runs: (page = 1, size = 50) => call<RunPage>(`/api/runs?page=${page}&size=${size}`),
+  runs: (page = 1, size = 50) => request<RunPage>(`/api/runs?page=${page}&size=${size}`, { cache: "no-store" }),
   deleteRun: (id: string) => call<void>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  run: (id: string, signal?: AbortSignal) => call<Run>(`/api/runs/${encodeURIComponent(id)}`, signal ? { signal, cache: "no-store" } : undefined),
+  run: (id: string, signal?: AbortSignal) => request<RunRead>(`/api/runs/${encodeURIComponent(id)}`, { signal, cache: "no-store" }),
   // #528 모의 투자(#527) — 실제 주문 없음. 설정을 바꾸면 다음 읽기에서 settings_version 이 따라온다
   paperSettings: () => call<PaperSettings>("/api/paper/settings"),
   savePaperSettings: (patch: PaperSettingsPatch) =>
@@ -263,8 +264,8 @@ export const api = {
     return call<PaperTrades>(`/api/paper/trades${qs ? `?${qs}` : ""}`);
   },
   // #494 초보자 해설(#493) — 처음 한 번은 모델이 쓰는 동안 수십 초
-  runExplain: (id: string, refresh = false) =>
-    call<RunExplain>(`/api/runs/${encodeURIComponent(id)}/explain${refresh ? "?refresh=1" : ""}`),
+  runExplain: (id: string, refresh = false, signal?: AbortSignal) =>
+    request<RunExplain>(`/api/runs/${encodeURIComponent(id)}/explain${refresh ? "?refresh=1" : ""}`, { signal, cache: "no-store" }),
   createRun: (body: NewRun) => call<Run>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
   // 계좌 응답은 진행 중인 GET과 공유하지 않고 현재 세션으로 다시 확인한다.
   portfolio: () => request<Portfolio>("/api/portfolio", { cache: "no-store" }),
@@ -362,7 +363,7 @@ export const api = {
     call<OscillatorView>(`/api/oscillator?ticker=${encodeURIComponent(ticker)}&interval=${interval}`),
   /** 지지 · 저항(backend desk/sr.py) — 지금 봉 기준, 서버가 몇 분 캐시. */
   /** #128: 분석(run)의 구역 · 사다리 · 손절 · 목표는 그대로, 조건 · 점수 · 상태만 지금 값. ticker · horizon 은 run 에서 */
-  livePlaybooks: (run: string) => call<LivePlaybooks>(`/api/playbooks?run=${encodeURIComponent(run)}`),
+  livePlaybooks: (run: string) => request<LivePlaybooks>(`/api/playbooks?run=${encodeURIComponent(run)}`, { cache: "no-store" }),
   /** #317 분석 없이 종목만으로 — 지금 봉 · 현재가로 새로 계산한 롱 · 숏 플레이북 */
   playbooksFor: (ticker: string, horizon?: string) =>
     call<LivePlaybooks>(`/api/playbooks?ticker=${encodeURIComponent(ticker)}${horizon ? `&horizon=${encodeURIComponent(horizon)}` : ""}`),
@@ -375,8 +376,11 @@ export const api = {
   /** #243 한 달의 휴장 · 발표(KST) · 만기 · 실적 — month "YYYY-MM", 없으면 이번 달 */
   marketMonth: (month?: string) => call<MarketMonth>(`/api/calendar${month ? `?month=${encodeURIComponent(month)}` : ""}`),
   /** run 을 주면(#465) 그 분석의 시간축으로 계획선 근거(basis) · 해설(explain)도 — horizon 은 넣지 않는다 */
-  levels: (ticker: string, run?: string) =>
-    call<SupportResistance>(`/api/levels?ticker=${encodeURIComponent(ticker)}${run ? `&run=${encodeURIComponent(run)}` : ""}`),
+  levels: (ticker: string, run?: string) => {
+    const path = `/api/levels?ticker=${encodeURIComponent(ticker)}`;
+    return run ? request<SupportResistance>(`${path}&run=${encodeURIComponent(run)}`, { cache: "no-store" })
+      : call<SupportResistance>(path);
+  },
   /** #299 차트 예상도: 보정한 확률 원뿔 · 레벨 경로 · 설명 */
   projection: (ticker: string, horizon: string) =>
     call<Projection>(`/api/projection?ticker=${encodeURIComponent(ticker)}&horizon=${encodeURIComponent(horizon)}`),
@@ -594,7 +598,7 @@ export interface FlowAlert {
 }
 
 /** Follow a run's events. The server replays from the start, then streams live. */
-export function followRun(id: string, onEvent: (e: DeskEvent) => void): () => void {
+export function followRun(id: string, onEvent: (e: DeskEvent) => void, onClosed?: () => void): () => void {
   const source = new EventSource(`/api/runs/${id}/stream`);
   source.onmessage = (msg) => {
     const event: DeskEvent = JSON.parse(msg.data);
@@ -603,9 +607,16 @@ export function followRun(id: string, onEvent: (e: DeskEvent) => void): () => vo
   };
   source.onerror = () => {
     // A 401 closes the stream for good; ask the API once so an ended session shows the login screen.
-    if (source.readyState === EventSource.CLOSED) api.me().catch(() => {});
+    if (source.readyState === EventSource.CLOSED) {
+      api.me().catch(() => {});
+      onClosed?.();
+    }
   };
-  return () => source.close();
+  return () => {
+    source.onmessage = null;
+    source.onerror = null;
+    source.close();
+  };
 }
 
 export type StreamState = "live" | "lost";

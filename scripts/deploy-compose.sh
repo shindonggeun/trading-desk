@@ -3,7 +3,7 @@
 # 배포 호스트(backend-server)에서 돈다. Jenkins(Jenkinsfile.deploy-common.groovy)와 손 배포(scripts/deploy.sh)가 같은 이 스크립트를 부른다.
 #
 #   ENV_FILE=<env 파일> REVISION=<커밋 SHA> scripts/deploy-compose.sh <backend|web> [소스 루트, 기본 이 저장소]
-#   split 단독 배포 계약: backend [소스 루트] --build-only | --service api|collector|analyst
+#   split 단독 배포 계약: backend [소스 루트] --build-only | --service api|collector|analyst [--image-id sha256:<ID>]
 #   두 모드는 배포 작업 준비용이다. 기존 Jenkins · 손 배포 진입점은 호출하지 않는다.
 #   연동 시 호출자가 기존 전체 배포와 동일한 락을 잡은 상태에서 사용한다.
 #
@@ -34,7 +34,7 @@ TARGET="${1:?대상: backend | web}"
 shift
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "$#" -gt 0 ] && [[ $1 != --* ]]; then ROOT=$1; shift; fi
-MODE=all SERVICE=''
+MODE=all SERVICE='' EXPECTED_IMAGE=''
 case "${1:-}" in
   --build-only) MODE=build; shift ;;
   --service)
@@ -45,7 +45,13 @@ case "${1:-}" in
       analyst) SERVICE=analyst-prod ;;
       *) echo "--service 는 api | collector | analyst 이어야 한다" >&2; exit 1 ;;
     esac
-    shift 2 ;;
+    shift 2
+    if [ "${1:-}" = --image-id ]; then
+      EXPECTED_IMAGE=${2:-}
+      [[ $EXPECTED_IMAGE =~ ^sha256:[0-9a-f]{64}$ ]] \
+        || { echo "--image-id 에는 전체 로컬 이미지 ID가 필요하다" >&2; exit 1; }
+      shift 2
+    fi ;;
 esac
 [ "$#" = 0 ] || { echo "지원하지 않는 배포 옵션" >&2; exit 1; }
 : "${ENV_FILE:?ENV_FILE (compose --env-file)}" "${REVISION:?REVISION (배포할 커밋 SHA)}"
@@ -402,6 +408,10 @@ if [ "$MODE" != all ]; then
     exit 0
   fi
   id=$(image_id "$candidate") || { echo "먼저 --build-only 로 대상 이미지를 준비해야 한다" >&2; exit 1; }
+  if [ -n "$EXPECTED_IMAGE" ] && [ "$id" != "$EXPECTED_IMAGE" ]; then
+    echo "준비한 이미지 ID와 전달받은 ID가 다르다 — 교체하지 않았다" >&2
+    exit 1
+  fi
   deploy_one "$id"
   exit 0
 fi

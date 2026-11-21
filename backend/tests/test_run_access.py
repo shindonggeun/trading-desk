@@ -2,9 +2,9 @@ from io import StringIO
 
 import pytest
 from alembic import command
-from sqlalchemy import Boolean, MetaData, Table, column, func, insert, select, text, update
+from sqlalchemy import Boolean, MetaData, Table, column, event, func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import dialect as postgresql_dialect
-from sqlalchemy.exc import IntegrityError, StatementError
+from sqlalchemy.exc import IntegrityError
 
 from desk.db import alembic_config, make_engine, migrate, now, runs
 from desk.run_access import can_access_run, shared_run_rows, visibility_for_new_run, visible_run_rows
@@ -165,8 +165,16 @@ def test_a_completed_run_stores_visibility_only_when_both_writers_establish_prov
         store.mark_done(account, plan, None, executed_use_portfolio=True, source_visibility=())
         store.mark_done(unknown, plan, None, executed_use_portfolio=False, source_visibility=(None,))
         store.mark_done(mismatch, plan, None, executed_use_portfolio=False, source_visibility=())
-        with pytest.raises(StatementError):
-            store.mark_done(failed, {"invalid": object()}, None, executed_use_portfolio=False, source_visibility=())
+        def abort_after_result_update(_conn, _cursor, statement, *_args):
+            if statement.startswith("UPDATE runs "):
+                raise RuntimeError("synthetic failure after result update")
+
+        event.listen(engine, "after_cursor_execute", abort_after_result_update)
+        try:
+            with pytest.raises(RuntimeError, match="synthetic failure after result update"):
+                store.mark_done(failed, plan, None, executed_use_portfolio=False, source_visibility=())
+        finally:
+            event.remove(engine, "after_cursor_execute", abort_after_result_update)
 
         with engine.connect() as conn:
             result = {

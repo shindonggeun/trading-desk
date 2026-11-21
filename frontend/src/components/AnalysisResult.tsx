@@ -9,6 +9,7 @@ import type { ExtraLine, Interval } from "./PriceChart";
 import LevelLadder from "./LevelLadder";
 import SectionBoundary from "./SectionBoundary";
 import { css, useColorScheme } from "../chartColors";
+import { scenarioExtraPrices, SCENARIO_STATUS, type DirectionScenario } from "../directionScenarios";
 
 const PriceChart = lazy(() => import("./PriceChart"));
 
@@ -67,7 +68,10 @@ function ownLabels(basis: LineBasis[]) {
 // 계획의 시간축(#63)에 맞는 봉: 스캘핑 · 단타는 5분봉, 2~3일은 1시간봉, 스윙은 일봉.
 const HORIZON_INTERVAL: Record<string, Interval> = { scalp: "5m", intraday: "5m", short_swing: "60m", swing: "1d" };
 
-function Chart({ ticker, tradeDate, plan, title, outlook = null, runId }: { ticker: string; tradeDate: string; plan: Plan | null; title: string; outlook?: RunOutlook | null; runId?: string }) {
+function Chart({ ticker, tradeDate, plan, title, outlook = null, runId, scenario }: {
+  ticker: string; tradeDate: string; plan: Plan | null; title: string; outlook?: RunOutlook | null; runId?: string;
+  scenario?: DirectionScenario | null;
+}) {
   // #466 이 분석의 계획선 근거 · 해설(#465 /api/levels?run=) — 계획이 있는 그 종목 차트에서만(본주 쪽은 다른 종목이라 422)
   const [sr, setSr] = useState<SupportResistance | null>(null);
   const [srFailed, setSrFailed] = useState(false);
@@ -82,7 +86,9 @@ function Chart({ ticker, tradeDate, plan, title, outlook = null, runId }: { tick
   }, [hasPlan, runId, ticker]);
   const basis = useMemo(() => sr?.basis ?? [], [sr]);
   const scheme = useColorScheme();   // #627 테마가 바뀌면 조건선 색도 다시 읽는다
-  const extra = useMemo(() => triggerLines(plan, basis), [plan, basis, scheme]);
+  const extra = useMemo(() => scenario ? scenarioExtraPrices(scenario).map(({ price, label, kind }) => ({
+    price, label, color: css(kind === "entry" ? "--accent" : "--ok"), dashed: kind === "entry",
+  })) : triggerLines(plan, basis), [plan, basis, scenario, scheme]);
   const labels = useMemo(() => ownLabels(basis), [basis, scheme]);
   const [picked, setPicked] = useState<number | null>(null);   // #440 사다리에서 고른 가격
   const [focus, setFocus] = useState<PlanLineKey | null>(null);
@@ -122,14 +128,19 @@ function Chart({ ticker, tradeDate, plan, title, outlook = null, runId }: { tick
  * 분석 화면 차트 탭(#99): 차트 하나. 레버리지 상품이면 본주 · 상품을 전환한다(처음은 입력한 상품).
  * 분석 중(계획 없음)에는 레벨 없이 시세만.
  */
-export function ResultChart({ plan, ticker, tradeDate, outlook = null, runId, label = null }: {
+export function ResultChart({ plan, ticker, tradeDate, outlook = null, runId, label = null, scenario }: {
   plan: Plan | null; ticker: string; tradeDate: string; outlook?: RunOutlook | null; runId?: string;
   /** #697 분석 기간이 아닌 칸을 그릴 때 제목 꼬리("단타 · 데스크 지도") — 이때 runId 는 넘기지 않는다(근거 해설은 분석 기간 것) */
   label?: string | null;
+  scenario?: DirectionScenario | null;
 }) {
   const u = plan?.underlying;
   const [side, setSide] = useState<"product" | "underlying">("product");
-  if (!u) return <Chart ticker={ticker} tradeDate={tradeDate} plan={plan} title={plan ? `${ticker} · ${label ?? "분석 결과"}` : `${ticker} · 가격`} outlook={outlook} runId={runId} />;
+  if (!u) return <>
+    {scenario && <p className="muted small"><strong>{SCENARIO_STATUS[scenario.status]}</strong>{scenario.reason && ` · ${scenario.reason}`}</p>}
+    <Chart ticker={ticker} tradeDate={tradeDate} plan={plan} title={plan ? `${ticker} · ${label ?? "분석 결과"}` : `${ticker} · 가격`}
+      outlook={outlook} runId={runId} scenario={scenario} />
+  </>;
   const lev = `${u.leverage > 0 ? "+" : ""}${u.leverage}배`;
   return (
     <div className="result-chart">

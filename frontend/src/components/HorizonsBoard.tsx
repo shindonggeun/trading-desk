@@ -2,6 +2,8 @@ import { useRef, type KeyboardEvent } from "react";
 import { price } from "../format";
 import { type AllHorizonsPlan, FIT_KO, HORIZON_ORDER, LOW_RR, slotLines } from "../allHorizons";
 import type { HorizonId } from "../types";
+import { DIRECTIONS, hasScenarios, type ScenarioSide } from "../directionScenarios";
+import DirectionScenarioCard from "./DirectionScenarioCard";
 
 const pct = (to: number | null, from: number | null) =>
   to == null || from == null || !from ? "" : ` (${to >= from ? "+" : ""}${((to / from - 1) * 100).toFixed(1)}%)`;
@@ -14,10 +16,12 @@ const rText = (r: number) => (Math.abs(r) < 0.005 ? "0.00R" : `${r > 0 ? "+" : "
  * 종목 성격 배지 · 지금 장세에 맞는 기간 문장, 칸마다 진입 · 손절 · 목표 · 들고 갈 시간 · 손익비 · 과거 R.
  * 장세에 맞는 칸은 강조, 손익비 낮은 칸은 흐리게(#671). 칸을 누르면 차트 탭의 진입 · 손절 · 목표선이 그 기간 것으로.
  */
-export default function HorizonsBoard({ plan, selected, onSelect }: {
+export default function HorizonsBoard({ plan, selected, selectedSide, onSelect, onDirection }: {
   plan: AllHorizonsPlan;
   selected: HorizonId | null;
+  selectedSide: ScenarioSide | null;
   onSelect: (h: HorizonId) => void;
+  onDirection: (h: HorizonId, side: ScenarioSide) => void;
 }) {
   const grid = useRef<HTMLDivElement>(null);
   const hs = plan.horizons;
@@ -26,6 +30,7 @@ export default function HorizonsBoard({ plan, selected, onSelect }: {
     return plan.horizons_note ? <p className="muted small hz-note">네 기간 칸: {plan.horizons_note}</p> : null;
   }
   const slots = HORIZON_ORDER.map((h) => hs[h]).filter((s): s is NonNullable<typeof s> => !!s);
+  const directional = slots.some(hasScenarios);
   const fit = plan.horizon_fit;
   const cls = plan.instrument_class;
   const now = slots.map((s) => s.map?.price_now).find((v) => v != null) ?? null;
@@ -54,7 +59,8 @@ export default function HorizonsBoard({ plan, selected, onSelect }: {
       </header>
       {fit?.sentence && <p className="hz-fit">{fit.sentence}</p>}
       {plan.horizons_fake && <p className="app-notice notice-warn small">대본 실행의 예시 값이에요 — 실제 계산이 아닙니다.</p>}
-      <div className="hz-grid" role="radiogroup" aria-label="차트에 그릴 기간" ref={grid}>
+      <div className={`hz-grid${directional ? " hz-with-scenarios" : ""}`}
+        role={directional ? "group" : "radiogroup"} aria-label="차트에 그릴 기간" ref={grid}>
         {slots.map((s, i) => {
           const l = slotLines(s);
           const f = fit?.fit?.[s.horizon] ?? "unknown";
@@ -62,10 +68,13 @@ export default function HorizonsBoard({ plan, selected, onSelect }: {
           const low = l.rr != null && l.rr < LOW_RR;
           const on = selected === s.horizon;
           const r = s.map?.expected_r ?? fit?.record?.[s.horizon]?.r ?? null;
-          return (
-            <button key={s.horizon} type="button" role="radio" aria-checked={on} tabIndex={i === focusIdx ? 0 : -1}
+          const reason = l.side && hasScenarios(s) ? (s.source === "model" ? s.model?.why : s.map?.why?.[0]) : null;
+          const period = (
+            <button key={s.horizon} type="button" role={directional ? undefined : "radio"}
+              aria-checked={directional ? undefined : on} aria-pressed={directional ? on && !selectedSide : undefined}
+              tabIndex={directional || i === focusIdx ? 0 : -1}
               className={`hz-cell${on ? " on" : ""}${best ? " hz-best" : ""}${low ? " hz-low" : ""}`}
-              onClick={() => onSelect(s.horizon)} onKeyDown={(e) => onKey(e, i)}>
+              onClick={() => onSelect(s.horizon)} onKeyDown={directional ? undefined : (e) => onKey(e, i)}>
               <span className="hz-cell-head">
                 <strong>{s.label}</strong>
                 <span className={`hz-fit-chip hz-fit-${f}`}>{best ? "지금 장세에 맞음" : FIT_KO[f]}</span>
@@ -76,6 +85,7 @@ export default function HorizonsBoard({ plan, selected, onSelect }: {
                 {l.kindKo && ` · ${l.kindKo}`}
                 <span className="muted"> · {s.source === "model" ? "에이전트 분석" : "데스크 지도"}</span>
               </span>
+              {reason && <span className="small muted hz-aside">{reason}</span>}
               {l.standAside ? (
                 <span className="small muted hz-aside">{l.standAside}</span>
               ) : (
@@ -93,9 +103,21 @@ export default function HorizonsBoard({ plan, selected, onSelect }: {
               )}
             </button>
           );
+          return hasScenarios(s) ? (
+            <article key={s.horizon} className="hz-scenario-slot" aria-label={s.label}>
+              {period}
+              <div className="hz-scenario-pair">
+                {DIRECTIONS.map((side) => (
+                  <DirectionScenarioCard key={side} side={side} scenario={s.scenarios?.[side]}
+                    selected={on && selectedSide === side} onSelect={() => onDirection(s.horizon, side)} />
+                ))}
+              </div>
+            </article>
+          ) : period;
         })}
       </div>
-      <p className="muted small">칸을 누르면 차트 탭의 진입 · 손절 · 목표선이 그 기간 것으로 바뀌어요. 데스크 지도 칸은 모델 없이 계산한 값이에요. 예측 · 추천 아님.</p>
+      <p className="muted small">{directional && "롱·숏을 고르면 차트 탭에서 해당 방향의 가격선을 볼 수 있어요. "}
+        칸을 누르면 차트 탭의 진입 · 손절 · 목표선이 그 기간 것으로 바뀌어요. 데스크 지도 칸은 모델 없이 계산한 값이에요. 예측 · 추천 아님.</p>
     </section>
   );
 }

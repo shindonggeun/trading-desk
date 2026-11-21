@@ -3021,8 +3021,19 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .hz-facts .hz-k { color: var(--muted); }
 .hz-facts > span > span:last-child { text-align: right; }
 .hz-aside { display: block; }
+.hz-grid.hz-with-scenarios { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.hz-scenario-slot { display: grid; align-content: start; gap: 6px; min-width: 0; }
+.hz-scenario-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.hz-scenario { min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.85em; overflow-wrap: anywhere; }
+.hz-scenario p { margin: 6px 0 0; }
+.hz-scenario-prices { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 6px; margin: 6px 0; }
+.hz-scenario-prices > div { display: contents; }
+.hz-scenario-prices dt { color: var(--muted); }
+.hz-scenario-prices dd { margin: 0; text-align: right; }
+.hz-chart-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 @media (max-width: 900px) {
   .hz-grid { grid-auto-flow: column; grid-template-columns: none; grid-auto-columns: minmax(220px, 78%); overflow-x: auto; scroll-snap-type: x mandatory; }
+  .hz-grid.hz-with-scenarios { grid-auto-flow: row; grid-template-columns: minmax(0, 1fr); overflow: visible; scroll-snap-type: none; }
   .hz-cell { scroll-snap-align: start; }
 }
 

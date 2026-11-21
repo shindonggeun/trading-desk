@@ -407,7 +407,8 @@ TradingAgents SHA 를 올려 이 잠금이 빠지면 여기서 깨진다. 전제
 | `analyst-prod` · `trading-desk-analyst-prod` | `analyst`(LLM run 을 DB 대기열에서 가져감 · 아침 시황 · 리포트 · 채점). **하나만** — 두 번째는 PG advisory lock 에 막힌다 | 프로젝트 `default` | `DESK_ANALYST_MEM_LIMIT`(기본 2g) |
 
 - **스위치**: Vault `kv/trading-desk/backend/prod/env` 의 `DESK_BACKEND_SPLIT` — `0`(기본) | `1`. `scripts/deploy-compose.sh` 가 읽어 `1` 이면 compose profile `split` 을 켜고 `backend-prod` 를 `api` 로 띄운다(셸 환경 `DESK_API_ROLE`). 다른 값이면 바꾸기 전에 멈춘다. compose 를 손으로 부르지 않는다 — 스위치와 역할을 맞추는 것이 이 스크립트다.
-- **순서**: api 를 먼저 `up --wait`(기동 시 Alembic `upgrade head`), healthy 가 된 뒤 collector · analyst(`--no-deps`, 이미 head 라 upgrade 는 아무것도 하지 않는다). 확인 · 되돌림은 2-1 · 2-2 그대로 — 세 컨테이너 모두 커밋 라벨 · 재시작 없음 · health 를 보고, 실패하면 셋 다 직전 이미지로.
+- **순서**: api를 먼저 `up --wait`로 띄워 Alembic `upgrade head`를 마친다. API가 healthy가 되면 collector · analyst를 `--no-deps`로 띄운다. 워커는 기동 전에 적용된 Alembic head 집합을 읽어 이미지와 대조한다. DB를 읽을 수 없거나, 리비전이 비어 있거나, 이미지와 다르면 시작을 중단한다. 워커 오류가 나면 API의 DB 연결과 배포 이미지가 같은 스키마를 쓰는지 확인한다.
+- **되돌림**: 변경 전후 스키마의 호환성을 확인하고 2-1 · 2-2 절을 따른다. 이미 실행 중인 이전 워커는 다음 기동 때 이 검사를 거친다. API와 워커가 잠시 공존하는 구간의 호환성은 배포 전에 확인한다.
 - **진행 중인 분석**: 종합 배포는 `desk.cli unfinished`로 확인하고 분석이 끝나기를 기다린다. split에서 API만 교체하면 분석은 analyst에서 계속된다. analyst를 재시작하면 `running`만 실패로 바뀌고 `queued`는 남는다.
 
 ### 켜기 전 선행 조건 (모두 머지 · 배포된 뒤, 사용자 승인으로 켠다)

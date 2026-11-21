@@ -35,14 +35,13 @@ class TeamTests(unittest.TestCase):
                         "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True, capture_output=True)
         subprocess.run(["git", "worktree", "add", "--no-track", "-b", "linked", str(linked)],
                        cwd=repo, check=True, capture_output=True)
-        with patch.dict(os.environ, {"CODEX_TEAM_STATE_DIR": ""}):
-            with patch.object(team, "ROOT", repo):
-                primary = team.state_path()
-            with patch.object(team, "ROOT", linked):
-                self.assertEqual(primary, team.state_path())
-        self.assertEqual(repo / ".trading-desk-codex-team" / "team.sqlite", primary)
         ignored = [".trading-desk-codex-team/team.sqlite", ".trading-desk-codex-team/team.sqlite-wal"]
         for checkout in (repo, linked):
+            with patch.dict(os.environ, {"CODEX_TEAM_STATE_DIR": ""}), patch.object(team, "ROOT", checkout):
+                selected = team.state_path()
+            # The DB does not exist yet, but its checkout root does.
+            self.assertTrue(selected.parents[1].samefile(repo))
+            self.assertEqual(Path(ignored[0]), selected.relative_to(selected.parents[1]))
             result = subprocess.run(["git", "check-ignore", "--", *ignored],
                                     cwd=checkout, check=True, capture_output=True, text=True)
             self.assertEqual(ignored, result.stdout.splitlines())
@@ -55,16 +54,17 @@ class TeamTests(unittest.TestCase):
         legacy.write_bytes(self.path.read_bytes())
         with patch.object(team, "repository_root", return_value=repo), \
              patch.dict(os.environ, {"CODEX_TEAM_STATE_DIR": ""}):
-            self.assertEqual(legacy, team.state_path())
+            self.assertTrue(legacy.samefile(team.state_path()))
             with patch.object(team.sys, "argv", ["codex_team.py", "migrate-state"]), \
                  patch("builtins.print"):
                 self.assertEqual(0, team.main())
             self.assertTrue(current.is_file())
             self.assertTrue(legacy.is_file())
+            self.assertFalse(legacy.samefile(current))
             with self.assertRaisesRegex(ValueError, "CODEX_TEAM_STATE_DIR"):
                 team.state_path()
             with patch.dict(os.environ, {"CODEX_TEAM_STATE_DIR": str(current.parent)}):
-                self.assertEqual(current, team.state_path())
+                self.assertTrue(current.samefile(team.state_path()))
 
     def test_migrate_state_preserves_messages_and_source(self):
         self.store.db.execute("PRAGMA journal_mode=WAL")

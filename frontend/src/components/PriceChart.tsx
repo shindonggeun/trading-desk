@@ -2423,7 +2423,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
         <ChartReadPanel read={chartRead} failed={readFailed} frame={readFrame} interval={interval}
           onInterval={(tf) => setBarInterval(tf as Interval)} marks={readMarks} picked={readPick} onPick={(n) => pickMark(n, "panel")}
           beginner={readPrefs.beginner} applied={beginner} onBeginner={(b) => pickRead({ beginner: b })} idPrefix={readId}
-          open={readExpanded} onToggle={setReadExpanded}
+          open={readExpanded} onToggle={setReadExpanded} selectedAccumulation={selectedAccumulation}
           accumulation={chartRead && (
             <AccumulationPanel read={chartRead} selected={selectedAccumulation} onSelect={(view) => {
               selectAccumulationView(view);

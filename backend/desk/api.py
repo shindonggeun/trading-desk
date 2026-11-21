@@ -1520,7 +1520,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             max_debate_rounds=body.max_debate_rounds,
             max_risk_rounds=body.max_risk_rounds,
         )
-        run_id = request.app.state.manager.submit(run_request)
+        run_id = request.app.state.manager.submit(run_request, authenticated_submitter_id=request.state.user.id)
         return with_queue([store.get_run(run_id)])[0]
 
     def with_queue(items: list[dict]) -> list[dict]:

@@ -89,8 +89,26 @@ def test_build_gives_the_four_horizons_with_the_model_on_the_runs_own():
         assert r["label"] and r["holding"] and set(r["levels"]) == {"support", "resistance"}
         assert r["chart"] is None or r["chart"]["timeframe"] == all_horizons.CHART_TF[h]
         assert set(r["scenarios"]) == {"long", "short"}
+    assert [r["accumulation"]["view"] for r in rows.values()] == ["short", "short", "mid", "long"]
+    assert rows["scalp"]["accumulation"] == rows["intraday"]["accumulation"]
+    assert [r["accumulation"]["timeframe"] for r in rows.values()] == ["240m", "240m", "1d", "1w"]
     assert got["horizon_fit"]["regime"] in all_horizons.REGIME_KO and got["horizon_fit"]["sentence"]
     assert got["instrument_class"]["id"] == "general" and got["horizons_note"] is None
+
+
+def test_accumulation_missing_frames_leave_the_other_views_and_scenarios_available():
+    class MissingFrames(_Prices):
+        async def candles(self, ticker, interval, count=120, indicators=()):
+            if interval in ("240m", "1w"):
+                raise ValueError("no data")
+            return await super().candles(ticker, interval, count, indicators)
+
+    rows = asyncio.run(all_horizons.build(MissingFrames(), "ZZZT", {}, "swing", None, same_day=True))["horizons"]
+    assert rows["scalp"]["accumulation"]["timeframe"] == "60m"
+    assert rows["scalp"]["accumulation"]["stats"] is None
+    assert rows["short_swing"]["accumulation"]["view"] == "mid"
+    assert rows["swing"]["accumulation"] is None
+    assert all(set(row["scenarios"]) == {"long", "short"} for row in rows.values())
 
 
 def test_a_fake_run_carries_four_scripted_horizons(db_url):

@@ -26,8 +26,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import (
-    accumulation,
-    accumulation_bt,
+    accumulation_live,
     alert_tone,
     backtest_reports,
     bottom_zone,
@@ -2532,11 +2531,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if hit and hit[0] > time.monotonic():
             return hit[1]
         # #751 the daily once, long enough for the mid view's bands too (the frame reads its last BARS)
-        wanted = [prices.candles(ticker, t, max(channels.BARS[t], ACC_DAYS) if t == "1d" else channels.BARS[t])
+        wanted = [prices.candles(ticker, t, max(channels.BARS[t], accumulation_live.DAILY_BARS)
+                                 if t == "1d" else channels.BARS[t])
                   for t in tfs]
         if "1d" in tfs:
             # the weekly gaps beside the daily, and (#751) the long view's weeks
-            wanted.append(prices.candles(ticker, "1w", max(CHART_READ_WEEKS, ACC_WEEKS)))
+            wanted.append(prices.candles(ticker, "1w", max(CHART_READ_WEEKS, accumulation_live.WEEKLY_BARS)))
         got = await asyncio.gather(*wanted, return_exceptions=True)
         weeks = got[len(tfs)]["bars"] if "1d" in tfs and not isinstance(got[len(tfs)], BaseException) else None
         now = datetime.now(UTC)
@@ -2577,39 +2577,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         out = chart_read.read(ticker, frames)
         if "1d" in tfs:
             price = next((f["price"] for f in frames if f.get("price")), None)     # the shortest timeframe's: now
-            out["accumulation"], out["legs"] = await _accumulation_read(tfs, got, weeks, now, price)
+            out["accumulation"], out["legs"] = await accumulation_live.read(tfs, got, weeks, now, price)
             if out["accumulation"] is None or None in (out["accumulation"].get("mid"), out["accumulation"].get("long")):
                 keep = min(keep, CHART_READ_MIN_SEC * 4)                        # a view missing: ask again soon
         if len(chart_reads) > 256:
             chart_reads.clear()
         chart_reads[key] = (time.monotonic() + max(CHART_READ_MIN_SEC, keep), out)
         return out
-
-    async def _accumulation_read(tfs, got, weeks, now, price) -> tuple[dict | None, dict | None]:
-        """#751 the accumulation bands and the legs per view (desk.accumulation) on finished bars - the bars
-        its record was measured on (desk.accumulation_bt.SPEC's windows): short on the 4h (else 1h) bars of
-        the read, mid on the days, long on the weeks; placed against the price now. None on failure."""
-        def finished(bars, tf, n):
-            if not bars:
-                return None
-            live = ((now - datetime.fromisoformat(bars[-1]["at"])).days < 7 if tf == "1w"
-                    else channels.is_live(bars, tf, now))
-            return (bars[:-1] if live else bars)[-n:]
-
-        def bars_of(tf):
-            res = got[tfs.index(tf)] if tf in tfs else None
-            return res["bars"] if res is not None and not isinstance(res, BaseException) else None
-
-        try:
-            short_tf = next((t for t in ("240m", "60m") if t in tfs), None)
-            win = {v: accumulation_bt.SPEC[v]["window"] for v in accumulation_bt.SPEC}
-            by_view = {"short": finished(bars_of(short_tf), short_tf, win["short"]) if short_tf else None,
-                       "mid": finished(bars_of("1d"), "1d", win["mid"]), "long": finished(weeks, "1w", win["long"])}
-            return await asyncio.to_thread(accumulation.views, by_view, {"short": short_tf} if short_tf else None,
-                                           None, price)
-        except Exception as exc:  # noqa: BLE001 - the read stands without the bands
-            log.warning("accumulation read failed: %s", type(exc).__name__)
-            return None, None
 
     @app.get("/api/stock/profile")
     async def stock_profile(ticker: str | None = None, tickers: str | None = None):
@@ -3643,8 +3617,6 @@ class KakaoCallbackIn(BaseModel):
 CHART_READ_MIN_SEC = 15.0
 CHART_READ_MAX_SEC = 300.0
 CHART_READ_WEEKS = 120
-ACC_WEEKS = 261            # #751 the long view's weeks (accumulation_bt's window of 260 and the one trading)
-ACC_DAYS = 501             # ...and the mid view's days (its window of 500 and the one trading)
 
 NOTIFY_LABELS = {"telegram": "텔레그램", "kakao": "카카오톡"}
 KAKAO_STATE_TTL_SEC = 600

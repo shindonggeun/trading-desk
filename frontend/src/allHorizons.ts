@@ -1,5 +1,5 @@
 import { price as fmt } from "./format";
-import type { HorizonId, Plan } from "./types";
+import type { AccumulationView, HorizonId, Plan } from "./types";
 import type { DirectionScenario, ScenarioSide } from "./directionScenarios";
 
 /**
@@ -59,6 +59,7 @@ export interface HorizonSlot {
   model: HorizonModel | null;
   map: HorizonMap | null;
   scenarios?: Partial<Record<ScenarioSide, DirectionScenario>> | null;
+  accumulation?: AccumulationView | null;
   levels?: { support: { price: number; strength?: number; basis?: string }[]; resistance: { price: number; strength?: number; basis?: string }[] } | null;
   atr?: number | null;
   chart?: {

@@ -166,6 +166,21 @@ scripts/deploy.sh "$(git rev-parse --short origin/develop)" backend   # backend/
 
 ### 2-5. Jenkins 잡 · credential 등록 (사람이 한 번)
 
+#### 독립 백엔드 잡 등록 리허설 (#785)
+
+세 역할 잡의 비활성 XML은 `deploy/jenkins/trading-desk/`에 있다. 기존 멀티브랜치 잡은 아래 절차로 관리한다. Infra의 Jenkins 설정에는 Job DSL과 JCasC 등록 절차가 없으므로 역할 잡의 명세는 이 저장소에서 관리한다.
+
+`scripts/jenkins/register-disabled-backend-jobs.py`는 대상 컨트롤러의 `trading-desk` 폴더에서 세 잡의 존재를 읽어 출력한다. 비운영 컨트롤러에 같은 폴더와 Pipeline 플러그인을 준비한 뒤 기본 명령으로 목록을 대조한다. CLI가 읽기와 생성에 사용하는 인증은 Jenkins 환경에서 이미 설정된 방식을 쓴다. [Jenkins CLI 문서](https://www.jenkins.io/doc/book/managing/cli/)
+
+```bash
+python -B -X utf8 scripts/jenkins/register-disabled-backend-jobs.py -- java -jar jenkins-cli.jar -s "$JENKINS_REHEARSAL_URL"
+python -B -X utf8 scripts/jenkins/register-disabled-backend-jobs.py --apply -- java -jar jenkins-cli.jar -s "$JENKINS_REHEARSAL_URL"
+```
+
+`--apply`는 누락된 비활성 잡만 생성한다. 이미 있는 잡은 UI에서 별도로 상태와 트리거를 확인한다. 등록이 중간에 실패하면 원인을 확인한 뒤 다시 실행할 수 있다. 생성된 세 잡은 각각 비활성이며 트리거가 비어 있어야 한다.
+
+#### 기존 자동 배포 잡 설정
+
 작업 세션은 자격 증명을 받지 않는다. 값 자리는 `<...>` 이고 값은 채팅 · 로그 · 커밋에 쓰지 않는다. 순서:
 
 1. **Vault 정책 · AppRole** — Infra 저장소의 `vault/scripts/bootstrap-trading-desk.sh` 를 ai-host 에서 root 토큰으로 돌린다(Infra `vault/README.md` trading-desk 절).
@@ -401,6 +416,10 @@ TradingAgents SHA 를 올려 이 잠금이 빠지면 여기서 깨진다. 전제
 4. **#760 · #690**: 화면과 run 메모가 함께 읽는 캐시(수급 · 선물 · 시세 …)를 Redis 로 나누고, collector 가 모은 시세 · 수급 · 알림을 화면 SSE 로 흘린다. 없으면 api 의 캐시가 collector 의 수집을 보지 못한다.
 
 켠 뒤 확인: `docker ps --filter name=trading-desk` 에 컨테이너 3개가 healthy, 로그의 브로커 토큰 발급 줄이 `collector` 에서만(`toss token issued (collector)`), `GET /api/status` 의 작업들이 오류 없이 도는지.
+
+독립 잡을 연결하려면 #776의 공통 스크립트에 이미지 빌드와 서비스 단독 배포·검증·되돌림 진입점이 먼저 필요하다. 현재 스크립트는 이미지를 한 번 빌드한 뒤 API를 먼저 올리고 split 서비스를 일괄 배포·되돌린다. #776에서 반영된 PostgreSQL 발급자 잠금은 all과 collector의 중복 발급을 막는다.
+
+연결 시에는 기존 백엔드 잡이 develop의 CI 성공을 확인하고 공통 배포 락 안에서 빌드한 불변 이미지를 역할 잡에 전달한다. 역할 잡은 직접 SCM 트리거 없이 호출하고, 서비스 하나의 재실행도 기존 백엔드 잡을 통해 같은 락으로 직렬화한다. API 마이그레이션과 헬스 확인이 실패하면 후속 잡을 호출하지 않는다. #776의 서비스 진입점에서 커밋 라벨·헬스·무재시작·서비스별 되돌림을 확인하고, analyst의 분석 대기와 collector의 발급자 조건을 검증한다. split 전환과 운영 잡 활성화는 비운영 리허설 이후 진행한다.
 
 ## 13. 공유 캐시 — 홈랩 Redis (#689, 선택)
 

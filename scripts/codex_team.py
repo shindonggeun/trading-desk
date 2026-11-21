@@ -258,13 +258,13 @@ class Team:
                             (row["id"],))
 
     def deliver_live(self, mid, client):
-        from codex_live import same_repo
+        from codex_live import recipient_cwd, same_repo
         row = self.db.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
         if row is None or row["transport"] != "pending" or row["state"] != "pending":
             raise ValueError("이미 전달했거나 확인한 메시지를 다시 보내지 않습니다")
         member = self.member(row["recipient"])
         target = client.target(member["thread"])
-        same_repo(target["cwd"], ROOT)
+        same_repo(recipient_cwd(target), ROOT)
         with self.transaction():
             current = self.member(row["recipient"])
             if current["thread"] != member["thread"] or current["generation"] != member["generation"]:
@@ -280,13 +280,13 @@ class Team:
                 "회신은 send --live를 사용하되 보고를 다시 보고하는 무한 회신을 만들지 마세요.")
         try:
             # dispatching fences takeover; never hold SQLite locks during external I/O.
-            turn = client.push(member["thread"], text, ROOT)
+            receipt = client.push(member["thread"], text, ROOT)
             self.db.execute("UPDATE messages SET transport='live_accepted',error=NULL WHERE id=?", (mid,))
         except Exception:
             self.db.execute("UPDATE messages SET transport='unknown',error=? WHERE id=?",
                             ("실시간 전달 미확인. inbox 확인 후 처리하고 자동 재전송하지 않습니다", mid))
             raise
-        return turn
+        return receipt
 
 
 def live(member):
@@ -365,6 +365,10 @@ def launch(team, role, cwd, selected=None):
             team.release(role, token)
 
 
+def print_recipient(evidence):
+    print(f"수신 thread: {json.dumps(evidence, ensure_ascii=False)}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -412,24 +416,27 @@ def main():
     try:
         thread = os.environ.get("CODEX_THREAD_ID")
         if args.command == "peers":
-            from codex_live import Client, LiveError, independent, same_repo
+            from codex_live import (
+                Client,
+                LiveError,
+                independent,
+                not_loaded,
+                recipient_cwd,
+                recipient_evidence,
+                same_repo,
+            )
             rows = []
             try:
                 with closing(Client(codex())) as client:
                     for tid in client.loaded():
-                        result = client.call("thread/read", {"threadId": tid, "includeTurns": False})
-                        row = result.get("thread") if isinstance(result, dict) else None
-                        if not isinstance(row, dict) or row.get("id") != tid:
-                            raise LiveError("공용 서버 thread/read 응답의 수신 ID를 확인할 수 없습니다")
-                        if not independent(row):
+                        row = client.read_thread(tid)
+                        if not independent(row) or not_loaded(row):
                             continue
                         try:
-                            same_repo(row["cwd"], ROOT)
-                        except (KeyError, ValueError, OSError, RuntimeError):
+                            same_repo(recipient_cwd(row), ROOT)
+                        except LiveError:
                             continue
-                        peer = {k: row.get(k) for k in ("id", "name", "cwd", "source", "status")}
-                        peer["effectivePolicy"] = "확인 불가"
-                        rows.append(peer)
+                        rows.append(recipient_evidence(row))
             except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
                 # Wire errors use controlled messages. Malformed responses and OS errors may contain local data.
                 reason = str(exc) if isinstance(exc, LiveError) else "공용 서버 연결 또는 응답을 확인할 수 없습니다"
@@ -444,13 +451,15 @@ def main():
                 print(json.dumps(rows, ensure_ascii=False, indent=2))
             return exit_code
         elif args.command == "bind":
-            from codex_live import Client, same_repo
+            from codex_live import Client, recipient_cwd, recipient_evidence, same_repo
             with closing(Client(codex())) as client:
                 team.actor("supervisor", thread)
                 row = client.target(args.thread)
-                same_repo(row["cwd"], ROOT)
-                team.join(args.role, args.thread, row["cwd"], args.takeover)
+                cwd = recipient_cwd(row)
+                same_repo(cwd, ROOT)
+                team.join(args.role, args.thread, cwd, args.takeover)
                 print(f"{args.role}에 로드된 thread를 연결했습니다. 화면 표시는 별도 확인하세요.")
+                print_recipient(recipient_evidence(row))
         elif args.command == "join":
             token = os.environ.get("CODEX_TEAM_TOKEN")
             if token and args.role != os.environ.get("CODEX_TEAM_ROLE"):
@@ -467,10 +476,17 @@ def main():
             mid = team.send(args.from_role, thread, args.recipient, body, args.task_key)
             print(mid, flush=True)
             if args.live:
-                from codex_live import Client
-                with closing(Client(codex())) as client:
-                    turn = team.deliver_live(mid, client)
+                from codex_live import Client, LiveError
+                try:
+                    with closing(Client(codex())) as client:
+                        turn, evidence = team.deliver_live(mid, client)
+                except (LiveError, OSError, ValueError) as exc:
+                    reason = str(exc) if isinstance(exc, (LiveError, ValueError)) else "공용 서버 연결을 확인할 수 없습니다"
+                    print(f"오류: {reason}", file=sys.stderr)
+                    print(f"수신 창에서 inbox {args.recipient}로 기존 메시지 {mid}를 확인하세요.", file=sys.stderr)
+                    return 1
                 print(f"공용 서버 수락: {turn}. 수신은 상대 ack로 확인합니다.")
+                print_recipient(evidence)
             else:
                 print("저장 완료. 전경 연결 시 큐 전달하며, 수신은 상대 ack로 확인합니다.")
         elif args.command == "inbox":

@@ -32,7 +32,8 @@ set -euo pipefail
 
 TARGET="${1:?대상: backend | web}"
 shift
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 if [ "$#" -gt 0 ] && [[ $1 != --* ]]; then ROOT=$1; shift; fi
 MODE=all SERVICE='' EXPECTED_IMAGE=''
 case "${1:-}" in
@@ -59,7 +60,7 @@ esac
 ENV_FILE="$(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
 ROOT="$(cd "$ROOT" && pwd)"
 WAIT_MIN="${WAIT_MIN:-30}" STABLE_SEC="${STABLE_SEC:-30}" WAIT_TIMEOUT="${WAIT_TIMEOUT:-300}"
-FORCE="${FORCE:-0}" DRILL="${ROLLBACK_DRILL:-0}"
+FORCE="${FORCE:-0}" DRILL="${ROLLBACK_DRILL:-0}" RECREATE="${TD_FORCE_RECREATE:-0}"
 LABEL=org.opencontainers.image.revision
 
 case "$TARGET" in
@@ -69,6 +70,28 @@ case "$TARGET" in
            PROJECT=trading-desk-web-prod; PRIMARY=web-prod ;;
   *) echo "대상은 backend | web" >&2; exit 1 ;;
 esac
+
+if [ "$TARGET" = backend ] && { [ "${TD_DEPLOY_FENCE_REQUIRED:-0}" = 1 ] \
+    || [ -e /var/lib/trading-desk/deploy-fence ] || [ -L /var/lib/trading-desk/deploy-fence ]; }; then
+  # shellcheck source-path=SCRIPTDIR
+  source "$SCRIPT_DIR/jenkins/backend-fence.sh"
+  if [ "$MODE" = service ] && { [ "${TD_FENCED_ROLE:-0}" != 1 ] || ! backend_fence_inherited; }; then
+    echo "백엔드 서비스 단독 배포는 승인된 Jenkins 인계로 실행한다" >&2
+    exit 1
+  fi
+  backend_fence_lock
+  if [ "$MODE" = all ]; then
+    backend_fence_idle
+    if [ "${TD_LEGACY_SPLIT_FALLBACK:-0}" = 1 ]; then
+      fallback_rc=0
+      backend_fence_route || fallback_rc=$?
+      if [ "$fallback_rc" != 10 ]; then
+        echo "종합 배포를 결정한 뒤 API 경로가 바뀌었다 — 배포하지 않았다" >&2
+        exit 1
+      fi
+    fi
+  fi
+fi
 
 PROFILE=() OVERRIDE=() SPLIT=0 SPLIT_SERVICES=(collector-prod analyst-prod)
 # -p 를 빼지 않는다 — 빠지면 디렉터리 이름이 프로젝트가 돼 --remove-orphans 가 남의 컨테이너를 지울 수 있다
@@ -348,7 +371,7 @@ deploy_one() {
       echo "직전 이미지 ID를 확인하지 못했다 — 교체하지 않았다" >&2
       return 1
     fi
-    if [ "$DRILL" != 1 ] && [ "$PREV_IMAGE" = "$next" ] && [ "$PREV_REV" = "$REVISION" ] \
+    if [ "$DRILL" != 1 ] && [ "$RECREATE" != 1 ] && [ "$PREV_IMAGE" = "$next" ] && [ "$PREV_REV" = "$REVISION" ] \
       && [ "$(docker inspect -f '{{.State.Status}} {{.State.Health.Status}}' "$PREV_CID" 2>/dev/null)" = "running healthy" ]; then
       echo "변경 없음: $SERVICE $REVISION"
       return 0

@@ -3,7 +3,7 @@
 # Jenkins 가 배포 전에 부른다. 시간 상한은 부르는 쪽(Jenkins timeout)이 둔다.
 #
 #   CI_REPO=<owner/repo> CI_SHA=<40자 SHA> [CI_WORKFLOW=ci] [CI_BRANCH=develop] [CI_POLL_SEC=10] [CI_SUPERSEDE=1] \
-#     [GITHUB_TOKEN=<...>] scripts/jenkins/wait-ci.sh [--superseded-only]
+#     [GITHUB_TOKEN=<...>] scripts/jenkins/wait-ci.sh [--superseded-only | --require-head]
 #
 # 종료 코드: 0 성공 · 1 실패(실패 · 시간 초과 · 건너뜀 등) · 4 밀림 — 이 커밋의 빌드는 배포하지 않고 뒤 커밋의 빌드가 배포한다(#752).
 #   밀림은 둘이다.
@@ -13,6 +13,7 @@
 #   develop 은 rebase 머지만 하므로 "머리가 이 커밋과 다르다" 를 "더 새 커밋" 으로 읽는다.
 # --superseded-only: CI 를 기다리지 않고 밀림 검사만 한 번 한다(배포 직전, lock 안 — Jenkinsfile.deploy-common.groovy).
 #   0 배포 계속 · 4 밀림. GitHub 를 읽지 못하면 0 이다(검사 실패로 배포를 막지 않는다).
+# --require-head: 자동 분리 배포는 정확한 develop 머리와 성공 CI를 다시 확인한다. 알 수 없으면 멈춘다.
 # 수동 되돌리기(DEPLOY_COMMIT)는 develop 머리보다 옛 커밋이라 Jenkins 가 CI_SUPERSEDE 를 켜지 않고 --superseded-only 도 부르지 않는다.
 #
 # 요청 수: 한 바퀴에 이 커밋의 실행 1회, 아직 안 끝났으면 밀림 검사로 develop 머리 1회와 그 커밋의 실행 1회를 읽는다.
@@ -87,6 +88,24 @@ if [ "${1:-}" = "--superseded-only" ]; then
     same) echo "배포 직전 확인: develop 머리가 이 커밋이다 — ${CI_SHA:0:12} 를 배포한다" ;;
     *) echo "배포 직전 확인: 더 새 커밋은 배포 후보가 아니다 — ${CI_SHA:0:12} 를 배포한다" ;;
   esac
+  exit 0
+fi
+
+if [ "${1:-}" = "--require-head" ]; then
+  if ! body=$(api "$API/git/ref/heads/$BRANCH") ||
+     ! head=$(printf '%s' "$body" | jq -er '.object.sha | select(type == "string")') ||
+     [[ ! $head =~ ^[0-9a-f]{40}$ ]]; then
+    echo "분리 배포: develop 머리를 확인할 수 없다" >&2
+    exit 1
+  fi
+  if [ "$head" != "$CI_SHA" ]; then
+    NEWER=$head
+    pushed_back
+  fi
+  if ! state=$(run_state "$CI_SHA") || [[ $state != "completed success "* ]]; then
+    echo "분리 배포: 현재 머리의 CI 성공을 다시 확인할 수 없다" >&2
+    exit 1
+  fi
   exit 0
 fi
 

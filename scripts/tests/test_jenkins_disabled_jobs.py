@@ -21,7 +21,7 @@ class DisabledJobsTest(TestCase):
             {f"trading-desk-backend-{role}/config.xml" for role in ROLES},
         )
 
-    def test_each_job_is_disabled_triggerless_and_cannot_deploy(self):
+    def test_each_job_is_disabled_triggerless_and_fixed_to_trusted_develop(self):
         for role in ROLES:
             with self.subTest(role=role):
                 job = ElementTree.parse(JOB_DIR / f"trading-desk-backend-{role}" / "config.xml").getroot()
@@ -32,15 +32,20 @@ class DisabledJobsTest(TestCase):
                 )
                 self.assertEqual(job.findtext("disabled"), "true")
                 self.assertEqual(job.findtext("keepDependencies"), "false")
-                self.assertEqual(len(job.find("properties")), 0)
                 self.assertEqual(len(job.find("triggers")), 0)
                 definition = job.find("definition")
                 self.assertEqual(
-                    definition.attrib, {"class": "org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition"},
+                    definition.attrib, {"class": "org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition"},
                 )
-                self.assertEqual([entry.tag for entry in definition], ["script", "sandbox"])
-                self.assertEqual(definition.findtext("sandbox"), "true")
-                self.assertEqual(definition.findtext("script"), f"error('TD-785: {role} deployment is not wired')")
+                self.assertEqual(definition.findtext("scriptPath"), "Jenkinsfile-backend-role")
+                self.assertEqual(definition.findtext("scm/branches/hudson.plugins.git.BranchSpec/name"),
+                                 "refs/heads/develop")
+                self.assertEqual(
+                    [item.text for item in job.findall(
+                        "properties/hudson.model.ParametersDefinitionProperty/parameterDefinitions/*/name"
+                    )],
+                    ["TD_RELEASE", "TD_PARENT_BUILD", "TD_SHA", "TD_IMAGE_ID", "TD_AGENT", "TD_DAEMON"],
+                )
 
 
 class RegistrationTest(TestCase):
@@ -115,7 +120,7 @@ else:
         (self.directory / "fail-list").touch()
         result = self.register("--apply", script=script)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("analyst: expected a disabled, triggerless, error-only Pipeline", result.stderr)
+        self.assertIn("analyst: expected a disabled, triggerless, trusted develop Pipeline", result.stderr)
         self.assertEqual(list(self.directory.glob("*.xml")), [])
 
     def test_apply_can_resume_after_partial_failure(self):

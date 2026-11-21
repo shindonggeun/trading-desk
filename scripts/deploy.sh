@@ -80,13 +80,24 @@ if [ "$TARGET" != web ]; then
   wait_idle "ssh \"\$HOST\" $(printf '%q' "$UNFINISHED")" "$DRY" || exit 3
 fi
 if [ "$DRY" = 1 ]; then echo "드라이런: 배포하지 않는다"; exit 0; fi
+FENCE_REQUIRED=${TD_DEPLOY_FENCE_REQUIRED:-0}
+case "$FENCE_REQUIRED" in 0|1) ;; *) echo "TD_DEPLOY_FENCE_REQUIRED 는 0 | 1 이어야 한다" >&2; exit 1 ;; esac
 
 # 원격 스크립트는 인자로, 소스 tar 는 표준입력으로 보낸다.
 # deploy-compose.sh 종료 코드: 0 배포됨 · 1 실패(되돌리지 못함) · 2 실패해서 직전 이미지로 되돌림 · 3 진행 중인 분석 때문에 멈춤
-REMOTE=$(cat <<'REMOTE'
+REMOTE=$(
+cat "$(dirname "$0")/jenkins/backend-fence.sh" || exit 1
+cat <<'REMOTE'
 set -euo pipefail
 cd ~/"$DIR"
 test -f .env.runtime || { echo "~/$DIR/.env.runtime 가 없다 (docs/deploy.md 3절)"; exit 1; }
+
+# src may come from a commit that predates the fence. Lock the host before
+# switching sources and keep the descriptor open through deployment.
+if [ "$TARGET" != web ] && backend_fence_configured; then
+  backend_fence_lock
+  backend_fence_idle
+fi
 
 rm -rf src.new && mkdir src.new && tar -x -C src.new
 echo "$SHA" > src.new/REVISION
@@ -107,7 +118,7 @@ done
 docker ps --filter name=trading-desk --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 REMOTE
 )
-git archive --format=tar "$REF" | ssh "$HOST" "TARGET=$TARGET SHA=$SHA DIR=$DIR FORCE=$FORCE WAIT_MIN=$WAIT_MIN \
+git archive --format=tar "$REF" | ssh "$HOST" "TARGET=$TARGET SHA=$SHA DIR=$DIR FORCE=$FORCE WAIT_MIN=$WAIT_MIN TD_DEPLOY_FENCE_REQUIRED=$FENCE_REQUIRED \
   bash -c $(printf '%q' "$REMOTE")"
 
 echo "배포 완료: ${SHA:0:12}"

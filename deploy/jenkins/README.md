@@ -8,33 +8,33 @@
 | `trading-desk/trading-desk-backend-collector` | 수집기 |
 | `trading-desk/trading-desk-backend-analyst` | 분석기 |
 
-각 명세는 `disabled=true`로 시작한다. 자동 트리거, SCM 연결, 빌드 파라미터와 자격 증명 참조가 없다. 잘못 활성화되어 실행되더라도 sandbox Pipeline은 역할이 적힌 오류에서 즉시 끝난다. 기존 `trading-desk-backend`와 `trading-desk-web`의 잡 정의 및 all 모드에는 영향이 없다.
+각 명세는 `disabled=true`이고 트리거가 없다. 고정된 저장소와 `refs/heads/develop`의 `Jenkinsfile-backend-role`만 SCM으로 불러온다. 하위 잡 파라미터에는 릴리스 ID·부모 빌드 번호·커밋·이미지 ID·노드·데몬만 들어간다. 자동 SCM 트리거는 기존 부모 잡만 소유한다. 역할 잡을 직접 시작하거나 Replay한 실행은 상위 잡 원인 검사에서 거부된다.
 
 XML 구조는 Jenkins [Pipeline Job](https://javadoc.jenkins.io/plugin/workflow-job/org/jenkinsci/plugins/workflow/job/WorkflowJob.html)과 [Pipeline Groovy](https://javadoc.jenkins.io/plugin/workflow-cps/org/jenkinsci/plugins/workflow/cps/CpsFlowDefinition.html)를 기준으로 작성했다.
 
 ## 로컬 검증
 
-저장소 루트에서 `python -B -X utf8 scripts/tests/test_jenkins_disabled_jobs.py`를 실행한다. 세 잡의 이름, 비활성 상태, 트리거 없음, sandbox와 오류 전용 스크립트를 XML에서 확인한다. Jenkins 또는 Docker 연결은 필요 없다.
+저장소 루트에서 `python -B -X utf8 scripts/tests/test_jenkins_disabled_jobs.py`, `bash scripts/tests/backend-deploy-lease.test.sh`, `groovy scripts/tests/backend-production.test.groovy`를 실행한다. XML·등록 계약, 담당 역할·중복 소비·실패 및 고아 릴리스 차단, 상위 잡의 종합 경로·역할 호출 순서를 대역으로 확인한다. Jenkins 또는 Docker 연결은 필요 없다.
 
-## 후속 인계
+## 운영 연결 전 검증과 등록
 
-- #808의 단독 배포는 서비스별 검증·되돌림, collector 발급 검사, analyst 분석 대기를 처리한다.
-- 기존 백엔드 잡만 SCM 트리거를 소유한다. 실제 Jenkins에서 폴더·잡·트리거·플러그인을 읽기 전용으로 대조한 뒤 비운영 컨트롤러에서 잡 등록과 결과를 리허설한다.
+- 실제 Jenkins에서 폴더·잡·트리거·플러그인을 읽기 전용으로 대조하고 아래 비운영 리허설로 정상·취소·실행기 단절을 검증한다. #842 드릴은 격리 Docker에서 API만 교체·복구하고 양쪽 워커의 ID와 시작 시간이 유지됐음을 확인한다. 컨트롤러 큐·권한·호스트 경계에는 별도 증거가 필요하다.
+- [등록 도구](../../scripts/jenkins/register-disabled-backend-jobs.py)는 누락된 잡만 비활성 상태로 생성한다. 기존 자리표시자 잡은 그대로 둔다. 검증과 승인 후 운영자가 기존 정의·비활성 상태를 백업하고 비활성인 동안 위 SCM·트리거·파라미터 계약으로 교체한 뒤 읽기 전용으로 확인한다. 폴더 권한 및 빌드 실행 주체를 설정하고 부모만 하위 잡 읽기·빌드·취소가 가능하게 제한한다.
+- 백엔드 배포 노드와 수동 배포 SSH 실행 주체가 같은 Docker 호스트·같은 UID에서 **같은 파일시스템 디렉터리** `/var/lib/trading-desk/deploy-fence`를 사용해야 한다. 호스트 디렉터리는 배포 계정 소유의 mode 700이며 애플리케이션 컨테이너에는 연결하지 않는다. 해당 경로를 같은 이름으로 전용 에이전트에 연결하고 `flock`·Docker CLI를 사용할 수 있는지 확인한다. 펜스가 설치된 배포는 `unix:///var/run/docker.sock`으로 고정된다. 이 소켓이 전용 에이전트와 수동 호스트에서 동일한 데몬을 가리키는지 확인한다.
+- 검증 후 Jenkins 전역 설정에 `TD_SPLIT_DEPLOY_NODE`를 전용 노드의 실제 이름으로 설정하고 `TD_SPLIT_JOBS_ENABLED=true`를 별도로 적용한다. 기본값은 종합 배포다. 역할 잡을 끄더라도 호스트 펜스와 전용 노드 설정은 남은 하위 작업을 확인하고 종료하기 전까지 유지한다. 펜스를 사용하는 수동 배포는 최신 `scripts/deploy.sh`를 `TD_DEPLOY_FENCE_REQUIRED=1`로 호출한다. 이전 커밋은 배포 SHA로만 지정할 수 있다. 펜스가 없는 예전 수동 스크립트를 역할 잡과 함께 사용하지 않는다.
 
-## #776 이미지 인계 모의 검증
+## #776 이미지 인계와 복구
 
-`scripts/jenkins/backend-handoff.groovy`는 Jenkins 어댑터를 주입하는 인계 계약이다. 운영 Jenkinsfile과 XML은 현재 기존 설정으로 실행된다. 저장소 루트에서 `groovy scripts/tests/backend-handoff.test.groovy`로 계약을 시험한다.
+1. 부모 잡이 기존 `trading-desk-prod-deploy` 락을 잡는다. `SERVICES=all`은 기본 종합 경로다. 독립 잡을 활성화하고 Vault의 split이 켜져 있으며 기존 split API가 healthy일 때만 API → collector → analyst의 역할별 순서로 전환한다. 이 상태에서 `SERVICES=api|collector|analyst`로 대상 하나를 선택할 수 있다. 신규 전환이나 split 해제는 종합 경로로 수행한다.
+2. 자동 역할별 배포는 CI 성공과 develop 최신 SHA를 이미지 준비 전과 직후에 다시 확인한다. 명시한 `DEPLOY_COMMIT`은 기존 develop ancestry·CI 게이트를 사용한다. 전용 노드에서 이미지 한 번과 단일 Vault 스냅샷을 준비한다. 호스트 펜스 아래에 mode 600 스냅샷, 대상 Compose, 실행 스크립트와 릴리스 기록을 보존한다. 파라미터나 빌드 산출물로 스냅샷을 전달하지 않는다.
+3. 부모는 노드 실행기를 반납하고 각 역할 잡이 완료될 때까지 동기 대기한다. 하위 잡은 부모가 아직 활성 상태인지 확인한 뒤 동일 호스트의 `flock`에서 릴리스·부모·SHA·이미지·노드·데몬·순서를 검증하고 해당 역할을 한 번 소비한다. 교체부터 검증과 복구까지 잠금을 유지한다. #808의 단독 배포가 API 스키마 호환, collector 발급 검사, analyst 드레인 및 헬스·이전 이미지 복구를 처리한다. 같은 이미지의 정상 컨테이너는 건너뛴다. `FORCE_DEPLOY`는 재생성을 강제하며 `FORCE_STOP_RUNS`는 analyst 대기를 우회할 때만 사용한다.
+4. 확인된 종료 코드 0만 다음 역할을 시작한다. 종료 코드 2는 대상 서비스 복구, 3은 분석 대기 종료로 기록한다. 나머지 실패와 임의 종료도 후속 잡을 차단한다. 부모는 일치하는 자식의 종료 기록을 확인한 경우에만 자기 릴리스를 정리한다.
 
-1. 부모 잡이 기존 `trading-desk-prod-deploy` 락을 잡고 develop SHA의 CI 성공과 밀림 여부를 확인한다. 통과하면 `deploy-compose.sh backend <소스> --build-only`를 한 번 실행한다. 준비 결과에는 전체 커밋 SHA, 로컬 이미지 ID, Jenkins 노드 이름과 Docker 데몬 ID를 넣는다.
-2. API → collector → analyst 잡을 하나씩 요청한다. 하위 잡은 락을 다시 잡지 않는다. 각 잡은 신뢰할 수 있는 부모 요청만 받아 실제 소스 SHA·노드·데몬·이미지 ID를 대조한다. 역할은 잡에서 정하고, 환경 파일이나 자격 증명 값은 인계에 넣지 않는다.
-3. 하위 잡은 검증한 값을 `deploy-compose.sh backend <소스> --service <역할> --image-id <ID>`에 넘긴다. 스크립트는 로컬에서 커밋 태그를 다시 확인하고 전달받은 이미지 ID가 다르면 교체 전에 멈춘다. API를 먼저 검증하며 후속 역할의 스키마 호환은 #808의 단독 배포가 확인한다.
-4. 종료 코드 0만 다음 역할을 실행한다. 2는 대상 서비스 복구, 3은 분석 대기 종료로 남기고 후속 잡을 차단한다. 확인이 필요한 실패도 후속 잡을 차단한다. 재실행은 공통 락을 다시 잡아 새로 확인하고 이미 올라간 정상 이미지는 #808의 단독 배포가 건너뛴다.
+### 중단된 릴리스
 
-실제 어댑터는 요청한 자식 빌드가 종료된 뒤 그 빌드의 결과에서 역할·커밋 SHA·이미지 ID·스크립트 종료 코드를 확인해야 한다. 결과 누락이나 불일치는 후속 잡을 차단한다.
+부모가 취소되거나 종료 확인을 잃으면 호스트의 `active` 릴리스가 남는다. 이를 새 배포가 자동으로 덮어쓰지 않는다. 종합 Jenkins 배포와 최신 수동 배포도 동일 호스트 펜스에서 이를 발견하면 배포나 소스 교체 전에 중단한다. 이미 락을 잡아 실행 중인 하위 작업은 락 해제까지 다른 돌연변이와 직렬화된다.
 
-모의 어댑터에서 부모 취소는 현재 자식에 취소를 전달하고 자식 종료 확인 뒤 락을 해제한다. 실제 어댑터의 `start`는 하위 잡을 만든 경우 그 핸들을 추적해야 한다. `cancelAndAwait`는 하위 실행이 끝나거나 배포 권한이 격리된 뒤에만 반환해야 한다. Jenkins에서 자식 큐 등록 직후 취소, 실행 중 취소, 컨트롤러 재시작과 에이전트 단절 상황에서 이 조건을 검증해야 한다. 종료를 확인할 수 없는 경우까지 현재 모의 시험이 보장하지는 않는다.
-
-비운영 리허설에서는 전용 권한으로 부모 외 직접 실행과 재실행을 막고, 하위 잡의 노드·데몬 고정과 공통 락 유지, 손 배포와의 직렬화를 확인한다. 운영 잡 활성화와 split 전환은 이 검증을 마치고 별도 승인을 받은 뒤 진행한다.
+운영자가 부모·자식 빌드 번호와 대기열을 확인하고 실행기 및 Compose 작업의 종료도 확인한 후, 같은 펜스를 확보한 상태에서 해당 릴리스만 폐기한다. `active/env`의 스냅샷 값을 출력하거나 보관하지 않는다. 이후 이미지 라벨·헬스·스키마를 확인하고 기존 종합 경로 또는 동일 SHA의 선택 서비스를 재실행한다. 부모 상태 조회와 티켓 소비 사이의 취소 경쟁, 컨트롤러 재시작, 노드 단절, 권한 및 공유 마운트 동작은 비운영 실측으로 검증한다. 이 항목이 확인될 때까지 운영 활성화는 보류한다.
 
 ## 비운영 Jenkins 어댑터 검증 절차
 

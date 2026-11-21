@@ -43,3 +43,11 @@ python -B -X utf8 scripts/codex_team.py send S1 --from-role supervisor --live --
 - 전송 중 proxy 호출자가 강제 종료되어 `dispatching`이 남으면 해당 역할 인수·재실행은 보류된다. 복구는 관리자가 (1) 원 호출자/proxy 종료 확인, (2) 외부 팀 SQLite 백업, (3) 수신 inbox·ack·서버 turn 접수 결과 대조, (4) 해당 메시지의 transport만 `dispatching`에서 `unknown`으로 변경, (5) 기존 메시지를 inbox로 처리하는 순서로 한다. 원문·소유자·ack를 지우거나 메시지를 자동 재전송하지 않는다. 이는 프로젝트 소유 팀 DB의 수동 복구이며 Codex 내부 DB를 수정하지 않는다. 현재 전용 복구 CLI는 제공하지 않는다.
 - 현재 창이 정확히 어느 thread인지 모호하면 자동 선택하지 않는다. 표시 이름·프로젝트·사용자의 명시적 선택을 대조한다.
 - 바인딩·idle 전달은 메타데이터만 읽는다. 실행 중 turn은 `thread/turns/list`에서 최신 1개를 `itemsView: notLoaded`로 조회하여 전체 대화를 읽지 않는다. 이 API를 지원하지 않는 구버전 서버에서는 실패 처리하고 inbox로 확인한다. 응답 전체는 4MiB 제한이며 제한 없는 대화 조회나 재시작으로 우회하지 않는다.
+
+## Windows 전달 검증
+
+`peers`의 `source`는 App Server가 기록한 출처다. `vscode`와 `cli`가 표시되더라도 실제로 열려 있는 창과 수신 turn의 유효 승인·샌드박스 정책은 각 수신 창에서 확인한다. 사용자가 선택한 창의 UUID와 대조할 수 없거나 표시와 기대가 다르면 배정을 보류한다. 공용 서버 목록에 나타나지 않는 전경 창은 [단독 실행 절차](codex-team.md#작업자-터미널-연결)의 연결 상태를 확인한다.
+
+실패하면 출력된 메시지 ID를 기준으로 수신 창의 `inbox <역할>`에서 원문을 찾는다. 수신 대상 확인이나 proxy 연결이 배정 저장 뒤에 실패하면 전송 상태가 `pending`으로 남을 수 있다. 실행 중 turn을 찾는 API가 지원되지 않거나 전달 응답을 잃으면 `unknown`으로 남을 수 있다. 수신자는 찾은 기존 원문에 대해 `ack`를 남긴다.
+
+`scripts`에서 `python -B -X utf8 -m unittest test_codex_live test_codex_team -q`로 가짜 App Server 프레임을 사용하는 회귀를 실행할 수 있다. 이 검사는 유휴 `turn/start`, 실행 중 `turn/steer`, 미지원 API의 원인과 inbox 상태, 수신 ack 및 중복 차단을 확인한다. 실제 창에서의 파일 쓰기와 승인 요청 비교에는 사용자가 지정한 Windows IDE·CLI 테스트 창이 필요하다.

@@ -83,5 +83,11 @@ Codex 등급은 `.codex/agent-models.json` 의 `models` 에서 실제 ID 로 바
 - Codex 는 프로젝트를 신뢰(trusted)했을 때만 `.codex/` 를 읽는다. 역할 파일은 sandbox · 승인 정책을 바꾸지 못하므로 읽기 전용은 역할 본문으로만 지킨다.
 - 모델을 바꿀 때는 `.codex/agent-models.json` 을 고치고, 로컬 Codex 모델 캐시가 있으면 대조한 뒤 생성한다:
   `python -X utf8 scripts/sync-agent-skills.py --model-catalog "$env:USERPROFILE/.codex/models_cache.json" --write`
-- 확인: Codex 새 세션에서 이 저장소를 열고 "읽은 지침 파일과 쓸 수 있는 프로젝트 스킬 · 역할을 나열해" 라고 묻는다.
-  `AGENTS.md`, 스킬 4개, 역할 7개가 나오면 된다. 이미 열린 세션은 목록이 갱신되지 않으니 새로 연다.
+
+### Codex 역할 이름이 겹칠 때
+
+Codex CLI 0.171.0에서 신뢰된 프로젝트의 유효한 `.codex/agents/architect.toml`과 사용자 `config.toml`의 `[agents.architect]`가 같은 이름을 등록하면 프로젝트 역할 파일이 우선한다. 같은 설정 계층 안에서는 유효한 `[agents.<역할>]` 등록이 별도 역할 파일보다 먼저 적용되며, 같은 이름의 파일은 중복 경고와 함께 건너뛴다. [Codex 설정 우선순위](https://learn.chatgpt.com/docs/config-file/config-basic#configuration-precedence) · [0.171.0 역할 로더](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/agent-roles/src/loader.rs#L22-L110)
+
+- 설정 파일은 `python -X utf8 scripts/sync-agent-skills.py`로 대조한다. CLI에 번들된 모델과 추론 강도는 `codex debug models --bundled`로, 실행 중인 App Server의 카탈로그는 `model/list`로 확인한다.
+- 실행 중인 App Server에서 저장소 경로를 `cwd`로 지정해 `config/read`를 읽으면 사용자 등록의 출처를 확인할 수 있다. 응답의 `agents`는 설정 테이블이다. 프로젝트 역할 파일을 검색해 얻은 최종 역할 목록은 별도이므로, 여기에 사용자 `architect`가 표시돼도 어느 역할 파일이 선택됐는지는 이 조회만으로 알 수 없다.
+- 이미 생성된 하위 스레드가 있으면 `thread/read`에서 `includeTurns: false`로 역할, 모델, 추론 강도와 부모 스레드를 대조한다. 부모 스레드에 Git SHA가 기록돼 있으면 현재 리비전과 대조한다. 턴 완료 여부는 `thread/turns/list`에서 `itemsView: notLoaded`로 확인할 수 있다. 역할 이름과 모델 카탈로그만 확인했거나 일치하는 실행 기록이 없으면 #717의 실행 검증을 미확인으로 남긴다. [App Server 조회 API](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/app-server/README.md) · [#717](https://github.com/shindonggeun/trading-desk/issues/717)

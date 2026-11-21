@@ -30,15 +30,17 @@ import argparse
 import getpass
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from . import otp
+from .account_owner import AccountOwnerStore
 from .auth import MIN_PASSWORD, Auth
-from .db import make_engine, migrate, now
+from .db import make_engine, migrate, now, require_schema_at_head
 from .settings import load
 
 
@@ -577,11 +579,66 @@ def _utf8_out() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 
+def _owner_user_id(value: str) -> int:
+    if value.isascii() and value.isdecimal() and len(value) <= 10:
+        user_id = int(value)
+        if 1 <= user_id <= 2_147_483_647:
+            return user_id
+    raise argparse.ArgumentTypeError("양의 정수 계정 ID가 필요합니다.")
+
+
+def _owner_generation(value: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{32}", value) is None:
+        raise argparse.ArgumentTypeError("상태 조회에서 확인한 세대가 필요합니다.")
+    return value
+
+
+def _account_owner_command(args: argparse.Namespace) -> int:
+    engine = None
+    failure = "계좌 소유자 설정을 확인하지 못했습니다."
+    try:
+        database_url = load().database_url
+        require_schema_at_head(database_url)
+        engine = make_engine(database_url)
+        store = AccountOwnerStore(engine)
+        binding = store.binding()
+        if args.command == "account-owner-status":
+            if binding is not None:
+                if binding.user_id is None:
+                    print(f"계좌 소유자 슬롯이 비어 있습니다. 세대 {binding.generation}")
+                else:
+                    print("계좌 소유자가 이미 연결되어 있습니다.")
+                return 0
+        elif (
+            binding is not None
+            and binding.user_id is None
+            and binding.generation == args.generation
+            and store.bind_verified(verified_user_id=args.user_id, expected_vacancy=binding) is not None
+        ):
+            print("계좌 소유자 바인딩을 저장했습니다.")
+            return 0
+    except (OSError, RuntimeError, SQLAlchemyError, ValueError):
+        # DB exceptions can carry URLs or account details. Keep the CLI output generic.
+        pass
+    finally:
+        if engine is not None:
+            engine.dispose()
+    print(failure, file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     _utf8_out()
     parser = argparse.ArgumentParser(prog="python -m desk.cli")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("migrate", help="bring the database schema to head")
+    sub.add_parser("account-owner-status", help="show whether the explicit owner slot is vacant")
+    bind_owner = sub.add_parser(
+        "bind-account-owner", help="bind a verified existing account to a vacant owner slot", allow_abbrev=False,
+    )
+    bind_owner.add_argument("--user-id", required=True, type=_owner_user_id, help="verified existing account ID")
+    bind_owner.add_argument("--generation", required=True, type=_owner_generation, help="generation from status")
+    bind_owner.add_argument("--confirm", action="store_true", required=True, help="confirm account authority was verified")
     sub.add_parser("otp-key", help="print a new DESK_OTP_KEY (Fernet key) for the server env")
     for name in ("create-user", "set-password", "revoke-sessions", "disable-otp"):
         sub.add_parser(name).add_argument("username")
@@ -747,6 +804,8 @@ def main(argv: list[str] | None = None) -> int:
                 json.dump(report, f, ensure_ascii=False, indent=1)
         return 0
 
+    if args.command in ("account-owner-status", "bind-account-owner"):
+        return _account_owner_command(args)
     settings = load()
     if args.command == "unfinished":
         return _unfinished(settings.database_url)

@@ -126,7 +126,7 @@ from .market_flow import MarketFlow
 from .portfolio import Portfolio
 from .prices import INTERVALS, PriceSource, kis_quote
 from .related import collect as collect_related
-from .run_read import RunReader
+from .run_read import RunReader, last_done_seq
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
 from .runner import rate_limited as run_rate_limited
 from .sectors import Duplicate, NotFound, Sectors, clean_name, clean_tickers
@@ -1737,6 +1737,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         async def frames():
             seq = start
+            terminal_wait_expired = False
             while not await request.is_disconnected():
                 # Re-check every round: logout, revoke or expiry ends an open stream too.
                 user = await asyncio.to_thread(auth.resolve, token, touch=False)
@@ -1755,20 +1756,25 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     seq = event["seq"]
                     yield f"id: {seq}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if events:
+                    terminal_wait_expired = False
                     continue
-                if batch is not None and batch.terminal_seq is not None and seq >= batch.terminal_seq:
-                    return
                 status = batch.status if batch is not None else store.run_status(run_id)
-                if status is None or (batch is None and status in TERMINAL):
+                if status is None:
                     return
+                if status in TERMINAL:
+                    terminal_seq = (batch.terminal_seq if batch is not None
+                                    else await asyncio.to_thread(last_done_seq, engine, run_id))
+                    if terminal_wait_expired or (terminal_seq is not None and seq >= terminal_seq):
+                        return
                 try:
                     await asyncio.wait_for(waiter.wait(), HEARTBEAT_SEC)
                 except TimeoutError:
-                    # A terminal row is written before the terminal event. Keep
-                    # its listener until that event arrives or one heartbeat passes.
-                    if batch is not None and status in TERMINAL:
-                        return
-                    yield ": ping\n\n"
+                    # A terminal row can commit before its final events. Re-read
+                    # once after the wait even if no wake-up reached this process.
+                    if status in TERMINAL:
+                        terminal_wait_expired = True
+                    else:
+                        yield ": ping\n\n"
 
         cache = _RUN_READ_CACHE if run_reader is not None else {"Cache-Control": "no-cache"}
         return StreamingResponse(frames(), media_type="text/event-stream", headers={**cache, "X-Accel-Buffering": "no"})

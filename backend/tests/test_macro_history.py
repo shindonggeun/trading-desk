@@ -4,6 +4,8 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from desk import macro_history as mh
 from desk import macro_news as m
 from desk import news_history
@@ -109,6 +111,38 @@ def test_a_429_keeps_the_last_gdelt_values_for_the_rest_of_the_pass(tmp_path):
     assert all(t["source"] == "gdelt" for t in cache.themes.values())    # no Google News mixed in
     second = m.THEMES[1].id
     assert cache.themes[second] == before[second] and cache.gdelt_resume_at is not None
+
+
+def test_a_headline_429_still_records_the_two_successful_timelines(tmp_path):
+    previous = {theme.id: {"source": "gdelt", "tone": 2.0} for theme in m.THEMES}
+    cache = m.Cache(themes=previous, cache_file=tmp_path / "macro_news.json")
+    provider = Gdelt(refuse_at=3)
+    asyncio.run(cache.refresh(gdelt=provider, now=NOW, rss=_rss))
+
+    assert provider.modes == ["TimelineVolRaw", "TimelineTone", "ArtList"]
+    assert cache.themes == previous and cache.gdelt_resume_at is not None
+    theme_id = m.THEMES[0].id
+    assert {p.name for p in cache.history_dir().glob("*.json")} == {
+        f"{theme_id}.vol.2026.json", f"{theme_id}.tone.2026.json",
+    }
+    days = news_history.load(cache.history_dir(), first_year=2026)[theme_id]
+    assert days["vol"]["2026-11-16"] == 72.0 and days["tone"]["2026-11-16"] == -1.0
+
+
+@pytest.mark.parametrize("headlines_too", [True, False])
+def test_each_theme_keeps_its_timelines_once_before_optional_headlines(headlines_too):
+    provider = Gdelt()
+    theme = m.THEMES[0]
+    timeline_modes = ["TimelineVolRaw", "TimelineTone"]
+    kept = []
+
+    def keep(theme_id, volume, tones):
+        assert theme_id == theme.id and volume and tones
+        kept.append(provider.modes.copy())
+
+    asyncio.run(m.fetch_theme(provider, theme, NOW, headlines_too=headlines_too, keep=keep))
+    assert kept == [timeline_modes]
+    assert provider.modes == timeline_modes + (["ArtList"] if headlines_too else [])
 
 
 def test_the_default_pass_interval_is_an_hour(monkeypatch):

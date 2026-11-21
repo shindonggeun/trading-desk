@@ -311,6 +311,15 @@ def features(market: str, round_: int, day: date, series: dict[str, Sequence],
 
 
 LABELS = ("oc", "cc")      # open -> close (the call), or the previous close -> close (the gap included)
+ANSWER = "@answer"         # series[target + ANSWER]: the bars the answer is read from (#604 KRX's KOSPI)
+
+
+def answer_bars(market: str, series: dict[str, Sequence]) -> Sequence:
+    """The bars ``label`` reads: the answer series (desk.day_call_krx, KRX's official KOSPI) when there
+    is one, else the target's own. The features never read the answer series - they stay on the bars
+    a live call has at its cutoff (Yahoo's)."""
+    target = MARKETS[market].target
+    return series.get(target + ANSWER) or series[target]
 
 
 def previous_session(market: str, day: date) -> date:
@@ -325,7 +334,7 @@ def label(market: str, day: date, series: dict[str, Sequence], kind: str = "oc",
     while the session is not over at ``now`` (default: the real clock) - Yahoo's bar of a session in
     progress is not an answer."""
     m = MARKETS[market]
-    bars = series[m.target]
+    bars = answer_bars(market, series)
     closes, days = _index(m.target, bars)
     i = days.get(day)
     if i is None or i == 0 or closes[i] > (now or datetime.now(ZoneInfo("UTC"))):

@@ -93,10 +93,12 @@ class TokenStore:
     """The shared rows. ``minter``: this process may issue (DESK_ROLE all | collector)."""
 
     def __init__(self, engine: Engine, *, role: str, clock: Callable[[], datetime] = lambda: datetime.now(UTC),
-                 wait_sec: float = WAIT_SEC, poll_sec: float = POLL_SEC) -> None:
+                 wait_sec: float = WAIT_SEC, poll_sec: float = POLL_SEC,
+                 can_issue: Callable[[], bool] | None = None) -> None:
         self._engine = engine
         self.role = role
         self.minter = role in MINTERS
+        self._can_issue = can_issue
         self._clock = clock
         self._wait_sec, self._poll_sec = wait_sec, poll_sec
 
@@ -292,6 +294,8 @@ class TokenSlot:
                 row, cur, use = await self._decide(refused, ahead, gap)
                 if use:
                     return cur, False
+                if store._can_issue is not None and not await asyncio.to_thread(store._can_issue):
+                    raise TokenUnavailable("broker issuer lock not held")
                 counted = self._counted(row, cur)
                 at = store._clock()
                 refusals = self._refusals(row, cur, at)

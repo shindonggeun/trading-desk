@@ -280,3 +280,20 @@ def test_a_token_that_works_after_a_refusal_ends_the_backoff_run(engine):
     assert _row(engine, "kis_rest")["refusals"] == 1                # a fresh run of one, not the old run + 1
     clock.tick(601)                                                 # 600 s (as before #688), not 1800 s
     assert asyncio.run(minter.get(issue, refused="tok-2", gap=gap))[0] == "tok-3"
+
+
+@pytest.mark.parametrize("role", ["all", "collector"])
+def test_lost_issuer_lock_blocks_provider_calls_and_keeps_existing_token(engine, role):
+    clock, issue = Clock(), Issuer(life=60)
+    held = True
+    slot = _store(engine, role, clock, can_issue=lambda: held).slot("toss", SECRET)
+    assert asyncio.run(slot.get(issue))[0] == "tok-1"
+
+    held = False
+    assert asyncio.run(slot.get(issue))[0] == "tok-1"
+    clock.tick(61)
+    with pytest.raises(TokenUnavailable, match="issuer lock not held"):
+        asyncio.run(slot.get(issue))
+    assert asyncio.run(slot.keep(issue, ahead=300)) is None
+    assert issue.count == 1
+    assert _row(engine)["lease_owner"] is None

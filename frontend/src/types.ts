@@ -787,6 +787,8 @@ export interface Run {
   outcome?: Outcome | null;
   outcome_status?: OutcomeStatus | null;
   scored_at?: string | null;
+  /** #801 대기 중일 때 제공되는 대기열 스냅숏 */
+  queue?: { ahead: number; running: number; analyst: "up" | "down" | null } | null;
   /** #437 run 이 끝날 때 고정한 1주 · 1개월 방향 전망 — 옛 run · 만들지 못한 run 은 null */
   outlook?: RunOutlook | null;
 }
@@ -1833,6 +1835,9 @@ export interface IntradaySpotBar {
   t: string; // 봉 끝 KST ISO(+09:00), 08:45 부터 bucket 격자. 스냅샷 없는 봉은 빠진다. 첫 봉 *_delta = 그 봉 누적값
   foreign: number | null; institution: number | null; individual: number | null; // 누적 억원
   foreign_delta: number | null; institution_delta: number | null; individual_delta: number | null; // 구간 억원
+  /** #743 KRX 프로그램매매 순매수(#677 스냅숏) — 누적 억원 · 구간 억원. 09:00 전 · 못 받은 봉은 null */
+  program_total?: number | null; program_non_arbitrage?: number | null; program_arbitrage?: number | null;
+  program_total_delta?: number | null; program_non_arbitrage_delta?: number | null; program_arbitrage_delta?: number | null;
 }
 export interface IntradayFuturesBar {
   t: string;
@@ -1841,7 +1846,7 @@ export interface IntradayFuturesBar {
   price: number | null;
 }
 export interface IntradayTurn {
-  t: string; market: "futures" | "kospi" | "kosdaq"; who: "foreign"; kind: "buy_turn" | "sell_turn"; value: number | null;
+  t: string; market: "futures" | "kospi" | "kosdaq"; who: "foreign" | "program_total" | "program_non_arbitrage"; kind: "buy_turn" | "sell_turn"; value: number | null;
 }
 export interface IntradayFlow {
   supported: boolean; // false 면 KIS 키 없음
@@ -1849,6 +1854,8 @@ export interface IntradayFlow {
   spot: { kospi: IntradaySpotBar[]; kosdaq: IntradaySpotBar[] };
   futures: IntradayFuturesBar[];
   turns: IntradayTurn[];
+  /** #743 프로그램 전체 · 비차익의 매수 · 매도 전환(데드밴드 · 3분 유지) */
+  program_turns?: IntradayTurn[];
 }
 
 /** #443 · #444 코스피200 선물 근월물 주간 · 야간 시세 — GET /api/market/futures/quote */
@@ -2497,7 +2504,70 @@ export interface ChartReadFrame {
   error?: string;
 }
 
+/** #751 chart-read's historical structure candidates, by viewing horizon. */
+export type AccumulationViewKey = "short" | "mid" | "long";
+
+export interface AccumulationBand {
+  low: number;
+  high: number;
+  score: number;
+  basis: string[];
+  role: "accumulation" | "supply";
+  distance_pct: number;
+  inside?: boolean;
+}
+
+export interface AccumulationStats {
+  n: number;
+  bounce_pct: number | null;
+  baseline_pct: number | null;
+  valid: { n: number; bounce_pct: number | null };
+  edge_pct: number | null;
+  edge_needed_pct: number | null;
+  horizon_bars: number;
+}
+
+type AccumulationViewBase = {
+  view: AccumulationViewKey;
+  label: string;
+  timeframe: "60m" | "240m" | "1d" | "1w";
+  below: AccumulationBand[];
+  above: AccumulationBand[];
+};
+
+export type AccumulationView = AccumulationViewBase & (
+  | { error: string; sentence: null }
+  | {
+      error?: never;
+      timeframe_ko: string;
+      stats: AccumulationStats | null;
+      reference_only: boolean;
+      small_sample: boolean;
+      reference_label: string | null;
+      sentence: string | null;
+    }
+);
+
+export interface AccumulationLeg {
+  direction: "up" | "down";
+  from: { at: string | null; price: number };
+  to: { at: string | null; price: number };
+  pct: number;
+  bars: number;
+  days: number | null;
+  pct_per_day: number | null;
+  live: boolean;
+}
+
+export interface AccumulationLegs {
+  items: AccumulationLeg[];
+  accelerating: boolean;
+  sentence: string | null;
+}
+
 export interface ChartRead {
+  accumulation?: (Record<AccumulationViewKey, AccumulationView | null> & { note: string }) | null;
+  legs?: Record<AccumulationViewKey, AccumulationLegs | null> | null;
   ticker: string;
   generated_at: string;
   timeframes: ChartReadFrame[];

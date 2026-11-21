@@ -14,6 +14,8 @@ os.environ.setdefault("DESK_MORNING_BRIEF_AT", "off")    # #571: no automatic mo
 os.environ["DESK_KIS_APP_KEY"] = ""
 os.environ["DESK_KIS_APP_SECRET"] = ""
 os.environ["DESK_KRX_API_KEY"] = ""                       # #601 nor call KRX with a real key
+os.environ["DESK_REDIS_SENTINELS"] = ""                   # #689 nor share cache entries through a real Redis
+os.environ["DESK_REDIS_URL"] = ""
 from sqlalchemy import text
 
 from desk.db import make_engine, metadata
@@ -22,7 +24,6 @@ from desk.db import make_engine, metadata
 # no shard gets two; a test missing here only balances less well. Every other test counts as LIGHT.
 SLOW = {
     "tests/test_day_call.py::test_the_backtest_holds_out_the_last_90_days_and_the_server_reads_the_same_numbers": 29,
-    "tests/test_day_call.py::test_the_cli_writes_the_model_and_the_report": 24,
     "tests/test_channels.py::test_on_a_random_walk_each_line_reads_like_its_baseline": 13,
     "tests/test_day_call.py::test_a_call_from_the_committed_model_has_the_contract_shape": 10,
     "tests/test_day_call.py::test_the_held_out_sessions_choose_nothing": 9,

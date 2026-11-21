@@ -125,10 +125,18 @@ class RoutingTests(unittest.TestCase):
             self.client.target("old")
         self.client.call.assert_not_called()
 
+    def test_push_refuses_mismatched_target_before_dispatch(self):
+        self.client.loaded = Mock(return_value=["selected"])
+        self.client.call = Mock(return_value={"thread": {"id": "other", "status": {"type": "idle"}}})
+        with self.assertRaisesRegex(live.LiveError, "수신 ID"):
+            self.client.push("selected", "hello")
+        self.client.call.assert_called_once_with("thread/read", {
+            "threadId": "selected", "includeTurns": False})
+
     def test_ephemeral_and_subagent_are_not_independent_targets(self):
         for field in ({"ephemeral": True}, {"source": {"subAgent": {}}}, {"source": "subAgent"}):
             self.client.loaded = Mock(return_value=["id"])
-            self.client.call = Mock(return_value={"thread": field})
+            self.client.call = Mock(return_value={"thread": {"id": "id", **field}})
             with self.assertRaisesRegex(live.LiveError, "독립"):
                 self.client.target("id")
             self.assertFalse(live.independent(field))

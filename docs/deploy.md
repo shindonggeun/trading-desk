@@ -19,7 +19,7 @@
 | 파일 | 내용 |
 |------|------|
 | `backend/backend.Dockerfile` (+ `.dockerignore`) | 멀티 스테이지. 의존성 층과 소스 층을 갈라 `desk/` 만 바뀌면 TradingAgents 를 다시 설치하지 않는다. 비루트 `app` |
-| `backend/docker-compose-backend.yml` | `backend-prod`. 앱이 읽는 키만 `environment` 로 넘기고 필수 키는 `${KEY:?}` 로 막는다 |
+| `backend/docker-compose-backend.yml` | `backend-prod`(+ 나누기를 켜면 `collector-prod` · `analyst-prod`, 12절). 앱이 읽는 키만 `environment` 로 넘기고 필수 키는 `${KEY:?}` 로 막는다 |
 | `frontend/frontend.Dockerfile` (+ `.dockerignore`) | 멀티 스테이지. Vite 빌드 → nginx. `nginx.conf.template` 의 `${BACKEND_UPSTREAM}` 을 기동 시 치환 |
 | `frontend/docker-compose-frontend.yml` | `web-prod`. 외부에 여는 유일한 컨테이너 |
 | `docker-compose-local.yml` | PC 에서 PostgreSQL 경로를 시험할 때만 쓰는 DB |
@@ -166,6 +166,21 @@ scripts/deploy.sh "$(git rev-parse --short origin/develop)" backend   # backend/
 
 ### 2-5. Jenkins 잡 · credential 등록 (사람이 한 번)
 
+#### 독립 백엔드 잡 등록 리허설 (#785)
+
+세 역할 잡의 비활성 XML은 `deploy/jenkins/trading-desk/`에 있다. 기존 멀티브랜치 잡은 아래 절차로 관리한다. Infra의 Jenkins 설정에는 Job DSL과 JCasC 등록 절차가 없으므로 역할 잡의 명세는 이 저장소에서 관리한다.
+
+`scripts/jenkins/register-disabled-backend-jobs.py`는 대상 컨트롤러의 `trading-desk` 폴더에서 세 잡의 존재를 읽어 출력한다. 비운영 컨트롤러에 같은 폴더와 Pipeline 플러그인을 준비한 뒤 기본 명령으로 목록을 대조한다. CLI가 읽기와 생성에 사용하는 인증은 Jenkins 환경에서 이미 설정된 방식을 쓴다. [Jenkins CLI 문서](https://www.jenkins.io/doc/book/managing/cli/)
+
+```bash
+python -B -X utf8 scripts/jenkins/register-disabled-backend-jobs.py -- java -jar jenkins-cli.jar -s "$JENKINS_REHEARSAL_URL"
+python -B -X utf8 scripts/jenkins/register-disabled-backend-jobs.py --apply -- java -jar jenkins-cli.jar -s "$JENKINS_REHEARSAL_URL"
+```
+
+`--apply`는 누락된 비활성 잡만 생성한다. 이미 있는 잡은 UI에서 별도로 상태와 트리거를 확인한다. 등록이 중간에 실패하면 원인을 확인한 뒤 다시 실행할 수 있다. 생성된 세 잡은 각각 비활성이며 트리거가 비어 있어야 한다.
+
+#### 기존 자동 배포 잡 설정
+
 작업 세션은 자격 증명을 받지 않는다. 값 자리는 `<...>` 이고 값은 채팅 · 로그 · 커밋에 쓰지 않는다. 순서:
 
 1. **Vault 정책 · AppRole** — Infra 저장소의 `vault/scripts/bootstrap-trading-desk.sh` 를 ai-host 에서 root 토큰으로 돌린다(Infra `vault/README.md` trading-desk 절).
@@ -304,6 +319,15 @@ docker run --rm -it -p 127.0.0.1:1455:1455 -v trading-desk-tradingagents-home:/h
 그다음 `.env.runtime` 에서 `DESK_FAKE_RUNS=false`, 모델 ID(`TRADINGAGENTS_QUICK_THINK_LLM` · `TRADINGAGENTS_DEEP_THINK_LLM`)를 채우고 `scripts/deploy.sh HEAD backend`.
 속도 옵션 env 4개(`TRADINGAGENTS_DEBATE_PARALLEL_FIRST_ROUND` · `TRADINGAGENTS_RISK_PARALLEL_FIRST_ROUND` · `TRADINGAGENTS_QUICK_THINK_REASONING_EFFORT` · `TRADINGAGENTS_DEEP_THINK_REASONING_EFFORT`)는 비워 두면, 보고서 재사용 `DESK_REUSE_REPORTS_MIN` 은 0 이면 꺼진다 — README "ChatGPT 플랜으로 실제 실행".
 
+**토큰 갱신을 여러 프로세스가 함께 쓸 때(#766, 백엔드 나누기)**: 액세스 토큰은 1시간이고, 갱신할 때마다 refresh token 이 바뀐다 —
+이미 쓴 refresh token 을 다시 보내면 OpenAI 가 로그인을 끝낸다. 라이브러리(`tradingagents.llm_clients.chatgpt_auth.access_token`)가
+갱신을 볼륨의 `chatgpt-auth.json.lock` 잠금(`flock`) 안에서만 하고, 잠금을 잡은 뒤 파일을 다시 읽어 다른 프로세스가 이미 갱신했으면
+그 토큰을 쓴다. 새 토큰은 임시 파일에 쓴 뒤 원자적으로 바꾼다. 그래서 api(AI 채팅)와 analyst(분석 · 리포트 · 아침 시황)가 같은 볼륨을
+써도 갱신은 한 번이다 — `backend/tests/test_chatgpt_refresh.py` 가 독립 프로세스 둘과 가짜 OAuth(회전 · 재사용 거절)로 이를 확인하고,
+TradingAgents SHA 를 올려 이 잠금이 빠지면 여기서 깨진다. 전제: 세 컨테이너가 **같은 호스트의 같은 명명 볼륨**
+(`trading-desk-tradingagents-home`, local 드라이버)을 같은 사용자(`app`)로 쓴다. NFS 같은 네트워크 볼륨이나 다른 호스트로 나누면 `flock` 이
+보장되지 않으니 그때는 갱신을 한 프로세스로 모아야 한다.
+
 ## 6. 토스증권 Open API
 
 - `.env.runtime` 에 `DESK_BROKER=toss`, `TOSS_CLIENT_ID` · `TOSS_CLIENT_SECRET`(· `TOSS_ACCOUNT_SEQ`).
@@ -368,3 +392,105 @@ docker run --rm -it -p 127.0.0.1:1455:1455 -v trading-desk-tradingagents-home:/h
 - 그다음부터 KRX 영업일 08:30 KST 뒤 첫 패스(15분 간격)가 전 영업일치를 `krx_daily` 에 쌓는다. 서버가 쉬었으면 최근 2주 중 빠진 날을 채운다.
 - 과거치: `ssh -t homelab-backend-server docker exec -it trading-desk-backend-prod python -m desk.cli krx backfill --api kospi_dd_trd --from 2015-01-01`
   (이미 받은 날은 건너뛴다 · 기본 `--max-calls 3000`, 키 한도는 하루 10,000건). 진행은 `python -m desk.cli krx status`.
+
+## 12. 백엔드 나누기 — api · collector · analyst (#688)
+
+같은 이미지(`trading-desk-backend:prod`)를 역할(`DESK_ROLE`, `backend/desk/roles.py`)만 달리해 컨테이너 3개로 띄운다. **기본은 꺼짐**이다 — `backend-prod` 하나가 `all` 로 지금처럼 돈다.
+
+| 서비스 · 컨테이너 | 역할 | 네트워크 | 메모리 상한 |
+|---|---|---|---|
+| `backend-prod` · `trading-desk-backend-prod` | 꺼짐 `all` / 켜짐 `api`(화면 · SSE · 로그인, run 은 `queued` 만 쓴다) | `desk`(웹이 이름으로 닿는 유일한 백엔드) | `DESK_BACKEND_MEM_LIMIT`(기본 2g, 켜면 1g 권장) |
+| `collector-prod` · `trading-desk-collector-prod` | `collector`(시세 · 수급 · 알림 · 정기 작업, **브로커 토큰 발급**) | 프로젝트 `default`(밖으로 나가는 연결만) | `DESK_COLLECTOR_MEM_LIMIT`(기본 1g) |
+| `analyst-prod` · `trading-desk-analyst-prod` | `analyst`(LLM run 을 DB 대기열에서 가져감 · 아침 시황 · 리포트 · 채점). **하나만** — 두 번째는 PG advisory lock 에 막힌다 | 프로젝트 `default` | `DESK_ANALYST_MEM_LIMIT`(기본 2g) |
+
+- **스위치**: Vault `kv/trading-desk/backend/prod/env` 의 `DESK_BACKEND_SPLIT` — `0`(기본) | `1`. `scripts/deploy-compose.sh` 가 읽어 `1` 이면 compose profile `split` 을 켜고 `backend-prod` 를 `api` 로 띄운다(셸 환경 `DESK_API_ROLE`). 다른 값이면 바꾸기 전에 멈춘다. compose 를 손으로 부르지 않는다 — 스위치와 역할을 맞추는 것이 이 스크립트다.
+- **순서**: api 를 먼저 `up --wait`(기동 시 Alembic `upgrade head`), healthy 가 된 뒤 collector · analyst(`--no-deps`, 이미 head 라 upgrade 는 아무것도 하지 않는다). 확인 · 되돌림은 2-1 · 2-2 그대로 — 세 컨테이너 모두 커밋 라벨 · 재시작 없음 · health 를 보고, 실패하면 셋 다 직전 이미지로.
+- **끄기**: `DESK_BACKEND_SPLIT=0` 으로 바꾸고 다시 배포한다(Jenkins `FORCE_DEPLOY` 또는 `scripts/deploy.sh HEAD backend`). 스크립트가 남은 collector · analyst 를 **api 를 `all` 로 바꾸기 전에** 지운다 — `all` 과 `collector` 가 함께 떠 브로커 토큰을 둘이 발급하지 않게.
+- **진행 중인 분석**: 배포 전 확인(`desk.cli unfinished`)은 DB 를 읽으므로 그대로다. 켜진 상태에서 api 재시작은 run 을 끊지 않고, analyst 재시작은 `running` 만 실패로 바꾸며 `queued` 는 남는다.
+
+### 켜기 전 선행 조건 (모두 머지 · 배포된 뒤, 사용자 승인으로 켠다)
+
+1. **ChatGPT 로그인 토큰 동시 갱신(#766)**: `chatgpt-auth.json`(볼륨 공유)을 AI 채팅(api)과 run · 리포트(analyst)가 함께 쓴다. 두 프로세스가 동시에 갱신하면 refresh token 회전으로 로그인이 끊길 수 있다.
+2. ~~**run 대기열**~~ 머지됨(cd85df1): api 는 `queued` 만 쓰고 analyst 가 가져가 실행한다. analyst 가 없으면 run 이 `queued` 로 남는다.
+3. ~~**#750**~~ 머지됨(2cde3c3): run 이벤트를 PostgreSQL `LISTEN/NOTIFY` 로 알려 analyst 가 쓴 이벤트로 api 의 SSE 가 깨어난다.
+4. **#760 · #690**: 화면과 run 메모가 함께 읽는 캐시(수급 · 선물 · 시세 …)를 Redis 로 나누고, collector 가 모은 시세 · 수급 · 알림을 화면 SSE 로 흘린다. 없으면 api 의 캐시가 collector 의 수집을 보지 못한다.
+
+켠 뒤 확인: `docker ps --filter name=trading-desk` 에 컨테이너 3개가 healthy, 로그의 브로커 토큰 발급 줄이 `collector` 에서만(`toss token issued (collector)`), `GET /api/status` 의 작업들이 오류 없이 도는지.
+
+독립 잡을 연결하려면 #776의 공통 스크립트에 이미지 빌드와 서비스 단독 배포·검증·되돌림 진입점이 먼저 필요하다. 현재 스크립트는 이미지를 한 번 빌드한 뒤 API를 먼저 올리고 split 서비스를 일괄 배포·되돌린다. #776에서 반영된 PostgreSQL 발급자 잠금은 all과 collector의 중복 발급을 막는다.
+
+연결 시에는 기존 백엔드 잡이 develop의 CI 성공을 확인하고 공통 배포 락 안에서 빌드한 불변 이미지를 역할 잡에 전달한다. 역할 잡은 직접 SCM 트리거 없이 호출하고, 서비스 하나의 재실행도 기존 백엔드 잡을 통해 같은 락으로 직렬화한다. API 마이그레이션과 헬스 확인이 실패하면 후속 잡을 호출하지 않는다. #776의 서비스 진입점에서 커밋 라벨·헬스·무재시작·서비스별 되돌림을 확인하고, analyst의 분석 대기와 collector의 발급자 조건을 검증한다. split 전환과 운영 잡 활성화는 비운영 리허설 이후 진행한다.
+
+## 13. 공유 캐시 — 홈랩 Redis (#689, 선택)
+
+api · collector · analyst(#688) 가 따로 뜨면 같은 수급 · 시세를 프로세스마다 다시 부른다. Redis 를 켜면 collector 가 읽은 값을 api 가 먼저 읽는다.
+**비워 두면 지금처럼 프로세스 메모리 캐시만** 쓴다(아무 키도 필수가 아니다). 넣는 것 · 넣지 않는 것은 [security.md](security.md) §5.2.
+**선행 조건: 백엔드가 api · collector · analyst 로 나뉘어 있을 것**(compose 의 `DESK_ROLE`). `all` 한 프로세스면 나눠 쓸 상대가 없어 이득이 없다.
+
+- 키 이름에 코드 지문(`desk/` 소스의 해시)이 들어간다. 배포하면 새 키로 시작하고 옛 빌드의 값은 TTL 까지 그냥 남았다 사라진다 — 값 모양이 바뀐 배포가 옛 값을 읽어 화면이 깨지는 일이 없다.
+- 운영 `DESK_REDIS_CACHE_KEY` 는 운영에만 쓴다. 개발 · 가짜 실행(`DESK_FAKE_RUNS`) 프로세스가 같은 Redis 를 가리켜도 키가 다르면 서로의 값을 보지도 덮지도 못한다.
+- Redis 가 응답하지 않을 때: 비동기 호출은 0.25초에서 끊고, 워커 스레드의 동기 호출(갭 · 오실레이터)은 Sentinel 3대를 차례로 물어 최대 1초 남짓이다. 그 뒤 30초는 건너뛴다.
+
+| 키 | 값 |
+|----|----|
+| `DESK_REDIS_SENTINELS` | `192.168.0.11:26379,192.168.0.13:26379,192.168.0.12:26379` (Infra `redis/README.md`) |
+| `DESK_REDIS_MASTER` | 비우면 `master-redis` |
+| `DESK_REDIS_PASSWORD` | Redis `requirepass` — **Vault 에만** |
+| `DESK_REDIS_CACHE_KEY` | 이 앱 전용 무작위 비밀(32바이트, base64). 키 이름을 HMAC 으로 가리고 값을 봉인한다 — **Vault 에만**. 비면 Redis 를 설정해도 꺼진다. 바꾸면 기존 값은 TTL 까지 무시될 뿐이다 |
+| `DESK_REDIS_URL` | Sentinel 대신 단일 서버(`redis://host:6379/0`, 시험용). Sentinel 이 있으면 무시 |
+
+| 공유 이름(`td:<이름>:…`) | 쓰는 쪽 → 읽는 쪽 | TTL |
+|------|------|-----|
+| `market_flow` · `futures_flow` | collector 스냅샷 잡(`fresh`) → api 카드. 실패한 읽기는 넣지 않는다 | 각 캐시 TTL, 최소 90초(1분 스냅샷 사이를 잇는다) |
+| `quote` | 먼저 읽은 프로세스 → 나머지 | 10초 |
+| `sr` · `gap_fill` · `oscillator` | 계산한 프로세스 → 나머지(메모리 → Redis 2단) | 각 캐시 TTL |
+
+나머지 메모리 캐시(추정치 종가 · 바이낸스 추정 · 공시 · 실시간 봉 · 롱숏 · NQ 한도 · 종목 프로필 · 예상치)는 한 프로세스만 쓰거나 값이 JSON 으로 돌아오지 않아 그대로 둔다.
+
+### 켜기 (사람이 한 번)
+
+```bash
+# 1) Vault 에 키 4개를 더한다 — PATCH(merge) 라 다른 키는 그대로다(POST 는 secret 전체를 덮어쓴다).
+#    토큰 · 비밀번호는 read -s 로 받아 파이프로만 넘긴다(argv · 셸 기록 · 파일에 남기지 않는다). 토큰은 3절처럼 ui-trading-desk 계정에서.
+#    캐시 키는 여기서 만들어 바로 넣는다(화면에 내지 않는다)
+read -rs -p 'vault token: ' VAULT_TOKEN; echo
+read -rs -p 'redis password: ' P; echo
+K=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+printf '%s\n%s' "$P" "$K" | jq -Rs 'split("\n") as [$p, $k]
+  | {data: {DESK_REDIS_SENTINELS: "192.168.0.11:26379,192.168.0.13:26379,192.168.0.12:26379",
+            DESK_REDIS_MASTER: "master-redis", DESK_REDIS_PASSWORD: $p, DESK_REDIS_CACHE_KEY: $k}}' \
+  | curl -sS --fail -o /dev/null -X PATCH --header 'Content-Type: application/merge-patch+json' \
+      --header @<(printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN") --data @- \
+      https://vault.8llow8llowme.com/v1/kv/data/trading-desk/backend/prod/env && echo 넣음
+curl -sS --fail --header @<(printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN") \
+  https://vault.8llow8llowme.com/v1/kv/data/trading-desk/backend/prod/env | jq -r '.data.data | keys[]' | grep REDIS   # 이름만 확인
+unset VAULT_TOKEN P K
+# 2) Jenkins trading-desk-backend 를 FORCE_DEPLOY 로 (손 배포면 .env.runtime 에 같은 4줄 → scripts/deploy.sh HEAD backend)
+```
+
+### 연결 확인 (배포 뒤)
+
+```bash
+ssh homelab-backend-server 'docker logs trading-desk-backend-prod 2>&1 | grep -E "shared cache (on|unreachable)" | tail -3'
+#   shared cache on (sentinel master-redis via 3 hosts)   ← 켜짐
+#   shared cache unreachable (...) - memory only for 30s  ← 닿지 않음: 앱은 메모리 캐시로 계속 돈다
+```
+
+- `/api/status` 의 `shared_cache`: `on` · `down_sec`(건너뛰는 남은 초) · `hits` · `misses` · `writes` · `skipped` ·
+  `rejected`(봉인 · 검사에 걸린 값 — 0 이 아니면 캐시 키가 바뀌었거나 누가 `td:` 아래에 쓴다) · `errors` — 이 프로세스 것.
+- 키 확인(master 호스트 main-server 에서). 키 이름은 `td:<종류>:<HMAC>` 라 종목이 보이지 않고 값은 봉인돼 있다. 비밀번호는 argv 대신 env 로:
+
+```bash
+ssh -t homelab-main-server
+read -rs -p 'redis password: ' REDISCLI_AUTH; echo; export REDISCLI_AUTH
+docker exec -e REDISCLI_AUTH redis-node1 redis-cli --scan --pattern 'td:*' | cut -d: -f2 | sort | uniq -c   # 종류별 개수
+docker exec -e REDISCLI_AUTH redis-node1 sh -c 'redis-cli --scan --pattern "td:*" | head -50 | while read k; do redis-cli ttl "$k"; done' | sort -n | head -3   # -1 이 나오면 TTL 없는 키(버그)
+unset REDISCLI_AUTH
+```
+
+### 전 · 후 측정 (#689 완료 기준)
+
+1. 켜기 **전**, 장중(09:00–15:30 KST)에 `GET /api/perf/timings?reset=1` 로 비우고 1시간 뒤 `GET /api/perf/timings` 와 `GET /api/status` 를 저장한다.
+2. 켠 **뒤** 같은 요일 · 같은 시간대에 똑같이 한다.
+3. 비교: `/api/market/flow` · `/api/market/futures` · `/api/quote` · `/api/levels` · `/api/gaps` · `/api/oscillator` 의 p95,
+   그리고 `/api/status` `outbound` 의 `toss` · `kis`(그 프로세스가 `since` 부터 부른 수). api 프로세스의 수가 0 에 가까우면 완료.

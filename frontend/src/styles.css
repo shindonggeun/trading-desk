@@ -585,6 +585,10 @@ button.secondary { background: none; color: var(--text); border: 1px solid var(-
 /* 시장 수급 패널 (#78) — 선 색은 주체(외국인 · 기관 · 개인), dataviz 검증 통과(다크 #161b22 · 라이트 #fff) */
 :root { --flow-foreigner: #a371f7; --flow-institution: #1fa39a; --flow-individual: #cf6f2a; }
 @media (prefers-color-scheme: light) { :root { --flow-foreigner: #8250df; --flow-institution: #00958a; --flow-individual: #b85c1a; } }
+/* #743 프로그램매매 — 주체 색(보라 · 청록 · 주황) · 극성(빨강 · 파랑) · 주의(--warn 호박색) · 참고(--muted 회색)와 겹치지 않게:
+   분홍 · 올리브 · 강철 청회색, 점선. (팔레트 검증 스크립트 없이 고름 — 색만으로 가르지 않게 칩 · 머리 값에 이름이 같이 있다) */
+:root { --flow-program-total: #db61a2; --flow-program-non-arbitrage: #a8b532; --flow-program-arbitrage: #6c8eaa; }
+@media (prefers-color-scheme: light) { :root { --flow-program-total: #bf3989; --flow-program-non-arbitrage: #6b7a00; --flow-program-arbitrage: #46677f; } }
 .flow { display: grid; gap: 8px; }
 .flow-head, .flow-sub, .flow-trend-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .flow-head h3 { margin: 0; }
@@ -862,6 +866,7 @@ span.cs-hold-text { color: var(--warn); }
 .recent-status-queued, .recent-status-running { color: var(--warn); }
 .recent-status-failed { color: var(--danger, var(--up)); }
 .recent-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-queue-detail { color: var(--muted); white-space: normal; }
 .recent-more { margin: 8px 0 0; font-size: 13px; }
 
 .history { padding: 20px; max-width: 1320px; margin: 0 auto; box-sizing: border-box; width: 100%; }
@@ -894,6 +899,7 @@ span.cs-hold-text { color: var(--warn); }
 .run-bar .lv-stop { color: var(--short); }
 .run-bar .lv-target { color: var(--long); }
 .run-bar-now { color: var(--muted); }
+.run-bar-now.run-bar-queue-warn { color: var(--warn); }
 .run-bar-more { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 0 14px 10px; }
 .run-tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
 .run-tab { position: relative; background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted);
@@ -2900,6 +2906,9 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 .chart-live-tag.chart-live-stale::before { color: var(--muted); }
 
 /* #632 · #672 지금 이 차트 읽기 — 넓은 화면은 차트 오른쪽 칸, 좁은 화면은 차트 위(접힘). 번호 표식은 차트 오른쪽 끝 그 가격 높이 */
+.read-beginner-guide { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.read-beginner-guide h4 { margin: 0 0 8px; }
+.read-beginner-guide p { margin: 6px 0; line-height: 1.5; }
 .chart-read-wrap.on { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px; align-items: start; }
 .chart-read-wrap.on > .chart-and-fills { min-width: 0; }
 .chart-read { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 0.92em; max-height: 640px; overflow-y: auto; }
@@ -3033,3 +3042,13 @@ a.sp-step:hover, a.sp-step:focus-visible { background: var(--surface-2, rgba(127
 /* #764 패널 머리의 실시간 · 폴링 표시 */
 .live-badge { margin-left: 6px; font-size: var(--fs-s); font-weight: 400; color: var(--muted); white-space: nowrap; }
 .live-badge.on { color: var(--ok); }
+
+/* #751 관점별 매집 후보 */
+.accumulation-read { display: grid; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); font-size: var(--fs-s); }
+.accumulation-read :is(h4, p, ul, ol) { margin: 0; }
+.accumulation-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.accumulation-meta span { color: var(--muted); }
+.accumulation-bands { display: grid; gap: 6px; list-style: none; padding: 0; }
+.accumulation-bands li { display: grid; gap: 2px; background: var(--surface-2); border-radius: var(--radius-s); padding: 6px 8px; }
+.accumulation-record { display: grid; gap: 2px; }
+.accumulation-legs ol { padding: 4px 0 0 20px; }

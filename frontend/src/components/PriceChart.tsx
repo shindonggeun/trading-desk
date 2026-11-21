@@ -35,7 +35,7 @@ import GapOddsCard from "./GapOddsCard";
 import ChannelLineCard, { type LinePick } from "./ChannelLineCard";
 import { channelTitle, fakeLines, isLineTf, TF_KO, TREND_STATE_KO, CHANNEL_STATE_KO, trendTitle } from "../channelLines";
 import { oddsLabel } from "../gapOdds";
-import type { ChartRead, ChartReadRef, GapReport, LinesReport, LineTf, OpenGap } from "../types";
+import type { AccumulationViewKey, ChartRead, ChartReadRef, GapReport, LinesReport, LineTf, OpenGap } from "../types";
 import type { BottomZone, ChartPattern, FibLevel, HsPattern, Fibonacci, OutlookPeriodId, Plan, Positioning, Projection, RunOutlook, SrLevel, SupportResistance, Trendline, VolumeProfile } from "../types";
 import { futureKeys, PROJECTION_HORIZON } from "./chartProjection";
 import PatternCard, { patternKey } from "./PatternCard";
@@ -44,6 +44,8 @@ import { css, useColorScheme } from "../chartColors";
 import { every, usePoll } from "../poll";
 import { delayText, LIVE_NOTE, liveLabel, liveMs, useInView } from "../liveBar";
 import ChartReadPanel from "./ChartReadPanel";
+import AccumulationPanel from "./AccumulationPanel";
+import { useAccumulationOverlay } from "./accumulationOverlay";
 import { beginnerLines, loadReadPrefs, marksOf, MARKS, type ReadPrefs, refIds, refKinds, saveReadPrefs } from "../chartRead";
 
 export type Interval = Exclude<CandleInterval, "1m">;
@@ -164,9 +166,6 @@ function savePrefs(interval: Interval, show: Show, preset: Preset, custom: Show)
 const AUTOSCALE_MAX_GAP = 0.5;
 // #560 전망 기준가와 분석일 종가가 이만큼 넘게 다르면 원뿔을 그리지 않는다
 const OUTLOOK_FAR = 0.2;
-// 체결 마커는 복기 API(브로커 체결 + 종목별 일봉)를 쓴다. 분석 화면을 오갈 때마다 다시 부르지 않게 잠깐 기억한다.
-const FILLS_TTL_MS = 60_000;
-let fillsMemo: { at: number; rows: Promise<ReviewRow[]> } | null = null;
 
 /** 체결이 든 봉 — 분봉은 체결 시각이 든 봉(장 전 · 시간외는 그날 첫 봉, 그날 봉이 없으면 null), 일봉 이상은 그 거래일이 든 봉. */
 function fillBar(f: ReviewRow, rows: { key: Key; day?: string }[], intraday: boolean, ticker: string): Key | null {
@@ -176,14 +175,6 @@ function fillBar(f: ReviewRow, rows: { key: Key; day?: string }[], intraday: boo
   if (at == null) return null;
   if (intraday && rows.find((r) => r.key === at)?.day !== fillOn) return rows.find((r) => r.day === fillOn)?.key ?? null;
   return at;
-}
-
-function recentFills(): Promise<ReviewRow[]> {
-  if (!fillsMemo || Date.now() - fillsMemo.at > FILLS_TTL_MS) {
-    const rows = api.review(180).then((r) => r.fills).catch(() => [] as ReviewRow[]);
-    fillsMemo = { at: Date.now(), rows };
-  }
-  return fillsMemo.rows;
 }
 
 const isKorean = (ticker: string) => /\.(KS|KQ)$/i.test(ticker);
@@ -573,6 +564,19 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     };
   }, [ticker, oscInterval, show.osc]);
   const [drawn, setDrawn] = useState<Drawn | null>(null);
+  const [accumulationView, selectAccumulationView] = useState<AccumulationViewKey | null>(null);
+  const selectedAccumulation = accumulationView
+    ?? (interval === "1d" ? "mid" : isIntradayTf(interval) ? "short" : "long");
+  const accumulationTime = useCallback((at: string): Time | null => {
+    if (!drawn || !Number.isFinite(Date.parse(at))) return null;
+    const key = drawn.intraday ? kstStamp(at) : kstDay(at);
+    return drawn.rows.some((row) => row.key === key) ? key as Time : null;
+  }, [drawn]);
+  useAccumulationOverlay(
+    drawn, readOn ? chartRead?.accumulation?.[selectedAccumulation] : null,
+    chartRead?.legs?.[selectedAccumulation], accumulationTime,
+    { accent: css("--sr-resistance"), muted: css("--muted"), surface: css("--surface") }, "12px sans-serif",
+  );
   const reloadBars = useCallback(() => {
     // 보던 논리 범위 그대로(봉 수가 같으면 오른쪽 끝이 새 마지막 봉)
     const r = drawn?.alive.current ? drawn.chart.timeScale().getVisibleLogicalRange() : null;
@@ -958,10 +962,14 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     };
   }, [ticker, interval, wanted, show.rsi, show.stoch, show.bb, refreshed]);
 
-  // 이 종목 체결만. 브로커가 체결 내역을 안 주거나 실패하면 마커 없이 그린다.
+  // 현재 세션으로 복기를 조회한다. 권한이 없거나 조회에 실패하면 마커 없이 그린다.
   useEffect(() => {
     let live = true;
-    recentFills().then((rows) => live && setFills(rows.filter((f) => baseCode(f.ticker) === baseCode(ticker))));
+    setFills([]);
+    api.review(180).then(
+      ({ fills }) => live && setFills(fills.filter((f) => baseCode(f.ticker) === baseCode(ticker))),
+      () => {},
+    );
     return () => {
       live = false;
     };
@@ -2415,7 +2423,14 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
         <ChartReadPanel read={chartRead} failed={readFailed} frame={readFrame} interval={interval}
           onInterval={(tf) => setBarInterval(tf as Interval)} marks={readMarks} picked={readPick} onPick={(n) => pickMark(n, "panel")}
           beginner={readPrefs.beginner} applied={beginner} onBeginner={(b) => pickRead({ beginner: b })} idPrefix={readId}
-          open={readExpanded} onToggle={setReadExpanded} />
+          open={readExpanded} onToggle={setReadExpanded} selectedAccumulation={selectedAccumulation}
+          accumulation={chartRead && (
+            <AccumulationPanel read={chartRead} selected={selectedAccumulation} onSelect={(view) => {
+              selectAccumulationView(view);
+              const target = chartRead.accumulation?.[view];
+              if (target && target.error === undefined) setBarInterval(target.timeframe);
+            }} />
+          )} />
       )}
       </div>
       {plan && hasLevels && show.levels && (

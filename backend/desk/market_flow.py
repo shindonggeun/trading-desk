@@ -38,7 +38,7 @@ import logging
 import time
 from datetime import UTC, date, datetime, timedelta, timezone
 
-from . import freshness, kis_spot_flow
+from . import freshness, kis_spot_flow, shared_cache
 from .broker.base import INSTITUTION_KINDS, INVESTORS, Broker, FlowRecord
 
 log = logging.getLogger(__name__)
@@ -53,6 +53,7 @@ CONFIRMED_AFTER = (18, 0)
 CACHE_OPEN_SEC = 60.0
 CACHE_CLOSED_SEC = 600.0
 CACHE_FAIL_SEC = 30.0
+SHARED_NS = "market_flow"   # #689 desk.shared_cache: the last good page per (market, interval), {"value", "ttl"}
 PREMARKET_FROM = (8, 0)        # NXT pre-market opens 08:00 (KRX pre-open off-hours trades 08:30-08:40)
 
 
@@ -182,6 +183,12 @@ class MarketFlow:
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:   # concurrent refreshes of one key share a single broker call
             cached = self._cache.get(key)
+            if not fresh and (not cached or self._clock() - cached[0] >= cached[1]):
+                # #689 another process (the collector's snapshot job reads fresh) may have it already
+                hit = shared_cache.latest(await shared_cache.aget(SHARED_NS, key))
+                if hit is not None:
+                    shared, ttl, left = hit
+                    cached = self._cache[key] = (self._clock() - max(0.0, ttl - left), ttl, shared)
             if fresh or not cached or self._clock() - cached[0] >= cached[1]:
                 value, ok = await self._fetch(market, interval)
                 now = self._now()
@@ -195,6 +202,8 @@ class MarketFlow:
                 # a failed fresh read (the snapshot's) answers its caller but leaves a good cache to the card
                 if ok or not fresh or not cached or cached[2].get("error") or not cached[2].get("records"):
                     self._cache[key] = got
+                if ok:   # a failure answers this caller only - the other processes keep the last good one
+                    await shared_cache.aput(SHARED_NS, key, {"value": value, "ttl": ttl}, max(ttl, shared_cache.LATEST_KEEP_SEC))
                 cached = got
         value = cached[2]
         now = self._now()

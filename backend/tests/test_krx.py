@@ -174,6 +174,32 @@ def test_without_a_key_nothing_is_asked(engine, monkeypatch, db_url, capsys):
     assert cli.main(["krx", "status"]) == 0
 
 
+def test_the_collector_runs_only_with_a_key_and_the_feeds_on():
+    from desk.settings import Settings
+
+    def s(**kw):
+        return Settings(**{"krx_api_key": "", "fake_runs": False, "macro_interval_sec": 3600, **kw})
+
+    assert krx.off_reason(s()) == "no_key"
+    assert krx.off_reason(s(krx_api_key=KEY, fake_runs=True)) == "fake_runs"
+    assert krx.off_reason(s(krx_api_key=KEY, macro_interval_sec=0)) == "feeds_off"
+    assert krx.off_reason(s(krx_api_key=KEY)) is None
+    assert KEY not in repr(s(krx_api_key=KEY))                                   # the key never shows
+
+
+def test_without_a_key_the_desk_starts_and_says_why_krx_is_empty(db_url):
+    from tests.test_api import OWNER, PASSWORD, _client
+
+    with _client(db_url, login=False, krx_api_key="") as client:
+        assert client.get("/api/health").status_code == 200
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        jobs = {j["name"]: j for j in client.get("/api/status").json()["jobs"]}
+        assert jobs["krx"]["state"] == "off" and jobs["listing"]["state"] in ("starting", "fresh", "error")
+        empty = client.get("/api/market/futures/oi-history").json()
+        assert empty["items"] == [] and empty["reason"] == "no_key"
+        assert client.get("/api/market/flow?market=KOSPI&interval=1d").status_code == 200   # the rest as before
+
+
 def test_backfill_from_the_cli_is_rerun_safe(engine, monkeypatch, db_url, capsys):
     fake = Krx()
     real = krx.Client

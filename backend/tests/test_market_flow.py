@@ -269,6 +269,7 @@ def test_api_returns_the_flow_with_the_index_and_rejects_bad_input(db_url):
         assert len(rec["institution_breakdown"]) == 7
         assert "premarket" in body and body["premarket"] is None          # #677 no pre-market snapshot today
         assert "program" in body and body["program"] is None              # #677 no program trading snapshot today
+        assert "expected" in body and body["expected"] is None            # #677 no KIS stream in tests
         assert "premarket" not in client.get("/api/market/flow?market=kospi&interval=1w").json()
         assert client.get("/api/market/flow?market=NASDAQ").status_code == 422
         assert client.get("/api/market/flow?interval=1m").status_code == 422

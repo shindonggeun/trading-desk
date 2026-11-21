@@ -3,6 +3,7 @@ import { agentInfo, TEAM_LABEL } from "../agents";
 import { duration, price, STATUS_LABEL, time } from "../format";
 import { OPINION } from "../korean";
 import type { DeskEvent, Plan, Run, RunStatus } from "../types";
+import { queueReason } from "../runQueue";
 
 /** 분석 중 지금 일하는 에이전트: 마지막 발언 뒤에 "thinking" 을 알린 에이전트, 아니면 마지막 발언자. */
 function current(events: DeskEvent[]): string | null {
@@ -34,6 +35,7 @@ const RunSummaryBar = forwardRef<HTMLDivElement, { run: Run; plan: Plan | null; 
     const directional = !!plan && (op === "buy" || op === "sell");
     const triggers = !!plan && (plan.long_trigger != null || plan.short_trigger != null);
     const elapsed = duration(run.started_at, null);
+    const waiting = queueReason({ status, queue: run.queue }, events);
 
     return (
       <div ref={ref} className={`run-bar ${open ? "run-bar-open" : ""}`}>
@@ -66,8 +68,8 @@ const RunSummaryBar = forwardRef<HTMLDivElement, { run: Run; plan: Plan | null; 
             </span>
           )}
           {working && (
-            <span className="run-bar-now small">
-              {who ? `${TEAM_LABEL[agentInfo(who).team]} · ${agentInfo(who).name}` : "준비 중"}
+            <span className={`run-bar-now small${waiting?.tone === "warn" ? " run-bar-queue-warn" : ""}`} title={waiting?.title}>
+              {waiting ? waiting.text : who ? `${TEAM_LABEL[agentInfo(who).team]} · ${agentInfo(who).name}` : "준비 중"}
               {elapsed && ` · ${elapsed}`}
             </span>
           )}

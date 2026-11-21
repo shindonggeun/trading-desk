@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type Alignment, type ReviewResponse, type ReviewRow } from "../api";
+import { api, ApiError, type Alignment, type ReviewResponse, type ReviewRow } from "../api";
 import { price } from "../format";
 import { RATING, term } from "../korean";
 
@@ -117,7 +117,9 @@ export default function Review() {
     api
       .review(days)
       .then((d) => live && setData(d))
-      .catch((err) => live && setFailed(err instanceof Error ? err.message : "불러오지 못했습니다."))
+      // #775 체결은 주인 계정 것 — 다른 계정은 403
+      .catch((err) => live && setFailed(err instanceof ApiError && err.status === 403
+        ? "체결 내역은 주인 계정에서만 보여요." : err instanceof Error ? err.message : "불러오지 못했습니다."))
       .finally(() => live && setLoading(false));
     return () => {
       live = false;

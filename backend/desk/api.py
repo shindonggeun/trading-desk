@@ -26,6 +26,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import (
+    accumulation,
+    accumulation_bt,
     alert_tone,
     backtest_reports,
     bottom_zone,
@@ -69,6 +71,7 @@ from . import (
     nq_watch,
     oscillator,
     otp,
+    outbound,
     outcome,
     outlook,
     paper,
@@ -76,6 +79,7 @@ from . import (
     positioning,
     prewarm,
     primary_trend,
+    program_flow,
     program_trade,
     projection,
     regime,
@@ -93,6 +97,7 @@ from . import (
     sector_news,
     session_progress,
     sessions,
+    shared_cache,
     tips,
     verdict,
     web_search,
@@ -100,6 +105,7 @@ from . import (
 )
 from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
 from .broker import kis_stream, make_broker
+from .broker_issuer_lock import BrokerIssuerLock
 from .consensus import fake_summariser, llm_summariser
 from .db import make_engine, migrate, now
 from .estimate import CANDLE_INTERVALS, BinanceEstimator, naver_overtime, trading_soon
@@ -387,7 +393,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     engine = make_engine(settings.database_url)
     store = Store(engine)
     # #688 broker tokens shared by the desk's processes: issued only where DESK_ROLE is all | collector
-    tokens = TokenStore(engine, role=settings.role)
+    active_issuer: BrokerIssuerLock | None = None
+
+    def can_issue_broker_token() -> bool:
+        issuer = active_issuer
+        return issuer is not None and issuer.check()
+
+    tokens = TokenStore(engine, role=settings.role, can_issue=can_issue_broker_token)
     futures_history = FuturesHistory(engine)    # #254
     futures_oi = FuturesOi(engine)              # #603 KRX open interest · basis · put/call per day
     auth = Auth(engine, timedelta(hours=settings.session_max_hours), timedelta(hours=settings.session_idle_hours))
@@ -558,7 +570,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     sector_tasks: dict[str, asyncio.Task] = {}
     # #601 KRX OPEN API end-of-day history: only with a key, and off in scripted runs and tests
     krx_desk = (krx.KrxDaily(engine, krx.Client(settings.krx_api_key))
-                if settings.krx_api_key and not settings.fake_runs and settings.macro_interval_sec > 0 else None)
+                if krx.off_reason(settings) is None else None)           # #601 no key: off, nothing else changes
     # #462: VIX · CNN / crypto Fear & Greed · VKOSPI, cached per source (fakes stay offline in tests)
     fear_gauges = (fear.Fear(candles=lambda *a: prices._yahoo_candles(*a),   # read when asked, as risk does
                              kis=lambda: getattr(futures, "rest", None),         # #486 VKOSPI via the futures KIS client
@@ -674,6 +686,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        shared_cache.configure(settings)   # #689 Redis behind some caches; nothing configured = memory only
         # #688 only a process that runs the runs it is handed (all) fails what its predecessor left; the analyst
         # does it in desk.run_queue once it holds the queue, the api and the collector never. all holds the
         # queue's lock too (PostgreSQL), so an analyst started beside it by mistake claims none of its runs.
@@ -731,6 +744,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         token_owners = [o for o in (broker, token_rest) if callable(getattr(o, "keep_token", None))]
 
         async def keep_tokens() -> float:
+            if not await asyncio.to_thread(can_issue_broker_token):
+                raise RuntimeError("broker issuer lock lost")
             # #688 the minting process renews the shared broker tokens ahead of expiry and answers the
             # other processes' requests (desk.token_store); the KIS approval key only when one was asked for
             keeps = [(type(o).__name__, o.keep_token) for o in token_owners]
@@ -986,6 +1001,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.exception("day call push failed")
             with jobs.part("day_call_scoring", "day call scoring failed"):
                 await asyncio.wait_for(asyncio.to_thread(day_desk.score), 180)
+                # #604 the Korean answers again on KRX's bars once krx_daily has them
+                await asyncio.wait_for(asyncio.to_thread(day_desk.recheck_krx), 180)
             return day_calls.TICK_SEC
 
         oi_pending = {"due": False}
@@ -1214,10 +1231,30 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         await estimator.aclose()
         await longshort.aclose()
         await futures.aclose()
+        await shared_cache.aclose()      # #689 after every task that reads or writes it has stopped
         engine.dispose()
 
+    @asynccontextmanager
+    async def issuer_lifespan(app: FastAPI):
+        nonlocal active_issuer
+        if not tokens.minter:
+            async with lifespan(app):
+                yield
+            return
+
+        issuer = BrokerIssuerLock(engine)
+        try:
+            if not await asyncio.to_thread(issuer.acquire):
+                raise RuntimeError("broker issuer lock unavailable")
+            active_issuer = issuer
+            async with lifespan(app):
+                yield
+        finally:
+            active_issuer = None
+            await asyncio.to_thread(issuer.release)
+
     docs = settings.enable_docs
-    app = FastAPI(title="Trading Desk", lifespan=lifespan, docs_url="/docs" if docs else None,
+    app = FastAPI(title="Trading Desk", lifespan=issuer_lifespan, docs_url="/docs" if docs else None,
                   redoc_url=None, openapi_url="/openapi.json" if docs else None)
     if settings.cors_origins:
         app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
@@ -1234,6 +1271,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 return JSONResponse({"detail": "login required"}, status_code=401)
             request.state.user = user
         return await call_next(request)
+
+    def owns(request: Request) -> bool:
+        """#775 the session is the owner's (desk.auth.owner_id): the account's holdings, fills and the runs
+        that read them are the owner's alone - another account is refused the same way whatever is held."""
+        return request.state.user.id == auth.owner_id()
+
+    def must_own_account(request: Request) -> None:
+        if not owns(request):
+            raise HTTPException(403, "only the desk's owner sees the account")
 
     @app.get("/api/health")
     def health():
@@ -1263,7 +1309,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         """#623 the background jobs (state fresh · stale · error · starting · stopped · off, last success,
         last error as a type name, next pass) and the providers' rate-limit waits. Session required."""
         return {"now": datetime.now(UTC).isoformat(timespec="seconds"), "role": settings.role,
-                "jobs": jobs.status(), "cooldowns": cooldowns()}
+                "jobs": jobs.status(), "cooldowns": cooldowns(),
+                # #689 this process's shared-cache hits and its own calls to the brokers (Toss · KIS REST)
+                "shared_cache": shared_cache.stats(), "outbound": outbound.snapshot()}
 
     # #536 per-route request times (desk.req_timing), read in production without parsing logs
     timings = req_timing.Timings()
@@ -1452,7 +1500,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             horizon=body.horizon or horizons.DEFAULT_HORIZON,   # stored explicitly, never left implicit
             trade_date=(body.trade_date or date.today()).isoformat(),
             analysts=body.analysts,
-            use_portfolio=body.use_portfolio,
+            use_portfolio=body.use_portfolio and owns(request),   # #775 another account's run never reads it
             output_language=body.output_language,
             max_debate_rounds=body.max_debate_rounds,
             max_risk_rounds=body.max_risk_rounds,
@@ -1707,8 +1755,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             return value
 
     @app.get("/api/review")
-    async def trade_review(days: int = 90):
-        """Executions of the last ``days`` (max 180, KST dates) next to the plan of the time. Read-only."""
+    async def trade_review(request: Request, days: int = 90):
+        """Executions of the last ``days`` (max 180, KST dates) next to the plan of the time. Read-only.
+        #775 the owner's only."""
+        must_own_account(request)
         days = min(max(days, 1), review.MAX_DAYS)
         today = datetime.now(KST).date()
         start = today - timedelta(days=days)
@@ -1800,7 +1850,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         """KOSPI / KOSDAQ trading value by investor class, newest first (desk.market_flow). Read-only;
         a broker failure comes back as ``error`` with no records, not as a 5xx. #677 the 1d answer carries
         ``premarket``: today's spot flow before the bell (desk.flow_intraday.premarket) once there is one, and
-        ``program``: today's newest KRX program trading net buy (desk.program_trade, from the snapshots)."""
+        ``program``: today's newest KRX program trading net buy (desk.program_trade, from the snapshots), and
+        ``expected``: the pre-open hour's expected index / NXT large caps (desk.broker.kis_stream's standing
+        subscriptions in this api process; None without a KIS stream or before any came today)."""
         try:
             got = await flow.get(market.upper(), interval, count)
         except ValueError as exc:
@@ -1822,7 +1874,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             program_cache.clear()
             program_cache[day] = prog
         return {**got, "premarket": flow_intraday.premarket(hit[1], market.lower()),
-                "program": prog[1].get(market.lower())}
+                "program": prog[1].get(market.lower()),
+                "expected": kis_feed.expected(market.lower()) if kis_feed is not None else None}
 
     @app.get("/api/market/futures")
     async def market_futures():
@@ -1889,8 +1942,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except ValueError:
             raise HTTPException(422, "date must be YYYY-MM-DD") from None
         points = await asyncio.to_thread(futures_history.intraday, day)
+        # #743 the program turns on the alerts' band (once a day per process)
+        band = (await asyncio.to_thread(program_flow.bands_for, futures_history, day))["band"]
         try:
-            body = flow_intraday.view(points, bucket)
+            body = flow_intraday.view(points, bucket, band)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         return {"supported": getattr(futures, "rest", None) is not None, "date": day.isoformat(),
@@ -1949,13 +2004,16 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return {"symbol": symbol, "weeks": await asyncio.to_thread(weekly.history, symbol, min(max(weeks, 1), 52))}
 
     @app.get("/api/portfolio")
-    async def portfolio():
-        """Holdings at live prices in KRW and USD (desk.portfolio). Failures land in ``error``."""
+    async def portfolio(request: Request):
+        """Holdings at live prices in KRW and USD (desk.portfolio). Failures land in ``error``. #775 the
+        owner's only."""
+        must_own_account(request)
         return await book.snapshot()
 
     @app.get("/api/portfolio/stream")
     async def portfolio_stream(request: Request):
-        """The same snapshot every DESK_PORTFOLIO_STREAM_SEC seconds, as SSE."""
+        """The same snapshot every DESK_PORTFOLIO_STREAM_SEC seconds, as SSE. #775 the owner's only."""
+        must_own_account(request)
         token = request.cookies.get(COOKIE)
         interval = min(max(settings.portfolio_stream_sec, 2.0), 60.0)
 
@@ -2381,9 +2439,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         hit = chart_reads.get(key)
         if hit and hit[0] > time.monotonic():
             return hit[1]
-        wanted = [prices.candles(ticker, t, channels.BARS[t]) for t in tfs]
+        # #751 the daily once, long enough for the mid view's bands too (the frame reads its last BARS)
+        wanted = [prices.candles(ticker, t, max(channels.BARS[t], ACC_DAYS) if t == "1d" else channels.BARS[t])
+                  for t in tfs]
         if "1d" in tfs:
-            wanted.append(prices.candles(ticker, "1w", CHART_READ_WEEKS))    # the weekly gaps beside the daily
+            # the weekly gaps beside the daily, and (#751) the long view's weeks
+            wanted.append(prices.candles(ticker, "1w", max(CHART_READ_WEEKS, ACC_WEEKS)))
         got = await asyncio.gather(*wanted, return_exceptions=True)
         weeks = got[len(tfs)]["bars"] if "1d" in tfs and not isinstance(got[len(tfs)], BaseException) else None
         now = datetime.now(UTC)
@@ -2396,12 +2457,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 frames.append({"timeframe": t, "error": type(res).__name__})
                 keep = min(keep, CHART_READ_MIN_SEC * 4)
                 continue
-            bars = res["bars"]
+            bars = res["bars"][-channels.BARS[t]:]
             live = channels.is_live(bars, t, now)
             gaps, gaps_error = [], None
             if t == "1d" and bars:
                 try:
-                    gaps = await asyncio.to_thread(line_basis.gaps, bars, weeks, bars[-1]["close"], ticker)
+                    gaps = await asyncio.to_thread(line_basis.gaps, bars, weeks[-CHART_READ_WEEKS:] if weeks else weeks,
+                                                   bars[-1]["close"], ticker)
                 except Exception as exc:  # noqa: BLE001 - the read stands without the gaps
                     gaps_error = type(exc).__name__
                     keep = min(keep, CHART_READ_MIN_SEC * 4)
@@ -2421,10 +2483,41 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 end = datetime.fromisoformat(bars[-1]["at"]) + timedelta(minutes=channels.MINUTES[t])
                 keep = min(keep, (end - now).total_seconds() + 5)
         out = chart_read.read(ticker, frames)
+        if "1d" in tfs:
+            price = next((f["price"] for f in frames if f.get("price")), None)     # the shortest timeframe's: now
+            out["accumulation"], out["legs"] = await _accumulation_read(tfs, got, weeks, now, price)
+            if out["accumulation"] is None or None in (out["accumulation"].get("mid"), out["accumulation"].get("long")):
+                keep = min(keep, CHART_READ_MIN_SEC * 4)                        # a view missing: ask again soon
         if len(chart_reads) > 256:
             chart_reads.clear()
         chart_reads[key] = (time.monotonic() + max(CHART_READ_MIN_SEC, keep), out)
         return out
+
+    async def _accumulation_read(tfs, got, weeks, now, price) -> tuple[dict | None, dict | None]:
+        """#751 the accumulation bands and the legs per view (desk.accumulation) on finished bars - the bars
+        its record was measured on (desk.accumulation_bt.SPEC's windows): short on the 4h (else 1h) bars of
+        the read, mid on the days, long on the weeks; placed against the price now. None on failure."""
+        def finished(bars, tf, n):
+            if not bars:
+                return None
+            live = ((now - datetime.fromisoformat(bars[-1]["at"])).days < 7 if tf == "1w"
+                    else channels.is_live(bars, tf, now))
+            return (bars[:-1] if live else bars)[-n:]
+
+        def bars_of(tf):
+            res = got[tfs.index(tf)] if tf in tfs else None
+            return res["bars"] if res is not None and not isinstance(res, BaseException) else None
+
+        try:
+            short_tf = next((t for t in ("240m", "60m") if t in tfs), None)
+            win = {v: accumulation_bt.SPEC[v]["window"] for v in accumulation_bt.SPEC}
+            by_view = {"short": finished(bars_of(short_tf), short_tf, win["short"]) if short_tf else None,
+                       "mid": finished(bars_of("1d"), "1d", win["mid"]), "long": finished(weeks, "1w", win["long"])}
+            return await asyncio.to_thread(accumulation.views, by_view, {"short": short_tf} if short_tf else None,
+                                           None, price)
+        except Exception as exc:  # noqa: BLE001 - the read stands without the bands
+            log.warning("accumulation read failed: %s", type(exc).__name__)
+            return None, None
 
     @app.get("/api/stock/profile")
     async def stock_profile(ticker: str | None = None, tickers: str | None = None):
@@ -3320,6 +3413,7 @@ class PushKindsIn(BaseModel):
     line_signal: bool = True        # #613 channel / trendline signals (the watch itself is off until set)
     holding_alert: bool = True      # #694 each holding's stop / take-profit (desk.holding_watch)
     sector_mover: bool = True       # #680 a sector's big day and the stocks that drove it (desk.sector_movers)
+    program_alert: bool = True      # #743 program trading buy / sell turns (desk.program_flow)
     # #641 the flow / NQ=F alerts by tone (desk.alert_tone)
     tone_positive: bool = True
     tone_neutral: bool = True
@@ -3457,6 +3551,8 @@ class KakaoCallbackIn(BaseModel):
 CHART_READ_MIN_SEC = 15.0
 CHART_READ_MAX_SEC = 300.0
 CHART_READ_WEEKS = 120
+ACC_WEEKS = 261            # #751 the long view's weeks (accumulation_bt's window of 260 and the one trading)
+ACC_DAYS = 501             # ...and the mid view's days (its window of 500 and the one trading)
 
 NOTIFY_LABELS = {"telegram": "텔레그램", "kakao": "카카오톡"}
 KAKAO_STATE_TTL_SEC = 600
@@ -3471,11 +3567,9 @@ def _notify_routes(app: FastAPI, engine, settings: Settings) -> None:
     Kakao's OAuth comes back to the static /kakao-callback.html, which POSTs the code and state here: the
     callback keeps the session and the Origin check (no open path). A state is 32 random bytes, kept
     hashed in this process for 10 minutes, for the account that asked, once (one worker process)."""
-    from sqlalchemy import func, select
-
     from . import notify_channels as nc
     from . import otp, push
-    from .db import users
+    from .auth import owner_id as account_owner
 
     nc.install_log_filter()
     store = nc.ChannelStore(engine, otp.SecretBox(settings.notify_key, "DESK_NOTIFY_KEY"))
@@ -3491,8 +3585,7 @@ def _notify_routes(app: FastAPI, engine, settings: Settings) -> None:
     last_test = {"at": 0.0}
 
     def owner_id() -> int | None:
-        with engine.connect() as conn:
-            return conn.execute(select(func.min(users.c.id))).scalar()
+        return account_owner(engine)     # #775 the one rule (desk.auth.owner_id)
 
     def must_own(request: Request) -> None:
         if request.state.user.id != owner_id():

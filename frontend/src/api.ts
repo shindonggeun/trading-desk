@@ -1,4 +1,4 @@
-import { activityHeaders } from "./activity";
+import { activityHeaders, BACKGROUND_HEADER } from "./activity";
 import type { DayCallSectorsResponse } from "./components/DayCallSectors";
 import type { ChartRead, GapReport, LinesReport, LineTf } from "./types";
 import type { DayCallHistory, DayCallMarket, DayCallStats, DayCallToday, MorningBrief, MorningBriefList } from "./types";
@@ -249,7 +249,7 @@ export const api = {
   config: () => call<DeskConfig>("/api/config"),
   runs: (page = 1, size = 50) => call<RunPage>(`/api/runs?page=${page}&size=${size}`),
   deleteRun: (id: string) => call<void>(`/api/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  run: (id: string) => call<Run>(`/api/runs/${encodeURIComponent(id)}`),
+  run: (id: string, signal?: AbortSignal) => call<Run>(`/api/runs/${encodeURIComponent(id)}`, signal ? { signal, cache: "no-store" } : undefined),
   // #528 모의 투자(#527) — 실제 주문 없음. 설정을 바꾸면 다음 읽기에서 settings_version 이 따라온다
   paperSettings: () => call<PaperSettings>("/api/paper/settings"),
   savePaperSettings: (patch: PaperSettingsPatch) =>
@@ -266,7 +266,8 @@ export const api = {
   runExplain: (id: string, refresh = false) =>
     call<RunExplain>(`/api/runs/${encodeURIComponent(id)}/explain${refresh ? "?refresh=1" : ""}`),
   createRun: (body: NewRun) => call<Run>("/api/runs", { method: "POST", body: JSON.stringify(body) }),
-  portfolio: () => call<Portfolio>("/api/portfolio"),
+  // 계좌 응답은 진행 중인 GET과 공유하지 않고 현재 세션으로 다시 확인한다.
+  portfolio: () => request<Portfolio>("/api/portfolio", { cache: "no-store" }),
   regime: () => call<RegimeSnapshot>("/api/regime"),
   /** #115 거시 · 정책 뉴스 흐름 — 서버가 30분마다 새로 모은다. */
   macroBrief: () => call<MacroBrief>("/api/macro/brief"),
@@ -304,7 +305,7 @@ export const api = {
   futuresCandles: (session?: FuturesSession, interval: FuturesInterval = "1m") =>
     call<FuturesCandles>(`/api/market/futures/candles?interval=${interval}${session ? `&session=${session}` : ""}`),
   /** 매매 복기(백엔드 desk/review.py): 최근 days 일 체결을 그때의 분석 계획과 묶는다. 읽기 전용. */
-  review: (days: number) => call<ReviewResponse>(`/api/review?days=${days}`),
+  review: (days: number) => request<ReviewResponse>(`/api/review?days=${days}`, { cache: "no-store" }),
   quote: (ticker: string) =>
     call<{ ticker: string; price: number; currency: string | null; source: string; fetched_at: string }>(
       `/api/quote?ticker=${encodeURIComponent(ticker)}`,
@@ -502,6 +503,7 @@ export interface PushKinds {
   line_signal?: boolean;     // #614 차트 선 닿음 · 이탈(#613)
   holding_alert?: boolean;   // #714 보유 종목 손절 · 익절(#694)
   sector_mover?: boolean;    // #740 섹터 급등락 주범(#680)
+  program_alert?: boolean;   // #743 프로그램매매 매수 · 매도 전환
   tone_positive?: boolean;   // #642 수급 알림의 뜻(#641) — 끈 tone 은 이 기기로 보내지 않는다
   tone_neutral?: boolean;
   tone_caution?: boolean;
@@ -512,11 +514,12 @@ export interface PushKinds {
 export interface MarketAlert {
   trade_date: string;
   /** #581 holding_alert(#694 보유 종목 손절 · 익절)은 주인 계정에만 온다. 서버가 새 종류를 먼저 내도 화면은 "알림" 으로 보인다 */
-  kind: "flow_turn" | "flow_shift" | "flow_warn" | "nq_alert" | "holding_alert" | "sector_mover";
+  kind: "flow_turn" | "flow_shift" | "flow_warn" | "nq_alert" | "holding_alert" | "sector_mover" | "program_alert";
   rule: string;
   /** 지수 시장, holding_alert 은 그 종목 코드, sector_mover(#740)는 섹터 키(SectorMoverKey) */
   market: "kospi" | "kosdaq" | "futures" | "nq" | SectorMoverKey | (string & {});
-  who: "foreign" | "institution" | "individual" | "all";
+  /** #743 program_alert 는 prog_total(프로그램 전체) · prog_nonarb(비차익) */
+  who: "foreign" | "institution" | "individual" | "all" | "prog_total" | "prog_nonarb";
   severity: "info" | "caution" | "strong";
   /** #642 지수에 어떤 뜻인지(#641) — 크기(severity)와 따로. 예전 서버 · 예전 알림에는 없다 */
   tone?: AlertTone;
@@ -609,10 +612,14 @@ export type StreamState = "live" | "lost";
 
 /** Live "내 투자" snapshots every few seconds (GET /api/portfolio/stream).
  * EventSource retries a dropped connection by itself, but any non-200 answer (a 502 while
- * the backend is redeployed, a 401 after logout) ends it for good. Then: ask the API once -
- * a 401 shows the login screen through call(); anything else opens a new stream after a
- * growing pause. ``onState`` lets the panel say it is reconnecting while it keeps the last numbers. */
-export function followPortfolio(onSnapshot: (p: Portfolio) => void, onState: (s: StreamState) => void): () => void {
+ * the backend is redeployed, a 401 after logout) ends it for good. Recheck access with
+ * the current cookie: 401 shows the login screen, 403 clears the panel, and temporary
+ * failures retry with a growing pause. */
+export function followPortfolio(
+  onSnapshot: (p: Portfolio) => void,
+  onState: (s: StreamState) => void,
+  onAccessDenied: () => void,
+): () => void {
   let source: EventSource | null = null;
   let timer: number | undefined;
   let stopped = false;
@@ -635,8 +642,13 @@ export function followPortfolio(onSnapshot: (p: Portfolio) => void, onState: (s:
     es.onerror = () => {
       onState("lost");
       if (es.readyState !== EventSource.CLOSED) return; // the browser is retrying
-      api.me().then(retry, (e) => {
-        if (!(e instanceof Unauthorized)) retry();
+      request<Portfolio>("/api/portfolio", { cache: "no-store", headers: { [BACKGROUND_HEADER]: "1" } }).then(retry, (e) => {
+        if (stopped || e instanceof Unauthorized) return;
+        if (e instanceof ApiError && e.status === 403) {
+          onAccessDenied();
+          return;
+        }
+        retry();
       });
     };
   }

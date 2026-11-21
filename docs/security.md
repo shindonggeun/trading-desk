@@ -38,6 +38,7 @@ SSE(`EventSource`)도 쿠키로 인증된다. URL 에 토큰을 싣지 않는다
 - FastAPI `/docs` · `/openapi.json` 은 기본으로 꺼져 있고(`DESK_ENABLE_DOCS`), 켜도 로그인 뒤다.
 - `POST`/`PUT`/`PATCH`/`DELETE` 는 `Origin` 이 있으면 자기 `Host` 와 같아야 한다(로그인 CSRF 포함). `SameSite=Strict` 와 이중 방어다.
 - 계정별 데이터(즐겨찾기 `favorites` #134, 섹터 탭 `sector_groups` #156)는 세션의 `request.state.user.id` 로만 범위를 정한다 — 경로 · 본문의 사용자 id 는 받지 않는다.
+- 브로커 계좌 데이터는 **소유자(첫 계정) 것**이다(#775, 판정은 `desk.auth.owner_id` 하나). `GET /api/portfolio` · `/api/portfolio/stream` · `/api/review`(체결)는 다른 계정에 같은 403(`only the desk's owner sees the account`)을 주고, `POST /api/runs` 의 `use_portfolio` 는 다른 계정이면 무시한다(계좌를 읽지 않는다). 보유 종목 감시(`/api/holding-watch`, #762)는 다른 계정에 기본 설정 · 빈 목록을, 보유 종목 알림은 소유자에게만 보낸다(#694 · #756).
 - 리포트(#495 `reports`)는 모든 계정이 같이 본다. 그래서 #681 부터 주제 후보는 설정의 순환 목록(`DESK_REPORT_TOPICS`, 비면 기본 목록)과 두 지수뿐이고 **누구의 즐겨찾기도 넣지 않는다**. 새 리포트 푸시는 소유자(첫 계정)에게만 보낸다. 수동 생성(`POST /api/reports`)은 동시에 1개, 직전 리포트 뒤 10분 안에는 429 다.
   경로 · 본문의 자원 id(섹터 id 등)는 언제나 `user_id` 와 함께 찾고, 남의 것이면 없는 것과 똑같이 답한다(수정 404, 삭제 204).
 - 채팅 도구 중 밖으로 나가는 것은 `news_search`(#403) 하나다. 보내는 것은 모델이 쓴 짧은 검색어뿐이고(100자, 9자리 이상 숫자열 · 이메일은 보내지 않고 거절),
@@ -58,6 +59,8 @@ SSE(`EventSource`)도 쿠키로 인증된다. URL 에 토큰을 싣지 않는다
 클라이언트 IP: 인그레스가 `X-Real-IP` 를 붙이고, 웹 컨테이너 nginx 가 인그레스(`192.168.0.12`)에서 온 값만 믿어
 `X-Forwarded-For` 를 그 한 값으로 **덮어쓴다**. 백엔드 uvicorn 은 `--proxy-headers` 로 그것을 클라이언트 주소로 쓴다.
 백엔드 포트는 호스트에 열지 않는다 — 열면 헤더 위조로 시도 제한을 우회할 수 있다.
+백엔드를 나누면(#688, docs/deploy.md 12절) 웹 네트워크(`DESK_DOCKER_NETWORK`)에는 `backend-prod`(api | all) 하나만 붙고,
+collector · analyst 는 프록시 헤더 없이 컨테이너 안(`127.0.0.1`)에서만 듣는다(health 확인용).
 
 로그(#712): 컨테이너 로그는 파일 · 로그 수집기로 퍼지므로 로그인 이메일과 원본 IP 를 쓰지 않는다.
 
@@ -96,6 +99,7 @@ Jenkins 가 배포할 때마다 읽어 임시 env 파일(600)로 compose 에 넘
 | 텔레그램 봇 토큰 · chat_id · 카카오 REST 키 · 클라이언트 시크릿 · `DESK_NOTIFY_KEY` (#580) | 서버 `.env.runtime` | `.env.example` 에 이름만 |
 | 카카오 액세스 · 리프레시 토큰 (#580) | DB `notify_channels.secret`, `DESK_NOTIFY_KEY`(Fernet)로 봉인 | 없음 |
 | KRX OPEN API 인증키 (#601) | 서버 `.env.runtime` 의 `DESK_KRX_API_KEY`. 요청 헤더 `AUTH_KEY` 로만 보내고 로그 · URL · DB 에 남기지 않는다 | `.env.example` 에 이름만 |
+| 홈랩 Redis 비밀번호 · 공유 캐시 키 (#689, 선택) | Vault `kv/trading-desk/backend/prod/env` 의 `DESK_REDIS_PASSWORD` · `DESK_REDIS_CACHE_KEY`(아래 §5.2). 설정 repr · 로그 · `/api/status` 에 나오지 않는다 | `.env.example` 에 이름만 |
 
 ### KIS 실시간 시세 키 (#125)
 
@@ -136,6 +140,24 @@ Jenkins 가 배포할 때마다 읽어 임시 env 파일(600)로 compose 에 넘
   - DB 엔진은 `hide_parameters=True` 라, SQL 오류에도 값이 찍히지 않는다.
   - 토스 토큰 발급 오류에는 HTTP 상태와 오류 코드만 남는다.
 - **남는 위험:** `DESK_ROLE` 없이(기본 all) **다른 DB** 로 띄운 백엔드가 운영 키를 가지면 저장소 조정이 닿지 않는다. PC 로컬은 `DESK_BROKER=mock` 과 KIS 키 없이 띄운다.
+
+### 5.2 공유 캐시 — 홈랩 Redis (#689)
+
+- 홈랩 Redis(Sentinel `master-redis`)는 **다른 프로젝트와 함께 쓰는 서버**고 비밀번호(`requirepass`)도 같다. 그 비밀번호를 가진 누구든
+  아무 키나 **읽고 쓸 수 있다**고 본다. 그래서 두 가지를 지킨다(`desk/shared_cache.py` 가 정본):
+  - **넣는 것은 시장 데이터뿐** — 시장 · 선물 수급, 시세(10초), 지지 · 저항, 갭, 오실레이터.
+  - **읽을 수 있게 두지 않는다** — 이 앱 전용 비밀 `DESK_REDIS_CACHE_KEY`(Vault)에서 HKDF 로 두 키를 만든다. 키 이름은 `td:<종류>:<HMAC>`
+    (종목 · 날짜가 이름에 없다 — 시세 키 집합이 곧 보유 종목 목록이 되지 않게), 값은 Fernet 봉인. 캐시 키가 없으면 Redis 를 설정해도 꺼진다.
+- **남이 쓴 값을 믿지 않는다:** 읽은 값은 봉인이 열리고, 안에 적힌 키가 요청한 키와 같고(다른 키로 옮긴 값 거절), 봉인 안의 쓴 시각 · ttl 로
+  아직 살아 있을 때만(긴 만료로 다시 넣은 옛 값 거절) 쓴다. 남은 시간도 서버의 PTTL 이 아니라 봉인 안의 ttl 로 잰다. 그 밖은 전부 miss
+  (`/api/status` `shared_cache.rejected`, 경고 한 줄). 값은 JSON 뿐(pickle 없음), 크기 상한 · NaN 거부, 수급 · 선물 · 시세는 형태도 다시 본다.
+- **넣지 않는 것:** 브로커 토큰(#688 은 DB 에 봉인), 세션 · 로그인 · 사용자별 데이터, 보유 수량 · 평단 · 계좌, 알림 채널 비밀. 새 캐시를 공유로 바꿀 때는 이 목록부터 본다.
+- 키는 모두 TTL 이 있다(그 서버는 `maxmemory` 가 없어 TTL 없는 키는 영원히 남는다. 7일 상한).
+- 비밀번호 · 캐시 키는 Vault 에만. 설정의 `redis_password` · `redis_url` · `redis_cache_key` 는 `repr=False`, 연결 실패 로그는 예외 **형식 이름만** 남긴다(메시지에 호스트 · 응답이 실릴 수 있다).
+- Redis 가 없거나 죽어도 각 프로세스는 메모리 캐시 · 자기 호출로 지금처럼 돈다(비동기 0.25초 · 워커 스레드 최대 1초 남짓에서 끊고, 실패 뒤 30초 건너뜀). 가용성 의존이 아니다.
+- **남는 위험:** 같은 비밀번호를 가진 쪽은 `td:*` 를 지우거나 덮어 **캐시를 비울** 수 있다(앱은 자기 호출로 돌아가 호출 수만 는다). 종류별 키 개수 · 쓰는 시각은 보인다.
+  Infra 쪽 Sentinel 에는 인증이 없고 Redis 는 TLS 없이 LAN 평문이다 — LAN 의 누군가가 Sentinel 의 master 주소를 바꾸면 이 앱은 그 호스트에 공유 비밀번호로 AUTH 한다.
+  근본 수정은 Infra 에서 프로젝트별 ACL 사용자 · 키 패턴과 Sentinel `requirepass` 를 두는 것이다(이 앱은 그때 `sentinel_kwargs` 에 비밀번호를 넘긴다).
 
 ### KIS REST 접근 토큰 — 코스피200 선물 현황 (#160)
 

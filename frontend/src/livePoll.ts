@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { lastMessage, streamLive, useMarketStream, type StreamChannel, type StreamMessage } from "./marketStream";
+import { lastMessage, streamCovers, useMarketStream, type StreamChannel, type StreamMessage } from "./marketStream";
 import { pushPollData, usePoll, type PollOptions, type PollSnapshot } from "./poll";
 
 /**
@@ -29,34 +29,28 @@ export function useLivePoll<T>(
   liveRef.current = live;
   const covered = (data: T | undefined, restAt: number): boolean => {
     const l = liveRef.current;
-    if (!l || !keysLive(l)) return false;
-    if (l.pauseWhen && !l.pauseWhen(data)) return false;
-    return !(l.reconcileMs && Date.now() - restAt >= l.reconcileMs);
+    return !!l && streamCovers(l.channel, l.keys) && (l.pauseWhen?.(data) ?? true) &&
+      !(l.reconcileMs && Date.now() - restAt >= l.reconcileMs);
   };
   const poll = usePoll<T>(key, fetch, ms, {
     ...options,
     paused: (data, restAt) => covered(data, restAt) || !!options.paused?.(data, restAt),
   });
-  const tickers = live?.channel === "quote" ? live.keys ?? [] : [];
-  const { live: channelLive } = useMarketStream(live?.channel ?? "alert", tickers, (m) => {
+  const { live: coveredKeys } = useMarketStream(live?.channel ?? "alert", live?.keys ?? null, (m) => {
     const l = liveRef.current;
-    if (!key || !l || (l.keys && !l.keys.includes(m.key))) return;
+    if (!key || !l || l.channel !== m.kind || (l.keys && !l.keys.includes(m.key))) return;
     pushPollData<T>(key, (prev) => l.apply(prev, m));
   }, !!key && !!live && (live.keys === null || live.keys.length > 0));
   // 스트림 상태가 바뀔 때마다 REST 를 바로 한 번 — 끊기면(degraded) 그 패널만 폴링으로, 다시 살아나면(ready · 회복)
   // 그 사이 놓친 것(스트림은 알림을 다시 보내지 않는다)을 맞춘 뒤 쉰다. 처음 붙을 때는 usePoll 이 이미 부른다
-  const was = useRef<boolean | null>(null);
+  const was = useRef<{ key: string | null; live: boolean } | null>(null);
   const refresh = poll.refresh;
+  const isLive = coveredKeys && (live?.pauseWhen?.(poll.data) ?? true);
   useEffect(() => {
-    if (was.current !== null && was.current !== channelLive) refresh();
-    was.current = channelLive;
-  }, [channelLive, refresh]);
-  return { ...poll, live: !!live && channelLive && keysLive(live) };
-}
-
-function keysLive(l: Pick<LiveSpec<unknown>, "channel" | "keys">): boolean {
-  if (l.keys === null) return streamLive(l.channel);
-  return l.keys.length > 0 && l.keys.every((k) => streamLive(l.channel, k));
+    if (key && was.current?.key === key && was.current.live !== isLive) refresh(true);
+    was.current = { key, live: isLive };
+  }, [isLive, key, refresh]);
+  return { ...poll, live: isLive };
 }
 
 /** "실시간 · 폴링" 표시와 지연 툴팁에 쓰는 글 — 마지막 메시지의 observed_at 기준 */

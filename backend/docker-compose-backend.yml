@@ -1,9 +1,9 @@
 # trading-desk 백엔드 배포 정의 (docs/deploy.md).
 #
-#   docker compose -p trading-desk-backend-prod --env-file ../../.env.runtime -f docker-compose-backend.yml \
-#     up -d --build --wait --remove-orphans backend-prod
-# scripts/deploy.sh 가 위 명령을 부른다. -p 를 빼지 않는다 — 빠지면 디렉터리 이름이 프로젝트가 돼 다른 compose 와 섞이고
-# --remove-orphans 가 남의 컨테이너를 지울 수 있다.
+# 이 파일을 손으로 부르지 않는다 — scripts/deploy-compose.sh(Jenkins · scripts/deploy.sh 가 부른다)만 쓴다. 그 스크립트가
+# 프로젝트 이름(-p trading-desk-backend-prod), 백엔드 나누기 스위치(DESK_BACKEND_SPLIT → profile split · api 역할 DESK_API_ROLE),
+# 스위치를 끌 때 collector · analyst 를 먼저 지우는 순서를 맞춘다. 손으로 부르면 backend-prod 가 all 로 뜨면서 collector 가 남아
+# 브로커 토큰 발급자가 둘이 될 수 있다(docs/deploy.md 12절). 되돌림도 같은 스크립트로: docs/deploy.md 2-2.
 #
 # 호스트 포트를 열지 않는다. 웹 컨테이너만 같은 외부 네트워크(DESK_DOCKER_NETWORK)로 컨테이너 이름을 불러 닿는다 —
 # 열면 X-Forwarded-For 위조로 로그인 시도 제한을 우회할 수 있다(docs/security.md §4).
@@ -46,6 +46,12 @@ x-backend-environment: &backend_environment
   DESK_REPORT_IMAGE_MODEL: ${DESK_REPORT_IMAGE_MODEL:-}
   DESK_FUTURES_SNAPSHOT_MIN: ${DESK_FUTURES_SNAPSHOT_MIN:-1}
   DESK_LOG_LEVEL: ${DESK_LOG_LEVEL:-}
+  # #689 공유 캐시(Redis, 선택). 비면 프로세스 메모리 캐시만. 비밀번호는 Vault(kv/trading-desk/backend/prod/env)
+  DESK_REDIS_SENTINELS: ${DESK_REDIS_SENTINELS:-}
+  DESK_REDIS_MASTER: ${DESK_REDIS_MASTER:-}
+  DESK_REDIS_URL: ${DESK_REDIS_URL:-}
+  DESK_REDIS_PASSWORD: ${DESK_REDIS_PASSWORD:-}
+  DESK_REDIS_CACHE_KEY: ${DESK_REDIS_CACHE_KEY:-}
   # GDELT 테마 과거 파일 폴더(cli news-history · backtest, #390). 비우면 data/gdelt
   DESK_GDELT_CACHE: ${DESK_GDELT_CACHE:-}
   # 로그인 세션 (docs/security.md §2). 쿠키는 HTTPS 앞단 뒤에서만 쓰므로 Secure 를 끄지 않는다
@@ -108,44 +114,96 @@ x-logging: &default_logging
     max-size: "10m"
     max-file: "3"
 
+# 세 서비스가 함께 쓰는 정의(#688): 같은 이미지 · 같은 볼륨 · 같은 health 확인. 다른 것은 DESK_ROLE · 네트워크 · 메모리뿐이다
+x-backend-service: &backend_service
+  image: trading-desk-backend:prod
+  volumes:
+    # ChatGPT 로그인(chatgpt-auth.json) · TradingAgents 메모리 로그 · 리포트 · 데이터 캐시. 백업 대상이다(docs/deploy.md 7절)
+    - tradingagents_home:/home/app/.tradingagents
+  # /api/health 는 세션 없이 열린 유일한 GET 이다({"ok": true} 만 준다). 확인은 컨테이너 안에서 한다
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+    interval: 15s
+    timeout: 5s
+    retries: 4
+    # TradingAgents · langchain import 와 Alembic upgrade 시간
+    start_period: 60s
+  # 진행 중인 SSE 응답을 끊을 시간. 진행 중인 분석은 재시작 시 failed 로 표시된다(워커 스레드는 프로세스와 함께 끝난다)
+  stop_grace_period: 30s
+  restart: unless-stopped
+  logging: *default_logging
+
+# #688 백엔드 나누기: DESK_BACKEND_SPLIT=1 이면 scripts/deploy-compose.sh 가 profile split 을 켜고 backend-prod 를 api 로 띄운다.
+# 0(기본)이면 backend-prod 하나가 all 이다(나누기 전과 같다). 켜기 전 선행 조건 · 켜고 끄는 법: docs/deploy.md 12절.
+# 이 compose 를 손으로 부르지 않는다 — 스위치와 DESK_ROLE 을 맞추는 것이 deploy-compose.sh 다.
 services:
   backend-prod:
+    <<: *backend_service
     build:
       context: .
       dockerfile: backend.Dockerfile
-    image: trading-desk-backend:prod
     container_name: trading-desk-backend-prod
     environment:
       <<: *backend_environment
-      # #688 이 프로세스가 띄울 백그라운드 작업(desk/roles.py): all | api | collector | analyst. 서비스마다 정하는 값이라
-      # .env.runtime 에서 읽지 않는다 — 공통 env 에 두면 모든 서비스가 같은 역할이 된다
-      DESK_ROLE: all
-    volumes:
-      # ChatGPT 로그인(chatgpt-auth.json) · TradingAgents 메모리 로그 · 리포트 · 데이터 캐시. 백업 대상이다(docs/deploy.md 7절)
-      - tradingagents_home:/home/app/.tradingagents
-    # /api/health 는 세션 없이 열린 유일한 GET 이다({"ok": true} 만 준다)
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
-      interval: 15s
-      timeout: 5s
-      retries: 4
-      # TradingAgents · langchain import 와 Alembic upgrade 시간
-      start_period: 60s
-    # 진행 중인 SSE 응답을 끊을 시간. 진행 중인 분석은 재시작 시 failed 로 표시된다(워커 스레드는 프로세스와 함께 끝난다)
-    stop_grace_period: 30s
-    restart: unless-stopped
-    logging: *default_logging
+      # #688 이 프로세스가 띄울 백그라운드 작업(desk/roles.py): all | api. deploy-compose.sh 가 DESK_BACKEND_SPLIT 에 맞춰
+      # 셸 환경으로 넘긴다(.env.runtime 보다 앞선다). 공통 env 에 DESK_ROLE 을 두면 모든 서비스가 같은 역할이 된다
+      DESK_ROLE: ${DESK_API_ROLE:-all}
+    labels:
+      # 스위치 값을 compose 키로 남긴다 — Jenkins 의 vault-env.sh 는 compose 에 나오는 키만 env 파일에 넣는다
+      desk.backend-split: ${DESK_BACKEND_SPLIT:-0}
+    # 웹 컨테이너가 이름으로 닿는 유일한 백엔드(BACKEND_UPSTREAM)
     networks:
       - desk
-    # LangGraph · pandas 가 분석 중에 수백 MB 를 쓴다. 동시 실행 1 기준
+    # all 일 때 LangGraph · pandas 가 분석 중에 수백 MB 를 쓴다(동시 실행 1 기준). split 의 api 는 1g 로 충분하다
     mem_limit: ${DESK_BACKEND_MEM_LIMIT:-2g}
+
+  # 시세 · 수급 수집, 알림, 정기 작업, 브로커 토큰 발급(desk/roles.py). 웹 네트워크에 붙지 않는다 — 밖으로 나가는 연결만 쓴다
+  collector-prod:
+    <<: *backend_service
+    profiles: [split]
+    container_name: trading-desk-collector-prod
+    environment:
+      <<: *backend_environment
+      DESK_ROLE: collector
+    # 컨테이너 안(127.0.0.1)에서만 듣는다 — health 확인만 닿으면 된다. 프록시 헤더를 믿는 리스너는 웹이 닿는 backend-prod 하나로 둔다
+    # (docs/security.md §4). 이미지 CMD 와 다른 것은 --host 와 프록시 헤더 옵션뿐이다
+    command: ["uvicorn", "desk.api:create_app", "--factory", "--host", "127.0.0.1", "--port", "8000",
+              "--timeout-graceful-shutdown", "20"]
+    # api 가 Alembic upgrade head 를 끝내고 healthy 가 된 뒤에 뜬다(여기서는 이미 head 라 아무것도 하지 않는다)
+    depends_on:
+      backend-prod:
+        condition: service_healthy
+    networks:
+      - default
+    mem_limit: ${DESK_COLLECTOR_MEM_LIMIT:-1g}
+
+  # LLM 분석 run(대기열을 DB 에서 가져간다) · 아침 시황 · 리포트 · 채점. 하나만 둔다 — 두 번째는 PG advisory lock 에 막혀 대기열을 집지 않는다
+  analyst-prod:
+    <<: *backend_service
+    profiles: [split]
+    container_name: trading-desk-analyst-prod
+    environment:
+      <<: *backend_environment
+      DESK_ROLE: analyst
+    # 컨테이너 안(127.0.0.1)에서만 듣는다 — health 확인만 닿으면 된다. 프록시 헤더를 믿는 리스너는 웹이 닿는 backend-prod 하나로 둔다
+    # (docs/security.md §4). 이미지 CMD 와 다른 것은 --host 와 프록시 헤더 옵션뿐이다
+    command: ["uvicorn", "desk.api:create_app", "--factory", "--host", "127.0.0.1", "--port", "8000",
+              "--timeout-graceful-shutdown", "20"]
+    depends_on:
+      backend-prod:
+        condition: service_healthy
+    networks:
+      - default
+    mem_limit: ${DESK_ANALYST_MEM_LIMIT:-2g}
 
 volumes:
   tradingagents_home:
     name: trading-desk-tradingagents-home
 
-# 웹 compose 와 같은 외부 네트워크. scripts/deploy.sh 가 없으면 만든다
+# desk: 웹 compose 와 같은 외부 네트워크(backend-prod 만). scripts/deploy-compose.sh 가 없으면 만든다.
+# default: 이 프로젝트만의 네트워크(collector · analyst). DB · Redis · 외부 API 로 나가는 연결만 쓴다
 networks:
   desk:
     name: ${DESK_DOCKER_NETWORK:?docs/deploy.md 3절}
     external: true
+  default:

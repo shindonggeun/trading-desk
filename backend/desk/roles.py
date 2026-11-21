@@ -27,6 +27,10 @@ process's memory:
 
 A run's events already cross processes on PostgreSQL (desk.run_events: ``pg_notify`` on write, the ``run_events``
 job listens where the streams are served), and runs from the api to the analyst (desk.run_queue).
+
+The ChatGPT sign-in (``chatgpt-auth.json`` on the shared ``tradingagents_home`` volume) is used by the api's chat
+and the analyst's runs alike. The library renews it under a file lock beside it and reads it again inside the lock,
+so two processes renew once (#766, tests/test_chatgpt_refresh.py) - on one host's local volume, as the same user.
 """
 
 from __future__ import annotations
@@ -63,7 +67,7 @@ JOBS: tuple[tuple[str, str, str, str | None, str], ...] = (
     ("funds", "13F 기관 보유", "SEC EDGAR", None, COLLECTOR),
     ("scoring", "분석 채점", "야후", None, ANALYST),
     ("purge", "오래된 분석 정리", "DB", None, COLLECTOR),
-    ("kis_stream", "실시간 시세 스트림", "한투(KIS)", None, API),
+    ("kis_stream", "실시간 시세 스트림", "한투(KIS)", None, API),   # #677 + 장전 1시간 예상체결(지수 · NXT): GET /api/market/flow 가 같은 api 에서 읽음
     ("run_events", "분석 이벤트 알림", "PostgreSQL LISTEN", None, API),   # wakes this process's SSE streams
     ("run_queue", "분석 실행 대기열", "DB", None, ANALYST),   # claims what the api queued (desk.run_queue)
 )

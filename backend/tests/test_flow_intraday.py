@@ -84,7 +84,8 @@ def test_a_turn_needs_the_dead_band_and_two_snapshots():
 def test_view_checks_the_bucket():
     with pytest.raises(ValueError):
         fi.view([], 7)
-    assert fi.view([], 30) == {"bucket_min": 30, "spot": {"kospi": [], "kosdaq": []}, "futures": [], "turns": []}
+    assert fi.view([], 30) == {"bucket_min": 30, "spot": {"kospi": [], "kosdaq": []}, "futures": [], "turns": [],
+                               "program_turns": []}                        # #743
 
 
 def test_api_answers_bars_and_turns(db_url):

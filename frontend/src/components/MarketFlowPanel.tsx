@@ -350,8 +350,8 @@ export default function MarketFlowPanel() {
   const kinds = latest ? KINDS.filter((k) => latest.institution_breakdown[k.key]) : [];
   const kindMax = latest ? Math.max(...kinds.map((k) => Math.abs(latest.institution_breakdown[k.key]!.net)), 1) : 1;
   const marketLabel = TABS.find((m) => m.key === prefs.market)!.label;
-  const expectedIndex = prefs.interval === "1d" && data?.interval === "1d" && data.market === spotMarket
-    ? data.expected?.index
+  const expected = prefs.interval === "1d" && data?.interval === "1d" && data.market === spotMarket
+    ? data.expected
     : null;
 
   return (
@@ -379,7 +379,7 @@ export default function MarketFlowPanel() {
         </div>
       </div>
 
-      <PremarketExpected index={expectedIndex} />
+      <PremarketExpected index={expected?.index} stocks={spotMarket === "KOSPI" ? expected?.stocks : undefined} />
       {failed && <p className="error small" role="alert">{data ? "갱신하지 못했습니다 — 마지막 값을 보여 줍니다." : `수급을 불러오지 못했습니다. ${failed}`}</p>}
       {data && !data.supported && <p className="muted small">이 브로커는 시장 수급을 제공하지 않습니다.</p>}
       {!data && !failed && <p className="muted small">불러오는 중…</p>}

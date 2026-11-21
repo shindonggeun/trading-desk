@@ -119,6 +119,82 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli day-call backtest --mark
   서버에서 바로 돌릴 때는 `--krx-db`. 둘 다 없으면 리포트 `answers.kospi` 가 `yahoo` 다.
 - 운영 채점: 장 마감 30분 뒤 채점할 때 KRX 에 그날이 있으면 KRX 로, 없으면 야후로 채점하고 `outcome.answer_source` 에 적는다. 야후로 채점한 국장 판정은 다음 영업일 08:30 뒤 KRX 가 올라오면 다시 채점하고(최근 14일), 둘이 0.1% 넘게 다르거나 적중이 뒤집히면 야후 정답을 `outcome.yahoo_answer` 에 남긴다. 검증 구간 백필(`day-call backfill`)도 KRX 정답으로 채점하고, 그 기간 중 야후로 채점된 국장 판정을 KRX 로 다시 채점한다.
 
+#### #604 국장 표본 비교와 KRX 재현
+
+저장소의 이전 리포트는 `0de89bf0^`의 `dc-20260820-619da11b`, 2015년으로 확장한 리포트는 `0de89bf0`의 `dc-20260820-a83a7217`이다. 두 버전 모두 Yahoo로 채점했다. 학습 종료일은 2026-08-20, 검증 시작일은 2026-08-21로 같다. 검증 종료일은 2026-11-17에서 2026-11-20으로 바뀌었다.
+
+| 판정 | 회차 | 학습 표본 전 → 후 | 검증 표본 전 → 후 | 방향 적중 전 → 후 | Brier 전 → 후 | 후: 항상 롱 / 숏 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 전일 종가 대비 · 야간 선물 | 1 | 346 → 344 | 46 → 49 | 54.3% → 57.1% | 0.7006 → 0.7053 | 49.0% / 51.0% |
+| 전일 종가 대비 · 야간 선물 | 2 | 425 → 424 | 57 → 59 | 66.7% → 67.8% | 0.6212 → 0.6200 | 45.8% / 54.2% |
+| 전일 종가 대비 · 일봉 | 1 | 2,188 → 2,847 | 59 → 62 | 54.2% → 54.8% | 0.7209 → 0.7207 | 46.8% / 53.2% |
+| 전일 종가 대비 · 일봉 | 2 | 2,172 → 2,827 | 59 → 61 | 67.8% → 68.9% | 0.6238 → 0.6294 | 45.9% / 54.1% |
+| 시가 대비 · 일봉 | 1 | 2,192 → 2,851 | 59 → 62 | 64.4% → 59.7% | 0.6598 → 0.6492 | 37.1% / 62.9% |
+| 시가 대비 · 일봉 | 2 | 2,176 → 2,831 | 59 → 61 | 64.4% → 63.9% | 0.6551 → 0.6501 | 36.1% / 63.9% |
+
+일봉 판정의 학습 표본은 회차당 655~659세션 늘었다. 야간 선물 판정은 60분봉이 있는 2024년 10월부터 학습했다. 검증 종료일과 표본이 달라 적중률 차이에는 기간 변화도 포함된다. 원본은 두 커밋의 `backend/desk/data/day_call/report_kr.json`에 있는 `calls.<판정>.rounds.<회차>.train`과 `holdout`이다.
+
+**KRX 결과 대기 중.** 로컬에서 찾은 KRX 코스피 JSON은 수집기 테스트용 응답이다. 실제 비교에는 아래 입력이 필요하다.
+
+- `krx_daily`에서 이미 내보낸 `kospi_dd_trd`의 `코스피` 파일. `api`, `code`, 날짜별 `rows`와 유효한 시·고·저·종가가 필요하다. 최초 학습일 이전 ATR 계산 구간부터 검증 종료일까지 확보한다.
+- 같은 기간의 Yahoo 일봉과 야간 선물 60분봉. #777과 같은 기간을 재현할 때는 2026-08-21~2026-11-20의 60분봉도 보관되어 있어야 한다. 일봉만 남은 기간은 야간 선물 판정 표본에서 빠진다.
+
+아래 코드를 로컬 스크립트로 저장해 `backend` 환경에서 실행한다. 인자는 KRX 파일, 로컬 출력 디렉터리, 검증 시작일, 확정 거래일 기준 검증 종료일 순서다. 출력 디렉터리의 `yahoo_features.json`에 Yahoo 일봉과 60분봉을 보관하고, 재실행할 때는 이 파일을 읽는다.
+
+```python
+import json
+import sys
+from dataclasses import asdict
+from datetime import date
+from pathlib import Path
+
+from desk import day_call as call, day_call_krx as krx, day_call_train as train
+from desk.broker.base import Bar
+
+export, output, start, end = sys.argv[1:]
+split, last = date.fromisoformat(start), date.fromisoformat(end)
+output = Path(output)
+output.mkdir(parents=True, exist_ok=True)
+snapshot = output / "yahoo_features.json"
+if snapshot.exists():
+    raw = json.loads(snapshot.read_text(encoding="utf-8"))
+    yahoo = {symbol: [Bar(**bar) for bar in bars] for symbol, bars in raw.items()}
+else:
+    yahoo = train.fetch()
+    raw = {symbol: [asdict(bar) for bar in bars] for symbol, bars in yahoo.items()}
+    snapshot.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+target = yahoo[krx.SYMBOL]
+yahoo[krx.SYMBOL] = [bar for bar in target if call.session_day(krx.SYMBOL, bar) <= last]
+if split > last or not any(call.session_day(krx.SYMBOL, bar) == last for bar in yahoo[krx.SYMBOL]):
+    raise ValueError("검증 종료일에 확정된 Yahoo 코스피 봉이 필요합니다")
+with_krx = dict(yahoo)
+check = krx.apply(with_krx, {day: row for day, row in krx.load_file(export).items() if day <= last})
+if not any(split <= day <= last for day in check["days"]):
+    raise ValueError("검증 구간에 유효한 KRX 코스피 일봉이 필요합니다")
+
+for name, series, source in (("yahoo", yahoo, None), ("krx", with_krx, check)):
+    _, report = train.backtest("kr", series, (last - split).days + 1, compare=False, krx_check=source)
+    (output / f"report_kr_{name}.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+for name, (kind, extras) in call.CALLS.items():
+    for turn in sorted(call.MARKETS["kr"].rounds):
+        scored = train.rows("kr", turn, with_krx, kind=kind, extras=extras)
+        for phase, sample in (
+            ("train", [r for r in scored if train.TRAIN_FROM <= r["day"] < split]),
+            ("holdout", [r for r in scored if r["day"] >= split]),
+        ):
+            official = sum(
+                r["day"] in check["days"]
+                and (kind != "cc" or call.previous_session("kr", r["day"]) in check["days"])
+                for r in sample
+            )
+            print(name, turn, phase, f"KRX 정답 가격 {official}/{len(sample)}")
+```
+
+두 JSON의 회차별 학습·검증 날짜와 표본, 방향 적중률, Brier, Brier skill, 항상 롱·숏 기준선을 함께 적는다. `answers.kospi = krx`인 리포트에도 Yahoo 대체일이 들어갈 수 있다. 회차별 KRX 정답 가격 적용 건수와 가격 차이 일수(`answers.diff_days`)를 함께 보고한다. 전일 종가 대비는 당일 종가와 직전 거래일 종가 모두를 확인한다. ATR에는 과거 Yahoo 대체 봉이 들어갈 수 있다. 검증 세션이 다르면 날짜 범위를 명시하고 동일 세션 성능 비교를 별도로 수행한다.
+
 ## 지표
 
 | 지표 | 정의 |

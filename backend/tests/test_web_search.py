@@ -110,8 +110,9 @@ def test_the_page_gets_only_http_links_and_the_stored_message_keeps_them():
     assert events[1]["links"] == used[0]["links"] == web_search.links(result)
 
 
-def test_the_scripted_session_searches_without_the_network():
-    app = create_app(Settings(database_url="sqlite://", fake_runs=True, fake_delay=0), runner=make_fake_runner(0))
+def test_the_scripted_session_searches_without_the_network(tmp_path):
+    url = f"sqlite:///{(tmp_path / 'desk.db').as_posix()}"
+    app = create_app(Settings(database_url=url, fake_runs=True, fake_delay=0), runner=make_fake_runner(0))
     tools = app.state.chat_tools
     events: list[dict] = []
     text, used = asyncio.run(chat.FakeChatter()(chat.build_messages([], "거시 어때?", None, False), tools, events.append))

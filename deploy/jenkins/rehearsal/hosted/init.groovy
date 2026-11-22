@@ -9,8 +9,8 @@ import hudson.security.ProjectMatrixAuthorizationStrategy
 import hudson.security.SecurityRealm
 import hudson.security.csrf.DefaultCrumbIssuer
 import jenkins.model.Jenkins
-import org.jenkinsci.plugins.scriptsecurity.sandbox.groovy.GroovyLanguage
 import org.jenkinsci.plugins.scriptsecurity.scripts.ScriptApproval
+import org.jenkinsci.plugins.scriptsecurity.scripts.languages.GroovyLanguage
 import org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition
 import org.jenkinsci.plugins.workflow.job.WorkflowJob
 

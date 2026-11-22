@@ -1,5 +1,6 @@
 import { historyText, SCENARIO_STATUS, scenarioRegime, SIDE_KO, type DirectionScenario, type ScenarioSide } from "../directionScenarios";
 import { price } from "../format";
+import { scenarioConfirmationRows } from "../playbookConditions";
 
 export default function DirectionScenarioCard({ side, scenario, selected, onSelect }: {
   side: ScenarioSide;
@@ -32,6 +33,9 @@ export default function DirectionScenarioCard({ side, scenario, selected, onSele
       {priced && (confirmation.trigger_text || confirmation.trigger_price != null) && (
         <p>{confirmation.trigger_price != null && `확인 가격 ${price(confirmation.trigger_price)} `}{confirmation.trigger_text}</p>
       )}
+      {priced && scenarioConfirmationRows(confirmation).map((row) => (
+        <p key={row.label}><strong>{row.label}</strong> · {row.text}</p>
+      ))}
       {basis.length > 0 && <p className="muted">{basis.join(" · ")}</p>}
       <p>{historyText(history)}</p>
       {history.start && history.end && <p className="muted">{history.start} ~ {history.end}</p>}

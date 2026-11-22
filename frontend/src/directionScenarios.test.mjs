@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { hasScenarios, historyText, scenarioAt, scenarioExtraPrices, scenarioPlan, scenarioRegime } from "./directionScenarios.ts";
+import { scenarioConfirmationRows } from "./playbookConditions.ts";
+
+test("구조화된 장중 및 봉 마감 조건을 확인 상태와 함께 구분한다", () => {
+  assert.deepEqual(scenarioConfirmationRows({}), []);
+  assert.deepEqual(scenarioConfirmationRows({
+    intrabar: [{ id: "in_zone", met: true }, { id: "volume_watch", label: "체결량", met: null }],
+    bar_close: [{ id: "reclaim", met: false }],
+  }), [
+    { label: "장중 확인", text: "구역 안 (충족) · 체결량 (관찰)" },
+    { label: "봉 마감 확인", text: "구역 되찾기 (미충족)" },
+  ]);
+});
 
 const absent = { status: "unavailable", n: 0, win_rate: null, start: null, end: null, win_rule: null };
 const long = {

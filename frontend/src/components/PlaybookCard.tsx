@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { price } from "../format";
+import { conditionLabel } from "../playbookConditions";
 import type {
   EconEvent, HorizonId, LivePlaybooks, LivePlaybookSide, LowerTrigger, Outcome, Plan, PlanTrigger, PlaybookOutcome, PlaybookSide,
   PlaybookCalibration, Playbooks, RegimeId, RiskPhase, RiskRegime,
@@ -48,14 +49,6 @@ export const REGIME: Record<RegimeId, string> = {
 export const SETUP: Record<string, string> = {
   dip_catch: "하따(급락 받기)", range_low: "박스 하단", pullback: "눌림목", fade: "반등 매도", breakdown: "이탈 매도",
   value_swing: "과매도 스윙", none: "없음",
-};
-const CONDITION: Record<string, string> = {
-  in_zone: "구역 안", rejection_wick: "아래꼬리", rsi_divergence: "RSI 다이버전스", higher_low: "저점 높임", reclaim: "구역 되찾기",
-  volume_dry: "거래량 마름", climax_recent: "투매 직후", tape_hh_hl: "체결 고점 · 저점 높임",
-  at_resistance: "저항 도달", rejection_bar: "윗꼬리 · 음봉", lower_high: "고점 낮춤", below_vwap: "VWAP 아래",
-  below_ma20: "20선 아래", volume_on_break: "이탈 거래량", no_new_entry_late: "장 막판 신규 금지",
-  event_clear: "경제 일정 통과",
-  vs_oversold: "과매도", vs_depth: "낙폭", vs_base: "바닥 구조", vs_fear: "시장 공포", vs_flows: "수급 · 뉴스",
 };
 const SOURCE: Record<string, string> = { sr: "지지 · 저항", vp: "매물대", fib: "피보나치", trend: "추세선", ma: "이평선", vwap: "VWAP", avwap: "앵커드 VWAP", gap: "갭 메움", atr: "ATR" };
 const RESULT: Record<string, string> = {
@@ -467,7 +460,7 @@ function Side({ side, dir, state, result, live, lower, interval, cal }: {
           {conditions.map((c) => (
             <li key={c.id} className={c.how === "watch" || c.met == null ? "pb-watch" : c.met ? "pb-met" : "pb-unmet"}>
               <span aria-hidden>{c.how === "watch" ? "◌" : c.met == null ? "–" : c.met ? "●" : "○"}</span>{" "}
-              {CONDITION[c.id] ?? c.label ?? c.id}
+              {conditionLabel(c)}
               {c.how === "edge" && <span className="pb-edge muted"> · 우위 조건</span>}
               <span className="sr-only">{c.how === "watch" ? " — 직접 지켜볼 것" : c.met == null ? " — 판단 불가(데이터 없음)" : c.met ? " — 충족" : " — 미충족"}</span>
             </li>

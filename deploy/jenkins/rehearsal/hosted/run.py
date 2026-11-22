@@ -77,11 +77,13 @@ class Jenkins:
         self.container = container
         self.crumb = []
 
-    def request(self, path, data=None, *, ready=False):
+    def request(self, path, data=None, *, ready=False, include_headers=False):
         curl = ["curl", "--silent", "--show-error", "--max-time", "5",
                 "--cookie", COOKIE, "--cookie-jar", COOKIE, "--write-out", "\n%{http_code}"]
         if data is not None:
             curl += [*self.crumb, "--data", urlencode(data)]
+        if include_headers:
+            curl.append("--include")
         try:
             result = docker("exec", self.container, *curl, "http://127.0.0.1:8080" + path)
         except RuntimeError:
@@ -117,8 +119,14 @@ class Jenkins:
         require(code in (200, 302, 303), f"stop {job} #{number} returned {code}")
 
     def assert_denied(self, path, permission):
-        code, body = self.request(path, {})
-        require(code == 403 and permission in body, f"expected anonymous denial of {permission} at {path}, got {code}")
+        code, response = self.request(path, {}, include_headers=True)
+        headers, _, _ = response.partition("\n\n")
+        permission_id = f"hudson.model.Item.{permission.removeprefix('Job/')}"
+        denied = any(
+            name.casefold() == "x-required-permission" and value.strip().casefold() == permission_id.casefold()
+            for name, _, value in (line.partition(":") for line in headers.splitlines()[1:])
+        )
+        require(code == 403 and denied, f"expected anonymous denial of {permission} at {path}, got {code}")
         print(f"Anonymous {permission} denied")
 
     def terminal(self, job, number, expected):

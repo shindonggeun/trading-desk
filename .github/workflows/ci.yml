@@ -24,6 +24,7 @@ jobs:
     outputs:
       backend: ${{ steps.f.outputs.backend }}
       frontend: ${{ steps.f.outputs.frontend }}
+      market-redis: ${{ steps.f.outputs.market-redis }}
       images: ${{ steps.f.outputs.images }}
       scripts: ${{ steps.f.outputs.scripts }}
     steps:
@@ -41,6 +42,24 @@ jobs:
             frontend:
               - *ci
               - frontend/**
+            market-redis:
+              - *ci
+              - backend/pyproject.toml
+              - backend/desk/api.py
+              - backend/desk/market_bus.py
+              - backend/desk/settings.py
+              - backend/desk/shared_cache.py
+              - frontend/package.json
+              - frontend/package-lock.json
+              - frontend/src/api.ts
+              - frontend/src/alertsFeed.ts
+              - frontend/src/livePoll.ts
+              - frontend/src/marketStream.ts
+              - frontend/src/poll.ts
+              - frontend/src/components/QuoteBoard.tsx
+              - frontend/src/components/MarketFlowPanel.tsx
+              - frontend/src/components/FuturesFlowView.tsx
+              - frontend/tests/market-redis/**
             images:
               - *ci
               - backend/backend.Dockerfile
@@ -125,6 +144,39 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run build
 
+  # #690 public market SSE with an isolated real Redis and one browser. No operating credentials.
+  market-redis:
+    needs: changes
+    if: needs.changes.outputs.market-redis == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        id: py
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        id: venv
+        with:
+          path: backend/.venv
+          key: market-redis-ubuntu24-venv-${{ runner.os }}-py${{ steps.py.outputs.python-version }}-${{ hashFiles('backend/pyproject.toml') }}
+      - if: steps.venv.outputs.cache-hit != 'true'
+        working-directory: backend
+        run: python -m venv .venv && .venv/bin/pip install -q -e ".[dev]"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        run: npm ci --no-audit --no-fund
+      - run: node frontend/tests/market-redis/run.mjs
+
   # 배포 이미지가 실제로 빌드되는지만 본다(푸시하지 않는다). 서버(scripts/deploy.sh)와 같은 Dockerfile · 컨텍스트다.
   # Dockerfile · 의존성 · nginx 템플릿 · compose 가 바뀔 때만 돈다(#748). 층은 GitHub Actions 캐시에 남겨 다음에 다시 쓴다
   images:
@@ -184,7 +236,7 @@ jobs:
 
   # 필수 체크로 걸 하나(#748): 돈 잡이 모두 성공이고, 건너뛴 잡은 "변경 없음"으로 통과한다
   ci-ok:
-    needs: [changes, backend, frontend, images, deploy-scripts]
+    needs: [changes, backend, frontend, market-redis, images, deploy-scripts]
     if: always()
     runs-on: ubuntu-latest
     steps:

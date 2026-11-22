@@ -8,9 +8,9 @@ so nothing prints twice; tests' log capture keeps working). A desk module too ch
 QUIET at WARNING.
 
 #712: log lines leave the box (files, a log collector), so they carry no login e-mail and no full client
-address: a user is ``#<id>``, an address loses its last IPv4 octet (``mask_ip``). uvicorn's access line
-gets the same treatment (``AccessMask``). Bans don't depend on any of this: the ingress fail2ban reads
-nginx's own access log (Infra ``nginx-trading-login``).
+address: a user is ``#<id>``, an address loses its last IPv4 octet (``mask_ip``). Uvicorn's access line
+masks the address and omits the request target (``AccessMask``). Ingress fail2ban reads the separate
+ingress nginx access log (Infra ``nginx-trading-login``).
 """
 
 from __future__ import annotations
@@ -21,6 +21,9 @@ import sys
 
 FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 QUIET: dict[str, int] = {}          # desk module -> its own level (none needed so far)
+_ACCESS_FORMAT = '%s - "%s %s HTTP/%s" %d'
+_HTTP_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE"})
+_HTTP_VERSIONS = frozenset({"1.0", "1.1", "2", "3"})
 
 
 def mask_ip(ip: str | None) -> str:
@@ -39,17 +42,22 @@ def mask_ip(ip: str | None) -> str:
 
 
 class AccessMask(logging.Filter):
-    """uvicorn's access record: args ``(client_addr "ip:port", method, path, http_version, status)``.
-
-    Always passes the record: logging does not catch a filter's exception, so it would break the response."""
+    """Keep only safe values in the five arguments expected by Uvicorn's AccessFormatter."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            args = record.args
-            if isinstance(args, tuple) and args and isinstance(args[0], str):
-                record.args = (mask_ip(args[0].rpartition(":")[0]), *args[1:])   # "%s:%d" % scope client
-        except Exception:  # noqa: BLE001
-            record.args = ("?", *record.args[1:]) if isinstance(record.args, tuple) and record.args else record.args
+        args = record.args
+        if record.msg != _ACCESS_FORMAT or not isinstance(args, tuple) or len(args) != 5:
+            return False
+        address, method, _, version, status = args
+        if not isinstance(status, int) or not 100 <= status <= 999:
+            return False
+        record.args = (
+            mask_ip(address.rpartition(":")[0]) if isinstance(address, str) else "?",
+            method if isinstance(method, str) and method in _HTTP_METHODS else "?",
+            "-",
+            version if isinstance(version, str) and version in _HTTP_VERSIONS else "?",
+            status,
+        )
         return True
 
 

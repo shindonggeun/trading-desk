@@ -7,6 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from uvicorn.logging import AccessFormatter
 
 from desk.api import create_app
 from desk.auth import Auth
@@ -18,6 +19,8 @@ from tests.test_api import PASSWORD
 
 CLIENT_IP = "203.0.113.57"
 OWNER = "owner@desk.test"
+ACCESS_FORMAT = '%s - "%s %s HTTP/%s" %d'
+NGINX_TEMPLATE = Path(__file__).resolve().parents[2] / "frontend" / "nginx.conf.template"
 
 
 def test_mask_ip_hides_the_host_part():
@@ -34,13 +37,15 @@ def test_mask_ip_hides_the_host_part():
 def test_uvicorn_access_line_is_masked():
     configure("INFO")
     assert any(isinstance(f, AccessMask) for f in logging.getLogger("uvicorn.access").filters)
+    formatter = AccessFormatter('%(client_addr)s - "%(request_line)s" %(status_code)s', use_colors=False)
     for addr, shown in ((f"{CLIENT_IP}:50000", "203.0.113.x"), ("2001:db8:1:2::9:443", "2001:db8:1::x"),
                         ("", "?")):
+        target = f"/api/{OWNER}/{CLIENT_IP}?next={OWNER}&peer={CLIENT_IP}"
         record = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1,
-                                   '%s - "%s %s HTTP/%s" %d', (addr, "GET", "/api/health", "1.1", 200), None)
+                                   ACCESS_FORMAT, (addr, "POST", target, "1.1", 401), None)
         assert AccessMask().filter(record)
-        assert record.args[0] == shown
-        assert CLIENT_IP not in record.getMessage()
+        assert formatter.format(record) == f'{shown} - "POST - HTTP/1.1" 401 Unauthorized'
+        assert OWNER not in record.getMessage() and CLIENT_IP not in record.getMessage()
 
 
 def test_login_lines_carry_neither_the_email_nor_the_address(db_url, caplog):
@@ -60,10 +65,32 @@ def test_login_lines_carry_neither_the_email_nor_the_address(db_url, caplog):
         assert OWNER not in line and CLIENT_IP not in line, line
 
 
-def test_access_mask_never_raises_and_passes_the_record():
-    for args in ((None, "GET"), ("x",), (), ({"a": 1},), None):
-        record = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, "%s", args, None)
-        assert AccessMask().filter(record)
+def test_access_mask_drops_unsupported_records_without_formatting_them():
+    for msg, args in (
+        (ACCESS_FORMAT, (None, "GET")),
+        (ACCESS_FORMAT, (OWNER,)),
+        (ACCESS_FORMAT, ()),
+        (ACCESS_FORMAT, ({"raw": OWNER},)),
+        (ACCESS_FORMAT, None),
+        (ACCESS_FORMAT, (f"{CLIENT_IP}:50000", "POST", OWNER, "1.1", OWNER)),
+        (OWNER, (f"{CLIENT_IP}:50000", "POST", OWNER, "1.1", 401)),
+    ):
+        record = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, msg, args, None)
+        assert not AccessMask().filter(record)
+
+
+def test_web_container_request_logs_keep_only_safe_fields():
+    template = NGINX_TEMPLATE.read_text(encoding="utf-8")
+    http, server = template.split("\nserver {", maxsplit=1)
+    masked_format = re.search(r"(?m)^log_format desk_masked [^;]+;", http)
+    assert masked_format is not None
+    assert set(re.findall(r"\$\w+", masked_format.group())) == {
+        "$desk_masked_addr", "$time_local", "$request_method", "$server_protocol", "$status",
+        "$body_bytes_sent", "$request_time", "$upstream_status", "$upstream_response_time",
+    }
+    assert re.search(r"(?m)^    access_log /var/log/nginx/access\.log desk_masked;$", server)
+    assert re.search(r"(?m)^    error_log /dev/null;$", server)
+    assert not re.search(r"(?m)^\s*error_log\s", http)
 
 
 API = Path(__file__).resolve().parents[1] / "desk" / "api.py"

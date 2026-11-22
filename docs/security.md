@@ -51,7 +51,7 @@ SSE(`EventSource`)도 쿠키로 인증된다. URL 에 토큰을 싣지 않는다
 |----|------|
 | 앱(`auth.LoginThrottle`, 메모리) | 15분 안에 IP 당 **시도** 5회 → 429 + `Retry-After`. 비밀번호 검사 **전에** 센다 — 병렬 요청이 검사 중에 한도를 넘지 못한다. 성공하면 그 IP 의 기록을 지운다 |
 | argon2 동시 검사 | 2개(`_VERIFY_SLOTS`). 넘치면 503 — 검사 한 번이 ~64MiB 라 몰아치기로 호스트 메모리를 못 태운다 |
-| 인그레스 fail2ban (`storage` `.12`) | nginx 접근 로그의 `POST /api/auth/login` 401 을 세어 IP 를 차단한다 — 재시작에도 남는 긴 기억 |
+| 인그레스 fail2ban (`storage` `.12`) | 인그레스 nginx 접근 로그의 `POST /api/auth/login` 401 · 429 를 세어 IP 를 차단한다 — 재시작에도 남는 긴 기억 |
 
 **아이디 단위 잠금은 일부러 없다.** 계정이 하나라 아이디를 아는 누구나 소유자를 계속 잠가 둘 수 있다(2026-11-04 보안 검토).
 분산 추측은 fail2ban · 12자 이상 비밀번호 + argon2id · 다음 단계 OTP 가 막는다.
@@ -62,13 +62,14 @@ SSE(`EventSource`)도 쿠키로 인증된다. URL 에 토큰을 싣지 않는다
 백엔드를 나누면(#688, docs/deploy.md 12절) 웹 네트워크(`DESK_DOCKER_NETWORK`)에는 `backend-prod`(api | all) 하나만 붙고,
 collector · analyst 는 프록시 헤더 없이 컨테이너 안(`127.0.0.1`)에서만 듣는다(health 확인용).
 
-로그(#712): 컨테이너 로그는 파일 · 로그 수집기로 퍼지므로 로그인 이메일과 원본 IP 를 쓰지 않는다.
+로그(#712): 컨테이너 로그는 파일 · 로그 수집기로 퍼지므로 로그인·OTP 기록과 일반 접근 로그에서 이메일과 원본 IP 를 가린다.
 
 - 앱(`desk.*`): 사용자는 `#<내부 id>`, IP 는 마지막 옥텟을 가린다(`log_setup.mask_ip`, `203.0.113.x` · IPv6 는 /48 + `::x`).
-- 백엔드 uvicorn 접근 로그 · 웹 컨테이너 nginx 접근 로그(`frontend/nginx.conf.template` 의 `desk_masked` 형식)도 같은 식으로 가린다.
+- 백엔드 Uvicorn과 웹 컨테이너 nginx의 일반 접근 로그는 마스킹된 주소, HTTP 메서드·버전·상태를 기록한다. 클라이언트가 보낸 경로·쿼리와 Referer·User-Agent는 제외한다. 웹의 `desk_masked` 형식은 전송량과 요청·업스트림 상태 및 소요 시간도 기록한다.
+- 웹 nginx는 요청 처리 오류에 원본 주소와 요청 정보를 붙인다. 웹 `server` 범위의 오류 로그는 폐기한다. 업스트림 장애는 접근 로그의 상태·시간으로 확인하며, nginx 전역 기동 로그는 유지한다.
 - DB 오류의 traceback 에 바인딩 값(이메일 · IP · 토큰 해시)이 찍히지 않게 엔진에 `hide_parameters=True` 를 준다.
 - 시도 제한(`LoginThrottle`)은 원본 IP 를 그대로 키로 쓴다 — 가린 값을 쓰면 /24 전체가 함께 잠긴다.
-- 차단에는 영향이 없다 — fail2ban 은 인그레스 nginx 접근 로그만 본다(Infra `nginx-trading-login`). 인그레스 로그는 가리지 않는다.
+- fail2ban은 웹 컨테이너 로그와 별개인 인그레스 nginx의 `main` 접근 로그에서 로그인 POST의 401·429와 원본 주소를 읽는다(Infra `nginx-trading-login`). 이 보안 로그에는 원본 IP와 요청줄·헤더가 남으므로 개인정보가 포함된 로그로 다룬다.
 
 ## 5. 비밀
 
@@ -187,7 +188,7 @@ OTP 앱(Google Authenticator 등, TOTP RFC 6238)으로 두 번째 확인을 한�
 | 1 | `{username, password}` | OTP 꺼짐: 204 + 세션 쿠키. OTP 켜짐: 200 `{otp_required: true, challenge}` — 쿠키 없음 |
 | 2 | `{challenge, code}` | 맞으면 204 + 세션 쿠키, 아니면 401 |
 
-- 두 단계 모두 같은 경로라 인그레스 fail2ban(로그인 401)이 코드 추측도 센다. 앱의 IP 당 시도 제한도 두 단계 모두 센다 —
+- 두 단계 모두 같은 경로라 인그레스 fail2ban(로그인 401·429)이 코드 추측도 센다. 앱의 IP 당 시도 제한도 두 단계 모두 센다 —
   OTP 가 켜진 계정은 비밀번호가 맞아도 IP 기록을 지우지 않고, 코드까지 통과해야 지운다.
 - `challenge` 는 32바이트 무작위, 메모리에만(해시로) 있고 5분 · 5번 시도 뒤 사라진다. 서버를 재시작하면 비밀번호부터 다시.
 - `code` 는 6자리 TOTP(앞뒤 30초 허용) 또는 복구 코드. **같은 시간 칸의 코드는 한 번만** 받는다(마지막 칸을 저장하고 비교 후 갱신).

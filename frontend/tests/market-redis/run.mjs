@@ -120,8 +120,13 @@ async function verify() {
   chrome.stderr.on("data", chunk => { chromeLog = (chromeLog + chunk).slice(-4000); });
   const debugPort = await eventually(async () => (await readFile(join(profile, "DevToolsActivePort"), "utf8"))
     .split(/\r?\n/)[0], "Chrome DevTools");
-  const [tab] = await (await fetch(`http://${loopback}:${debugPort}/json/list`, { signal: AbortSignal.timeout(2000) })).json();
-  socket = new WebSocket(tab.webSocketDebuggerUrl);
+  const pageDebuggerUrl = await eventually(async () => {
+    const response = await fetch(`http://${loopback}:${debugPort}/json/list`, { signal: AbortSignal.timeout(2500) });
+    if (!response.ok) throw Error(`Chrome target listing returned ${response.status}`);
+    const targets = await response.json();
+    return targets.find(target => target.type === "page" && target.webSocketDebuggerUrl)?.webSocketDebuggerUrl;
+  }, "Chrome page target", 20_000);
+  socket = new WebSocket(pageDebuggerUrl);
   await new Promise((resolve, reject) => {
     socket.addEventListener("open", resolve, { once: true });
     socket.addEventListener("error", reject, { once: true });
@@ -182,6 +187,7 @@ async function verify() {
       if (await docker("port", container, "6379/tcp") !== redisBinding) {
         throw Error("Redis loopback binding changed on restart");
       }
+      await eventually(async () => await docker("exec", container, "redis-cli", "PING") === "PONG", "restarted Redis");
       restarted = true;
     }
     await wait(75);

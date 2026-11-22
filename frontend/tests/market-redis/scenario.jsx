@@ -116,11 +116,20 @@ async function verify() {
   await wait(400);
   const recoveryRest = Object.fromEntries(channels.map(key => [key, responses[key] - beforeRecovery[key]]));
   const recovered = { ...requests };
+  const first = await phase("recovery-first");
+  const firstMarkersVisible = () => flowPrice().includes("2711") && futuresPrice().includes("491")
+    && currentText("#test-alert").includes("Redis first recovery marker");
+  const firstVisible = first.batch.complete
+    ? await until(firstMarkersVisible, "first recovery batch markers", 2).then(() => true, () => false)
+    : firstMarkersVisible();
+  const firstRecovery = { ...first.batch, visible: firstVisible };
+
+  // Publish later values with their own event IDs, not a replay of the first recovery batch.
   const restored = await phase("recovered");
-  assert(restored.api.received_remote >= 7 && restored.collector.published_remote >= 7
-    && restored.api.reconnects > 0, "live redis subscription did not receive new events");
+  assert(restored.batch.complete && restored.api.reconnects > 0,
+    `live Redis subscription did not receive all new events: ${JSON.stringify({ firstRecovery, second: restored.batch })}`);
   // REST still serves 2699/489 and the single saved alert. Only SSE can show all three markers.
-  const recoveredMarkersVisible = () => flowPrice().includes("2711") && futuresPrice().includes("491")
+  const recoveredMarkersVisible = () => flowPrice().includes("2722") && futuresPrice().includes("492")
     && currentText("#test-alert").includes("Redis recovery marker");
   await until(recoveredMarkersVisible, "post-reconnect SSE markers");
   await wait(3200);
@@ -128,7 +137,8 @@ async function verify() {
     "polling continued or SSE markers were lost after recovery");
   assert(errors.length === 0, "browser errors");
   return { ok: true, outage, localQuoteDuringOutage: 193, recoveryRest, receivedRemote: restored.api.received_remote,
-    publishedRemote: restored.collector.published_remote, redisReconnects: restored.api.reconnects };
+    publishedRemote: restored.collector.published_remote, redisReconnects: restored.api.reconnects,
+    recoveryBatches: { first: firstRecovery, second: restored.batch } };
 }
 
 verify().then(

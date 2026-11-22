@@ -120,35 +120,57 @@ def make_app(directory: Path, redis_port: int):
 
     app.router.lifespan_context = fixture_lifespan
 
-    async def publish_remote(flow_price, futures_price, *, alert=False):
+    def transport_counters():
         bus = market_bus.BUS
-        received = bus.stats()["received_remote"]
-        published = collector.stats()["published_remote"]
+        api_stats = bus.stats()
+        collector_stats = collector.stats()
+        return {"published_remote": collector_stats["published_remote"], "received_remote": api_stats["received_remote"],
+                "publish_errors": collector_stats["publish_errors"], "dropped": api_stats["dropped"],
+                "subscribed": api_stats["subscribed"], "reconnects": api_stats["reconnects"]}
+
+    async def publish_remote(flow_price, futures_price, *, alert=None):
+        before = transport_counters()
         collector.publish("flow", "KOSPI:1d", flow_view(flow_price), "toss_investors", now())
         collector.publish("futures", "view", futures_view(futures_price), "kis_futures", now())
         if alert:
+            rule, text = alert
             collector.publish("alert", "flow_shift", {
-                "kind": "flow_shift", "rule": "buy_grow", "market": "kospi", "who": "foreign",
+                "kind": "flow_shift", "rule": rule, "market": "kospi", "who": "foreign",
                 "trade_date": today(), "severity": "info", "t": now(),
-                "text": "Redis recovery marker", "value": 10, "prev": 1,
+                "text": text, "value": 10, "prev": 1,
             }, "desk", now())
         expected = 3 if alert else 2
-        async with asyncio.timeout(5):
-            while (bus.stats()["received_remote"] < received + expected
-                   or collector.stats()["published_remote"] < published + expected):
-                await asyncio.sleep(0.025)
+        complete = False
+        try:
+            async with asyncio.timeout(5):
+                while True:
+                    after = transport_counters()
+                    if all(after[key] - before[key] >= expected for key in ("published_remote", "received_remote")):
+                        complete = True
+                        break
+                    await asyncio.sleep(0.025)
+        except TimeoutError:
+            after = transport_counters()
+        return {"complete": complete, "expected": expected, "before": before, "after": after,
+                "deltas": {key: after[key] - before[key] for key in before if key != "subscribed"}}
+
+    async def require_remote(flow_price, futures_price):
+        batch = await publish_remote(flow_price, futures_price)
+        if not batch["complete"]:
+            raise RuntimeError(f"fixture Redis publish incomplete: {json.dumps(batch)}")
 
     @app.post("/api/_integration/{phase}")
     async def control(phase: str):
         nonlocal local_quote
         bus = market_bus.BUS
+        batch = None
         if phase == "seed":
             async with asyncio.timeout(8):
                 while not bus.stats()["subscribed"]:
                     await asyncio.sleep(0.05)
             if bus.mode != "redis" or collector.mode != "redis":
                 raise RuntimeError("fixture requires actual Redis transport")
-            await publish_remote(2601, 451)
+            await require_remote(2601, 451)
             recorded = app.state.market_alerts.dispatch([{
                 "kind": "flow_shift", "rule": "buy_grow", "market": "kospi", "who": "foreign",
                 "severity": "info", "t": now(), "value": 48_100_000_000, "prev": 3_000_000_000,
@@ -156,7 +178,7 @@ def make_app(directory: Path, redis_port: int):
             if not recorded:
                 raise RuntimeError("fixture alert baseline was not recorded")
         elif phase == "healthy":
-            await publish_remote(2688, 483)
+            await require_remote(2688, 483)
         elif phase == "prepare-outage":
             rest.update(flow=2699, futures=489)
         elif phase == "outage":
@@ -165,13 +187,17 @@ def make_app(directory: Path, redis_port: int):
                 raise RuntimeError("API has not lost its Redis subscription")
             local_quote = 193
             keep_quote_live()
-        elif phase == "recovered":
+        elif phase in ("recovery-first", "recovered"):
             if not bus.stats()["subscribed"] or not bus.stats()["reconnects"]:
                 raise RuntimeError("API did not lose and restore its Redis subscription")
-            await publish_remote(2711, 491, alert=True)
+            if phase == "recovery-first":
+                batch = await publish_remote(2711, 491, alert=("buy_grow", "Redis first recovery marker"))
+            else:
+                batch = await publish_remote(2722, 492, alert=("sell_grow", "Redis recovery marker"))
+            print(f"{phase} Redis counters: {json.dumps(batch)}", file=sys.stderr, flush=True)
         else:
             raise ValueError(f"unknown fixture phase: {phase}")
-        return {"api": bus.stats(), "collector": collector.stats()}
+        return {"api": bus.stats(), "collector": collector.stats(), "batch": batch}
 
     return app
 

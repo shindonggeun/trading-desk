@@ -51,6 +51,7 @@ def futures_view(price):
 
 def make_app(directory: Path, redis_port: int):
     rest = {"flow": 2601, "futures": 451}
+    local_quote = 182
     collector = market_bus.Bus()
 
     class Flow:
@@ -96,7 +97,7 @@ def make_app(directory: Path, redis_port: int):
 
     def keep_quote_live():
         # This quote comes from the API role itself, even when Redis is unavailable.
-        market_bus.publish("quote", "AAPL", Quote("AAPL", 182, "USD", "kis", now()).to_dict(), "kis", now())
+        market_bus.publish("quote", "AAPL", Quote("AAPL", local_quote, "USD", "kis", now()).to_dict(), "kis", now())
 
     async def local_quotes():
         while True:
@@ -139,6 +140,7 @@ def make_app(directory: Path, redis_port: int):
 
     @app.post("/api/_integration/{phase}")
     async def control(phase: str):
+        nonlocal local_quote
         bus = market_bus.BUS
         if phase == "seed":
             async with asyncio.timeout(8):
@@ -157,6 +159,12 @@ def make_app(directory: Path, redis_port: int):
             await publish_remote(2688, 483)
         elif phase == "prepare-outage":
             rest.update(flow=2699, futures=489)
+        elif phase == "outage":
+            status = bus.stats()
+            if status["subscribed"] or status["reason"] != "bus_down" or not status["reconnects"]:
+                raise RuntimeError("API has not lost its Redis subscription")
+            local_quote = 193
+            keep_quote_live()
         elif phase == "recovered":
             if not bus.stats()["subscribed"] or not bus.stats()["reconnects"]:
                 raise RuntimeError("API did not lose and restore its Redis subscription")

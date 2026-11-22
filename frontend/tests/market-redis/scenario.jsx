@@ -102,26 +102,32 @@ async function verify() {
   document.body.dataset.stage = "stop-redis";
   await until(() => remote.every(key => !live(key) && responses[key] > beforeOutage[key])
     && flowPrice().includes("2699") && futuresPrice().includes("489"), "remote panels switch to REST values", 20);
+  await phase("outage");
+  await until(() => live("quote") && quotePrice().includes("193"), "new local quote arrives with Redis down");
   await wait(3200);
   const outage = Object.fromEntries(channels.map(key => [key, requests[key] - beforeOutage[key]]));
   assert(remote.every(key => outage[key] >= 2), "remote panels did not continue polling");
-  assert(outage.quote === 0 && live("quote") && quotePrice().includes("182") && alertRows() === 1,
+  assert(outage.quote === 0 && live("quote") && quotePrice().includes("193") && alertRows() === 1,
     "local quote or saved alert was lost during the outage");
 
+  const beforeRecovery = { ...responses };
   document.body.dataset.stage = "start-redis";
   await until(() => channels.every(live), "all channels return to live", 20);
   await wait(400);
+  const recoveryRest = Object.fromEntries(channels.map(key => [key, responses[key] - beforeRecovery[key]]));
   const recovered = { ...requests };
   const restored = await phase("recovered");
   assert(restored.api.received_remote >= 7 && restored.collector.published_remote >= 7
     && restored.api.reconnects > 0, "live redis subscription did not receive new events");
   // REST still serves 2699/489 and the single saved alert. Only SSE can show all three markers.
-  await until(() => flowPrice().includes("2711") && futuresPrice().includes("491")
-    && currentText("#test-alert").includes("Redis recovery marker"), "post-reconnect SSE markers");
+  const recoveredMarkersVisible = () => flowPrice().includes("2711") && futuresPrice().includes("491")
+    && currentText("#test-alert").includes("Redis recovery marker");
+  await until(recoveredMarkersVisible, "post-reconnect SSE markers");
   await wait(3200);
-  assert(channels.every(key => requests[key] === recovered[key] && live(key)), "polling continued after recovery");
+  assert(channels.every(key => requests[key] === recovered[key] && live(key)) && recoveredMarkersVisible(),
+    "polling continued or SSE markers were lost after recovery");
   assert(errors.length === 0, "browser errors");
-  return { ok: true, outage, receivedRemote: restored.api.received_remote,
+  return { ok: true, outage, localQuoteDuringOutage: 193, recoveryRest, receivedRemote: restored.api.received_remote,
     publishedRemote: restored.collector.published_remote, redisReconnects: restored.api.reconnects };
 }
 

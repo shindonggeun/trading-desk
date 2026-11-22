@@ -19,8 +19,6 @@ jobs:
   controller-rehearsal:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      DOCKER_CONFIG: ${{ runner.temp }}/td-jenkins-empty-docker-config
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,14 +26,19 @@ jobs:
       - name: Build the disposable controller from a fixture-only context
         shell: bash
         run: |
-          unset DOCKER_CONTEXT DOCKER_HOST
+          export DOCKER_CONFIG="$RUNNER_TEMP/td-jenkins-empty-docker-config"
+          mkdir -- "$DOCKER_CONFIG"
           fixture=deploy/jenkins/rehearsal/hosted
           context=$(mktemp -d)
           trap 'rm -rf -- "$context"' EXIT
           cp "$fixture"/Dockerfile "$fixture"/init.groovy "$fixture"/pipeline.groovy "$fixture"/competitor.groovy "$context/"
           cp scripts/jenkins/backend-handoff.groovy scripts/jenkins/backend-rehearsal.groovy "$context/"
-          docker --host unix:///var/run/docker.sock build --pull --tag td-jenkins-controller-fixture "$context"
+          env -u DOCKER_CONTEXT -u DOCKER_HOST docker --host unix:///var/run/docker.sock build --pull --tag td-jenkins-controller-fixture "$context"
       - name: Exercise real queue, ACL, cancellation and lock behavior in isolation
-        run: env -u DOCKER_CONTEXT -u DOCKER_HOST python3 -B deploy/jenkins/rehearsal/hosted/run.py td-jenkins-controller-fixture
+        shell: bash
+        run: |
+          export DOCKER_CONFIG="$RUNNER_TEMP/td-jenkins-empty-docker-config"
+          test -d "$DOCKER_CONFIG"
+          env -u DOCKER_CONTEXT -u DOCKER_HOST python3 -B deploy/jenkins/rehearsal/hosted/run.py td-jenkins-controller-fixture
       - name: Check the #849 host fence separately with fake Docker
         run: bash scripts/tests/backend-deploy-lease.test.sh

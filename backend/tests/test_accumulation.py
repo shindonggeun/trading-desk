@@ -1,10 +1,11 @@
 """#751 accumulation bands by view, the legs of the move, and their past record (desk.accumulation)."""
 
+import asyncio
 from datetime import date, timedelta
 
 import pytest
 
-from desk import accumulation, accumulation_bt
+from desk import accumulation, accumulation_bt, all_horizons
 
 
 def _bars(closes: list[float], vols: list[float] | None = None, wick: float = 0.008) -> list[dict]:
@@ -183,7 +184,7 @@ def test_weekly_bars_fold_the_days_by_iso_week():
 
 
 
-def _client(db_url, asked: list):
+def _client(db_url, asked: list, *, four_hours: str | None = None):
     from fastapi.testclient import TestClient
 
     from desk.api import create_app
@@ -199,21 +200,26 @@ def _client(db_url, asked: list):
 
     def yahoo(ticker, interval, count):
         asked.append((interval, count))
+        if interval == "240m" and four_hours == "error":
+            raise RuntimeError("4h unavailable")
+        if interval == "240m" and four_hours == "empty":
+            return []
         src = story                                        # one price scale: the read's price places the bands
         return [Bar(b["at"], b["open"], b["high"], b["low"], b["close"], b["volume"]) for b in src][-count:]
 
     settings = Settings(database_url=db_url, fake_delay=0, fake_runs=True)
+    prices = PriceSource(MockBroker(), yahoo_quote=lambda ticker: (story[-1]["close"], "USD"), yahoo_candles=yahoo)
     client = TestClient(create_app(settings, runner=make_fake_runner(0),
-                                   prices=PriceSource(MockBroker(), yahoo_candles=yahoo)), base_url="https://testserver")
+                                   prices=prices), base_url="https://testserver")
     engine = make_engine(db_url)
     Auth(engine, timedelta(hours=1), timedelta(hours=1)).create_user(OWNER, PASSWORD)
     engine.dispose()
-    return client, (OWNER, PASSWORD)
+    return client, (OWNER, PASSWORD), prices
 
 
 def test_api_chart_read_has_the_bands_and_legs_by_view(db_url):
     asked: list = []
-    client, (user, password) = _client(db_url, asked)
+    client, (user, password), _ = _client(db_url, asked)
     with client:
         client.post("/api/auth/login", json={"username": user, "password": password})
         body = client.get("/api/chart-read?ticker=GC=F&tf=1h,1d").json()
@@ -231,12 +237,31 @@ def test_api_chart_read_has_the_bands_and_legs_by_view(db_url):
         assert "accumulation" not in only_hours                             # the full read only
 
 
+@pytest.mark.parametrize("four_hours", ["error", "empty"])
+def test_default_chart_and_analysis_use_the_same_hourly_fallback(db_url, four_hours):
+    asked: list = []
+    client, (user, password), prices = _client(db_url, asked, four_hours=four_hours)
+    ticker = "ZZZT=F" if four_hours == "error" else "ZZZE=F"
+    with client:
+        assert client.post("/api/auth/login", json={"username": user, "password": password}).status_code == 204
+        response = client.get("/api/chart-read", params={"ticker": ticker})
+        assert response.status_code == 200
+        chart = response.json()
+    analysis = asyncio.run(all_horizons.build(prices, ticker, {}, "intraday", None, same_day=True))["horizons"]
+    short = chart["accumulation"]["short"]
+
+    assert {"60m", "240m"} <= {interval for interval, _ in asked}
+    assert short is not None and short["timeframe"] == "60m" and short["stats"] is None
+    assert short == analysis["scalp"]["accumulation"] == analysis["intraday"]["accumulation"]
+    assert any(leg["direction"] == "up" for leg in chart["legs"]["short"]["items"])
+
+
 def test_api_chart_read_stands_without_the_bands(db_url, monkeypatch):
     def broken(*a, **k):
         raise RuntimeError("bad bars")
 
     monkeypatch.setattr(accumulation, "views", broken)
-    client, (user, password) = _client(db_url, [])
+    client, (user, password), _ = _client(db_url, [])
     with client:
         client.post("/api/auth/login", json={"username": user, "password": password})
         got = client.get("/api/chart-read?ticker=GC=F&tf=1h,1d")

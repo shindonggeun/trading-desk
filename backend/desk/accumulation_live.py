@@ -29,9 +29,13 @@ async def read(tfs, results, weeks, now: datetime, price: float | None) -> tuple
         return res["bars"] if res is not None and not isinstance(res, BaseException) else None
 
     try:
-        short_tf = next((t for t in ("240m", "60m") if t in tfs), None)
+        short_tf, short_bars = None, None
+        for tf in ("240m", "60m"):
+            if bars := bars_of(tf):
+                short_tf, short_bars = tf, _finished(bars, tf, "short", now)
+                break
         by_view = {
-            "short": _finished(bars_of(short_tf), short_tf, "short", now) if short_tf else None,
+            "short": short_bars,
             "mid": _finished(bars_of("1d"), "1d", "mid", now),
             "long": _finished(weeks, "1w", "long", now),
         }

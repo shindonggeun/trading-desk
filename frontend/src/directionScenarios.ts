@@ -1,4 +1,5 @@
 import type { AllHorizonsPlan, HorizonSlot } from "./allHorizons";
+import type { PlaybookCondition } from "./playbookConditions";
 import type { HorizonId, Plan } from "./types";
 
 export const DIRECTIONS = ["long", "short"] as const;
@@ -23,7 +24,12 @@ export interface DirectionScenario {
   entry_zone: [number, number] | null;
   stop_loss: number | null;
   targets: { role: string; price: number; rr: number | null }[];
-  confirmation: { trigger_price: number | null; trigger_text: string | null };
+  confirmation: {
+    trigger_price: number | null;
+    trigger_text: string | null;
+    intrabar?: PlaybookCondition[];
+    bar_close?: PlaybookCondition[];
+  };
   history: ScenarioHistory;
 }
 

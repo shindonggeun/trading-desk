@@ -40,9 +40,10 @@ def text(turn: dict) -> str:
 
 
 class FlowAlerts:
-    def __init__(self, engine: Engine, pusher=None) -> None:
+    def __init__(self, engine: Engine, pusher=None, *, send_notice=None) -> None:
         self.engine = engine
         self.pusher = pusher
+        self.send_notice = send_notice
 
     def _last(self, conn, day: str, market: str):
         return conn.execute(select(flow_alerts_sent.c.kind, flow_alerts_sent.c.turned_at)
@@ -76,7 +77,7 @@ class FlowAlerts:
                 "trade_date": day, "kind": "flow_turn", "rule": turn["kind"], "market": turn["market"], "who": "foreign",
                 "severity": "caution", "t": at, "value": turn.get("value"), "prev": None, "text": row["text"],
                 "pushed": True, "tone": tone}, "desk", at)
-            notify.send(self.pusher, "flow", f"flow_{turn['market']}", f"tone_{tone}", payload={   # #579 the one exit
+            (self.send_notice or notify.send)(self.pusher, "flow", f"flow_{turn['market']}", f"tone_{tone}", payload={   # #579 the one exit
                 "title": "외국인 수급 전향", "body": row["text"], "tag": f"flow-{turn['market']}",
                 "url": ALERT_URL, "market": turn["market"], "kind": turn["kind"], "tone": tone})
         return out

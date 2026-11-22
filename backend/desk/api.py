@@ -16,6 +16,7 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, date, datetime, timedelta, timezone
 from datetime import time as dtime
+from functools import partial
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
@@ -126,6 +127,7 @@ from .longshort import LongShort
 from .market_flow import MarketFlow
 from .portfolio import Portfolio
 from .prices import INTERVALS, PriceSource, kis_quote
+from .privacy import OwnerResources, PolicyChanged, ProcessPolicy
 from .related import collect as collect_related
 from .run_read import RunReader, last_done_seq
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
@@ -392,7 +394,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                flow: MarketFlow | None = None, futures: FuturesFlow | None = None,
                weekly: weekly_map.Maps | None = None, bottoms: bottom_zone.Zones | None = None,
                longshort: LongShort | None = None, chatter: chat.Chatter | None = None,
-               pictures: report_images.ReportImages | None = None, *, protect_run_reads: bool = False) -> FastAPI:
+               pictures: report_images.ReportImages | None = None, *, protect_run_reads: bool = False,
+               owner_resources: OwnerResources | None = None) -> FastAPI:
     settings = settings or load()
     log_setup.configure(settings.log_level)     # #676 the desk.* INFO lines reach the container log
     if settings.role in ("all", "api"):
@@ -400,10 +403,45 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     else:
         require_schema_at_head(settings.database_url)
     engine = make_engine(settings.database_url)
-    store = Store(engine)
+    try:
+        policy = ProcessPolicy.open(engine, protect_run_reads)
+    except PolicyChanged:
+        engine.dispose()
+        raise
+    store = Store(engine, policy)
     run_reader = RunReader(engine) if protect_run_reads else None
     owners = AccountOwnerStore(engine) if protect_run_reads else None
     public_calibration = calibration.Table.load() if protect_run_reads else None
+
+    def current_resources() -> OwnerResources | None:
+        if owners is not None and owner_resources is not None and policy.current() and owner_resources.current(owners):
+            return owner_resources
+        return None
+
+    def account_broker():
+        approved = current_resources()
+        return approved.broker if approved is not None else None
+
+    def send_notice(pusher, *kinds, payload, user_id=None):
+        # An account notice must identify the current owner. The protected dispatcher
+        # never consults stored Telegram/Kakao settings, even for a public notice.
+        if policy.protected and user_id is not None:
+            approved = current_resources()
+            if approved is None or approved.binding.user_id != user_id:
+                return 0
+        sent = notify.send(pusher, *kinds, payload=payload, user_id=user_id,
+                           use_channels=not policy.protected, allowed=policy.current)
+        approved = current_resources()
+        if approved is not None:
+            for destination in approved.destinations:
+                if not set(kinds) <= destination.kinds:
+                    continue
+                try:
+                    if current_resources() is approved:
+                        destination.deliver(payload)
+                except Exception as exc:  # noqa: BLE001 - a destination's details stay out of the logs
+                    log.warning("approved destination delivery failed: %s", type(exc).__name__)
+        return sent
     # #688 broker tokens shared by the desk's processes: issued only where DESK_ROLE is all | collector
     active_issuer: BrokerIssuerLock | None = None
 
@@ -487,8 +525,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             return "none"
         log.info("report %s on %s (%s)", out["id"], out["subject"]["symbol"], out["source"])
         try:                             # a push problem never loses the report
-            owner = await asyncio.to_thread(report_desk.owner)
-            if owner is not None:        # the owner only: the subject may be one of the owner's favorites
+            owner = None if policy.protected else await asyncio.to_thread(report_desk.owner)
+            if owner is not None and policy.current():        # the owner only: the subject may be one of the owner's favorites
                 await asyncio.to_thread(app.state.pusher.to_user, owner, {
                     "title": out["title"], "body": out.get("summary") or "", "tag": "report",
                     "url": f"/#/reports/{out['id']}"})
@@ -545,7 +583,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             brief_desk.generating = False
         log.info("morning brief %s (%s, %s)", saved["id"], saved["source"], trigger)
         try:                             # a push problem never loses the brief
-            await asyncio.to_thread(notify.send, app.state.pusher, "morning_brief", payload={   # #580 every channel
+            await asyncio.to_thread(send_notice, app.state.pusher, "morning_brief", payload={   # #580 every channel
                 "title": "아침 시황 · " + (saved.get("title") or ""), "body": (saved.get("numbers") or [""])[0],
                 "tag": "morning_brief", "url": f"/#/briefs/morning?date={saved['date']}"})
         except Exception as exc:  # noqa: BLE001
@@ -676,6 +714,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                     off_hours=lambda t, s, c: _chart_off_hours(t, s, c))   # defined below
     if runner is None:
         runner = make_fake_runner(settings.fake_delay) if settings.fake_runs else run_tradingagents
+    if protect_run_reads and runner is run_tradingagents:
+        runner = partial(run_tradingagents, isolate_artifacts=True)
 
     async def run_outlook(ticker: str, trade_date: str, _price: float | None, _sr: dict | None) -> dict:
         """#437: #299's projection on the daily (swing) frame up to the run's date, whatever the
@@ -698,6 +738,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        if not policy.current():
+            raise PolicyChanged("process privacy mode changed")
         shared_cache.configure(settings)   # #689 Redis behind some caches; nothing configured = memory only
         # #690 the market stream: in this process (all), or over Redis pub/sub when split (docs/market-stream.md)
         market_bus.BUS.configure(settings, settings.role)
@@ -756,7 +798,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        reuse_minutes=settings.reuse_reports_min,
                                        rate_limit_cooldown_min=settings.rate_limit_cooldown_min,
                                        direct=settings.role == "all", protect_account_runs=protect_run_reads,
-                                       calibration_table=public_calibration)   # #688 split queues for the analyst
+                                       calibration_table=public_calibration, account_broker=account_broker)   # #688 split queues for the analyst
 
         # #623 every loop below is a step that returns its next wait, run by jobs.run_forever: an exception
         # is logged and the loop goes on after its retry wait; GET /api/status shows each one's state
@@ -1014,7 +1056,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     push = await asyncio.to_thread(day_desk.push_of, row)
                     if push is None:     # #619 an intraday round only when its stage jumped two or more
                         continue
-                    await asyncio.to_thread(notify.send, app.state.pusher, "day_call", payload={
+                    await asyncio.to_thread(send_notice, app.state.pusher, "day_call", payload={
                         "title": push[0], "body": push[1],
                         "tag": f"day_call-{row['market']}", "url": "/#/day-call", "kind": "day_call"})
                 except Exception:
@@ -1233,7 +1275,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             await queue.close()             # #688 first: claim nothing more, put back a claim under way, unlock
         if all_lock is not None:
             await asyncio.to_thread(all_lock.release)
-        notify.shutdown()                # #580 the channels' queued sends go with the process
+        if not policy.protected:
+            notify.shutdown()            # #580 the channels' queued sends go with the process
         if kis:
             kis.cancel()
             with suppress(asyncio.CancelledError):
@@ -1284,6 +1327,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     @app.middleware("http")
     async def require_session(request: Request, call_next):
+        def unavailable():
+            return JSONResponse({"detail": "service temporarily unavailable"}, status_code=503, headers=_RUN_READ_CACHE)
+
+        if not await asyncio.to_thread(policy.current):
+            return unavailable()
         # Cross-site writes: the SameSite=Strict cookie already stays home; this also stops login CSRF.
         if request.method in UNSAFE_METHODS and not _same_origin(request):
             return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
@@ -1292,12 +1340,35 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             if user is None:
                 return JSONResponse({"detail": "login required"}, status_code=401)
             request.state.user = user
-        with calibration.use_table(public_calibration):
-            return await call_next(request)
+        try:
+            with calibration.use_table(public_calibration):
+                response = await call_next(request)
+        except PolicyChanged:
+            return unavailable()
+        if not await asyncio.to_thread(policy.current):
+            return unavailable()
+        if response.headers.get("content-type", "").startswith("text/event-stream"):
+            # call_next has only seen the headers. Do not release buffered frames
+            # from an isolated epoch, including legacy streams already open.
+            frames = response.body_iterator
+
+            async def current_frames():
+                async for frame in frames:
+                    if not await asyncio.to_thread(policy.current):
+                        return
+                    yield frame
+
+            response.body_iterator = current_frames()
+        return response
+
+    def active_session(request: Request) -> bool:
+        if not policy.current():
+            return False
+        user = auth.resolve(request.cookies.get(COOKIE), touch=False)
+        return user is not None and user.id == request.state.user.id
 
     async def session_is_current(request: Request) -> bool:
-        user = await asyncio.to_thread(auth.resolve, request.cookies.get(COOKIE), touch=False)
-        return user is not None and user.id == request.state.user.id
+        return await asyncio.to_thread(active_session, request)
 
     def owner_binding(request: Request) -> OwnerBinding | None:
         binding = owners.binding() if owners is not None else None
@@ -1526,7 +1597,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     @app.post("/api/runs", status_code=201)
     async def create_run(body: RunIn, request: Request, response: Response):
         listed = None if body.name else universe.lookup(body.ticker)
-        binding = owner_binding(request) if body.use_portfolio and owners is not None else None
+        approved = approved_account(request) if body.use_portfolio else None
+        binding = approved.binding if approved is not None else None
         use_portfolio = body.use_portfolio and (
             binding is not None if owners is not None else owns(request)
         )
@@ -1805,7 +1877,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             while not await request.is_disconnected():
                 # Re-check every round: logout, revoke or expiry ends an open stream too.
                 user = await asyncio.to_thread(auth.resolve, token, touch=False)
-                if user is None or (run_reader is not None and user.id != viewer_id):
+                if (user is None or (run_reader is not None and user.id != viewer_id)
+                        or not await asyncio.to_thread(policy.current)):
                     return
                 waiter = hub.listen(run_id)          # before reading, so nothing slips between
                 batch = None
@@ -2130,29 +2203,32 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     bound_book: tuple[str, Portfolio] | None = None
 
-    def account_book(binding: OwnerBinding | None) -> Portfolio:
+    def account_book(approved: OwnerResources | None) -> Portfolio:
         nonlocal bound_book
-        if binding is None:
+        if approved is None:
             return book
-        if bound_book is None or bound_book[0] != binding.generation:
-            bound_book = (binding.generation, Portfolio(broker, prices))
+        if bound_book is None or bound_book[0] != approved.binding.generation:
+            bound_book = (approved.binding.generation, Portfolio(approved.broker, prices))
         return bound_book[1]
 
-    def same_binding(request: Request, binding: OwnerBinding | None) -> bool:
-        return owners is None or (binding is not None and owner_binding(request) == binding)
+    def approved_account(request: Request) -> OwnerResources | None:
+        approved = current_resources()
+        if approved is not None and approved.broker is not None and approved.binding == owner_binding(request):
+            return approved
+        return None
 
     @app.get("/api/portfolio")
     async def portfolio(request: Request, response: Response):
         """Holdings at live prices in KRW and USD (desk.portfolio). Failures land in ``error``. #775 the
         owner's only."""
-        binding = owner_binding(request)
-        if not same_binding(request, binding) or (owners is None and not owns(request)):
+        approved = approved_account(request)
+        if (owners is not None and approved is None) or (owners is None and not owns(request)):
             raise HTTPException(403, "only the desk's owner sees the account", headers=_RUN_READ_CACHE)
-        result = await account_book(binding).snapshot()
+        result = await account_book(approved).snapshot()
         if owners is not None:
             if not await session_is_current(request):
                 raise HTTPException(401, "login required", headers=_RUN_READ_CACHE)
-            if not same_binding(request, binding):
+            if approved_account(request) is not approved:
                 raise HTTPException(403, "only the desk's owner sees the account", headers=_RUN_READ_CACHE)
             response.headers.update(_RUN_READ_CACHE)
         return result
@@ -2160,13 +2236,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     @app.get("/api/portfolio/stream")
     async def portfolio_stream(request: Request):
         """The same snapshot every DESK_PORTFOLIO_STREAM_SEC seconds, as SSE. #775 the owner's only."""
-        binding = owner_binding(request)
-        if not same_binding(request, binding) or (owners is None and not owns(request)):
+        approved = approved_account(request)
+        if (owners is not None and approved is None) or (owners is None and not owns(request)):
             raise HTTPException(403, "only the desk's owner sees the account", headers=_RUN_READ_CACHE)
         interval = min(max(settings.portfolio_stream_sec, 2.0), 60.0)
 
         async def still_allowed() -> bool:
-            return await session_is_current(request) and same_binding(request, binding)
+            return await session_is_current(request) and (
+                approved_account(request) is approved if owners is not None else owns(request)
+            )
 
         async def frames():
             yield f"retry: {int(interval * 1000)}\n\n"
@@ -2174,8 +2252,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 # Re-check every round: logout, revoke or expiry ends an open stream too.
                 if not await still_allowed():
                     return
-                snap = await account_book(binding).snapshot()
-                if owners is not None and not await still_allowed():
+                snap = await account_book(approved).snapshot()
+                if not await still_allowed():
                     return
                 yield f"data: {json.dumps(snap, ensure_ascii=False)}\n\n"
                 # #762 a round up to 60 s still re-checks the session within STREAM_RECHECK_SEC
@@ -3233,7 +3311,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     # --- the desk chat (#314): per account, the model looks the desk up --------------------
 
-    chats = chat.ChatStore(engine)
+    chats = chat.ChatStore(engine, policy)
     chatter = chatter or (chat.FakeChatter() if settings.fake_runs else chat.LangChainChatter(
         tier=settings.chat_model_tier, effort=settings.chat_reasoning_effort or None))
     # #414: only these reach the provider. Default: DESK_CHAT_MODEL, else the chat tier's own model
@@ -3430,11 +3508,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         async def work() -> None:
             try:
+                if not await asyncio.to_thread(policy.current):
+                    return
                 text, used = await asyncio.wait_for(chatter(messages, chat_tools, queue.put_nowait, model=model),
                                                     chat.ANSWER_TIMEOUT_SEC)
                 saved = chats.add(user_id, thread_id, "assistant", text or "(빈 답)", used, model=model)
                 queue.put_nowait({"type": "done", "message_id": saved["id"], "user_message_id": mine["id"],
                                   "model": saved["model"]})
+            except PolicyChanged:
+                queue.put_nowait(None)   # let the stream close without returning saved content
             except Exception as exc:  # noqa: BLE001 - the page gets a fixed word, the log the detail
                 log.warning("chat answer in %s failed: %s", thread_id, exc)
                 limited = manager is not None and manager.note_rate_limit(f"chat:{thread_id}", exc)
@@ -3450,6 +3532,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                         event = await asyncio.wait_for(queue.get(), 5.0)
                     except TimeoutError:
                         event = None
+                    if not await asyncio.to_thread(policy.current):
+                        return
                     loop_now = asyncio.get_running_loop().time()
                     if event is None or loop_now - checked >= 5.0:
                         # docs/security.md §2: an open stream re-checks the session within 5 s
@@ -3619,8 +3703,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         out["desk"] = await asyncio.to_thread(regime.desk_view, risk, tip_cache.regime)
         return out
 
-    _push_routes(app, engine, settings, hide_holding_alerts=protect_run_reads)
-    _notify_routes(app, engine, settings, owners=owners)
+    _push_routes(app, engine, settings, hide_holding_alerts=protect_run_reads, send_notice=send_notice)
+    _notify_routes(app, engine, settings, owners=owners, current_resources=current_resources,
+                   active_session=active_session, send_notice=send_notice)
     # outermost (added last): the session check and every other middleware count in the time
     app.add_middleware(req_timing.TimingMiddleware, timings=timings)
     return app
@@ -3679,15 +3764,18 @@ class PushEndpointIn(BaseModel):
     endpoint: str = Field(min_length=1, max_length=1024)
 
 
-def _push_routes(app: FastAPI, engine, settings: Settings, *, hide_holding_alerts: bool = False) -> None:
+def _push_routes(app: FastAPI, engine, settings: Settings, *, hide_holding_alerts: bool = False,
+                 send_notice=None) -> None:
     """Subscriptions are the caller's own only. ``app.state.pusher`` is read per request (tests swap it)."""
     from . import flow_alerts, market_alerts, push
 
     store = push.PushStore(engine)
     app.state.pusher = push.Pusher(store, settings.vapid_public_key, settings.vapid_private_key,
                                    settings.vapid_subject)
-    app.state.flow_alerts = flow_alerts.FlowAlerts(engine, app.state.pusher)
-    app.state.market_alerts = market_alerts.MarketAlerts(engine, app.state.pusher)
+    app.state.flow_alerts = flow_alerts.FlowAlerts(engine, app.state.pusher, send_notice=send_notice)
+    app.state.market_alerts = market_alerts.MarketAlerts(
+        engine, app.state.pusher, send_notice=send_notice, hide_holdings=hide_holding_alerts,
+    )
 
     @app.get("/api/push/key")
     def push_key():
@@ -3790,7 +3878,8 @@ KAKAO_STATE_TTL_SEC = 600
 NOTIFY_TEST_GAP_SEC = 5.0
 
 
-def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountOwnerStore | None = None) -> None:
+def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountOwnerStore | None = None,
+                   current_resources, active_session, send_notice) -> None:
     """#580 Telegram · KakaoTalk beside web push (desk.notify_channels), sent through desk.notify.
 
     One set of channels for the desk (the alerts go to every account's devices, as web push does), so
@@ -3803,15 +3892,17 @@ def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountO
     from .auth import owner_id as account_owner
 
     nc.install_log_filter()
-    store = nc.ChannelStore(engine, otp.SecretBox(settings.notify_key, "DESK_NOTIFY_KEY"))
-    if store.box.error:
+    if owners is None:
+        store = nc.ChannelStore(engine, otp.SecretBox(settings.notify_key, "DESK_NOTIFY_KEY"))
+    if owners is None and store.box.error:
         log.error("%s", store.box.error)
-    base = settings.public_url if settings.public_url.startswith("https://") else ""
-    telegram = nc.Telegram(settings.telegram_bot_token, settings.telegram_chat_id, base)
-    kakao = nc.Kakao(settings.kakao_rest_key, settings.kakao_client_secret,
-                     f"{base}/kakao-callback.html" if base else "", store, base)
-    notify.install([telegram, kakao], store)
-    app.state.notify_store = store
+    if owners is None:
+        base = settings.public_url if settings.public_url.startswith("https://") else ""
+        telegram = nc.Telegram(settings.telegram_bot_token, settings.telegram_chat_id, base)
+        kakao = nc.Kakao(settings.kakao_rest_key, settings.kakao_client_secret,
+                         f"{base}/kakao-callback.html" if base else "", store, base)
+        notify.install([telegram, kakao], store)
+        app.state.notify_store = store
     states: dict[str, tuple[int, float]] = {}
     last_test = {"at": 0.0}
 
@@ -3835,19 +3926,40 @@ def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountO
             out["connected"] = out["connected"] and ch.configured
         return out
 
+    def approved_destination(name: str, request: Request):
+        approved = current_resources()
+        if approved is None or approved.binding.user_id != request.state.user.id:
+            return None
+        return next((d for d in approved.destinations if d.name == name), None)
+
+    def require_legacy_channel_settings(request: Request):
+        if owners is not None:
+            raise HTTPException(403, "channel settings unavailable", headers=_RUN_READ_CACHE)
+        must_own(request)
+
     def known(name: str) -> str:
         if name not in NOTIFY_LABELS:
             raise HTTPException(404, "no such channel")
         return name
 
     @app.get("/api/notify/channels")
-    def notify_channels_list(request: Request):
-        return {"kinds": list(push.KINDS), "can_edit": request.state.user.id == owner_id(),
-                "channels": [view(n) for n in NOTIFY_LABELS]}
+    def notify_channels_list(request: Request, response: Response):
+        if owners is None:
+            return {"kinds": list(push.KINDS), "can_edit": request.state.user.id == owner_id(),
+                    "channels": [view(n) for n in NOTIFY_LABELS]}
+        response.headers.update(_RUN_READ_CACHE)
+        channels = []
+        for name, label in NOTIFY_LABELS.items():
+            destination = approved_destination(name, request)
+            channels.append({"name": name, "label": label, "configured": destination is not None,
+                             "enabled": destination is not None, "kinds": {
+                                 kind: destination is not None and kind in destination.kinds for kind in push.KINDS
+                             }})
+        return {"kinds": list(push.KINDS), "can_edit": False, "channels": channels}
 
     @app.put("/api/notify/channels/{name}")
     def notify_channel_set(name: str, body: NotifyChannelIn, request: Request):
-        must_own(request)
+        require_legacy_channel_settings(request)
         known(name)
         unknown = sorted(set(body.kinds or {}) - set(push.KINDS))
         if unknown:
@@ -3859,13 +3971,31 @@ def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountO
     async def notify_channel_test(name: str, request: Request):
         must_own(request)
         known(name)
+        destination = approved_destination(name, request)
+        if owners is not None and destination is None:
+            raise HTTPException(403, "channel unavailable", headers=_RUN_READ_CACHE)
         moment = time.monotonic()
         if moment - last_test["at"] < NOTIFY_TEST_GAP_SEC:
             raise HTTPException(429, "one test every few seconds", headers={"Retry-After": "5"})
         last_test["at"] = moment
+        payload = {"title": "트레이딩 데스크", "body": "시험 알림입니다.", "url": "/#/settings"}
+        if owners is not None:
+            def deliver() -> bool:
+                if not active_session(request) or approved_destination(name, request) is not destination:
+                    return False
+                destination.deliver(payload)
+                return active_session(request) and approved_destination(name, request) is destination
+
+            try:
+                sent = await asyncio.to_thread(deliver)
+            except Exception as exc:  # noqa: BLE001 - destination errors may contain identifiers
+                log.warning("approved destination test failed: %s", type(exc).__name__)
+                return {"ok": False, "error": "delivery failed"}
+            if not sent:
+                raise HTTPException(403, "channel unavailable", headers=_RUN_READ_CACHE)
+            return {"ok": True, "error": None}
         try:
-            error = await asyncio.to_thread(notify.test, name, {
-                "title": "트레이딩 데스크", "body": "시험 알림입니다.", "url": "/#/settings"})
+            error = await asyncio.to_thread(notify.test, name, payload, allowed=lambda: active_session(request))
         except nc.ChannelError as exc:         # the worker busy past the wait: it may still go later
             error = str(exc)
         return {"ok": error is None, "error": error}
@@ -3902,7 +4032,7 @@ def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountO
             raise HTTPException(422, str(exc)) from None
         return holding_view(request)
 
-    watch = line_signals.LineWatch(engine)
+    watch = line_signals.LineWatch(engine, send_notice=send_notice)
     app.state.line_watch = watch
 
     def watch_view(request: Request) -> dict:
@@ -3932,7 +4062,7 @@ def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountO
 
     @app.post("/api/notify/kakao/connect")
     def kakao_connect(request: Request):
-        must_own(request)
+        require_legacy_channel_settings(request)
         if not kakao.configured:
             raise HTTPException(503, "kakao is not set up on the server")
         moment = time.monotonic()
@@ -3944,12 +4074,16 @@ def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountO
 
     @app.post("/api/notify/kakao/callback", status_code=204)
     async def kakao_callback(body: KakaoCallbackIn, request: Request):
-        must_own(request)
+        require_legacy_channel_settings(request)
         got = states.pop(hashlib.sha256(body.state.encode()).hexdigest(), None)
         if got is None or got[0] != request.state.user.id or time.monotonic() - got[1] > KAKAO_STATE_TTL_SEC:
             raise HTTPException(400, "the connect request expired - start again")
         try:
-            await asyncio.to_thread(notify.run, lambda: kakao.connect(body.code))
+            def connect():
+                if active_session(request):
+                    kakao.connect(body.code)
+
+            await asyncio.to_thread(notify.run, connect)
         except nc.ChannelError as exc:
             log.warning("kakao connect failed: %s", exc)
             if str(exc) == "timeout":           # still running on the worker: it may yet connect
@@ -3958,7 +4092,7 @@ def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountO
 
     @app.delete("/api/notify/kakao", status_code=204)
     def kakao_disconnect(request: Request):
-        must_own(request)
+        require_legacy_channel_settings(request)
         store.forget("kakao")
 
 

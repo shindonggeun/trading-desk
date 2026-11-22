@@ -8,7 +8,20 @@ from desk import market_bus, paper
 from desk.account_owner import AccountOwnerStore
 from desk.api import create_app
 from desk.auth import Auth
-from desk.db import account_owner_binding, events, make_engine, now, run_submissions, runs, sessions, users
+from desk.broker.mock import MockBroker
+from desk.db import (
+    account_owner_binding,
+    events,
+    make_engine,
+    migrate,
+    now,
+    run_submissions,
+    runs,
+    sessions,
+    users,
+)
+from desk.privacy import ISOLATED, PROTECTED, OwnerResources, PrivacyPolicyStore
+from desk.run_access import PROTECTED_WRITER, VISIBILITY_WORKER, VISIBILITY_WRITER
 from desk.run_read import RunReader
 from desk.runner import make_fake_runner
 from desk.settings import Settings
@@ -19,7 +32,8 @@ from tests.test_api import PASSWORD
 @pytest.fixture
 def fixture_desk(db_url, request):
     settings = Settings(database_url=db_url, fake_runs=True, fake_delay=0, role="api")
-    app = create_app(settings, runner=make_fake_runner(0), protect_run_reads=getattr(request, "param", True))
+    protected = getattr(request, "param", True)
+    migrate(db_url)
     engine = make_engine(db_url)
     try:
         auth = Auth(engine, timedelta(hours=1), timedelta(hours=1))
@@ -32,6 +46,13 @@ def fixture_desk(db_url, request):
         assert vacancy is not None
         bound = owners.bind_verified(verified_user_id=ids["bound-owner"], expected_vacancy=vacancy)
         assert bound is not None
+        resources = None
+        if protected:
+            policy = PrivacyPolicyStore(engine)
+            isolated = policy.transition(policy.current(), ISOLATED)
+            assert isolated is not None and policy.transition(isolated, PROTECTED) is not None
+            resources = OwnerResources(bound, broker=MockBroker())
+        app = create_app(settings, runner=make_fake_runner(0), protect_run_reads=protected, owner_resources=resources)
         records = [
             ("a-private", "done", False, "bound-owner", False),
             ("b-shared", "done", True, "first", True),
@@ -45,9 +66,12 @@ def fixture_desk(db_url, request):
         at = now()
         with engine.begin() as conn:
             for run_id, status, visible, submitter, proof in records:
+                options = {"use_portfolio": not proof, "synthetic": True}
+                if protected and run_id != "c-legacy":
+                    options.update({VISIBILITY_WRITER: PROTECTED_WRITER, VISIBILITY_WORKER: PROTECTED_WRITER})
                 conn.execute(runs.insert().values(
                     id=run_id, ticker="TEST", trade_date="2026-11-20", status=status, created_at=at,
-                    is_shareable=visible, options={"use_portfolio": not proof, "synthetic": True},
+                    is_shareable=visible, options=options,
                     plan={"rating": "Hold", "summary": "synthetic body"}, error="synthetic error",
                 ))
                 conn.execute(events.insert(), [
@@ -291,7 +315,7 @@ def test_account_fetch_rechecks_revocation_before_and_after_await(fixture_desk, 
             conn.execute(update(account_owner_binding).values(user_id=None))
         return object()
 
-    monkeypatch.setattr(manager.broker, "portfolio", snapshot_and_revoke)
+    monkeypatch.setattr(client.portal.call(manager.account_broker), "portfolio", snapshot_and_revoke)
     with pytest.raises(RuntimeError, match="account authorization changed"):
         client.portal.call(manager._run_portfolio, "c-legacy")
     assert not fetched
@@ -302,7 +326,7 @@ def test_account_fetch_rechecks_revocation_before_and_after_await(fixture_desk, 
     assert fetched == [True]
 
 
-def test_portfolio_cache_is_per_generation_and_history_is_closed(fixture_desk, monkeypatch):
+def test_portfolio_cache_does_not_follow_a_new_generation_and_history_is_closed(fixture_desk, monkeypatch):
     client, engine, ids = fixture_desk
     owners = AccountOwnerStore(engine)
     books = []
@@ -331,7 +355,8 @@ def test_portfolio_cache_is_per_generation_and_history_is_closed(fixture_desk, m
     vacancy = owners.binding()
     assert vacancy is not None and vacancy.user_id is None
     assert owners.bind_verified(verified_user_id=ids["first"], expected_vacancy=vacancy) is not None
-    assert client.get("/api/portfolio").json() == {"synthetic": 1}
+    assert client.get("/api/portfolio").status_code == 403
+    assert len(books) == 1
     assert client.get("/api/runs/a-private").status_code == 404
 
 

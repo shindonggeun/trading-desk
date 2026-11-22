@@ -113,6 +113,17 @@ account_owner_binding = Table(
     Column("generation", String(32), nullable=False),
 )
 
+privacy_policy = Table(
+    "privacy_policy", metadata,
+    Column("id", Integer, CheckConstraint("id = 1", name="ck_privacy_policy_singleton"),
+           primary_key=True, autoincrement=False),
+    Column("mode", String(12), nullable=False),
+    Column("epoch", Integer, nullable=False),
+    CheckConstraint("mode IN ('legacy', 'isolated', 'protected')", name="ck_privacy_policy_mode"),
+    CheckConstraint("epoch >= 0 AND (mode <> 'legacy' OR epoch = 0)", name="ck_privacy_policy_epoch"),
+)
+
+
 run_submissions = Table(
     "run_submissions", metadata,
     Column("run_id", String(32), ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True),

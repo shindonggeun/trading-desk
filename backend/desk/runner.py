@@ -11,6 +11,9 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from threading import Lock
 from typing import Any
 
 from . import (
@@ -48,6 +51,7 @@ from .leverage_analyst import (
 )
 from .plan import BIAS, HORIZON_LABELS, parse_plan, with_sides
 from .prices import CRYPTO_SUFFIXES, PriceSource, is_market_symbol
+from .privacy import PolicyChanged
 from .profile import desk_portfolio
 from .recent import prompt_note as recent_note
 from .related import collect as collect_related
@@ -126,15 +130,18 @@ def models_in_use() -> dict | None:
             "deep_effort": c.get("deep_think_reasoning_effort") or effort}
 
 
-def run_tradingagents(request: RunRequest, emit: Emit, portfolio: Any) -> RunResult:
+_GRAPH_SETUP = Lock()
+
+
+def run_tradingagents(
+    request: RunRequest, emit: Emit, portfolio: Any, *, isolate_artifacts: bool = False,
+) -> RunResult:
     """One TradingAgents run, the same steps the CLI takes, streamed through StateDiffer.
 
     Provider, models and keys come from the TRADINGAGENTS_* environment (see .env),
     so switching from the ChatGPT plan to an API key or Ollama is a config change.
     """
-    from tradingagents.dataflows.config import run_config
     from tradingagents.default_config import build_default_config
-    from tradingagents.graph.trading_graph import TradingAgentsGraph
 
     config = build_default_config()
     if request.output_language:
@@ -147,7 +154,30 @@ def run_tradingagents(request: RunRequest, emit: Emit, portfolio: Any) -> RunRes
     if request.max_risk_rounds:
         config["max_risk_discuss_rounds"] = request.max_risk_rounds
 
-    graph = TradingAgentsGraph(selected_analysts=request.graph_analysts(), config=config)
+    if isolate_artifacts:
+        with TemporaryDirectory(prefix="desk-protected-run-") as temp:
+            root = Path(temp)
+            config.update(memory_log_path=str(root / "trading_memory.md"), data_cache_dir=str(root / "cache"),
+                          results_dir=str(root / "results"), checkpoint_enabled=False)
+            return _stream_graph(request, emit, portfolio, config, isolated=True)
+    return _stream_graph(request, emit, portfolio, config, isolated=False)
+
+
+def _stream_graph(
+    request: RunRequest, emit: Emit, portfolio: Any, config: dict, *, isolated: bool,
+) -> RunResult:
+    from tradingagents.dataflows.config import get_config, run_config, set_config
+    from tradingagents.graph.trading_graph import TradingAgentsGraph
+
+    # The pinned graph constructor also sets the library's process-wide fallback.
+    # Keep temporary paths out of later unrelated reads as soon as setup is done.
+    with _GRAPH_SETUP:
+        previous = get_config() if isolated else None
+        try:
+            graph = TradingAgentsGraph(selected_analysts=request.graph_analysts(), config=config)
+        finally:
+            if previous is not None:
+                set_config(previous)
     ticker, date, asset_type = request.ticker, request.trade_date, request.asset_type()
     differ = StateDiffer(config.get("output_language"))
     final_state: dict[str, Any] = {}
@@ -161,17 +191,21 @@ def run_tradingagents(request: RunRequest, emit: Emit, portfolio: Any) -> RunRes
             init_state[key] = report
             differ.seed(key, report)
         args = graph.propagator.get_graph_args()
-        thread_id = graph.begin_checkpoint(ticker, date, asset_type, portfolio)
+        thread_id = None if isolated else graph.begin_checkpoint(ticker, date, asset_type, portfolio)
         if thread_id is not None:
             args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = thread_id
         try:
-            for messages, chunk in graph.stream_run(graph.checkpoint_input(init_state), **args):
+            graph_input = init_state if isolated else graph.checkpoint_input(init_state)
+            for messages, chunk in graph.stream_run(graph_input, **args):
                 for event in differ.feed(messages, chunk):
                     emit(event)
                 if chunk is not None:
                     final_state.update(chunk)
         finally:
-            graph.end_checkpoint()
+            if not isolated:
+                graph.end_checkpoint()
+        if isolated:
+            return RunResult(final_state=final_state)
         graph.record_decision(ticker, date, final_state)
         graph.clear_checkpoint_on_success(ticker, date, asset_type, portfolio)
         report_path = graph.save_reports(final_state, ticker)
@@ -435,11 +469,13 @@ class RunManager:
                  outlook: Callable[[str, str, float | None, dict | None], Awaitable[dict | None]] | None = None,
                  reuse_minutes: float = 0, rate_limit_cooldown_min: float = RATE_LIMIT_COOLDOWN_MIN,
                  direct: bool = True, protect_account_runs: bool = False,
-                 calibration_table: calibration.Table | None = None) -> None:
+                 calibration_table: calibration.Table | None = None,
+                 account_broker: Callable[[], Broker | None] | None = None) -> None:
         # #688 direct (DESK_ROLE=all): a submitted run runs here. Otherwise submit only queues it and the
         # analyst's desk.run_queue claims it (start), calling on_free when one of its runs ends
         self.direct = direct
         self.protect_account_runs = protect_account_runs
+        self.account_broker = account_broker
         self.calibration_table = calibration_table
         self.on_free: Callable[[], None] | None = None
         self.levels = levels
@@ -647,10 +683,24 @@ class RunManager:
         if current is False or (self.protect_account_runs and current is not True):
             raise RuntimeError("account authorization changed")
 
+    def _account_source(self, run_id: str):
+        self._require_current_policy()
+        self._require_current_binding(run_id)
+        if self.store.protected:
+            broker = self.account_broker() if self.account_broker is not None else None
+            if broker is None:
+                raise RuntimeError("account authorization changed")
+            return broker
+        return self.broker
+
+    def _require_current_policy(self) -> None:
+        if not self.store.policy_is_current():
+            raise PolicyChanged("process privacy mode changed")
+
     async def _run_portfolio(self, run_id: str):
-        self._require_current_binding(run_id)
-        book = await self.broker.portfolio()
-        self._require_current_binding(run_id)
+        broker = self._account_source(run_id)
+        book = await broker.portfolio()
+        self._account_source(run_id)
         return book
 
     def start(self, run_id: str, request: RunRequest) -> None:
@@ -692,7 +742,10 @@ class RunManager:
 
     def fail_claimed(self, run_id: str, message: str) -> None:
         """A claimed run that cannot start (its stored options do not make a request)."""
-        self.store.mark_failed(run_id, message)
+        try:
+            self.store.mark_failed(run_id, message)
+        except PolicyChanged:
+            return
         self._publish(run_id, {"type": "error", "agent": "system", "content": message})
         self._publish(run_id, {"type": "done", "agent": "system", "content": "failed"})
 
@@ -994,7 +1047,10 @@ class RunManager:
             log.exception("outlook for %s failed", request.ticker)
 
     def _publish(self, run_id: str, event: dict) -> None:
-        self.store.append_event(run_id, event)
+        try:
+            self.store.append_event(run_id, event)
+        except PolicyChanged:
+            return
         self.hub.notify(run_id)
 
     def _reusable(self, request: RunRequest, analysts: list[str]) -> list[dict]:
@@ -1031,7 +1087,10 @@ class RunManager:
     async def _execute(self, run_id: str, request: RunRequest) -> None:
         # the instrument first: a second run of it waits without holding a slot another ticker could use
         async with self._instrument(request), self._slots:
-            self.store.mark_running(run_id)
+            try:
+                self.store.mark_running(run_id)
+            except PolicyChanged:
+                return
             # A leveraged/inverse product is analysed through its underlying (desk.underlying, #82):
             # TradingAgents reads SOXX, then the leverage analyst turns the call into one on SOXL.
             lever = under.leverage_of(request.ticker)
@@ -1142,8 +1201,9 @@ class RunManager:
                     mandate, verdict.mandate(horizon), playbook.mandate() if pb_note else None,
                     all_horizons.class_note(all_horizons.instrument_class(request.ticker)),
                     all_horizons.mandate(horizon.id, subject.ticker)) if part)
+                self._require_current_policy()
                 if request.use_portfolio:
-                    self._require_current_binding(run_id)
+                    self._account_source(run_id)
                 portfolio = desk_portfolio(book, note, horizon_mandate=mandate)
                 watch.mark("desk_pre")
                 result = await asyncio.to_thread(self.runner, subject, emit, portfolio)
@@ -1246,21 +1306,23 @@ class RunManager:
                 plan = with_sides(plan)     # #311: long / short view of the levels, conflicts, trigger warnings
                 # #437 first: a run read as done already carries its outlook
                 self._publish_outlook(run_id, request, plan, await ahead)
+                if request.use_portfolio:
+                    self._account_source(run_id)
                 self.store.mark_done(
                     run_id, plan, result.report_path, executed_use_portfolio=request.use_portfolio,
                     source_visibility=source_visibility,
                 )
                 self._publish(run_id, {"type": "plan", "agent": "portfolio_manager", "data": plan})
                 self._publish(run_id, {"type": "done", "agent": "system", "content": "done"})
+            except PolicyChanged:
+                return
             except Exception as exc:   # surface every failure to the page, not just the log
                 log.exception("run %s failed", run_id)
                 # a slow run that fails is still worth timing (up to the last finished stage)
                 log.info("run %s %s timing (failed): %s", run_id, request.ticker, watch.line())
                 message = f"{type(exc).__name__}: {exc}"
                 self._note_rate_limit(run_id, exc)
-                self.store.mark_failed(run_id, message)
-                self._publish(run_id, {"type": "error", "agent": "system", "content": message})
-                self._publish(run_id, {"type": "done", "agent": "system", "content": "failed"})
+                self.fail_claimed(run_id, message)
             finally:
                 self._language.pop(run_id, None)
                 for lookup in notes.values():   # a failed run does not wait for its notes

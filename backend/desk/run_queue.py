@@ -31,6 +31,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from . import run_events
+from .privacy import PolicyChanged
 from .runner import RunManager, RunRequest
 from .store import Store
 
@@ -140,7 +141,7 @@ class RunQueue:
     async def take(self) -> int:
         """Claim queued runs while there is room; how many were started."""
         async with self._lock:
-            if self._stopped:
+            if self._stopped or not self.store.policy_is_current():
                 return 0
             held = await asyncio.to_thread(self.holder.hold)
             if not held:
@@ -152,19 +153,28 @@ class RunQueue:
                 log.info("run queue: taken over")
             self.blocked = False
             if not self._held:            # just took the lock: what the previous holder left running died
-                failed = await asyncio.to_thread(self.store.fail_unfinished, RESTART_REASON, ("running",),
-                                                 self.manager.run_ids())
+                try:
+                    failed = await asyncio.to_thread(self.store.fail_unfinished, RESTART_REASON, ("running",),
+                                                     self.manager.run_ids())
+                except PolicyChanged:
+                    return 0
                 if failed:
                     log.warning("marked %d run(s) left running by the previous analyst as failed", failed)
                 self._held = True
             started = 0
             while self.manager.room() and not self._stopped:
-                claimed = await asyncio.to_thread(self.store.claim_queued)
+                try:
+                    claimed = await asyncio.to_thread(self.store.claim_queued)
+                except PolicyChanged:
+                    break
                 if claimed is None:
                     break
                 run_id, options = claimed
                 if self._stopped:         # shutting down meanwhile: back to the queue for the next analyst
-                    await asyncio.to_thread(self.store.requeue, run_id)
+                    try:
+                        await asyncio.to_thread(self.store.requeue, run_id)
+                    except PolicyChanged:
+                        pass
                     break
                 try:
                     request = _request(options)

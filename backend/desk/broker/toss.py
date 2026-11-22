@@ -124,6 +124,7 @@ class TossBroker(Broker):
         # #688 the token shared by the desk's processes (None: this object's own, as before)
         self._slot = tokens.slot("toss", client_secret) if tokens is not None else None
         self._account_seq = account_seq
+        self.account_pinned = bool(account_seq)
         self._kosdaq = set(kosdaq_symbols or [])
         self._http = http or httpx.AsyncClient(base_url=BASE_URL, timeout=15)
         self._token: str | None = None

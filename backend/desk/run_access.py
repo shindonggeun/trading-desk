@@ -2,8 +2,30 @@
 
 from collections.abc import Mapping
 
-from sqlalchemy import false, true
+from sqlalchemy import false, or_, true
 from sqlalchemy.sql import ColumnElement
+
+VISIBILITY_WRITER = "_run_visibility_writer"
+VISIBILITY_WORKER = "_run_visibility_worker"
+LEGACY_WRITER = "1"
+PROTECTED_WRITER = "2"
+
+
+def protected_submission(options):
+    return options[VISIBILITY_WRITER].as_string() == PROTECTED_WRITER
+
+
+def protected_execution(options):
+    return protected_submission(options) & (options[VISIBILITY_WORKER].as_string() == PROTECTED_WRITER)
+
+
+def legacy_submission(options):
+    writer = options[VISIBILITY_WRITER].as_string()
+    return or_(writer.is_(None), writer == LEGACY_WRITER)
+
+
+def proven_public_run(runs):
+    return protected_execution(runs.c.options) & shared_run_rows(runs.c.is_shareable)
 
 
 def visibility_for_new_run(use_portfolio: object, *, source_visibility: tuple[object, ...] | None = None) -> bool | None:

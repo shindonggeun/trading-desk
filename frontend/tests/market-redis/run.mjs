@@ -71,12 +71,14 @@ async function stop(child) {
 
 async function verify() {
   await writeFile(join(scratch, "account.json"), JSON.stringify(account), { mode: 0o600 });
-  await docker("run", "-d", "--name", container, "-p", `${loopback}::6379`,
+  const redisPort = await unusedPort();
+  const redisBinding = `${loopback}:${redisPort}`;
+  await docker("run", "-d", "--name", container, "-p", `${redisBinding}:6379`,
     "redis:7-alpine", "--save", "", "--appendonly", "no");
   containerStarted = true;
-  const mapping = await docker("port", container, "6379/tcp");
-  const redisPort = /^127\.0\.0\.1:(\d+)$/.exec(mapping)?.[1];
-  if (!redisPort) throw Error("Redis port is not bound to loopback");
+  if (await docker("port", container, "6379/tcp") !== redisBinding) {
+    throw Error("Redis did not bind to the expected loopback port");
+  }
   await eventually(async () => await docker("exec", container, "redis-cli", "PING") === "PONG", "Redis");
 
   const backPort = await unusedPort();
@@ -177,6 +179,9 @@ async function verify() {
     }
     if (page?.stage === "start-redis" && stopped && !restarted) {
       await docker("start", container);
+      if (await docker("port", container, "6379/tcp") !== redisBinding) {
+        throw Error("Redis loopback binding changed on restart");
+      }
       restarted = true;
     }
     await wait(75);

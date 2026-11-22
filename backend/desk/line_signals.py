@@ -260,8 +260,9 @@ class LineWatch:
     """The watch setting (one row of line_watch) and the signals sent (line_signals). A signal is kept
     before it is sent and never sent again: at most once, even if the process stops in between."""
 
-    def __init__(self, engine: Engine, clock=lambda: datetime.now(UTC)) -> None:
+    def __init__(self, engine: Engine, clock=lambda: datetime.now(UTC), *, send_notice=None) -> None:
         self.engine = engine
+        self.send_notice = send_notice
         self.clock = clock
         self._due: dict[tuple[str, str], datetime] = {}
 
@@ -345,7 +346,7 @@ class LineWatch:
                         text=f"{title}\n{body}"[:600], created_at=now()))
             except IntegrityError:                     # another pass kept it first
                 continue
-            notify.send(pusher, KIND, f"tone_{TONE}", payload={"title": title, "body": body, "tag": f"line-{ticker}-{tf}",
+            (self.send_notice or notify.send)(pusher, KIND, f"tone_{TONE}", payload={"title": title, "body": body, "tag": f"line-{ticker}-{tf}",
                                                                "url": chart_url(ticker, tf), "tone": TONE})
             sent.append({**sig, "title": title, "body": body})
         return sent

@@ -6,7 +6,7 @@ from sqlalchemy import and_, false, func, or_, select, true
 from sqlalchemy.engine import Engine, RowMapping
 
 from .db import account_owner_binding, events, run_submissions, runs
-from .run_access import shared_run_rows
+from .run_access import protected_execution, protected_submission, proven_public_run
 from .store import _light, _run, iso
 
 _STATUS_SUMMARY = {"queued": "progress", "running": "progress", "done": "completed", "failed": "failed"}
@@ -15,20 +15,22 @@ _STATUS_SUMMARY = {"queued": "progress", "running": "progress", "done": "complet
 def _current_run_owner(viewer_id: int):
     if type(viewer_id) is not int or viewer_id < 1:
         return false()
-    return select(run_submissions.c.run_id).select_from(run_submissions.join(account_owner_binding, and_(
+    valid = or_(and_(runs.c.status == "queued", protected_submission(runs.c.options)),
+                protected_execution(runs.c.options))
+    return and_(valid, select(run_submissions.c.run_id).select_from(run_submissions.join(account_owner_binding, and_(
         account_owner_binding.c.id == 1, account_owner_binding.c.user_id == viewer_id,
         account_owner_binding.c.generation == run_submissions.c.owner_generation,
     ))).where(
         run_submissions.c.run_id == runs.c.id,
         run_submissions.c.submitted_by_user_id == viewer_id,
         run_submissions.c.non_account_submission == false(),
-    ).correlate(runs).exists()
+    ).correlate(runs).exists())
 
 
 def _full_read(viewer_id: int):
     if type(viewer_id) is not int or viewer_id < 1:
         return false()
-    return or_(_current_run_owner(viewer_id), shared_run_rows(runs.c.is_shareable))
+    return or_(_current_run_owner(viewer_id), proven_public_run(runs))
 
 
 def _change_granted(viewer_id: int, full):
@@ -47,7 +49,6 @@ def _visible_runs(viewer_id: int):
         status_only = and_(
             run_submissions.c.submitted_by_user_id == viewer_id,
             run_submissions.c.non_account_submission == true(),
-            runs.c.is_shareable.is_(None),
             runs.c.status.in_(tuple(_STATUS_SUMMARY)),
         )
     return select(

@@ -156,9 +156,11 @@ def text(alert: dict) -> str:
 
 
 class MarketAlerts:
-    def __init__(self, engine: Engine, pusher=None) -> None:
+    def __init__(self, engine: Engine, pusher=None, *, send_notice=None, hide_holdings: bool = False) -> None:
         self.engine = engine
         self.pusher = pusher
+        self.send_notice = send_notice
+        self.hide_holdings = hide_holdings
         self._limits: tuple[date, dict] | None = None
         self._warn_history: tuple[date, dict] | None = None
         self._lock = threading.Lock()   # #674 two loops dispatch NQ=F alarms: admit and insert one at a time
@@ -175,7 +177,8 @@ class MarketAlerts:
         """Record (and push the caution / strong ones of) the alerts that get through; those."""
         out = []
         rank = {"strong": 0, "caution": 1, "info": 2}
-        for alert in sorted(alerts, key=lambda a: (datetime.fromisoformat(a["t"]), rank[a["severity"]])):
+        visible = [a for a in alerts if not self.hide_holdings or a["kind"] not in OWNER_ONLY]
+        for alert in sorted(visible, key=lambda a: (datetime.fromisoformat(a["t"]), rank[a["severity"]])):
             day = datetime.fromisoformat(alert["t"]).astimezone(KST).date().isoformat()
             row = {**alert, "trade_date": day, "text": text(alert), "pushed": alert["severity"] in PUSHED,
                    "tone": alert_tone.tone(alert)}
@@ -206,7 +209,7 @@ class MarketAlerts:
                 line["value"] = line["prev"] = None
             publish_market_event("alert", alert["kind"], line, "desk", alert["t"])
             if row["pushed"]:
-                notify.send(self.pusher, alert["kind"], f"tone_{row['tone']}", user_id=owner, payload={
+                (self.send_notice or notify.send)(self.pusher, alert["kind"], f"tone_{row['tone']}", user_id=owner, payload={
                     "title": TITLE[alert["kind"]], "body": row["text"], "tag": _tag(alert),
                     "url": URLS.get(alert["kind"], ALERT_URL), "kind": alert["kind"], "rule": alert["rule"], "market": alert["market"],
                     "severity": alert["severity"], "tone": row["tone"]})

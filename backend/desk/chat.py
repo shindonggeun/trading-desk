@@ -30,6 +30,7 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -75,8 +76,16 @@ def _iso(value) -> str | None:
 
 
 class ChatStore:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, policy=None) -> None:
         self.engine = engine
+        self.policy = policy
+
+    @contextmanager
+    def _write(self):
+        with self.engine.begin() as conn:
+            if self.policy is not None:
+                self.policy.lock(conn)
+            yield conn
 
     @staticmethod
     def _thread(row) -> dict:
@@ -98,7 +107,7 @@ class ChatStore:
         stamp = now()
         row = {"id": uuid.uuid4().hex[:12], "user_id": user_id, "title": (title or "새 대화").strip()[:MAX_TITLE] or "새 대화",
                "created_at": stamp, "updated_at": stamp}
-        with self.engine.begin() as conn:
+        with self._write() as conn:
             count = conn.execute(select(func.count()).select_from(chat_threads)
                                  .where(chat_threads.c.user_id == user_id)).scalar_one()
             if count >= MAX_THREADS:
@@ -113,7 +122,7 @@ class ChatStore:
         return self._thread(row) if row else None
 
     def delete(self, user_id: int, thread_id: str) -> None:
-        with self.engine.begin() as conn:
+        with self._write() as conn:
             mine = select(chat_threads.c.id).where(chat_threads.c.id == thread_id, chat_threads.c.user_id == user_id)
             if conn.execute(mine).first() is None:
                 return
@@ -135,7 +144,7 @@ class ChatStore:
         """Append to the account's own thread - checked here too, not only by the caller. Raises
         LookupError for another account's (or a deleted) thread, TooMany past MAX_MESSAGES."""
         stamp = now()
-        with self.engine.begin() as conn:
+        with self._write() as conn:
             mine = select(chat_threads.c.id).where(chat_threads.c.id == thread_id, chat_threads.c.user_id == user_id)
             if conn.execute(mine).first() is None:
                 raise LookupError("thread not found")

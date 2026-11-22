@@ -8,6 +8,7 @@ primary key on (run_id, seq) catches it if that ever stops being true."""
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
@@ -17,7 +18,18 @@ from sqlalchemy.sql import ColumnElement
 
 from .db import account_owner_binding, aware, events, now, run_submissions, runs, users
 from .plan import with_sides
-from .run_access import shared_run_rows, visibility_for_new_run
+from .privacy import PolicyChanged, ProcessPolicy
+from .run_access import (
+    LEGACY_WRITER,
+    PROTECTED_WRITER,
+    VISIBILITY_WORKER,
+    VISIBILITY_WRITER,
+    legacy_submission,
+    protected_submission,
+    proven_public_run,
+    shared_run_rows,
+    visibility_for_new_run,
+)
 from .run_events import CHANNEL, shared
 
 TERMINAL = ("done", "failed")
@@ -28,18 +40,34 @@ def iso(value: datetime | None) -> str | None:
     return value.isoformat(timespec="seconds") if value else None
 
 
-_VISIBILITY_WRITER = "_run_visibility_writer"
-_GUARDED_WRITER_VERSION = "1"
-
-
 class AccountBindingChanged(Exception):
     """The confirmed account binding is no longer current."""
 
 
 class Store:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, policy: ProcessPolicy | None = None) -> None:
         self.engine = engine
+        self.policy = policy
         self._shared = shared(engine)    # #688 PostgreSQL: tell the other processes' streams (desk.run_events)
+
+    @property
+    def protected(self) -> bool:
+        return self.policy is not None and self.policy.protected
+
+    def policy_is_current(self) -> bool:
+        return self.policy is None or self.policy.current()
+
+    def _writer_scope(self):
+        if self.policy is None:
+            return literal(True)
+        return protected_submission(runs.c.options) if self.protected else legacy_submission(runs.c.options)
+
+    @contextmanager
+    def _write(self):
+        with self.engine.begin() as conn:
+            if self.policy is not None:
+                self.policy.lock(conn)
+            yield conn
 
     def _announce(self, conn, run_id: str) -> None:
         """Inside the writing transaction: PostgreSQL delivers it at commit, after the row is visible."""
@@ -72,11 +100,13 @@ class Store:
         if owner_generation is not None and non_account_submission is not False:
             raise ValueError("account provenance requires a verified account submission")
         if isinstance(options, dict):
-            options = {key: value for key, value in options.items() if key != _VISIBILITY_WRITER}
+            options = _public_options(options)
             if guarded_writer is True:
-                options[_VISIBILITY_WRITER] = _GUARDED_WRITER_VERSION
+                options[VISIBILITY_WRITER] = PROTECTED_WRITER if self.protected else LEGACY_WRITER
+        if self.protected and non_account_submission is None:
+            raise ValueError("protected runs require authenticated submission provenance")
         run_id = uuid.uuid4().hex[:12]
-        with self.engine.begin() as conn:
+        with self._write() as conn:
             conn.execute(runs.insert().values(
                 id=run_id, ticker=ticker, trade_date=trade_date, status="queued",
                 options=options, created_at=now(),
@@ -120,25 +150,37 @@ class Store:
             ))).where(run_submissions.c.run_id == run_id)).one_or_none()
         return None if row is None or row.owner_generation is None else row.id is not None
 
+    def _worker_options(self, conn, run_id: str, options: dict) -> None:
+        conn.execute(update(runs).where(runs.c.id == run_id).values(
+            options={**options, VISIBILITY_WORKER: PROTECTED_WRITER},
+        ))
+
     def mark_running(self, run_id: str) -> None:
-        self._update(run_id, status="running", started_at=now())
+        with self._write() as conn:
+            row = conn.execute(update(runs).where(runs.c.id == run_id, self._writer_scope())
+                               .values(status="running", started_at=now()).returning(runs.c.options)).first()
+            if row is None:
+                raise PolicyChanged("run is outside the process privacy policy")
+            if self.protected:
+                self._worker_options(conn, run_id, row.options)
 
     def mark_done(
         self, run_id: str, plan: dict, report_path: str | None, *,
         executed_use_portfolio: bool | None = None, source_visibility: tuple[object, ...] | None = None,
     ) -> None:
-        with self.engine.begin() as conn:
+        with self._write() as conn:
             is_shareable = None
             if type(executed_use_portfolio) is bool:
                 options = conn.scalar(select(runs.c.options).where(runs.c.id == run_id))
                 if (
                     isinstance(options, dict)
-                    and options.get(_VISIBILITY_WRITER) == _GUARDED_WRITER_VERSION
+                    and options.get(VISIBILITY_WRITER) == (PROTECTED_WRITER if self.protected else LEGACY_WRITER)
+                    and (not self.protected or options.get(VISIBILITY_WORKER) == PROTECTED_WRITER)
                     and options.get("use_portfolio") is executed_use_portfolio
                 ):
                     is_shareable = visibility_for_new_run(executed_use_portfolio, source_visibility=source_visibility)
             # A completed result and its classification become visible together.
-            conn.execute(update(runs).where(runs.c.id == run_id).values(
+            conn.execute(update(runs).where(runs.c.id == run_id, self._writer_scope()).values(
                 status="done", plan=plan, report_path=report_path, finished_at=now(), is_shareable=is_shareable,
             ))
 
@@ -160,10 +202,10 @@ class Store:
         """Runs a previous process left mid-way cannot continue; say so instead of spinning forever.
         #688 the analyst fails only ``running`` (its own worker died with it) less those it runs itself
         (``spare``); ``queued`` waits to be claimed."""
-        where = [runs.c.status.in_(statuses)]
+        where = [runs.c.status.in_(statuses), self._writer_scope()]
         if spare:
             where.append(runs.c.id.not_in(list(spare)))
-        with self.engine.begin() as conn:
+        with self._write() as conn:
             failed = conn.execute(
                 update(runs).where(*where)
                 .values(status="failed", error=reason, finished_at=now()).returning(runs.c.id)
@@ -176,22 +218,25 @@ class Store:
         """#688 the oldest queued run, now ``running``, with its stored options (as stored) - or None. PostgreSQL skips a row
         another transaction holds (``FOR UPDATE SKIP LOCKED``), so two claims never take the same run; SQLite
         (one local process) has no row locks and the dialect leaves the clause out."""
-        oldest = (select(runs.c.id).where(runs.c.status == "queued").order_by(runs.c.created_at, runs.c.id)
-                  .limit(1).with_for_update(skip_locked=True).scalar_subquery())
-        with self.engine.begin() as conn:
+        oldest = (select(runs.c.id).where(runs.c.status == "queued", self._writer_scope())
+                  .order_by(runs.c.created_at, runs.c.id).limit(1)
+                  .with_for_update(skip_locked=True).scalar_subquery())
+        with self._write() as conn:
             row = conn.execute(
                 update(runs).where(runs.c.id == oldest, runs.c.status == "queued")
                 .values(status="running", started_at=now()).returning(runs.c.id, runs.c.options)
             ).first()
             if row is None:
                 return None
+            if self.protected:
+                self._worker_options(conn, row.id, row.options)
             self._announce(conn, row.id)
         return row.id, row.options
 
     def requeue(self, run_id: str) -> None:
         """#688 a run claimed by an analyst that is shutting down goes back to the queue, untouched."""
-        with self.engine.begin() as conn:
-            conn.execute(update(runs).where(runs.c.id == run_id, runs.c.status == "running")
+        with self._write() as conn:
+            conn.execute(update(runs).where(runs.c.id == run_id, runs.c.status == "running", self._writer_scope())
                          .values(status="queued", started_at=None))
 
     def purge_finished_before(self, cutoff: datetime) -> int:
@@ -199,14 +244,14 @@ class Store:
         running runs stay whatever their age. Events are deleted explicitly rather than
         left to the FK cascade, so a SQLite connection without ``foreign_keys=ON`` cannot
         leave orphans behind."""
-        old = select(runs.c.id).where(runs.c.created_at < cutoff, runs.c.status.in_(TERMINAL))
-        with self.engine.begin() as conn:
+        old = select(runs.c.id).where(runs.c.created_at < cutoff, runs.c.status.in_(TERMINAL), self._writer_scope())
+        with self._write() as conn:
             conn.execute(delete(events).where(events.c.run_id.in_(old)))
             return conn.execute(delete(runs).where(runs.c.id.in_(old))).rowcount
 
     def _update(self, run_id: str, **fields: Any) -> None:
-        with self.engine.begin() as conn:
-            conn.execute(update(runs).where(runs.c.id == run_id).values(**fields))
+        with self._write() as conn:
+            conn.execute(update(runs).where(runs.c.id == run_id, self._writer_scope()).values(**fields))
 
     def get_run(self, run_id: str) -> dict | None:
         with self.engine.connect() as conn:
@@ -226,7 +271,7 @@ class Store:
         the FK's ON DELETE CASCADE instead. Call it from the event loop thread: RunManager
         writes its last events right after mark_done() without yielding."""
         finished = select(runs.c.id).where(runs.c.id == run_id, runs.c.status.in_(TERMINAL))
-        with self.engine.begin() as conn:
+        with self._write() as conn:
             if scope is None:
                 conn.execute(delete(events).where(events.c.run_id.in_(finished)))
             else:
@@ -252,7 +297,7 @@ class Store:
     def list_runs(self, limit: int = 50, offset: int = 0, *, public_only: bool = False) -> list[dict]:
         query = select(runs)
         if public_only:
-            query = query.where(shared_run_rows(runs.c.is_shareable))
+            query = query.where(proven_public_run(runs))
         with self.engine.connect() as conn:
             rows = conn.execute(
                 query.order_by(runs.c.created_at.desc(), runs.c.id).limit(limit).offset(offset)
@@ -277,7 +322,7 @@ class Store:
         newest first."""
         with self.engine.connect() as conn:
             rows = conn.execute(
-                select(runs).where(runs.c.status == "done", runs.c.plan.is_not(None),
+                select(runs).where(runs.c.status == "done", runs.c.plan.is_not(None), self._writer_scope(),
                                    runs.c.outcome_status.is_(None)
                                    | runs.c.outcome_status.in_(("waiting", "open", "error")))
                 .order_by(runs.c.scored_at.asc().nulls_first(), runs.c.created_at.desc()).limit(limit)
@@ -293,7 +338,7 @@ class Store:
         """Finished runs created since ``since`` with their outcomes, for the statistics."""
         query = select(runs).where(runs.c.status == "done", runs.c.created_at >= since)
         if public_only:
-            query = query.where(shared_run_rows(runs.c.is_shareable))
+            query = query.where(proven_public_run(runs))
         with self.engine.connect() as conn:
             rows = conn.execute(
                 query
@@ -316,13 +361,15 @@ class Store:
     # --- events ---------------------------------------------------------------------
 
     def append_event(self, run_id: str, event: dict) -> dict:
-        with self.engine.begin() as conn:
-            stored = self._insert_event(conn, run_id, event)
-        assert stored is not None
+        with self._write() as conn:
+            scope = self._writer_scope() if self.policy is not None else None
+            stored = self._insert_event(conn, run_id, event, scope=scope)
+        if stored is None:
+            raise PolicyChanged("run is outside the process privacy policy")
         return {**stored, "ts": iso(stored["ts"])}
 
     def append_scoped_event(self, run_id: str, event: dict, scope: ColumnElement[bool]) -> bool:
-        with self.engine.begin() as conn:
+        with self._write() as conn:
             return self._insert_event(conn, run_id, event, scope=scope) is not None
 
     def _insert_event(self, conn, run_id: str, event: dict, *,
@@ -375,7 +422,7 @@ class Store:
                 .select_from(events.join(runs, events.c.run_id == runs.c.id))
                 .where(runs.c.ticker == ticker, runs.c.trade_date == trade_date, runs.c.status == "done",
                        events.c.type == "message", events.c.agent.in_(agents), events.c.ts >= since,
-                       shared_run_rows(runs.c.is_shareable))
+                       proven_public_run(runs) if self.protected else shared_run_rows(runs.c.is_shareable))
                 .order_by(events.c.ts.desc())
             ).mappings().all()
         return [{**row, "ts": aware(row["ts"])} for row in rows]
@@ -392,10 +439,14 @@ def _light(run: dict) -> dict:
     return run
 
 
+def _public_options(options: dict) -> dict:
+    return {key: value for key, value in options.items() if key not in (VISIBILITY_WRITER, VISIBILITY_WORKER)}
+
+
 def _run(row: RowMapping) -> dict:
     options = row["options"]
-    if isinstance(options, dict) and _VISIBILITY_WRITER in options:
-        options = {key: value for key, value in options.items() if key != _VISIBILITY_WRITER}
+    if isinstance(options, dict):
+        options = _public_options(options)
     return {
         "id": row["id"],
         "ticker": row["ticker"],

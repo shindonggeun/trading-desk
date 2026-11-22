@@ -41,7 +41,7 @@ from sqlalchemy.engine import Engine
 from desk.db import now as db_now
 from desk.db import paper_settings as settings_t
 from desk.db import runs as runs_t
-from desk.run_access import shared_run_rows
+from desk.run_access import proven_public_run
 
 log = logging.getLogger(__name__)
 
@@ -451,7 +451,7 @@ class Paper:
         self.engine, self.fetch_rates, self.name_of = engine, rates, name_of
         self._source = (runs_t.c.status == "done",)
         if public_only:
-            self._source += (shared_run_rows(runs_t.c.is_shareable),)
+            self._source += (proven_public_run(runs_t),)
         self.lock = threading.Lock()           # the settings row
         self.fx_lock = threading.Lock()        # one rate fetch at a time
         self.compute_lock = threading.Lock()   # one computation at a time

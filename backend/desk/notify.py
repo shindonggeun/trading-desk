@@ -80,12 +80,15 @@ def _deliver(ch, payload: dict, what: str) -> str | None:
         return type(exc).__name__
 
 
-def _submit(ch, payload: dict, what: str) -> Future | None:
+def _submit(ch, payload: dict, what: str, allowed=None) -> Future | None:
+    def deliver():
+        return _deliver(ch, payload, what) if allowed is None or allowed() else None
+
     if not _slots.acquire(blocking=False):
         log.warning("%s send of %s dropped: %d already queued", ch.name, what, QUEUE_MAX)
         return None
     try:
-        future = _executor().submit(_deliver, ch, payload, what)
+        future = _executor().submit(deliver)
     except RuntimeError:                  # shut down meanwhile
         _slots.release()
         return None
@@ -93,17 +96,22 @@ def _submit(ch, payload: dict, what: str) -> Future | None:
     return future
 
 
-def send(pusher, *kinds: str, payload: dict, user_id: int | None = None) -> int:
+def send(pusher, *kinds: str, payload: dict, user_id: int | None = None,
+         use_channels: bool = True, allowed=None) -> int:
     """Deliver ``payload`` ({title, body, tag, url, ...}) to the web push subscriptions and the channels
     that have all of ``kinds`` on; the number of web pushes delivered (the channels go on afterwards).
     #694 ``user_id``: web push to that user's devices only (the channels are the owner's own)."""
     sent = 0
+    if allowed is not None and not allowed():
+        return sent
     if pusher is not None:
         try:
             sent += (pusher.broadcast(*kinds, payload=payload) if user_id is None
                      else pusher.broadcast(*kinds, payload=payload, user_id=user_id))
         except Exception as exc:  # noqa: BLE001 - a push never stops recording
             log.warning("push of %s failed: %s", "/".join(kinds), type(exc).__name__)
+    if not use_channels:
+        return sent
     store, channels = _store, list(_channels.values())
     for ch in channels:
         try:
@@ -112,7 +120,7 @@ def send(pusher, *kinds: str, payload: dict, user_id: int | None = None) -> int:
         except Exception as exc:  # noqa: BLE001 - a settings read never stops the other channels
             log.warning("%s settings unreadable: %s", ch.name, type(exc).__name__)
             continue
-        _submit(ch, payload, "/".join(kinds))
+        _submit(ch, payload, "/".join(kinds), allowed)
     return sent
 
 
@@ -129,14 +137,14 @@ def run(fn, timeout: float | None = None):
         raise ChannelError("timeout") from None
 
 
-def test(name: str, payload: dict) -> str | None:
+def test(name: str, payload: dict, *, allowed=None) -> str | None:
     """A test message on one channel, whatever its switches; None when it went, else the short code."""
     ch = _channels.get(name)
     if ch is None:
         return "unknown channel"
     if not ch.configured:
         return "not configured"
-    return run(lambda: _deliver(ch, payload, "test"))
+    return run(lambda: _deliver(ch, payload, "test") if allowed is None or allowed() else "authorization changed")
 
 
 def drain(timeout: float = 10.0) -> None:

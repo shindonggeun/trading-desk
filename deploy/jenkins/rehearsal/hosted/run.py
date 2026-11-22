@@ -19,13 +19,25 @@ def require(condition, message):
 
 def docker(*args):
     try:
-        result = subprocess.run([*DOCKER, *args], capture_output=True, text=True, timeout=60, check=False)
+        stderr = subprocess.STDOUT if args[0] == "logs" else subprocess.PIPE
+        result = subprocess.run([*DOCKER, *args], stdout=subprocess.PIPE, stderr=stderr,
+                                text=True, timeout=60, check=False)
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"Docker {args[0]} timed out") from None
     if result.returncode:
         # subprocess errors normally include command arguments, which would log the crumb.
         raise RuntimeError(f"Docker {args[0]} exited {result.returncode}")
     return result.stdout
+
+
+def controller_state(container):
+    return docker("inspect", "--format",
+                  "{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}", container).strip()
+
+
+def require_running(container):
+    state = controller_state(container)
+    require(state.startswith("running "), f"Controller stopped before readiness ({state})")
 
 
 def inspect_isolation(container):
@@ -134,12 +146,18 @@ class Jenkins:
             try:
                 docker("exec", self.container, "test", "-f", "/var/jenkins_home/td-fixture-ready")
             except RuntimeError:
+                require_running(self.container)
                 return False
             return True
 
+        def serving():
+            if self.request(f"{BASE}/analyst/api/json", ready=True)[0] == 200:
+                return True
+            require_running(self.container)
+            return False
+
         wait_for(initialized, "Jenkins fixture authorization setup", seconds=100)
-        wait_for(lambda: self.request(f"{BASE}/analyst/api/json", ready=True)[0] == 200,
-                 "Jenkins fixture jobs", seconds=100)
+        wait_for(serving, "Jenkins fixture jobs", seconds=100)
         code, body = self.request("/crumbIssuer/api/json")
         require(code == 200, "fixture crumb is unavailable")
         crumb = json.loads(body)
@@ -208,7 +226,14 @@ def main():
         cancel_case(jenkins, queued=False)
         print("Jenkins rehearsal passed: ACL, terminal state at first guarded observation, synthetic orphan recovery")
     except Exception:
-        print(docker("logs", "--tail", "80", container))
+        try:
+            print(f"Controller state: {controller_state(container)}")
+        except RuntimeError as diagnostic:
+            print(f"Controller state unavailable: {diagnostic}")
+        try:
+            print(docker("logs", "--tail", "80", container))
+        except RuntimeError as diagnostic:
+            print(f"Controller logs unavailable: {diagnostic}")
         raise
     finally:
         docker("rm", "--force", "--volumes", container)

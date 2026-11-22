@@ -5,8 +5,8 @@ import hudson.model.ParametersDefinitionProperty
 import hudson.model.StringParameterDefinition
 import hudson.security.ACL
 import hudson.security.AuthorizationMatrixProperty
+import hudson.security.LegacySecurityRealm
 import hudson.security.ProjectMatrixAuthorizationStrategy
-import hudson.security.SecurityRealm
 import hudson.security.csrf.DefaultCrumbIssuer
 import jenkins.model.Jenkins
 import org.jenkinsci.plugins.scriptsecurity.scripts.ScriptApproval
@@ -19,7 +19,8 @@ def fixture = new File('/opt/td-rehearsal')
 def folder = jenkins.createProject(Folder, 'trading-desk-rehearsal')
 jenkins.setNumExecutors(2)
 jenkins.setSlaveAgentPort(-1)
-jenkins.setSecurityRealm(SecurityRealm.NO_AUTHENTICATION)
+// No fixture users or credentials. Use the standard anonymous request filters.
+jenkins.setSecurityRealm(new LegacySecurityRealm())
 jenkins.setCrumbIssuer(new DefaultCrumbIssuer(false))
 def strategy = new ProjectMatrixAuthorizationStrategy()
 strategy.add(Jenkins.READ, 'anonymous')

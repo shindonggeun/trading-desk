@@ -231,7 +231,7 @@ def main():
         except RuntimeError as diagnostic:
             print(f"Controller state unavailable: {diagnostic}")
         try:
-            print(docker("logs", "--tail", "80", container))
+            print(docker("logs", "--tail", "240", container))
         except RuntimeError as diagnostic:
             print(f"Controller logs unavailable: {diagnostic}")
         raise

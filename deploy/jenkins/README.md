@@ -42,6 +42,8 @@ XML 구조는 Jenkins [Pipeline Job](https://javadoc.jenkins.io/plugin/workflow-
 
 ### 비운영 설정
 
+GitHub-hosted의 무자격 Controller 동작은 [호스티드 리허설](rehearsal/hosted/README.md)에서 확인한다. 이 경로의 합성 역할 설정과 운영 전환 실측은 별도다.
+
 로컬 Docker의 포트·볼륨·플러그인 준비와 정적 검증은 [격리 Compose 템플릿](rehearsal/README.md)을 참고한다.
 
 1. 격리된 Jenkins 컨트롤러에 별도 Docker 데몬을 쓰는 전용 에이전트 `trading-desk-rehearsal`을 둔다. 노드 이름과 라벨을 모두 이 이름으로 맞춘다.

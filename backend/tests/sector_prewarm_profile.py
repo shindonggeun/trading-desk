@@ -28,7 +28,7 @@ from desk import market_calendar
 from desk.broker.base import Bar
 
 DAY = date(2026, 11, 23)
-BEFORE_CLOSE = datetime(2026, 11, 23, 11, 22, tzinfo=ds.KST)
+BEFORE_CLOSE = datetime(2026, 11, 23, 15, 54, 11, tzinfo=ds.KST)
 AHEAD_SEC = 300
 SEED = 864
 STAGES = ("bars_pipeline", "view", "build_excess", "rows", "fit", "holdout")
@@ -63,12 +63,18 @@ def _fixture(count: int) -> tuple[dict[str, list[Bar]], dict[str, list[Bar]]]:
 
 
 class Origin:
-    def __init__(self, bars: dict[str, list[Bar]], delay: float) -> None:
+    def __init__(self, bars: dict[str, list[Bar]], delay: float,
+                 mode: str = "normal", extra_delay: float = 0) -> None:
         self.bars = bars
         self.delay = delay
+        self.mode = mode
+        self.extra_delay = extra_delay
+        self.injected_delay = 0.0
+        self.injected_calls = 0
         self.requests: list[tuple[str, int]] = []
         self.peak = 0
         self.active_wall = 0.0
+        self.longest_call = 0.0
         self._inflight = 0
         self._active_since = 0.0
         self._lock = threading.Lock()
@@ -76,18 +82,28 @@ class Origin:
     def __call__(self, ticker: str, interval: str, count: int) -> list[Bar]:
         if interval != "1d":
             raise AssertionError(f"unexpected candle interval: {interval}")
+        injected = self.mode != "normal" and ticker == ds.KR.benchmark
+        delay = self.delay + (self.extra_delay if injected else 0)
+        started = time.perf_counter()
         with self._lock:
             self.requests.append((ticker, count))
+            self.injected_delay += delay
+            self.injected_calls += int(injected)
             if self._inflight == 0:
                 self._active_since = time.perf_counter()
             self._inflight += 1
             self.peak = max(self.peak, self._inflight)
         try:
-            if self.delay:
-                time.sleep(self.delay)
+            if delay:
+                time.sleep(delay)
+            if injected and self.mode == "timeout":
+                raise TimeoutError
+            if injected and self.mode == "empty":
+                return []
             return self.bars[ticker][-count:]
         finally:
             with self._lock:
+                self.longest_call = max(self.longest_call, time.perf_counter() - started)
                 self._inflight -= 1
                 if self._inflight == 0:
                     self.active_wall += time.perf_counter() - self._active_since
@@ -127,15 +143,17 @@ def _ms(seconds: float) -> float:
 
 def _pass(cache: ds.Cache, workers: ThreadPoolExecutor, now: datetime, origin: Origin) -> dict:
     timings = Timings()
-    bar_lookups = bar_misses = 0
+    bar_lookups = bar_misses = bar_reused_failures = 0
     read_bars = getattr(cache, "_read_bars", None)
 
     def fetch_bars(tickers, candles, at):
-        nonlocal bar_lookups, bar_misses
+        nonlocal bar_lookups, bar_misses, bar_reused_failures
         first_call = len(origin.requests)
         result = read_bars(tickers, candles, at)
         bar_lookups += len(tickers)
         bar_misses += len({t for t, _ in origin.requests[first_call:]})
+        if len(result) == 3:  # the third element contains read outcomes on #864 follow-up
+            bar_reused_failures += sum(read.status == "reused_failure" for read in result[2])
         return result
 
     # The refactor may split holdout scoring from model training. Compare the
@@ -160,20 +178,23 @@ def _pass(cache: ds.Cache, workers: ThreadPoolExecutor, now: datetime, origin: O
                       "scored": v["result"] is not None} for m, v in views.items()},
         "view_cache_hits": len(views) - timings.calls["view"],
         "view_cache_misses": timings.calls["view"],
-        "bar_cache_hits": bar_lookups - bar_misses,
+        "bar_cache_hits": bar_lookups - bar_misses - bar_reused_failures,
         "bar_cache_misses": bar_misses,
+        "bar_reused_failures": bar_reused_failures,
         "origin": {"unique_tickers": len({t for t, _ in origin.requests}), "calls": len(origin.requests),
                    "full_calls": requests[ds.HISTORY_BARS], "recent_calls": requests[getattr(ds, "RECENT_BARS", 0)],
                    "peak_inflight": origin.peak, "active_wall_ms": _ms(origin.active_wall),
-                   "injected_delay_sum_ms": _ms(origin.delay * len(origin.requests))},
+                   "longest_call_ms": _ms(origin.longest_call),
+                   "injected_delay_sum_ms": _ms(origin.injected_delay),
+                   "injected_calls": origin.injected_calls},
         "stages": {stage: {"calls": timings.calls[stage], "inclusive_ms": _ms(timings.inclusive[stage]),
                            "exclusive_ms": _ms(timings.exclusive[stage])} for stage in STAGES},
     }
 
 
-def profile(runs: int, bars: int, origin_ms: float) -> dict:
+def profile(runs: int, bars: int, origin_ms: float, rebuild_origin: str = "normal", extra_origin_ms: float = 0) -> dict:
     before, after = _fixture(bars)
-    boundary = (ds.session_close(ds.KR, DAY) + ds.SCORE_AFTER).astimezone(ds.KST) + timedelta(minutes=1)
+    boundary = (ds.session_close(ds.KR, DAY) + ds.SCORE_AFTER).astimezone(ds.KST) + timedelta(seconds=41)
     phases = {"cold": (BEFORE_CLOSE, before), "stable": (BEFORE_CLOSE + timedelta(minutes=4), before),
               "rebuild": (boundary, after)}
     samples: dict[str, list[dict]] = {name: [] for name in phases}
@@ -183,10 +204,13 @@ def profile(runs: int, bars: int, origin_ms: float) -> dict:
             cache = ds.Cache(clock=lambda clock=clock: clock[0])
             for name, (now, fixture) in phases.items():
                 clock[0] = (now - BEFORE_CLOSE).total_seconds()
-                samples[name].append(_pass(cache, workers, now, Origin(fixture, origin_ms / 1000)))
+                mode = rebuild_origin if name == "rebuild" else "normal"
+                origin = Origin(fixture, origin_ms / 1000, mode, extra_origin_ms / 1000)
+                samples[name].append(_pass(cache, workers, now, origin))
     return {
         "fixture": {"runs": runs, "tickers": len(before), "max_bars_per_ticker": bars,
                     "origin_delay_ms": origin_ms, "fetch_parallel_limit": getattr(ds, "FETCH_PARALLEL", 1),
+                    "rebuild_origin": rebuild_origin, "rebuild_extra_origin_ms": extra_origin_ms,
                     "ahead_seconds": AHEAD_SEC, "seed": SEED,
                     "pass_times": {name: now.isoformat() for name, (now, _) in phases.items()}},
         "passes": {name: {"median_wall_ms": statistics.median(s["wall_ms"] for s in values),
@@ -199,12 +223,19 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--bars", type=int, default=ds.HISTORY_BARS, help="synthetic sessions per ticker")
     parser.add_argument("--origin-ms", type=float, default=200, help="synthetic delay per source call")
+    parser.add_argument("--rebuild-origin", choices=("normal", "slow", "timeout", "empty"), default="normal",
+                        help="scenario applied to the KR benchmark request only in the rebuild")
+    parser.add_argument("--extra-origin-ms", type=float, default=0, help="extra delay on the injected request")
     args = parser.parse_args()
     if args.runs < 1 or not 1 <= args.bars <= ds.HISTORY_BARS:
         parser.error(f"--runs must be positive and --bars must be in 1..{ds.HISTORY_BARS}")
     if not math.isfinite(args.origin_ms) or args.origin_ms < 0:
         parser.error("--origin-ms must be finite and nonnegative")
-    print(json.dumps(profile(args.runs, args.bars, args.origin_ms), indent=2))
+    if not math.isfinite(args.extra_origin_ms) or args.extra_origin_ms < 0:
+        parser.error("--extra-origin-ms must be finite and nonnegative")
+    if args.extra_origin_ms and args.rebuild_origin == "normal":
+        parser.error("--extra-origin-ms requires a non-normal --rebuild-origin")
+    print(json.dumps(profile(args.runs, args.bars, args.origin_ms, args.rebuild_origin, args.extra_origin_ms), indent=2))
 
 
 if __name__ == "__main__":

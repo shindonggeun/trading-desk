@@ -41,6 +41,7 @@ import math
 import threading
 import time as _time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from itertools import pairwise
@@ -61,8 +62,14 @@ PICKS = 3
 RIDGE = 1.0
 MIN_ROWS = 500               # fewer training rows than this: no model
 SCORE_AFTER = timedelta(minutes=30)
-CACHE_TTL_SEC = 30 * 60
-NOT_READY_TTL_SEC = 2 * 60   # a view still waiting for a session is asked again this soon
+NOT_READY_TTL_SEC = 2 * 60   # a view still waiting for a session's bars is asked again this soon
+# #864 the prewarm rebuilt both views every pass (10-14 s in production): a view still waiting for a session kept
+# a 2 min life that the prewarm's 300 s "ahead" always called stale, and each build read ~30 ETFs' ten years one by
+# one, both markets the same ETFs. Now a view stands until the time it can change (Cache.read), the two markets
+# share the bars, a rebuild later in the day reads only the last few, and the reads go side by side.
+FETCH_PARALLEL = 6           # one rebuild's ETF reads at a time
+BARS_FRESH_SEC = 120.0       # bars this young are used as they are (the other market's build in the same pass)
+RECENT_BARS = 10             # after the day's full read, a rebuild asks only this many (merged by date)
 FEATURES = ("own_1d", "own_5d", "own_20d", "link_1d", "link_5d")
 
 
@@ -432,14 +439,38 @@ def ready(data: Data, day: date, now: datetime) -> bool:
     session in progress moves): the market's last one before ``day`` and the linked one. Korea's next
     day turns at midnight KST while the US session is still on; the US's at midnight ET, before Korea's
     close."""
-    m, o = data.market, other(data.market)
+    m = data.market
     if _prev_open(m.id, day) not in data.bench_days:
         return False
-    # Korea's D: the US session before D · the US's D: Korea's D when it opened, else the one before
-    need = day if m.id == "us" and market_calendar.is_open(o.id, day) else _prev_open(o.id, day)
-    if now < session_close(o, need) + SCORE_AFTER:
+    if now < ready_at(m, day):
         return False
-    return any(need in e.days for e in data.link.values())
+    return any(_linked(m, day) in e.days for e in data.link.values())
+
+
+def _linked(m: Market, day: date) -> date:
+    """The other market's session ``day``'s picks need. Korea's D: the US session before D · the US's D:
+    Korea's D when it opened, else the one before."""
+    o = other(m)
+    return day if m.id == "us" and market_calendar.is_open(o.id, day) else _prev_open(o.id, day)
+
+
+def ready_at(m: Market, day: date) -> datetime:
+    """The first moment ``ready`` can be true for ``day`` - the bars still have to be in by then (#864)."""
+    return session_close(other(m), _linked(m, day)) + SCORE_AFTER
+
+
+def stands_until(m: Market, v: dict, now: datetime) -> datetime | None:
+    """#864 Until when ``v`` (built at ``now``) cannot change without new sessions: a view waiting for its target
+    until that is ready, the target's picks until the session is over and scored, a scored one until the target
+    moves on (Cache.cached checks the target). None: it could change now - the bars are late."""
+    day = date.fromisoformat(v["target"])
+    if not (v["ready"] and v["date"] == v["target"]):
+        at = ready_at(m, day)
+    elif v["result"] is None:
+        at = session_close(m, day) + SCORE_AFTER
+    else:
+        return now + timedelta(days=1)
+    return at if now < at else None
 
 
 NOTE = "판정 시각 전에 끝난 일봉만 씁니다. 확률은 시장(벤치마크 ETF) 대비 강할 확률이고 예측이 아닙니다."
@@ -500,24 +531,75 @@ def brief_line(v: dict) -> tuple[str, str] | None:
 
 # ---------------------------------------------------------------- the cache
 
-class Cache:
-    """Each market's view, rebuilt from the bars at most every CACHE_TTL_SEC; one build at a time."""
+def _merge(old: list, recent: list) -> list | None:
+    """The day's full read with a few newer bars laid over it by date (the newer one wins), oldest first. None
+    when they do not join: no bar in common, or the oldest one in common closes differently - Yahoo re-adjusted
+    the history since (a distribution or a split, auto_adjust): laid over the old, it would read as a fake move.
+    Then the full history is read again."""
+    if not recent:
+        return old
+    by_at = {b.at: b for b in old}
+    common = next((b for b in recent if b.at in by_at), None)
+    if common is None:
+        return None
+    was = by_at[common.at].close
+    if not was or abs(common.close / was - 1) > 1e-9:
+        return None
+    by_at.update((b.at, b) for b in recent)
+    return [by_at[k] for k in sorted(by_at)][-HISTORY_BARS:]
 
-    def __init__(self, ttl: float = CACHE_TTL_SEC, clock=_time.monotonic) -> None:
+
+class Cache:
+    """Each market's view, standing until it can change (``stands_until``) or for ``NOT_READY_TTL_SEC`` while its
+    bars are late; one build at a time. The ETFs' bars are kept for both markets (#864)."""
+
+    def __init__(self, ttl: float = NOT_READY_TTL_SEC, clock=_time.monotonic) -> None:
         self.ttl, self.clock = ttl, clock
-        self._views: dict[str, tuple[float, str, dict]] = {}   # market → (expires at, target session, view)
+        # market → (expires at on clock, target session, view, stands until: a wall time "ahead" does not pull)
+        self._views: dict[str, tuple[float, str, dict, datetime | None]] = {}
+        # ticker → (read at on clock, day of the full read, bars): kept for the process's life (~30 ETFs x 2400 bars,
+        # tens of MB) so a later rebuild reads only the last few
+        self._bars: dict[str, tuple[float, date, list]] = {}
         self._lock = threading.Lock()
 
     def cached(self, market: str, now: datetime, ahead: float = 0) -> dict | None:
         hit = self._views.get(market)
-        if hit and self.clock() < hit[0] - ahead and hit[1] == target(MARKETS[market], now).isoformat():
-            return hit[2]
-        return None
+        if not hit or hit[1] != target(MARKETS[market], now).isoformat():
+            return None
+        if hit[3] is not None and now < hit[3]:
+            return hit[2]                     # nothing new until then: a prewarm's "ahead" does not rebuild it
+        return hit[2] if self.clock() < hit[0] - ahead else None
+
+    def _read_bars(self, tickers: list[str], candles: Callable[[str, str, int], list],
+                   now: datetime) -> tuple[dict, bool]:
+        """Every ticker's bars, and whether all of them were read now (or a moment ago) - a view built on an
+        ETF that failed is not held until it can change (Cache.read): it is asked again soon."""
+        today = now.astimezone(KST).date()
+
+        def one(t: str) -> tuple[str, list | None, bool]:
+            had = self._bars.get(t)
+            if had and self.clock() - had[0] < BARS_FRESH_SEC:
+                return t, had[2], True
+            try:
+                bars = None
+                if had and had[1] == today and had[2]:
+                    bars = _merge(had[2], candles(t, "1d", RECENT_BARS))
+                if bars is None:                 # the day's first read, or the history moved: all of it
+                    bars, had = candles(t, "1d", HISTORY_BARS), None
+            except Exception as exc:  # noqa: BLE001 - one ETF down leaves the rest (and its last bars)
+                log.info("day sectors: %s failed: %s", t, type(exc).__name__)
+                return t, had[2] if had else None, False
+            self._bars[t] = (self.clock(), had[1] if had else today, bars)
+            return t, bars, True
+
+        with ThreadPoolExecutor(max_workers=FETCH_PARALLEL, thread_name_prefix="desk-sectors") as pool:
+            got = list(pool.map(one, tickers))
+        return {t: bars for t, bars, _ in got if bars is not None}, all(ok for _, _, ok in got)
 
     def read(self, market: str, candles: Callable[[str, str, int], list], now: datetime | None = None,
              ahead: float = 0) -> dict:
-        """The market's view, fetching the bars when the cached one is old (``ahead``: this many seconds
-        before it is) or for another session."""
+        """The market's view, rebuilt when it can have changed (``ahead``: this many seconds before a late one
+        is asked again) or for another session."""
         now = now or datetime.now(KST)
         if (v := self.cached(market, now, ahead)) is not None:
             return v
@@ -525,14 +607,9 @@ class Cache:
             if (v := self.cached(market, now, ahead)) is not None:
                 return v
             m = MARKETS[market]
-            bars = {}
-            for t in symbols(m):
-                try:
-                    bars[t] = candles(t, "1d", HISTORY_BARS)
-                except Exception as exc:  # noqa: BLE001 - one ETF down leaves the rest
-                    log.info("day sectors: %s failed: %s", t, type(exc).__name__)
+            bars, complete = self._read_bars(symbols(m), candles, now)
             v = view(m, bars, now)
-            # a view not on its target yet (waiting, or the last session's) is asked again soon
-            ttl = self.ttl if v["ready"] and v["date"] == v["target"] else min(self.ttl, NOT_READY_TTL_SEC)
-            self._views[market] = (self.clock() + ttl, v["target"], v)
+            until = stands_until(m, v, now) if complete else None   # an ETF missing: asked again soon
+            life = (until - now).total_seconds() if until else self.ttl
+            self._views[market] = (self.clock() + life, v["target"], v, until)
             return v

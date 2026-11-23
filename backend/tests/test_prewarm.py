@@ -304,3 +304,42 @@ def test_the_then_jobs_start_after_the_shared_jobs_have_finished():
 
     asyncio.run(go())
     assert order == ["risk done", "playbooks start"]
+
+
+def test_the_prewarm_runs_on_its_own_workers_and_a_page_does_not_wait_behind_it():
+    """#864 prewarm 이 기본 to_thread 풀을 붙잡지 않는다 — 전용 실행기가 꽉 차도 화면 요청(to_thread)은 바로 돈다."""
+    release = threading.Event()
+    names = []
+
+    def slow():
+        names.append(threading.current_thread().name)
+        release.wait(5)
+
+    async def go():
+        warming = [asyncio.ensure_future(prewarm.off(slow)) for _ in range(prewarm.WORKERS * 2)]
+        await asyncio.sleep(0.05)
+        start = time.perf_counter()
+        await asyncio.to_thread(lambda: None)                        # a page's read
+        waited = time.perf_counter() - start
+        release.set()
+        await asyncio.gather(*warming)
+        return waited
+
+    waited = asyncio.run(go())
+    assert waited < 0.5
+    assert names and all(n.startswith("desk-prewarm") for n in names)
+
+
+def test_the_last_pass_is_kept_for_the_status_page():
+    async def go():
+        async def stop(_):
+            raise asyncio.CancelledError
+        jobs = {"a": lambda: asyncio.sleep(0)}
+        try:
+            await prewarm.run(lambda: jobs, list, lambda t: asyncio.sleep(0), first_delay=0,
+                              sleep=lambda s: asyncio.sleep(0) if s == 0 else stop(s))
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(go())
+    assert set(prewarm.LAST) == {"at", "ms", "jobs"} and set(prewarm.LAST["jobs"]) == {"a"}

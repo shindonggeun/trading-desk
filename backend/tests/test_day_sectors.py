@@ -179,28 +179,101 @@ def test_a_reversal_is_said_as_one():
     assert ds.reasons(ds.KR, row, up=True) == ["직전 거래일 시장 대비 -2.3% — 되돌림 쪽", "최근 20거래일 시장 대비 +4.0%"]
 
 
-def test_the_cache_keeps_a_view_per_session_and_refetches_when_old():
+def test_the_cache_keeps_a_view_per_session_and_asks_a_late_one_again_soon():
     asked = []
 
     def candles(t, i, n):
-        asked.append(t)
+        asked.append((t, n))
         return []
     clock = [0.0]
-    cache = ds.Cache(ttl=100, clock=lambda: clock[0])
-    now = _kst(date(2026, 11, 17), 7, 30)
+    cache = ds.Cache(clock=lambda: clock[0])
+    now = _kst(date(2026, 11, 17), 7, 30)                            # its US session is over: no bars = late
     cache.read("kr", candles, now)
     first = len(asked)
-    assert first == len(ds.symbols(ds.KR))
+    assert first == len(set(ds.symbols(ds.KR))) and {n for _, n in asked} == {ds.HISTORY_BARS}
     cache.read("kr", candles, now)
     assert len(asked) == first                                       # cached
-    clock[0] = 95
-    cache.read("kr", candles, now, ahead=10)                         # prewarm: refetch before it expires
+    clock[0] = ds.NOT_READY_TTL_SEC - 5
+    cache.read("kr", candles, now, ahead=10)                         # prewarm: asked again before it expires
+    assert len(asked) == first                                       # ... but its bars are this young: kept
+    clock[0] = ds.NOT_READY_TTL_SEC + ds.BARS_FRESH_SEC
+    cache.read("kr", candles, _kst(date(2026, 11, 18), 7, 30))       # another session: read again
     assert len(asked) == 2 * first
-    cache.read("kr", candles, _kst(date(2026, 11, 18), 7, 30))       # another session
-    assert len(asked) == 3 * first
-    clock[0] = 95 + ds.NOT_READY_TTL_SEC + 1                         # no bars: a waiting view is asked again soon
-    cache.read("kr", candles, _kst(date(2026, 11, 18), 7, 30))
-    assert len(asked) == 4 * first
+
+
+def _view(target: str, *, ready: bool, date_: str | None = None, result=None) -> dict:
+    return {"market": "us", "target": target, "date": date_ or target, "ready": ready, "result": result}
+
+
+def test_a_view_stands_until_it_can_change():
+    """#864 대기 뷰는 필요한 세션 마감 + 30분까지, 당일 판정은 그 세션 채점까지, 채점된 것은 대상이 바뀔 때까지."""
+    mon = date(2026, 11, 23)
+    before = _kst(mon, 11, 22)
+    # the US's Monday needs Korea's Monday (16:00 KST with SCORE_AFTER): Friday's scored view until then
+    assert ds.ready_at(ds.US, mon) == _kst(mon, 16, 0)
+    assert ds.stands_until(ds.US, _view("2026-11-23", ready=True, date_="2026-11-20"), before) == _kst(mon, 16, 0)
+    assert ds.stands_until(ds.US, _view("2026-11-23", ready=False), _kst(mon, 16, 1)) is None   # bars late
+    kr = {**_view("2026-11-23", ready=True), "market": "kr"}
+    assert ds.stands_until(ds.KR, kr, before) == _kst(mon, 16, 0)     # 15:30 close + 30 min: then scored
+    assert ds.stands_until(ds.KR, kr, _kst(mon, 16, 5)) is None       # past it and still no score: late
+    scored = {**kr, "result": {"spearman": 0.1}}
+    assert ds.stands_until(ds.KR, scored, _kst(mon, 16, 5)) == _kst(mon, 16, 5) + timedelta(days=1)
+
+
+def test_a_waiting_view_is_not_rebuilt_by_each_prewarm_pass(monkeypatch):
+    """#864 운영: US 뷰가 한국장 마감 전 2분 TTL 이라 prewarm(ahead 300초)이 4분마다 10~14초씩 다시 만들었다."""
+    built, asked = [], []
+    mon = date(2026, 11, 23)
+
+    def fake_view(m, bars, now):
+        built.append(now)
+        day = ds.target(m, now).isoformat()
+        return _view(day, ready=True, date_="2026-11-20") if now < ds.ready_at(m, ds.target(m, now))             else _view(day, ready=True, result={"spearman": 0.2})
+
+    monkeypatch.setattr(ds, "view", fake_view)
+    clock = [0.0]
+    cache = ds.Cache(clock=lambda: clock[0])
+    now = _kst(mon, 11, 22)
+    for _ in range(10):                                              # 40 minutes of prewarm passes
+        cache.read("us", lambda t, i, n: asked.append(n) or [], now, ahead=300)
+        clock[0] += 240
+        now += timedelta(seconds=240)
+    assert len(built) == 1
+    clock[0] += 5 * 3600
+    cache.read("us", lambda t, i, n: asked.append(n) or [], _kst(mon, 16, 1), ahead=300)
+    assert len(built) == 2                                           # its Korean session is in: rebuilt
+
+
+def _flat(n: int, last: date, close: float = 100.0) -> list:
+    days = [last - timedelta(days=k) for k in range(n)][::-1]
+    return [Bar(datetime.combine(d, time(0), UTC).isoformat(timespec="seconds"), close, close, close, close, 0.0)
+            for d in days]
+
+
+def test_both_markets_share_the_bars_and_a_later_rebuild_reads_only_the_last_few(monkeypatch):
+    monkeypatch.setattr(ds, "view", lambda m, bars, now: {**_view(ds.target(m, now).isoformat(), ready=False),
+                                                          "bars": bars})
+    asked = []
+
+    def candles(t, i, n):
+        asked.append((t, n))
+        bars = _flat(n, date(2026, 11, 20))
+        if n == ds.RECENT_BARS:                                      # today's bar moved; the older ones did not
+            bars[-1] = Bar(bars[-1].at, 101.0, 101.0, 101.0, 101.0, 0.0)
+        return bars
+
+    clock = [0.0]
+    cache = ds.Cache(clock=lambda: clock[0])
+    now = _kst(date(2026, 11, 23), 16, 1)                           # past both ready times: a late view
+    cache.read("kr", candles, now)
+    cache.read("us", candles, now)
+    assert len(asked) == len(set(ds.symbols(ds.KR))) == len(set(ds.symbols(ds.US)))   # one read per ETF
+    asked.clear()
+    clock[0] = ds.NOT_READY_TTL_SEC + ds.BARS_FRESH_SEC
+    v = cache.read("kr", candles, now + timedelta(minutes=4))
+    assert asked and {n for _, n in asked} == {ds.RECENT_BARS}       # the day's full read: only the last few
+    bars = v["bars"][ds.KR.benchmark]
+    assert len(bars) == ds.HISTORY_BARS and bars[-1].close == 101.0 and bars[0].close == 100.0
 
 
 SECTOR_VIEW = {"ready": True, "date": "2026-11-18", "name": "국장",
@@ -275,3 +348,45 @@ def test_column_wise_bars_are_the_row_loops():
         for count in (1, 250, 700, 2000):
             assert day_sectors.frame_bars(frame, count, Bar) == _row_loop(frame, count)
     assert day_sectors.frame_bars(_frame(10, "UTC").iloc[:0], 5, Bar) == []
+
+
+def test_a_rebuild_reads_all_again_when_yahoo_readjusted_the_history():
+    """#864 리뷰: 낮에 분배금 · 분할로 조정 계수가 바뀌면 최근 봉을 옛 이력 위에 얹지 않는다(가짜 수익률)."""
+    old = _flat(30, date(2026, 11, 20))
+    adjusted = [Bar(b.at, b.close * 0.97, b.close * 0.97, b.close * 0.97, b.close * 0.97, 0.0) for b in old[-10:]]
+    assert ds._merge(old, adjusted) is None
+    assert ds._merge(old, _flat(10, date(2026, 12, 20))) is None      # nothing in common
+    assert ds._merge(old, []) == old
+    same = ds._merge(old, old[-10:])
+    assert same == old
+
+
+def test_a_view_built_without_an_etf_is_asked_again_soon_not_held(monkeypatch):
+    """#864 리뷰: 재시작 직후 ETF 하나를 못 읽고 만든 뷰를 16:00 까지 붙잡지 않는다."""
+    built = []
+
+    def fake_view(m, bars, now):
+        built.append(set(bars))
+        day = ds.target(m, now).isoformat()
+        return _view(day, ready=True, date_="2026-11-20")              # waiting for its target: held if complete
+
+    monkeypatch.setattr(ds, "view", fake_view)
+    down = {"SPY"}
+
+    def candles(t, i, n):
+        if t in down:
+            raise TimeoutError()
+        return _flat(n, date(2026, 11, 20))
+
+    clock = [0.0]
+    cache = ds.Cache(clock=lambda: clock[0])
+    now = _kst(date(2026, 11, 23), 11, 22)
+    cache.read("us", candles, now, ahead=300)
+    assert "SPY" not in built[-1]
+    clock[0] += 240
+    down.clear()
+    cache.read("us", candles, now + timedelta(minutes=4), ahead=300)   # the next pass reads it again
+    assert len(built) == 2 and "SPY" in built[-1]
+    clock[0] += 240
+    cache.read("us", candles, now + timedelta(minutes=8), ahead=300)   # complete now: held until 16:00
+    assert len(built) == 2

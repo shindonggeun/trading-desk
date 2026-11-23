@@ -51,18 +51,18 @@ function Picks({ sectors, weak = false }: { sectors: Sector[]; weak?: boolean })
   );
 }
 
-/** #705 카드가 같이 받아 둔 섹터: "wait" 받는 중(아직 묻지 않는다) · 준비된 응답(그대로 쓴다) · null(직접 묻는다) */
-export type SectorsPreset = DayCallSectorsResponse | "wait" | null;
+/** #705 카드가 같이 받아 둔 섹터: "wait" 받는 중(아직 묻지 않는다) · 응답(그대로 쓴다) · "failed"(묶음에서 실패 —
+ *  다시 묻지 않고 다시 불러오기만) · null(직접 묻는다: 받는 중이었거나 다른 시장 탭) */
+export type SectorsPreset = DayCallSectorsResponse | "failed" | "wait" | null;
 
 export default function DayCallSectors({ market, preset = null }: { market: DayCallMarket; preset?: SectorsPreset }) {
-  const [data, setData] = useState<DayCallSectorsResponse | "failed">();
+  const [fetched, setData] = useState<DayCallSectorsResponse | "failed">();
   const [attempt, setAttempt] = useState(0);
+  // 받아 둔 값은 첫 그리기부터 그대로(불러오는 중 한 프레임 없이) — 다시 불러오기를 누르면 직접 묻는다
+  const fromCard = attempt === 0 && preset !== null && preset !== "wait";
+  const data = fromCard ? preset : fetched;
   useEffect(() => {
-    if (preset === "wait") return;
-    if (preset && attempt === 0) {
-      setData(preset);
-      return;
-    }
+    if (preset === "wait" || (attempt === 0 && preset !== null)) return;
     let active = true;
     api.dayCallSectors(market)
       .then((response) => { if (active) setData(response); })

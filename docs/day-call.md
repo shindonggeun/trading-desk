@@ -305,6 +305,12 @@ ssh -t homelab-backend-server docker exec -it trading-desk-backend-prod python -
 `GET /api/day-call/stats` 의 `calls.to_close.by_round["3".."8"]` 가 회차별 적중률이고, `rounds_backtest` 가 회차 모델 버전 · 검증 시작일 · stale 이다.
 `GET /api/day-call/history` 는 기본으로 1차 · 2차만 준다. 장중 회차는 `?call=to_close` 로 따로 받는다(하루 최대 6개라 기본 응답을 키우지 않는다).
 
+`GET /api/day-call/board?sectors=kr|us`(#705): 대시보드 '오늘 방향' 카드의 세 요청을 한 번에 준다.
+- `calls.kr` · `calls.us` 는 `/api/day-call?market=` 와 같다.
+- `sectors` 는 `/api/day-call/sectors` 와 같지만 캐시에서만 준다. 아직 없으면 바로 `loading` 이다. 계산은 시작되고, 카드는 섹터 경로로 다시 물어 그 계산을 기다린다. 판정 글(대시보드에서 가장 큰 글)이 식은 섹터 봉을 기다리지 않게 하려는 것이다.
+- 실패한 부분은 `{error, detail}` 이고 나머지는 그대로 온다. 세션이 필요하다.
+- 묶음 경로가 없는 서버(배포 사이)면 카드는 예전처럼 시장마다 읽는다.
+
 ### 검증 결과(2026-11-20, 최근 90일 홀드아웃)
 
 **우위 없음.** 두 시장 모두 `verdict: no_edge` 다. 그래서 회차 항목은 `reference_only`("참고용 · 통계적 우위 없음")로 나가고, 단계 급변 알림도 보내지 않는다.

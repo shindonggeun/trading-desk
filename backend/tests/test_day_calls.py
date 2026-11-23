@@ -166,7 +166,6 @@ def test_the_api_needs_a_session_checks_the_market_and_answers_empty(db_url):
     assert "day_call" in push.KINDS
 
 
-
 def test_the_board_answers_both_markets_and_the_sectors_in_one_call(db_url):
     """#705 the dashboard card's three asks in one: each market's calls exactly as /api/day-call, the sectors
     as /api/day-call/sectors (a failing part is an error item, the calls still come); a session is needed."""
@@ -186,6 +185,24 @@ def test_the_board_answers_both_markets_and_the_sectors_in_one_call(db_url):
         assert single.status_code == 503
         assert with_sectors["sectors"] == {"error": 503, "detail": single.json()["detail"]}
         assert with_sectors["calls"]["kr"] == board["calls"]["kr"]
+
+
+def test_a_failing_market_is_an_error_item_and_the_other_still_comes(db_url, monkeypatch):
+    from desk.day_calls import DayCalls
+    from tests.test_api import _client
+
+    real = DayCalls.view
+
+    def view(self, market, *a, **kw):
+        if market == "kr":
+            raise KeyError("broken")
+        return real(self, market, *a, **kw)
+
+    monkeypatch.setattr(DayCalls, "view", view)
+    with _client(db_url) as client:
+        board = client.get("/api/day-call/board").json()
+    assert board["calls"]["kr"] == {"error": 503, "detail": "오늘 방향을 읽지 못했습니다"}      # no type name out
+    assert board["calls"]["us"]["market"] == "us"
 
 def test_the_csat_session_is_scored_after_its_1630_close(desk):
     csat = date(2024, 11, 14)

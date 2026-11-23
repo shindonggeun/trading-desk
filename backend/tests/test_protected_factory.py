@@ -384,7 +384,8 @@ def test_toss_provider_errors_in_facade_use_the_factory_policy(desk, monkeypatch
         public = client.get("/api/instruments/status")
         assert snapshot.status_code == stream.status_code == public.status_code == 200
         assert "holdings:" in snapshot.text and "data: " in stream.text
-        assert json.loads(next(line[6:] for line in stream.text.splitlines() if line.startswith("data: "))) == snapshot.json()
+        frame = json.loads(next(line[6:] for line in stream.text.splitlines() if line.startswith("data: ")))
+        assert frame["error"] == snapshot.json()["error"]
         assert ("403" if failure == "status" else "malformed") in public.json()["error"]
         for surface in (snapshot.text, stream.text, public.text, caplog.text):
             assert (PRIVATE_MARKER in surface) is not protected

@@ -36,7 +36,7 @@ python -B -X utf8 scripts/codex_team.py send S1 --from-role supervisor --live --
 
 ## 연결 모드와 실패 경계
 
-- `launch --no-daemon`은 단독 터미널 실행 모드다. 이 세션은 공용 서버 경로의 대상이 아닐 수 있다. 현재 열린 창 통신에는 공용 서버 모드를 우선한다.
+- `codex_team.py launch`는 단독 터미널에서 `codex --no-daemon`을 실행한다. 이 세션은 공용 서버 경로의 대상이 아닐 수 있다. 현재 열린 창 통신에는 공용 서버 모드를 우선한다.
 - `peers`가 0개거나 proxy 연결/프로토콜이 실패하면 새 서버를 띄우지 않는다. 설치된 CLI·공용 서버 버전과 연결 상태를 확인한다.
 - 로컬 Python의 AF_UNIX 지원에 의존하지 않고 설치된 Codex exe의 `app-server proxy`를 사용한다. proxy만 종료하며 공용 서버와 작업자 프로세스를 종료하지 않는다.
 - SQLite 메시지 원문과 ack는 기존 팀 도구가 관리한다. MCP 서버·자동 시작 hook·다른 프로그램 설치는 이 변경 범위가 아니다.
@@ -46,8 +46,42 @@ python -B -X utf8 scripts/codex_team.py send S1 --from-role supervisor --live --
 
 ## Windows 전달 검증
 
-`peers`의 `source`는 App Server가 기록한 출처다. `vscode`와 `cli`가 표시되더라도 실제로 열려 있는 창과 수신 turn의 유효 승인·샌드박스 정책은 각 수신 창에서 확인한다. 사용자가 선택한 창의 UUID와 대조할 수 없거나 표시와 기대가 다르면 배정을 보류한다. 공용 서버 목록에 나타나지 않는 전경 창은 [단독 실행 절차](codex-team.md#작업자-터미널-연결)의 연결 상태를 확인한다.
+`peers`·`bind`·`send --live`가 보여 주는 정보의 출처를 구분한다.
 
-실패하면 출력된 메시지 ID를 기준으로 수신 창의 `inbox <역할>`에서 원문을 찾는다. 수신 대상 확인이나 proxy 연결이 배정 저장 뒤에 실패하면 전송 상태가 `pending`으로 남을 수 있다. 별도 전경 실행기가 연결돼 있으면 이 `pending` 메시지는 기존 큐 경로에서 처리할 수 있다. 실행 중 turn을 찾는 API가 지원되지 않거나 전달 응답으로 수락 여부를 확인하지 못하면 `unknown`으로 남을 수 있다. `unknown`은 자동 재전송 대상이 아니다. 수신자는 찾은 기존 원문에 대해 `ack`를 남긴다.
+| 확인하려는 항목 | 기록할 근거 | 확인 불가인 경우 |
+|---|---|---|
+| 공용 서버의 수신 후보 | `peers`의 UUID·`source`·`status`·`cwd` | 후보가 없으면 해당 공용 서버를 통한 전달을 검증할 수 없다. 조회 실패나 API 미지원과 빈 목록을 구분한다. |
+| 사용자가 보는 Windows 창 | 선택한 IDE/CLI 창의 실제 thread UUID와 후보 UUID 대조 및 해당 창에서 배정이 보였는지 확인 | 창과 UUID를 대조할 수 없으면 전송을 보류한다. `source`는 서버가 기록한 출처이며 같은 이름·작업 경로의 창은 UUID로 구분한다. |
+| 시작 설정과 권한 출처 | 사용자가 확인한 시작 옵션·IDE 설정, 수신 창이 직접 표시한 정책과 그 출처 | `effectivePolicy`는 `확인 불가`로 기록한다. 발신 설정, CLI 인자 또는 `source`만으로 수신 정책을 판정할 수 없다. |
+| 실제 승인과 실행 | 수신 창에 나타난 승인 요청·차단·완료와 대상 파일의 결과 | 승인 요청 없이 파일이 만들어졌다면 해당 파일 작업에서 승인 요청을 관측하지 않았다고 기록한다. 다른 경로·명령에 적용되는 권한은 확인할 수 없다. |
 
-`scripts`에서 `python -B -X utf8 -m unittest test_codex_live test_codex_team -q`로 가짜 App Server 프레임을 사용하는 회귀를 실행할 수 있다. 이 검사는 유휴 `turn/start`, 실행 중 `turn/steer`, 미지원 API의 원인과 inbox 상태, 수신 ack 및 중복 차단을 확인한다. 실제 창에서의 파일 쓰기와 승인 요청 비교에는 사용자가 지정한 Windows IDE·CLI 테스트 창이 필요하다.
+공용 서버 조회에는 수신 turn의 유효 승인·샌드박스 정책을 알려 주는 응답 필드가 없다. App Server 프로토콜의 `turn/start` 요청에 정책 필드가 있는 버전에서도 이 저장소 도구는 해당 필드를 보내지 않는다. 설치 버전의 응답 구조는 서버를 시작하지 않고 `codex --version`과 `codex app-server generate-json-schema --out <새-임시-폴더>`로 확인할 수 있다. 생성된 `ThreadReadResponse.json`, `TurnStartResponse.json`, `TurnSteerResponse.json`은 설치 CLI의 스키마이며, 연결된 공용 서버 버전이나 수신 창의 정책을 확인하는 자료는 아니다.
+
+### 승인된 테스트 창에서 재현
+
+1. 사용자가 지정한 폐기용 IDE·CLI 수신 창과 감독 테스트 세션을 사용한다. 모두 같은 Git 저장소의 테스트 작업 경로를 열고, 각 수신자가 실행해도 되는 전용 파일 경로를 미리 정한다. 테스트 중 기존 실행 옵션과 승인·샌드박스 정책을 그대로 사용한다.
+2. 기존 팀 DB와 분리된 새 절대 경로를 정한다. 모든 참여 세션에서 `codex_team.py`를 호출할 때마다 같은 `CODEX_TEAM_STATE_DIR`을 해당 명령의 환경에 지정한다. 이 변수로 격리되는 것은 팀 SQLite DB다. `peers`는 공용 App Server에 로드된 스레드의 메타데이터를 조회하므로 해당 서버와 메타데이터 조회 범위가 승인된 경우에 실행한다. 공유 메타데이터 조회가 승인 범위에 포함되지 않으면 실전달을 **미검증**으로 남긴다. 아래는 테스트 감독 세션의 PowerShell 예시다. 수신 창의 `inbox`와 `ack`에도 같은 경로를 지정한다. 참여 세션에서 `CODEX_THREAD_ID`를 자동으로 제공하지 않으면 그 창의 시험은 보류한다.
+
+   ```powershell
+   $env:CODEX_TEAM_STATE_DIR = '<새-테스트-상태-디렉터리의-절대-경로>'
+   python -B -X utf8 scripts/codex_team.py join supervisor
+   python -B -X utf8 scripts/codex_team.py peers
+   ```
+
+3. 수신 Codex가 실행한 `Write-Output $env:CODEX_THREAD_ID`의 결과처럼 해당 창에서 직접 확인한 UUID를 후보 UUID와 대조한다. 감독이 `bind S1 --thread <IDE-UUID>`, `bind S2 --thread <CLI-UUID>` 중 대조된 대상만 실행한다. 공용 서버 목록에 없는 창에서는 공용 서버 전달 결과를 **미검증**으로 남긴다. `launch`가 사용하는 `codex --no-daemon`의 [전경 실행](codex-team.md#작업자-터미널-연결)은 별도 연결 방식이다.
+4. 각 수신자의 유휴 상태가 확인되면 감독에서 아래처럼 한 건을 보낸다. UTF-8 배정 파일에 수신 역할, 사전 합의한 새 파일의 절대 경로와 시험 식별자를 적는다. 수신자에게 모든 `inbox`·`ack` 명령에서 시험용 `CODEX_TEAM_STATE_DIR` 경로를 사용하고 수신 확인은 `ack`로 남기도록 명시한다. 수신 작업은 기존 파일을 덮어쓰지 않는 `New-Item -ItemType File -Path '<합의한-파일>' -Value '<시험-식별자>' -ErrorAction Stop` 정도로 한정한다.
+
+   ```powershell
+   python -B -X utf8 scripts/codex_team.py send S1 --from-role supervisor --live --task-key 734/windows-ide-idle --message-file '<시험-배정-파일>'
+   ```
+
+5. 수신자는 같은 테스트 상태 경로의 `inbox S1`에서 출력된 메시지 ID를 대조하고, `ack S1 <ID> received`, `ack S1 <ID> started`를 순서대로 기록한다. 사전 합의한 파일 작업에서 수신 창에 표시된 승인·차단과 파일 결과를 기록하고, 결과를 확인한 뒤 `ack S1 <ID> completed`를 남긴다. `live_accepted`는 공용 서버 수락 상태이며 수신 창 표시와 수신자 ack는 각각 확인한다.
+6. 실행 중 시험은 해당 창에서 무해한 짧은 읽기 작업이나 대기를 시작해 `peers`의 `active`와 실제 창의 실행 상태를 대조한 뒤 한 번 전송한다. IDE/CLI 및 유휴/실행 중 조합마다 다른 작업 키와 파일명을 사용한다. 같은 조합에서는 저장된 메시지 ID를 기준으로 따라가며 다시 보내지 않는다. 성공 출력의 `수신 thread` 상태와 `공용 서버 수락`의 turn ID를 기록하고, 실제 창에서 기존 turn에 입력이 보였는지 확인한다. 전송 전에 turn이 끝나 유휴 경로로 전송됐다면 실행 중 전달 결과는 미검증으로 기록한다.
+
+배정 저장 뒤 대상 확인이나 proxy 연결에 실패하면 `pending`이 남을 수 있고, 실행 중 조회 API가 미지원이거나 공용 서버 수락 응답을 확인할 수 없으면 `unknown`이 남을 수 있다. 결과와 실패 원인을 기록하고 기존 메시지 ID로 수신 창의 inbox를 확인한다. 다른 창을 선택하거나 메시지를 다시 보내거나 기존 세션을 재시작해 확인을 대체하지 않는다.
+
+실행 기록에는 각 조합의 CLI/IDE 버전과 시작 설정의 출처, 후보 UUID 대조 여부, 전송 전 상태, 메시지 ID, 선택한 창 표시, 승인·파일 결과, 최종 ack를 남긴다. 정책 출처나 화면 증거가 없는 조합은 **미검증**으로 기록한다.
+
+### 자동 회귀의 범위
+
+`scripts`에서 `python -B -X utf8 -m unittest test_codex_live test_codex_team -q`를 실행한다. 가짜 App Server와 격리 DB를 사용해 같은 이름·경로의 CLI와 IDE 중 바인딩한 UUID로 전달하는지, 유휴 `turn/start`·실행 중 `turn/steer` 요청, 미지원 API의 원인과 inbox 상태, 수신 ack 및 중복 차단을 확인한다. Windows에서 실행해도 실제 IDE·CLI 창의 표시, 유효 정책, 승인 요청, 수신 작업의 파일 쓰기는 수동 시험에서 확인한다.

@@ -5,21 +5,40 @@
  * 새 값을 덮어, 다음 이벤트까지(수급은 최대 1분) 옛 값이 보였다. 그래서 응답을 받으면 그 사이의 메시지를 순서대로
  * 다시 적용한다. 값의 시각(stamps 의 at — 시세 fetched_at, 수급 · 선물 freshness.fetched_at)이 있으면, REST 가 가져온
  * 값보다 오래된 메시지는 건너뛴다(REST 가 더 새 값을 읽어 온 경우). 시각이 같으면 메시지가 이긴다.
+ * onlyNewer(요청 전에 받은 메시지 — 그 값은 REST 가 이미 담았을 수 있다): 두 시각이 모두 있고 메시지가 더 새로울 때만.
  * 알림처럼 시각이 없는 채널은 apply 가 이미 중복을 거르므로 그대로 다시 얹는다.
  */
 
 export type ReplayStamp = { key: string; at?: string | null };
 
 export function replayOver<T, M>(data: T, messages: M[], apply: (prev: T, m: M) => T | undefined,
-                                 stamps?: (data: T) => ReplayStamp[]): T {
+                                 stamps?: (data: T) => ReplayStamp[], onlyNewer = false): T {
   let out = data;
   for (const m of messages) {
     const next = apply(out, m);
     if (next === undefined || next === out) continue;
-    if (stamps && goesBack(stamps(out), stamps(next))) continue;
+    if (onlyNewer ? !stamps || !goesForward(stamps(out), stamps(next))
+      : stamps && goesBack(stamps(out), stamps(next))) continue;
     out = next;
   }
   return out;
+}
+
+const time = (iso: string | null | undefined) => (iso ? Date.parse(iso) : NaN);
+
+/** 바뀐 키가 있고, 그 키들이 모두 시각을 읽을 수 있으며 앞보다 늦으면 true(더 새 값이라는 증명) */
+function goesForward(before: ReplayStamp[], after: ReplayStamp[]): boolean {
+  const was = new Map(before.map((s) => [s.key, s.at]));
+  let moved = false;
+  for (const s of after) {
+    const prev = was.get(s.key);
+    if (prev === s.at) continue;
+    const a = time(s.at);
+    const b = time(prev);
+    if (Number.isNaN(a) || Number.isNaN(b) || a <= b) return false;
+    moved = true;
+  }
+  return moved;
 }
 
 /** 바뀐 키 중 하나라도 시각이 앞보다 이르면(더 오래된 값으로 돌아가면) true */
@@ -49,8 +68,10 @@ export function remember<M>(list: Applied<M>[], key: string, skey: string, m: M,
   return [...kept, { key, skey, at: now, m }].slice(-REPLAY_MAX);
 }
 
-/** 그 요청(startedAt 에 보냄)의 응답 위에 다시 얹을 메시지, 받은 순서대로. 시각이 있으면 기억 전부 — 요청 전에 받은
- *  것이라도 서버가 더 옛 캐시를 줄 수 있고, 더 오래된 메시지는 replayOver 의 시각 비교가 거른다. 알림은 요청 뒤의 것만 */
-export function pending<M>(list: Applied<M>[], key: string, startedAt: number, stamped: boolean): M[] {
-  return list.filter((a) => a.key === key && (stamped || a.at >= startedAt)).map((a) => a.m);
+/** 그 요청(startedAt 에 보냄)의 응답 위에 다시 얹을 메시지, 받은 순서대로 — before: 요청 전에 받은 것(시각이 있는
+ *  채널만: 서버가 더 옛 캐시를 줄 수 있다. replayOver(onlyNewer) 로 더 새 것만), after: 요청 뒤에 받은 것 */
+export function pending<M>(list: Applied<M>[], key: string, startedAt: number, stamped: boolean): { before: M[]; after: M[] } {
+  const mine = list.filter((a) => a.key === key);
+  return { before: stamped ? mine.filter((a) => a.at < startedAt).map((a) => a.m) : [],
+           after: mine.filter((a) => a.at >= startedAt).map((a) => a.m) };
 }

@@ -17,15 +17,15 @@ from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.pool import NullPool
 
 from . import roles
-from .db import account_owner_binding, market_alerts, privacy_policy, run_submissions, runs, users
+from .db import account_owner_binding, market_alerts, run_submissions, runs, users
 from .privacy import (
     ISOLATED,
-    LEGACY,
     PROTECTED,
     PolicyChanged,
     PolicyEpoch,
     PrivacyPolicyStore,
     ProcessPolicy,
+    read_policy_epoch,
 )
 from .run_access import account_run, legacy_submission, protected_execution, protected_submission
 
@@ -320,21 +320,10 @@ def _inspect_topology(dsn: str) -> str:
 
 
 def _read_epoch(conn: Connection) -> PolicyEpoch:
-    row = conn.execute(select(privacy_policy.c.mode, privacy_policy.c.epoch).where(privacy_policy.c.id == 1)).one_or_none()
-    if row is None or row.mode not in (LEGACY, ISOLATED, PROTECTED) or type(row.epoch) is not int or row.epoch < 0:
+    current = read_policy_epoch(conn)
+    if current is None:
         raise PolicyChanged
-    return PolicyEpoch(*row)
-
-
-def _lock_isolation(conn: Connection, policy: ProcessPolicy) -> None:
-    if conn.dialect.name == "sqlite":
-        policy.lock(conn)
-    elif conn.scalar(select(privacy_policy.c.epoch).where(
-        privacy_policy.c.id == 1, privacy_policy.c.mode == policy.expected.mode,
-        privacy_policy.c.epoch == policy.expected.epoch,
-    ).with_for_update()) is None:
-        # Exclusive on PostgreSQL to serialize two admin operations as well as CAS.
-        raise PolicyChanged
+    return current
 
 
 def _legacy_candidates():
@@ -390,7 +379,7 @@ def _execute(args, dsn: str):
         with engine.begin() as conn:
             if write:
                 policy = PolicyEpoch(ISOLATED, args.epoch)
-                _lock_isolation(conn, ProcessPolicy(store, policy))
+                ProcessPolicy(store, policy).lock(conn, exclusive=True)
                 if args.archive_memory:
                     archived = _archive_memory(_memory_path())
                     return {"mode": policy.mode, "epoch": policy.epoch, "archived_legacy_memory_files": archived}

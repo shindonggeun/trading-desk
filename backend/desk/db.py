@@ -18,6 +18,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     String,
     Table,
@@ -121,6 +122,20 @@ privacy_policy = Table(
     Column("epoch", Integer, nullable=False),
     CheckConstraint("mode IN ('legacy', 'isolated', 'protected')", name="ck_privacy_policy_mode"),
     CheckConstraint("epoch >= 0 AND (mode <> 'legacy' OR epoch = 0)", name="ck_privacy_policy_epoch"),
+)
+
+# Source evidence survives a vacant or replaced owner binding. Only the approval epoch can advance.
+owner_toss_attestations = Table(
+    "owner_toss_attestations", metadata,
+    Column("generation", String(32), primary_key=True),
+    Column("version", Integer, nullable=False),
+    Column("fingerprint", LargeBinary(32), nullable=False),
+    Column("approved_isolation_epoch", Integer, nullable=False),
+    Column("approval_fingerprint", LargeBinary(32), nullable=False),
+    CheckConstraint("version > 0", name="ck_owner_toss_attestations_version"),
+    CheckConstraint("approved_isolation_epoch > 0", name="ck_owner_toss_attestations_epoch"),
+    CheckConstraint("length(fingerprint) = 32 AND length(approval_fingerprint) = 32",
+                    name="ck_owner_toss_attestations_fingerprints"),
 )
 
 

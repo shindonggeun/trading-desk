@@ -517,3 +517,21 @@ unset REDISCLI_AUTH
 2. 켠 **뒤** 같은 요일 · 같은 시간대에 똑같이 한다.
 3. 비교: `/api/market/flow` · `/api/market/futures` · `/api/quote` · `/api/levels` · `/api/gaps` · `/api/oscillator` 의 p95,
    그리고 `/api/status` `outbound` 의 `toss` · `kis`(그 프로세스가 `since` 부터 부른 수). api 프로세스의 수가 0 에 가까우면 완료.
+
+## 14. 운영 로그의 알려진 외부 원천 실패 (#861)
+
+분석(TradingAgents)의 소셜 · 예측시장 원천은 운영 서버에서 막혀 있다. 라이브러리가 실패를 삼키고 "못 가져옴" 표시
+(`<stocktwits unavailable: …>` · `<Reddit unavailable: … this is not an absence of discussion>` · Polymarket "currently unavailable")를
+넣으므로 분석은 이어지지만, 시장 심리 보고서에 StockTwits · Reddit 근거가, 뉴스 보고서에 Polymarket 확률이 빠진다.
+
+| 로그 | 원인(2026-11-23, 서버와 PC 에서 같은 요청 한 번씩) | 서버 | PC |
+|------|------|------|----|
+| `StockTwits fetch failed … 403 Forbidden` | 서버 공인 IP 에서 즉시 차단(0.03초 403) | 403 | 200 |
+| `Reddit RSS fetch failed for r/a+b+c … 404` | 여러 서브레딧을 `+` 로 묶은 `search.rss` 가 더 이상 안 된다. 하나씩 물어도 인증 없는 RSS 검색은 429 | 404 · 429 | 404 · 429 |
+| `Polymarket search failed … Connection reset` | 서버 네트워크에서 연결이 끊긴다(일시 장애 아님) | 리셋 | 200 |
+
+- 지금 지연 비용은 원천마다 0.2초 미만이다. 다만 Reddit 은 429 를 받으면 Retry-After(없으면 약 60초)만큼 기다렸다 한 번 더 묻는다 —
+  묶음 URL 이 404 대신 429 를 받기 시작하면 분석마다 시장 심리 단계가 1분 가까이 멈춘다. 끄거나 고치려면 포크(`shindonggeun/TradingAgents`)
+  패치와 SHA 올리기가 필요하다(sentiment analyst 가 StockTwits · Reddit 을 설정 없이 직접 부른다) — 별도 이슈로 다룬다.
+- `Cookie fetch from fc.yahoo.com failed` 는 yfinance 내부 경고다. 바로 뒤 Yahoo 가 빈 일봉을 줄 수 있어 `desk.prices._yahoo_rows` 가
+  일봉 이상이 비면 한 번 더 묻는다(로그 `Yahoo returned no 1d bars for …; asking once more`).

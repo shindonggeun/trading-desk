@@ -90,6 +90,7 @@ FUNDS = (
     Fund("pershing", "퍼싱스퀘어", "빌 애크먼", "0001336528"),
     Fund("bridgewater", "브리지워터", "레이 달리오", "0001350694"),
     Fund("citadel", "시타델 어드바이저스", "켄 그리핀", "0001423053"),
+    Fund("duquesne", "Duquesne Family Office", "Stanley Druckenmiller", "0001536411"),
     # 2026Q3 13F-NT: Brookfield Corp (028-14349, CIK 0001001085, EDGAR 2026-11-18) reports Oaktree's
     # positions - sequence 7 among the eight advisers of its combination report. Sequence 8 (Oaktree Fund
     # Advisors, 028-21340) is left out: Oaktree's own 13F-HRs never included it
@@ -504,6 +505,11 @@ def _shown(fs: list[dict]) -> dict:
     return fs[-1]
 
 
+def _view_key(fund_id: str, period: str, prev_period: str, periods: dict) -> tuple:
+    return (fund_id, period, tuple(f["accession"] for f in periods[period]),
+            tuple(f["accession"] for f in periods.get(prev_period, [])))
+
+
 # ------------------------------------------------------------------ the desk's view
 
 class Funds:
@@ -526,7 +532,7 @@ class Funds:
         self.checked_at: str | None = None
         self._tables: OrderedDict[str, list[dict]] = OrderedDict()   # accession → merged rows
         self._views: OrderedDict[tuple, dict] = OrderedDict()
-        self._latest: dict[str, dict] = {}                   # fund id → its latest quarter's view
+        self._latest: dict[str, tuple[tuple, dict]] = {}     # fund id → latest submission key and view
         self._fails: dict[str, tuple[float, str]] = {}
         self._kinds: dict[str, str | None] = self._load_json("amendments.json") or {}
         self._tickers: dict[str, str | None] = self._load_json("cusip_tickers.json") or {}
@@ -596,13 +602,17 @@ class Funds:
                 continue
             try:
                 v = self.view(fund.id, wait=True, map_budget=MAP_PER_PASS, search_budget=SEARCH_PER_PASS)
+                period = v["period_of_report"]
+                prior_period = period_of(previous_quarter(v["quarter"])).isoformat()
+                latest = (_view_key(fund.id, period, prior_period, got), v)
                 if v["prev_quarter"] is None and self._has_previous(fund.id, v["period_of_report"]):
                     # the quarter before is filed but could not be read: keep a compared view, retry soon
                     self.errors[fund.id] = "전 분기 공시를 읽지 못해 변화를 계산하지 못했습니다"
-                    if fund.id not in self._latest:
-                        self._latest[fund.id] = v
+                    kept = self._latest.get(fund.id)
+                    if kept is None or kept[0] != latest[0]:
+                        self._latest[fund.id] = latest
                 else:
-                    self._latest[fund.id] = v
+                    self._latest[fund.id] = latest
             except Exception as exc:  # noqa: BLE001 - the list still shows the filing, without its table
                 log.warning("13F table for %s failed: %s", fund.id, _short(exc))
                 self.errors[fund.id] = _short(exc)
@@ -771,7 +781,7 @@ class Funds:
             periods = self.periods.get(fund.id) or {}
             latest = max(periods) if periods else None
             f = _shown(periods[latest]) if latest else None
-            v = self._latest.get(fund.id)
+            _, v = self._latest.get(fund.id, (None, None))
             v = v if v and f and v["period_of_report"] == f["period"] else None
             top_new = sorted((h for h in (v or {}).get("holdings", []) if h["change"] == "new" and _stock(h)),
                              key=lambda h: -h["value"])[:3]
@@ -784,6 +794,32 @@ class Funds:
                          if f else None,
                          "next_due": next_due(self._today()).isoformat(), "error": self.errors.get(fund.id)})
         return {"funds": rows, "checked_at": self.checked_at}
+
+    def latest_snapshot(self, fund_id: str) -> dict:
+        """Cached metadata and detail for the exact latest SEC submission set; never fetch."""
+        fund = BY_ID[fund_id]
+        periods = self.periods.get(fund_id) or {}
+        snapshot = {"checked_at": self.checked_at, "failed": bool(self.errors.get(fund_id)),
+                    "filing": None, "detail": None}
+        if not periods:
+            return snapshot
+        period = max(periods)
+        quarter = quarter_of(date.fromisoformat(period))
+        prev_period = period_of(previous_quarter(quarter)).isoformat()
+        shown = _shown(periods[period])
+        accession = shown["accession"]
+        snapshot["filing"] = {
+            "fund_id": fund_id, "name": fund.name, "cik": fund.cik, "quarter": quarter,
+            "period_of_report": period, "filed_at": shown["filed_at"], "form": shown["form"],
+            "accession": accession, "source_url": (
+                f"https://www.sec.gov/Archives/edgar/data/{int(fund.cik)}/"
+                f"{accession.replace('-', '')}/{accession}-index.html"
+            ),
+        }
+        key = _view_key(fund_id, period, prev_period, periods)
+        kept_key, kept = self._latest.get(fund_id, (None, None))
+        snapshot["detail"] = self._views.get(key) or (kept if kept_key == key else None)
+        return snapshot
 
     def view(self, fund_id: str, quarter: str | None = None, wait: bool = False,
              map_budget: int = MAP_PER_REQUEST, search_budget: int = 0) -> dict:
@@ -800,8 +836,7 @@ class Funds:
         q = quarter_of(date.fromisoformat(period))
         prev_q = previous_quarter(q)
         prev_period = period_of(prev_q).isoformat()
-        key = (fund.id, period, tuple(f["accession"] for f in periods[period]),
-               tuple(f["accession"] for f in periods.get(prev_period, [])))
+        key = _view_key(fund.id, period, prev_period, periods)
         hit = self._views.get(key)
         if hit is not None and (hit["prev_quarter"] or prev_period not in periods):
             self._views.move_to_end(key)
@@ -841,7 +876,7 @@ class Funds:
         out: dict[str, list[dict]] = {}
         for fund in FUNDS:
             periods = self.periods.get(fund.id) or {}
-            view = self._latest.get(fund.id)
+            _, view = self._latest.get(fund.id, (None, None))
             if not periods or not view or view["period_of_report"] != max(periods):
                 continue
             for h in view["holdings"]:

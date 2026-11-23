@@ -242,3 +242,16 @@
     align-items: start;
   }
 }
+
+
+/* 미장 옵션을 포함한 시장 탭은 좁은 카드에서 줄을 바꾼다. */
+.flow-head > .seg {
+  max-inline-size: 100%;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 440px) {
+  .flow-head > .seg > button {
+    padding-inline: 8px;
+  }
+}

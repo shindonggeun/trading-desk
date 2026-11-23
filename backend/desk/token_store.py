@@ -23,10 +23,10 @@ keeps the count; any other issue (an expiry, a token turned away hours after its
 
 A token still valid in the row is reused: a restart (a deploy) issues nothing.
 
-Values are Fernet-sealed with a key derived (HKDF) from that provider's own secret, so the database alone
-gives no usable token. A row the secret no longer opens (the key was rotated) reads as no token and is
-issued again. Never log a token, its hash or the sealed value - only the token's name and the role (the
-engine hides SQL parameters in its errors, desk.db.make_engine).
+Values are Fernet-sealed with a key derived (HKDF) from that provider's own secret or, for protected Toss,
+the verified epoch's seal material. A row the current key cannot open reads as no token. Never log a token,
+its hash, seal material or the sealed value - only the token's name and the role (the engine hides SQL
+parameters in its errors, desk.db.make_engine).
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from sqlalchemy import and_, insert, or_, select, update
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
 from .db import aware, broker_tokens
@@ -94,11 +94,14 @@ class TokenStore:
 
     def __init__(self, engine: Engine, *, role: str, clock: Callable[[], datetime] = lambda: datetime.now(UTC),
                  wait_sec: float = WAIT_SEC, poll_sec: float = POLL_SEC,
-                 can_issue: Callable[[], bool] | None = None) -> None:
+                 can_issue: Callable[[], bool] | None = None, toss_seal_material: str | None = None,
+                 fence_issue: Callable[[Connection, str], None] | None = None) -> None:
         self._engine = engine
         self.role = role
         self.minter = role in MINTERS
         self._can_issue = can_issue
+        self._toss_seal_material = toss_seal_material
+        self._fence_issue = fence_issue
         self._clock = clock
         self._wait_sec, self._poll_sec = wait_sec, poll_sec
 
@@ -108,6 +111,8 @@ class TokenStore:
     def slot(self, name: str, secret: str) -> TokenSlot:
         if name not in NAMES:
             raise ValueError(f"unknown token {name!r}")
+        if name == "toss" and self._toss_seal_material is not None:
+            secret = self._toss_seal_material
         return TokenSlot(self, name, _fernet(name, secret))
 
     # --- rows (sync: called through asyncio.to_thread) ------------------------------------------------
@@ -134,9 +139,11 @@ class TokenStore:
             )).values(lease_until=now + timedelta(seconds=LEASE_SEC), lease_owner=owner))
             return res.rowcount == 1
 
-    def _write_leased(self, name: str, owner: str, **values) -> bool:
-        """Only while the lease is still ``owner``'s: a minter that outran its lease writes nothing."""
+    def _write_leased(self, name: str, owner: str, *, fence: bool = False, **values) -> bool:
+        """Write under the lease, with the factory's policy fence for stamping and publishing an issue."""
         with self._engine.begin() as conn:
+            if fence and self._fence_issue is not None:
+                self._fence_issue(conn, name)
             res = conn.execute(update(broker_tokens).where(and_(
                 broker_tokens.c.name == name, broker_tokens.c.lease_owner == owner)).values(**values))
             return res.rowcount == 1
@@ -300,7 +307,7 @@ class TokenSlot:
                 at = store._clock()
                 refusals = self._refusals(row, cur, at)
                 # the ask counts before it is sent: a crash, a cancel or a lost save still keeps the gap
-                if not await asyncio.to_thread(store._write_leased, self.name, owner, asked_at=at):
+                if not await asyncio.to_thread(store._write_leased, self.name, owner, fence=True, asked_at=at):
                     raise TokenUnavailable(f"{self.name}: lease lost")
                 try:
                     got = await issue()
@@ -309,7 +316,8 @@ class TokenSlot:
                     raise
                 expires = store._clock() + timedelta(seconds=got.life_sec)
                 saved = await asyncio.to_thread(
-                    store._write_leased, self.name, owner, sealed=self._box.encrypt(got.value.encode()).decode(),
+                    store._write_leased, self.name, owner, fence=True,
+                    sealed=self._box.encrypt(got.value.encode()).decode(),
                     expires_at=expires, issued_at=at, issued_by=store.role, refresh_for=None,
                     # an issue that answers a counted refusal keeps the count for the next one; any other resets it
                     refusals=refusals if counted else 0)

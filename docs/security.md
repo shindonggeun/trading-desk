@@ -108,7 +108,7 @@ Jenkins 가 배포할 때마다 읽어 임시 env 파일(600)로 compose 에 넘
 | 사용자 비밀번호 | 소유자의 머리 · 비밀번호 관리자. DB 에는 해시만 | 없음 |
 | ChatGPT 로그인 | 볼륨 `trading-desk-tradingagents-home` 의 `chatgpt-auth.json` | 없음 |
 | 한국투자증권(KIS) 앱키 · 앱시크릿 | 서버 `.env.runtime` 의 `DESK_KIS_APP_KEY` · `DESK_KIS_APP_SECRET` | `.env.example` 에 이름만 |
-| 토스 접근 토큰 · KIS REST 접근 토큰 · KIS 웹소켓 접속키 (#688) | DB `broker_tokens.sealed` — 그 공급자 자신의 시크릿(`TOSS_CLIENT_SECRET` · `DESK_KIS_APP_SECRET`)에서 HKDF 로 만든 Fernet 키로 봉인. 발급은 `DESK_ROLE` all · collector 프로세스만(아래 §5.1) | 없음 |
+| 토스 접근 토큰 · KIS REST 접근 토큰 · KIS 웹소켓 접속키 (#688) | DB `broker_tokens.sealed`에 Fernet으로 봉인. KIS와 legacy Toss는 공급자 시크릿, 보호 Toss는 검증된 보호 세대의 봉인 재료에서 키를 파생한다. 발급자는 `DESK_ROLE` all · collector 프로세스(아래 §5.1) | 없음 |
 | 텔레그램 봇 토큰 · chat_id · 카카오 REST 키 · 클라이언트 시크릿 · `DESK_NOTIFY_KEY` (#580) | 서버 `.env.runtime` | `.env.example` 에 이름만 |
 | 카카오 액세스 · 리프레시 토큰 (#580) | DB `notify_channels.secret`, `DESK_NOTIFY_KEY`(Fernet)로 봉인 | 없음 |
 | KRX OPEN API 인증키 (#601) | 서버 `.env.runtime` 의 `DESK_KRX_API_KEY`. 요청 헤더 `AUTH_KEY` 로만 보내고 로그 · URL · DB 에 남기지 않는다 | `.env.example` 에 이름만 |
@@ -143,12 +143,12 @@ Jenkins 가 배포할 때마다 읽어 임시 env 파일(600)로 compose 에 넘
 - **재사용 · 갱신:** 유효한 토큰이 있으면 재배포해도 새로 받지 않는다. collector 의 `tokens` 작업이 5초마다 돈다.
   - 토스 · KIS REST 는 만료 10분 전에 갱신하고 다른 프로세스의 요청을 처리한다.
   - KIS 접속키는 **요청이 있을 때만** 받는다. 미리 갱신하지 않는다 — 스트림이 재연결할 때 스스로 요청한다.
-- **읽기 전용:** `api` · `analyst` 와 `python -m desk.cli`(`flow-history`)는 발급하지 않는다.
+- **읽기 전용:** `api` · `analyst`와 legacy의 `python -m desk.cli flow-history`는 발급하지 않는다.
   - 401 · KIS 만료 코드 · 접속키 거절이 오거나 토큰이 없으면 행에 요청을 남긴다. 요청은 거부된 토큰의 SHA-256 앞 32자이고, 같은 토큰에 대한 요청은 하나다. `missing` 은 실제 거절 요청을 덮지 않는다.
   - 만료가 가깝지만 아직 유효한 토큰은 기다리지 않고 바로 쓴다. 유효한 토큰이 없을 때만 최대 10초 다시 읽는다.
   - **403(허용 IP 아님)은 요청을 남기지 않는다** — 새 토큰으로는 풀리지 않는다.
   - 운영 팩토리(`make_broker` · `kis_stream.make` · `futures_flow.make`)는 저장소 인자가 필수다. `None`(자기 메모리, 스스로 발급)은 테스트에서만 넘긴다.
-- **봉인:** DB 만 읽은 사람은 쓸 수 있는 토큰을 얻지 못한다. 시크릿을 바꾸면(키 교체) 저장된 행을 못 열고, 그 행은 "토큰 없음" 으로 보고 새로 발급한다(경고 1줄, 값 없음).
+- **봉인:** 토큰을 열려면 DB 밖의 시크릿이 필요하다. 보호 Toss에는 승인된 소유자·원천·정책 세대를 반영한 봉인 재료를 사용한다. 키가 달라진 저장 행은 "토큰 없음"으로 처리하고 기존 발급 간격에 따라 새로 받는다(경고 1줄, 값 없음).
 - **로그:** 토큰 · 해시 · 봉인 값은 로그 · 예외 · 응답에 쓰지 않는다. 남는 것은 토큰 이름(`toss` · `kis_rest` · `kis_approval`)과 발급한 역할뿐이다.
   - DB 엔진은 `hide_parameters=True` 라, SQL 오류에도 값이 찍히지 않는다.
   - 토스 토큰 발급 오류에는 HTTP 상태와 오류 코드만 남는다.

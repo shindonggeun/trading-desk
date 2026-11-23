@@ -344,7 +344,7 @@ TradingAgents SHA 를 올려 이 잠금이 빠지면 여기서 깨진다. 전제
   PC 와 서버가 같은 공인 IP 라 허용 IP(403)로도 막히지 않는다. 다른 앱(semibot 등)에 토스를 붙일 때는 키를 따로 발급받는다.
   두 곳이 같은 키를 계속 쓰면 서로 무효화를 반복한다(핑퐁) — 서버는 재발급을 1분에 한 번으로 묶고 로그에 `toss token revoked` 를 남긴다.
 - 토큰은 DB `broker_tokens` 에 봉인해 프로세스 · 재배포를 넘어 함께 쓴다(#688, docs/security.md §5.1). 재배포해도 유효한 토큰을 다시 쓰고,
-  발급은 `DESK_ROLE` all · collector 만 한다 — 로그 `toss token issued (all)` 이 발급 한 번이다. `python -m desk.cli flow-history` 는 저장소의 토큰만 읽는다.
+  발급은 `DESK_ROLE` all · collector 만 한다 — 로그 `toss token issued (all)` 이 발급 한 번이다. legacy의 `python -m desk.cli flow-history`는 저장소의 토큰만 읽는다.
 - 시세 · 보유 정보를 다른 사람에게 보여주지 않는다(재배포 금지). 로그인이 소유자 한 명으로 막는 이유다.
 
 ## 7. 백업
@@ -587,7 +587,9 @@ Reddit 429의 `Retry-After: 75`에는 60초 대기를 한 번 예약했고, Poly
 
 ## 15. 계좌 데이터 보호 모드 (#871)
 
-현재 배포 팩토리는 보호 모드를 명시적으로 주입한 기동만 지원한다. 운영 팩토리의 DB 정책 연동과 브로커·알림 목적지 검증이 완료되기 전에는 운영 DB를 `legacy`에 둔다. 격리한 DB에는 기존 운영 팩토리로 재접속할 수 없다.
+기본 배포 팩토리는 시작 시 DB 정책을 읽는다. `protected`에서는 같은 소유자와 직전 격리 세대에서 승인한 고정 Toss 원천을 검증한다. `isolated`, 잘못된 정책 또는 보호 계좌 승인 불일치로는 기동할 수 없다. 승인과 전진 전환 절차의 검증 및 사용자 승인이 끝날 때까지 운영 DB는 `legacy`에 둔다.
+
+기존 `desk.cli flow-history`는 legacy 모드에서 사용한다. 보호 세대의 토큰은 검증된 팩토리의 공유 슬롯에서 읽으며, 단발 CLI에는 별도의 연동이 필요하다.
 
 ### 전환 전 점검
 

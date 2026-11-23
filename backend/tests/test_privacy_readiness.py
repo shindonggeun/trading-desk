@@ -1,5 +1,7 @@
 """Exercise the coordinated privacy policy with synthetic resources and roles."""
 
+import asyncio
+import time
 from datetime import timedelta
 from secrets import randbits
 from types import SimpleNamespace
@@ -292,3 +294,70 @@ def test_migration_keeps_the_fence_after_the_first_transition(db_url, desk_data)
         command.downgrade(cfg, "0029")
     assert policy.current() == PolicyEpoch(PROTECTED, 2)
     assert Store(engine).get_run("old-history") is not None
+
+
+def _settled(history, run_id, timeout=30.0):
+    """The stored run once done or failed (a stale account run is no API reader's to poll)."""
+    deadline = time.monotonic() + timeout
+    while (run := history.get_run(run_id))["status"] not in ("done", "failed"):
+        assert time.monotonic() < deadline, f"run {run_id} still {run['status']}"
+        time.sleep(0.05)
+    return run
+
+
+def test_a_separate_analyst_refuses_an_account_run_queued_under_a_replaced_binding(db_url, desk_data):
+    """#775 the binding a run was queued under is checked where it runs: an analyst still holding the old
+    binding's broker reads nothing for it, and the rebound owner does not inherit it."""
+    engine, owners, bound = desk_data
+    _protect(PrivacyPolicyStore(engine))
+    broker = SyntheticBroker()
+    resources = OwnerResources(bound, broker=broker)
+    history = Store(engine)
+    with _client(_app(db_url, protected=True, resources=resources)) as api:
+        _login(api)
+        stale = api.post("/api/runs", json={"ticker": "ACCOUNT", "use_portfolio": True}).json()["id"]
+        assert history.get_run(stale)["options"]["use_portfolio"] is True
+        with engine.begin() as conn:
+            conn.execute(update(account_owner_binding).values(user_id=None))
+        replacement = owners.bind_verified(verified_user_id=bound.user_id, expected_vacancy=owners.binding())
+        assert replacement is not None and replacement.generation != bound.generation
+        public = api.post("/api/runs", json={"ticker": "PUBLIC"}).json()["id"]
+        with _client(_app(db_url, "analyst", protected=True, resources=resources)):
+            refused, completed = _settled(history, stale), _settled(history, public)
+        assert (refused["status"], refused["error"]) == ("failed", "RuntimeError: account authorization changed")
+        assert completed["status"] == "done"
+        assert broker.holdings_count == 0
+        for path in (f"/api/runs/{stale}", f"/api/runs/{stale}/events", f"/api/runs/{stale}/stream"):
+            assert api.get(path).status_code == 404, path
+        listed = {item["id"] for item in api.get("/api/runs").json()["items"]}
+        assert stale not in listed and public in listed
+
+
+def test_an_analyst_from_an_older_policy_epoch_claims_nothing(db_url, desk_data):
+    """An analyst started before an isolate-and-protect cycle claims nothing, by its loop or by hand; one
+    started at the current epoch runs the same queue."""
+    engine, _, bound = desk_data
+    policy = PrivacyPolicyStore(engine)
+    _protect(policy)
+    broker = SyntheticBroker()
+    resources = OwnerResources(bound, broker=broker)
+    history = Store(engine)
+    with _client(_app(db_url, "analyst", protected=True, resources=resources)) as analyst:
+        assert policy.transition(PolicyEpoch(PROTECTED, 2), ISOLATED) == PolicyEpoch(ISOLATED, 3)
+        assert policy.transition(PolicyEpoch(ISOLATED, 3), PROTECTED) == PolicyEpoch(PROTECTED, 4)
+        with _client(_app(db_url, protected=True, resources=resources)) as api:
+            _login(api)
+            public = api.post("/api/runs", json={"ticker": "PUBLIC"}).json()["id"]
+            account = api.post("/api/runs", json={"ticker": "ACCOUNT", "use_portfolio": True}).json()["id"]
+        manager = analyst.app.state.manager
+        with pytest.raises(PolicyChanged):
+            manager.store.claim_queued()
+        assert asyncio.run(run_queue.RunQueue(manager.store, manager, run_queue.Holder(engine)).take()) == 0
+        time.sleep(run_queue.POLL_SEC * 1.5)          # its own loop polled meanwhile
+        assert [history.run_status(run_id) for run_id in (public, account)] == ["queued", "queued"]
+        assert broker.holdings_count == 0
+        assert analyst.get("/api/health").status_code == 503
+    with _client(_app(db_url, "analyst", protected=True, resources=resources)):
+        assert _settled(history, public)["status"] == "done"
+        assert _settled(history, account)["status"] == "done"
+    assert broker.holdings_count == 1

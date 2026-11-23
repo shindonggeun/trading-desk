@@ -2,12 +2,19 @@ from io import StringIO
 
 import pytest
 from alembic import command
-from sqlalchemy import Boolean, MetaData, Table, column, event, func, insert, select, text, update
+from sqlalchemy import Boolean, MetaData, Table, column, event, func, insert, not_, select, text, update
 from sqlalchemy.dialects.postgresql import dialect as postgresql_dialect
 from sqlalchemy.exc import IntegrityError
 
 from desk.db import alembic_config, make_engine, migrate, now, runs
-from desk.run_access import can_access_run, shared_run_rows, visibility_for_new_run, visible_run_rows
+from desk.run_access import (
+    account_run,
+    can_access_run,
+    reads_account,
+    shared_run_rows,
+    visibility_for_new_run,
+    visible_run_rows,
+)
 from desk.store import Store
 
 
@@ -199,5 +206,39 @@ def test_a_completed_run_stores_visibility_only_when_both_writers_establish_prov
             first = conn.scalar(select(func.min(runs.c.created_at)))
         reports = store.recent_reports("TEST", date, ["market"], first)
         assert [(report["run_id"], report["is_shareable"]) for report in reports] == [(public, True)]
+    finally:
+        engine.dispose()
+
+
+def test_the_account_run_predicate_agrees_with_the_loaded_row(db_url):
+    """#775 the list's SQL and the detail's loaded row decide alike: only an explicit true read the account."""
+    migrate(db_url)
+    engine = make_engine(db_url)
+    store = Store(engine)
+    try:
+        made = {
+            label: store.create_run("TEST", "2026-11-20", options)
+            for label, options in [
+                ("true", {"use_portfolio": True}),
+                ("false", {"use_portfolio": False}),
+                ("missing", {}),
+                ("null", {"use_portfolio": None}),
+            ]
+        }
+        loaded = {label: reads_account(store.get_run(run_id)) for label, run_id in made.items()}
+        assert loaded == {"true": True, "false": False, "missing": False, "null": False}
+
+        predicate = account_run(runs.c.options)
+        with engine.connect() as conn:
+            in_sql = set(conn.scalars(select(runs.c.id).where(predicate)))
+            out_sql = set(conn.scalars(select(runs.c.id).where(not_(predicate))))
+        assert in_sql == {made["true"]}
+        assert out_sql == {made[label] for label in ("false", "missing", "null")}   # never NULL: nothing drops out
+
+        others = not_(predicate)
+        assert {row["id"] for row in store.list_runs(scope=others)} == out_sql
+        assert store.count_runs(scope=others) == 3 and store.count_runs() == 4
+        assert {row["id"] for row in store.list_runs(scope=predicate)} == in_sql
+        assert reads_account(None) is False
     finally:
         engine.dispose()

@@ -1,7 +1,7 @@
 # 미장 옵션 만기별 분포 계약 (#887)
 
-예정된 화면 연결은 `GET /api/positioning/options?ticker=NVDA`에서 유효 만기 목록과 가장 가까운 만기를
-받는다. `expiration=YYYY-MM-DD`를 보내면 그 만기를 선택한다. `strike_min`과 `strike_max`는
+원천이 구성되면 시장 수급 화면은 `GET /api/positioning/options?ticker=NVDA`에서 유효 만기 목록과 가장 가까운
+만기를 받는다. `expiration=YYYY-MM-DD`를 보내면 그 만기를 선택한다. `strike_min`과 `strike_max`는
 표시할 행사가의 포함 범위다. 세션 인증은 기존 포지셔닝 API와 같다. [화면 이슈 #889](https://github.com/shindonggeun/trading-desk/issues/889)
 
 ## 출처와 기준 시각
@@ -20,7 +20,7 @@ Yahoo Finance는 OPRA 옵션 시세의 명목 지연을 15분으로 안내하지
 | 응답 상태 | 의미 |
 |----------|------|
 | `ok` | 선택 만기의 표준 계약 분포가 있다. |
-| `unavailable` | 승인된 원천이 구성되지 않았거나 원천 조회가 실패했다. |
+| `unavailable` | 승인된 원천이 구성되지 않았거나 원천 조회가 실패했다. 기본 구성은 `reason: no_provider`, `source: null`을 반환한다. |
 | `no_options` | 원천이 사용 가능한 만기 목록을 비어 있는 것으로 반환했다. |
 | `invalid_expiration` | 요청한 만기가 유효 만기 목록에 없다. |
 | `no_data` | 선택 만기에서 표시할 수 있는 계약이 없다. |

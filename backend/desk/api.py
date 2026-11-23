@@ -77,6 +77,7 @@ from . import (
     notify,
     nq_fast,
     nq_watch,
+    options_detail,
     oscillator,
     otp,
     outbound,
@@ -425,7 +426,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                weekly: weekly_map.Maps | None = None, bottoms: bottom_zone.Zones | None = None,
                longshort: LongShort | None = None, chatter: chat.Chatter | None = None,
                pictures: report_images.ReportImages | None = None, *, protect_run_reads: bool = False,
-               owner_resources: OwnerResources | None = None) -> FastAPI:
+               owner_resources: OwnerResources | None = None,
+               options_provider: options_detail.OptionSource | None = None) -> FastAPI:
     settings = settings or load()
     log_setup.configure(settings.log_level)     # #676 the desk.* INFO lines reach the container log
     if settings.role in ("all", "api"):
@@ -3762,6 +3764,23 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             favorites.remove(request.state.user.id, raw)
 
     # --- #154 short selling & options positioning ------------------------------------------
+
+    option_details = options_detail.OptionsDetail(options_provider)
+
+    @app.get("/api/positioning/options")
+    async def ticker_option_details(ticker: str, expiration: str | None = None, strike_min: float | None = None,
+                                    strike_max: float | None = None):
+        """#887 Detailed option counts for one US expiration from a configured source."""
+        try:
+            ticker = clean_ticker(ticker)
+            if not positioning.is_us_ticker(ticker):
+                raise ValueError("options detail requires a US underlying ticker")
+            if expiration is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", expiration):
+                raise ValueError("expiration must be YYYY-MM-DD")
+            day = date.fromisoformat(expiration) if expiration is not None else None
+            return await option_details.get(ticker, day, strike_min=strike_min, strike_max=strike_max)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
 
     async def _positioning(ticker: str) -> dict:
         async def spot_of() -> float | None:

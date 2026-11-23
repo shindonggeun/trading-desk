@@ -27,7 +27,7 @@ SSE 형식 그대로다: `event:` 가 종류, `data:` 가 JSON 한 줄, 데이�
 
 ```json
 {"v": 1, "kind": "quote", "key": "AAPL", "event_id": "q-AAPL-1795147788123",
- "source": "kis", "source_at": "2026-11-20T14:31:05+00:00", "observed_at": "2026-11-20T14:31:05.412+00:00",
+ "source": "kis", "source_at": null, "observed_at": "2026-11-20T14:31:05.412+00:00",
  "payload": { ... }}
 ```
 
@@ -38,7 +38,7 @@ SSE 형식 그대로다: `event:` 가 종류, `data:` 가 JSON 한 줄, 데이�
 | `key` | 채널 안의 대상. 아래 표 |
 | `event_id` | 이벤트 하나의 ID. 같은 ID 는 한 번만 반영한다(재접속 스냅숏과 겹칠 수 있다) |
 | `source` | 원천: `kis` · `toss` · `yahoo` · `kis_futures` · `toss_investors` · `kis_spot_investors` · `desk`(알림) |
-| `source_at` | 원천이 붙인 시각(ISO, 없으면 `null`) |
+| `source_at` | 원천이 붙인 시각(ISO, 없으면 `null`). 지금은 수급의 `source_updated_at` 만 — 한투 틱 · 토스 · 야후 시세는 `null` |
 | `observed_at` | 데스크가 받은(확인한) 시각(ISO UTC, 밀리초). 화면 지연 계측의 기준 |
 | `payload` | 아래 표 — 같은 값의 REST 응답 모양 그대로 |
 
@@ -80,7 +80,23 @@ all       ─(전부 프로세스 안)──────────────
 - `desk/market_bus.py`. `DESK_ROLE=all` 이거나 Redis(#689)가 없으면 프로세스 안 fan-out 만 쓴다. 기본 켜짐, `DESK_MARKET_STREAM=off` 로 끈다.
 - 역할이 나뉘고 Redis 가 있으면 발행한 프로세스가 Redis 채널에도 내고, api 가 구독한다. 채널 이름은 `td:bus:<HMAC>`, 메시지는
   `DESK_REDIS_CACHE_KEY` 로 봉인한다(공유 Redis — 보유 종목 알림이 실린다, [security.md](security.md) 5.2). 다른 빌드 · 다른 키의 메시지와 자기 메시지는 버린다.
-- Kafka 는 쓰지 않는다: 다루는 것이 최신값과 알림뿐이라 보존 · 오프셋 재생이 필요 없고, 놓친 것은 재접속 스냅숏 · REST 타임라인으로 회수한다.
-  Redis 는 이미 있는 LAN 서버라 왕복이 ~1 ms 다. 재생이 필요해지면(예: 알림 누락 0 보장) 그때 Kafka(ollama-01) 를 다시 본다.
-- 계측: `GET /api/status` 의 `market_stream` — 채널별 이벤트 수, `observed_at` → api 송출까지 지연 p50 · p95(초), 연결 수, 버스 상태 · `degraded`.
+- 전송 선택(#690). 셋 다 목표(장중 1~2초)보다 두 자릿수 이상 빠르므로 고른 기준은 속도가 아니라 단순함이다.
+
+  | 경로 | 언제 | 왕복(실측, backend-server 에서 2026-11-23) | 더하는 것 |
+  |------|------|------------------------------------------|-----------|
+  | 프로세스 안 fan-out | `DESK_ROLE=all` · Redis 없음 · api 가 직접 받는 한투 틱 | 네트워크 없음 | 없음 |
+  | Redis pub/sub(봉인) | 역할 분리 + #689 공유 Redis | ping 평균 0.19 ms, TCP 연결 p50 0.14~0.17 ms(Redis 노드 3대) | 이미 쓰는 Redis 연결 하나 |
+  | Kafka(ollama-01) | 쓰지 않음 | ping 평균 0.65 ms(최대 1.1 ms), TCP 연결 p50 0.12 ms | 클라이언트 라이브러리 · 토픽 · 컨슈머 그룹 · 오프셋 관리, 프로듀서 배치 대기 |
+
+  - Kafka 의 강점(보존 · 오프셋 재생 · 컨슈머 그룹 분배)이 여기서는 쓸 데가 없다. 다루는 것이 최신값과 알림뿐이라 놓친 것은
+    재접속 스냅숏 · REST 타임라인으로 회수하고, 받는 쪽은 api 프로세스 하나다.
+  - 왕복은 둘 다 1 ms 미만이라 차이가 화면에 보이지 않는다. 화면 지연을 정하는 것은 원천을 읽는 주기(collector)와 폴링 주기다.
+  - 재생이 필요해지면(예: 알림 누락 0 보장) 그때 Kafka 를 다시 본다. 그때는 종단(발행 → 구독) 지연을 운영 토픽으로 따로 잰다 —
+    위 값은 네트워크 왕복뿐이다.
+- 계측: `GET /api/status` 의 `market_stream`
+  - 채널별 이벤트 수, 연결 수, 버스 상태 · `degraded`.
+  - `lag_sec`: `observed_at` → 이 프로세스의 스트림에 넘긴 때까지, 최근 500건의 p50 · p95(초).
+  - `source_lag_sec`: 원천이 붙인 시각(`source_at`) → `observed_at`, 원천이 시각을 주는 이벤트만(지금은 수급). 원천 시각의 단위가
+    분이면 그만큼 커진다.
+  - 브라우저 쪽(관측 → 화면, 폴링 · 스트림)은 `frontend/src/marketLatency.ts` 가 잰다 — 절차는 아래 지연 검증 문서.
 - 합성 이벤트의 브라우저 지연을 비교하거나 장중 결과를 기록할 때는 [시장 스트림 지연 검증](market-stream-latency.md) 절차를 따른다.

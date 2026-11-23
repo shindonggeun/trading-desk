@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -51,6 +52,10 @@ def _monday(value: str) -> date:
     return day
 
 
+def _week_closed_at(monday: date) -> datetime:
+    return datetime.combine(monday + timedelta(days=4), WEEK_CLOSE, NY)
+
+
 def _closed(rows: list[dict], as_of: datetime) -> list[dict]:
     """Validate chronology and the OHLC values available at this cutoff."""
     if as_of.utcoffset() is None:
@@ -65,7 +70,7 @@ def _closed(rows: list[dict], as_of: datetime) -> list[dict]:
         if previous is not None and monday <= previous:
             raise ValueError(f"weekly bars must be unique and in ascending order: {monday}")
         prior, previous = previous, monday
-        if datetime.combine(monday + timedelta(days=4), WEEK_CLOSE, NY) > as_of:
+        if _week_closed_at(monday) > as_of:
             continue
         if prior is not None and monday - prior != WEEK:
             raise ValueError(f"missing weekly bar between {prior} and {monday}")
@@ -120,25 +125,62 @@ def _confluent(price_hits: int, rsi_hit: bool) -> bool:
     return price_hits >= 2 or (price_hits == 1 and rsi_hit)
 
 
-def _reaction(future: list[dict], target: float, stop: float) -> str:
+@dataclass
+class _PriceBasis:
+    atr: float
+    levels: dict[str, float | None]
+    channel_anchors: list[str]
+    fib_anchors: list[str]
+
+
+def _price_basis(prefix: list[dict], lower_band: float | None) -> _PriceBasis:
+    # A flat window has no usable ATR-based price levels; zero is not a proximity radius.
+    atr = (channels.atr(prefix) or 0.0) if len(prefix) > channels.ATR_N else 0.0
+    channel_level, channel_anchors = _outer_channel(prefix, atr) if atr > 0 else (None, [])
+    fib_level, fib_anchors = _fib(prefix)
+    return _PriceBasis(atr, {"bollinger": lower_band, "channel": channel_level, "fib_2618": fib_level},
+                       channel_anchors, fib_anchors)
+
+
+def _drawdown(bars: list[dict], i: int) -> float:
+    peak = max(bar["high"] for bar in bars[i - DRAWDOWN_WEEKS + 1:i + 1])
+    return (peak - bars[i]["close"]) / peak * 100
+
+
+@dataclass
+class _Terms:
+    stop: float
+    bounce_target: float
+    resistance: float
+
+
+def _terms(prefix: list[dict], signal: dict, atr: float) -> _Terms:
+    return _Terms(
+        signal["low"] - INVALIDATION_ATR * atr,
+        max(signal["high"], signal["close"] + BOUNCE_ATR * atr),
+        max(bar["high"] for bar in prefix[-RESISTANCE_WEEKS:]),
+    )
+
+
+def _reaction(future: list[dict], target: float, stop: float) -> tuple[str, str | None]:
     for bar in future:
         # Weekly OHLC cannot resolve order when both levels are reached in one bar.
         if bar["low"] < stop:
-            return "invalidated"
+            return "invalidated", bar["at"]
         if bar["close"] >= target:
-            return "success"
-    return "expired"
+            return "success", bar["at"]
+    return "expired", future[-1]["at"] if future else None
 
 
-def _recovery(future: list[dict], states: list[bool], resistance: float, stop: float) -> str:
+def _recovery(future: list[dict], states: list[bool], resistance: float, stop: float) -> tuple[str, str | None]:
     streak = 0
     for bar, uptrend in zip(future, states, strict=True):
         if bar["close"] < stop:
-            return "invalidated"
+            return "invalidated", bar["at"]
         streak = streak + 1 if uptrend and bar["close"] > resistance else 0
         if streak >= RECOVERY_CONFIRM:
-            return "success"
-    return "expired"
+            return "success", bar["at"]
+    return "expired", future[-1]["at"] if future else None
 
 
 def _adverse_pct(future: list[dict], close: float) -> float:
@@ -148,20 +190,15 @@ def _adverse_pct(future: list[dict], close: float) -> float:
 def _event(bars: list[dict], i: int, bands: list, rsis: list, uptrends: list[bool], drawdown: float) -> dict:
     prefix, signal = bars[:i], bars[i]
     future = bars[i + 1:i + RECOVERY_WEEKS + 1]
-    atr = channels.atr(prefix) or 0.0
-    # A flat prior window has no usable ATR-based price levels; zero is not a proximity radius.
-    channel_level, channel_anchors = _outer_channel(prefix, atr) if atr > 0 else (None, [])
-    fib_level, fib_anchors = _fib(prefix)
-    levels = {"bollinger": bands[i - 1]["lower"], "channel": channel_level, "fib_2618": fib_level}
+    basis = _price_basis(prefix, bands[i - 1]["lower"])
+    atr, levels = basis.atr, basis.levels
     hits = {name: atr > 0 and level is not None and _near(signal["low"], level, atr) for name, level in levels.items()}
     hits["rsi"] = rsis[i] <= RSI_LIMIT
     hits["confluence"] = _confluent(sum(hits[name] for name in PRICE_LEVELS), hits["rsi"])
     hits["baseline"] = True
     close = signal["close"]
     bounce = future[:BOUNCE_WEEKS]
-    stop = signal["low"] - INVALIDATION_ATR * atr
-    bounce_target = max(signal["high"], close + BOUNCE_ATR * atr)
-    resistance = max(bar["high"] for bar in prefix[-RESISTANCE_WEEKS:])
+    terms = _terms(prefix, signal, atr)
     return {
         "at": signal["at"],
         "drawdown_pct": round(drawdown, 6),
@@ -170,18 +207,18 @@ def _event(bars: list[dict], i: int, bands: list, rsis: list, uptrends: list[boo
         "previous_atr": atr,
         "rsi": rsis[i],
         "levels": levels,
-        "channel_anchors": channel_anchors,
-        "fib_anchors": fib_anchors,
+        "channel_anchors": basis.channel_anchors,
+        "fib_anchors": basis.fib_anchors,
         "methods": [name for name in METHODS if hits[name]],
-        "invalidation": stop,
-        "bounce_target": bounce_target,
-        "recovery_resistance": resistance,
+        "invalidation": terms.stop,
+        "bounce_target": terms.bounce_target,
+        "recovery_resistance": terms.resistance,
         "bounce": {
-            "outcome": _reaction(bounce, bounce_target, stop),
+            "outcome": _reaction(bounce, terms.bounce_target, terms.stop)[0],
             "adverse_pct": _adverse_pct(bounce, close),
         },
         "recovery": {
-            "outcome": _recovery(future, uptrends[i + 1:i + RECOVERY_WEEKS + 1], resistance, stop),
+            "outcome": _recovery(future, uptrends[i + 1:i + RECOVERY_WEEKS + 1], terms.resistance, terms.stop)[0],
             "adverse_pct": _adverse_pct(future, close),
         },
     }
@@ -236,8 +273,7 @@ def report(rows: list[dict], as_of: datetime) -> dict:
         if period is None:
             continue
         completed_windows[period] += 1
-        peak = max(bar["high"] for bar in bars[i - DRAWDOWN_WEEKS + 1:i + 1])
-        drawdown = (peak - closes[i]) / peak * 100
+        drawdown = _drawdown(bars, i)
         if drawdown >= CORRECTION_PCT:
             events_by_period[period].append(_event(bars, i, bands, rsis, uptrends, drawdown))
     events = [event for group in events_by_period.values() for event in group]

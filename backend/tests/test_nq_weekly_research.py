@@ -92,9 +92,9 @@ def test_confluence_needs_two_price_contacts_or_one_with_rsi():
 def test_bounce_failure_and_later_weekly_recovery_are_independent():
     future = [_bar("2020-01-06", close=120, high=123, low=89), _bar("2020-01-13", close=120, high=121),
               _bar("2020-01-20", close=122, high=124)]
-    assert nq._reaction(future[:2], 115, 90) == "invalidated"
-    assert nq._recovery(future, [True, False, True], 115, 90) == "expired"
-    assert nq._recovery(future, [False, True, True], 115, 90) == "success"
+    assert nq._reaction(future[:2], 115, 90) == ("invalidated", future[0]["at"])
+    assert nq._recovery(future, [True, False, True], 115, 90) == ("expired", future[-1]["at"])
+    assert nq._recovery(future, [False, True, True], 115, 90) == ("success", future[-1]["at"])
     assert nq._adverse_pct(future, 100) == pytest.approx(11)
 
 

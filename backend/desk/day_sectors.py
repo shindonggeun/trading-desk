@@ -40,6 +40,7 @@ import logging
 import math
 import threading
 import time as _time
+from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -544,6 +545,16 @@ def brief_line(v: dict) -> tuple[str, str] | None:
 
 # ---------------------------------------------------------------- the cache
 
+@dataclass
+class _BarRead:
+    ticker: str
+    bars: list | None
+    status: str = "fetched"
+    recent_calls: int = 0
+    full_calls: int = 0
+    origin_max_ms: float = 0.0
+
+
 def _merge(old: list, recent: list) -> list | None:
     """The day's full read with a few newer bars laid over it by date (the newer one wins), oldest first. None
     when they do not join: no bar in common, or the oldest one in common closes differently - Yahoo re-adjusted
@@ -573,6 +584,8 @@ class Cache:
         # ticker → (read at on clock, day of the full read, bars): kept for the process's life (~30 ETFs x 2400 bars,
         # tens of MB) so a later rebuild reads only the last few
         self._bars: dict[str, tuple[float, date, list]] = {}
+        # Share failed attempts across market builds for the same window as successful reads.
+        self._failed_bars_at: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def cached(self, market: str, now: datetime, ahead: float = 0) -> dict | None:
@@ -584,30 +597,57 @@ class Cache:
         return hit[2] if self.clock() < hit[0] - ahead else None
 
     def _read_bars(self, tickers: list[str], candles: Callable[[str, str, int], list],
-                   now: datetime) -> tuple[dict, bool]:
+                   now: datetime) -> tuple[dict, bool, list[_BarRead]]:
         """Every ticker's bars, and whether all of them were read now (or a moment ago) - a view built on an
-        ETF that failed is not held until it can change (Cache.read): it is asked again soon."""
+        ETF that failed is not held until it can change (Cache.read): it is asked again soon. Keep the
+        last good bars and share a failed read with the other market without counting them as fresh."""
         today = now.astimezone(KST).date()
 
-        def one(t: str) -> tuple[str, list | None, bool]:
+        def one(t: str) -> _BarRead:
             had = self._bars.get(t)
-            if had and self.clock() - had[0] < BARS_FRESH_SEC:
-                return t, had[2], True
+            failed_at = self._failed_bars_at.get(t)
+            stamp = self.clock()
+            result = _BarRead(t, had[2] if had else None)
+            if had and stamp - had[0] < BARS_FRESH_SEC:
+                result.status = "cache_hit"
+                return result
+            if failed_at is not None and stamp - failed_at < BARS_FRESH_SEC:
+                result.status = "reused_failure"
+                return result
+
+            def fetch(count: int) -> list:
+                result.recent_calls += count == RECENT_BARS
+                result.full_calls += count == HISTORY_BARS
+                start = _time.perf_counter()
+                try:
+                    return candles(t, "1d", count)
+                finally:
+                    result.origin_max_ms = max(result.origin_max_ms, (_time.perf_counter() - start) * 1000)
+
             try:
                 bars = None
                 if had and had[1] == today and had[2]:
-                    bars = _merge(had[2], candles(t, "1d", RECENT_BARS))
+                    recent = fetch(RECENT_BARS)
+                    bars = _merge(had[2], recent) if recent else recent
                 if bars is None:                 # the day's first read, or the history moved: all of it
-                    bars, had = candles(t, "1d", HISTORY_BARS), None
+                    bars = fetch(HISTORY_BARS)
             except Exception as exc:  # noqa: BLE001 - one ETF down leaves the rest (and its last bars)
                 log.info("day sectors: %s failed: %s", t, type(exc).__name__)
-                return t, had[2] if had else None, False
-            self._bars[t] = (self.clock(), had[1] if had else today, bars)
-            return t, bars, True
+                result.status = "error"
+            else:
+                if bars:
+                    self._bars[t] = (self.clock(), today, bars)
+                    self._failed_bars_at.pop(t, None)
+                    result.bars = bars
+                    return result
+                result.status = "empty"
+            self._failed_bars_at[t] = self.clock()
+            return result
 
         with ThreadPoolExecutor(max_workers=FETCH_PARALLEL, thread_name_prefix="desk-sectors") as pool:
-            got = list(pool.map(one, tickers))
-        return {t: bars for t, bars, _ in got if bars is not None}, all(ok for _, _, ok in got)
+            reads = list(pool.map(one, tickers))
+        bars = {read.ticker: read.bars for read in reads if read.bars is not None}
+        return bars, all(read.status in ("cache_hit", "fetched") for read in reads), reads
 
     def read(self, market: str, candles: Callable[[str, str, int], list], now: datetime | None = None,
              ahead: float = 0) -> dict:
@@ -616,13 +656,28 @@ class Cache:
         now = now or datetime.now(KST)
         if (v := self.cached(market, now, ahead)) is not None:
             return v
+        enqueued_at = _time.perf_counter()
         with self._lock:
+            acquired_at = _time.perf_counter()
             if (v := self.cached(market, now, ahead)) is not None:
                 return v
             m = MARKETS[market]
-            bars, complete = self._read_bars(symbols(m), candles, now)
+            fetch_at = _time.perf_counter()
+            bars, complete, reads = self._read_bars(symbols(m), candles, now)
+            view_at = _time.perf_counter()
             v = view(m, bars, now)
+            view_ms = (_time.perf_counter() - view_at) * 1000
             until = stands_until(m, v, now) if complete else None   # an ETF missing: asked again soon
             life = (until - now).total_seconds() if until else self.ttl
             self._views[market] = (self.clock() + life, v["target"], v, until)
-            return v
+        states = Counter(read.status for read in reads)
+        log.info(
+            "day sectors: rebuild market=%s complete=%s lock_ms=%.1f bars_ms=%.1f view_ms=%.1f "
+            "bar_hits=%d recent_calls=%d full_calls=%d origin_max_ms=%.1f origin_errors=%d "
+            "origin_empty=%d reused_failures=%d",
+            market, complete, (acquired_at - enqueued_at) * 1000, (view_at - fetch_at) * 1000, view_ms,
+            states["cache_hit"], sum(read.recent_calls for read in reads), sum(read.full_calls for read in reads),
+            max((read.origin_max_ms for read in reads), default=0.0),
+            states["error"], states["empty"], states["reused_failure"],
+        )
+        return v

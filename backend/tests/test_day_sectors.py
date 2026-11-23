@@ -275,13 +275,17 @@ def test_a_waiting_view_is_not_rebuilt_by_each_prewarm_pass(monkeypatch):
     clock = [0.0]
     cache = ds.Cache(clock=lambda: clock[0])
     now = _kst(mon, 11, 22)
+    def candles(t, i, n):
+        asked.append(n)
+        return _flat(1, date(2026, 11, 20))
+
     for _ in range(10):                                              # 40 minutes of prewarm passes
-        cache.read("us", lambda t, i, n: asked.append(n) or [], now, ahead=300)
+        cache.read("us", candles, now, ahead=300)
         clock[0] += 240
         now += timedelta(seconds=240)
     assert len(built) == 1
     clock[0] += 5 * 3600
-    cache.read("us", lambda t, i, n: asked.append(n) or [], _kst(mon, 16, 1), ahead=300)
+    cache.read("us", candles, _kst(mon, 16, 1), ahead=300)
     assert len(built) == 2                                           # its Korean session is in: rebuilt
 
 
@@ -404,32 +408,79 @@ def test_a_rebuild_reads_all_again_when_yahoo_readjusted_the_history():
     assert same == old
 
 
-def test_a_view_built_without_an_etf_is_asked_again_soon_not_held(monkeypatch):
-    """#864 리뷰: 재시작 직후 ETF 하나를 못 읽고 만든 뷰를 16:00 까지 붙잡지 않는다."""
-    built = []
+@pytest.mark.parametrize("failure", ["timeout", "empty"])
+def test_both_markets_share_a_failed_etf_read_and_retry_next_pass(monkeypatch, caplog, failure):
+    built, asked = [], []
+    caplog.set_level("INFO", logger=ds.log.name)
 
     def fake_view(m, bars, now):
-        built.append(set(bars))
+        built.append((m.id, set(bars)))
         day = ds.target(m, now).isoformat()
         return _view(day, ready=True, date_="2026-11-20")              # waiting for its target: held if complete
 
     monkeypatch.setattr(ds, "view", fake_view)
-    down = {"SPY"}
+    down = True
 
     def candles(t, i, n):
-        if t in down:
-            raise TimeoutError()
+        asked.append((t, n))
+        if t == "SPY" and down:
+            if failure == "timeout":
+                raise TimeoutError()
+            return []
         return _flat(n, date(2026, 11, 20))
 
     clock = [0.0]
     cache = ds.Cache(clock=lambda: clock[0])
     now = _kst(date(2026, 11, 23), 11, 22)
     cache.read("us", candles, now, ahead=300)
-    assert "SPY" not in built[-1]
+    cache.read("kr", candles, now, ahead=300)
+    assert asked.count(("SPY", ds.HISTORY_BARS)) == 1
+    assert len(asked) == len(ds.symbols(ds.US))
+    assert all("SPY" not in bars for _, bars in built)
+    assert cache.cached("us", now, ahead=300) is None
+    first, second = [m for m in caplog.messages if m.startswith("day sectors: rebuild")]
+    assert f"full_calls={len(asked)} " in first
+    expected_failures = "origin_errors=1 origin_empty=0" if failure == "timeout" else "origin_errors=0 origin_empty=1"
+    assert expected_failures in first
+    assert "full_calls=0 " in second and "reused_failures=1" in second
+    assert all(field in first for field in ("lock_ms=", "bars_ms=", "view_ms=", "origin_max_ms="))
+
     clock[0] += 240
-    down.clear()
+    down = False
     cache.read("us", candles, now + timedelta(minutes=4), ahead=300)   # the next pass reads it again
-    assert len(built) == 2 and "SPY" in built[-1]
+    assert len(built) == 3 and "SPY" in built[-1][1]
+    assert asked.count(("SPY", ds.HISTORY_BARS)) == 2
     clock[0] += 240
     cache.read("us", candles, now + timedelta(minutes=8), ahead=300)   # complete now: held until 16:00
-    assert len(built) == 2
+    assert len(built) == 3
+
+
+@pytest.mark.parametrize("adjusted", [False, True])
+def test_a_failed_refresh_keeps_last_good_bars_without_marking_them_fresh(adjusted):
+    asked = []
+    clock = [0.0]
+    cache = ds.Cache(clock=lambda: clock[0])
+    ticker = ds.US.benchmark
+    day = date(2026, 11, 23)
+    now = _kst(day, 15, 58)
+    old = _flat(30, date(2026, 11, 20))
+    new = _flat(30, date(2026, 11, 20), close=97)
+    cache._read_bars([ticker], lambda t, i, n: old, now)
+
+    def candles(t, i, n):
+        asked.append(n)
+        return new[-n:] if adjusted and n == ds.RECENT_BARS else []
+
+    clock[0] = ds.BARS_FRESH_SEC
+    later = now + timedelta(minutes=4)
+    bars, complete, _ = cache._read_bars([ticker], candles, later)
+    assert bars[ticker] == old and not complete
+    assert asked == ([ds.RECENT_BARS, ds.HISTORY_BARS] if adjusted else [ds.RECENT_BARS])
+
+    reused, complete, _ = cache._read_bars([ticker], candles, later)
+    assert reused[ticker] == old and not complete
+    assert len(asked) == (2 if adjusted else 1)
+
+    clock[0] += ds.BARS_FRESH_SEC
+    recovered, complete, _ = cache._read_bars([ticker], lambda t, i, n: new[-n:], later + timedelta(minutes=4))
+    assert recovered[ticker] == new and complete

@@ -1,4 +1,4 @@
-"""Count and isolate legacy account artifacts outside the application lifecycle."""
+"""Manage account privacy cutover and legacy artifacts outside the application lifecycle."""
 
 from __future__ import annotations
 
@@ -11,26 +11,38 @@ import stat
 import sys
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
+from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, false, func, or_, select, update
 from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.pool import NullPool
 
 from . import roles
-from .db import account_owner_binding, market_alerts, run_submissions, runs, users
+from .account_owner import OwnerBinding
+from .db import MIGRATIONS, account_owner_binding, market_alerts, run_submissions, runs, users
+from .owner_attestation import TossAttestationStore, TossSource
 from .privacy import (
     ISOLATED,
+    LEGACY,
     PROTECTED,
     PolicyChanged,
     PolicyEpoch,
     PrivacyPolicyStore,
     ProcessPolicy,
+    _transition_policy,
     read_policy_epoch,
 )
 from .run_access import account_run, legacy_submission, protected_execution, protected_submission
 
+if TYPE_CHECKING:
+    from .settings import Settings
+
+
 _MEMORY_VOLUME = PurePosixPath("/home/app/.tradingagents")
 _INSPECT_LIMIT = 1024 * 1024
+_FORWARD_COMMANDS = {"isolate", "toss-approval-check", "approve-toss", "activate"}
 
 
 class InvalidArguments(ValueError):
@@ -49,6 +61,11 @@ class ArchiveRequiresPosix(OSError):
     pass
 
 
+class ForwardRefused(RuntimeError):
+    def __init__(self, error: str, **counts: int):
+        self.result = {"error": error, **counts}
+
+
 class Parser(argparse.ArgumentParser):
     def error(self, message):
         # argparse errors normally include the rejected option or value verbatim.
@@ -59,21 +76,39 @@ def _arguments(argv):
     parser = Parser(prog="python -m desk.privacy_admin", description=__doc__, allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
     status = commands.add_parser("status", allow_abbrev=False)
-    status.add_argument("--inspect-stdin", action="store_true", help="verify Docker inspect JSON from standard input")
+    status_scope = status.add_mutually_exclusive_group()
+    status_scope.add_argument("--inspect-stdin", action="store_true", help="verify Docker inspect JSON from standard input")
+    status_scope.add_argument("--policy-only", action="store_true", help="read only the policy mode and epoch")
     hide = commands.add_parser("hide-legacy", allow_abbrev=False)
     hide.add_argument("--archive-memory", action="store_true", help="select memory archival instead of DB updates")
     hide.add_argument("--apply", action="store_true", help="apply the selected operation in the expected isolation")
     hide.add_argument("--epoch", type=int)
     hide.add_argument("--confirm", action="store_true")
-    rollback = commands.add_parser("rollback", allow_abbrev=False)
-    rollback.add_argument("--epoch", type=int, required=True)
-    rollback.add_argument("--confirm", action="store_true", required=True)
+    approval_check = commands.add_parser("toss-approval-check", allow_abbrev=False)
+    approval_check.add_argument("--epoch", type=int, required=True)
+    for name in ("isolate", "approve-toss", "activate", "rollback"):
+        command = commands.add_parser(name, allow_abbrev=False)
+        command.add_argument("--epoch", type=int, required=True)
+        command.add_argument("--confirm", action="store_true", required=True)
+        if name == "approve-toss":
+            command.description = "Read the Toss approval challenge from standard input."
     args = parser.parse_args(argv)
     if args.command != "status" and args.epoch is not None and args.epoch < 0:
         raise InvalidArguments
     if args.command == "hide-legacy" and (args.apply != args.confirm or args.apply != (args.epoch is not None)):
         raise InvalidArguments
     return args
+
+
+def _read_approval_challenge() -> bytes:
+    # Read through EOF within the bound so a second line or trailing content is rejected.
+    try:
+        payload = sys.stdin.read(67)
+    except (OSError, UnicodeError):
+        raise InvalidArguments from None
+    if not re.fullmatch(r"[0-9a-f]{64}(?:\r?\n)?", payload):
+        raise InvalidArguments
+    return bytes.fromhex(payload)
 
 
 def _engine(dsn: str, *, write: bool):
@@ -330,6 +365,10 @@ def _legacy_candidates():
     return account_run(runs.c.options) & legacy_submission(runs.c.options) & runs.c.is_shareable.is_not(False)
 
 
+def _legacy_candidate_count(conn: Connection) -> int:
+    return conn.scalar(select(func.count()).select_from(runs).where(_legacy_candidates()))
+
+
 def _ownerless_account_runs():
     # As for protected reads, queued runs need submission evidence. A run that
     # has started also needs a protected worker stamp and a current owner match.
@@ -363,11 +402,72 @@ def _status(conn: Connection, policy: PolicyEpoch, topology: str):
     }
 
 
-def _execute(args, dsn: str):
+def _forward(args, settings: Settings, conn: Connection, store: PrivacyPolicyStore):
+    policy = PolicyEpoch(LEGACY if args.command == "isolate" else ISOLATED, args.epoch)
+    check_only = args.command == "toss-approval-check"
+    if check_only:
+        if _read_epoch(conn) != policy:
+            raise PolicyChanged
+    else:
+        ProcessPolicy(store, policy).lock(conn, exclusive=True)
+
+    applied = set(MigrationContext.configure(conn).get_current_heads())
+    if applied != set(ScriptDirectory(str(MIGRATIONS)).get_heads()):
+        raise ForwardRefused("schema_not_ready")
+
+    source = TossSource(settings.toss_client_id, settings.toss_client_secret, settings.toss_account_seq)
+    if settings.broker != "toss" or not source.valid:
+        raise ForwardRefused("toss_configuration_invalid")
+
+    owner_exists = select(users.c.id).where(users.c.id == account_owner_binding.c.user_id).exists()
+    query = select(account_owner_binding.c.user_id, account_owner_binding.c.generation).where(
+        account_owner_binding.c.id == 1, owner_exists,
+    )
+    # Binding updates and user deletion need not take the policy lock.
+    owner = conn.execute(query if check_only else query.with_for_update()).one_or_none()
+    if owner is None:
+        raise ForwardRefused("owner_binding_unavailable")
+    binding = OwnerBinding(owner.user_id, owner.generation)
+
+    if args.command in ("isolate", "toss-approval-check"):
+        # Preflight the prospective source before leaving legacy.
+        isolation = PolicyEpoch(ISOLATED, policy.epoch + 1) if args.command == "isolate" else policy
+        challenge = TossAttestationStore.challenge(conn, expected=isolation, binding=binding, source=source)
+        if challenge is None:
+            raise ForwardRefused("toss_approval_mismatch")
+        if check_only:
+            return {"mode": policy.mode, "epoch": policy.epoch, "challenge": challenge}
+    elif args.command == "approve-toss":
+        if not TossAttestationStore.approve_locked(
+            conn, expected=policy, binding=binding, source=source, challenge=args.challenge,
+        ):
+            raise ForwardRefused("toss_approval_mismatch")
+        return {"mode": policy.mode, "epoch": policy.epoch}
+    else:
+        if not TossAttestationStore.approved_in_isolation(conn, expected=policy, binding=binding, source=source):
+            raise ForwardRefused("toss_approval_mismatch")
+        candidates = _legacy_candidate_count(conn)
+        memory_files = _memory_count(_memory_path())
+        if candidates or memory_files:
+            raise ForwardRefused(
+                "legacy_cleanup_pending", legacy_account_run_candidates=candidates, legacy_memory_files=memory_files,
+            )
+
+    target = ISOLATED if args.command == "isolate" else PROTECTED
+    next_policy = _transition_policy(conn, policy, target)
+    if next_policy is None:
+        raise PolicyChanged
+    return {"mode": next_policy.mode, "epoch": next_policy.epoch}
+
+
+def _execute(args, settings: Settings):
+    dsn = settings.database_url
     topology = "unverified"
     if args.command == "status" and args.inspect_stdin:
         topology = _inspect_topology(dsn)
-    write = args.command == "rollback" or (args.command == "hide-legacy" and args.apply)
+    write = args.command in {"isolate", "approve-toss", "activate", "rollback"} or (
+        args.command == "hide-legacy" and args.apply
+    )
     engine = _engine(dsn, write=write)
     store = PrivacyPolicyStore(engine)
     try:
@@ -377,6 +477,13 @@ def _execute(args, dsn: str):
                 raise PolicyChanged
             return {"mode": policy.mode, "epoch": policy.epoch}
         with engine.begin() as conn:
+            if not write:
+                if conn.dialect.name == "sqlite":
+                    conn.exec_driver_sql("BEGIN")
+                else:
+                    conn.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            if args.command in _FORWARD_COMMANDS:
+                return _forward(args, settings, conn, store)
             if write:
                 policy = PolicyEpoch(ISOLATED, args.epoch)
                 ProcessPolicy(store, policy).lock(conn, exclusive=True)
@@ -385,18 +492,14 @@ def _execute(args, dsn: str):
                     return {"mode": policy.mode, "epoch": policy.epoch, "archived_legacy_memory_files": archived}
                 update_result = conn.execute(update(runs).where(_legacy_candidates()).values(is_shareable=False))
                 return {"mode": policy.mode, "epoch": policy.epoch, "hidden_legacy_account_runs": update_result.rowcount}
-            if conn.dialect.name == "sqlite":
-                conn.exec_driver_sql("BEGIN")
-            else:
-                conn.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             policy = _read_epoch(conn)
             if args.command == "status":
+                if args.policy_only:
+                    return {"mode": policy.mode, "epoch": policy.epoch}
                 return _status(conn, policy, topology)
             result = {"mode": policy.mode, "epoch": policy.epoch, "legacy_memory_files": _memory_count(_memory_path())}
             if not args.archive_memory:
-                result["legacy_account_run_candidates"] = conn.scalar(
-                    select(func.count()).select_from(runs).where(_legacy_candidates()),
-                )
+                result["legacy_account_run_candidates"] = _legacy_candidate_count(conn)
             return result
     finally:
         engine.dispose()
@@ -405,11 +508,13 @@ def _execute(args, dsn: str):
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _arguments(argv)
+        if args.command == "approve-toss":
+            args.challenge = _read_approval_challenge()
         # Import locally so .env parsing (when used locally) is covered by the
         # same redaction boundary as the DSN and TradingAgents configuration.
         from .settings import load
 
-        result = _execute(args, load().database_url)
+        result = _execute(args, load())
     except InvalidArguments:
         print(json.dumps({"error": "invalid_arguments"}))
         return 2
@@ -417,6 +522,8 @@ def main(argv: list[str] | None = None) -> int:
         result = {"error": "role_configuration_mismatch"}
     except PolicyChanged:
         result = {"error": "policy_mismatch"}
+    except ForwardRefused as error:
+        result = error.result
     except UnsafeMemoryPath:
         result = {"error": "unsafe_memory_path"}
     except ArchiveRequiresPosix:

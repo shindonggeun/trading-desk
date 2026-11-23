@@ -58,15 +58,20 @@ class PrivacyPolicyStore:
         Isolation never reopens legacy reads. A retained database may only resume
         in protected mode after isolation. Factories do not call this method.
         """
-        if not expected.valid or (expected.mode, target) not in {
-            (LEGACY, ISOLATED), (ISOLATED, PROTECTED), (PROTECTED, ISOLATED),
-        }:
-            return None
-        result = PolicyEpoch(target, expected.epoch + 1)
         with self.engine.begin() as conn:
-            row = conn.execute(update(privacy_policy).where(policy_epoch_matches(expected))
-                               .values(mode=result.mode, epoch=result.epoch).returning(privacy_policy.c.epoch))
-            return result if row.scalar_one_or_none() is not None else None
+            return _transition_policy(conn, expected, target)
+
+
+def _transition_policy(conn: Connection, expected: PolicyEpoch, target: str) -> PolicyEpoch | None:
+    """Apply the CAS inside the caller's transaction, retaining any prerequisite locks."""
+    if not expected.valid or (expected.mode, target) not in {
+        (LEGACY, ISOLATED), (ISOLATED, PROTECTED), (PROTECTED, ISOLATED),
+    }:
+        return None
+    result = PolicyEpoch(target, expected.epoch + 1)
+    row = conn.execute(update(privacy_policy).where(policy_epoch_matches(expected))
+                       .values(mode=result.mode, epoch=result.epoch).returning(privacy_policy.c.epoch))
+    return result if row.scalar_one_or_none() is not None else None
 
 
 def policy_epoch_matches(expected: PolicyEpoch) -> ColumnElement[bool]:

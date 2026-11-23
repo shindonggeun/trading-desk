@@ -3,6 +3,7 @@ import { api } from "../api";
 import { time } from "../format";
 import { HORIZON } from "../korean";
 import type { DeskConfig, MacroBrief as Brief, MacroLean, MacroTheme } from "../types";
+import MarketOutlook from "./MarketOutlook";
 import { Impact, Lean, NewsHeadline } from "./NewsRead";
 import { usePoll } from "../poll";
 
@@ -90,12 +91,26 @@ function Tone({ t }: { t: MacroTheme }) {
 }
 
 
+export default function MacroBrief() {
+  const [outlookFailedAt, setOutlookFailedAt] = useState<string | null>(null);
+  const outlook = usePoll("market-outlook:us", api.marketOutlook, POLL_MS, {
+    onData: () => setOutlookFailedAt(null),
+    onError: () => setOutlookFailedAt(new Date().toISOString()),
+  });
+  return (
+    <>
+      <MarketOutlook data={outlook.data ?? null} failedAt={outlookFailedAt} />
+      <MacroNewsBrief />
+    </>
+  );
+}
+
 /**
  * 대시보드 맨 위 "오늘의 거시 · 정책 브리핑"(#118, #274): 테마마다 방향 배지(우호 · 부담 · 중립) · 한 줄 결론 ·
  * 급증일 때만 배수. 기준(최근 3일 · 급증 비교 대상)은 머리에 한 번. 테마를 누르면 기사 수 · 톤 · 긍정/부정 ·
  * 헤드라인 3개(N시간 전)와 대표 종목 분석 시작 버튼. 조용한 테마는 맨 아래 접는다. 실패하면 마지막 값을 그대로 둔다.
  */
-export default function MacroBrief() {
+function MacroNewsBrief() {
   const [brief, setBrief] = useState<Brief | null>(null);
   const [failedAt, setFailedAt] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);

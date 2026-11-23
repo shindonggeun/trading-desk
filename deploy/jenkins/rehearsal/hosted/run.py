@@ -1,4 +1,4 @@
-"""Exercise an isolated, credential-free Jenkins controller already built as an image."""
+"""Exercise a disposable Jenkins controller with fixture-only accounts and inputs."""
 
 import argparse
 import json
@@ -10,6 +10,8 @@ from urllib.parse import urlencode
 DOCKER = ["docker", "--host", "unix:///var/run/docker.sock"]
 BASE = "/job/trading-desk-rehearsal/job"
 COOKIE = "/tmp/td-rehearsal.cookie"  # Inside the fixture container.
+ROLES = ("api", "collector", "analyst")
+LOSS_AGENT = "/computer/td-loss-agent"
 
 
 def require(condition, message):
@@ -172,15 +174,70 @@ class Jenkins:
         self.crumb = ["--header", f"{crumb['crumbRequestField']}: {crumb['crumb']}"]
 
 
-def cancel_case(jenkins, queued):
+def assert_build_identities(jenkins):
+    before = tuple(jenkins.number(role) for role in ROLES)
+    denied = jenkins.start("denied-coordinator")
+    jenkins.terminal("denied-coordinator", denied, "FAILURE")
+    require("fixture-child is missing the Job/Build permission" in jenkins.log("denied-coordinator", denied),
+            "the negative control must reach the downstream Build permission check")
+    require(tuple(jenkins.number(role) for role in ROLES) == before,
+            "a parent without downstream Build permission created a child")
+
+    parent = jenkins.start("coordinator", TD_CASE="success")
+    jenkins.terminal("coordinator", parent, "SUCCESS")
+    for role, number in zip(ROLES, before):
+        require(jenkins.number(role) == number + 1, f"parent did not dispatch exactly one {role} build")
+        jenkins.assert_denied(f"{BASE}/{role}/{number}/stop", "Job/Cancel")
+    observer = jenkins.start("competitor", TD_PARENT_BUILD=str(parent),
+                             TD_VERIFY_IDENTITIES=",".join(map(str, before)))
+    jenkins.terminal("competitor", observer, "SUCCESS")
+    marker = "TD_BUILD_IDENTITIES parent=fixture-coordinator children=fixture-child"
+    require(marker in jenkins.log("competitor", observer), "the observer did not verify the runtime subjects")
+    print(marker)
+
+
+def start_loss_agent(jenkins):
+    container = jenkins.container
+    docker("exec", container, "sh", "-ec",
+           "mkdir -p /tmp/td-loss-agent; "
+           "curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8080/jnlpJars/agent.jar "
+           "-o /tmp/td-loss-agent.jar")
+    # args4j reads the secret inside the container. Neither Docker commands nor logs contain its value.
+    docker("exec", "--detach", container, "sh", "-ec",
+           "printf '%s\\n' \"$$\" > /tmp/td-loss-agent.pid; "
+           "exec java -jar /tmp/td-loss-agent.jar -url http://127.0.0.1:8080/ -webSocket "
+           "-name td-loss-agent -secret @/var/jenkins_home/td-loss-agent-connection "
+           "-workDir /tmp/td-loss-agent -noReconnect >/tmp/td-loss-agent.log 2>&1")
+    wait_for(lambda: jenkins.api(LOSS_AGENT, tree="offline").get("offline") is False,
+             "the disposable Remoting agent to connect")
+    docker("exec", container, "rm", "--", "/var/jenkins_home/td-loss-agent-connection")
+
+
+def stop_loss_agent(jenkins):
+    docker("exec", jenkins.container, "sh", "-ec",
+           'pid=$(cat /tmp/td-loss-agent.pid); '
+           'case "$pid" in ""|0|1|*[!0-9]*) exit 1;; esac; '
+           'kill -KILL "$pid"')
+
+    def disconnected():
+        state = jenkins.api(LOSS_AGENT, tree="offline,temporarilyOffline")
+        return state.get("offline") is True and state.get("temporarilyOffline") is False
+
+    wait_for(disconnected, "the Remoting agent to disconnect", seconds=30)
+    print("TD_NODE_DISCONNECTED agent=td-loss-agent")
+
+
+def cancel_case(jenkins, *, queued=False, node_loss=False):
     child = jenkins.number("api")
     before_workers = tuple(jenkins.number(role) for role in ("collector", "analyst"))
-    parent = jenkins.start("coordinator", TD_CASE="cancel-queued-api" if queued else "cancel-api")
+    scenario = "node-loss" if node_loss else "cancel-queued-api" if queued else "cancel-api"
+    parent = jenkins.start("coordinator", TD_CASE=scenario)
     if queued:
         queue_id = wait_for(lambda: jenkins.api_queue(parent), "the API in Jenkins' quiet-period queue", seconds=30)
         evidence = {"TD_QUEUE_ID": str(queue_id)}
     else:
-        wait_for(lambda: "TD_CANCEL_POINT" in jenkins.log("api", child), "running API cancellation point")
+        marker = "TD_NODE_LOSS_POINT" if node_loss else "TD_CANCEL_POINT"
+        wait_for(lambda: marker in jenkins.log("api", child), "running API cancellation point")
         require(jenkins.api(f"{BASE}/api/{child}", tree="building")["building"], "API must be running")
         jenkins.assert_denied(f"{BASE}/api/{child}/stop", "Job/Cancel")
         evidence = {"TD_CHILD_BUILD": str(child)}
@@ -188,6 +245,12 @@ def cancel_case(jenkins, queued):
     competitor = jenkins.start("competitor", TD_PARENT_BUILD=str(parent), **evidence)
     wait_for(lambda: "waiting" in jenkins.log("competitor", competitor).lower(),
              "independent competitor waiting in the lock step", seconds=20)
+    if node_loss:
+        stop_loss_agent(jenkins)
+        require(jenkins.api(f"{BASE}/api/{child}", tree="building")["building"],
+                "API must still be active after the agent disconnects and before cancellation")
+        require("TD_COMPETITOR_OBSERVED_TERMINAL" not in jenkins.log("competitor", competitor),
+                "the competitor entered the lock body before the parent was cancelled")
     jenkins.stop("coordinator", parent)
     print(f"Stop requested for coordinator #{parent} with {evidence}")
     jenkins.terminal("coordinator", parent, "ABORTED")
@@ -202,6 +265,12 @@ def cancel_case(jenkins, queued):
     blocked = jenkins.start("coordinator", TD_CASE="success")
     jenkins.terminal("coordinator", blocked, "FAILURE")
     require("TD_ORPHAN_BLOCKED" in jenkins.log("coordinator", blocked), "orphan did not block a new parent")
+    if node_loss:
+        # An ABORTED Run cannot attest that the disconnected workspace's shell stopped.
+        require(tuple(jenkins.number(role) for role in ("collector", "analyst")) == before_workers,
+                "the blocked parent dispatched a worker")
+        print("TD_NODE_LOSS_FAIL_CLOSED orphan retained")
+        return
     recovery = jenkins.start("competitor", TD_PARENT_BUILD=str(parent), TD_RECOVER="yes", **evidence)
     jenkins.terminal("competitor", recovery, "SUCCESS")
     require("recovered=true" in jenkins.log("competitor", recovery), "verified orphan was not recovered")
@@ -224,15 +293,17 @@ def main():
         require(docker("exec", container, "id", "-u").strip() == "1000", "runtime UID differs from config")
         jenkins = Jenkins(container)
         jenkins.ready()
-        jenkins.assert_denied(f"{BASE}/api/buildWithParameters", "Job/Build")
-        # A real parent Build Step succeeds with the internal Jenkins identity.
-        jenkins.terminal("coordinator", jenkins.start("coordinator", TD_CASE="success"), "SUCCESS")
+        for role in ROLES:
+            jenkins.assert_denied(f"{BASE}/{role}/buildWithParameters", "Job/Build")
+        assert_build_identities(jenkins)
         rollback = jenkins.start("coordinator", TD_CASE="api-rollback")
         jenkins.terminal("coordinator", rollback, "FAILURE")
         require("TD_RESULT_RECOVERED" in jenkins.log("coordinator", rollback), "rollback was not observed")
         cancel_case(jenkins, queued=True)
-        cancel_case(jenkins, queued=False)
-        print("Jenkins rehearsal passed: ACL, terminal state at first guarded observation, synthetic orphan recovery")
+        cancel_case(jenkins)
+        start_loss_agent(jenkins)
+        cancel_case(jenkins, node_loss=True)
+        print("Jenkins rehearsal passed: ACL, Remoting disconnect, guarded cancellation and synthetic orphan recovery")
     except Exception:
         try:
             print(f"Controller state: {controller_state(container)}")

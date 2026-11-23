@@ -5,10 +5,35 @@ import hudson.model.Queue
 import jenkins.model.Jenkins
 import org.jenkinsci.plugins.workflow.job.WorkflowJob
 
+if (params.TD_VERIFY_IDENTITIES) {
+    echo observeIdentities(params.TD_PARENT_BUILD, params.TD_VERIFY_IDENTITIES)
+    return
+}
+
 lock(resource: 'trading-desk-prod-deploy') {
     def evidence = observe(params.TD_PARENT_BUILD, params.TD_QUEUE_ID, params.TD_CHILD_BUILD,
                            params.TD_RECOVER == 'yes')
     echo evidence
+}
+
+@NonCPS
+String observeIdentities(String parentBuild, String childBuilds) {
+    assert parentBuild ==~ /[1-9][0-9]*/
+    assert childBuilds ==~ /[1-9][0-9]*(,[1-9][0-9]*){2}/
+    def jenkins = Jenkins.get()
+    def coordinator = jenkins.getItemByFullName('trading-desk-rehearsal/coordinator', WorkflowJob)
+    def parent = coordinator.getBuildByNumber(Integer.parseInt(parentBuild))
+    assert !parent.building && parent.result?.toString() == 'SUCCESS'
+    assert parent.execution.authentication2.name == 'fixture-coordinator'
+    def roles = ['api', 'collector', 'analyst']
+    roles.eachWithIndex { role, index ->
+        def job = jenkins.getItemByFullName("trading-desk-rehearsal/${role}", WorkflowJob)
+        def child = job.getBuildByNumber(Integer.parseInt(childBuilds.split(',')[index]))
+        assert !child.building && child.result?.toString() == 'SUCCESS'
+        assert matchesParent(child.causes, parentBuild)
+        assert child.execution.authentication2.name == 'fixture-child'
+    }
+    return 'TD_BUILD_IDENTITIES parent=fixture-coordinator children=fixture-child'
 }
 
 @NonCPS

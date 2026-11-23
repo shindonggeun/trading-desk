@@ -15,7 +15,7 @@
  * 콘솔: `await __deskMarketLatency.skew()` · `__deskMarketLatency.reset()` · `__deskMarketLatency.report()`.
  */
 
-export type LatencyStamp = { key: string; id: string | number | null | undefined };
+export type LatencyStamp = { key: string; id: string | number | null | undefined; at?: string | null };
 type Mode = "off" | "measure" | "poll";
 type Arrival = { at: number; observed: number; source: number | null };
 

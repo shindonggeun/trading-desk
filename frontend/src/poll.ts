@@ -27,6 +27,8 @@ export type PollOptions<T> = {
   delay?: number;
   /** meta 는 REST 응답으로 막 받았을 때만 — 그 요청을 보낸 시각(ms, #690 지연 실측) */
   onData?: (d: T, meta?: { startedAt: number }) => void;
+  /** #866 REST 응답을 저장하기 전에 고친다(그 요청을 보낸 뒤 스트림이 바꾼 값을 다시 얹기 — livePoll.ts) */
+  reconcile?: (d: T, meta: { startedAt: number }) => T;
   onError?: (e: unknown) => void;
   /** #764 true 면 이번 차례를 건너뛴다(값이 이미 있을 때만 — 실시간 스트림이 대신 채우는 동안). livePoll.ts.
    *  restAt: 이 key 를 마지막으로 REST 로 받은 시각(ms, 스트림이 밀어 넣은 값은 세지 않는다) */
@@ -95,7 +97,13 @@ function run(e: Entry<unknown>, force = false) {
     p = Promise.reject(err);
   }
   p.then(
-    (data) => {
+    (fetched) => {
+      let data = fetched;
+      for (const s of [...e.subs]) {
+        const fix = s.opts.current.reconcile;
+        if (!fix) continue;
+        try { data = fix(data, { startedAt }); } catch { /* 고치지 못하면 받은 그대로 */ }
+      }
       e.fails = 0;
       e.restAt = Date.now();
       e.snap = { data, error: null, at: Date.now(), failing: false };

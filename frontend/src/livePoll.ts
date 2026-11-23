@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { latencyMode, recordRest, recordStream, type LatencyStamp } from "./marketLatency";
 import { lastMessage, streamConnected, streamCovers, useMarketStream, type StreamChannel, type StreamMessage } from "./marketStream";
+import { pending, remember, replayOver, type Applied } from "./liveReplay";
 import { pushPollData, usePoll, type PollOptions, type PollSnapshot } from "./poll";
 
 /**
@@ -21,7 +22,8 @@ export type LiveSpec<T> = {
   pauseWhen?: (data: T | undefined) => boolean;
   /** 쉬는 동안에도 이만큼마다 REST 로 한 번 맞춘다(서버가 정하는 상태가 바뀌는 패널 · 놓칠 수 있는 알림) */
   reconcileMs?: number;
-  /** #690 지연 실측(marketLatency.ts): 받은 값의 키와 동일성(시세는 가격, 수급 · 선물은 fetched_at). 없으면 재지 않는다 */
+  /** 받은 값의 키 · 동일성 · 시각(시세는 가격 · fetched_at, 수급 · 선물은 fetched_at). #690 지연 실측(marketLatency.ts)과
+   *  #866 늦은 REST 응답 위에 스트림 값을 다시 얹을 때 더 오래된 메시지를 거르는 데 쓴다. 없으면 시각 비교 없이 얹는다 */
   stamps?: (data: T) => LatencyStamp[];
 };
 
@@ -37,6 +39,8 @@ export function useLivePoll<T>(
   };
   const optionsRef = useRef(options);
   optionsRef.current = options;
+  // #866 적용한 스트림 메시지(liveReplay.remember) — REST 응답 위에 다시 얹는다
+  const applied = useRef<Applied<StreamMessage>[]>([]);
   const poll = usePoll<T>(key, fetch, ms, {
     ...options,
     // #690 지연 실측(poll 모드): REST 가 막 가져온 값 — 같은 요청을 함께 쓰는 다른 화면이 먼저 구독했어도 여기로 온다
@@ -46,6 +50,13 @@ export function useLivePoll<T>(
         try { recordRest(l.channel, l.stamps(d), meta.startedAt); } catch { /* 계측은 화면을 막지 않는다 */ }
       }
       optionsRef.current.onData?.(d, meta);
+    },
+    // #866 요청 시점의 값을 담은 응답이 그 뒤 온 스트림 새 값을 덮지 않게(더 새 값이 이긴다 — liveReplay.ts)
+    reconcile: (d, { startedAt }) => {
+      const l = liveRef.current;
+      if (!l || latencyMode() === "poll") return d;
+      const since = key ? pending(applied.current, key, startedAt, !!l.stamps) : [];
+      return since.length ? replayOver(d, since, l.apply, l.stamps) : d;
     },
     paused: (data, restAt) => covered(data, restAt) || !!options.paused?.(data, restAt),
   });
@@ -67,16 +78,25 @@ export function useLivePoll<T>(
       } catch { /* 계측은 화면을 막지 않는다 */ }
     }
     if (latencyMode() === "poll") return;   // 이 탭은 폴링으로만 그린다
+    applied.current = remember(applied.current, key, m.key, m, !!l.stamps, Date.now());
     pushPollData<T>(key, (prev) => l.apply(prev, m));
   }, !!key && !!live && (live.keys === null || live.keys.length > 0));
   // 스트림 상태가 바뀔 때마다 REST 를 바로 한 번 — 끊기면(degraded) 그 패널만 폴링으로, 다시 살아나면(ready · 회복)
   // 그 사이 놓친 것(스트림은 알림을 다시 보내지 않는다)을 맞춘 뒤 쉰다. 처음 붙을 때는 usePoll 이 이미 부른다
-  const was = useRef<{ key: string | null; live: boolean } | null>(null);
+  // #866 · #705 키가 있는 채널(시세 · 수급 · 선물)은 처음 live 가 될 때 다시 읽지 않는다: live 는 그 키의 메시지(새 연결의
+  // 스냅숏 = 최신값)를 받은 뒤에야 켜지고, 첫 REST 가 그보다 늦게 와도 reconcile 이 그 메시지를 다시 얹는다. 알림(스냅숏
+  // 없음)과 끊겼다 살아날 때(그 사이 버스가 놓친 것)는 그대로 읽는다 — 대시보드 첫 방문 요청이 하나 준다
+  const was = useRef<{ key: string | null; live: boolean; once: boolean } | null>(null);
   const refresh = poll.refresh;
   const isLive = coveredKeys && (live?.pauseWhen?.(poll.data) ?? true);
   useEffect(() => {
-    if (key && was.current?.key === key && was.current.live !== isLive) refresh(true);
-    was.current = { key, live: isLive };
+    const same = !!key && was.current?.key === key;
+    const once = same && !!was.current?.once;
+    if (same && was.current!.live !== isLive) {
+      const firstLive = isLive && !once && liveRef.current?.keys != null;
+      if (!firstLive) refresh(true);
+    }
+    was.current = { key, live: isLive, once: once || isLive };
   }, [isLive, key, refresh]);
   return { ...poll, live: isLive };
 }

@@ -175,6 +175,9 @@ FUNDS_TICKERS_MAX = 30   # #483 tickers per /api/funds/changes call (the favorit
 BOTTOM_NOTE_SEC = 4.0
 BOTTOM_QUOTE_SEC = 2.0   # #310: the price the bottom-zone ladder is cut at, per lookup
 SECTORS_WAIT_SEC = 20.0  # #620: a first /api/day-call/sectors waits this long for the bars, then says "loading"
+# #705 /api/day-call/board waits this little for the sectors: the card's calls (the dashboard's largest text) must not
+# wait for cold sector bars - a "loading" answer sends the card to /api/day-call/sectors, which waits as before
+BOARD_SECTORS_WAIT_SEC = 0.3
 TREND_WAIT_SEC = 8.0     # #460: /api/tips waits this long for the indices' trend, then answers without it
 GAPS_TTL_SEC = 300.0     # #465: a ticker's unfilled gaps are kept as long as its swing levels (desk.horizons sr_ttl_sec)
 GAP_FILL_MAX = 4          # #577: background reads of the gap odds at once (the entry summary never waits for one)
@@ -2038,14 +2041,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     def day_call_stats(market: str = "kr", days: int = day_calls.RECORD_DAYS):
         return day_desk.stats(_day_market(market), min(max(days, 1), 365))
 
-    @app.get("/api/day-call/sectors")
-    async def day_call_sectors(market: str = "kr"):
-        """#620 the market's sectors most and least likely to beat its benchmark today (desk.day_sectors):
-        probability, reasons, the last 90 sessions' record against following yesterday's strong
-        sectors, and today's score after the close. Built from the sector ETFs' daily bars in the
-        background - a first ask waits SECTORS_WAIT_SEC, then answers ``loading``."""
-        if market not in day_sectors.MARKETS:
-            raise HTTPException(422, "market must be kr or us")
+    async def sectors_view(market: str, wait: float) -> dict:
+        """#620 the market's sector call (desk.day_sectors) from the cache, else built in the background -
+        waited for ``wait`` seconds, then answered ``loading``."""
         now = datetime.now(UTC)
         if (v := sector_cache.cached(market, now)) is not None:
             return v
@@ -2056,13 +2054,49 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             task = sector_tasks[market] = asyncio.create_task(
                 asyncio.to_thread(sector_cache.read, market, sector_candles, now))
         try:
-            return await asyncio.wait_for(asyncio.shield(task), SECTORS_WAIT_SEC)
+            return await asyncio.wait_for(asyncio.shield(task), wait)
         except TimeoutError:
             return {"market": market, "ready": False, "loading": True,
                     "note": "섹터 ETF 일봉을 받는 중입니다 — 잠시 뒤 다시 보세요."}
         except Exception as exc:  # noqa: BLE001 - a source down: said, not raised
             log.warning("day sectors %s failed: %s", market, type(exc).__name__)
             raise HTTPException(503, "섹터 판정을 만들지 못했습니다") from None
+
+    @app.get("/api/day-call/sectors")
+    async def day_call_sectors(market: str = "kr"):
+        """#620 the market's sectors most and least likely to beat its benchmark today (desk.day_sectors):
+        probability, reasons, the last 90 sessions' record against following yesterday's strong
+        sectors, and today's score after the close. Built from the sector ETFs' daily bars in the
+        background - a first ask waits SECTORS_WAIT_SEC, then answers ``loading``."""
+        if market not in day_sectors.MARKETS:
+            raise HTTPException(422, "market must be kr or us")
+        return await sectors_view(market, SECTORS_WAIT_SEC)
+
+    @app.get("/api/day-call/board")
+    async def day_call_board(sectors: str | None = None):
+        """#705 the dashboard's 오늘 방향 card in one call (it asked three): every market's calls as
+        /api/day-call answers them, and with ``sectors=<market>`` that market's sector call as
+        /api/day-call/sectors does - waited BOARD_SECTORS_WAIT_SEC only (``loading`` past it, the card then
+        asks the sectors path). A part that fails is ``{"error": status, "detail": ...}``, the rest still come."""
+        if sectors is not None and sectors not in day_sectors.MARKETS:
+            raise HTTPException(422, "sectors must be kr or us")
+
+        async def part(work):
+            try:
+                return await work
+            except HTTPException as exc:
+                return {"error": exc.status_code, "detail": exc.detail}
+            except Exception as exc:  # noqa: BLE001 - one part failing leaves the others
+                log.warning("day-call board part failed: %s", type(exc).__name__)
+                return {"error": 503, "detail": type(exc).__name__}
+
+        markets = list(day_calls.dc.MARKETS)
+        got = await asyncio.gather(*(part(asyncio.to_thread(day_desk.view, m)) for m in markets),
+                                   *([part(sectors_view(sectors, BOARD_SECTORS_WAIT_SEC))] if sectors else []))
+        out: dict = {"calls": dict(zip(markets, got[:len(markets)], strict=True))}
+        if sectors:
+            out["sectors"] = got[-1]
+        return out
 
     @app.get("/api/market/fear")
     async def market_fear():

@@ -111,15 +111,27 @@ async function verify() {
     } }],
   });
   await vite.listen();
-  const profile = join(scratch, "chrome");
-  chrome = start("google-chrome", ["--headless=new", "--disable-dev-shm-usage", "--disable-background-networking",
-    "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
-    "--no-first-run", "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1",
-    `--user-data-dir=${profile}`, "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1", "about:blank"],
-    { stdio: ["ignore", "ignore", "pipe"] });
-  chrome.stderr.on("data", chunk => { chromeLog = (chromeLog + chunk).slice(-4000); });
-  const debugPort = await eventually(async () => (await readFile(join(profile, "DevToolsActivePort"), "utf8"))
-    .split(/\r?\n/)[0], "Chrome DevTools");
+  // #690 flaky: on a busy runner Chrome once wrote no DevToolsActivePort within 12 s. Give it 30 s, and if it
+  // still has not, stop it and start once more on a fresh profile.
+  const launchChrome = async attempt => {
+    const profile = join(scratch, `chrome-${attempt}`);
+    chrome = start("google-chrome", ["--headless=new", "--disable-dev-shm-usage", "--disable-background-networking",
+      "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
+      "--no-first-run", "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1",
+      `--user-data-dir=${profile}`, "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1", "about:blank"],
+      { stdio: ["ignore", "ignore", "pipe"] });
+    chrome.stderr.on("data", chunk => { chromeLog = (chromeLog + chunk).slice(-4000); });
+    return eventually(async () => (await readFile(join(profile, "DevToolsActivePort"), "utf8"))
+      .split(/\r?\n/)[0], `Chrome DevTools (attempt ${attempt})`, 30_000);
+  };
+  let debugPort;
+  try {
+    debugPort = await launchChrome(1);
+  } catch (error) {
+    console.error(`${error.message}; starting Chrome once more`);
+    await stop(chrome);
+    debugPort = await launchChrome(2);
+  }
   const pageDebuggerUrl = await eventually(async () => {
     const response = await fetch(`http://${loopback}:${debugPort}/json/list`, { signal: AbortSignal.timeout(2500) });
     if (!response.ok) throw Error(`Chrome target listing returned ${response.status}`);

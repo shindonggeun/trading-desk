@@ -47,10 +47,9 @@ def inspect_isolation(container):
     require(len(info["Mounts"]) == 1 and info["Mounts"][0]["Type"] == "volume"
             and info["Mounts"][0]["Destination"] == HOME, "unexpected mount")
     env = dict(entry.split("=", 1) for entry in info["Config"]["Env"])
-    forbidden = re.compile(r"TOKEN|SECRET|PASSWORD|CREDENTIAL|^GITHUB_|^DOCKER_", re.IGNORECASE)
+    forbidden = re.compile(r"TOKEN|SECRET|PASSWORD|CREDENTIAL|^GITHUB_|^DOCKER_|^VAULT_", re.IGNORECASE)
     require(not any(forbidden.search(key) for key in env),
-            "unexpected credential or Docker environment")
-    require(env.get("VAULT_ADDR") == "http://127.0.0.1:9", "fixture must use the loopback placeholder for Vault")
+            "unexpected credential, Docker or Vault environment")
     print("Controller isolation passed")
 
 

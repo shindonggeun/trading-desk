@@ -11,9 +11,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import math
 import time
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from functools import wraps
 
 import httpx
 
@@ -32,10 +34,29 @@ log = logging.getLogger(__name__)
 FILL_PAGES = 20
 RATE_LIMIT_RETRIES = 4
 MAX_RETRY_AFTER_SEC = 10.0
+_MALFORMED_RESPONSE = "Toss response is malformed"
 
 
 class TossError(RuntimeError):
     pass
+
+
+def _provider_errors(method):
+    """Keep provider and parser details out of protected errors and tracebacks."""
+    @wraps(method)
+    async def wrapped(self, *args, **kwargs):
+        try:
+            return await method(self, *args, **kwargs)
+        except (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError):
+            if self._redact_errors:
+                raise TossError("Toss request failed") from None
+            raise
+        except (AttributeError, KeyError, OverflowError, RecursionError, TypeError, ValueError):
+            if self._redact_errors:
+                raise TossError(_MALFORMED_RESPONSE) from None
+            raise
+
+    return wrapped
 
 
 def _retry_after(value: str | None) -> float:
@@ -117,7 +138,7 @@ class TossBroker(Broker):
 
     def __init__(self, client_id: str, client_secret: str, account_seq: str = "",
                  kosdaq_symbols: list[str] | None = None, http: httpx.AsyncClient | None = None,
-                 tokens: TokenStore | None = None) -> None:
+                 tokens: TokenStore | None = None, *, redact_errors: bool = False) -> None:
         if not client_id or not client_secret:
             raise TossError("DESK_BROKER=toss needs TOSS_CLIENT_ID and TOSS_CLIENT_SECRET.")
         self._basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
@@ -125,6 +146,7 @@ class TossBroker(Broker):
         self._slot = tokens.slot("toss", client_secret) if tokens is not None else None
         self._account_seq = account_seq
         self.account_pinned = bool(account_seq)
+        self._redact_errors = redact_errors
         self._kosdaq = set(kosdaq_symbols or [])
         self._http = http or httpx.AsyncClient(base_url=BASE_URL, timeout=15)
         self._token: str | None = None
@@ -132,6 +154,7 @@ class TossBroker(Broker):
         self._lock = asyncio.Lock()
         self._renewed_at: float | None = None
 
+    @_provider_errors
     async def _access_token(self, revoked: str | None = None) -> str:
         """The cached token, or a new one. ``revoked`` is a token Toss just refused: Toss keeps
         one valid token per client, so a token issued anywhere else (a one-off script, another
@@ -148,33 +171,41 @@ class TossBroker(Broker):
                                     "the same key (docs/deploy.md section 6)")
                 self._renewed_at = time.monotonic()
                 log.warning("toss token revoked (issued elsewhere on the same key); renewing")
-            r = await self._http.post(
-                "/oauth2/token",
-                headers={"Authorization": f"Basic {self._basic}",
-                         "Content-Type": "application/x-www-form-urlencoded"},
-                data={"grant_type": "client_credentials"},
-            )
-            if r.status_code != 200:
-                raise TossError(f"Toss token request failed {r.status_code} {_error_code(r)}".rstrip())
-            body = r.json()
-            self._token = body["access_token"]
-            self._expires_at = time.monotonic() + max(60.0, float(body.get("expires_in", 3600)) - REFRESH_MARGIN_SEC)
+            if self._redact_errors:
+                issued = await self._issue()
+                self._token, life_sec = issued.value, issued.life_sec
+            else:
+                body = (await self._token_response()).json()
+                self._token = body["access_token"]
+                life_sec = float(body.get("expires_in", 3600))
+            self._expires_at = time.monotonic() + max(60.0, life_sec - REFRESH_MARGIN_SEC)
             return self._token
 
-    async def _issue(self) -> Issued:
+    async def _token_response(self) -> httpx.Response:
         r = await self._http.post(
             "/oauth2/token",
             headers={"Authorization": f"Basic {self._basic}", "Content-Type": "application/x-www-form-urlencoded"},
             data={"grant_type": "client_credentials"},
         )
         if r.status_code != 200:
-            # the status and Toss' error code only: the body of a token answer is not ours to log
-            raise TossError(f"Toss token request failed {r.status_code} {_error_code(r)}".rstrip())
-        body = r.json()
+            error = f"Toss token request failed {r.status_code}"
+            if not self._redact_errors:
+                error = f"{error} {_error_code(r)}".rstrip()
+            raise TossError(error)
+        return r
+
+    @_provider_errors
+    async def _issue(self) -> Issued:
+        body = (await self._token_response()).json()
         token = body.get("access_token")
         if not token or not isinstance(token, str):
             raise TossError("Toss token request: no token in the answer")
-        return Issued(token, float(body.get("expires_in", 3600)))
+        life_sec = float(body.get("expires_in", 3600))
+        if self._redact_errors:
+            max_life = (datetime.max.replace(tzinfo=UTC) - datetime.now(UTC)).total_seconds()
+            if not 0 < life_sec < max_life:
+                raise TossError(_MALFORMED_RESPONSE)
+        return Issued(token, life_sec)
 
     async def _shared_token(self, revoked: str | None) -> str:
         """#688 the desk's one token (desk.token_store): issued here only in the minting process, under the
@@ -202,6 +233,7 @@ class TossBroker(Broker):
             self._token, self._expires_at = got[0], time.monotonic() + max(0.0, left)
         return True
 
+    @_provider_errors
     async def _get(self, path: str, headers: dict | None = None, params: dict | None = None):
         token = await self._access_token()
         renewed = False
@@ -221,6 +253,8 @@ class TossBroker(Broker):
             attempt += 1
             await asyncio.sleep(_retry_after(r.headers.get("retry-after")))
         if r.status_code != 200:
+            if self._redact_errors:
+                raise TossError(f"Toss GET request failed {r.status_code}")
             raise TossError(f"Toss GET {path} failed {r.status_code}: {r.text[:300]}")
         return r.json().get("result")
 
@@ -238,58 +272,86 @@ class TossBroker(Broker):
             return f"{symbol}.KQ" if symbol in self._kosdaq else f"{symbol}.KS"
         return symbol
 
+    def _check_text(self, *fields) -> None:
+        if self._redact_errors and not all(isinstance(field, str) for field in fields):
+            raise TossError(_MALFORMED_RESPONSE)
+
+    def _number(self, value) -> float | None:
+        number = _num(value)
+        if self._redact_errors and number is not None and not math.isfinite(number):
+            raise TossError(_MALFORMED_RESPONSE)
+        return number
+
+    @_provider_errors
     async def holdings(self) -> list[Holding]:
         account = await self._account()
         overview = await self._get("/api/v1/holdings", headers={"X-Tossinvest-Account": account}) or {}
         out = []
         for item in overview.get("items", []):
             market = item.get("marketCountry", "")
+            symbol = item["symbol"]
+            name, currency = item.get("name", symbol), item.get("currency", "")
+            self._check_text(symbol, market, name, currency)
             out.append(Holding(
-                symbol=item["symbol"],
-                yahoo_ticker=self._yahoo(item["symbol"], market),
-                name=item.get("name", item["symbol"]),
+                symbol=symbol,
+                yahoo_ticker=self._yahoo(symbol, market),
+                name=name,
                 market=market,
-                currency=item.get("currency", ""),
-                quantity=_num(item.get("quantity")) or 0.0,
-                average_price=_num(item.get("averagePurchasePrice")),
-                last_price=_num(item.get("lastPrice")),
+                currency=currency,
+                quantity=self._number(item.get("quantity")) or 0.0,
+                average_price=self._number(item.get("averagePurchasePrice")),
+                last_price=self._number(item.get("lastPrice")),
             ))
         return out
 
+    @_provider_errors
     async def list_stocks(self, market: str) -> list[Listing]:
         # Batch data refreshed daily on Toss' side; desk.universe caches it for a day.
         rows = await self._get("/api/v1/stocks/all", params={"market": market}) or []
-        return [Listing(symbol=r["symbol"], name=r.get("name") or r["symbol"], market=market,
-                        security_type=r.get("securityType", "STOCK"))
-                for r in rows if r.get("symbol")]
+        listings = []
+        for row in rows:
+            symbol = row.get("symbol")
+            if not symbol:
+                continue
+            name, security_type = row.get("name") or symbol, row.get("securityType", "STOCK")
+            self._check_text(symbol, name, security_type)
+            listings.append(Listing(symbol=symbol, name=name, market=market, security_type=security_type))
+        return listings
 
+    @_provider_errors
     async def quote(self, symbol: str) -> tuple[float, str | None]:
         rows = _rows(await self._get("/api/v1/prices", params={"symbols": symbol}), "prices")
         for row in rows:
             if str(row.get("symbol", "")).upper() == symbol.upper():
-                price = _num(row.get("lastPrice"))
+                price = self._number(row.get("lastPrice"))
                 if price:
-                    return price, row.get("currency")
-        raise TossError(f"Toss has no price for {symbol}")
+                    currency = row.get("currency")
+                    if currency is not None:
+                        self._check_text(currency)
+                    return price, currency
+        raise TossError("Toss has no price for the requested symbol" if self._redact_errors
+                        else f"Toss has no price for {symbol}")
 
+    @_provider_errors
     async def candles(self, symbol: str, interval: str, count: int) -> list[Bar]:
         payload = await self._get("/api/v1/candles", params={
             "symbol": symbol, "interval": interval, "count": min(max(count, 1), 200), "adjusted": "true"})
         bars = []
         for row in _rows(payload, "candles"):
-            values = [_num(row.get(k)) for k in ("openPrice", "highPrice", "lowPrice", "closePrice")]
+            values = [self._number(row.get(k)) for k in ("openPrice", "highPrice", "lowPrice", "closePrice")]
             stamp = row.get("timestamp") or row.get("date")
             if None in values or not stamp:
                 continue
-            bars.append(Bar(_iso(stamp), *values, _num(row.get("volume")) or 0.0))
+            bars.append(Bar(_iso(stamp), *values, self._number(row.get("volume")) or 0.0))
         return sorted(bars, key=lambda bar: bar.at)
 
+    @_provider_errors
     async def usd_krw(self) -> float:
         # Refreshed once a minute on Toss' side. midRate (매매기준율), not rate: rate is the
         # buy-side rate with Toss' spread on top, which would overstate a USD holding in won.
         result = await self._get("/api/v1/exchange-rate",
                                  params={"baseCurrency": "USD", "quoteCurrency": "KRW"}) or {}
-        rate = _num(result.get("midRate")) or _num(result.get("rate"))
+        rate = self._number(result.get("midRate")) or self._number(result.get("rate"))
         if not rate:
             raise TossError("Toss returned no USD/KRW rate")
         return rate
@@ -327,7 +389,10 @@ class TossBroker(Broker):
                 if isinstance(regular, dict) and regular.get("startTime") and regular.get("endTime"):
                     opens, closes = (_kst(regular["startTime"]), _kst(regular["endTime"]))
             except ValueError:
-                log.warning("Toss %s calendar: unreadable day %s", market, node.get("date"))
+                if self._redact_errors:
+                    log.warning("Toss %s calendar: unreadable day", market)
+                else:
+                    log.warning("Toss %s calendar: unreadable day %s", market, node.get("date"))
                 continue
             days.append(MarketDay(day=day, opens=opens, closes=closes))
         return days
@@ -339,7 +404,7 @@ class TossBroker(Broker):
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            price = _num(row.get("lastPrice"))
+            price = self._number(row.get("lastPrice"))
             if row.get("symbol") and price:
                 at = row.get("timestamp")
                 out.append(IndexPrice(symbol=str(row["symbol"]).upper(), price=price,

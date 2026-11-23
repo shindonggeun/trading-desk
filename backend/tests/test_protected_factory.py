@@ -5,6 +5,7 @@ import json
 from datetime import timedelta
 from threading import Event
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event, select
@@ -12,7 +13,7 @@ from sqlalchemy import event, select
 from desk import api, privacy_admin
 from desk.account_owner import AccountOwnerStore
 from desk.auth import Auth
-from desk.broker.toss import TossBroker
+from desk.broker.toss import TossBroker, TossError
 from desk.db import (
     account_owner_binding,
     broker_tokens,
@@ -318,3 +319,148 @@ def test_issuer_does_not_publish_when_approval_changes_during_issue(desk, monkey
             row = conn.execute(select(broker_tokens).where(broker_tokens.c.name == "toss")).one()
         assert row.asked_at is not None and row.sealed is None and row.lease_owner is None
         assert brokers[0]._token is None
+
+
+PRIVATE_MARKER = "synthetic-private-provider-error"
+
+
+@pytest.mark.parametrize(("protected", "failure"), [(True, "status"), (False, "status"), (True, "shape")])
+def test_toss_provider_errors_in_facade_use_the_factory_policy(desk, monkeypatch, caplog, protected, failure):
+    engine, binding = desk
+    if protected:
+        _protect(engine, binding)
+    monkeypatch.setenv("DESK_ROLE", "all")
+    refreshed = Event()
+    init = TossBroker.__init__
+    refresh = api.Universe.refresh_if_stale
+
+    def respond(request):
+        if request.url.path == "/oauth2/token":
+            return httpx.Response(200, json={"access_token": "synthetic-token", "expires_in": 3600})
+        if request.url.path == "/api/v1/exchange-rate":
+            return httpx.Response(200, json={"result": {"midRate": "1300"}})
+        if failure == "shape":
+            if request.url.path == "/api/v1/holdings":
+                items = [{"symbol": "SYNTHETIC", "currency": {"reason": PRIVATE_MARKER}}]
+                return httpx.Response(200, json={"result": {"items": items}})
+            return httpx.Response(200, json={"result": [{"symbol": "SYNTHETIC", "name": {"reason": PRIVATE_MARKER}}]})
+        return httpx.Response(403, json={"error": {"code": PRIVATE_MARKER, "message": PRIVATE_MARKER}})
+
+    def bind_transport(broker, *args, **kwargs):
+        client = httpx.AsyncClient(base_url="https://toss.test", transport=httpx.MockTransport(respond))
+        init(broker, *args, http=client, **kwargs)
+
+    async def observe_refresh(universe, broker):
+        try:
+            await refresh(universe, broker)
+        finally:
+            refreshed.set()
+
+    async def one_snapshot(scope, receive, send):
+        if scope["type"] != "http" or scope["path"] != "/api/portfolio/stream":
+            return await app(scope, receive, send)
+        sent = asyncio.Event()
+
+        async def receive_until_snapshot():
+            await asyncio.wait_for(sent.wait(), 5)
+            return {"type": "http.disconnect"}
+
+        async def send_snapshot(message):
+            await send(message)
+            if message.get("body", b"").startswith(b"data: "):
+                sent.set()
+
+        await app(scope, receive_until_snapshot, send_snapshot)
+
+    monkeypatch.setattr(TossBroker, "__init__", bind_transport)
+    monkeypatch.setattr(api.Universe, "refresh_if_stale", observe_refresh)
+    app = api.create_app()
+    with TestClient(one_snapshot, base_url="https://testserver") as client:
+        assert refreshed.wait(5)
+        _login(client, "synthetic-owner" if protected else "synthetic-peer")
+        snapshot = client.get("/api/portfolio")
+        stream = client.get("/api/portfolio/stream")
+        _login(client, "synthetic-peer")
+        public = client.get("/api/instruments/status")
+        assert snapshot.status_code == stream.status_code == public.status_code == 200
+        assert "holdings:" in snapshot.text and "data: " in stream.text
+        assert json.loads(next(line[6:] for line in stream.text.splitlines() if line.startswith("data: "))) == snapshot.json()
+        assert ("403" if failure == "status" else "malformed") in public.json()["error"]
+        for surface in (snapshot.text, stream.text, public.text, caplog.text):
+            assert (PRIVATE_MARKER in surface) is not protected
+
+
+@pytest.mark.parametrize("failure", ["token-status", "token-parse", "transport", "bad-json", "candles", "calendar",
+                                     "malformed-list"])
+def test_protected_toss_redacts_provider_status_and_parse_errors(caplog, failure):
+    def respond(request):
+        if request.url.path == "/oauth2/token":
+            if failure == "token-status":
+                return httpx.Response(401, json={"error": {"code": PRIVATE_MARKER}})
+            expires = PRIVATE_MARKER if failure == "token-parse" else 3600
+            return httpx.Response(200, json={"access_token": "synthetic-token", "expires_in": expires})
+        if failure == "transport":
+            raise httpx.ReadError(PRIVATE_MARKER, request=request)
+        if failure == "bad-json":
+            return httpx.Response(200, text=PRIVATE_MARKER)
+        if failure == "candles":
+            return httpx.Response(200, json={"result": [{"timestamp": PRIVATE_MARKER, "openPrice": 1,
+                                                       "highPrice": 1, "lowPrice": 1, "closePrice": 1}]})
+        if failure == "calendar":
+            return httpx.Response(200, json={"result": {"today": {"date": PRIVATE_MARKER}}})
+        return httpx.Response(200, json={"result": [{"symbol": "SYNTHETIC", "name": {"reason": PRIVATE_MARKER}}]})
+
+    async def exercise():
+        async with httpx.AsyncClient(base_url="https://toss.test", transport=httpx.MockTransport(respond)) as http:
+            broker = TossBroker(SOURCE.client_id, SOURCE.client_secret, SOURCE.account_seq,
+                                http=http, redact_errors=True)
+            if failure == "token-status":
+                legacy = TossBroker(SOURCE.client_id, SOURCE.client_secret, SOURCE.account_seq, http=http)
+                with pytest.raises(TossError, match=rf"401 {PRIVATE_MARKER}"):
+                    await legacy._issue()
+            if failure == "calendar":
+                assert await broker.market_calendar("US") == []
+            else:
+                with pytest.raises(TossError) as caught:
+                    if failure.startswith("token"):
+                        await broker._issue()
+                    elif failure == "candles":
+                        await broker.candles("SYNTHETIC", "day", 1)
+                    elif failure == "malformed-list":
+                        await broker.list_stocks("NASDAQ")
+                    else:
+                        await broker.holdings()
+                assert PRIVATE_MARKER not in str(caught.value)
+                assert caught.value.__cause__ is None
+                assert caught.value.__context__ is None or caught.value.__suppress_context__
+
+    asyncio.run(exercise())
+    assert PRIVATE_MARKER not in caplog.text
+
+
+def test_protected_toss_renews_on_401_retries_on_429_and_keeps_403(monkeypatch):
+    tokens, requests, delays = [], [], []
+    answers = iter((401, 429, 403))
+
+    def respond(request):
+        if request.url.path == "/oauth2/token":
+            token = f"synthetic-token-{len(tokens)}"
+            tokens.append(token)
+            return httpx.Response(200, json={"access_token": token})
+        requests.append(request.headers["Authorization"])
+        return httpx.Response(next(answers), text=PRIVATE_MARKER, headers={"Retry-After": "1"})
+
+    async def wait(delay):
+        delays.append(delay)
+
+    async def exercise():
+        async with httpx.AsyncClient(base_url="https://toss.test", transport=httpx.MockTransport(respond)) as http:
+            broker = TossBroker(SOURCE.client_id, SOURCE.client_secret, SOURCE.account_seq,
+                                http=http, redact_errors=True)
+            with pytest.raises(TossError, match=r"^Toss GET request failed 403$"):
+                await broker.holdings()
+
+    monkeypatch.setattr(asyncio, "sleep", wait)
+    asyncio.run(exercise())
+    assert len(tokens) == 2 and requests == [f"Bearer {tokens[0]}", f"Bearer {tokens[1]}", f"Bearer {tokens[1]}"]
+    assert delays == [1]

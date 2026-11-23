@@ -14,15 +14,20 @@ const paths = {
 };
 const requests = { flow: 0, quote: 0, futures: 0, alert: 0 };
 const responses = { ...requests };
+const settledRequests = { ...requests };   // finished either way (an error too) - none in flight when equal
 const channels = Object.keys(requests);
 const remote = ["flow", "futures", "alert"];
 const fetchRequest = window.fetch.bind(window);
 window.fetch = async (path, options) => {
   const key = paths[new URL(String(path), location.origin).pathname];
   if (key) requests[key]++;
-  const response = await fetchRequest(path, options);
-  if (key && response.ok) responses[key]++;
-  return response;
+  try {
+    const response = await fetchRequest(path, options);
+    if (key && response.ok) responses[key]++;
+    return response;
+  } finally {
+    if (key) settledRequests[key]++;
+  }
 };
 
 // The product defaults are 15/30/60 seconds. Run the same usePoll code at 1/20 in this page.
@@ -43,7 +48,11 @@ window.addEventListener("error", event => errors.push(event.message));
 window.addEventListener("unhandledrejection", event => errors.push(String(event.reason)));
 
 function assert(condition, label) {
-  if (!condition) throw Error(`${label} ${JSON.stringify({ requests, responses, live: channels.filter(live), errors })}`);
+  if (!condition) {
+    const shown = { flow: flowPrice(), futures: futuresPrice(), quote: quotePrice(), alerts: alertRows() };
+    throw Error(`${label} ${JSON.stringify({ requests, responses, settledRequests, live: channels.filter(live), shown,
+      errors })}`);
+  }
 }
 
 async function until(predicate, label, seconds = 12) {
@@ -53,6 +62,15 @@ async function until(predicate, label, seconds = 12) {
     await wait(25);
   }
   assert(false, label);
+}
+
+// A panel that turns live asks REST once more (livePoll: catch up what the stream missed). That answer carries
+// the REST values as they were when it was asked; landing after a newer SSE event it shows the older value, and
+// nothing newer follows in this fixture. On a slow runner it did land late (#690 flaky "Redis and local updates
+// reached the panels"). So before publishing over SSE: let those effects fire and their REST answers land.
+async function restSettled(label) {
+  await wait(300);
+  await until(() => channels.every(key => settledRequests[key] === requests[key]), `${label}: REST still in flight`);
 }
 
 async function phase(name) {
@@ -89,6 +107,7 @@ async function verify() {
   assert(initial.api.received_remote >= 2 && initial.collector.published_remote >= 2, "seed crossed Redis");
   createRoot(document.getElementById("root")).render(<Panels />);
   await until(() => channels.every(key => live(key) && responses[key] > 0) && alertRows() === 1, "initial panels");
+  await restSettled("initial panels");
   await phase("healthy");
   await until(() => flowPrice().includes("2688") && futuresPrice().includes("483") && quotePrice().includes("182"),
     "Redis and local updates reached the panels");
@@ -113,7 +132,7 @@ async function verify() {
   const beforeRecovery = { ...responses };
   document.body.dataset.stage = "start-redis";
   await until(() => channels.every(live), "all channels return to live", 20);
-  await wait(400);
+  await restSettled("all channels return to live");
   const recoveryRest = Object.fromEntries(channels.map(key => [key, responses[key] - beforeRecovery[key]]));
   const recovered = { ...requests };
   const first = await phase("recovery-first");

@@ -5,6 +5,7 @@ Every route needs a login session except the two in OPEN_PATHS. See docs/securit
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import logging
@@ -13,6 +14,7 @@ import re
 import secrets
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, date, datetime, timedelta, timezone
 from datetime import time as dtime
@@ -128,7 +130,7 @@ from .leverage_analyst import fake_analyst, llm_analyst
 from .longshort import LongShort
 from .market_flow import MarketFlow
 from .portfolio import Portfolio
-from .prices import INTERVALS, PriceSource, kis_quote
+from .prices import INTERVALS, PriceSource, kis_quote, stale_ok
 from .privacy import OwnerResources, PolicyChanged, ProcessPolicy
 from .related import collect as collect_related
 from .run_read import RunReader, last_done_seq
@@ -155,7 +157,18 @@ CREDIT_RETRY_SEC = 15 * 60
 BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
 BATCH_PARALLEL = 4      # #705 /api/batch/{kind}: tickers worked on at once, for the whole app (as a browser asked before)
 BATCH_PARALLEL_BARS = 8  # bars (candles · estimate-candles) are light and cached: the market tiles draw sooner
+# #858 batch items worked on at once for the whole app, over the kinds' own gates: in the dashboard's first-look
+# burst their thread work (Yahoo reads and parsing, levels) took every thread of the loop's default executor (20 at
+# 16 CPUs) and every other route's to_thread queued behind it (a chart, the paper desk: 2-3 s). Measured on a cold
+# burst: 14 keeps the others at their own source time and costs the burst ~30%; 10 the same for the others at ~50%.
+# The quote board is not under it (BOARD_PARALLEL; in the session its rows are async reads and cached closes)
+SCREEN_PARALLEL = 14
 BATCH_MAX_COUNT = 500    # bars a ticker in one batch (the chart's own path allows more, one ticker at a time)
+# #858 /api/batch/candles takes bars up to this long past their TTL at once while a background read brings new ones
+# (desk.prices.STALE_OK): one minute's poll of the market tiles and a margin - a page back within that no longer
+# waits on dozens of Yahoo reads, one back after longer reads anew. Only the bars kind: the levels, playbooks and
+# projections are kept in caches of their own and are never built from old bars
+BATCH_STALE_SEC = 90.0
 FUNDS_TICKERS_MAX = 30   # #483 tickers per /api/funds/changes call (the favorites' badges)
 # #240: the bottom-zone line of the weekly note waits this long (the scalp budget is 5 s; the line is
 # skipped, not the weekly map, when a cold cache is slower)
@@ -174,6 +187,16 @@ FIRST_TICK_WAIT_SEC = 0.4      # #643 a short wait: the prewarm subscribes the f
 FIRST_TICK_POLL_SEC = 0.25
 FIRST_TICK_RETRY_SEC = 600.0     # a ticker the board waited for is not waited for again before this
 KST = timezone(timedelta(hours=9))   # Toss dates (order history from/to) are KST
+# #858 every request's policy and session checks (small DB reads) run on threads of their own: on the loop's
+# default executor they queued behind the sources' blocking reads (Yahoo ~1 s each, dozens in the dashboard's
+# first-look burst) and every request in that burst - a /api/auth/me included - waited seconds before its handler
+_ADMISSION = ThreadPoolExecutor(max_workers=4, thread_name_prefix="desk-admission")
+
+
+async def _admit(fn, /, *args, **kwargs):
+    """``asyncio.to_thread`` on the admission threads (the caller's context goes along, as to_thread's does)."""
+    ctx = contextvars.copy_context()
+    return await asyncio.get_running_loop().run_in_executor(_ADMISSION, partial(ctx.run, fn, *args, **kwargs))
 REVIEW_CACHE_SEC = 60
 REVIEW_FAIL_CACHE_SEC = 30
 log = logging.getLogger(__name__)
@@ -1341,13 +1364,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         def unavailable():
             return JSONResponse({"detail": "service temporarily unavailable"}, status_code=503, headers=_RUN_READ_CACHE)
 
-        if not await asyncio.to_thread(policy.current):
+        if not await _admit(policy.current):
             return unavailable()
         # Cross-site writes: the SameSite=Strict cookie already stays home; this also stops login CSRF.
         if request.method in UNSAFE_METHODS and not _same_origin(request):
             return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
         if request.url.path not in OPEN_PATHS:
-            user = await asyncio.to_thread(auth.resolve, request.cookies.get(COOKIE), touch=is_activity(request))
+            token = request.cookies.get(COOKIE)
+            # #858 no cookie, no session to look up (auth.resolve answers None for it without the DB): no thread
+            user = await _admit(auth.resolve, token, touch=is_activity(request)) if token else None
             if user is None:
                 return JSONResponse({"detail": "login required"}, status_code=401)
             request.state.user = user
@@ -1356,7 +1381,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 response = await call_next(request)
         except PolicyChanged:
             return unavailable()
-        if not await asyncio.to_thread(policy.current):
+        if not await _admit(policy.current):
             return unavailable()
         if response.headers.get("content-type", "").startswith("text/event-stream"):
             # call_next has only seen the headers. Do not release buffered frames
@@ -1365,7 +1390,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
             async def current_frames():
                 async for frame in frames:
-                    if not await asyncio.to_thread(policy.current):
+                    if not await _admit(policy.current):
                         return
                     yield frame
 
@@ -3013,6 +3038,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # one gate a kind for the whole app: two pages batching at once do not double the load on the sources
     batch_gates = {k: asyncio.Semaphore(BATCH_PARALLEL_BARS if k in ("candles", "estimate-candles") else BATCH_PARALLEL)
                    for k in ("bottom-zone", "candles", "levels", "playbooks", "projection", "gaps", "estimate-candles")}
+    screen_gate = asyncio.Semaphore(SCREEN_PARALLEL)     # #858 over the kinds' gates (taken last)
 
     @app.get("/api/batch/{kind}")
     async def batch(kind: str, tickers: str, request: Request, response: Response,
@@ -3041,12 +3067,16 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(422, f"between 1 and {MAX_BOARD} tickers")
         if not 1 <= count <= BATCH_MAX_COUNT:
             raise HTTPException(422, f"count must be 1 to {BATCH_MAX_COUNT}")
+        request.state.timing_note = {"kind": kind, "n": len(names)}    # #858 the slow-request line: no tickers
         gate = batch_gates[kind]
 
+        stale = BATCH_STALE_SEC if kind == "candles" else 0.0
+
         async def one(ticker: str) -> tuple[str, dict]:
-            async with gate:
+            async with gate, screen_gate:
                 try:
-                    return ticker, await fn(ticker)
+                    with stale_ok(stale):
+                        return ticker, await fn(ticker)
                 except HTTPException as exc:
                     return ticker, {"error": exc.status_code, "detail": exc.detail}
                 except Exception as exc:  # noqa: BLE001 - one ticker failing leaves the others
@@ -3214,8 +3244,35 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             return None
         return q
 
+    async def _board_quote(ticker: str):
+        try:
+            return await prices.quote(ticker)
+        except Exception as exc:  # noqa: BLE001 - the estimate stands in
+            log.warning("board quote for %s failed: %s", ticker, exc)
+            return None
+
+    ahead_tasks: set[asyncio.Future] = set()
+
+    async def _has_contract(ticker: str) -> bool:
+        try:
+            return await estimator.resolve(ticker) is not None
+        except Exception:  # noqa: BLE001 - Binance's list unread: the estimate below says so
+            return False
+
+    async def _quote_ahead(ticker: str) -> None:
+        with suppress(Exception):            # the caller that takes it logs a failure
+            await prices.quote(ticker)
+
+    async def _board_close(ticker: str):
+        """#858 the board's change base while the market trades (desk.estimate.BinanceEstimator.last_close)."""
+        try:
+            return await estimator.last_close(ticker)
+        except Exception as exc:  # noqa: BLE001 - the live price without its change
+            log.warning("board close for %s failed: %s", ticker, exc)
+            return None
+
     @app.get("/api/estimates")
-    async def estimates(tickers: str):
+    async def estimates(tickers: str, request: Request):
         """The quote board (#123/#124): for each ticker the live price while its market is open,
         else the off-hours estimate (own Binance contract, a proxy, or a leveraged base x multiple),
         else "unavailable". One ticker failing does not fail the others."""
@@ -3226,21 +3283,40 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             names = list(dict.fromkeys(clean_ticker(t) for t in names))
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
+        request.state.timing_note = {"n": len(names)}                   # #858 the slow-request line: no tickers
         gate = asyncio.Semaphore(BOARD_PARALLEL)
         await _first_trades(names)
 
         async def one(ticker: str) -> dict:
             async with gate:
-                est, err = None, None
-                try:
-                    est = await estimator.estimate(ticker)
-                except Exception as exc:  # noqa: BLE001 - Binance or Yahoo down for this one
-                    err = type(exc).__name__
-                    log.warning("board estimate for %s failed: %s", ticker, exc)
                 # #250: one session answer; while anything trades the board shows a real price
                 session = await sessions.session(calendar, ticker)
-                if est and est.market_state == "open":
-                    session = "regular"          # the estimator's own calendar (special days) agrees
+                est, err, quote, asked = None, None, None, False
+                if session == "regular":
+                    # #858 the price is the live quote; the estimator gives only the last close (the change's
+                    # base), read alongside it - the contract's marks (Binance) are not asked
+                    live.watch(prices, ticker)       # the board's tickers ride the KIS stream too
+                    est, quote = await asyncio.gather(_board_close(ticker), _board_quote(ticker))
+                    asked = True
+                if quote is None:                    # off hours, or no quote: the estimate stands in
+                    ahead = None
+                    if (session in ("pre", "post", "overnight") and kis_stream.market_of(ticker) == "US"
+                            and _off_hours_trade(ticker) is None and await _has_contract(ticker)):
+                        # #858 the broker quote the row may take below (#250), read alongside the estimate:
+                        # desk.prices shares the read, so the call below finds it (no contract, no estimate:
+                        # that row never asked for a quote and still does not)
+                        ahead = asyncio.ensure_future(_quote_ahead(ticker))
+                        ahead_tasks.add(ahead)
+                        ahead.add_done_callback(ahead_tasks.discard)
+                    try:
+                        est = await estimator.estimate(ticker)
+                    except Exception as exc:  # noqa: BLE001 - Binance or Yahoo down for this one
+                        est, err = None, type(exc).__name__
+                        log.warning("board estimate for %s failed: %s", ticker, exc)
+                    if est is None and ahead is not None:
+                        ahead.cancel()               # no close to weigh it against: not read when not begun
+                    if est and est.market_state == "open":
+                        session = "regular"          # the estimator's own calendar (special days) agrees
                 close = est.last_close if est else None
                 row: dict = {"ticker": ticker, "close": close,
                              "close_date": est.last_close_date if est else None, "session": session,
@@ -3253,17 +3329,17 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     return {**row, "state": "live", "price": price, "change_pct": change,
                             "quote_source": source, "fetched_at": at}
 
+                if quote is not None:
+                    return live_row(quote.price, quote.source, quote.fetched_at)
                 if est and est.market_state == "nxt":
                     # #209: NXT trading (08:00-08:50, 15:40-20:00 KST) - its last trade is a real price
                     row["session"] = session if session in ("pre", "post") else "post"
                     return live_row(est.estimate, "nxt", est.fetched_at, est.change_pct)
                 if session == "regular":
-                    live.watch(prices, ticker)       # the board's tickers ride the KIS stream too
-                    try:
-                        q = await prices.quote(ticker)
-                        return live_row(q.price, q.source, q.fetched_at)
-                    except Exception as exc:  # noqa: BLE001 - fall back to the estimate below
-                        log.warning("board quote for %s failed: %s", ticker, exc)
+                    if not asked:
+                        live.watch(prices, ticker)
+                        if (q := await _board_quote(ticker)) is not None:
+                            return live_row(q.price, q.source, q.fetched_at)
                 elif session in ("pre", "post") and kis_stream.market_of(ticker) == "KR":
                     # #250: any KRX stock trading on NXT / after hours - not only those with a contract
                     if (nxt := await _nxt_today(ticker)) is not None:

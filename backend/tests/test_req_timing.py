@@ -7,7 +7,8 @@ import logging
 from desk import req_timing as rt
 
 
-def _app(status=200, content_type=b"application/json", delay=0.0, route_path="/api/runs/{run_id}", cache=None):
+def _app(status=200, content_type=b"application/json", delay=0.0, route_path="/api/runs/{run_id}", cache=None,
+         note=None):
     class Route:
         path = route_path
 
@@ -16,6 +17,8 @@ def _app(status=200, content_type=b"application/json", delay=0.0, route_path="/a
         scope["route"] = Route()
         if cache:
             scope.setdefault("state", {})["cache"] = cache
+        if note is not None:
+            scope.setdefault("state", {})["timing_note"] = note
         await send({"type": "http.response.start", "status": status, "headers": [(b"content-type", content_type)]})
         await send({"type": "http.response.body", "body": b"{}"})
     return app
@@ -44,6 +47,37 @@ def test_a_slow_request_logs_the_route_template_not_the_ids_or_the_query(caplog)
     assert "GET /api/runs/{run_id}" in msg and "status 200" in msg and "cache miss" in msg
     assert "abc123" not in msg and "secret" not in msg and "token" not in msg
     assert t.stats()[0]["route"] == "/api/runs/{run_id}" and t.stats()[0]["count"] == 1
+
+
+def test_a_slow_request_carries_the_handlers_counts_and_nothing_else(caplog):
+    """#858 a batch's kind and how many tickers - only those keys, only short ASCII words or counts."""
+    notes = [{"kind": "estimate-candles", "n": 24, "tickers": "NVDA,AAPL", "ticker": "NVDA", "flag": True},
+             "kind=levels",                                            # only a dict is read
+             {"ticker": "NVDA", "symbol": "005930"},                    # a single ticker under any other key
+             {"kind": "레벨", "n": "x" * 25},                           # not ASCII, too long
+             {"kind": "levels", "n": True}]                            # a bool is not a count
+    with caplog.at_level(logging.WARNING, logger="desk.req_timing"):
+        for note in notes:
+            _call(rt.TimingMiddleware(_app(route_path="/api/batch/{kind}", note=note), rt.Timings(), slow_ms=0),
+                  path="/api/batch/estimate-candles", query=b"tickers=NVDA,AAPL")
+    first, *rest = (r.getMessage() for r in caplog.records)
+    assert "GET /api/batch/{kind}" in first and "status 200 kind=estimate-candles n=24" in first
+    assert "NVDA" not in first and "flag" not in first and "ticker" not in first
+    assert [m.split("status 200", 1)[1] for m in rest] == ["", "", "", " kind=levels"]
+    assert not any("NVDA" in m or "005930" in m or "레벨" in m for m in rest)
+
+
+def test_the_batch_and_the_board_tell_the_slow_line_their_counts_not_their_tickers(db_url, caplog, monkeypatch):
+    from tests.test_api import _client
+
+    monkeypatch.setattr(rt.TimingMiddleware.__init__, "__defaults__", (0.0,))      # every request is "slow"
+    with _client(db_url) as client, caplog.at_level(logging.WARNING, logger="desk.req_timing"):
+        client.get("/api/batch/gaps?tickers=ZZTEST1,ZZTEST2")
+        client.get("/api/estimates?tickers=ZZTEST1,ZZTEST2,ZZTEST3")
+    lines = [r.getMessage() for r in caplog.records if "/api/batch/" in r.getMessage() or "/api/estimates" in r.getMessage()]
+    assert any("GET /api/batch/{kind}" in m and "kind=gaps n=2" in m for m in lines)
+    assert any("GET /api/estimates" in m and " n=3" in m for m in lines)
+    assert not any("ZZTEST" in m for m in lines)
 
 
 def test_a_fast_request_is_counted_but_not_logged_and_a_stream_is_left_out(caplog):

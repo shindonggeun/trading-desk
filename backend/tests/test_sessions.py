@@ -92,6 +92,12 @@ class Estimator:
             raise LookupError("no contract")
         return self.ests[ticker]
 
+    async def resolve(self, ticker):
+        return ("XUSDT", "contract", None, 1.0) if ticker in self.ests else None
+
+    async def last_close(self, ticker):            # #858 the board's change base in the session
+        return self.ests.get(ticker)
+
     async def _nxt_trade(self, code):
         return self.nxt.get(code)
 
@@ -160,6 +166,33 @@ def test_a_us_stock_off_hours_falls_back_to_toss_only_when_it_moved(db_url, monk
     assert rows["SOXL"]["change_pct"] == round((47.1 / 46.0 - 1) * 100, 2) and rows["SOXL"]["session"] == "pre"
     # the broker answered the close itself: no off-hours trade, the estimate stays
     assert (rows["TQQQ"]["state"], rows["TQQQ"]["quote_source"]) == ("estimate", "binance-estimate")
+
+
+def test_off_hours_the_broker_quote_is_read_alongside_the_estimate(db_url, monkeypatch):
+    """#858: the Toss price a US row may take off hours is asked while the estimate is computed, not after it
+    (the estimate here waits up to a second for that quote to have started)."""
+    name, started, saw = MockBroker().name, [], []
+
+    async def quote(self, ticker):
+        started.append(ticker)
+        return Quote(ticker, 47.1, "USD", name, "2026-11-10T09:00:00+00:00")
+
+    class Slow(Estimator):
+        async def estimate(self, ticker):
+            for _ in range(100):
+                if started:
+                    break
+                await asyncio.sleep(0.01)
+            saw.append((ticker, bool(started)))
+            return await super().estimate(ticker)
+
+    monkeypatch.setattr("desk.prices.PriceSource.quote", quote)
+    est = Slow({"SOXL": _est(close=46.0, value=46.5)})
+    rows = _board(db_url, monkeypatch, est, "overnight", "SOXL,NOPE")
+    assert (rows["SOXL"]["state"], rows["SOXL"]["price"], rows["SOXL"]["quote_source"]) == ("live", 47.1, "toss")
+    assert dict(saw)["SOXL"] is True
+    # no contract: no estimate, and no broker read for it either (as before the read ahead)
+    assert rows["NOPE"]["state"] == "unavailable" and "NOPE" not in started
 
 
 def test_closed_markets_show_the_estimate_with_its_source(db_url, monkeypatch):

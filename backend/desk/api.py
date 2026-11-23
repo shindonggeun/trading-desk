@@ -111,6 +111,7 @@ from . import (
     tips,
     verdict,
     web_search,
+    weekly_chart_evidence,
     weekly_map,
 )
 from .account_owner import AccountOwnerStore, OwnerBinding
@@ -2924,7 +2925,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             # the weekly gaps beside the daily, and (#751) the long view's weeks
             wanted.append(prices.candles(ticker, "1w", max(CHART_READ_WEEKS, accumulation_live.WEEKLY_BARS)))
         got = await asyncio.gather(*wanted, return_exceptions=True)
-        weeks = got[len(tfs)]["bars"] if "1d" in tfs and not isinstance(got[len(tfs)], BaseException) else None
+        weekly = got[-1] if "1d" in tfs and isinstance(got[-1], dict) else None
+        weeks = weekly["bars"] if weekly is not None else None
         now = datetime.now(UTC)
         frames, keep = [], CHART_READ_MAX_SEC
         if "1d" in tfs and weeks is None:
@@ -2966,6 +2968,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             out["accumulation"], out["legs"] = await accumulation_live.read(tfs, got, weeks, now, price)
             if out["accumulation"] is None or None in (out["accumulation"].get("mid"), out["accumulation"].get("long")):
                 keep = min(keep, CHART_READ_MIN_SEC * 4)                        # a view missing: ask again soon
+            if ticker == "NQ=F":
+                try:
+                    reference = weekly_chart_evidence.chart_price(tfs, got, now)
+                    out["weekly_drawdown"] = await asyncio.to_thread(weekly_chart_evidence.build, weekly, reference, now)
+                except Exception as exc:  # noqa: BLE001 - the other chart frames still stand
+                    log.warning("chart read weekly evidence failed: %s", type(exc).__name__)
+                    out["weekly_drawdown"] = weekly_chart_evidence.unavailable("weekly_evidence_error", now)
+                if out["weekly_drawdown"]["status"] == "unavailable":
+                    keep = min(keep, CHART_READ_MIN_SEC * 4)
         if len(chart_reads) > 256:
             chart_reads.clear()
         chart_reads[key] = (time.monotonic() + max(CHART_READ_MIN_SEC, keep), out)

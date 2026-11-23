@@ -7,11 +7,11 @@ import { price, time } from "../format";
 import type { BoardItem, EstimatedCandles, LongShortItem } from "../types";
 import { LongShortBar, LongShortToggle, useLongShort, useLongShortShown } from "./LongShortBar";
 import EarningsPreviewCard from "./EarningsPreviewCard";
-import { addMonths, todayKst } from "../calendar";
+import { addDays, addMonths, todayKst } from "../calendar";
 
 const EARN_SOON_DAYS = 3;     // #294 실적 발표가 이 날 수 안이면 타일에 D-n 배지
 
-/** #294 즐겨찾기 종목의 가까운 실적 발표일(이번 달 · 다음 달 캘린더에서). 실패하면 배지만 없다. */
+/** #294 즐겨찾기 종목의 가까운 실적 발표일(이번 달 캘린더, D-3 범위가 다음 달에 걸칠 때만 다음 달도 — #705). 실패하면 배지만 없다. */
 function useEarningsSoon(key: string): Record<string, number> {
   const [soon, setSoon] = useState<Record<string, number>>({});
   useEffect(() => {
@@ -19,7 +19,8 @@ function useEarningsSoon(key: string): Record<string, number> {
     let alive = true;
     const today = todayKst();
     const month = today.slice(0, 7);
-    Promise.allSettled([api.marketMonth(month), api.marketMonth(addMonths(month, 1))]).then((rs) => {
+    const months = addDays(today, EARN_SOON_DAYS).slice(0, 7) === month ? [month] : [month, addMonths(month, 1)];
+    Promise.allSettled(months.map((m) => api.marketMonth(m))).then((rs) => {
       if (!alive) return;
       const want = new Set(key.split(","));
       const out: Record<string, number> = {};

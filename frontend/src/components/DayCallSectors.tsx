@@ -51,16 +51,24 @@ function Picks({ sectors, weak = false }: { sectors: Sector[]; weak?: boolean })
   );
 }
 
-export default function DayCallSectors({ market }: { market: DayCallMarket }) {
+/** #705 카드가 같이 받아 둔 섹터: "wait" 받는 중(아직 묻지 않는다) · 준비된 응답(그대로 쓴다) · null(직접 묻는다) */
+export type SectorsPreset = DayCallSectorsResponse | "wait" | null;
+
+export default function DayCallSectors({ market, preset = null }: { market: DayCallMarket; preset?: SectorsPreset }) {
   const [data, setData] = useState<DayCallSectorsResponse | "failed">();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
+    if (preset === "wait") return;
+    if (preset && attempt === 0) {
+      setData(preset);
+      return;
+    }
     let active = true;
     api.dayCallSectors(market)
       .then((response) => { if (active) setData(response); })
       .catch(() => { if (active) setData("failed"); });
     return () => { active = false; };
-  }, [market, attempt]);
+  }, [market, attempt, preset]);
 
   return (
     <section className="daycall-sectors small" aria-labelledby="daycall-sector-title">

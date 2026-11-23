@@ -426,6 +426,9 @@ export const api = {
   // #573 오늘 방향(#572) — 판정이 없으면 200 + call: null
   dayCall: (market: DayCallMarket) => call<DayCallToday>(`/api/day-call?market=${market}`),
   dayCallSectors: (market: DayCallMarket) => call<DayCallSectorsResponse>(`/api/day-call/sectors?market=${market}`),
+  /** #705 오늘 방향 카드의 세 요청(국장 · 미장 판정, 한 시장의 섹터)을 한 번에 — 실패한 부분은 {error, detail} */
+  dayCallBoard: (sectors?: DayCallMarket) =>
+    call<DayCallBoard>(`/api/day-call/board${sectors ? `?sectors=${sectors}` : ""}`),
   dayCallHistory: (market: DayCallMarket, days = 90) =>
     call<DayCallHistory>(`/api/day-call/history?market=${market}&days=${days}`),
   dayCallStats: (market: DayCallMarket, days = 90) =>
@@ -463,6 +466,14 @@ const BATCH_MAX = 30;
 const batchFailed = (x: unknown): boolean =>
   x != null && typeof x === "object" && typeof (x as { error?: unknown }).error === "number"
   && Object.keys(x).every((k) => k === "error" || k === "detail");
+
+/** 묶음 응답(#705 /api/day-call/board 등)의 한 부분 — 그 부분만 실패하면 {error: 상태, detail} */
+export type PartError = { error: number; detail?: unknown };
+export const isPartError = (x: unknown): x is PartError => batchFailed(x);
+export interface DayCallBoard {
+  calls: Partial<Record<DayCallMarket, DayCallToday | PartError>>;
+  sectors?: DayCallSectorsResponse | PartError;
+}
 
 /**
  * 종목 → 값(그 종목이 실패하면 null). 30개 넘으면 나눠 부른다. 일괄 경로가 없는 서버(배포 사이 404)면 single 로 하나씩.

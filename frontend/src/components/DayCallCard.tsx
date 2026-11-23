@@ -1,10 +1,10 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
-import { api, ApiError } from "../api";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { api, ApiError, isPartError } from "../api";
 import { fakeDayCall } from "../briefsFake";
 import { DAY_CALL_KINDS, DAY_CALL_STAGES, KIND_KO, kstStamp, LIVE_RECORD_MIN, MARKET_KO, percent, rate, scoredOutcome, STAGE_KO, STAGE_MARK, verdictText } from "../dayCall";
 import type { DayCallEntry, DayCallMarket, DayCallProbs, DayCallReason, DayCallRecord, DayCallStage, DayCallToday } from "../types";
 
-import DayCallSectors from "./DayCallSectors";
+import DayCallSectors, { type DayCallSectorsResponse, type SectorsPreset } from "./DayCallSectors";
 const is404 = (e: unknown) => e instanceof ApiError && e.status === 404;
 const PENDING_TEXT = "오늘 방향 판정은 준비 중이에요. 판정이 시작되면 여기에 보여요.";
 const MARKETS: DayCallMarket[] = ["kr", "us"];
@@ -138,17 +138,37 @@ export default function DayCallCard() {
     return kstHour >= 16 || kstHour < 6 ? "us" : "kr";      // 국장이 끝난 뒤 · 새벽은 미장부터
   });
 
+  // #705 처음 보이는 시장의 섹터는 판정과 같은 요청(/api/day-call/board)으로 받는다 — 받기 전엔 섹터 칸이 기다린다
+  const firstMarket = useRef(market).current;
+  const [sectors, setSectors] = useState<SectorsPreset>("wait");
+
   useEffect(() => {
     let alive = true;
-    for (const m of MARKETS) {
+    // API(#572)가 아직 없으면(404) 개발 모드는 예시, 운영은 "준비 중" — 오류처럼 보이지 않게
+    const missing = (m: DayCallMarket, notFound: boolean) =>
+      setToday((cur) => ({ ...cur, [m]: notFound ? (import.meta.env.DEV ? fakeDayCall(m) : "pending") : "failed" }));
+    const one = (m: DayCallMarket) =>
       api.dayCall(m).then((t) => alive && setToday((cur) => ({ ...cur, [m]: t })))
-        // API(#572)가 아직 없으면(404) 개발 모드는 예시, 운영은 "준비 중" — 오류처럼 보이지 않게
-        .catch((e: unknown) => {
-          if (alive) setToday((cur) => ({ ...cur, [m]: is404(e) ? (import.meta.env.DEV ? fakeDayCall(m) : "pending") : "failed" }));
-        });
-    }
+        .catch((e: unknown) => { if (alive) missing(m, is404(e)); });
+    api.dayCallBoard(firstMarket).then((b) => {
+      if (!alive) return;
+      for (const m of MARKETS) {
+        const got = b.calls[m];
+        if (got === undefined) void one(m);
+        else if (isPartError(got)) missing(m, got.error === 404);
+        else setToday((cur) => ({ ...cur, [m]: got }));
+      }
+      // 준비된 섹터만 넘긴다 — 받는 중(loading) · 실패면 섹터 칸이 예전처럼 따로 묻는다(그 경로는 더 기다린다)
+      const s = b.sectors;
+      setSectors(s && !isPartError(s) && s.ready ? (s as DayCallSectorsResponse) : null);
+    }, () => {
+      // 묶음 경로가 없는 서버(배포 사이 404) · 실패: 예전처럼 시장마다
+      if (!alive) return;
+      setSectors(null);
+      for (const m of MARKETS) void one(m);
+    });
     return () => { alive = false; };
-  }, []);
+  }, [firstMarket]);
 
   const onKey = (e: KeyboardEvent<HTMLButtonElement>) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
@@ -194,7 +214,7 @@ export default function DayCallCard() {
             </div>
             </>
           )}
-        <DayCallSectors key={market} market={market} />
+        <DayCallSectors key={market} market={market} preset={market === firstMarket ? sectors : null} />
         <p className="daycall-note small muted">
           확률은 추정이에요{note ? ` — ${note}` : ""}. <a href="#/day-call">적중 기록</a>
         </p>

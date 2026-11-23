@@ -518,6 +518,22 @@ unset REDISCLI_AUTH
 3. 비교: `/api/market/flow` · `/api/market/futures` · `/api/quote` · `/api/levels` · `/api/gaps` · `/api/oscillator` 의 p95,
    그리고 `/api/status` `outbound` 의 `toss` · `kis`(그 프로세스가 `since` 부터 부른 수). api 프로세스의 수가 0 에 가까우면 완료.
 
+### 이벤트 루프 지연 (#859)
+
+요청 · 스트림 · 백그라운드 작업이 이벤트 루프 하나를 같이 쓴다. 루프 위의 동기 호출(파일 쓰기, TLS 컨텍스트 생성, 큰 계산)이나
+GIL 을 잡은 워커 스레드가 있으면 모든 요청이 같이 늦어진다(`desk.loop_lag`).
+
+- `/api/status` 의 `loop_lag`: 최근 5분의 `p50_ms` · `p95_ms` · `max_ms`, `stall_ms`(250ms) 넘게 멈춘 횟수 `stalls_recent`,
+  그리고 기동 뒤 남겨 둔 멈춤(최근 200개)의 자리 `sites`(`모듈.py:줄 함수` · 횟수 · 최대 ms). 그 자리는 멈춤을 처음 본 순간
+  루프 스레드가 서 있던 가장 안쪽 `desk` 프레임이다. 경고 줄 `event loop blocked` 는 자리마다 1분에 한 번(그 사이 횟수를 붙여) 남는다.
+  자리가 소켓 읽기처럼 평범한 곳이면 루프가 GIL 을 기다린 것(워커 스레드의 CPU 작업)으로 읽는다.
+- slow request 줄 끝의 `loop_max=<ms>`: 그 요청이 도는 동안 가장 길게 멈춘 루프 시간. 요청 시간과 비슷하면 그 요청은 자기 일이
+  아니라 루프를 기다린 것이다.
+
+```bash
+ssh homelab-backend-server 'docker logs --since 24h trading-desk-backend-prod 2>&1 | grep "event loop blocked" | sed "s/.* at //" | sort | uniq -c | sort -rn | head'
+```
+
 ## 14. 운영 로그의 알려진 외부 원천 실패 (#861)
 
 분석(TradingAgents)의 소셜 · 예측시장 원천은 운영 서버에서 막혀 있다. 라이브러리가 실패를 삼키고 "못 가져옴" 표시

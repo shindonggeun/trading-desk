@@ -551,3 +551,48 @@ ssh homelab-backend-server 'docker logs --since 24h trading-desk-backend-prod 2>
   패치와 SHA 올리기가 필요하다(sentiment analyst 가 StockTwits · Reddit 을 설정 없이 직접 부른다) — 별도 이슈로 다룬다.
 - `Cookie fetch from fc.yahoo.com failed` 는 yfinance 내부 경고다. 바로 뒤 Yahoo 가 빈 일봉을 줄 수 있어 `desk.prices._yahoo_rows` 가
   일봉 이상이 비면 한 번 더 묻는다(로그 `Yahoo returned no 1d bars for …; asking once more`).
+
+## 15. 계좌 데이터 보호 모드 (#871)
+
+현재 배포 팩토리는 보호 모드를 명시적으로 주입한 기동만 지원한다. 운영 팩토리의 DB 정책 연동과 브로커·알림 목적지 검증이 완료되기 전에는 운영 DB를 `legacy`에 둔다. 격리한 DB에는 기존 운영 팩토리로 재접속할 수 없다.
+
+### 전환 전 점검
+
+1. 전환 대상 SHA에서 PostgreSQL 17 CI와 `tests/test_account_egress.py`의 리허설이 성공했는지 확인한다. API·collector·analyst를 모두 같은 승인 SHA로 교체할 수 있는지 확인한다. 소유 계정과 실제 브로커 계좌, 사용할 외부 알림 목적지는 각각 대조한다.
+2. 신뢰할 수 있는 운영 셸에서 실행 중인 백엔드 컨테이너의 설정을 점검 프로세스에 직접 전달한다. 다음은 split 구성의 점검이다. `all` 구성은 `docker inspect`에 `trading-desk-backend-prod` 하나만 전달한다. Docker 설정 원문에는 비밀이 있으므로 파일·로그에 남기지 않는다.
+
+   ```bash
+   docker inspect --type container trading-desk-backend-prod trading-desk-collector-prod trading-desk-analyst-prod \
+     | docker exec -i trading-desk-backend-prod python -m desk.privacy_admin status --inspect-stdin
+   ```
+
+3. 점검 결과의 정책 상태·세대, 역할 구성, 명시 소유자 슬롯과 레거시 파생 기록 건수를 검토한다. 역할 점검은 실행 중인 컨테이너의 기동 명령, 이미지, 환경과 메모리 볼륨을 비교하며 split에는 PostgreSQL이 필요하다. `--inspect-stdin`을 생략한 상태 조회에는 역할 대조 결과가 `unverified`로 표시된다. `python -m desk.privacy_admin hide-legacy`에서 이전 대상 건수를 먼저 읽는다. 롤아웃 승인과 세 역할의 호환 기동이 확인될 때까지 쓰기 명령을 실행하지 않는다.
+
+### 승인 후 전환 순서
+
+1. 배포 잡을 정지하고 DB와 TradingAgents 볼륨을 백업한다. 인그레스에서 유지보수 503을 응답하고, 열려 있는 스트림과 분석의 종료를 확인한다. DB 정책을 모르는 이미지나 작업자가 있으면 전환 전 모두 중지한다. split 구성에서는 API·collector·analyst가 모두 전환에 참여해야 한다.
+2. 별도로 승인된 정책 전환 경로로 `legacy → isolated`로 이동한다. 정지한 서비스와 같은 DB·메모리 볼륨을 사용하는 단발 관리 컨테이너를 실행한다. 승인된 이미지가 로컬의 `trading-desk-backend:prod`를 가리키는지 확인한 뒤, 승인된 커밋의 저장소 루트에서 아래 함수를 사용한다. `PRIVACY_ENV_FILE`에는 [3절](#3-운영-env--vault-정본--envruntime-손-배포-대체)의 동일 운영 설정을 전달받은 권한 600 파일의 경로를 지정한다. 셸에 별도로 export된 `DESK_DATABASE_URL`과 `DESK_DOCKER_NETWORK`는 env 파일보다 우선하므로 두 키가 없는 관리 셸에서 실행한다. 관리가 끝나면 임시 env 파일을 정리한다.
+
+   ```bash
+   privacy_admin() {
+     docker compose -p trading-desk-backend-prod --env-file "${PRIVACY_ENV_FILE:?}" \
+       -f backend/docker-compose-backend.yml run --no-deps --rm --pull never -T backend-prod \
+       python -m desk.privacy_admin "$@"
+   }
+   privacy_admin status
+   ```
+
+   아래 두 명령의 `N`을 점검에서 확인한 격리 세대로 바꿔 실행한다. 중간에 실패하면 같은 세대에서 남은 대상 건수를 확인하고 다시 실행한다.
+
+   ```bash
+   privacy_admin hide-legacy --apply --epoch N --confirm
+   privacy_admin hide-legacy --archive-memory --apply --epoch N --confirm
+   ```
+
+   메모리 보관은 해당 볼륨을 사용하는 모든 프로세스를 멈춘 상태에서 백엔드와 같은 UID로 실행한다. Linux의 동일 볼륨에서 그룹·다른 사용자에게 쓰기가 닫힌 디렉터리를 써야 한다. 레거시 메모리 두 파일을 비공개로 보관하며 보호 모드는 보관 파일을 읽지 않는다. `hide-legacy`로 조치 대상 run과 원래 위치에 남은 메모리 파일이 모두 0건인지 다시 확인한다. 바인딩 증거가 없는 run과 보유 알림은 숨긴 채 보존하므로 `status`의 비귀속 건수에는 남을 수 있다.
+
+3. 승인된 정책 전환 경로로 `isolated → protected`를 적용한 뒤 API를 먼저 띄워 헬스를 확인하고, 같은 이미지의 collector·analyst를 띄운다. 인그레스를 열기 전에 소유자와 두 번째 계정의 계좌·분석 접근, 분석 claim, 보유 알림 차단, 공개 알림과 공개 조회를 확인한다. 로그에는 역할·상태·건수만 기록한다.
+
+### 장애 시 격리로 복귀
+
+인그레스가 유지보수 503을 응답하도록 하고 추가 배포와 작업 시작을 멈춘다. 위 관리 컨테이너의 `privacy_admin status`에서 보호 세대를 확인하고 `privacy_admin rollback --epoch N --confirm`을 실행한다. 보호 상태와 세대가 일치할 때만 `protected → isolated`가 적용된다. 기존 호환 프로세스의 요청은 503이 되고 새 프로세스는 기동이 거절된다. 기존 요청·작업의 종료와 데이터 보존을 확인한 뒤 유지보수 상태를 유지한다. 이미 외부로 전달된 알림은 회수할 수 없다. [12절의 `all` 복귀](#기존-all-경로로-복귀)는 프로세스 배치 변경에만 사용한다.

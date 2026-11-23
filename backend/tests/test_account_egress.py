@@ -2,24 +2,33 @@
 what is derived from those reach the owner and no other account - legacy (the deployed mode) and protected."""
 
 import json
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from secrets import randbits
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import insert, select
+from sqlalchemy import func, insert, select
 
 from desk import api as api_module
-from desk import run_queue
+from desk import privacy_admin, run_queue
 from desk.account_owner import AccountOwnerStore
 from desk.api import create_app
 from desk.auth import Auth
 from desk.broker.base import Fill, Holding
 from desk.broker.mock import MockBroker
-from desk.db import make_engine, market_alerts, migrate, now, users
+from desk.db import events, make_engine, market_alerts, migrate, now, runs, users
 from desk.futures_flow import KST
 from desk.holding_watch import KIND as HOLDING_ALERT
-from desk.privacy import ISOLATED, PROTECTED, OwnerResources, PrivacyPolicyStore
+from desk.privacy import (
+    ISOLATED,
+    LEGACY,
+    PROTECTED,
+    OwnerResources,
+    PolicyChanged,
+    PolicyEpoch,
+    PrivacyPolicyStore,
+)
 from desk.runner import make_fake_runner
 from desk.settings import Settings
 from tests.test_api import PASSWORD, _wait_done
@@ -91,35 +100,51 @@ def _login(client, username):
     assert client.post("/api/auth/login", json={"username": username, "password": PASSWORD}).status_code == 204
 
 
-@pytest.fixture(params=["legacy", "protected"])
-def desk(request, db_url, monkeypatch):
-    """The app in either mode, the owner (the first account; bound in protected mode) and a second account."""
-    mode = request.param
+@pytest.fixture
+def egress_db(db_url, monkeypatch):
     monkeypatch.setattr(run_queue, "LOCK_KEY", randbits(63))
+    monkeypatch.setattr(api_module, "make_broker", lambda _settings, _tokens: CanaryBroker())
     migrate(db_url)
     engine = make_engine(db_url)
-    auth = Auth(engine, timedelta(hours=1), timedelta(hours=1))
-    auth.create_user(OWNER, PASSWORD)
-    auth.create_user(OTHER, PASSWORD)
-    resources = None
-    if mode == "legacy":
-        monkeypatch.setattr(api_module, "make_broker", lambda _settings, _tokens: CanaryBroker())
-    else:
+    try:
+        auth = Auth(engine, timedelta(hours=1), timedelta(hours=1))
+        auth.create_user(OWNER, PASSWORD)
+        auth.create_user(OTHER, PASSWORD)
         with engine.connect() as conn:
             owner_id = conn.scalar(select(users.c.id).where(users.c.username == OWNER))
-        owners = AccountOwnerStore(engine)
-        bound = owners.bind_verified(verified_user_id=owner_id, expected_vacancy=owners.binding())
-        policy = PrivacyPolicyStore(engine)
-        isolated = policy.transition(policy.current(), ISOLATED)
-        assert bound is not None and isolated is not None and policy.transition(isolated, PROTECTED) is not None
-        resources = OwnerResources(bound, broker=CanaryBroker())
-    app = create_app(Settings(database_url=db_url, fake_runs=True, fake_delay=0), runner=make_fake_runner(0),
-                     chatter=_chatter, protect_run_reads=mode == "protected", owner_resources=resources)
-    try:
-        with TestClient(app, base_url="https://testserver") as client:
-            yield mode, client, engine
+        yield engine, owner_id
     finally:
         engine.dispose()
+
+
+def _owner_resources(engine, owner_id):
+    owners = AccountOwnerStore(engine)
+    bound = owners.bind_verified(verified_user_id=owner_id, expected_vacancy=owners.binding())
+    assert bound is not None
+    return OwnerResources(bound, broker=CanaryBroker())
+
+
+@contextmanager
+def _open_desk(db_url, mode, resources=None):
+    app = create_app(Settings(database_url=db_url, fake_runs=True, fake_delay=0), runner=make_fake_runner(0),
+                     chatter=_chatter, protect_run_reads=mode == PROTECTED, owner_resources=resources)
+    with TestClient(app, base_url="https://testserver") as client:
+        yield client
+
+
+@pytest.fixture(params=[LEGACY, PROTECTED])
+def desk(request, db_url, egress_db):
+    """The app in either mode, the owner (the first account; bound in protected mode) and a second account."""
+    mode = request.param
+    engine, owner_id = egress_db
+    resources = None
+    if mode == PROTECTED:
+        resources = _owner_resources(engine, owner_id)
+        policy = PrivacyPolicyStore(engine)
+        isolated = policy.transition(PolicyEpoch(LEGACY, 0), ISOLATED)
+        assert isolated is not None and policy.transition(isolated, PROTECTED) is not None
+    with _open_desk(db_url, mode, resources) as client:
+        yield mode, client, engine
 
 
 def _seed(mode, client, engine) -> str:
@@ -138,10 +163,11 @@ def _seed(mode, client, engine) -> str:
     if mode == "legacy":
         assert client.put("/api/holding-watch", json={"tickers": {HELD: {"max_loss_pct": 7}}}).status_code == 200
     client.app.state.holding_watch.last = {HELD: {"ticker": HELD, "average_price": AVERAGE, "stop": 29000.0}}
+    alert_time = "10:00:00" if mode == LEGACY else "10:01:00"
     with engine.begin() as conn:
         conn.execute(insert(market_alerts).values(
             trade_date=TODAY, kind=HOLDING_ALERT, rule="stop", market="us", who="all", severity="strong",
-            at=f"{TODAY}T10:00:00+09:00", value=AVERAGE, prev=None, pushed=True, created_at=now(),
+            at=f"{TODAY}T{alert_time}+09:00", value=AVERAGE, prev=None, pushed=True, created_at=now(),
             text=f"{HELD} {QUANTITY:,.2f}주 평단 {AVERAGE:,.2f} 손절선 도달"))
     return run_id
 
@@ -162,9 +188,7 @@ def _walk(client, run_id, skip=()) -> dict[str, tuple[int, list[str], str]]:
     return seen
 
 
-def test_a_second_account_gets_no_account_data_on_any_path(desk):
-    mode, client, engine = desk
-    run_id = _seed(mode, client, engine)
+def _assert_second_account_exits(mode, client, run_id):
     _login(client, OTHER)
     missing = {path: client.get(path.format(run="000000000000")) for path in RUN_SCOPED}
 
@@ -181,8 +205,16 @@ def test_a_second_account_gets_no_account_data_on_any_path(desk):
     for exit_ in ("GET /api/runs", "GET /api/paper/trades") + (("CHAT recent_runs",) if mode == "legacy" else ()):
         assert seen[exit_][0] == 200 and SHARED in seen[exit_][2], exit_
 
+    second_session = dict(client.cookies)
+    client.cookies.clear()      # leave the second account's session open for the isolation rehearsal
     _login(client, OWNER)       # the second account's delete took nothing away
     assert client.get(f"/api/runs/{run_id}").status_code == 200
+    return second_session
+
+
+def test_a_second_account_gets_no_account_data_on_any_path(desk):
+    mode, client, engine = desk
+    _assert_second_account_exits(mode, client, _seed(mode, client, engine))
 
 
 # where the account must show for its owner, so the table above cannot pass by finding nothing anywhere
@@ -196,15 +228,76 @@ OWNER_SEES = {
 }
 
 
-def test_the_owner_still_gets_the_account_on_the_same_paths(desk):
-    mode, client, engine = desk
-    run_id = _seed(mode, client, engine)
+def _assert_owner_exits(mode, client, run_id, *, preserve_run=False):
     events = json.dumps(client.get(f"/api/runs/{run_id}/events").json(), ensure_ascii=False)
     assert f"Current position in {HELD}: 7,919 units, average price 31,337.42" in events   # the agents read it
     # the owner's portfolio stream never ends while the session lives: GET /api/portfolio is its snapshot
-    seen = _walk(client, run_id, skip={"GET /api/portfolio/stream"})
+    skipped = {"GET /api/portfolio/stream"}
+    if preserve_run:
+        skipped.add("DELETE /api/runs/{run}")
+    seen = _walk(client, run_id, skip=skipped)
     marked = {exit_ for exit_, (_, marks, _) in seen.items() if marks}
     assert marked >= OWNER_SEES[mode], f"{mode}: {sorted(OWNER_SEES[mode] - marked)}"
     for path in RUN_SCOPED:
         assert seen[f"GET {path}"][0] != 404, path      # the guard lets the owner through
-    assert seen["DELETE /api/runs/{run}"][0] == 204
+    if not preserve_run:
+        assert seen["DELETE /api/runs/{run}"][0] == 204
+
+
+def test_the_owner_still_gets_the_account_on_the_same_paths(desk):
+    mode, client, engine = desk
+    _assert_owner_exits(mode, client, _seed(mode, client, engine))
+
+
+def _assert_isolated(client, run_id, second_session):
+    assert client.get("/api/health").status_code == 503
+    for session in (dict(client.cookies), second_session):
+        client.cookies.clear()
+        client.cookies.update(session)
+        assert client.get("/api/auth/me").status_code == 503
+        seen = _walk(client, run_id)
+        assert {status for status, _, _ in seen.values()} == {503}
+        assert not any(marks for _, marks, _ in seen.values())
+    assert client.post("/api/auth/login", json={"username": OTHER, "password": PASSWORD}).status_code == 503
+
+
+def _retained_rows(engine):
+    with engine.connect() as conn:
+        return tuple(conn.scalar(select(func.count()).select_from(table)) for table in (runs, events, market_alerts))
+
+
+def test_account_egress_rehearsal_on_one_database(db_url, egress_db, monkeypatch, capsys):
+    """CI runs the same egress matrix through both live epochs on isolated PostgreSQL 17."""
+    engine, owner_id = egress_db
+    policy = PrivacyPolicyStore(engine)
+    with _open_desk(db_url, LEGACY) as client:
+        legacy_run = _seed(LEGACY, client, engine)
+        second_session = _assert_second_account_exits(LEGACY, client, legacy_run)
+        _assert_owner_exits(LEGACY, client, legacy_run, preserve_run=True)
+        legacy_rows = _retained_rows(engine)
+        isolated = policy.transition(PolicyEpoch(LEGACY, 0), ISOLATED)
+        assert isolated == PolicyEpoch(ISOLATED, 1)
+        _assert_isolated(client, legacy_run, second_session)
+        assert _retained_rows(engine) == legacy_rows
+    resources = _owner_resources(engine, owner_id)
+    assert policy.transition(isolated, PROTECTED) == PolicyEpoch(PROTECTED, 2)
+    with _open_desk(db_url, PROTECTED, resources) as client:
+        protected_run = _seed(PROTECTED, client, engine)
+        assert client.get(f"/api/runs/{legacy_run}").status_code == 404
+        second_session = _assert_second_account_exits(PROTECTED, client, protected_run)
+        _assert_owner_exits(PROTECTED, client, protected_run, preserve_run=True)
+        protected_rows = _retained_rows(engine)
+        assert protected_rows[0] > legacy_rows[0]
+        monkeypatch.setenv("DESK_DATABASE_URL", db_url)
+        capsys.readouterr()
+        assert privacy_admin.main(["rollback", "--epoch", "2", "--confirm"]) == 0
+        assert json.loads(capsys.readouterr().out) == {"mode": ISOLATED, "epoch": 3}
+        isolated = policy.current()
+        assert isolated == PolicyEpoch(ISOLATED, 3)
+        _assert_isolated(client, protected_run, second_session)
+        assert _retained_rows(engine) == protected_rows
+    assert policy.transition(isolated, LEGACY) is None
+    for role in ("api", "collector", "analyst"):
+        for protected in (False, True):
+            with pytest.raises(PolicyChanged):
+                create_app(Settings(database_url=db_url, role=role, fake_runs=True), protect_run_reads=protected)

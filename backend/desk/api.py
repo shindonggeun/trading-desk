@@ -474,10 +474,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             approved_binding, toss_seal_material = binding, verified.seal_material
         tokens = TokenStore(engine, role=settings.role, toss_seal_material=toss_seal_material,
                             fence_issue=fence_broker_token)
-        broker = make_broker(settings, tokens)
         if approved_binding is not None:
             # The deployed factory approves this broker only. Rehearsals can pass explicit resources.
+            broker = make_broker(settings, tokens, redact_toss_errors=True)
             owner_resources = OwnerResources(approved_binding, broker)
+        else:
+            broker = make_broker(settings, tokens)
     except Exception:
         engine.dispose()
         raise

@@ -316,6 +316,59 @@ class RoutingTests(unittest.TestCase):
             self.assertEqual({**expected, "source": "cli"},
                              json.loads(sent[2].removeprefix("수신 thread: ")))
 
+    def test_same_name_and_cwd_cli_peer_does_not_replace_selected_ide(self):
+        with TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "team.sqlite"
+            owner, ide, cli = (str(uuid.uuid4()) for _ in range(3))
+            with closing(team.Team(db_path)) as store:
+                store.join("supervisor", owner, tmp)
+            shared = {"name": "같은 이름", "cwd": tmp}
+            rows = {
+                ide: {**shared, "id": ide, "source": "vscode", "status": {"type": "active"}},
+                cli: {**shared, "id": cli, "source": "cli", "status": {"type": "idle"},
+                      "approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}},
+            }
+
+            def rpc(method, params):
+                if method == "thread/loaded/list":
+                    return {"data": [cli, ide]}
+                if method == "thread/read":
+                    return {"thread": rows[params["threadId"]]}
+                if method == "thread/turns/list":
+                    self.assertEqual(ide, params["threadId"])
+                    return {"data": [{"id": "ide-turn", "status": "inProgress"}]}
+                if method == "turn/steer":
+                    return {"turnId": "ide-turn"}
+                self.fail(f"Unexpected route: {method}")
+
+            self.client.close = Mock()
+            self.client.call = Mock(side_effect=rpc)
+            with patch.object(team, "state_path", return_value=db_path), \
+                 patch.object(live, "Client", return_value=self.client), \
+                 patch.object(live, "same_repo"), \
+                 patch.object(team, "codex", return_value="codex"), \
+                 patch.dict(os.environ, {"CODEX_THREAD_ID": owner}):
+                out = io.StringIO()
+                with patch.object(team.sys, "argv", ["codex_team.py", "peers"]), redirect_stdout(out):
+                    self.assertEqual(0, team.main())
+                peers = json.loads(out.getvalue())
+                self.assertEqual([(cli, "cli"), (ide, "vscode")], [(p["id"], p["source"]) for p in peers])
+                self.assertEqual({"확인 불가"}, {peer["effectivePolicy"] for peer in peers})
+                self.client.call.reset_mock()
+
+                for argv in (["bind", "S1", "--thread", ide], [
+                    "send", "S1", "--from-role", "supervisor", "--live", "--message", "격리 시험",
+                ]):
+                    with patch.object(team.sys, "argv", ["codex_team.py", *argv]), redirect_stdout(io.StringIO()):
+                        self.assertEqual(0, team.main())
+
+            requests = [entry.args for entry in self.client.call.call_args_list]
+            self.assertEqual([ide] * 3, [p["threadId"] for m, p in requests if m == "thread/read"])
+            method, params = requests[-1]
+            self.assertEqual("turn/steer", method)
+            self.assertEqual({"threadId": ide, "expectedTurnId": "ide-turn", "input": params["input"]}, params)
+            self.assertIn("격리 시험", params["input"][0]["text"])
+
     def test_live_cli_failure_guides_to_the_same_saved_message(self):
         for mode in ("preflight", "dispatch"):
             with self.subTest(mode=mode), TemporaryDirectory() as tmp:

@@ -24,6 +24,8 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from . import net
+
 log = logging.getLogger(__name__)
 
 FOMC_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
@@ -137,7 +139,7 @@ class Calendar:
 
     async def refresh(self, client: httpx.AsyncClient | None = None, now: datetime | None = None) -> int:
         own = client is None
-        client = client or httpx.AsyncClient(timeout=TIMEOUT_SEC)
+        client = client or net.async_client(timeout=TIMEOUT_SEC)
         failures, ok = [], 0
         # built aside and swapped in whole: a request reading events() never sees the dict change
         fresh = dict(self.by_source)

@@ -30,7 +30,7 @@ from sqlalchemy import and_, delete, insert, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from . import market_calendar
+from . import market_calendar, net
 from .db import krx_daily, krx_days
 from .db import now as db_now
 
@@ -180,7 +180,7 @@ class Client:
         self._spent = (today, self.spent() + 1)
         self._last = _time.monotonic()
         try:
-            with httpx.Client(transport=self._transport, timeout=TIMEOUT_SEC, follow_redirects=False) as client:
+            with net.client(transport=self._transport, timeout=TIMEOUT_SEC, follow_redirects=False) as client:
                 res = client.get(url, params={"basDd": day.strftime("%Y%m%d")},
                                  headers={"AUTH_KEY": self._key, "Accept": "application/json"})
         except Exception as exc:  # noqa: BLE001 - no chaining: the request object carries the header

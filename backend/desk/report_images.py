@@ -36,7 +36,7 @@ from pathlib import Path
 
 import httpx
 
-from desk import explain
+from desk import explain, net
 
 log = logging.getLogger(__name__)
 
@@ -233,7 +233,7 @@ class ReportImages:
         body = {"model": self.model, "prompt": prompt, "n": 1, "size": self.size, "quality": self.quality}
         try:
             headers = {"Authorization": f"Bearer {self.__key}", "Content-Type": "application/json"}
-            with httpx.Client(transport=self.transport, timeout=httpx.Timeout(timeout, connect=10.0),
+            with net.client(transport=self.transport, timeout=httpx.Timeout(timeout, connect=10.0),
                               follow_redirects=False) as client:
                 r = client.post(URL, headers=headers, json=body)
         except (httpx.HTTPError, UnicodeError) as exc:

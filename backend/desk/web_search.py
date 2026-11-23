@@ -23,7 +23,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
-from . import macro_news
+from . import macro_news, net
 
 MAX_QUERY = 100
 MAX_ARTICLES = 8
@@ -90,7 +90,7 @@ def articles(items: list[dict], now: datetime, window: str) -> list[dict]:
 async def _fetch(params: dict, client: httpx.AsyncClient | None) -> list[dict]:
     global _last_request
     own = client is None
-    client = client or httpx.AsyncClient(timeout=TIMEOUT_SEC, follow_redirects=False)
+    client = client or net.async_client(timeout=TIMEOUT_SEC, follow_redirects=False)
     try:
         wait = REQUEST_GAP_SEC - (time.monotonic() - _last_request)
         if wait > 0:

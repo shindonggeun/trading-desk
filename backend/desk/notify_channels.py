@@ -30,6 +30,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.engine import Engine
 
+from . import net
 from .db import notify_channels, now
 from .otp import OtpUnavailable
 
@@ -136,7 +137,7 @@ class Telegram:
         text, link = message(payload, self.base_url)
         body = {"chat_id": self._chat, "text": text + (f"\n{link}" if link else ""),
                 "disable_web_page_preview": True}
-        client = self._client or httpx.Client()
+        client = self._client or net.client()
         try:
             resp = _post(client, f"{TELEGRAM_API}/bot{self._token}/sendMessage", self._sleep, json=body)
         finally:
@@ -257,7 +258,7 @@ class Kakao:
 
     def _token_call(self, form: dict) -> dict:
         form = {"client_id": self._key, "client_secret": self._secret, **form}
-        client = self._client or httpx.Client()
+        client = self._client or net.client()
         try:
             resp = _post(client, f"{KAKAO_AUTH}/oauth/token", self._sleep, data=form)
         finally:
@@ -332,7 +333,7 @@ class Kakao:
             raise ChannelError(f"kakao {_json(resp).get('code') or resp.status_code}")
 
     def _memo(self, tokens: dict, template: dict) -> httpx.Response:
-        client = self._client or httpx.Client()
+        client = self._client or net.client()
         try:
             return _post(client, f"{KAKAO_API}/v2/api/talk/memo/default/send", self._sleep,
                          headers={"Authorization": f"Bearer {tokens['access_token']}"},

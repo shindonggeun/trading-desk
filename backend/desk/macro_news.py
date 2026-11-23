@@ -35,7 +35,7 @@ from typing import Any
 
 import httpx
 
-from . import macro_history, market_calendar, sessions
+from . import macro_history, market_calendar, net, sessions
 
 log = logging.getLogger(__name__)
 
@@ -308,7 +308,7 @@ class Gdelt:
             await asyncio.sleep(wait)
         params = {"query": f"{query} sourcelang:english" if mode == "ArtList" else query,
                   "mode": mode, "format": "json", "timespan": timespan, **extra}
-        client = self._client or httpx.AsyncClient(timeout=TIMEOUT_SEC)
+        client = self._client or net.async_client(timeout=TIMEOUT_SEC)
         self.sent += 1
         try:
             response = await client.get(GDELT_DOC, params=params)
@@ -347,7 +347,7 @@ async def fetch_theme(gdelt: Gdelt, theme: Theme, now: datetime, *, headlines_to
         tones = _rows(await gdelt.get(theme.query, "TimelineTone", "72h"), "tone")
         if keep is not None:
             try:
-                keep(theme.id, volume, tones)
+                await asyncio.to_thread(keep, theme.id, volume, tones)     # #859 file writes, off the loop
             except Exception as exc:  # noqa: BLE001 - a full disk must not cost the brief
                 log.warning("macro news history not kept for %s: %s", theme.id, exc)
         articles = (await gdelt.get(theme.query, "ArtList", "72h", maxrecords=str(HEADLINES * 4), sort="HybridRel")
@@ -438,7 +438,7 @@ def parse_rss(text: str) -> list[dict]:
 async def fetch_theme_rss(theme: Theme, now: datetime, client: httpx.AsyncClient | None = None) -> dict:
     params = {"q": f"{theme.query} when:7d", "hl": "en-US", "gl": "US", "ceid": "US:en"}
     own = client is None
-    client = client or httpx.AsyncClient(timeout=TIMEOUT_SEC, follow_redirects=True)
+    client = client or net.async_client(timeout=TIMEOUT_SEC, follow_redirects=True)
     try:
         response = await client.get(GOOGLE_NEWS, params=params)
         response.raise_for_status()
@@ -549,7 +549,8 @@ class Cache:
                 day_values = got.pop("_daily", None)
                 if day_values:              # #485 a refused pass is kept too, under its own source
                     try:
-                        macro_history.record_daily(macro_history.source_dir(history, "google-news"), theme.id, *day_values)
+                        await asyncio.to_thread(macro_history.record_daily,          # #859 off the loop
+                                                macro_history.source_dir(history, "google-news"), theme.id, *day_values)
                     except Exception as exc:  # noqa: BLE001 - a full disk must not cost the brief
                         log.warning("macro news history (google-news) not kept for %s: %s", theme.id, exc)
                 fresh[theme.id] = got
@@ -568,7 +569,7 @@ class Cache:
             self.restored = False
         self.error = "; ".join(failures) or None
         if ok:
-            self.save()
+            await asyncio.to_thread(self.save)     # #859 the snapshot file, off the loop
         return ok
 
     def status(self) -> str:

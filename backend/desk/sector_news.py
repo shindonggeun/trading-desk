@@ -23,6 +23,7 @@ from statistics import median
 
 import httpx
 
+from . import net
 from .macro_news import GOOGLE_NEWS, RSS_MAX_BYTES, TIMEOUT_SEC, parse_rss
 
 log = logging.getLogger(__name__)
@@ -186,7 +187,7 @@ class Cache:
     async def refresh(self, client: httpx.AsyncClient | None = None, now: datetime | None = None,
                       gap: float = GAP_SEC) -> int:
         own = client is None
-        client = client or httpx.AsyncClient(timeout=TIMEOUT_SEC, follow_redirects=True)
+        client = client or net.async_client(timeout=TIMEOUT_SEC, follow_redirects=True)
         fresh, ok, failures = dict(self.topics), 0, []
         try:
             for sector in SECTORS:

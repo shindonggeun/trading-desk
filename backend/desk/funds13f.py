@@ -57,6 +57,7 @@ from xml.etree import ElementTree
 
 import httpx
 
+from . import net
 from .events_calendar import user_agent
 
 log = logging.getLogger(__name__)
@@ -438,7 +439,7 @@ _WIRE_HEADERS = ("content-encoding", "content-length", "transfer-encoding")
 
 def _capped_get(url: str, headers: dict, transport: httpx.BaseTransport | None = None) -> httpx.Response:
     """GET with no redirects and at most MAX_BYTES of (decoded) body."""
-    with httpx.Client(transport=transport, timeout=TIMEOUT_SEC, follow_redirects=False) as client, \
+    with net.client(transport=transport, timeout=TIMEOUT_SEC, follow_redirects=False) as client, \
             client.stream("GET", url, headers=headers) as r:
         body = bytearray()
         for chunk in r.iter_bytes():         # decoded (gzip / deflate) as it streams

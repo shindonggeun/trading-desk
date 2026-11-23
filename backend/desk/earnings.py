@@ -43,6 +43,8 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from . import net
+
 log = logging.getLogger(__name__)
 
 NASDAQ_URL = "https://api.nasdaq.com/api/calendar/earnings"
@@ -347,7 +349,7 @@ class Earnings:
         ok, failures, in_row, refused, nasdaq_failed = 0, [], 0, False, False
         answered: set[str] = set()      # the US days Nasdaq answered this pass (not by stamp: two passes can share a second)
         own = client is None
-        client = client or httpx.AsyncClient(timeout=TIMEOUT_SEC, headers={
+        client = client or net.async_client(timeout=TIMEOUT_SEC, headers={
             "User-Agent": "trading-desk (personal calendar)", "Accept": "application/json"})
         # #338: a recent 403 - do not knock again yet; Yahoo's calendar carries this pass
         refused_at = self.refused_at
@@ -445,7 +447,7 @@ class Earnings:
         self.failed_sources = sorted({f.split(" ", 1)[0].rstrip(":") for f in failures})
         # a Nasdaq failure Yahoo's calendar covered is not retried sooner than usual
         self.failed_passes = self.failed_passes + 1 if nasdaq_failed and not substituted else 0
-        self.save()
+        await asyncio.to_thread(self.save)         # #859 the cache file, off the loop
         return ok
 
     # --- the view ----------------------------------------------------------------------------

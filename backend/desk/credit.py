@@ -24,6 +24,8 @@ from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
+from . import net
+
 log = logging.getLogger(__name__)
 
 KOFIA_URL = "https://freesis.kofia.or.kr/meta/getMetaDataList.do"
@@ -139,7 +141,7 @@ class CreditCache:
 
     async def refresh(self, client: httpx.AsyncClient | None = None, today: date | None = None) -> bool:
         own = client is None
-        client = client or httpx.AsyncClient(timeout=TIMEOUT_SEC)
+        client = client or net.async_client(timeout=TIMEOUT_SEC)
         today = today or datetime.now(UTC).date()
         start = today - timedelta(days=HISTORY_DAYS)
         try:

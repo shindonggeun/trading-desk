@@ -19,6 +19,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
+from . import net
 from .events_calendar import user_agent
 from .ttl_cache import TTLCache
 
@@ -73,7 +74,7 @@ class Filings:
         self._lock = asyncio.Lock()
 
     async def _get_json(self, url: str):
-        client = self._client or httpx.AsyncClient(timeout=TIMEOUT_SEC)
+        client = self._client or net.async_client(timeout=TIMEOUT_SEC)
         try:
             response = await client.get(url, headers={"User-Agent": user_agent(), "Accept": "application/json"})
             response.raise_for_status()

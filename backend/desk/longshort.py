@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 
 import httpx
 
+from . import net
 from .estimate import BINANCE_URL
 from .ttl_cache import TTLCache
 
@@ -90,7 +91,7 @@ class LongShort:
     def __init__(self, resolve: Resolve, http: httpx.AsyncClient | None = None,
                  clock: Callable[[], float] = time.monotonic) -> None:
         self._resolve = resolve
-        self._http = http or httpx.AsyncClient(base_url=BINANCE_URL, timeout=10)
+        self._http = http or net.async_client(base_url=BINANCE_URL, timeout=10)
         self._clock = clock
         # contract -> (stamp, summary | the failure's message, kept as text: a re-raised cached
         # exception would grow its traceback on every hit)

@@ -62,10 +62,12 @@ from . import (
     live_bars,
     log_setup,
     long_lines,
+    loop_lag,
     macro_news,
     market_bus,
     market_calendar,
     morning_brief,
+    net,
     news_digest,
     notify,
     nq_fast,
@@ -733,6 +735,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # read inside one loop's pass, each with its own line
     # #688 the list itself, with the process role that runs each job, is desk.roles.JOBS
     jobs = Jobs()
+    # #859 how late the event loop runs and what held it (/api/status, the slow-request log)
+    lag = loop_lag.LoopLag()
     for name, label, source, parent, _role in roles.JOBS:
         jobs.add(name, label, source, parent)
 
@@ -740,6 +744,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     async def lifespan(app: FastAPI):
         if not policy.current():
             raise PolicyChanged("process privacy mode changed")
+        lag_task = asyncio.create_task(lag.run())
+        await net.warm()                   # #859 the shared TLS context, built off the loop before any client
         shared_cache.configure(settings)   # #689 Redis behind some caches; nothing configured = memory only
         # #690 the market stream: in this process (all), or over Redis pub/sub when split (docs/market-stream.md)
         market_bus.BUS.configure(settings, settings.role)
@@ -1301,6 +1307,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         await market_bus.BUS.aclose()    # #690 its streams are told reset; its subscription and publishes stop
         await shared_cache.aclose()      # #689 after every task that reads or writes it has stopped
         engine.dispose()
+        lag_task.cancel()
 
     @asynccontextmanager
     async def issuer_lifespan(app: FastAPI):
@@ -1387,7 +1394,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(403, "only the desk's owner sees the account")
 
     @app.get("/api/health")
-    def health():
+    async def health():                  # #859 on the loop, no anyio threadpool hop (desk.loop_lag watches the loop)
         return {"ok": True}
 
     def cooldowns() -> list[dict]:
@@ -1418,7 +1425,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 "jobs": jobs.status(), "cooldowns": cooldowns(),
                 # #689 this process's shared-cache hits and its own calls to the brokers (Toss · KIS REST)
                 "shared_cache": shared_cache.stats(), "outbound": outbound.snapshot(),
-                "market_stream": market_bus.BUS.stats()}
+                "market_stream": market_bus.BUS.stats(),
+                "loop_lag": lag.stats()}             # #859 the event loop's lateness and what held it
 
     # #536 per-route request times (desk.req_timing), read in production without parsing logs
     timings = req_timing.Timings()
@@ -3711,7 +3719,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     _notify_routes(app, engine, settings, owners=owners, current_resources=current_resources,
                    active_session=active_session, send_notice=send_notice)
     # outermost (added last): the session check and every other middleware count in the time
-    app.add_middleware(req_timing.TimingMiddleware, timings=timings)
+    app.add_middleware(req_timing.TimingMiddleware, timings=timings, loop_max=lag.max_since)
     return app
 
 

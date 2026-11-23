@@ -26,7 +26,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
-from . import freshness, market_bus, outbound, shared_cache
+from . import freshness, market_bus, net, outbound, shared_cache
 from .market_flow import KST, _ttl_until_open
 from .token_store import Issued, TokenStore, TokenUnavailable
 
@@ -218,7 +218,7 @@ class KisRest:
 
     async def _client(self) -> httpx.AsyncClient:
         if self._http is None:
-            self._http = httpx.AsyncClient(timeout=TIMEOUT_SEC)
+            self._http = net.async_client(timeout=TIMEOUT_SEC)
         return self._http
 
     async def token(self, refused: str | None = None) -> str:

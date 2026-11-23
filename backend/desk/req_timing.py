@@ -4,7 +4,8 @@ A plain ASGI middleware (outermost, so the session check counts too):
 - every response gets ``Server-Timing: app;dur=<ms>`` (the time to the response headers);
 - a request slower than ``SLOW_MS`` logs one warning: the method, the route *template*
   (``/api/runs/{run_id}`` - never the ids or the query string), the ms, the status and, when the handler set
-  ``request.state.cache``, its hit/miss;
+  ``request.state.cache``, its hit/miss; and at the end ``loop_max=<ms>``, the longest the event loop was away
+  while it ran (#859, desk.loop_lag) - a slow request with a long loop wait waited for the loop, not its work;
 - per route the newest ``KEEP`` durations stay in memory for ``stats()`` (count · p50 · p95 · max), shown by
   ``GET /api/perf/timings`` so production can be read without parsing logs.
 
@@ -68,14 +69,16 @@ def route_of(scope: dict) -> str:
 
 
 class TimingMiddleware:
-    def __init__(self, app, timings: Timings, slow_ms: float = SLOW_MS) -> None:
+    def __init__(self, app, timings: Timings, slow_ms: float = SLOW_MS, loop_max=None) -> None:
         self.app, self.timings, self.slow_ms = app, timings, slow_ms
+        self.loop_max = loop_max          # #859 desk.loop_lag.LoopLag.max_since, or None
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
         start = time.perf_counter()
+        loop_start = time.monotonic()
 
         async def timed_send(message):
             if message["type"] == "http.response.start":
@@ -88,8 +91,10 @@ class TimingMiddleware:
                     self.timings.add(route, ms)
                     if ms >= self.slow_ms:
                         cache = (scope.get("state") or {}).get("cache")
-                        log.warning("slow request %s %s %.0fms status %s%s", scope.get("method"), route, ms,
-                                    message.get("status"), f" cache {cache}" if cache in ("hit", "miss") else "")
+                        waited = f" loop_max={self.loop_max(loop_start):.0f}ms" if self.loop_max else ""
+                        log.warning("slow request %s %s %.0fms status %s%s%s", scope.get("method"), route, ms,
+                                    message.get("status"), f" cache {cache}" if cache in ("hit", "miss") else "",
+                                    waited)
             await send(message)
 
         await self.app(scope, receive, timed_send)

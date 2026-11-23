@@ -38,6 +38,8 @@ from statistics import fmean
 
 import httpx
 
+from . import net
+
 log = logging.getLogger(__name__)
 
 FINRA_URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{day:%Y%m%d}.txt"
@@ -80,7 +82,7 @@ def user_agent() -> str:
 async def _fetch(client: httpx.AsyncClient | None, url: str, limit: int) -> tuple[int, bytes]:
     """(status, body) with the body read up to ``limit`` bytes (more raises)."""
     own = client is None
-    client = client or httpx.AsyncClient(timeout=TIMEOUT_SEC, follow_redirects=True)
+    client = client or net.async_client(timeout=TIMEOUT_SEC, follow_redirects=True)
     try:
         async with client.stream("GET", url, headers={"User-Agent": user_agent()}) as response:
             if response.status_code != 200:

@@ -128,10 +128,15 @@ def make_app(directory: Path, redis_port: int):
                 "publish_errors": collector_stats["publish_errors"], "dropped": api_stats["dropped"],
                 "subscribed": api_stats["subscribed"], "reconnects": api_stats["reconnects"]}
 
-    async def publish_remote(flow_price, futures_price, *, alert=None):
+    async def publish_remote(flow_price=None, futures_price=None, *, alert=None):
         before = transport_counters()
-        collector.publish("flow", "KOSPI:1d", flow_view(flow_price), "toss_investors", now())
-        collector.publish("futures", "view", futures_view(futures_price), "kis_futures", now())
+        expected = 0
+        if flow_price is not None:
+            collector.publish("flow", "KOSPI:1d", flow_view(flow_price), "toss_investors", now())
+            expected += 1
+        if futures_price is not None:
+            collector.publish("futures", "view", futures_view(futures_price), "kis_futures", now())
+            expected += 1
         if alert:
             rule, text = alert
             collector.publish("alert", "flow_shift", {
@@ -139,7 +144,7 @@ def make_app(directory: Path, redis_port: int):
                 "trade_date": today(), "severity": "info", "t": now(),
                 "text": text, "value": 10, "prev": 1,
             }, "desk", now())
-        expected = 3 if alert else 2
+            expected += 1
         complete = False
         try:
             async with asyncio.timeout(5):
@@ -177,6 +182,8 @@ def make_app(directory: Path, redis_port: int):
             }])
             if not recorded:
                 raise RuntimeError("fixture alert baseline was not recorded")
+        elif phase == "stale-alert-rest":
+            batch = await publish_remote(alert=("buy_grow", "Redis stale REST race alert"))
         elif phase == "healthy":
             await require_remote(2688, 483)
         elif phase == "prepare-outage":

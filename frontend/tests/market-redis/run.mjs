@@ -92,6 +92,9 @@ async function verify() {
   await eventually(async () => (await fetch(`http://${loopback}:${backPort}/api/health`,
     { signal: AbortSignal.timeout(1000) })).ok, "fixture API");
 
+  // Let the first alert REST request finish before the real SSE ready event can trigger a catch-up request.
+  let startStream;
+  const streamStarted = new Promise(resolve => { startStream = resolve; });
   vite = await createServer({
     root: join(root, "frontend"),
     configFile: false,
@@ -100,6 +103,17 @@ async function verify() {
       proxy: { "/api": { target: `http://${loopback}:${backPort}`, changeOrigin: false } } },
     plugins: [{ name: "market-redis-fixture", configureServer(server) {
       server.middlewares.use((request, response, next) => {
+        if (request.method === "POST" && request.url === `${pagePath}/start-stream`) {
+          startStream();
+          response.writeHead(204).end();
+          return;
+        }
+        if (request.url?.startsWith("/api/stream/market?")) {
+          void streamStarted.then(() => {
+            if (!response.destroyed) next();
+          });
+          return;
+        }
         if (request.url !== pagePath) return next();
         response.setHeader("Content-Type", "text/html; charset=utf-8");
         response.end(`<!doctype html><html lang="en"><meta charset="utf-8">
@@ -207,7 +221,9 @@ async function verify() {
   const down = degraded.findIndex(frame => frame.reason === "bus_down"
     && [...frame.degraded].sort().join(",") === "alert,flow,futures");
   console.log(JSON.stringify({ result, stopped, restarted, sseConnections: streams.size, ready, degraded, errors }));
-  if (!result?.ok || !stopped || !restarted || streams.size !== 1 || errors.length || ready.length !== 1
+  if (!result?.ok) throw Error(result?.error ?? "Market Redis browser scenario did not finish");
+  if (!result.staleAlertRest?.markerRetained) throw Error("Delayed REST regression check did not run");
+  if (!stopped || !restarted || streams.size !== 1 || errors.length || ready.length !== 1
       || ready[0].bus !== "redis" || down < 0 || !degraded.slice(down + 1).some(frame => !frame.degraded.length)) {
     throw Error("Redis outage did not drive channel-specific REST fallback and SSE recovery");
   }

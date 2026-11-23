@@ -98,6 +98,7 @@ class Bus:
         self._counts = {k: 0 for k in KINDS} | {"published_remote": 0, "received_remote": 0, "dropped": 0,
                                                 "publish_errors": 0, "reconnects": 0, "overflows": 0}
         self._lag: dict[str, deque] = {k: deque(maxlen=LAG_KEEP) for k in KINDS}
+        self._source_lag: dict[str, deque] = {k: deque(maxlen=LAG_KEEP) for k in KINDS}
         self._warned = False
 
     # -- setup -----------------------------------------------------------------------------------------
@@ -195,8 +196,13 @@ class Bus:
                 if oldest is not None:
                     del self._latest[oldest]
         with contextlib.suppress(ValueError, TypeError):
-            lag = time.time() - datetime.fromisoformat(event["observed_at"]).timestamp()
-            self._lag[kind].append(max(0.0, lag))
+            observed = datetime.fromisoformat(event["observed_at"]).timestamp()
+            self._lag[kind].append(max(0.0, time.time() - observed))
+            # #690 how old the source's own stamp was when the desk saw it (only sources that stamp it)
+            if event.get("source_at"):
+                source = datetime.fromisoformat(event["source_at"])
+                source = source if source.tzinfo else source.replace(tzinfo=UTC)
+                self._source_lag[kind].append(max(0.0, observed - source.timestamp()))
         for sub in list(self._subs):
             before = sub.overflowed
             sub.offer(event)
@@ -302,15 +308,13 @@ class Bus:
         return sorted(out), reason
 
     def stats(self) -> dict:
-        """For /api/status: counts, delivery lag (observed -> handed to the streams) p50 · p95 in seconds."""
-        lag = {}
-        for kind, values in self._lag.items():
-            if values:
-                ordered = sorted(values)
-                lag[kind] = {"n": len(ordered), "p50": round(_pct(ordered, 0.5), 3), "p95": round(_pct(ordered, 0.95), 3)}
+        """For /api/status: counts and, per kind, p50 · p95 in seconds of the last LAG_KEEP events' delivery lag
+        (``lag_sec``: observed -> handed to this process's streams) and source lag (``source_lag_sec``:
+        the source's stamp -> observed, only events whose source stamps one)."""
         degraded, reason = self.degraded() if self.on else ([], None)
         return {"on": self.on, "mode": self.mode, "subscribed": self.subscribe_remote and not self._bus_down,
-                "streams": len(self._subs), "degraded": degraded, "reason": reason, "lag_sec": lag, **self._counts}
+                "streams": len(self._subs), "degraded": degraded, "reason": reason,
+                "lag_sec": _summary(self._lag), "source_lag_sec": _summary(self._source_lag), **self._counts}
 
     def _spawn(self, coro) -> None:
         task = self._loop.create_task(coro)
@@ -323,6 +327,15 @@ def _on_loop(loop: asyncio.AbstractEventLoop) -> bool:
         return asyncio.get_running_loop() is loop
     except RuntimeError:
         return False
+
+
+def _summary(lags: dict[str, deque]) -> dict:
+    out = {}
+    for kind, values in lags.items():
+        if values:
+            ordered = sorted(values)
+            out[kind] = {"n": len(ordered), "p50": round(_pct(ordered, 0.5), 3), "p95": round(_pct(ordered, 0.95), 3)}
+    return out
 
 
 def _pct(ordered: list[float], q: float) -> float:

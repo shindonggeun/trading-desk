@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -121,6 +122,7 @@ def test_status_needs_a_session_and_lists_the_jobs(db_url):
         assert client.get("/api/status").status_code == 401
         client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
         body = client.get("/api/status").json()
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}\+00:00", body["now"])   # ms: #690 browser clock skew
     names = {j["name"]: j for j in body["jobs"]}
     assert {"listing", "news", "macro_news", "krx", "funds", "scoring", "purge"} <= set(names)
     assert names["news"]["state"] == "off" and names["macro_news"]["parent"] == "news"   # tests: feeds off

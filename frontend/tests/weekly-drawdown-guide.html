@@ -10,84 +10,23 @@
   import { createRoot } from "react-dom/client";
   import WeeklyDrawdownGuide, { WeeklyDrawdownTip } from "../src/components/WeeklyDrawdownGuide";
   import "../src/styles.css";
+  import { cases } from "./weekly-drawdown-cases.mjs";
 
   const root = createRoot(document.getElementById("root"));
-  const noValue = { value: null, state: "missing", reason: "합성 기준값 없음" };
-  const watch = { state: "watching", condition: "관찰 주 고가와 반등 기준을 주봉 종가로 확인", invalidation: "관찰 주 저가 기준 이탈" };
-  const recovery = { state: "not_confirmed", condition: "상승 주봉 구조와 이전 고점 상회 종가를 두 주 연속 확인", invalidation: "주봉 종가가 무효화 기준 이탈" };
-  const oversold = {
-    status: "available",
-    week: { start: "2026-11-16", source: "합성 NQ=F 확정 주봉", candle: "closed" },
-    current: { price: 25000, source: "합성 기준가", asOf: "2026-11-20T22:00:00Z" },
-    evidence: {
-      bollinger: { value: 24600, state: "normal", reason: null },
-      rsi: { value: 29, state: "oversold", reason: null },
-      channel: noValue,
-      fib: { ...noValue, reason: "합성 앵커 미확인" },
-    },
-    overlap: { state: "none", low: null, high: null, basis: [] },
-    rebound: watch,
-    recovery,
-  };
-  const overlap = {
-    ...oversold,
-    evidence: {
-      ...oversold.evidence,
-      bollinger: { value: 24600, state: "near", reason: null },
-      channel: { value: 24700, state: "near", reason: null },
-      fib: { value: 24500, state: "near", reason: null },
-    },
-    overlap: { state: "overlap", low: 24500, high: 24700, basis: ["bollinger", "rsi", "channel", "fib"] },
-  };
-  const cases = {
-    oversold,
-    overlap,
-    broken: {
-      ...overlap,
-      evidence: { ...overlap.evidence, channel: { value: 24700, state: "below", reason: null } },
-      rebound: { ...watch, state: "invalidated", condition: null },
-    },
-    rebound: {
-      ...overlap,
-      current: { ...overlap.current, price: 25500, asOf: "2026-11-27T22:00:00Z" },
-      rebound: { ...watch, state: "confirmed" },
-    },
-    recovered: {
-      ...overlap,
-      current: { ...overlap.current, price: 26400, asOf: "2026-12-04T22:00:00Z" },
-      recovery: { ...recovery, state: "confirmed" },
-    },
-    forming: {
-      ...overlap,
-      week: { ...overlap.week, candle: "forming" },
-      rebound: { ...watch, state: "confirmed" },
-      recovery: { ...recovery, state: "confirmed" },
-    },
-    missing: {
-      ...overlap,
-      week: { start: null, source: null, candle: "unknown" },
-      current: { price: null, source: null, asOf: null },
-      evidence: { bollinger: noValue, rsi: noValue, channel: noValue, fib: noValue },
-      overlap: { state: "missing", low: null, high: null, basis: [] },
-      rebound: { ...watch, state: "missing", condition: null },
-      recovery: { ...recovery, state: "missing", condition: null },
-    },
-    unavailable: { status: "unavailable", reason: null },
-  };
-
   function render(name) {
     if (!Object.hasOwn(cases, name)) throw new Error("알 수 없는 합성 사례 " + name);
+    const observation = cases[name] ?? { status: "unavailable", reason: null };
     root.render(h("div", { className: "chart-read-wrap on", "data-case": name },
       h("div", { className: "chart-and-fills" }, h(WeeklyDrawdownTip)),
       h("details", { open: true, className: "chart-read" },
         h("summary", {}, "지금 이 차트 읽기"),
         h("div", { className: "chart-read-body" },
-          h(WeeklyDrawdownGuide, { observation: cases[name], key: name }),
+          h(WeeklyDrawdownGuide, { observation, key: name }),
         ),
       ),
     ));
   }
   const sample = new URLSearchParams(location.search).get("case");
-  render(sample || "overlap");
+  render(sample || "rebound");
   window.renderWeeklyDrawdownCase = render;
 </script>

@@ -1,5 +1,6 @@
 import { useId } from "react";
 import { percent } from "../format";
+import { TF_KO } from "../channelLines";
 import type { WeeklyCheck, WeeklyDrawdownObservation, WeeklyEvidence, WeeklyEvidenceKey } from "../weeklyDrawdownTypes";
 import "./WeeklyDrawdownGuide.css";
 
@@ -24,7 +25,7 @@ const CANDLE_LABEL = { closed: "종가 확정", forming: "진행 중", unknown: 
 const CHECK_STATE = {
   watching: "관찰 중",
   invalidated: "조건 무효화",
-  not_confirmed: "확인되지 않음",
+  not_confirmed: "기한 내 미확인",
   missing: "판단 불가",
 } satisfies Record<Exclude<WeeklyCheck["state"], "confirmed">, string>;
 
@@ -52,16 +53,19 @@ function relativeDistance(level: number, current: number): number {
   return (level - current) / current * 100;
 }
 
-function CurrentTime({ asOf }: { asOf: string | null }) {
+function CurrentTime({ asOf }: { asOf: string | null | undefined }) {
   const ms = asOf ? Date.parse(asOf) : NaN;
   return Number.isFinite(ms) ? <time dateTime={asOf ?? undefined}>{NY_TIME.format(ms)}</time> : "미제공";
 }
 
 function EvidenceRow({ kind, item, current }: { kind: WeeklyEvidenceKey; item: WeeklyEvidence; current: number | null }) {
   const value = validEvidence(kind, item.value) && item.state !== "missing" ? item.value : null;
-  const distance = kind !== "rsi" && value !== null && validPrice(current)
-    ? relativeDistance(value, current)
-    : null;
+  let distance: number | null = null;
+  if (kind !== "rsi" && value !== null && validPrice(current)) {
+    // 서버가 null을 보낸 이격률은 결측으로 둔다. 필드가 없는 기존 표시 예시만 계산한다.
+    const pct = item.distancePct === undefined ? relativeDistance(value, current) : item.distancePct;
+    if (typeof pct === "number" && Number.isFinite(pct)) distance = pct;
+  }
   return (
     <li>
       <div className="weekly-drawdown-evidence-row">
@@ -70,6 +74,7 @@ function EvidenceRow({ kind, item, current }: { kind: WeeklyEvidenceKey; item: W
         <span className="weekly-drawdown-value">{value === null ? "미제공" : POINTS.format(value)}</span>
       </div>
       {distance !== null && <small className="muted">현재가 대비 {percent(distance)}</small>}
+      {item.anchorWeeks?.length ? <small className="muted">앵커 주 {item.anchorWeeks.join(" · ")}</small> : null}
       {item.reason && <small className="muted">{item.reason}</small>}
     </li>
   );
@@ -91,6 +96,7 @@ function Overlap({ overlap, current }: { overlap: AvailableObservation["overlap"
           </small>
         )}
       </p>
+      {overlap.reason && <p className="muted small">{overlap.reason}</p>}
       {overlap.state === "overlap" && (
         <p className="muted small">{overlap.basis.length ? overlap.basis.map(key => EVIDENCE_LABEL[key]).join(" · ") : "겹침 근거 미제공"}</p>
       )}
@@ -112,34 +118,52 @@ function Check({ kind, check, usableWeek }: {
       <h5>{title}</h5>
       <p className="weekly-drawdown-state">{state === "confirmed" ? confirmed : CHECK_STATE[state]}</p>
       <dl>
+        {check.anchorWeek !== undefined && <div><dt>관찰 주 (뉴욕)</dt><dd>{check.anchorWeek || "미제공"}</dd></div>}
+        {check.decisionWeek !== undefined && (
+          <div><dt>판정 주 (뉴욕)</dt><dd>{check.decisionWeek || (state === "watching" ? "미결정" : "미제공")}</dd></div>
+        )}
+        {check.source !== undefined && <div><dt>판정 원천</dt><dd>{check.source || "미제공"}</dd></div>}
         <div><dt>확인 조건</dt><dd>{check.condition || "미제공"}</dd></div>
         <div><dt>무효화 조건</dt><dd>{check.invalidation || "미제공"}</dd></div>
       </dl>
+      {check.reason && <p className="muted small">{check.reason}</p>}
     </section>
   );
 }
 
-export default function WeeklyDrawdownGuide({ observation }: { observation: WeeklyDrawdownObservation }) {
+export default function WeeklyDrawdownGuide({ observation, overlay }: {
+  observation: WeeklyDrawdownObservation;
+  overlay?: { enabled: boolean; onChange: (enabled: boolean) => void };
+}) {
   const id = useId();
   return (
     <section className="weekly-drawdown" aria-labelledby={id}>
       <h4 id={id}>주봉 급락 관찰</h4>
+      {observation.usage === "research_only" && <p className="muted small">연구용 주봉 관측</p>}
       {observation.status === "unavailable" ? (
         <p className="muted small">
           {observation.reason?.trim() ? `주봉 관찰 자료를 볼 수 없어요. ${observation.reason}` : "주봉 관찰 자료가 아직 연결되지 않았어요."}
         </p>
       ) : (
-        <details open>
-          <summary>관찰 근거와 확인 조건</summary>
-          <Observation observation={observation} />
-        </details>
+        <>
+          {overlay && (
+            <label className="weekly-drawdown-toggle small">
+              <input type="checkbox" checked={overlay.enabled} onChange={(e) => overlay.onChange(e.currentTarget.checked)} />
+              주봉 관찰 가격선 표시
+            </label>
+          )}
+          <details open>
+            <summary>관찰 근거와 확인 조건</summary>
+            <Observation observation={observation} />
+          </details>
+        </>
       )}
     </section>
   );
 }
 
 function Observation({ observation }: { observation: AvailableObservation }) {
-  const { week, current, evidence, overlap, rebound, recovery } = observation;
+  const { week, current, evidence, overlap, rebound, recovery, observedAt, assumptions } = observation;
   const start = week.start?.trim();
   const source = week.source?.trim();
   const usableWeek = Boolean(start && source && week.candle === "closed");
@@ -149,10 +173,24 @@ function Observation({ observation }: { observation: AvailableObservation }) {
         <div><dt>기준 주 (뉴욕)</dt><dd>{start ? <time dateTime={start}>{start}</time> : "미제공"}</dd></div>
         <div><dt>주봉 출처</dt><dd>{source || "미제공"}</dd></div>
         <div><dt>주봉 상태</dt><dd>{CANDLE_LABEL[week.candle]}</dd></div>
-        <div><dt>현재가</dt><dd>{validPrice(current.price) ? POINTS.format(current.price) : "미제공"}</dd></div>
-        <div><dt>현재가 출처</dt><dd>{current.source?.trim() || "미제공"}</dd></div>
-        <div><dt>현재가 기준 시각 (뉴욕)</dt><dd><CurrentTime asOf={current.asOf} /></dd></div>
+        {week.closedAt && <div><dt>주봉 마감 (뉴욕)</dt><dd><CurrentTime asOf={week.closedAt} /></dd></div>}
+        {week.fetchedAt && <div><dt>주봉 조회 (뉴욕)</dt><dd><CurrentTime asOf={week.fetchedAt} /></dd></div>}
+        {observedAt && <div><dt>연구 계산 (뉴욕)</dt><dd><CurrentTime asOf={observedAt} /></dd></div>}
       </dl>
+      <dl className="weekly-drawdown-meta">
+        <div><dt>현재가 참조 (차트 봉 종가)</dt><dd>{validPrice(current.price) ? POINTS.format(current.price) : "미제공"}</dd></div>
+        <div><dt>참조 원천</dt><dd>{current.source?.trim() || "미제공"}{current.timeframe && ` · ${TF_KO[current.timeframe] ?? current.timeframe}`}</dd></div>
+        <div><dt>참조 봉 시작 (뉴욕)</dt><dd><CurrentTime asOf={current.asOf} /></dd></div>
+        {current.fetchedAt !== undefined && (
+          <div><dt>참조 조회 (뉴욕)</dt><dd><CurrentTime asOf={current.fetchedAt} /></dd></div>
+        )}
+      </dl>
+      {current.reason && <p className="muted small">{current.reason}</p>}
+      {assumptions && (
+        <p className="muted small">
+          연구 원천은 {assumptions.series}이며, {assumptions.referenceSeries} 원본 설정·앵커와 롤오버는 미확인입니다.
+        </p>
+      )}
       {!usableWeek && (
         <p className="muted small">기준 주와 출처가 확인된 확정 주봉으로 반등과 주봉 구조 회복을 판단해요.</p>
       )}

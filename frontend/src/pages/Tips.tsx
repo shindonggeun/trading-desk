@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import TrendCard from "../components/TrendCard";
+import { WeeklyDrawdownTip } from "../components/WeeklyDrawdownGuide";
 import type { Tip, TipStats, TipsView } from "../types";
 
 const RATES_KO = { hiking: "인상기", cutting: "인하기", hold: "동결" } as const;
@@ -84,8 +85,13 @@ export default function Tips({ query }: { query: URLSearchParams }) {
     if (view && focus) document.getElementById(`tip-${focus}`)?.scrollIntoView({ block: "start" });
   }, [view, focus]);
 
-  if (failed) return <main className="page"><h2>매매 팁</h2><p className="muted">금리 · 달러 시세를 불러오지 못했습니다: {failed}</p></main>;
-  if (!view) return <main className="page"><h2>매매 팁</h2><p className="muted">불러오는 중…</p></main>;
+  if (failed || !view) return (
+    <main className="page tips-page">
+      <h2>매매 팁</h2>
+      <p className="muted">{failed ? `금리 · 달러 시세를 불러오지 못했습니다: ${failed}` : "불러오는 중…"}</p>
+      <div className="tip-list"><WeeklyDrawdownTip /></div>
+    </main>
+  );
   const g = view.regime;
   const v = g.values ?? {};
   const tips = [...view.tips].sort((a, b) => Number(b.active) - Number(a.active) || Number(a.weak) - Number(b.weak));
@@ -119,6 +125,7 @@ export default function Tips({ query }: { query: URLSearchParams }) {
         <p className="muted small tip-asof">기준일 {view.as_of ?? "—"} · 근거 계산 {view.evidence_as_of ?? "—"}</p>
       </section>
       <div className="tip-list" data-tour="tip-list">
+        <WeeklyDrawdownTip />
         {tips.map((t) => <TipCard key={t.id} tip={t} focus={t.id === focus} />)}
       </div>
       <p className="muted small">

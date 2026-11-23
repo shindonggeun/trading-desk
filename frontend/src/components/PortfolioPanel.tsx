@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, followPortfolio, type HoldingLine, type StreamState } from "../api";
+import { followPortfolio, type HoldingLine, type StreamState } from "../api";
 import { HoldingBadge, useHoldingLines } from "../holdingWatch";
 import { type Currency, money, percent, price, time, tone } from "../format";
 import type { Money, Portfolio, PortfolioRow } from "../types";
@@ -87,42 +87,22 @@ export default function PortfolioPanel() {
   const [view, setView] = useState<"price" | "value">(() => remembered("pf.view", ["price", "value"] as const, "value"));
 
   useEffect(() => {
-    let cancelled = false;
-    let stop = () => {};
-    const clearAccount = () => {
-      setData(null);
-      setFailure(null);
-      setNotOwner(true);
-    };
-    const follow = () => {
-      if (cancelled) return;
-      stop = followPortfolio(
-        (p) => {
-          setData(p);
-          setFailure(null);
-        },
-        setStream,
-        clearAccount,
-      );
-    };
-    // Draw the snapshot first; the stream takes over after it. #775 not the owner: no stream at all.
-    api.portfolio().then(
+    // #705 the stream's first message is the snapshot — no REST read before it (the server built it twice).
+    // #775 not the owner: the stream answers 403, the access check clears the panel and nothing reconnects.
+    const stop = followPortfolio(
       (p) => {
-        if (cancelled) return;
         setData(p);
-        follow();
+        setFailure(null);
       },
-      (e) => {
-        if (cancelled) return;
-        if (e instanceof ApiError && e.status === 403) return clearAccount();
-        setFailure(String(e));
-        follow();
+      setStream,
+      () => {
+        setData(null);
+        setFailure(null);
+        setNotOwner(true);
       },
+      (e) => setFailure(String(e)),
     );
-    return () => {
-      cancelled = true;
-      stop();
-    };
+    return stop;
   }, []);
 
   const choose = (c: Currency) => {

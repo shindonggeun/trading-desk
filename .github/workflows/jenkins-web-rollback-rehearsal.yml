@@ -1,0 +1,46 @@
+name: Isolated Jenkins web rollback rehearsal
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/jenkins-web-rollback-rehearsal.yml
+      - "deploy/jenkins/rehearsal/web-rollback/**"
+      - Jenkinsfile-web
+      - Jenkinsfile.deploy-common.groovy
+      - scripts/deploy-compose.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  web-rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the disposable controller from an allowlisted context
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG="$RUNNER_TEMP/td-web-rollback-docker-config"
+          mkdir -- "$DOCKER_CONFIG"
+          fixture=deploy/jenkins/rehearsal/web-rollback
+          context=$(mktemp -d)
+          trap 'rm -rf -- "$context"' EXIT
+          mkdir "$context/scripts"
+          cp "$fixture"/{Dockerfile,init.groovy,seed.sh,fake-docker.py,wait-ci.sh,vault-env.sh} "$context/"
+          cp Jenkinsfile-web Jenkinsfile.deploy-common.groovy "$context/"
+          cp scripts/deploy-compose.sh "$context/scripts/"
+          env -u DOCKER_CONTEXT -u DOCKER_HOST docker --host unix:///var/run/docker.sock \
+            build --pull --tag td-jenkins-web-rollback-fixture "$context"
+      - name: Exercise the web rollback with a real Jenkins build
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG="$RUNNER_TEMP/td-web-rollback-docker-config"
+          test -d "$DOCKER_CONFIG"
+          env -u DOCKER_CONTEXT -u DOCKER_HOST python3 -B deploy/jenkins/rehearsal/web-rollback/run.py \
+            td-jenkins-web-rollback-fixture

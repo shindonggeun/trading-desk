@@ -36,6 +36,9 @@ POLL_SEC = 0.05              # the watcher thread's check
 KEEP_STALLS = 200
 LOG_EVERY_SEC = 60.0         # one warning per place in this long (GIL contention can stall every cycle)
 _PACKAGE = os.path.dirname(os.path.abspath(__file__))
+# the real sleep, held at import: a test that swaps ``asyncio.sleep`` to drive a stream's rounds counts its
+# own sleeps, not this heartbeat's
+_sleep = asyncio.sleep
 
 
 def _pct(values: list[float], q: float) -> float:
@@ -82,7 +85,7 @@ class LoopLag:
         try:
             while True:
                 start = self._beat = self.clock()
-                await asyncio.sleep(self.interval)
+                await _sleep(self.interval)
                 now = self._beat = self.clock()
                 with self._lock:
                     self._samples.append((now, max(0.0, (now - start - self.interval) * 1000)))

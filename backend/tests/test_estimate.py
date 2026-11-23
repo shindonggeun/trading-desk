@@ -1,4 +1,5 @@
 import asyncio
+import time
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
@@ -302,6 +303,103 @@ def test_estimated_bars_scale_the_contract_and_merge_ten_minutes():
     assert asyncio.run(est.candles("AAPL", "5m")) is None
 
 
+class _CountedWide(WideBinance):
+    """WideBinance that also counts its anchor marks and bar pages (its own branches skip FakeBinance's count)."""
+
+    def __call__(self, request):
+        if request.url.path == "/fapi/v1/markPriceKlines":
+            self.calls.append("anchor" if request.url.params["interval"] == "1m" else "bars")
+        elif request.url.path == "/fapi/v1/premiumIndex":
+            self.calls.append("marks")
+        return super().__call__(request)
+
+
+def test_estimated_bars_asked_again_within_the_minute_are_the_cached_ones():
+    """#858: since #628 the cache holds the value itself, and candles() read it as (stamp, value): every
+    ask inside the cache window raised KeyError 0 (production: "estimated candles for NQ=F failed: 0")."""
+    clock, binance = Clock(), _CountedWide()
+    est, _ = _estimator(SATURDAY_KST_10AM, closes=WIDE_CLOSES, binance=binance, clock=clock)
+    first = asyncio.run(est.candles("SOXS", "5m"))
+    assert asyncio.run(est.candles("SOXS", "5m")) == first
+    clock.t += 30                     # past the estimate's 15 s, inside the bars' CANDLES_TTL_SEC
+    assert asyncio.run(est.candles("SOXS", "5m")) == first
+    assert binance.calls.count("bars") == 1
+    clock.t += 31
+    assert asyncio.run(est.candles("SOXS", "5m")) == first
+    assert binance.calls.count("bars") == 2
+    assert asyncio.run(est.candles("AAPL", "5m")) is None      # no contract: asked again, still None
+    assert asyncio.run(est.candles("AAPL", "5m")) is None
+
+
+def test_estimated_bars_failure_is_kept_briefly_not_for_the_minute():
+    clock, binance = Clock(), FakeBinance(missing_anchor=True)
+    est, _ = _estimator(SATURDAY_KST_10AM, binance=binance, clock=clock)
+    for _ in range(2):
+        with pytest.raises(ValueError, match="no SAMSUNGUSDT mark"):
+            asyncio.run(est.candles("005930.KS", "5m"))
+    assert binance.calls.count("/fapi/v1/markPriceKlines") == 1
+    clock.t += 16                     # #628: a failure is kept briefly (the estimate's window)
+    with pytest.raises(ValueError):
+        asyncio.run(est.candles("005930.KS", "5m"))
+    assert binance.calls.count("/fapi/v1/markPriceKlines") == 2
+
+
+def test_the_board_and_the_bars_asking_one_ticker_at_once_share_its_reads():
+    """#858: five estimates and three bar asks of one ticker at once - one estimate, one set of bars, one
+    anchor mark and one daily-closes read (each asker used to compute its own)."""
+    closes_read = []
+
+    def closes(t):
+        closes_read.append(t)
+        time.sleep(0.05)                   # a Yahoo read in a worker thread
+        return WIDE_CLOSES[t]
+
+    binance = _CountedWide()
+    http = httpx.AsyncClient(base_url="https://fapi.test", transport=httpx.MockTransport(binance))
+    est = BinanceEstimator(http=http, daily_closes=closes, now=lambda: SATURDAY_KST_10AM, clock=Clock(),
+                           after_hours=None)
+
+    async def main():
+        return await asyncio.gather(*(est.estimate("SOXL") for _ in range(5)),
+                                    *(est.candles("SOXL", "5m") for _ in range(3)))
+
+    got = asyncio.run(main())
+    assert len({id(g) for g in got[:5]}) == 1 and len({id(g) for g in got[5:]}) == 1
+    assert got[0].estimate == 42.0
+    assert binance.calls.count("anchor") == 1 and binance.calls.count("bars") == 1
+    assert closes_read == ["SOXL", "SOXL"]          # the estimate's and the bars' (injected source: no lock)
+
+
+def test_daily_closes_asked_from_several_threads_at_once_read_yahoo_once(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from desk import estimate
+
+    yahoo, clock = _FlakyYahoo(CLOSES["NVDA"]), Clock()
+    yahoo.install(monkeypatch, clock)
+    real = estimate._yahoo_rows
+
+    def slow(ticker, session):
+        time.sleep(0.05)
+        return real(ticker, session)
+
+    monkeypatch.setattr(estimate, "_yahoo_rows", slow)
+    with ThreadPoolExecutor(6) as pool:
+        got = list(pool.map(estimate.yahoo_daily_closes, ["NVDA"] * 6))
+    assert got == [CLOSES["NVDA"]] * 6 and yahoo.calls == 1
+
+
+def test_estimated_bars_asked_twice_through_the_api_are_200_both_times(db_url):
+    est = _wide()
+    with _client(db_url, est) as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        first = client.get("/api/estimate/candles?ticker=SOXS&interval=5m")
+        again = client.get("/api/estimate/candles?ticker=SOXS&interval=5m")
+        assert first.status_code == again.status_code == 200 and again.json() == first.json()
+        items = client.get("/api/batch/estimate-candles?tickers=SOXS,AAPL&interval=5m").json()["items"]
+        assert items["SOXS"] == first.json() and items["AAPL"] == {"ticker": "AAPL", "supported": False}
+
+
 def test_futures_hours():
     from desk.estimate import futures_open
 
@@ -522,17 +620,18 @@ def test_board_live_path_and_one_failure(db_url, monkeypatch):
     from desk.prices import Quote
 
     est = _wide()
-    real = est.estimate
+    real, asked = est.estimate, []
 
     async def flaky(t):
-        if t == "NVDA":
+        asked.append(t)
+        if t in ("NVDA", "BRK-B"):
             raise RuntimeError("Binance down")
         return await real(t)
 
     monkeypatch.setattr(est, "estimate", flaky)
 
     async def is_open(_cal, ticker, now=None):
-        return ticker == "NVDA"
+        return ticker in ("NVDA", "SOXL", "BRK-B")
 
     monkeypatch.setattr(live, "is_open", is_open)
     with _client(db_url, est) as client:
@@ -540,12 +639,47 @@ def test_board_live_path_and_one_failure(db_url, monkeypatch):
         from desk import api as api_mod  # noqa: F401 - the app holds its own PriceSource
 
         async def quote(self, t):
+            if t in ("SOXL", "BRK-B"):
+                raise ConnectionError("Toss down")
             return Quote(t, 190.0, "USD", "toss", "2026-11-07T01:00:00+00:00")
 
         monkeypatch.setattr("desk.prices.PriceSource.quote", quote)
-        rows = {r["ticker"]: r for r in client.get("/api/estimates?tickers=NVDA,SOXS").json()["items"]}
-    assert rows["NVDA"]["state"] == "live" and rows["NVDA"]["price"] == 190.0 and rows["NVDA"]["change_pct"] is None
+        rows = {r["ticker"]: r for r in client.get("/api/estimates?tickers=NVDA,SOXS,SOXL,BRK-B").json()["items"]}
+    # #858 in the session the board reads the last close and the quote - not the estimate (its Binance marks):
+    # the estimate failing no longer costs the live row its change
+    nvda = rows["NVDA"]
+    assert (nvda["state"], nvda["price"], nvda["close"], nvda["session"]) == ("live", 190.0, 204.2, "regular")
+    assert nvda["change_pct"] == round((190.0 / 204.2 - 1) * 100, 2) and "NVDA" not in asked
     assert rows["SOXS"]["state"] == "estimate"
+    # no quote in the session: the estimate stands in, and without one the row says why
+    assert (rows["SOXL"]["state"], rows["SOXL"]["price"]) == ("estimate", 42.0)
+    assert (rows["BRK-B"]["state"], rows["BRK-B"]["error"]) == ("unavailable", "RuntimeError")
+
+
+def test_in_the_session_the_board_never_asks_binance(db_url, monkeypatch):
+    """#858: the live quote is the price and the daily close its base - the contract's marks and anchor are
+    not read (they were, for every ticker on every poll)."""
+    from desk import live
+    from desk.prices import Quote
+
+    binance = _CountedWide()
+    est, _ = _estimator(SATURDAY_KST_10AM, closes=WIDE_CLOSES, binance=binance)
+
+    async def is_open(_cal, ticker, now=None):
+        return True
+
+    async def quote(self, t):
+        return Quote(t, 41.0, "USD", "toss", "2026-11-07T01:00:00+00:00")
+
+    monkeypatch.setattr(live, "is_open", is_open)
+    monkeypatch.setattr("desk.prices.PriceSource.quote", quote)
+    with _client(db_url, est) as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        soxl, aapl = client.get("/api/estimates?tickers=SOXL,AAPL").json()["items"]
+    assert (soxl["state"], soxl["price"], soxl["close"], soxl["close_date"], soxl["change_pct"]) ==         ("live", 41.0, 40.0, "2026-11-06", 2.5)
+    assert soxl["source"] == {"kind": "binance_perp_mark", "contract": "SOXLUSDT", "basis": None, "multiple": 1.0}
+    assert (aapl["state"], aapl["close"], aapl["source"]) == ("live", None, None)        # no contract: as before
+    assert "anchor" not in binance.calls and "marks" not in binance.calls
 
 
 # --- #204: the NXT after-market trade is the anchor when there was one after the close -------------

@@ -56,6 +56,7 @@ from . import (
     halving,
     holding_watch,
     horizons,
+    kr_short_sales,
     krx,
     krx_etp,
     language,
@@ -3773,12 +3774,19 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     @app.get("/api/positioning")
     async def ticker_positioning(ticker: str):
-        """Short-volume share (FINRA), short interest, option put/call · walls · max pain · implied
-        move (Cboe) for a US ticker; ``supported: false`` with the reason for others."""
+        """US short and options positioning, or domestic KRX data under ``kr_short``."""
         try:
             ticker = clean_ticker(ticker)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
+        if kr_short_sales.is_kr_ticker(ticker):
+            domestic = await kr_short_sales.KRX_SHORT_SALES.get(ticker)
+            status = domestic["status"]
+            reason = status if status in {"source_unavailable", "unsupported"} else None
+            body = positioning.blank(ticker, supported=status != "unsupported", reason=reason)
+            if domestic["trade"]["latest"] is not None or domestic["balance"]["latest"] is not None:
+                body["sources"] = ["krx"]
+            return {**body, "kr_short": domestic}
         return await _positioning(ticker)
 
     @app.get("/api/positioning/batch")

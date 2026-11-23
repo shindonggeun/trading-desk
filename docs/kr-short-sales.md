@@ -10,6 +10,8 @@
 
 ## 응답과 캐시
 
+- 기존 세션으로 인증한 단일 `GET /api/positioning?ticker=005930.KS`에서 국내 6자리 `.KS`·`.KQ` 종목의 응답에 `kr_short`를 추가한다. 국내 거래·잔고는 이 필드에서 읽는다. 미국 단일과 기존 배치의 응답 계약은 유지한다.
+- 국내 응답의 상위 `supported`는 정규화된 종목을 어댑터가 지원하는지 뜻한다. 정상 국내 코드에 공급자가 없으면 `reason`과 `kr_short.status`가 `source_unavailable`이며, 공급자가 해당 종목을 명시적으로 지원하지 않으면 `supported: false`와 `reason: "unsupported"`가 반환된다.
 - `market`은 `KOSPI` 또는 `KOSDAQ`이다. 상위 `status`는 거래 상태를 나타내며, `trade`와 `balance`는 각각 상태·`latest`·`stale`을 제공한다. 점은 `as_of`, `ratio_pct`, `status`를 담는다.
 - `trade.history`는 오래된 순서대로 최근 20개 거래 세션을 제공한다. 휴장일은 제외하고, 거래일 전체 공표 전에는 당일 점을 `not_published`로 표시한다. 빈 공표 행과 분모 0은 각각 `no_data`와 `zero_denominator`이며, 공매도 거래대금 0과 유효한 총 거래대금은 `0%`다.
 - 공급자 미설정은 `source_unavailable`, 공급자가 명시한 미지원 종목은 `unsupported`, 자료 조회 오류는 `source_error`다. 마지막 정상값을 표시할 때 그 값의 원래 기준일을 유지한다. `stale`은 오류·결측·분모 0에서 과거 정상값을 쓰는 경우를 구분한다.

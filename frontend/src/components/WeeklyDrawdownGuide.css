@@ -1,0 +1,119 @@
+.weekly-drawdown {
+  min-inline-size: 0;
+  margin-block: 12px;
+  padding-block: 10px;
+  border-block: 1px solid var(--border);
+}
+
+.weekly-drawdown h4,
+.weekly-drawdown h5,
+.weekly-drawdown p,
+.weekly-drawdown dl,
+.weekly-drawdown dd {
+  margin: 0;
+}
+
+.weekly-drawdown h4 {
+  color: var(--text);
+  font-size: var(--fs-m);
+}
+
+.weekly-drawdown summary {
+  margin-block-start: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--fs-s);
+}
+
+.weekly-drawdown summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.weekly-drawdown-body {
+  display: grid;
+  min-inline-size: 0;
+  gap: 10px;
+  margin-block-start: 10px;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-s);
+}
+
+.weekly-drawdown-meta,
+.weekly-drawdown-checks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 85px), 1fr));
+  gap: 8px 12px;
+}
+
+.weekly-drawdown-meta {
+  padding: 9px;
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+}
+
+.weekly-drawdown dt {
+  color: var(--muted);
+}
+
+.weekly-drawdown-evidence {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.weekly-drawdown-evidence li {
+  padding-block: 5px;
+  border-block-end: 1px solid var(--border);
+}
+
+.weekly-drawdown-evidence-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 8px;
+}
+
+.weekly-drawdown-evidence small,
+.weekly-drawdown-distance {
+  display: block;
+}
+
+.weekly-drawdown-value {
+  margin-inline-start: auto;
+}
+
+.weekly-drawdown-state {
+  font-weight: 600;
+}
+
+.weekly-drawdown-checks {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+}
+
+.weekly-drawdown-block {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+}
+
+.weekly-drawdown-block h5 {
+  font-size: inherit;
+}
+
+.weekly-drawdown-block dl {
+  display: grid;
+  gap: 4px;
+}
+
+.weekly-drawdown-tip ol {
+  padding-inline-start: 1.25rem;
+}
+
+.weekly-drawdown-tip li + li {
+  margin-block-start: 5px;
+}

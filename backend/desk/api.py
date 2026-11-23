@@ -142,6 +142,7 @@ from .owner_attestation import TossAttestationStore, TossSource
 from .portfolio import Portfolio
 from .prices import INTERVALS, PriceSource, kis_quote, stale_ok
 from .privacy import OwnerResources, PolicyChanged, ProcessPolicy
+from .program_latest import ProgramLatest
 from .related import collect as collect_related
 from .run_access import account_run, reads_account
 from .run_read import RunReader, last_done_seq
@@ -521,6 +522,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     log.warning("approved destination delivery failed: %s", type(exc).__name__)
         return sent
     futures_history = FuturesHistory(engine)    # #254
+    program_latest = ProgramLatest(futures_history, snapshot_min=settings.futures_snapshot_min)
     futures_oi = FuturesOi(engine)              # #603 KRX open interest · basis · put/call per day
     auth = Auth(engine, timedelta(hours=settings.session_max_hours), timedelta(hours=settings.session_idle_hours))
     throttle = LoginThrottle()
@@ -1030,7 +1032,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 view = await futures.get(fresh=True)
                 # after the futures read: a KIS token refreshed on a 401 is that (unbounded) call's to do
                 program = await program_now(moment)
-                await asyncio.to_thread(futures_history.record, view, None, spot, program)
+                await program_latest.record(view, spot, program)
                 try:                     # #361: a push problem never stops the snapshots
                     await asyncio.to_thread(app.state.flow_alerts.after_snapshot, futures_history.intraday)
                 except Exception as exc:  # noqa: BLE001
@@ -2201,7 +2203,6 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return got
 
     premarket_cache: dict[str, tuple[float, list[dict], bool]] = {}
-    program_cache: dict[str, tuple[float, dict]] = {}
 
     @app.get("/api/market/flow")
     async def market_flow(market: str = "KOSPI", interval: str = "1d", count: int = 20):
@@ -2226,13 +2227,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             hit = (time.monotonic(), await asyncio.to_thread(futures_history.premarket, local.date()), final)
             premarket_cache.clear()
             premarket_cache[day] = hit
-        prog = program_cache.get(day)
-        if not prog or time.monotonic() - prog[0] >= PREMARKET_CACHE_SEC:   # the snapshots' minute: a half minute
-            prog = (time.monotonic(), await asyncio.to_thread(futures_history.program, local.date()))
-            program_cache.clear()
-            program_cache[day] = prog
         return {**got, "premarket": flow_intraday.premarket(hit[1], market.lower()),
-                "program": prog[1].get(market.lower()),
+                "program": await program_latest.read(local.date(), market.lower()),
                 "expected": kis_feed.expected(market.lower()) if kis_feed is not None else None}
 
     @app.get("/api/market/futures")

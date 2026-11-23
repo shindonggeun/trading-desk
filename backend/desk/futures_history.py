@@ -168,8 +168,8 @@ class FuturesHistory:
 
     def program(self, day: date) -> dict:
         """#677 each market's newest program trading figures of the day (a market KIS failed for in the latest
-        snapshot keeps its earlier ones): ``{"kospi": {"at", "arbitrage", "non_arbitrage", "total"} | None,
-        "kosdaq": ...}`` (100 million KRW)."""
+        snapshot keeps its earlier ones). Each row preserves the legacy second-level ``at`` and the exact
+        collector confirmation in ``fetched_at``. Program values are in 100 million KRW."""
         out: dict[str, dict | None] = {}
         with self.engine.connect() as conn:
             for m in program_trade.MARKETS:
@@ -182,7 +182,9 @@ class FuturesHistory:
                     out[m] = None
                 else:
                     p = _point(r)
-                    out[m] = {"at": p["at"], **p["program"][m]}
+                    stamp = r["at"]
+                    fetched = stamp.astimezone(UTC) if stamp.tzinfo else stamp.replace(tzinfo=UTC)
+                    out[m] = {"at": p["at"], "fetched_at": fetched.isoformat(), **p["program"][m]}
         return out
 
     def record_spot(self, spot: dict | None, now: datetime | None = None) -> bool:

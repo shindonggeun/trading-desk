@@ -154,13 +154,14 @@ def test_the_snapshots_keep_it_and_the_day_reads_the_newest(db_url):
     p2 = {"kospi": {"at": "10:01:00", "arbitrage": -11.0, "non_arbitrage": 310.0, "total": 299.0},
           "kosdaq": {"at": "10:01:00", "arbitrage": 0.0, "non_arbitrage": -20.0, "total": -20.0}}
     assert history.record(_view(), _kst(10, 0), None, p1)
-    assert history.record(_view(), _kst(10, 1), None, p2)
+    assert history.record(_view(), _kst(10, 1).replace(microsecond=900_000), None, p2)
     assert history.record(_view(), _kst(10, 2), None, {"kospi": None, "kosdaq": None})   # KIS failed: kept as is
     points = history.intraday(day)
     assert points[0]["program"]["kospi"]["total"] is None and points[1]["program"]["kospi"]["total"] == 290.0
     got = history.program(day)
     assert got["kospi"]["at"].startswith("2026-11-10T01:01") and got["kospi"]["total"] == 299.0
-    assert got["kosdaq"] == {"at": got["kospi"]["at"], "arbitrage": 0.0, "non_arbitrage": -20.0, "total": -20.0}
+    assert got["kosdaq"] == {"at": got["kospi"]["at"], "fetched_at": "2026-11-10T01:01:00.900000+00:00",
+                            "arbitrage": 0.0, "non_arbitrage": -20.0, "total": -20.0}
     # the newest snapshot without KOSDAQ (its call timed out): KOSDAQ keeps the earlier figures
     p3 = {"kospi": {"at": "10:03:00", "arbitrage": -12.0, "non_arbitrage": 320.0, "total": 308.0}, "kosdaq": None}
     assert history.record(_view(), _kst(10, 3), None, p3)

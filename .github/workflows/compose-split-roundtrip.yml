@@ -1,0 +1,29 @@
+name: Compose split roundtrip rehearsal
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/compose-split-roundtrip.yml
+      - "scripts/tests/compose-split-roundtrip*"
+      - backend/backend.Dockerfile
+      - backend/backend.Dockerfile.dockerignore
+      - backend/docker-compose-backend.yml
+      - backend/pyproject.toml
+      - "backend/desk/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  split-roundtrip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Rehearse all to split and back on isolated Docker networks
+        shell: bash
+        run: |
+          env -u DOCKER_CONTEXT -u DOCKER_HOST python3 -B scripts/tests/compose-split-roundtrip.py --run

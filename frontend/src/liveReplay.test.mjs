@@ -50,15 +50,16 @@ test("최신값 채널은 스트림 키마다 마지막 메시지만 기억하�
   let list = [];
   for (let n = 0; n < 300; n++) list = remember(list, "board:A,B", n % 2 ? "B" : "A", { n }, true, 1000 + n);
   assert.deepEqual(list.map((a) => a.m.n), [298, 299]);               // 30종목 × 초당 메시지가 서로를 밀어내지 않는다
-  assert.deepEqual(pending(list, "board:A,B", 5000, true).map((m) => m.n), [298, 299]);   // 요청 전에 받은 것도
-  assert.deepEqual(pending(list, "other", 0, true), []);
+  assert.deepEqual(pending(list, "board:A,B", 5000, true).before.map((m) => m.n), [298, 299]);   // 요청 전에 받은 것도
+  assert.deepEqual(pending(list, "board:A,B", 1299, true).after.map((m) => m.n), [299]);
+  assert.deepEqual(pending(list, "other", 0, true), { before: [], after: [] });
 });
 
 test("알림은 모두 기억하되 요청 뒤에 받은 것만 다시 얹고, 오래된 기억은 버린다", () => {
   let list = [];
   list = remember(list, "alerts", "flow_shift", { id: 1 }, false, 1000);
   list = remember(list, "alerts", "flow_shift", { id: 2 }, false, 2000);
-  assert.deepEqual(pending(list, "alerts", 1500, false).map((m) => m.id), [2]);
+  assert.deepEqual(pending(list, "alerts", 1500, false), { before: [], after: [{ id: 2 }] });
   list = remember(list, "alerts", "x", { id: 3 }, false, 1001 + REPLAY_KEEP_MS);
   assert.deepEqual(list.map((a) => a.m.id), [2, 3]);                   // 1 은 보존창(KEEP) 밖, 2 는 안
 });
@@ -70,4 +71,19 @@ test("시각을 읽지 못하면 메시지가 이기고, 표기가 달라도 같
   assert.equal(replayOver(kst, [msg(2688, "2026-11-23T02:01:00Z")], apply, stamps).price, 2688);   // 같은 순간: 메시지
   const ms = flow(2601, "2026-11-23T02:01:00.500Z");
   assert.equal(replayOver(ms, [msg(2688, "2026-11-23T02:01:00+00:00")], apply, stamps), ms);       // 0.5초 오래됨
+});
+
+
+test("요청 전에 받은 메시지는 더 새롭다고 증명될 때만 얹는다 — 시각 없는 REST 를 끊기기 전 SSE 값이 덮지 않게", () => {
+  // #869 CI: Redis 가 끊겨 폴링으로 돌아간 수급(REST 2699, 픽스처에 시각 없음)을 끊기기 전의 SSE 2688 이 매번 덮었다
+  const noTime = { price: 2699, freshness: { fetched_at: null } };
+  const before = [msg(2688, "2026-11-23T02:01:00+00:00")];
+  assert.equal(replayOver(noTime, before, apply, stamps, true), noTime);
+  assert.equal(replayOver(noTime, before, apply, undefined, true), noTime);                   // 시각이 없는 채널
+  const older = flow(2699, "2026-11-23T02:02:00+00:00");
+  assert.equal(replayOver(older, before, apply, stamps, true), older);                        // REST 가 더 새롭다
+  const same = flow(2699, "2026-11-23T02:01:00+00:00");
+  assert.equal(replayOver(same, before, apply, stamps, true), same);                          // 같으면 REST
+  const stale = flow(2601, "2026-11-23T02:00:00+00:00");
+  assert.equal(replayOver(stale, before, apply, stamps, true).price, 2688);                   // 서버가 옛 캐시를 줬다
 });

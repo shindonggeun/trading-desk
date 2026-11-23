@@ -55,8 +55,10 @@ export function useLivePoll<T>(
     reconcile: (d, { startedAt }) => {
       const l = liveRef.current;
       if (!l || latencyMode() === "poll") return d;
-      const since = key ? pending(applied.current, key, startedAt, !!l.stamps) : [];
-      return since.length ? replayOver(d, since, l.apply, l.stamps) : d;
+      if (!key) return d;
+      const { before, after } = pending(applied.current, key, startedAt, !!l.stamps);
+      const out = before.length ? replayOver(d, before, l.apply, l.stamps, true) : d;
+      return after.length ? replayOver(out, after, l.apply, l.stamps) : out;
     },
     paused: (data, restAt) => covered(data, restAt) || !!options.paused?.(data, restAt),
   });

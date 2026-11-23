@@ -66,3 +66,62 @@ def test_protected_graph_has_fresh_memory_and_no_checkpoint_or_report(tmp_path, 
     assert temporary and not temporary[0].exists()
     assert memory.read_text(encoding="utf-8") == "legacy synthetic lesson"
     assert dataflows.get_config() == previous
+
+
+@pytest.mark.parametrize("public", [False, True], ids=["account", "public"])
+def test_a_public_run_reads_and_writes_a_memory_apart_from_the_account_runs(tmp_path, monkeypatch, public):
+    """#775 the default memory file holds the owner's account runs' decisions: a run anyone may read keeps its own."""
+    memory = tmp_path / "trading_memory.md"
+    memory.write_text("account synthetic lesson", encoding="utf-8")
+    cfg = {"memory_log_path": str(memory), "results_dir": str(tmp_path), "data_cache_dir": str(tmp_path),
+           "checkpoint_enabled": False}
+
+    class Graph:
+        def __init__(self, *, selected_analysts, config):
+            self.config = config
+            self.propagator = self
+
+        def create_run_state(self, ticker, date, asset_type, portfolio):
+            return {"ticker": ticker}
+
+        def get_graph_args(self):
+            return {}
+
+        def begin_checkpoint(self, *args):
+            return None
+
+        def checkpoint_input(self, state):
+            return state
+
+        def end_checkpoint(self):
+            pass
+
+        def stream_run(self, state):
+            # the library reads its past decisions from the configured file
+            yield [], {"final_trade_decision": Path(self.config["memory_log_path"]).read_text(encoding="utf-8")
+                       if Path(self.config["memory_log_path"]).exists() else "no memory"}
+
+        def record_decision(self, ticker, date, final_state):
+            with open(self.config["memory_log_path"], "a", encoding="utf-8") as f:
+                f.write(f"\n{ticker} decision")
+
+        def clear_checkpoint_on_success(self, *args):
+            pass
+
+        def save_reports(self, final_state, ticker):
+            return tmp_path / "report.md"
+
+    monkeypatch.setattr(default_config, "build_default_config", lambda: dict(cfg))
+    monkeypatch.setattr(trading_graph, "TradingAgentsGraph", Graph)
+
+    result = run_tradingagents(RunRequest("SYNTHETIC", "2026-11-20"), lambda _event: None, None,
+                               public_memory=public)
+    public_file = tmp_path / "trading_memory.public.md"
+    if public:
+        assert result.final_state["final_trade_decision"] == "no memory"
+        assert memory.read_text(encoding="utf-8") == "account synthetic lesson"
+        assert public_file.read_text(encoding="utf-8") == "\nSYNTHETIC decision"
+    else:
+        assert result.final_state["final_trade_decision"] == "account synthetic lesson"
+        assert memory.read_text(encoding="utf-8").endswith("SYNTHETIC decision")
+        assert not public_file.exists()

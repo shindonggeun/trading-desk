@@ -1,4 +1,4 @@
-"""A loopback-only split-backend smoke on the PostgreSQL test database."""
+"""A loopback-only split-backend smoke on a dedicated PostgreSQL test database."""
 
 from __future__ import annotations
 
@@ -12,12 +12,13 @@ import time
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import inspect
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
@@ -32,13 +33,23 @@ BACKEND = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def split_db_url(request):
+def split_db_url():
     raw = os.environ.get("DESK_TEST_DATABASE_URL")
     if not raw:
         pytest.skip("split-process smoke requires the PostgreSQL test database")
-    # Check before requesting db_url, whose fixture resets the test database.
-    _require_test_db(raw)
-    return request.getfixturevalue("db_url")
+    base = _require_test_db(raw)
+    # Advisory locks survive table resets. Keep the production lock key in an isolated database.
+    name = f"desk_split_{uuid4().hex}_test"
+    admin = create_engine(base, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            conn.exec_driver_sql(f'CREATE DATABASE "{name}"')
+            try:
+                yield base.set(database=name).render_as_string(hide_password=False)
+            finally:
+                conn.exec_driver_sql(f'DROP DATABASE "{name}"')
+    finally:
+        admin.dispose()
 
 
 def _require_test_db(raw: str):
@@ -51,6 +62,7 @@ def _require_test_db(raw: str):
             or os.environ.get("PGHOSTADDR") or os.environ.get("PGSERVICE")
             or not re.fullmatch(r"[a-z_][a-z0-9_]*_test(?:_gw[0-9]+)?", url.database or "")):
         raise ValueError(message)
+    return url
 
 
 @pytest.mark.parametrize("url", [

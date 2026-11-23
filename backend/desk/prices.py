@@ -15,7 +15,9 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from datetime import time as clock_time
@@ -23,12 +25,23 @@ from datetime import time as clock_time
 from . import market_bus, market_calendar, shared_cache
 from .broker.base import Bar, Broker
 from .indicators import WARMUP, annotate, normalize
+from .single_flight import Flights
 
 log = logging.getLogger(__name__)
 
 QUOTE_TTL_SEC = 10.0
 SHARED_NS = "quote"   # #689 desk.shared_cache: a Quote dict per ticker, QUOTE_TTL_SEC
 CANDLE_TTL_SEC = 30.0
+# #858 how far past their TTL a caller takes the bars it had, at once, while a background read brings new ones.
+# 0 - wait for new bars - everywhere but the one caller that says so with ``stale_ok``: /api/batch/candles (the
+# dashboard's tiles and sparks, desk.api BATCH_STALE_SEC). The levels, playbooks and projections built on bars,
+# the charts, alerts and analyses always wait. Inside a read (its own task) it is 0 again, so the bars a read takes
+# from another key (a KRX minute chart's 1m tail) are never old ones kept as new. Background reads run
+# REFRESH_PARALLEL at a time; a caller that would wait for one still in that queue reads at once instead.
+STALE_OK: ContextVar[float] = ContextVar("desk_prices_stale_ok", default=0.0)
+REFRESH_PARALLEL = 4
+# #858 (#391) an empty answer when bars are kept: the kept bars answer, and are asked for again this soon
+CANDLES_EMPTY_RETRY_SEC = 30.0
 CACHE_MAX = 256
 # 1M is a month, 1m a minute. 120m / 240m and 1y are built here from Yahoo's 60m and monthly bars.
 INTERVALS = ("1m", "5m", "15m", "30m", "60m", "120m", "240m", "1d", "1w", "1M", "1y")
@@ -63,6 +76,16 @@ class Quote:
 
 
 CRYPTO_SUFFIXES = ("-USD", "-USDT", "-USDC", "-BTC", "-ETH")
+
+
+@contextmanager
+def stale_ok(seconds: float) -> Iterator[None]:
+    """#858 inside: bars up to ``seconds`` past their TTL are answered at once (STALE_OK)."""
+    token = STALE_OK.set(seconds)
+    try:
+        yield
+    finally:
+        STALE_OK.reset(token)
 
 
 def is_market_symbol(ticker: str) -> bool:
@@ -336,6 +359,10 @@ class PriceSource:
         self._quotes: dict[str, tuple[float, Quote]] = {}
         self._candles: dict[tuple[str, str, int, tuple[str, ...]], tuple[float, dict, float]] = {}
         self._inflight: dict[tuple[str, str, int, tuple[str, ...]], asyncio.Future] = {}   # #536 single-flight
+        self._quote_reads = Flights()     # #858 the bottom zone, the playbooks and the board asking one ticker at once
+        self._refresh_gate: asyncio.Semaphore | None = None    # #858 background reads of stale bars, per loop
+        self._refresh_loop: asyncio.AbstractEventLoop | None = None
+        self._queued: set[asyncio.Future] = set()     # background reads still waiting for the gate
 
     async def quote(self, ticker: str) -> Quote:
         tick = self.stream.latest(ticker) if self.stream is not None else None
@@ -344,6 +371,9 @@ class PriceSource:
         cached = self._quotes.get(ticker)
         if cached and self._clock() - cached[0] < QUOTE_TTL_SEC:
             return cached[1]
+        return await self._quote_reads.run(ticker, lambda: self._read_quote(ticker))
+
+    async def _read_quote(self, ticker: str) -> Quote:
         # #689 a quote another process (collector · analyst · api) read in the last QUOTE_TTL_SEC
         hit = await shared_cache.aget(SHARED_NS, ticker)
         if hit is not None:
@@ -379,27 +409,71 @@ class PriceSource:
         key = (ticker, interval, count, indicators)
         ttl = _CANDLE_TTL[interval]
         cached = self._candles.get(key)
-        if cached and self._clock() - cached[0] < ttl:
-            return cached[1]
+        if cached:
+            age = self._clock() - cached[0]
+            if age < ttl:
+                return cached[1]
+            if age < ttl + STALE_OK.get():
+                # #858 a screen's batch read: the bars it had, at once; a background read brings the new ones
+                if self._pending(key) is None:      # queued from the start: until it holds the gate
+                    self._queued.add(self._start(key, self._refresh_candles(ticker, interval, count, indicators,
+                                                                            key, ttl)))
+                return cached[1]
         # #536: one fetch per key at a time - a page's cards (and the playbooks' bars and the levels) asking
         # for the same bars together share it. A caller that gives up does not cancel it for the others.
+        pending = self._pending(key)
+        if pending is not None and pending in self._queued:
+            # #858 a background read still waiting for its turn: nobody waits on it (its askers took the old
+            # bars), so it gives way to a read now instead of keeping this caller in the queue
+            self._queued.discard(pending)
+            pending.cancel()
+            pending = None
+        if pending is None:
+            pending = self._start(key, self._fetch_candles(ticker, interval, count, indicators, key, ttl))
+        return await asyncio.shield(pending)
+
+    def _pending(self, key: tuple) -> asyncio.Future | None:
         pending = self._inflight.get(key)
-        if pending is not None and pending.get_loop() is asyncio.get_running_loop():
-            return await asyncio.shield(pending)
-        task = asyncio.ensure_future(self._fetch_candles(ticker, interval, count, indicators, key, ttl))
+        return pending if pending is not None and pending.get_loop() is asyncio.get_running_loop() else None
+
+    def _start(self, key: tuple, fetch) -> asyncio.Future:
+        task = asyncio.ensure_future(fetch)
         self._inflight[key] = task
 
         def done(t: asyncio.Future) -> None:
             if self._inflight.get(key) is t:
                 self._inflight.pop(key, None)
+            self._queued.discard(t)
             if not t.cancelled():
                 t.exception()                  # retrieved: nobody may be left waiting for it
 
         task.add_done_callback(done)
-        return await asyncio.shield(task)
+        return task
+
+    async def _refresh_candles(self, ticker: str, interval: str, count: int, indicators: tuple[str, ...],
+                               key: tuple, ttl: float) -> dict:
+        """#858 a stale entry's background read, REFRESH_PARALLEL at a time per loop (a page's burst of stale
+        bars must not take every worker thread at once)."""
+        loop = asyncio.get_running_loop()
+        if self._refresh_loop is not loop:
+            self._refresh_gate, self._refresh_loop = asyncio.Semaphore(REFRESH_PARALLEL), loop
+        try:
+            await self._refresh_gate.acquire()
+        finally:
+            self._queued.discard(asyncio.current_task())     # holding the gate (or given way): not queued
+        try:
+            return await self._fetch_candles(ticker, interval, count, indicators, key, ttl)
+        except Exception as exc:  # the kept bars stand; the next ask past the TTL reads again
+            log.info("background candles for %s %s failed: %s", ticker, interval, type(exc).__name__)
+            raise
+        finally:
+            self._refresh_gate.release()
 
     async def _fetch_candles(self, ticker: str, interval: str, count: int, indicators: tuple[str, ...],
                              key: tuple, ttl: float) -> dict:
+        # #858 a read always runs in its own task (_start), so this stays inside it: the bars it takes from
+        # another key (_fill_krx's 1m) are new ones, never the old bars a batch caller may take
+        STALE_OK.set(0.0)
         # Extra bars ahead of the shown ones so the indicators have settled by the first bar drawn.
         fetch = count + max((WARMUP[i] for i in indicators), default=0)
         try:
@@ -426,6 +500,13 @@ class PriceSource:
         result = {"ticker": ticker, "interval": interval, "source": source, "fetched_at": _now(),
                   "bars": rows, "indicators": list(indicators),
                   "history_limit_days": HISTORY_LIMIT_DAYS.get(interval), "truncated": len(rows) < count}
+        kept = self._candles.get(key)
+        if not rows and kept and kept[1].get("bars"):
+            # #858 (#391) an empty answer never replaces kept bars: they answer, and stay fresh for
+            # CANDLES_EMPTY_RETRY_SEC - not every ask past the TTL asking Yahoo again
+            _remember(self._candles, key, (self._clock() - max(0.0, ttl - CANDLES_EMPTY_RETRY_SEC), kept[1], ttl),
+                      ttl, self._clock)
+            return kept[1]
         _remember(self._candles, key, (self._clock(), result, ttl), ttl, self._clock)
         return result
 

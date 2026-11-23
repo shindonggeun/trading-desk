@@ -68,6 +68,26 @@ def test_toss_quote_is_cached_for_a_few_seconds():
     assert broker.calls == 2 and yahoo_calls == []
 
 
+def test_askers_of_one_quote_at_once_share_one_broker_call():
+    """#858: the bottom zone, the playbooks and the board asked one ticker together - each called Toss."""
+    class SlowBroker(LiveBroker):
+        async def quote(self, symbol):
+            await asyncio.sleep(0.05)
+            return await super().quote(symbol)
+
+    broker, clock = SlowBroker(), Clock()
+    source = PriceSource(broker, yahoo_quote=_yahoo()[0], clock=clock)
+
+    async def main():
+        return await asyncio.gather(*(source.quote("NVDA") for _ in range(5)), source.quote("AAPL"))
+
+    got = asyncio.run(main())
+    assert [q.price for q in got] == [181.5] * 6 and broker.calls == 2
+    clock.t += QUOTE_TTL_SEC + 1
+    asyncio.run(source.quote("NVDA"))
+    assert broker.calls == 3
+
+
 @pytest.mark.parametrize("broker", [MockBroker(), LiveBroker(fail=True)], ids=["no-market-data", "toss-fails"])
 def test_falls_back_to_yahoo_and_says_so(broker):
     yahoo, calls = _yahoo(179.0)
@@ -209,6 +229,134 @@ def test_cache_drops_expired_tickers_once_it_is_full(monkeypatch):
     clock.t += QUOTE_TTL_SEC + 1
     asyncio.run(source.quote("D"))
     assert list(source._quotes) == ["D"]
+
+
+def test_a_batch_read_takes_the_bars_it_had_at_once_and_a_background_read_brings_new_ones():
+    """#858 stale-while-revalidate for the screens' batch reads only (``stale_ok``); everyone else waits."""
+    from contextlib import suppress
+
+    from desk.prices import CANDLE_TTL_SEC, CANDLES_EMPTY_RETRY_SEC, stale_ok
+
+    clock, answers, calls = Clock(), [], []
+
+    def yahoo_candles(ticker, interval, count):
+        calls.append(interval)
+        got = answers.pop(0)
+        if isinstance(got, Exception):
+            raise got
+        return got
+
+    def bars(close):
+        return [Bar("2026-11-20T00:00:00+00:00", 1, 2, 0.5, close, 100)]
+
+    source = PriceSource(MockBroker(), yahoo_candles=yahoo_candles, clock=clock)
+    key = ("^KS11", "1d", 5, ())
+
+    async def last(stale: float = 0.0) -> float:
+        with stale_ok(stale):
+            return (await source.candles("^KS11", "1d", 5))["bars"][-1]["close"]
+
+    async def settle():                                  # the background read, when one runs
+        if (task := source._inflight.get(key)) is not None:
+            with suppress(Exception):
+                await task
+
+    async def main():
+        answers.append(bars(100.0))
+        assert await last() == 100.0 and len(calls) == 1
+        clock.t += CANDLE_TTL_SEC + 1
+        answers.append(bars(101.0))
+        assert await last(90) == 100.0                  # at once: the bars it had
+        assert await last() == 101.0 and len(calls) == 2    # one that waits reads now: one read in all
+        clock.t += CANDLE_TTL_SEC + 1
+        answers.append([])                              # Yahoo throttling: an empty answer
+        assert await last(90) == 101.0
+        await settle()
+        assert len(calls) == 3
+        # (#391) the kept bars answer the empty read and stay fresh a short while: no read on every ask
+        assert await last() == 101.0 and len(calls) == 3
+        clock.t += CANDLES_EMPTY_RETRY_SEC + 1
+        answers.append(ConnectionError("Yahoo down"))
+        assert await last(90) == 101.0
+        await settle()
+        answers.append(ConnectionError("Yahoo down"))
+        assert await last(90) == 101.0 and len(calls) == 4      # failed in the background: the kept bars stand
+        await settle()
+        clock.t += 120                                  # past the stale window: a batch waits like everyone
+        answers.append(bars(103.0))
+        assert await last(90) == 103.0 and len(calls) == 6 and not answers
+
+    asyncio.run(main())
+
+
+def test_the_background_read_never_takes_old_bars_from_another_key():
+    """#858 review: a batch's stale_ok went into its background read's task, so a KRX 15-minute chart rebuilt
+    its tail from the old 1m bars and kept the result as new - for single charts and alerts too."""
+    from desk.prices import stale_ok
+
+    def minute(kst, close):
+        at = datetime.fromisoformat(kst).replace(tzinfo=timezone(timedelta(hours=9))).astimezone(UTC)
+        return Bar(at.isoformat(timespec="seconds"), close, close + 1, close - 1, close, 1.0)
+
+    last = {"minute": 29}
+
+    class Toss(MockBroker):
+        name = "toss"
+
+        async def candles(self, symbol, interval, count):
+            return [minute(f"2026-11-13 10:{m:02d}", 300 + m) for m in range(last["minute"] + 1)]
+
+    clock = Clock()
+    yahoo = [minute("2026-11-13 09:00", 100), minute("2026-11-13 10:00", 101)]
+    source = PriceSource(Toss(), yahoo_candles=lambda *_: list(yahoo), clock=clock)
+
+    async def main():
+        assert (await source.candles("005930.KS", "15m", 10))["bars"][-1]["close"] == 329
+        clock.t += 61                                   # 15m (60 s) and 1m (30 s) both past their TTL
+        last["minute"] = 44                             # the broker has bars to 10:44 now
+        with stale_ok(300):
+            assert (await source.candles("005930.KS", "15m", 10))["bars"][-1]["close"] == 329
+        await source._inflight[("005930.KS", "15m", 10, ())]
+        assert (await source.candles("005930.KS", "15m", 10))["bars"][-1]["close"] == 344
+
+    asyncio.run(main())
+
+
+def test_a_caller_that_waits_never_queues_behind_the_background_reads():
+    """#858 review: a chart asking a key whose background read still waited for REFRESH_PARALLEL waited
+    behind every read ahead of it; it reads at once now (and that queued read gives way)."""
+    import threading
+
+    from desk.prices import CANDLE_TTL_SEC, REFRESH_PARALLEL, stale_ok
+
+    hold, reads, filled = threading.Event(), [], threading.Event()
+
+    def yahoo_candles(ticker, interval, count):
+        reads.append(ticker)
+        if filled.is_set() and ticker != "T11":
+            hold.wait(5)                                # the reads ahead in the queue do not finish
+        return [Bar("2026-11-20T00:00:00+00:00", 1, 2, 0.5, 100, 100)]
+
+    clock = Clock()
+    source = PriceSource(MockBroker(), yahoo_candles=yahoo_candles, clock=clock)
+    tickers = [f"T{i}" for i in range(12)]
+
+    async def main():
+        await asyncio.gather(*(source.candles(t, "1d", 5) for t in tickers))
+        filled.set()
+        clock.t += CANDLE_TTL_SEC + 1
+        with stale_ok(90):                              # a dashboard batch: twelve background reads
+            await asyncio.gather(*(source.candles(t, "1d", 5) for t in tickers))
+        await asyncio.sleep(0.05)
+        try:
+            got = await asyncio.wait_for(source.candles("T11", "1d", 5), 2)
+        finally:
+            hold.set()
+        assert got["bars"] and reads.count("T11") == 2 and REFRESH_PARALLEL < 11
+        await asyncio.gather(*(t for t in list(source._inflight.values())), return_exceptions=True)
+        assert reads.count("T11") == 2                  # its queued read gave way, never ran
+
+    asyncio.run(main())
 
 
 def test_run_still_finishes_when_no_price_source_answers(db_url):

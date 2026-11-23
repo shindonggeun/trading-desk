@@ -7,6 +7,12 @@ every ``INTERVAL_SEC`` it asks each shared cache with ``ahead=AHEAD_SEC`` - a va
 the next pass is fetched now, while pages keep reading the old one (the caches read a fresh value without
 their fetch lock). The jobs run side by side; one failing does not stop the others or the next pass.
 
+#864: the jobs that are one blocking call (tips · trend · weekly · halving · gaps · sectors · risk · bottoms) run
+it on this module's own small executor (``off``), not asyncio's default one - the pages' requests use that
+(asyncio.to_thread), and a pass of slow reads must not leave them waiting for a worker at the market's open. The
+async jobs (board · fear · playbooks) and the positioning tickers still use the default one inside. ``LAST`` is
+the last pass, for /api/status.
+
 Then the favorites' US tickers' positioning (Cboe options, FINRA, short interest - 6-14 s cold), a few, one
 at a time: its cache holds a ticker's lock while it fetches, so it is only filled when missing, never
 refetched ahead.
@@ -15,9 +21,13 @@ refetched ahead.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +41,17 @@ LIVE_AHEAD_SEC = 100.0
 FIRST_DELAY_SEC = 5.0               # let the app finish starting before the first pass
 
 Job = Callable[[], Awaitable[object]]
+
+# #864 the prewarm's own workers (as #858's admission executor: a fixed small pool, asyncio.to_thread's meaning)
+WORKERS = 4
+_POOL = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="desk-prewarm")
+LAST: dict = {}                     # the last pass: {"at", "ms", "jobs": {name: "<ms>ms" | error}}
+
+
+async def off(fn: Callable, /, *args, **kwargs):
+    """``asyncio.to_thread`` on the prewarm's own executor (the context goes along, as to_thread's does)."""
+    ctx = contextvars.copy_context()
+    return await asyncio.get_running_loop().run_in_executor(_POOL, functools.partial(ctx.run, fn, *args, **kwargs))
 
 
 async def warm(jobs: dict[str, Job]) -> dict[str, str]:
@@ -63,6 +84,9 @@ async def run(jobs: Callable[[], dict[str, Job]], tickers: Callable[[], list[str
             if then is not None:
                 took.update(await warm(then()))
             log.info("prewarm: %s", " ".join(f"{k}={v}" for k, v in took.items()))
+            LAST.clear()
+            LAST.update(at=datetime.now(UTC).isoformat(timespec="seconds"),
+                        ms=round((time.monotonic() - start) * 1000), jobs=took)
             for ticker in (await asyncio.to_thread(tickers))[:FAVORITES_MAX]:   # a DB read: off the loop
                 try:
                     await ticker_job(ticker)

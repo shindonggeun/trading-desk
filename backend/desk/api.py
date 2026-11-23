@@ -1127,28 +1127,29 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             return morning_brief.RETRY_SEC * 2 ** min(brief_failures["n"] - 1, 3)
 
         def prewarm_jobs() -> dict[str, prewarm.Job]:
-            # #536: the dashboard's shared data, refetched before it expires (desk.prewarm)
+            # #536: the dashboard's shared data, refetched before it expires (desk.prewarm) - #864 on the prewarm's
+            # own workers (prewarm.off), not the pages' to_thread ones
             ahead = prewarm.AHEAD_SEC
             jobs: dict[str, prewarm.Job] = {
-                "tips": lambda: asyncio.to_thread(tip_cache.regime, ahead),
-                "trend": lambda: asyncio.to_thread(trend_cache.view, ahead),
-                "weekly": lambda: asyncio.to_thread(weekly.all, ahead),
-                "halving": lambda: asyncio.to_thread(halving_cache.get, ahead),
+                "tips": lambda: prewarm.off(tip_cache.regime, ahead),
+                "trend": lambda: prewarm.off(trend_cache.view, ahead),
+                "weekly": lambda: prewarm.off(weekly.all, ahead),
+                "halving": lambda: prewarm.off(halving_cache.get, ahead),
                 # #577: the tips page's gap lines read only what is cached
-                "gaps": lambda: asyncio.gather(*(asyncio.to_thread(gap_fill.read, gap_fetch, t, gap_events,
+                "gaps": lambda: asyncio.gather(*(prewarm.off(gap_fill.read, gap_fetch, t, gap_events,
                                                                    ahead=ahead) for t in gap_fill.WATCH)),
             }
             if sector_candles is not None:   # #620 both markets' sector picks, so a first look is instant
-                jobs["sectors"] = lambda: asyncio.gather(*(asyncio.to_thread(sector_cache.read, m, sector_candles,
+                jobs["sectors"] = lambda: asyncio.gather(*(prewarm.off(sector_cache.read, m, sector_candles,
                                                                              None, ahead) for m in day_sectors.MARKETS))
             if risk_cache is not None:
-                jobs["risk_us"] = lambda: asyncio.to_thread(risk_cache.series, False, ahead)
-                jobs["risk_kr"] = lambda: asyncio.to_thread(risk_cache.series, True, ahead)
+                jobs["risk_us"] = lambda: prewarm.off(risk_cache.series, False, ahead)
+                jobs["risk_kr"] = lambda: prewarm.off(risk_cache.series, True, ahead)
             if fear_gauges is not None:
                 jobs["fear"] = lambda: fear_gauges.get(ahead)
             jobs["board"] = lambda: _warm_board(prewarm.LIVE_AHEAD_SEC)
             # #643 the dashboard's bottom-zone card: the main indices and the favorites (1 h cache)
-            jobs["bottoms"] = lambda: asyncio.to_thread(
+            jobs["bottoms"] = lambda: prewarm.off(
                 lambda: bottoms.warm(["^KS11", "^NDX", "^SOX", *favorites.tickers(prewarm.FAVORITES_MAX)], ahead))
             return jobs
 
@@ -1426,7 +1427,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 # #689 this process's shared-cache hits and its own calls to the brokers (Toss · KIS REST)
                 "shared_cache": shared_cache.stats(), "outbound": outbound.snapshot(),
                 "market_stream": market_bus.BUS.stats(),
-                "loop_lag": lag.stats()}             # #859 the event loop's lateness and what held it
+                "loop_lag": lag.stats(),             # #859 the event loop's lateness and what held it
+                "prewarm": prewarm.LAST or None}   # #864 the last pass: when, how long, each job
 
     # #536 per-route request times (desk.req_timing), read in production without parsing logs
     timings = req_timing.Timings()

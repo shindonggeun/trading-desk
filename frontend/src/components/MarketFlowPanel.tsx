@@ -322,6 +322,8 @@ export default function MarketFlowPanel() {
   }, {
     channel: "flow",
     keys: flowKeys,
+    // #690 지연 실측 — 값의 동일성은 데스크가 읽은 시각
+    stamps: (d) => flowKeys.map((key) => ({ key, id: d.freshness?.fetched_at })),
     apply: (prev, m) => {
       const next = m.payload as MarketFlowWithExpected | null;
       if (!next || !Array.isArray(next.records)) return undefined;

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
+import { latencyMode } from "./marketLatency";
 import { sameTicker } from "./ticker";
 
 /**
@@ -221,6 +222,17 @@ if (typeof document !== "undefined") {
 
 /** 그 채널(과 키)이 지금 스트림으로 오고 있나 — 폴링을 쉬어도 되나 */
 export function streamLive(channel: StreamChannel, key?: string): boolean {
+  if (latencyMode() === "poll") return false;   // #690 이 탭은 폴링으로 그리고 스트림은 비교용으로만 받는다
+  return streamReady(channel, key);
+}
+
+/** #690 지연 실측: 연결 · ready(재접속 스냅숏이 끝남) · 45초 안에 받음 — degraded 와 별개 */
+export function streamConnected(): boolean {
+  return !!st.es && st.ready && Date.now() - st.lastAt <= DEAD_MS;
+}
+
+/** 연결 · ready · degraded 아님 · 45초 안에 받음(· 그 키를 받은 적 있음) — 화면이 스트림을 쓰는지와 별개 */
+function streamReady(channel: StreamChannel, key?: string): boolean {
   if (!st.es || !st.ready || st.degraded.has(channel)) return false;
   if (Date.now() - st.lastAt > DEAD_MS) return false;
   return key == null || st.seenKeys.has(slot(channel, key));

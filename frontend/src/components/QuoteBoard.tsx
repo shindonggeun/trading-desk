@@ -37,6 +37,8 @@ export const BOARD_LIVE = (tickers: string[]): LiveSpec<Board> => ({
   // 모든 칸이 정규장일 때만 쉰다 — 추정 칸은 서버가 바이낸스로 계산한다
   pauseWhen: (d) => !!d && d.items.length > 0 && d.items.every(trading),
   reconcileMs: RECONCILE_MS,
+  // #690 지연 실측 — 정규장 칸만(추정 칸은 서버가 계산한 값이라 원천 지연이 아니다)
+  stamps: (d) => d.items.filter(trading).map((it) => ({ key: it.ticker, id: it.price })),
 });
 const BUNDLE_KEY = "desk.board.weekend";
 const OPEN_KEY = "desk.board.weekend.open";

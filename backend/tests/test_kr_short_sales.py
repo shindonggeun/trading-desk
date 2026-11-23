@@ -2,10 +2,11 @@
 
 import asyncio
 from datetime import date, datetime
+from functools import partial
 
 import pytest
 
-from desk import market_calendar
+from desk import kr_short_sales, market_calendar, positioning
 from desk.kr_short_sales import (
     BalanceRow,
     KrxShortSales,
@@ -193,3 +194,75 @@ def test_same_ticker_concurrent_requests_share_one_source_call():
         assert all(result == results[0] for result in results)
 
     asyncio.run(run())
+
+
+def test_domestic_positioning_api_requires_session_and_valid_ticker(db_url):
+    from tests.test_api import OWNER, PASSWORD, _client
+
+    endpoint = "/api/positioning"
+    with _client(db_url, login=False) as client:
+        assert client.get(endpoint, params={"ticker": "005930.KS"}).status_code == 401
+        assert client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD}).status_code == 204
+        assert client.get(endpoint).status_code == 422
+        assert client.get(endpoint, params={"ticker": "bad ticker"}).status_code == 422
+
+        response = client.get(endpoint, params={"ticker": " 247540.kq "})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ticker"] == body["kr_short"]["ticker"] == "247540.KQ"
+        assert body["kr_short"]["market"] == "KOSDAQ"
+        assert body["supported"] is True
+        assert body["reason"] == body["kr_short"]["status"] == "source_unavailable"
+        assert body["sources"] == []
+        assert body["short"] is body["options"] is None
+
+
+def test_domestic_positioning_api_uses_injected_publications_for_single_get(db_url, monkeypatch):
+    from tests.test_api import _client
+
+    calls = []
+
+    async def source(ticker, start, end):
+        calls.append(ticker)
+        if ticker == "999999.KQ":
+            raise UnsupportedTicker(ticker)
+        if ticker == "000660.KS":
+            return Publication([], [])
+        return Publication([TradeRow(THURSDAY, 0, 50_000)], [BalanceRow(TUESDAY, 1.25)])
+
+    service = KrxShortSales(source)
+    monkeypatch.setattr(service, "get", partial(service.get, now=at(THURSDAY)))
+    monkeypatch.setattr(kr_short_sales, "KRX_SHORT_SALES", service)
+    monkeypatch.setattr(positioning, "POSITIONING", positioning.Positioning())
+    with _client(db_url) as client:
+        response = client.get("/api/positioning", params={"ticker": "005930.ks"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["supported"] is True and body["sources"] == ["krx"]
+        assert body["reason"] is None
+        assert body["kr_short"]["trade"]["latest"] == {
+            "as_of": "2026-10-08", "ratio_pct": 0.0, "status": "available",
+        }
+        assert body["kr_short"]["balance"]["latest"] == {
+            "as_of": "2026-10-06", "ratio_pct": 1.25, "status": "available",
+        }
+
+        response = client.get("/api/positioning", params={"ticker": "999999.KQ"})
+        assert response.status_code == 200
+        unknown = response.json()
+        assert unknown["supported"] is False
+        assert unknown["reason"] == unknown["kr_short"]["status"] == "unsupported"
+        assert unknown["sources"] == []
+
+        response = client.get("/api/positioning", params={"ticker": "000660.KS"})
+        assert response.status_code == 200
+        empty = response.json()
+        assert empty["kr_short"]["status"] == "no_data"
+        assert empty["sources"] == []
+
+        response = client.get("/api/positioning/batch", params={"tickers": "005930.KS"})
+        assert response.status_code == 200
+        item, = response.json()["items"]
+        assert item["supported"] is False
+        assert "kr_short" not in item
+    assert calls == ["005930.KS", "999999.KQ", "000660.KS"]

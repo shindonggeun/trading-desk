@@ -27,7 +27,8 @@ from fastapi import Path as FastPath
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import not_
+from sqlalchemy import not_, select
+from sqlalchemy.engine import Connection
 from starlette.concurrency import run_in_threadpool
 
 from . import (
@@ -117,7 +118,7 @@ from .auth import COOKIE, Auth, Busy, LoginThrottle, User, hash_token
 from .broker import kis_stream, make_broker
 from .broker_issuer_lock import BrokerIssuerLock
 from .consensus import fake_summariser, llm_summariser
-from .db import make_engine, migrate, now, require_schema_at_head
+from .db import account_owner_binding, make_engine, migrate, now, require_schema_at_head
 from .db import runs as run_rows
 from .estimate import CANDLE_INTERVALS, BinanceEstimator, naver_overtime, trading_soon
 from .favorites import Conflict, Favorites, TooMany
@@ -134,6 +135,7 @@ from .jobs import Jobs
 from .leverage_analyst import fake_analyst, llm_analyst
 from .longshort import LongShort
 from .market_flow import MarketFlow
+from .owner_attestation import TossAttestationStore, TossSource
 from .portfolio import Portfolio
 from .prices import INTERVALS, PriceSource, kis_quote, stale_ok
 from .privacy import OwnerResources, PolicyChanged, ProcessPolicy
@@ -148,7 +150,7 @@ from .sr import frame_bars, support_resistance
 from .stock_profile import MAX_TICKERS as PROFILE_MAX
 from .stock_profile import Profiles
 from .store import TERMINAL, AccountBindingChanged, Store, iso
-from .token_store import TokenStore
+from .token_store import TokenStore, TokenUnavailable
 from .ttl_cache import TTLCache
 from .universe import KR_SUFFIX, Universe
 
@@ -425,7 +427,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                flow: MarketFlow | None = None, futures: FuturesFlow | None = None,
                weekly: weekly_map.Maps | None = None, bottoms: bottom_zone.Zones | None = None,
                longshort: LongShort | None = None, chatter: chat.Chatter | None = None,
-               pictures: report_images.ReportImages | None = None, *, protect_run_reads: bool = False,
+               pictures: report_images.ReportImages | None = None, *, protect_run_reads: bool | None = None,
                owner_resources: OwnerResources | None = None,
                options_provider: options_detail.OptionSource | None = None) -> FastAPI:
     settings = settings or load()
@@ -435,15 +437,53 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     else:
         require_schema_at_head(settings.database_url)
     engine = make_engine(settings.database_url)
+    # #688 Only all and collector can issue broker tokens, while they hold the issuer lock.
+    active_issuer: BrokerIssuerLock | None = None
+
+    def issuer_lock_held() -> bool:
+        issuer = active_issuer
+        return issuer is not None and issuer.check()
+
+    def fence_broker_token(conn: Connection, name: str) -> None:
+        policy.lock(conn)
+        if name == "toss" and approved_binding is not None:
+            occupied = select(account_owner_binding.c.id).where(
+                account_owner_binding.c.id == 1,
+                account_owner_binding.c.user_id == approved_binding.user_id,
+                account_owner_binding.c.generation == approved_binding.generation,
+            ).with_for_update(read=True)
+            if conn.scalar(occupied) is None:
+                raise PolicyChanged("process privacy approval unavailable")
+        if not issuer_lock_held():
+            raise TokenUnavailable("broker issuer lock not held")
+
     try:
         policy = ProcessPolicy.open(engine, protect_run_reads)
-    except PolicyChanged:
+        protected = policy.protected
+        owners = AccountOwnerStore(engine) if protected else None
+        approved_binding: OwnerBinding | None = None
+        toss_seal_material: str | None = None
+        if owners is not None and protect_run_reads is None:
+            binding = owners.binding()
+            if settings.broker != "toss" or binding is None:
+                raise PolicyChanged("process privacy approval unavailable")
+            source = TossSource(settings.toss_client_id, settings.toss_client_secret, settings.toss_account_seq)
+            verified = TossAttestationStore(engine).verify(expected=policy.expected, binding=binding, source=source)
+            if verified is None:
+                raise PolicyChanged("process privacy approval unavailable")
+            approved_binding, toss_seal_material = binding, verified.seal_material
+        tokens = TokenStore(engine, role=settings.role, toss_seal_material=toss_seal_material,
+                            fence_issue=fence_broker_token)
+        broker = make_broker(settings, tokens)
+        if approved_binding is not None:
+            # The deployed factory approves this broker only. Rehearsals can pass explicit resources.
+            owner_resources = OwnerResources(approved_binding, broker)
+    except Exception:
         engine.dispose()
         raise
     store = Store(engine, policy)
-    run_reader = RunReader(engine) if protect_run_reads else None
-    owners = AccountOwnerStore(engine) if protect_run_reads else None
-    public_calibration = calibration.Table.load() if protect_run_reads else None
+    run_reader = RunReader(engine) if protected else None
+    public_calibration = calibration.Table.load() if protected else None
 
     def current_resources() -> OwnerResources | None:
         if owners is not None and owner_resources is not None and policy.current() and owner_resources.current(owners):
@@ -457,12 +497,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     def send_notice(pusher, *kinds, payload, user_id=None):
         # An account notice must identify the current owner. The protected dispatcher
         # never consults stored Telegram/Kakao settings, even for a public notice.
-        if policy.protected and user_id is not None:
+        if protected and user_id is not None:
             approved = current_resources()
             if approved is None or approved.binding.user_id != user_id:
                 return 0
         sent = notify.send(pusher, *kinds, payload=payload, user_id=user_id,
-                           use_channels=not policy.protected, allowed=policy.current)
+                           use_channels=not protected, allowed=policy.current)
         approved = current_resources()
         if approved is not None:
             for destination in approved.destinations:
@@ -474,14 +514,6 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 except Exception as exc:  # noqa: BLE001 - a destination's details stay out of the logs
                     log.warning("approved destination delivery failed: %s", type(exc).__name__)
         return sent
-    # #688 broker tokens shared by the desk's processes: issued only where DESK_ROLE is all | collector
-    active_issuer: BrokerIssuerLock | None = None
-
-    def can_issue_broker_token() -> bool:
-        issuer = active_issuer
-        return issuer is not None and issuer.check()
-
-    tokens = TokenStore(engine, role=settings.role, can_issue=can_issue_broker_token)
     futures_history = FuturesHistory(engine)    # #254
     futures_oi = FuturesOi(engine)              # #603 KRX open interest · basis · put/call per day
     auth = Auth(engine, timedelta(hours=settings.session_max_hours), timedelta(hours=settings.session_idle_hours))
@@ -623,7 +655,6 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return "made"
     sectors = Sectors(engine)
     hub = Hub()
-    broker = make_broker(settings, tokens)
     kis_feed = kis_stream.make(settings, tokens) if prices is None else None   # tests bring their own prices
     prices = prices or PriceSource(broker, stream=kis_feed)
     # #572 today's direction calls: made in their windows from Yahoo bars. Off (stored calls still served)
@@ -747,7 +778,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     if runner is None:
         runner = make_fake_runner(settings.fake_delay) if settings.fake_runs else run_tradingagents
     runner_for = None
-    if protect_run_reads and runner is run_tradingagents:
+    if protected and runner is run_tradingagents:
         runner = partial(run_tradingagents, isolate_artifacts=True)
     elif runner is run_tradingagents:
         # #775 legacy runs keep TradingAgents' memory: a ticker's past decisions (and other tickers' reflections)
@@ -791,6 +822,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     async def lifespan(app: FastAPI):
         if not policy.current():
             raise PolicyChanged("process privacy mode changed")
+        if approved_binding is not None and owners.binding() != approved_binding:
+            raise PolicyChanged("process privacy approval unavailable")
         lag_task = asyncio.create_task(lag.run())
         await net.warm()                   # #859 the shared TLS context, built off the loop before any client
         shared_cache.configure(settings)   # #689 Redis behind some caches; nothing configured = memory only
@@ -852,7 +885,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        # #171: recent news/fundamentals reports taken over (0 = off)
                                        reuse_minutes=settings.reuse_reports_min,
                                        rate_limit_cooldown_min=settings.rate_limit_cooldown_min,
-                                       direct=settings.role == "all", protect_account_runs=protect_run_reads,
+                                       direct=settings.role == "all", protect_account_runs=protected,
                                        calibration_table=public_calibration, account_broker=account_broker,   # #688 split queues for the analyst
                                        runner_for=runner_for)
 
@@ -862,7 +895,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         token_owners = [o for o in (broker, token_rest) if callable(getattr(o, "keep_token", None))]
 
         async def keep_tokens() -> float:
-            if not await asyncio.to_thread(can_issue_broker_token):
+            if not await asyncio.to_thread(lambda: issuer_lock_held() and policy.current()):
                 raise RuntimeError("broker issuer lock lost")
             # #688 the minting process renews the shared broker tokens ahead of expiry and answers the
             # other processes' requests (desk.token_store); the KIS approval key only when one was asked for
@@ -898,7 +931,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             if scored or scoring["fresh"]:
                 # #147: the playbooks' live record on top of the backtest prior
                 since = now() - timedelta(days=calibration.LIVE_DAYS)
-                runs_scored = await asyncio.to_thread(store.scored_since, since, public_only=protect_run_reads)
+                runs_scored = await asyncio.to_thread(store.scored_since, since, public_only=protected)
                 (public_calibration or calibration.TABLE).set_live(runs_scored)
                 scoring["fresh"] = False
             return settings.score_interval_sec
@@ -1333,7 +1366,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             await queue.close()             # #688 first: claim nothing more, put back a claim under way, unlock
         if all_lock is not None:
             await asyncio.to_thread(all_lock.release)
-        if not policy.protected:
+        if not protected:
             notify.shutdown()            # #580 the channels' queued sends go with the process
         if kis:
             kis.cancel()
@@ -1355,27 +1388,31 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         await futures.aclose()
         await market_bus.BUS.aclose()    # #690 its streams are told reset; its subscription and publishes stop
         await shared_cache.aclose()      # #689 after every task that reads or writes it has stopped
-        engine.dispose()
         lag_task.cancel()
 
     @asynccontextmanager
     async def issuer_lifespan(app: FastAPI):
         nonlocal active_issuer
-        if not tokens.minter:
-            async with lifespan(app):
-                yield
-            return
-
-        issuer = BrokerIssuerLock(engine)
         try:
-            if not await asyncio.to_thread(issuer.acquire):
-                raise RuntimeError("broker issuer lock unavailable")
-            active_issuer = issuer
-            async with lifespan(app):
-                yield
+            if not tokens.minter:
+                async with lifespan(app):
+                    yield
+                return
+
+            if not policy.current():
+                raise PolicyChanged("process privacy mode changed")
+            issuer = BrokerIssuerLock(engine)
+            try:
+                if not await asyncio.to_thread(issuer.acquire):
+                    raise RuntimeError("broker issuer lock unavailable")
+                active_issuer = issuer
+                async with lifespan(app):
+                    yield
+            finally:
+                active_issuer = None
+                await asyncio.to_thread(issuer.release)
         finally:
-            active_issuer = None
-            await asyncio.to_thread(issuer.release)
+            engine.dispose()
 
     docs = settings.enable_docs
     app = FastAPI(title="Trading Desk", lifespan=issuer_lifespan, docs_url="/docs" if docs else None,
@@ -2700,11 +2737,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     # #527 the paper account: the scored plans traded with won on paper (no orders, no LLM)
     paper_desk = paper.Paper(engine, dict if settings.fake_runs else paper.yahoo_rates, listing_name,
-                            public_only=protect_run_reads)
+                            public_only=protected)
     app.state.paper = paper_desk
     # #775 legacy: another account's paper account leaves out the runs that read the broker account, as
     # GET /api/runs does (protected mode trades proven public runs only, whoever asks)
-    others_paper = paper_desk if protect_run_reads else paper.Paper(
+    others_paper = paper_desk if protected else paper.Paper(
         engine, paper_desk.fetch_rates, listing_name, scope=not_(account_run(run_rows.c.options)))
 
     def paper_for(request: Request) -> paper.Paper:
@@ -2748,7 +2785,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         limit = settings.retention_days if settings.retention_days > 0 else 365
         days = min(max(days, 1), limit)
         since = now() - timedelta(days=days)
-        result = outcome.stats(store.scored_since(since, public_only=protect_run_reads))
+        result = outcome.stats(store.scored_since(since, public_only=protected))
         return {"days": days, "from": iso(since), "to": iso(now()),
                 "thresholds": {"win_probability": verdict.MIN_PROBABILITY, "agreeing": verdict.MIN_AGREEING},
                 **result}
@@ -3563,7 +3600,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         async def recent_runs(a: dict):
             want = clean_ticker(a["ticker"]) if a.get("ticker") else None
             scope = None if account_runs else not_(account_run(run_rows.c.options))
-            rows = [r for r in store.list_runs(40, public_only=protect_run_reads, scope=scope)
+            rows = [r for r in store.list_runs(40, public_only=protected, scope=scope)
                     if not want or r["ticker"] == want][:8]
             return [{**keep(r, "id", "ticker", "created_at", "status"),
                      **keep(r.get("plan"), "rating", "bias", "entry_price", "stop_loss", "price_target",
@@ -3902,7 +3939,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         out["desk"] = await asyncio.to_thread(regime.desk_view, risk, tip_cache.regime)
         return out
 
-    _push_routes(app, engine, settings, hide_holding_alerts=protect_run_reads, send_notice=send_notice)
+    _push_routes(app, engine, settings, hide_holding_alerts=protected, send_notice=send_notice)
     _notify_routes(app, engine, settings, owners=owners, current_resources=current_resources,
                    active_session=active_session, send_notice=send_notice)
     # outermost (added last): the session check and every other middleware count in the time

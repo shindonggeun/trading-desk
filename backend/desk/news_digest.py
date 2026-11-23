@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -28,7 +29,10 @@ from datetime import UTC, datetime
 
 log = logging.getLogger(__name__)
 
-BATCH = 30                    # headlines per model call (a pass has at most themes x HEADLINES)
+# headlines per model call (a pass has at most themes x PER_THEME). #861: a macro pass's batch (up to 24) ran past
+# the 100 s budget three passes in a row (2026-11-22 ~ 23) - the ChatGPT provider streams, so the client's 90 s is
+# a gap between chunks, not a cap on the whole answer. Each batch's time is logged to check 10 stays inside it
+BATCH = 10
 PER_THEME = 3                 # headlines per theme asked about (the ones the page shows first)
 TIMEOUT_SEC = 90.0
 KEEP = 2000                   # answers remembered (by URL)
@@ -175,6 +179,7 @@ class Digest:
         done = 0
         for start in range(0, len(pending), BATCH):
             batch = [{**p, "id": str(n)} for n, p in enumerate(pending[start:start + BATCH])]
+            began = time.monotonic()
             try:
                 async with (slot or _always)() as free:
                     if not free:
@@ -183,9 +188,13 @@ class Digest:
                                                   TIMEOUT_SEC + 10)
                 reads = parse(text, {b["id"] for b in batch})
                 self.error = None if reads else "unparsed"
+                log.info("news digest: %d of %d headline(s) read in %.0fs", len(reads), len(batch),
+                         time.monotonic() - began)
             except Exception as exc:  # noqa: BLE001 - no read: the page keeps the original headline
                 self.error = type(exc).__name__
-                log.info("news digest failed: %s", exc)
+                # #861 the type and the time it took: a timeout's message is empty
+                log.info("news digest failed after %.0fs (%d headline(s)): %s", time.monotonic() - began, len(batch),
+                         f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__)
                 break
             now = datetime.now(UTC).isoformat(timespec="seconds")
             for b in batch:

@@ -5,6 +5,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from desk import prices as prices_mod
 from desk.broker import Bar, MockBroker, TossBroker
 from desk.levels import fill_levels
 from desk.prices import QUOTE_TTL_SEC, PriceSource, broker_symbol
@@ -347,3 +348,43 @@ def test_after_the_close_a_krx_minute_chart_ends_with_the_official_close():
     failing = PriceSource(AfterHours(), yahoo_candles=lambda t, i, c: (_ for _ in ()).throw(OSError("down"))
                           if i == "1d" else yahoo(t, i, c))
     assert asyncio.run(failing.candles("005930.KS", "15m", 10))["bars"][-1]["close"] == 207.5   # 일봉이 없으면 분봉만
+
+
+def _yahoo_fake(monkeypatch, answers):
+    """yfinance stand-in: history() hands out the given frames in order and counts the asks."""
+    import sys
+    import types
+
+    asked = []
+
+    def history(**kw):
+        asked.append(kw["interval"])
+        return answers[min(len(asked), len(answers)) - 1]
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=lambda t: types.SimpleNamespace(history=history)))
+    monkeypatch.setattr(prices_mod, "YAHOO_EMPTY_RETRY_SEC", 0.0)
+    return asked
+
+
+def test_an_empty_yahoo_daily_answer_is_asked_once_more(monkeypatch, caplog):
+    """#861 운영: CL=F 일봉을 야후가 한 번 비워 줬다(쿠키 실패 직후 "possibly delisted") — 플레이북이 ValueError."""
+    import pandas as pd
+
+    caplog.set_level("INFO", logger="desk.prices")
+    day = pd.DatetimeIndex(["2026-11-20"], tz="America/New_York")
+    full = pd.DataFrame({"Open": [70.0], "High": [71.0], "Low": [69.0], "Close": [70.5], "Volume": [1.0]}, index=day)
+    asked = _yahoo_fake(monkeypatch, [full.iloc[0:0], full])     # yfinance's empty answer keeps its columns
+    rows = prices_mod._yahoo_rows("CL=F", "400d", "1d")
+    assert [bar.close for _, bar in rows] == [70.5] and asked == ["1d", "1d"]
+    assert "Yahoo returned no 1d bars for CL=F" in caplog.text
+
+
+def test_empty_yahoo_minutes_are_not_asked_again(monkeypatch):
+    """분봉은 장 밖이면 원래 비어 있다 — 다시 묻지 않는다(그런 읽기를 모두 늦추지 않게)."""
+    import pandas as pd
+
+    empty = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+    asked = _yahoo_fake(monkeypatch, [empty])
+    assert prices_mod._yahoo_rows("005930.KS", "5d", "5m") == [] and asked == ["5m"]
+    asked.clear()
+    assert prices_mod._yahoo_rows("GONE", "400d", "1d") == [] and asked == ["1d", "1d"]   # still nothing: no bars

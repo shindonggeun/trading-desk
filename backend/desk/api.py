@@ -1174,7 +1174,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                         await playbook_live.current(prices, ticker, risk=risk, ahead=ahead)
                     done += 1
                 except Exception as exc:  # noqa: BLE001 - that ticker only (its failure is cached briefly)
-                    log.info("prewarm playbooks %s failed: %s", ticker, type(exc).__name__)
+                    log.info("prewarm playbooks %s failed: %s", ticker,   # #861 why (a timeout's message is empty)
+                             f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__)
             return done
 
         def prewarm_tickers() -> list[str]:

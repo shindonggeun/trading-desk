@@ -123,11 +123,25 @@ def _yahoo_period(interval: str, count: int, ticker: str = "") -> str:
     return f"{max(count * 2, 30)}d"
 
 
+YAHOO_EMPTY_RETRY_SEC = 0.5   # #861 the pause before asking Yahoo once more after an empty answer
+_YAHOO_LONG = ("1d", "5d", "1wk", "1mo", "3mo")   # yfinance intervals an empty answer is asked again for
+
+
 def _yahoo_rows(ticker: str, period: str, interval: str) -> list[tuple[object, Bar]]:
     """yfinance's bars as (index in the exchange's own time zone, Bar stamped UTC), oldest first."""
     import yfinance as yf
 
     frame = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
+    if frame.empty and interval in _YAHOO_LONG:
+        # #861 Yahoo now and then answers a live symbol with nothing ("possibly delisted; no price data found"),
+        # right after yfinance's cookie fetch failed - once more after a breath; still nothing: no bars, as before.
+        # Daily and longer only: days of them are never empty for a real symbol, while minute bars outside the
+        # session are (asking again there would only slow every such read)
+        log.info("Yahoo returned no %s bars for %s; asking once more", interval, ticker)
+        time.sleep(YAHOO_EMPTY_RETRY_SEC)
+        frame = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
+        log.info("Yahoo %s bars for %s on the second ask: %s", interval, ticker,
+                 "still none" if frame.empty else f"{len(frame)} row(s)")
     frame = frame.dropna(subset=["Open", "High", "Low", "Close"])
     rows = []
     for index, row in frame.iterrows():

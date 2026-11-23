@@ -192,3 +192,57 @@ def test_one_line_takes_the_biggest_newest_read_and_says_which_way_it_leans():
     assert out["lean"] == "우호" and len(out["line"]) == news_digest.LINE_MAX and out["line"].endswith("…")
     assert news_digest.one_line(read[:1], 20, 70) == {"line": "작은 뉴스", "lean": "부담"}
     assert news_digest.one_line(read[:1], 45, 40)["lean"] == "중립"
+
+
+def test_a_timeout_is_logged_with_its_type_and_the_headlines_go_in_small_batches(monkeypatch, caplog):
+    """#861 운영: 매크로 패스의 묶음(24건 이하)이 100초 예산을 넘겨 빈 메시지(TimeoutError)로 세 번 실패했다."""
+    caplog.set_level("INFO", logger="desk.news_digest")
+
+    def slow(prompt):
+        raise TimeoutError()                       # str() is empty, as asyncio.wait_for's
+
+    d = news_digest.Digest(slow)
+    assert asyncio.run(d.refresh(THEMES)) == 0 and d.error == "TimeoutError"
+    line = next(r.getMessage() for r in caplog.records if "news digest failed" in r.getMessage())
+    assert line.endswith(": TimeoutError") and "headline(s)" in line
+    many = {f"t{n}": {"id": f"t{n}", "label": "x", "headlines": [
+        {"title": f"Headline {n}-{k}", "url": f"https://c.example/{n}/{k}", "domain": "c"} for k in range(3)]}
+        for n in range(8)}                         # 24 headlines
+    sizes = []
+
+    def ask(prompt):
+        items = json.loads(prompt[prompt.rfind("Headlines:\n") + len("Headlines:\n"):])
+        sizes.append(len(items))
+        return _answer(prompt)
+
+    assert asyncio.run(news_digest.Digest(ask).refresh(many)) == 24
+    assert sizes == [10, 10, 4] and news_digest.BATCH == 10
+
+
+def test_a_failed_second_batch_keeps_the_first_and_the_next_pass_asks_only_the_rest():
+    """#861 묶음이 10건이 되며 여러 묶음이 주 경로가 됐다 — 중간 실패 · 슬롯이 바빠진 경우."""
+    many = {f"t{n}": {"id": f"t{n}", "label": "x", "headlines": [
+        {"title": f"Headline {n}-{k}", "url": f"https://c.example/{n}/{k}", "domain": "c"} for k in range(3)]}
+        for n in range(8)}                         # 24 headlines
+    sizes, calls = [], []
+
+    def flaky(prompt):
+        calls.append(1)
+        sizes.append(len(json.loads(prompt[prompt.rfind("Headlines:\n") + len("Headlines:\n"):])))
+        if len(calls) == 2:                        # the pass's second batch only
+            raise TimeoutError()
+        return _answer(prompt)
+
+    d = news_digest.Digest(flaky)
+    assert asyncio.run(d.refresh(many)) == 10 and d.error == "TimeoutError" and len(d.reads) == 10
+    sizes.clear()
+    assert asyncio.run(d.refresh(many)) == 14 and sizes == [10, 4] and d.error is None
+    frees = iter([True, False])
+
+    @asynccontextmanager
+    async def busy_after_one():
+        yield next(frees)                          # an analysis takes the plan after the first batch
+
+    asked = []
+    late = news_digest.Digest(lambda p: asked.append(p) or _answer(p))
+    assert asyncio.run(late.refresh(many, slot=busy_after_one)) == 10 and len(asked) == 1

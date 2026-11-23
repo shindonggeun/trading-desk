@@ -3,6 +3,7 @@ import { api } from "../api";
 import { krwShort, price } from "../format";
 import type { FlowInterval, FlowMarket, FlowRecord, FlowSide, InstitutionKind, Investor } from "../types";
 import FuturesFlowView from "./FuturesFlowView";
+import KrShortSaleCard from "./KrShortSaleCard";
 import PremarketExpected, { type MarketFlowWithExpected } from "./PremarketExpected";
 // #644 오늘 장중(차트 라이브러리 160KB)은 그 탭을 열 때만 받는다 — 대시보드 첫 화면은 현물 탭이라 차트가 없다
 const IntradayFlowView = lazy(() => import("./IntradayFlowView"));
@@ -450,6 +451,7 @@ export default function MarketFlowPanel() {
         </>
       )}
       </>}
+      <KrShortSaleCard />
     </section>
   );
 }

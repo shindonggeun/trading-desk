@@ -1096,12 +1096,36 @@ export interface Sector {
   tickers: { ticker: string; name: string | null }[];
 }
 
-/** #154 공매도 · 옵션 포지션(GET /api/positioning) — 미국 상장 종목만, 나머지는 supported: false */
+/** #154 미국 공매도 · 옵션 포지션(GET /api/positioning) */
 export interface PositioningWall {
   strike: number;
   oi: number;
   distance_pct: number;
 }
+
+export type KrShortStatus = "available" | "not_published" | "no_data" | "zero_denominator" | "source_error" | "source_unavailable" | "unsupported";
+
+export interface KrShortPoint {
+  as_of: string;
+  ratio_pct: number | null;
+  status: KrShortStatus;
+}
+
+export interface KrShortSeries {
+  status: KrShortStatus;
+  latest: KrShortPoint | null;
+  stale: boolean;
+}
+
+/** #886 국내 개별종목 공매도 — 단일 GET /api/positioning의 kr_short */
+export interface KrShortSales {
+  ticker: string;
+  market: "KOSPI" | "KOSDAQ" | null;
+  status: KrShortStatus;
+  trade: KrShortSeries & { history: KrShortPoint[] };
+  balance: KrShortSeries;
+}
+
 export interface Positioning {
   ticker: string;
   supported: boolean;
@@ -1139,6 +1163,7 @@ export interface Positioning {
   errors: string[] | null;
   sources: string[];
   fetched_at: string;
+  kr_short?: KrShortSales;
 }
 
 /** #155 빚투 · 예탁금(GET /api/market/credit, 금융투자협회) — 조원 · 억원 */

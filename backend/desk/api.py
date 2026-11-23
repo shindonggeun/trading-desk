@@ -72,6 +72,8 @@ from . import (
     macro_news,
     market_bus,
     market_calendar,
+    market_outlook,
+    market_outlook_sources,
     morning_brief,
     net,
     news_digest,
@@ -429,7 +431,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                longshort: LongShort | None = None, chatter: chat.Chatter | None = None,
                pictures: report_images.ReportImages | None = None, *, protect_run_reads: bool | None = None,
                owner_resources: OwnerResources | None = None,
-               options_provider: options_detail.OptionSource | None = None) -> FastAPI:
+               options_provider: options_detail.OptionSource | None = None,
+               market_outlook_service: market_outlook.MarketOutlook | None = None) -> FastAPI:
     settings = settings or load()
     log_setup.configure(settings.log_level)     # #676 the desk.* INFO lines reach the container log
     if settings.role in ("all", "api"):
@@ -699,6 +702,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     tip_cache = tips.Cache(fetcher=lambda symbols: risk_regime.fetch(symbols, candles=prices._yahoo_candles,
                                                                      count=tips.HISTORY_BARS))
     funds = funds13f.Funds()   # #483 the well-known funds' 13F holdings (SEC EDGAR), refreshed by refresh_funds
+    market_outlook_reader = market_outlook_service if market_outlook_service is not None else market_outlook.MarketOutlook(
+        candles=None if settings.fake_runs else prices.candles,
+        filing=None if settings.fake_runs else partial(market_outlook_sources.read_duquesne, funds),
+        views=market_outlook_sources.read_views,
+    )
     # #460: the indices' primary trend (^KS11 ^NDX ^GSPC ^SOX, about ten years of dailies, cached 3 h)
     trend_cache = primary_trend.Cache(fetcher=lambda symbols: risk_regime.fetch(
         symbols, candles=prices._yahoo_candles, count=primary_trend.HISTORY_BARS))
@@ -2736,6 +2744,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from None
         return news_digest.DIGEST.annotate(macro_news.CACHE.brief(ticker))
+
+    @app.get("/api/macro/market-outlook")
+    async def macro_market_outlook(market: Literal["us"] = "us"):
+        """#903 attributed views and quarterly disclosures, separate from market evidence."""
+        return await market_outlook_reader.read()
 
     # #527 the paper account: the scored plans traded with won on paper (no orders, no LLM)
     paper_desk = paper.Paper(engine, dict if settings.fake_runs else paper.yahoo_rates, listing_name,

@@ -1,4 +1,5 @@
 import { activityHeaders, BACKGROUND_HEADER } from "./activity";
+import type { LoadUsOptions, UsOptionsResponse } from "./usOptionsTypes";
 import type { DayCallSectorsResponse } from "./components/DayCallSectors";
 import type { ChartRead, GapReport, LinesReport, LineTf } from "./types";
 import type { RunRead } from "./types";
@@ -331,6 +332,11 @@ export const api = {
   deleteSector: (id: number) => call<void>(`/api/sectors/${id}`, { method: "DELETE" }),
   /** #154 공매도 · 옵션 포지션 — 미국 종목만(나머지 supported: false) */
   positioning: (ticker: string) => call<Positioning>(`/api/positioning?ticker=${encodeURIComponent(ticker)}`),
+  usOptions: ((ticker, expiration, signal) => {
+    const query = new URLSearchParams({ ticker });
+    if (expiration) query.set("expiration", expiration);
+    return call<UsOptionsResponse>(`/api/positioning/options?${query}`, { signal });
+  }) satisfies LoadUsOptions,
   /** #240 장기 바닥권(인생 타점) */
   bottomZone: (ticker: string) => call<BottomZone>(`/api/bottom-zone?ticker=${encodeURIComponent(ticker)}`),
   positioningBatch: (tickers: string[]) =>

@@ -5,6 +5,7 @@ import type { FlowInterval, FlowMarket, FlowRecord, FlowSide, InstitutionKind, I
 import FuturesFlowView from "./FuturesFlowView";
 import KrShortSaleCard from "./KrShortSaleCard";
 import PremarketExpected, { type MarketFlowWithExpected } from "./PremarketExpected";
+import UsOptionsDistribution from "./UsOptionsDistribution";
 // #644 오늘 장중(차트 라이브러리 160KB)은 그 탭을 열 때만 받는다 — 대시보드 첫 화면은 현물 탭이라 차트가 없다
 const IntradayFlowView = lazy(() => import("./IntradayFlowView"));
 import { useLivePoll } from "../livePoll";
@@ -17,9 +18,13 @@ import type { MarketAlert } from "../api";
 // 두 쓰임을 섞지 않으려고 선에는 빨강 · 파랑을 쓰지 않는다(색은 dataviz 검증 통과: styles.css --flow-*).
 
 const MARKETS: { key: FlowMarket; label: string }[] = [{ key: "KOSPI", label: "코스피" }, { key: "KOSDAQ", label: "코스닥" }];
-// 탭: 현물 두 시장 + 코스피200 선물(#161)
-type Tab = FlowMarket | "FUTURES" | "INTRADAY";
-const TABS: { key: Tab; label: string }[] = [...MARKETS, { key: "FUTURES", label: "선물" }, { key: "INTRADAY", label: "오늘 장중" }];
+type Tab = FlowMarket | "FUTURES" | "INTRADAY" | "US_OPTIONS";
+const TABS: { key: Tab; label: string }[] = [
+  ...MARKETS,
+  { key: "FUTURES", label: "선물" },
+  { key: "INTRADAY", label: "오늘 장중" },
+  { key: "US_OPTIONS", label: "미장 옵션" },
+];
 const INTERVALS: { key: FlowInterval; label: string }[] = [
   { key: "1d", label: "일" }, { key: "1w", label: "주" }, { key: "1mo", label: "월" }, { key: "1y", label: "년" },
 ];
@@ -292,7 +297,7 @@ export default function MarketFlowPanel() {
     return () => window.removeEventListener("hashchange", open);
   }, []);
 
-  const spotMarket: FlowMarket | null = prefs.market === "FUTURES" || prefs.market === "INTRADAY" ? null : prefs.market;
+  const spotMarket: FlowMarket | null = prefs.market === "KOSPI" || prefs.market === "KOSDAQ" ? prefs.market : null;
 
   // #626 잠정(장중) 1분 · 확정 5분(가려진 탭은 쉰다). 선물 탭은 FuturesFlowView 가 따로 부른다.
   // 늦게 온 이전 시장 · 단위 응답은 훅이 버린다(key 가 바뀌면 그 구독을 떠난다)
@@ -369,7 +374,8 @@ export default function MarketFlowPanel() {
         </div>
       </div>
       <FlowWarnBand />
-      {prefs.market === "INTRADAY" ? <Suspense fallback={<p className="muted small">불러오는 중…</p>}><IntradayFlowView /></Suspense> : !spotMarket ? <FuturesFlowView /> : <>
+      {prefs.market === "US_OPTIONS" ? <UsOptionsDistribution loadOptions={api.usOptions} />
+      : prefs.market === "INTRADAY" ? <Suspense fallback={<p className="muted small">불러오는 중…</p>}><IntradayFlowView /></Suspense> : !spotMarket ? <FuturesFlowView /> : <>
       <div className="flow-sub">
         <div className="flow-index">
           {data?.index ? <><strong>{price(data.index.price)}</strong> <span className="muted small">{marketLabel}</span></> : <span className="muted small">{marketLabel}</span>}

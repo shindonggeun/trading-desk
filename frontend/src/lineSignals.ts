@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type LineSignal, type LineWatchEvent } from "./api";
+import { type LastRead, reusable } from "./lineFeedReuse";
 
 /** #614 차트 선 알림(#613) — 설정 · 알림 타임라인 · 최근 알림 띠가 같이 쓴다 */
 export const LINE_TF_KO: Record<string, string> = { "5m": "5분봉", "15m": "15분봉", "60m": "1시간봉", "120m": "2시간봉", "240m": "4시간봉", "1d": "일봉" };
@@ -37,9 +38,7 @@ export function splitText(text: string): { title: string; body: string } {
 // 서버의 고유 키와 같게(line_id 에는 종목이 없다)
 export const signalKey = (s: LineSignal) => `${s.ticker}|${s.timeframe}|${s.rule}|${s.line_id}|${s.at}`;
 
-/** #705 알림 피드가 같은 내용으로 곧바로 다시 읽힐 때(첫 화면: 스트림이 붙으며 한 번 더) 선 알림을 또 읽지 않는 간격 */
-const SAME_FEED_MS = 5_000;
-let lastRead: { date: string; feed: string; at: number; items: LineSignal[] } | null = null;
+let lastRead: LastRead<LineSignal[]> | null = null;
 
 /**
  * 오늘(date, KST) 보낸 선 알림 — 알림 피드가 다시 읽힐 때(refresh 가 바뀔 때) 같이 다시 읽는다.
@@ -51,9 +50,9 @@ export function useTodayLineSignals(date: string | null | undefined, refresh: un
   useEffect(() => {
     if (!date) return;
     const feed = JSON.stringify(refresh ?? null);
-    const last = lastRead;
-    if (last && last.date === date && last.feed === feed && Date.now() - last.at < SAME_FEED_MS) {
-      setItems(last.items);
+    const again = reusable(lastRead, date, feed, Date.now());
+    if (again) {
+      setItems(again);
       return;
     }
     let alive = true;

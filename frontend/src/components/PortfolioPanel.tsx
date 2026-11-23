@@ -80,7 +80,8 @@ function Row({ row, currency, view, line }: { row: PortfolioRow; currency: Curre
 export default function PortfolioPanel() {
   const [data, setData] = useState<Portfolio | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-  // #775 계좌는 주인 계정 것 — 다른 계정은 403 이고 스트림도 열지 않는다(열면 403 으로 끝없이 다시 연결)
+  // #775 계좌는 주인 계정 것 — 다른 계정은 스트림이 403 으로 끝나고, 접근 확인의 403 이 패널을 비운 뒤 다시 잇지 않는다
+  // (followPortfolio 의 403 갈래가 retry 를 부르지 않는 것이 재연결 고리를 막는다)
   const [notOwner, setNotOwner] = useState(false);
   const [stream, setStream] = useState<StreamState | "connecting">("connecting");
   const [currency, setCurrency] = useState<Currency>(() => remembered("pf.currency", ["KRW", "USD"] as const, "KRW"));

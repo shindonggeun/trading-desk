@@ -41,8 +41,9 @@ const CACHE_TTL: [RegExp, number][] = [
   [/^\/api\/macro\/brief$/, 30_000],
   // 모의 투자 요약은 설정 저장 뒤 서버가 다시 계산하는 동안 3초마다 다시 읽는다 — 기억하지 않는다
   [/^\/api\/market\/fear$/, 30_000],            // 구역 갱신 1분
-  // #705 즐겨찾기 저장소와 바닥권 칸이 첫 화면에서 차례로 따로 읽던 것 — 추가 · 삭제 · 순서(쓰기)는 기억을 지운다
-  [/^\/api\/favorites$/, 15_000],
+  // #705 즐겨찾기 저장소와 바닥권 칸이 첫 화면에서 0.1초 차이로 따로 읽던 것 — 짧게(탭에 돌아왔을 때 다른 탭 · 기기의
+  // 변경을 맞추는 읽기는 기억 밖), 추가 · 삭제 · 순서(쓰기)는 기억을 지운다
+  [/^\/api\/favorites$/, 3_000],
 ];
 const cached = new Map<string, { at: number; data: unknown }>();
 const inflight = new Map<string, Promise<unknown>>();
@@ -629,7 +630,8 @@ export type StreamState = "live" | "lost";
  * the current cookie: 401 shows the login screen, 403 clears the panel, and temporary
  * failures retry with a growing pause. #705 The stream's first message is the snapshot, so the panel opens
  * it straight away (no REST read before it — the server built the snapshot twice); the access check's
- * answer is drawn when the stream fails, and its other errors go to ``onFailure``. */
+ * answer is drawn when the stream fails, and its other errors go to ``onFailure`` until a snapshot was drawn.
+ * #775 a 403 calls ``onAccessDenied`` and schedules no retry — that is what keeps a not-owner from reconnecting. */
 export function followPortfolio(
   onSnapshot: (p: Portfolio) => void,
   onState: (s: StreamState) => void,
@@ -640,6 +642,7 @@ export function followPortfolio(
   let timer: number | undefined;
   let stopped = false;
   let delay = 3000;
+  let seen = false;     // a snapshot was drawn: later failures show only as "lost", as before
 
   const retry = () => {
     if (stopped) return;
@@ -654,12 +657,16 @@ export function followPortfolio(
       delay = 3000;
       onState("live");
     };
-    es.onmessage = (msg) => onSnapshot(JSON.parse(msg.data));
+    es.onmessage = (msg) => {
+      seen = true;
+      onSnapshot(JSON.parse(msg.data));
+    };
     es.onerror = () => {
       onState("lost");
       if (es.readyState !== EventSource.CLOSED) return; // the browser is retrying
       request<Portfolio>("/api/portfolio", { cache: "no-store", headers: { [BACKGROUND_HEADER]: "1" } }).then((p) => {
         if (stopped) return;
+        seen = true;
         onSnapshot(p);        // the account answers: draw it while the stream comes back
         retry();
       }, (e) => {
@@ -668,7 +675,7 @@ export function followPortfolio(
           onAccessDenied();
           return;
         }
-        onFailure?.(e);
+        if (!seen) onFailure?.(e);   // first load only, as the REST read before the stream did
         retry();
       });
     };

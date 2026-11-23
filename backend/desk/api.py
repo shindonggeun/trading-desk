@@ -27,6 +27,7 @@ from fastapi import Path as FastPath
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy import not_
 from starlette.concurrency import run_in_threadpool
 
 from . import (
@@ -115,6 +116,7 @@ from .broker import kis_stream, make_broker
 from .broker_issuer_lock import BrokerIssuerLock
 from .consensus import fake_summariser, llm_summariser
 from .db import make_engine, migrate, now, require_schema_at_head
+from .db import runs as run_rows
 from .estimate import CANDLE_INTERVALS, BinanceEstimator, naver_overtime, trading_soon
 from .favorites import Conflict, Favorites, TooMany
 from .futures_flow import KST as futures_kst
@@ -134,6 +136,7 @@ from .portfolio import Portfolio
 from .prices import INTERVALS, PriceSource, kis_quote, stale_ok
 from .privacy import OwnerResources, PolicyChanged, ProcessPolicy
 from .related import collect as collect_related
+from .run_access import account_run, reads_account
 from .run_read import RunReader, last_done_seq
 from .runner import ANALYSTS, Hub, RunManager, RunRequest, make_fake_runner, run_tradingagents
 from .runner import rate_limited as run_rate_limited
@@ -740,8 +743,25 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                     off_hours=lambda t, s, c: _chart_off_hours(t, s, c))   # defined below
     if runner is None:
         runner = make_fake_runner(settings.fake_delay) if settings.fake_runs else run_tradingagents
+    runner_for = None
     if protect_run_reads and runner is run_tradingagents:
         runner = partial(run_tradingagents, isolate_artifacts=True)
+    elif runner is run_tradingagents:
+        # #775 legacy runs keep TradingAgents' memory: a ticker's past decisions (and other tickers' reflections)
+        # reach the next run's prompt. The default memory file has the owner's account runs' decisions, so only
+        # those runs (owner-only to read) keep it; the owner's other runs keep a public one; another account's
+        # run - or one with no recorded submitter (an older run, a deleted account) - keeps none.
+        isolated_runner = partial(run_tradingagents, isolate_artifacts=True)
+        public_runner = partial(run_tradingagents, public_memory=True)
+
+        def runner_for(run_id: str):
+            if store.submitter_of(run_id) != auth.owner_id():
+                return isolated_runner
+            run = store.get_run(run_id)
+            if run is None:
+                return isolated_runner
+            # named, never None: an undecided run must not fall back on the account memory
+            return run_tradingagents if reads_account(run) else public_runner
 
     async def run_outlook(ticker: str, trade_date: str, _price: float | None, _sr: dict | None) -> dict:
         """#437: #299's projection on the daily (swing) frame up to the run's date, whatever the
@@ -830,7 +850,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                        reuse_minutes=settings.reuse_reports_min,
                                        rate_limit_cooldown_min=settings.rate_limit_cooldown_min,
                                        direct=settings.role == "all", protect_account_runs=protect_run_reads,
-                                       calibration_table=public_calibration, account_broker=account_broker)   # #688 split queues for the analyst
+                                       calibration_table=public_calibration, account_broker=account_broker,   # #688 split queues for the analyst
+                                       runner_for=runner_for)
 
         # #623 every loop below is a step that returns its next wait, run by jobs.run_forever: an exception
         # is logged and the loop goes on after its retry wait; GET /api/status shows each one's state
@@ -1688,15 +1709,16 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             items, total = run_reader.page(request.state.user.id, limit=size, offset=(page - 1) * size)
             response.headers.update(_RUN_READ_CACHE)
             return {"items": items, "total": total, "page": page, "size": size}
-        return {"items": with_queue(store.list_runs(size, (page - 1) * size)), "total": store.count_runs(),
-                "page": page, "size": size}
+        scope = account_scope(request)
+        return {"items": with_queue(store.list_runs(size, (page - 1) * size, scope=scope)),
+                "total": store.count_runs(scope=scope), "page": page, "size": size}
 
     @app.delete("/api/runs/{run_id}", status_code=204)
     async def delete_run(run_id: str, request: Request):
         # async on purpose: runs on the loop thread, so it cannot land between RunManager's
         # mark_done() and its last plan/done events (no await between them), and Hub is touched
         # from the loop only.
-        scope = run_reader.change_scope(request.state.user.id) if run_reader is not None else None
+        scope = run_reader.change_scope(request.state.user.id) if run_reader is not None else account_scope(request)
         cache = _RUN_READ_CACHE if run_reader is not None else None
         result = store.delete_run(run_id, scope=scope)
         if result == "missing":
@@ -1713,10 +1735,21 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(404, "run not found", headers=_RUN_READ_CACHE)
         return visible
 
+    def account_scope(request: Request):
+        """Legacy #775: a run that read the broker account (use_portfolio) is the owner's alone - listed,
+        counted and deleted by no other account. None for the owner."""
+        return None if owns(request) else not_(account_run(run_rows.c.options))
+
+    def legacy_run(request: Request, run_id: str) -> dict | None:
+        """Legacy #775: the stored run, or None when it is missing or another account's view of an account
+        run - one 404 for both."""
+        run = store.get_run(run_id)
+        return run if run is not None and (not reads_account(run) or owns(request)) else None
+
     def full_run(request: Request, run_id: str) -> dict | None:
         if run_reader is not None:
             return run_reader.full_run(request.state.user.id, run_id)
-        return store.get_run(run_id)
+        return legacy_run(request, run_id)
 
     async def verify_full_run(request: Request, run_id: str) -> None:
         if run_reader is not None:
@@ -1730,7 +1763,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if run_reader is not None:
             response.headers.update(_RUN_READ_CACHE)
             return guarded_detail(request, run_id)
-        run = store.get_run(run_id)
+        run = legacy_run(request, run_id)
         if not run:
             raise HTTPException(404, "run not found")
         # #437: the look ahead frozen when the run ended (an ``outlook`` event), None before / without one
@@ -1894,7 +1927,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 raise HTTPException(404, "run not found", headers=_RUN_READ_CACHE)
             response.headers.update(_RUN_READ_CACHE)
             return batch.items
-        if not store.get_run(run_id):
+        if not legacy_run(request, run_id):
             raise HTTPException(404, "run not found")
         return store.events_after(run_id, after)
 
@@ -1904,7 +1937,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if run_reader is not None:
             if not await asyncio.to_thread(run_reader.has_full_read, viewer_id, run_id):
                 raise HTTPException(404, "run not found", headers=_RUN_READ_CACHE)
-        elif not store.get_run(run_id):
+        elif not legacy_run(request, run_id):
             raise HTTPException(404, "run not found")
         last_id = request.headers.get("last-event-id")
         start = int(last_id) if last_id and last_id.isdigit() else after
@@ -2666,6 +2699,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     paper_desk = paper.Paper(engine, dict if settings.fake_runs else paper.yahoo_rates, listing_name,
                             public_only=protect_run_reads)
     app.state.paper = paper_desk
+    # #775 legacy: another account's paper account leaves out the runs that read the broker account, as
+    # GET /api/runs does (protected mode trades proven public runs only, whoever asks)
+    others_paper = paper_desk if protect_run_reads else paper.Paper(
+        engine, paper_desk.fetch_rates, listing_name, scope=not_(account_run(run_rows.c.options)))
+
+    def paper_for(request: Request) -> paper.Paper:
+        return paper_desk if others_paper is paper_desk or owns(request) else others_paper
 
     @app.get("/api/paper/settings")
     def paper_settings_get():
@@ -2684,18 +2724,18 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(422, str(exc)) from None
 
     @app.get("/api/paper/summary")
-    async def paper_summary():
-        return await asyncio.to_thread(paper_desk.summary)
+    async def paper_summary(request: Request):
+        return await asyncio.to_thread(lambda: paper_for(request).summary())
 
     @app.get("/api/paper/equity")
-    async def paper_equity():
-        return await asyncio.to_thread(paper_desk.equity)
+    async def paper_equity(request: Request):
+        return await asyncio.to_thread(lambda: paper_for(request).equity())
 
     @app.get("/api/paper/trades")
-    async def paper_trades(status: Literal["closed", "open", "waiting", "skipped"] | None = None,
+    async def paper_trades(request: Request, status: Literal["closed", "open", "waiting", "skipped"] | None = None,
                            direction: Literal["long", "short"] | None = None, ticker: str | None = None,
                            limit: int = 200):
-        return await asyncio.to_thread(paper_desk.trades, status, direction, ticker, limit)
+        return await asyncio.to_thread(lambda: paper_for(request).trades(status, direction, ticker, limit))
 
     @app.get("/api/stats/plans")
     def plan_stats(days: int = 90):
@@ -3451,8 +3491,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # limit, so a stream that never started (the client left first) cannot hold the account.
     chatting: dict[int, float] = {}
 
-    def _chat_tools() -> dict[str, chat.Tool]:
-        """Read-only desk lookups. No order tool; nothing reads the broker account."""
+    def _chat_tools(*, account_runs: bool = True) -> dict[str, chat.Tool]:
+        """Read-only desk lookups. No order tool; nothing reads the broker account. ``account_runs=False``
+        (#775, legacy: another account's chat) leaves out the runs that read it, as GET /api/runs does."""
         def keep(d: dict | None, *keys: str) -> dict:
             return {k: (d or {}).get(k) for k in keys}
 
@@ -3518,7 +3559,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         async def recent_runs(a: dict):
             want = clean_ticker(a["ticker"]) if a.get("ticker") else None
-            rows = [r for r in store.list_runs(40, public_only=protect_run_reads)
+            scope = None if account_runs else not_(account_run(run_rows.c.options))
+            rows = [r for r in store.list_runs(40, public_only=protect_run_reads, scope=scope)
                     if not want or r["ticker"] == want][:8]
             return [{**keep(r, "id", "ticker", "created_at", "status"),
                      **keep(r.get("plan"), "rating", "bias", "entry_price", "stop_loss", "price_target",
@@ -3555,6 +3597,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     chat_tools = _chat_tools()
     app.state.chat_tools = chat_tools     # what the model may look up (tests check it stays read-only)
+    # protected mode lists proven public runs only, whoever asks
+    others_chat_tools = chat_tools if run_reader is not None else _chat_tools(account_runs=False)
 
     @app.get("/api/chat/models")
     def chat_models_of():
@@ -3604,6 +3648,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         thread = chats.get(user_id, thread_id)
         if thread is None:
             raise HTTPException(404, "thread not found")
+        tools = chat_tools if others_chat_tools is chat_tools or owns(request) else others_chat_tools
         manager = getattr(request.app.state, "manager", None)
         wait = manager.rate_limit_wait() if manager is not None else 0.0
         if wait > 0:
@@ -3637,7 +3682,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             try:
                 if not await asyncio.to_thread(policy.current):
                     return
-                text, used = await asyncio.wait_for(chatter(messages, chat_tools, queue.put_nowait, model=model),
+                text, used = await asyncio.wait_for(chatter(messages, tools, queue.put_nowait, model=model),
                                                     chat.ANSWER_TIMEOUT_SEC)
                 saved = chats.add(user_id, thread_id, "assistant", text or "(빈 답)", used, model=model)
                 queue.put_nowait({"type": "done", "message_id": saved["id"], "user_message_id": mine["id"],

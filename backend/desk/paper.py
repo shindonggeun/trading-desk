@@ -37,6 +37,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
+from sqlalchemy.sql import ColumnElement
 
 from desk.db import now as db_now
 from desk.db import paper_settings as settings_t
@@ -447,11 +448,16 @@ class Paper:
     the plan scores change (one computation at a time; the others wait for it)."""
 
     def __init__(self, engine: Engine, rates: Callable[[], dict[str, float]] = yahoo_rates,
-                 name_of: Callable[[str], str | None] | None = None, *, public_only: bool = False) -> None:
+                 name_of: Callable[[str], str | None] | None = None, *, public_only: bool = False,
+                 scope: ColumnElement[bool] | None = None) -> None:
+        """``scope`` narrows the runs traded (#775: another account's paper account trades no run that read
+        the broker account); the settings row stays the desk's one."""
         self.engine, self.fetch_rates, self.name_of = engine, rates, name_of
         self._source = (runs_t.c.status == "done",)
         if public_only:
             self._source += (proven_public_run(runs_t),)
+        if scope is not None:
+            self._source += (scope,)
         self.lock = threading.Lock()           # the settings row
         self.fx_lock = threading.Lock()        # one rate fetch at a time
         self.compute_lock = threading.Lock()   # one computation at a time

@@ -13,6 +13,7 @@ import hudson.security.AuthorizationMatrixProperty
 import hudson.security.LegacySecurityRealm
 import hudson.security.ProjectMatrixAuthorizationStrategy
 import hudson.security.csrf.DefaultCrumbIssuer
+import hudson.slaves.EnvironmentVariablesNodeProperty
 import jenkins.model.Jenkins
 import org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl
 import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
@@ -26,6 +27,15 @@ jenkins.setSlaveAgentPort(-1)
 jenkins.setQuietPeriod(0)
 jenkins.setSecurityRealm(new LegacySecurityRealm())
 jenkins.setCrumbIssuer(new DefaultCrumbIssuer(false))
+// A standalone Pipeline job has no Multibranch environment contributor.
+def fixtureEnvironment = new EnvironmentVariablesNodeProperty()
+fixtureEnvironment.envVars.putAll([
+    'BRANCH_NAME': 'develop',
+    'STABLE_SEC': '0',
+    'VAULT_ADDR': 'http://127.0.0.1:9',
+    'PATH+TD_WEB_FIXTURE': '/opt/td-web-fixture/bin',
+])
+jenkins.globalNodeProperties.add(fixtureEnvironment)
 def strategy = new ProjectMatrixAuthorizationStrategy()
 strategy.add(Jenkins.READ, 'anonymous')
 strategy.add(Item.READ, 'anonymous')

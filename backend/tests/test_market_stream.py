@@ -3,6 +3,7 @@ Redis pub/sub between processes (fakeredis), and the SSE contract of docs/market
 
 import asyncio
 import json
+from datetime import UTC, datetime, timedelta
 
 import fakeredis
 import pytest
@@ -129,6 +130,25 @@ def test_a_stream_that_falls_behind_is_marked_for_reset(monkeypatch):
         return slow.overflowed, stats["overflows"]
 
     assert _run(go()) == (True, 1)
+
+
+def test_status_reports_source_lag_only_for_events_the_source_stamped():
+    """#690 /api/status: source_lag_sec is the source's stamp -> observed, per kind, from stamped events only."""
+    async def go():
+        bus = _local()
+        stamped = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
+        naive = (datetime.now(UTC) - timedelta(seconds=10)).replace(tzinfo=None).isoformat()   # read as UTC
+        bus.publish("flow", "KOSPI:1d", {}, "toss_investors", stamped)
+        bus.publish("flow", "KOSDAQ:1d", {}, "toss_investors", naive)
+        bus.publish("futures", "view", {}, "kis_futures")
+        stats = bus.stats()
+        await bus.aclose()
+        return stats
+
+    stats = _run(go())
+    assert set(stats["source_lag_sec"]) == {"flow"} and stats["source_lag_sec"]["flow"]["n"] == 2
+    assert 9 <= stats["source_lag_sec"]["flow"]["p50"] <= 11 and 29 <= stats["source_lag_sec"]["flow"]["p95"] <= 31
+    assert set(stats["lag_sec"]) == {"flow", "futures"}
 
 
 def test_a_channel_quiet_while_its_session_is_open_is_degraded():

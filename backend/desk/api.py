@@ -746,8 +746,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         market_bus.BUS.expect("futures", lambda: futures_open(datetime.now(UTC)))
         market_bus.BUS.expect("flow", lambda: premarket_window(datetime.now(UTC)) or futures_open(datetime.now(UTC)))
         if kis_feed is not None:
+            # source_at stays None: a KIS trade carries no exchange time here, and received_at is the desk's own
+            # (to the second) - as a source stamp it would show up as a fake source lag in /api/status (#690)
             kis_feed.on_tick = lambda ticker, tick: market_bus.publish(
-                "quote", ticker, kis_quote(ticker, tick).to_dict(), "kis", tick.received_at)
+                "quote", ticker, kis_quote(ticker, tick).to_dict(), "kis")
         # #688 only a process that runs the runs it is handed (all) fails what its predecessor left; the analyst
         # does it in desk.run_queue once it holds the queue, the api and the collector never. all holds the
         # queue's lock too (PostgreSQL), so an analyst started beside it by mistake claims none of its runs.
@@ -1410,7 +1412,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     def status():
         """#623 the background jobs (state fresh · stale · error · starting · stopped · off, last success,
         last error as a type name, next pass) and the providers' rate-limit waits. Session required."""
-        return {"now": datetime.now(UTC).isoformat(timespec="seconds"), "role": settings.role,
+        # now to the millisecond: the browser's latency probe (#690 marketLatency.ts) sets its clock skew by it
+        return {"now": datetime.now(UTC).isoformat(timespec="milliseconds"), "role": settings.role,
                 "jobs": jobs.status(), "cooldowns": cooldowns(),
                 # #689 this process's shared-cache hits and its own calls to the brokers (Toss · KIS REST)
                 "shared_cache": shared_cache.stats(), "outbound": outbound.snapshot(),

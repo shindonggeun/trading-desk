@@ -58,6 +58,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from . import market_calendar
+from .single_flight import Flights, KeyLocks
 from .ttl_cache import TTLCache
 
 log = logging.getLogger(__name__)
@@ -140,6 +141,7 @@ CLOSES_MAX = 256
 # ticker → (rows, when read): an entry lives CLOSES_STALE_MAX_SEC as the fallback, fresh for CLOSES_TTL_SEC
 _CLOSES: TTLCache[str, tuple[list[tuple[date, float]], datetime]] = TTLCache(CLOSES_MAX, CLOSES_STALE_MAX_SEC)
 _CLOSES_FAILED: TTLCache[str, bool] = TTLCache(CLOSES_MAX, CLOSES_RETRY_SEC)   # Yahoo just gave nothing
+_CLOSES_READS = KeyLocks()          # #858 one Yahoo read per ticker at a time
 _clock = time.monotonic
 
 
@@ -163,16 +165,35 @@ def yahoo_daily_closes(ticker: str, ahead: float = 0.0) -> list[tuple[date, floa
 
     #391: an empty answer (Yahoo throttling) is never cached. The last good rows stand in for it
     (up to CLOSES_STALE_MAX_SEC old) and Yahoo is asked again after CLOSES_RETRY_SEC; without good
-    rows it is retried once at once, then YahooEmpty."""
+    rows it is retried once at once, then YahooEmpty.
+
+    #858: one read per ticker at a time - the quote board and the estimated bars asked together, and each
+    read Yahoo; a second asker now waits for the first one's read. Fresh rows never wait behind a refresh."""
     session = session_of(ticker)
+    if (fresh := _fresh_closes(ticker, session, ahead)) is not None:
+        return fresh
+    with _CLOSES_READS.hold(ticker):
+        return _read_closes(ticker, session, ahead)
+
+
+def _fresh_closes(ticker: str, session: Session, ahead: float) -> list[tuple[date, float]] | None:
+    """The cached rows while fresh (``ahead``: rows expiring that soon are not), else None."""
     now = _wall()
-    mono = _clock()
-    hit = _CLOSES.entry(ticker, now=mono)          # (age, (rows, when read)), up to CLOSES_STALE_MAX_SEC old
+    hit = _CLOSES.entry(ticker, now=_clock())      # (age, (rows, when read)), up to CLOSES_STALE_MAX_SEC old
     if hit and hit[0] < CLOSES_TTL_SEC - ahead:
         # rows read before today's close still hold an intraday price for today: read again
         today_close = session.close_moment(now.astimezone(session.zone).date())
         if not (hit[1][1] < today_close <= now):
             return hit[1][0]
+    return None
+
+
+def _read_closes(ticker: str, session: Session, ahead: float) -> list[tuple[date, float]]:
+    if (fresh := _fresh_closes(ticker, session, ahead)) is not None:     # the read we waited for
+        return fresh
+    now = _wall()
+    mono = _clock()
+    hit = _CLOSES.entry(ticker, now=mono)
     # only bars that had closed when they were read: a bar still trading then holds an intraday
     # price, and standing in after its close it would pass for that day's close
     usable = ([(d, c) for d, c in hit[1][0] if session.close_moment(d) <= hit[1][1]] or None) if hit else None
@@ -384,6 +405,20 @@ class Estimate:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class LastClose:
+    """#858 what the quote board takes from an estimate while the market trades: the last regular close (the
+    change's base) and the contract it would follow - the live quote is the price then. Same names as Estimate."""
+    ticker: str
+    last_close: float
+    last_close_date: str
+    market_state: str              # open | closed
+    contract: str
+    method: str = "binance_perp_mark"
+    basis: str | None = None
+    multiple: float = 1.0
+
+
 class BinanceEstimator:
     def __init__(self, http: httpx.AsyncClient | None = None, daily_closes: DailyCloses = yahoo_daily_closes,
                  now: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -404,8 +439,10 @@ class BinanceEstimator:
         self._us: dict[str, str] = {}
         self._us_loaded = -CONTRACTS_TTL_SEC
         self._contracts_lock = asyncio.Lock()
-        # ticker -> (stamp, Estimate | None for "no contract" | Exception for a recent failure)
+        # ticker (and "candles:<ticker>:<interval>") -> Estimate | bars | None for "no contract" | Exception for a
+        # recent failure; an estimate lives ESTIMATE_TTL_SEC, bars CANDLES_TTL_SEC, a failure ESTIMATE_TTL_SEC
         self._cache: TTLCache[str, object] = TTLCache(CACHE_MAX, ESTIMATE_TTL_SEC, clock=lambda: self._clock())
+        self._flights = Flights()          # #858 one computation per key at a time (the board and the bars ask together)
         self._anchors: dict[tuple[str, int], float] = {}
         self._marks: tuple[float, dict[str, float]] = (-MARKS_TTL_SEC, {})
         self._marks_lock = asyncio.Lock()
@@ -472,26 +509,57 @@ class BinanceEstimator:
     async def _mark_at(self, contract: str, moment: datetime) -> float:
         """Close of the 1-minute mark-price bar that ends at ``moment``."""
         key = (contract, int(moment.timestamp()))
-        if key not in self._anchors:
-            start_ms = int(moment.timestamp() * 1000) - 60_000
-            rows = await self._get("/fapi/v1/markPriceKlines", {"symbol": contract, "interval": "1m",
-                                                                "startTime": start_ms, "limit": 1})
-            if not rows or int(rows[0][0]) != start_ms:
-                raise ValueError(f"Binance has no {contract} mark price at {_iso(moment)}")
-            if len(self._anchors) >= CACHE_MAX:
-                self._anchors.clear()
-            self._anchors[key] = float(rows[0][4])
-        return self._anchors[key]
+        if (mark := self._anchors.get(key)) is not None:
+            return mark
+        return await self._flights.run(("anchor", key), lambda: self._read_mark_at(key, contract, moment))
+
+    async def _read_mark_at(self, key: tuple[str, int], contract: str, moment: datetime) -> float:
+        start_ms = int(moment.timestamp() * 1000) - 60_000
+        rows = await self._get("/fapi/v1/markPriceKlines", {"symbol": contract, "interval": "1m",
+                                                            "startTime": start_ms, "limit": 1})
+        if not rows or int(rows[0][0]) != start_ms:
+            raise ValueError(f"Binance has no {contract} mark price at {_iso(moment)}")
+        if len(self._anchors) >= CACHE_MAX:
+            self._anchors.clear()
+        self._anchors[key] = mark = float(rows[0][4])
+        return mark
+
+    @staticmethod
+    def _cached(hit: tuple[float, object] | None):
+        """(found, value) of a cache entry; a remembered failure is raised again."""
+        if hit is None:
+            return False, None
+        if isinstance(hit[1], Exception):
+            raise hit[1]
+        return True, hit[1]
 
     async def estimate(self, ticker: str) -> Estimate | None:
         """None when Binance has no contract for the ticker. A failure is remembered for the
-        cache window too, so a page polling a broken ticker does not hammer Binance/Yahoo."""
+        cache window too, so a page polling a broken ticker does not hammer Binance/Yahoo.
+        #858: askers of one ticker at once share one computation."""
         ticker = ticker.upper()
-        cached = self._cache.entry(ticker)          # its value may be None: no contract
-        if cached is not None:
-            if isinstance(cached[1], Exception):
-                raise cached[1]
-            return cached[1]
+        found, value = self._cached(self._cache.entry(ticker))      # its value may be None: no contract
+        if found:
+            return value  # type: ignore[return-value]
+        return await self._flights.run(ticker, lambda: self._estimate(ticker))
+
+    async def last_close(self, ticker: str) -> LastClose | Estimate | None:
+        """#858 the last regular close without the contract's marks (no Binance call): a cached estimate
+        answers it, else the daily closes (cached, desk.estimate.yahoo_daily_closes). None without a contract."""
+        ticker = ticker.upper()
+        hit = self._cache.entry(ticker)
+        if hit is not None and not isinstance(hit[1], Exception):   # an estimate's failure may be Binance's
+            return hit[1]  # type: ignore[return-value]
+        found = await self.resolve(ticker)
+        if found is None:
+            return None
+        contract, method, basis, multiple = found
+        day, close, _at, is_open = await asyncio.to_thread(self._anchor_close, ticker, session_of(ticker), self._now())
+        return LastClose(ticker=ticker, last_close=_round(close), last_close_date=day.isoformat(),
+                         market_state="open" if is_open else "closed", contract=contract, method=method,
+                         basis=basis, multiple=multiple)
+
+    async def _estimate(self, ticker: str) -> Estimate | None:
         try:
             result = await self._compute(ticker)
         except Exception as exc:
@@ -649,17 +717,20 @@ class BinanceEstimator:
             raise ValueError(f"interval must be one of {', '.join(CANDLE_INTERVALS)}")
         ticker = ticker.upper()
         key = f"candles:{ticker}:{interval}"
-        cached = self._cache.get(key)
-        if cached and self._clock() - cached[0] < CANDLES_TTL_SEC:
-            if isinstance(cached[1], Exception):
-                raise cached[1]
-            return cached[1]
+        # #858: the cache holds the value (since #628), not (stamp, value) - reading it as a pair raised
+        # KeyError 0 on every ask inside the window ("estimated candles for NQ=F failed: 0")
+        found, value = self._cached(self._cache.entry(key))
+        if found:
+            return value  # type: ignore[return-value]
+        return await self._flights.run(key, lambda: self._candles_kept(key, ticker, interval))
+
+    async def _candles_kept(self, key: str, ticker: str, interval: str) -> dict | None:
         try:
             result = await self._candles(ticker, interval)
         except Exception as exc:
-            self._remember(key, exc)
+            self._cache.put(key, exc)               # #628 a failure briefly: the cache's own ESTIMATE_TTL_SEC
             raise
-        self._remember(key, result)
+        self._cache.put(key, result, CANDLES_TTL_SEC)
         return result
 
     async def _candles(self, ticker: str, interval: str) -> dict | None:
@@ -714,4 +785,5 @@ class BinanceEstimator:
                 "anchor_source": source, "anchor_price": _round(nxt_price), "anchor_at": _iso(nxt_at), "bars": out}
 
 
-__all__ = ["COMMODITY_CONTRACTS", "FUTURES", "KRX", "KR_CONTRACTS", "PROXIES", "US", "BinanceEstimator", "Estimate"]
+__all__ = ["COMMODITY_CONTRACTS", "FUTURES", "KRX", "KR_CONTRACTS", "PROXIES", "US", "BinanceEstimator", "Estimate",
+           "LastClose"]

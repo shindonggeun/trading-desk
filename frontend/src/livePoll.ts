@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
-import { lastMessage, streamCovers, useMarketStream, type StreamChannel, type StreamMessage } from "./marketStream";
+import { latencyMode, recordRest, recordStream, type LatencyStamp } from "./marketLatency";
+import { lastMessage, streamConnected, streamCovers, useMarketStream, type StreamChannel, type StreamMessage } from "./marketStream";
 import { pushPollData, usePoll, type PollOptions, type PollSnapshot } from "./poll";
 
 /**
@@ -20,6 +21,8 @@ export type LiveSpec<T> = {
   pauseWhen?: (data: T | undefined) => boolean;
   /** 쉬는 동안에도 이만큼마다 REST 로 한 번 맞춘다(서버가 정하는 상태가 바뀌는 패널 · 놓칠 수 있는 알림) */
   reconcileMs?: number;
+  /** #690 지연 실측(marketLatency.ts): 받은 값의 키와 동일성(시세는 가격, 수급 · 선물은 fetched_at). 없으면 재지 않는다 */
+  stamps?: (data: T) => LatencyStamp[];
 };
 
 export function useLivePoll<T>(
@@ -32,13 +35,38 @@ export function useLivePoll<T>(
     return !!l && streamCovers(l.channel, l.keys) && (l.pauseWhen?.(data) ?? true) &&
       !(l.reconcileMs && Date.now() - restAt >= l.reconcileMs);
   };
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
   const poll = usePoll<T>(key, fetch, ms, {
     ...options,
+    // #690 지연 실측(poll 모드): REST 가 막 가져온 값 — 같은 요청을 함께 쓰는 다른 화면이 먼저 구독했어도 여기로 온다
+    onData: (d, meta) => {
+      const l = liveRef.current;
+      if (meta && l?.stamps && latencyMode() === "poll") {
+        try { recordRest(l.channel, l.stamps(d), meta.startedAt); } catch { /* 계측은 화면을 막지 않는다 */ }
+      }
+      optionsRef.current.onData?.(d, meta);
+    },
     paused: (data, restAt) => covered(data, restAt) || !!options.paused?.(data, restAt),
   });
+  const dataRef = useRef(poll.data);
+  dataRef.current = poll.data;
+  // #690 지연 실측: 스트림만으로 이어 간 값(화면 값과 따로 — 폴링 · 맞춤 REST 가 바꾼 것과 섞지 않는다)
+  const shadow = useRef<{ key: string | null; data: T | undefined }>({ key: null, data: undefined });
   const { live: coveredKeys } = useMarketStream(live?.channel ?? "alert", live?.keys ?? null, (m) => {
     const l = liveRef.current;
     if (!key || !l || l.channel !== m.kind || (l.keys && !l.keys.includes(m.key))) return;
+    if (l.stamps && latencyMode() !== "off") {
+      try {
+        const base = shadow.current.key === key ? shadow.current.data : dataRef.current;
+        const next = base === undefined ? undefined : l.apply(base, m);
+        if (base !== undefined && next !== undefined && next !== base) {
+          shadow.current = { key, data: next };
+          recordStream(l.channel, l.stamps(base), l.stamps(next), m.observed_at, m.source_at, streamConnected());
+        }
+      } catch { /* 계측은 화면을 막지 않는다 */ }
+    }
+    if (latencyMode() === "poll") return;   // 이 탭은 폴링으로만 그린다
     pushPollData<T>(key, (prev) => l.apply(prev, m));
   }, !!key && !!live && (live.keys === null || live.keys.length > 0));
   // 스트림 상태가 바뀔 때마다 REST 를 바로 한 번 — 끊기면(degraded) 그 패널만 폴링으로, 다시 살아나면(ready · 회복)

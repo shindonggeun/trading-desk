@@ -80,6 +80,8 @@ export default function FuturesFlowView() {
     },
     pauseWhen: (d) => !!d?.supported && !!d.market_open && d.price != null,
     reconcileMs: 5 * 60_000,
+    // #690 지연 실측 — 값의 동일성은 데스크가 읽은 시각
+    stamps: (d) => [{ key: "view", id: d.freshness?.fetched_at ?? d.fetched_at }],
   });
 
   const p = data?.price;

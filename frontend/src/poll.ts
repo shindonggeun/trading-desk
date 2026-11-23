@@ -25,7 +25,8 @@ export type PollOptions<T> = {
   backoffOnError?: boolean;
   /** 처음 요청을 이만큼 미룬다(여러 카드가 한꺼번에 부르지 않게) */
   delay?: number;
-  onData?: (d: T) => void;
+  /** meta 는 REST 응답으로 막 받았을 때만 — 그 요청을 보낸 시각(ms, #690 지연 실측) */
+  onData?: (d: T, meta?: { startedAt: number }) => void;
   onError?: (e: unknown) => void;
   /** #764 true 면 이번 차례를 건너뛴다(값이 이미 있을 때만 — 실시간 스트림이 대신 채우는 동안). livePoll.ts.
    *  restAt: 이 key 를 마지막으로 REST 로 받은 시각(ms, 스트림이 밀어 넣은 값은 세지 않는다) */
@@ -86,6 +87,7 @@ function run(e: Entry<unknown>, force = false) {
   }
   const first = e.subs.values().next().value as Sub<unknown>;
   e.inflight = true;
+  const startedAt = Date.now();
   let p: Promise<unknown>;
   try {
     p = first.fetch.current();
@@ -97,7 +99,7 @@ function run(e: Entry<unknown>, force = false) {
       e.fails = 0;
       e.restAt = Date.now();
       e.snap = { data, error: null, at: Date.now(), failing: false };
-      for (const s of [...e.subs]) { s.opts.current.onData?.(data); s.set(e.snap); }
+      for (const s of [...e.subs]) { s.opts.current.onData?.(data, { startedAt }); s.set(e.snap); }
     },
     (error) => {
       e.fails += 1;

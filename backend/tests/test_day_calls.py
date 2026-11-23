@@ -166,6 +166,27 @@ def test_the_api_needs_a_session_checks_the_market_and_answers_empty(db_url):
     assert "day_call" in push.KINDS
 
 
+
+def test_the_board_answers_both_markets_and_the_sectors_in_one_call(db_url):
+    """#705 the dashboard card's three asks in one: each market's calls exactly as /api/day-call, the sectors
+    as /api/day-call/sectors (a failing part is an error item, the calls still come); a session is needed."""
+    from tests.test_api import OWNER, PASSWORD, _client
+
+    with _client(db_url, login=False) as client:
+        assert client.get("/api/day-call/board").status_code == 401
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        assert client.get("/api/day-call/board?sectors=jp").status_code == 422
+        board = client.get("/api/day-call/board").json()
+        assert set(board) == {"calls"}                                   # no sectors asked: none built
+        for market in ("kr", "us"):
+            assert board["calls"][market] == client.get(f"/api/day-call?market={market}").json()
+        with_sectors = client.get("/api/day-call/board?sectors=kr").json()
+        single = client.get("/api/day-call/sectors?market=kr")
+        # the test app has no sector bars: the sectors path says 503, the board carries it as the sectors' error
+        assert single.status_code == 503
+        assert with_sectors["sectors"] == {"error": 503, "detail": single.json()["detail"]}
+        assert with_sectors["calls"]["kr"] == board["calls"]["kr"]
+
 def test_the_csat_session_is_scored_after_its_1630_close(desk):
     csat = date(2024, 11, 14)
     assert desk.run(_kst(csat, 7, 40))

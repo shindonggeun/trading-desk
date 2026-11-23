@@ -305,6 +305,8 @@ def test_the_sectors_api(db_url, monkeypatch):
         monkeypatch.setattr(ds.Cache, "cached", lambda self, market, now, ahead=0: {**SECTOR_VIEW, "market": market})
         got = client.get("/api/day-call/sectors?market=us").json()
         assert got["market"] == "us" and got["top"][0]["name"] == "반도체"
+        # #705 the dashboard card's one call carries the same sector answer
+        assert client.get("/api/day-call/board?sectors=us").json()["sectors"] == got
 
 
 def test_the_sectors_api_needs_a_session(db_url):

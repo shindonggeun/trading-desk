@@ -7,11 +7,16 @@ rules (desk.api /api/estimates, #250 · #283):
 
 - NXT's trade while it runs (the estimator's ``nxt`` state); in the regular session the live quote - KIS's
   websocket trade, else Toss, else Yahoo (desk.prices.quote; a chart that asks puts the ticker on the KIS
-  stream) - except a CME future, whose Yahoo quote is late: the Binance estimate;
+  stream). Futures outside the NQ=F and ES=F rule below keep the Binance estimate;
 - pre / post / overnight: only a real off-hours trade (``off_hours``: KRX - NXT, then the KRX's own after-hours
   auction; US - a KIS trade, then a Toss price that has moved off the close), else the Binance estimate;
 - closed: the Binance estimate (own contract, a proxy or a leveraged base), marked ``estimated``.
 - No trade and no estimate: the last price there is, ``live`` false - it never opens or moves a bar.
+
+NQ=F and ES=F follow the CME clock. While Globex trades there is no live feed for these contracts here:
+show Yahoo's original bars on their own timestamps and use the delayed 1-minute close as the price.
+This avoids using the Binance equity proxy or an undated Yahoo quote to make a current bar. The proxy
+is shown only while the contract is closed. Without it, the chart still shows the delayed source.
 
 The bar (``merge``): the price falls in the last bar's bucket - its close moves, its high / low widen; in a
 later bucket - a new bar opens at it. Intraday buckets carry on the last bar's grid (``at`` + k x the step)
@@ -25,6 +30,8 @@ Channels, trendlines, gaps and the trade map keep reading finished bars (#611); 
 ``LiveBars.get`` answers from a short cache (``TTL_SEC``) and asks the sources at most once per key at a
 time, so a page polling every few seconds costs the brokers little; the base bars come from desk.prices'
 own cache (desk.prices._CANDLE_TTL). ``delay_sec`` is the price's age, plus the feed's own lag for Yahoo.
+For NQ=F and ES=F, the age of a delayed bar already includes the feed lag and has a ten-minute floor
+when the price has a timestamp.
 """
 
 from __future__ import annotations
@@ -36,6 +43,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from .estimate import futures_open
 from .market_calendar import bar_day
 from .ttl_cache import TTLCache
 
@@ -49,6 +57,7 @@ BASE_COUNT = 5                # the last few bars are enough to carry the last o
 STEP_SEC = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "60m": 3600, "120m": 7200, "240m": 14400}
 OPEN = {"krx": time(9, 0), "us": time(9, 30)}
 OFF_HOURS = ("pre", "post", "overnight")
+CME_CHARTS = frozenset({"NQ=F", "ES=F"})
 # What a chart series lags by (seconds), by where its bars came from - shown, not used for anything
 YAHOO_LAG = {"krx": 1200, "futures": 600, "us": 0, "other": 0}
 
@@ -161,14 +170,68 @@ def _row(price, source, at, session, estimated=False, live=True) -> dict:
     return {"price": price, "source": source, "at": at, "session": session, "estimated": estimated, "live": live}
 
 
-async def live_price(ticker: str, prices, estimator, session_of, watch=None, off_hours: OffHours | None = None,
-                     now: datetime | None = None) -> dict:
-    """{price, source, at, session, estimated, live} - the price a chart's last bar moves with now."""
-    est = None
+async def _estimate(ticker: str, estimator):
     try:
-        est = await estimator.estimate(ticker) if estimator is not None else None
+        return await estimator.estimate(ticker) if estimator is not None else None
     except Exception as exc:  # noqa: BLE001 - Binance or Yahoo down for this one: the quote may still do
         log.info("live bars: no estimate for %s: %s", ticker, type(exc).__name__)
+        return None
+
+
+def _last_yahoo_bar(series: dict, interval: str, now: datetime) -> dict | None:
+    if series.get("source") != "yahoo":
+        return None
+    for bar in reversed(series.get("bars") or []):
+        opening, high, low, close = (bar.get(field) for field in ("open", "high", "low", "close"))
+        volume = bar.get("volume")
+        if bar.get("estimated") or not all(
+            isinstance(price, (int, float)) and math.isfinite(price) and price > 0
+            for price in (opening, high, low, close)
+        ):
+            continue
+        if low > min(opening, close) or high < max(opening, close):
+            continue
+        if not isinstance(volume, (int, float)) or not math.isfinite(volume) or volume < 0:
+            continue
+        try:
+            at = _at(bar.get("at"))
+        except (TypeError, ValueError):
+            continue
+        # Daily and longer bars carry a trading date, which can be tomorrow after CME's evening open.
+        if interval not in STEP_SEC or at <= now:
+            return bar
+    return None
+
+
+async def _cme_price(ticker: str, prices, estimator, now: datetime, interval: str, base: dict | None) -> dict:
+    session = "regular" if futures_open(now) else "closed"
+    if session == "closed":
+        est = await _estimate(ticker, estimator)
+        if est is not None and math.isfinite(est.estimate) and est.estimate > 0:
+            return _row(est.estimate, "binance-estimate", est.fetched_at, session, estimated=True)
+
+    minute = base if interval == "1m" else None
+    if minute is None:
+        try:
+            minute = await prices.candles(ticker, "1m", BASE_COUNT)
+        except Exception as exc:  # noqa: BLE001 - broader Yahoo series may still be available
+            log.info("live bars: no 1m candles for %s: %s", ticker, type(exc).__name__)
+            minute = {}
+    bar = _last_yahoo_bar(minute, "1m", now)
+    if bar is not None:
+        return _row(bar["close"], "yahoo", bar["at"], session, live=False)
+    bar = _last_yahoo_bar(base or {}, interval, now)
+    if bar is None:
+        raise ValueError(f"no delayed candles for {ticker}")
+    return _row(bar["close"], "yahoo", bar["at"] if interval in STEP_SEC else None, session, live=False)
+
+
+async def live_price(ticker: str, prices, estimator, session_of, watch=None, off_hours: OffHours | None = None,
+                     now: datetime | None = None, *, interval: str = "1m", base: dict | None = None) -> dict:
+    """{price, source, at, session, estimated, live} - the price a chart's last bar moves with now."""
+    if ticker.upper() in CME_CHARTS:
+        return await _cme_price(ticker, prices, estimator, now or datetime.now(UTC), interval, base)
+    est = await _estimate(ticker, estimator)
     session = await session_of(ticker)
     if est is not None and est.market_state == "nxt":
         if session not in ("pre", "post"):
@@ -229,14 +292,26 @@ class LiveBars:
     async def _build(self, ticker: str, interval: str) -> dict:
         base = await self.prices.candles(ticker, interval, BASE_COUNT)
         now = self._now()
-        live = await live_price(ticker, self.prices, self.estimator, self.session_of, self.watch, self.off_hours, now)
-        bar, state = merge(base.get("bars") or [], live["price"], now, interval, ticker, live["estimated"],
-                           live["live"])
+        live = await live_price(ticker, self.prices, self.estimator, self.session_of, self.watch, self.off_hours,
+                                now, interval=interval, base=base)
+        cme_chart = ticker.upper() in CME_CHARTS
+        delayed = cme_chart and not live["estimated"]
+        bars = base.get("bars") or []
+        if cme_chart:
+            actual = _last_yahoo_bar(base, interval, now)
+            bars = [actual] if actual is not None else []
+        if delayed:
+            bar, state = (dict(bars[-1]), "updated") if bars else (None, "price_only")
+        else:
+            bar, state = merge(bars, live["price"], now, interval, ticker, live["estimated"], live["live"])
         try:
             age = max(0, round((now - _at(live["at"])).total_seconds()))
-            age += series_delay(live["source"], ticker)          # a Yahoo quote is late by its feed's lag
         except (TypeError, ValueError):
             age = None
+        lag = series_delay(live["source"], ticker)
+        if age is not None:
+            # Candle timestamps include the feed lag; ordinary quote timestamps record the read time.
+            age = max(age, lag) if delayed else age + lag
         return {"ticker": ticker, "interval": interval, "bar": bar, "state": state, "price": live["price"],
                 "source": live["source"], "estimated": live["estimated"], "live": live["live"],
                 "session": live["session"], "price_at": live["at"], "delay_sec": age,

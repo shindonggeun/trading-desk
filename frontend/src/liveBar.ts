@@ -32,7 +32,9 @@ export function delayText(sec: number | null | undefined): string | null {
 export function liveLabel(l: CandleLive): string {
   const src = LIVE_SOURCE_KO[l.source] ?? l.source;
   const session = l.session && l.session !== "regular" ? SESSION_KO[l.session] ?? null : null;
-  const late = delayText(l.delay_sec);
+  const late = l.source === "yahoo" && l.live === false && l.price_at == null
+    ? "지연 · 시각 미확인"
+    : delayText(l.delay_sec);
   const at = l.fetched_at ? CLOCK.format(new Date(l.fetched_at)) : null;
   return [src, session, late ?? at].filter(Boolean).join(" · ");
 }

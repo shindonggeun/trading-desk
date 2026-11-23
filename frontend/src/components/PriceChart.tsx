@@ -367,6 +367,12 @@ function LiveBarTag({ drawn, ticker, interval, watch, fallback, onStale }: {
   const poll = usePoll(drawn && inView ? `candle-live:${ticker}:${interval}` : null, () => api.candlesLive(ticker, interval),
     liveMs(INTRADAY.has(interval)), { onData: setLive });
   const painted = useRef<{ drawn: Drawn; key: Key; bar: Row["bar"] } | null>(null);
+  const beforeEstimate = useRef<{
+    drawn: Drawn;
+    painted: typeof painted.current;
+    candles: ReturnType<Drawn["series"]["data"]>;
+    volume: ReturnType<Drawn["volume"]["data"]>;
+  } | null>(null);
   // 마지막으로 값을 받은 때(차트를 새로 그린 때부터) — 화면 밖 · 가린 탭에서는 묻지 않으므로 오래 비면 쉬다 온 것
   const heard = useRef<{ drawn: Drawn | null; at: number }>({ drawn: null, at: 0 });
   if (heard.current.drawn !== drawn) heard.current = { drawn, at: Date.now() };
@@ -374,14 +380,25 @@ function LiveBarTag({ drawn, ticker, interval, watch, fallback, onStale }: {
     if (!drawn || !live || !drawn.alive.current || live.interval !== drawn.interval) return;
     const away = Date.now() - heard.current.at > STEP_SEC[drawn.interval] * 1000;
     heard.current = { drawn, at: Date.now() };
+    const { series, volume, rows, intraday } = drawn;
+    const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
+    let prev = painted.current?.drawn === drawn ? painted.current : null;
+    const bar = live.state === "price_only" ? null : live.bar;
+    const key = bar ? (intraday ? kstStamp(bar.at) : kstDay(bar.at)) : null;
+    const saved = beforeEstimate.current?.drawn === drawn ? beforeEstimate.current : null;
+    if (!saved) beforeEstimate.current = null;
+    if (saved && live.source === "yahoo" && live.live === false) {
+      // #653 재개 후 지연 실봉이 들어오면 장외 추정봉 전체를 걷고 직전에 그린 실제 봉을 되돌린다.
+      series.setData([...saved.candles]);
+      volume.setData([...saved.volume]);
+      prev = saved.painted;
+      painted.current = prev;
+      beforeEstimate.current = null;
+    }
     if (away) {   // 그 사이 끝난 봉들이 빠진다 — 이어 붙이지 말고 봉을 다시 받는다
       onStale();
       return;
     }
-    const { series, volume, rows, intraday } = drawn;
-    const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
-    const prev = painted.current?.drawn === drawn ? painted.current : null;
-    const bar = live.state === "price_only" ? null : live.bar;
     // 체결이 멈췄다(장 마감 · 추정만) — 진행 중으로 칠했던 봉을 보통 색으로(같은 봉이면 서버의 마지막 값으로)
     if (!bar && prev) {
       const same = live.bar && (intraday ? kstStamp(live.bar.at) : kstDay(live.bar.at)) === prev.key;
@@ -392,14 +409,17 @@ function LiveBarTag({ drawn, ticker, interval, watch, fallback, onStale }: {
       }
       painted.current = null;
     }
-    if (bar && rows.length) {
-      const key: Key = intraday ? kstStamp(bar.at) : kstDay(bar.at);
+    if (bar && key !== null && rows.length) {
       const lastKey = prev?.key ?? rows[rows.length - 1].key;
       if (key >= lastKey) {   // 더 앞 봉이면(원천이 막 바뀐 때 등) 건드리지 않는다 — update 가 throw 한다
         try {
           if (prev && prev.key < key) series.update({ time: time(prev.key), ...ohlc(prev.bar) }, true);
+          if (bar.estimated && (live.ticker === "NQ=F" || live.ticker === "ES=F") && !saved) {
+            beforeEstimate.current = { drawn, painted: prev, candles: series.data(), volume: volume.data() };
+          }
           const c = css(bar.close >= bar.open ? "--up" : "--down");
-          series.update({ time: time(key), ...ohlc(bar), color: withAlpha(c, 0.35), borderColor: c, wickColor: c });
+          series.update({ time: time(key), ...ohlc(bar), color: live.live === false ? c : withAlpha(c, 0.35),
+            borderColor: c, wickColor: c });
           if (bar.volume > 0) volume.update({ time: time(key), value: bar.volume, color: withAlpha(c, 0.33) });
           painted.current = { drawn, key, bar };
         } catch {
@@ -941,8 +961,9 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // RSI 를 켜고 끄면 다시 받는다(서버가 30초 캐시) — RSI 는 봉과 같은 응답에 실린다.
   useEffect(() => {
     let live = true;
+    const quiet = quietReload.current;
     // 과거 봉을 더 받을 땐 지금 차트를 둔 채 받는다(깜빡임 없이)
-    if (times === 1 && !quietReload.current) {
+    if (times === 1 && !quiet) {
       keepView.current = null;
       setCandles(null);
     }
@@ -952,7 +973,11 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       .candles(ticker, interval, wanted,
         [...(show.rsi ? ["rsi"] : []), ...(show.stoch ? ["stoch"] : []), ...(show.bb ? ["bb20"] : [])])
       .then((c) => live && setCandles(c))
-      .catch(() => live && (times === 1 ? setFailed(true) : (keepView.current = null)))
+      .catch(() => {
+        if (!live) return;
+        if (times === 1 && !quiet) setFailed(true);
+        else keepView.current = null;
+      })
       .finally(() => {
         if (live) loadingOlder.current = false;
       });

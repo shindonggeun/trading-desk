@@ -2,7 +2,7 @@
 source by session (the quote board's rules), the short cache, the API."""
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -99,11 +99,26 @@ class Prices:
 
 class Estimator:
     def __init__(self, state="closed", price=105.0):
+        self.asked = []
         self.est = None if state is None else SimpleNamespace(market_state=state, estimate=price, last_close=100.0,
                                                               fetched_at="2026-11-18T01:00:00+00:00")
 
     async def estimate(self, ticker):
+        self.asked.append(ticker)
         return self.est
+
+
+class FuturesPrices(Prices):
+    def __init__(self, **bars):
+        super().__init__(source="yahoo", series="yahoo")
+        self.by_interval = bars
+
+    async def candles(self, ticker, interval, count):
+        self.asked.append((ticker, interval, count))
+        bars = self.by_interval.get(interval, [])
+        if isinstance(bars, Exception):
+            raise bars
+        return {"bars": bars, "source": self.series}
 
 
 def _session(value):
@@ -124,7 +139,7 @@ TRADE = {"price": 99.0, "source": "nxt", "at": "2026-11-18T08:00:00+00:00"}
 @pytest.mark.parametrize(("ticker", "session", "est_state", "off", "want"), [
     ("005930.KS", "post", "nxt", None, ("nxt", False, True)),                 # NXT's trade while it runs
     ("NVDA", "regular", "open", None, ("kis", False, True)),                  # the live quote
-    ("NQ=F", "regular", "open", None, ("binance-estimate", True, True)),      # Yahoo's future is late
+    ("GC=F", "regular", "open", None, ("binance-estimate", True, True)),      # other futures keep their policy
     ("000660.KS", "post", None, TRADE, ("nxt", False, True)),                 # the board's off-hours trade
     ("000660.KS", "post", None, None, ("kis", False, False)),                 # none: the close, not live
     ("SOXL", "pre", "closed", None, ("binance-estimate", True, True)),        # no off-hours trade: the estimate
@@ -174,6 +189,123 @@ def test_how_late_a_series_and_a_yahoo_price_run():
     prices.q.fetched_at = _iso(_kst("2026-11-18T10:03:00"))
     desk = lb.LiveBars(prices, Estimator("open"), _session("regular"), now=lambda: _kst("2026-11-18T10:03:00"))
     assert asyncio.run(desk.get("005930.KS", "5m"))["delay_sec"] == 1200                  # fetched now, 20 min late
+
+
+def test_cme_chart_keeps_the_delayed_candle_through_the_reported_quote_and_proxy_jumps():
+    now = [_kst("2026-11-23T13:10:27")]
+    clock = [0.0]
+    actual = _bar(_kst("2026-11-23T13:00:00"), o=25835, h=25846, lo=25830, c=25840)
+    prices = FuturesPrices(**{"1m": [actual]})
+    estimator = Estimator("open", price=25927)
+    desk = lb.LiveBars(prices, estimator, _session("closed"), now=lambda: now[0], clock=lambda: clock[0])
+
+    async def check():
+        for quote, estimate in [(25844, 25927), (25126, 25700), (25844, 25706)]:
+            prices.q.price = quote
+            estimator.est.estimate = estimate
+            got = await desk.get("NQ=F", "1m")
+            assert got["price"] == 25840 and got["bar"] == actual
+            assert (got["source"], got["session"], got["live"], got["estimated"], got["state"]) == (
+                "yahoo", "regular", False, False, "updated",
+            )
+            assert got["price_at"] == actual["at"]
+            assert got["delay_sec"] == round((now[0] - _kst("2026-11-23T13:00:00")).total_seconds())
+            clock[0] += 3
+            now[0] += timedelta(seconds=3)
+
+        newer = _bar(_kst("2026-11-23T13:01:00"), o=25840, h=25886, lo=25838, c=25880)
+        prices.by_interval["1m"].append(newer)
+        got = await desk.get("NQ=F", "1m")
+        assert got["price"] == 25880 and got["bar"] == newer and got["delay_sec"] == 600
+
+    asyncio.run(check())
+    assert prices.asked == [("NQ=F", "1m", lb.BASE_COUNT)] * 4
+    assert prices.quoted == 0 and estimator.asked == []
+
+
+@pytest.mark.parametrize(("time", "session"), [
+    ("2026-11-22T17:59:59", "closed"),    # Sunday before Globex
+    ("2026-11-22T18:00:00", "regular"),
+    ("2026-11-23T16:59:59", "regular"),
+    ("2026-11-23T17:00:00", "closed"),    # daily maintenance break
+    ("2026-11-23T18:00:00", "regular"),
+    ("2026-11-27T17:00:00", "closed"),    # Friday close
+    ("2026-11-28T18:00:00", "closed"),    # Saturday
+])
+def test_cme_chart_uses_the_exchange_clock_even_when_the_other_open_flags_disagree(time, session):
+    now = _et(time)
+    minute = _bar(now - timedelta(minutes=11), o=25835, h=25846, lo=25830, c=25840)
+    prices = FuturesPrices(**{"1m": [minute]})
+    estimator = Estimator("open", price=25700)
+    desk = lb.LiveBars(prices, estimator, _session("closed" if session == "regular" else "regular"),
+                       now=lambda: now)
+
+    got = asyncio.run(desk.get("ES=F", "1m"))
+    assert got["session"] == session
+    if session == "regular":
+        assert got["source"] == "yahoo" and got["bar"] == minute and not got["live"] and not got["estimated"]
+        assert estimator.asked == []
+    else:
+        assert got["source"] == "binance-estimate" and got["price"] == 25700 and got["estimated"]
+        assert got["state"] == "appended" and got["bar"]["estimated"]
+        assert minute["close"] == 25840 and "estimated" not in minute
+        assert estimator.asked == ["ES=F"]
+    assert prices.quoted == 0
+
+
+def test_cme_chart_uses_the_minute_close_but_draws_the_requested_original_bar():
+    now = _et("2026-11-23T16:00:00")
+    actual = _bar(now - timedelta(minutes=12), o=25835, h=25846, lo=25830, c=25840)
+    daily = _bar(_et("2026-11-23T00:00:00"), o=25891, h=26003, lo=25801, c=25829)
+    future = dict(actual, at=_iso(now + timedelta(minutes=1)))
+    estimated = dict(actual, at=_iso(now - timedelta(minutes=1)), estimated=True)
+    invalid = _bar(now - timedelta(minutes=2), c=float("inf"))
+    invalid_open = _bar(now - timedelta(minutes=3), o=float("inf"), c=25126)
+    invalid_volume = dict(actual, at=_iso(now - timedelta(minutes=4)), volume=-1)
+    invalid_range = dict(actual, at=_iso(now - timedelta(minutes=5)), low=25847)
+    prices = FuturesPrices(**{"1m": [actual, invalid_range, invalid_volume, invalid_open, invalid, estimated, future],
+                              "1d": [daily]})
+    desk = lb.LiveBars(prices, Estimator("open"), _session("regular"), now=lambda: now)
+
+    got = asyncio.run(desk.get("NQ=F", "1d"))
+    assert got["price"] == 25840 and got["price_at"] == actual["at"] and got["delay_sec"] == 720
+    assert got["bar"] == daily and got["series_source"] == "yahoo" and got["state"] == "updated"
+    assert prices.asked == [("NQ=F", "1d", lb.BASE_COUNT), ("NQ=F", "1m", lb.BASE_COUNT)]
+
+
+def test_cme_chart_falls_back_to_the_requested_bar_on_a_minute_read_failure():
+    now = _et("2026-11-23T17:20:00")
+    daily = _bar(_et("2026-11-23T00:00:00"), o=25891, h=26003, lo=25801, c=25829)
+    prices = FuturesPrices(**{"1m": OSError("minute unavailable"), "1d": [daily]})
+    desk = lb.LiveBars(prices, Estimator(state=None), _session("regular"), now=lambda: now)
+
+    got = asyncio.run(desk.get("NQ=F", "1d"))
+    assert got["bar"] == daily and got["price"] == 25829
+    assert got["price_at"] is None and got["delay_sec"] is None and got["session"] == "closed"
+    assert not got["live"] and not got["estimated"] and prices.quoted == 0
+
+
+def test_cme_estimate_in_the_same_bucket_preserves_the_real_candle():
+    now = _et("2026-11-23T17:20:00")
+    daily = _bar(_et("2026-11-23T00:00:00"), o=25891, h=26003, lo=25801, c=25840)
+    prices = FuturesPrices(**{"1d": [daily]})
+    desk = lb.LiveBars(prices, Estimator(price=25700), _session("regular"), now=lambda: now)
+
+    got = asyncio.run(desk.get("NQ=F", "1d"))
+    assert got["session"] == "closed" and got["source"] == "binance-estimate" and got["estimated"]
+    assert got["state"] == "price_only" and got["price"] == 25700 and got["bar"] == daily
+    assert prices.asked == [("NQ=F", "1d", lb.BASE_COUNT)]
+
+
+def test_cme_chart_treats_the_absence_of_actual_bars_as_unavailable_while_open():
+    prices = FuturesPrices()
+    estimator = Estimator("open")
+    now = _et("2026-11-23T04:00:00")
+    desk = lb.LiveBars(prices, estimator, _session("regular"), now=lambda: now)
+
+    with pytest.raises(ValueError):
+        asyncio.run(desk.get("NQ=F", "1m"))
+    assert prices.quoted == 0 and estimator.asked == []
 
 
 def test_the_api(db_url, monkeypatch):

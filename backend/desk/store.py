@@ -294,10 +294,14 @@ class Store:
                                    .where(runs.c.status == "running")).scalar_one()
         return list(queued), running
 
-    def list_runs(self, limit: int = 50, offset: int = 0, *, public_only: bool = False) -> list[dict]:
+    def list_runs(self, limit: int = 50, offset: int = 0, *, public_only: bool = False,
+                  scope: ColumnElement[bool] | None = None) -> list[dict]:
+        """``scope`` (as delete_run's) is applied before the page, so a page never comes up short."""
         query = select(runs)
         if public_only:
             query = query.where(proven_public_run(runs))
+        if scope is not None:
+            query = query.where(scope)
         with self.engine.connect() as conn:
             rows = conn.execute(
                 query.order_by(runs.c.created_at.desc(), runs.c.id).limit(limit).offset(offset)
@@ -354,9 +358,17 @@ class Store:
         with self.engine.begin() as conn:
             return conn.execute(stmt).rowcount
 
-    def count_runs(self) -> int:
+    def count_runs(self, *, scope: ColumnElement[bool] | None = None) -> int:
+        query = select(func.count()).select_from(runs)
         with self.engine.connect() as conn:
-            return conn.execute(select(func.count()).select_from(runs)).scalar_one()
+            return conn.execute(query if scope is None else query.where(scope)).scalar_one()
+
+    def submitter_of(self, run_id: str) -> int | None:
+        """#775 the account that asked for the run (run_submissions) - None when none was recorded (an older
+        run) or that account is gone."""
+        with self.engine.connect() as conn:
+            return conn.scalar(select(run_submissions.c.submitted_by_user_id)
+                               .where(run_submissions.c.run_id == run_id))
 
     # --- events ---------------------------------------------------------------------
 

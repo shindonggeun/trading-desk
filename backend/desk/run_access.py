@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 
-from sqlalchemy import false, or_, true
+from sqlalchemy import false, func, or_, true
 from sqlalchemy.sql import ColumnElement
 
 VISIBILITY_WRITER = "_run_visibility_writer"
@@ -26,6 +26,21 @@ def legacy_submission(options):
 
 def proven_public_run(runs):
     return protected_execution(runs.c.options) & shared_run_rows(runs.c.is_shareable)
+
+
+def account_run(options) -> ColumnElement[bool]:
+    """#775 a run that read the broker account (``use_portfolio``) - the owner's alone in legacy mode.
+
+    Never NULL, so ``not_()`` of it keeps every other run. The same decision as reads_account on a
+    loaded row; the server writes the option as a JSON boolean (desk.runner.RunRequest).
+    """
+    return func.coalesce(options["use_portfolio"].as_boolean(), false()) == true()
+
+
+def reads_account(run: Mapping[str, object] | None) -> bool:
+    """account_run for a stored run already read (Store.get_run)."""
+    options = run.get("options") if run is not None else None
+    return isinstance(options, Mapping) and options.get("use_portfolio") is True
 
 
 def visibility_for_new_run(use_portfolio: object, *, source_visibility: tuple[object, ...] | None = None) -> bool | None:

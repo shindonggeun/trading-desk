@@ -135,6 +135,7 @@ _GRAPH_SETUP = Lock()
 
 def run_tradingagents(
     request: RunRequest, emit: Emit, portfolio: Any, *, isolate_artifacts: bool = False,
+    public_memory: bool = False,
 ) -> RunResult:
     """One TradingAgents run, the same steps the CLI takes, streamed through StateDiffer.
 
@@ -154,6 +155,11 @@ def run_tradingagents(
     if request.max_risk_rounds:
         config["max_risk_discuss_rounds"] = request.max_risk_rounds
 
+    if public_memory:
+        # #775 the default memory file holds the owner's account runs' decisions (their positions): a run anyone
+        # may read keeps a memory of its own beside it, so those decisions never reach its prompt
+        default = Path(config["memory_log_path"])
+        config["memory_log_path"] = str(default.with_name(f"{default.stem}.public{default.suffix}"))
     if isolate_artifacts:
         with TemporaryDirectory(prefix="desk-protected-run-") as temp:
             root = Path(temp)
@@ -470,10 +476,13 @@ class RunManager:
                  reuse_minutes: float = 0, rate_limit_cooldown_min: float = RATE_LIMIT_COOLDOWN_MIN,
                  direct: bool = True, protect_account_runs: bool = False,
                  calibration_table: calibration.Table | None = None,
-                 account_broker: Callable[[], Broker | None] | None = None) -> None:
+                 account_broker: Callable[[], Broker | None] | None = None, *,
+                 runner_for: Callable[[str], Runner | None] | None = None) -> None:
         # #688 direct (DESK_ROLE=all): a submitted run runs here. Otherwise submit only queues it and the
         # analyst's desk.run_queue claims it (start), calling on_free when one of its runs ends
         self.direct = direct
+        # #775 runner_for(run id) may pick another runner for a stored run (None: the default one)
+        self.pick_runner = runner_for
         self.protect_account_runs = protect_account_runs
         self.account_broker = account_broker
         self.calibration_table = calibration_table
@@ -696,6 +705,11 @@ class RunManager:
     def _require_current_policy(self) -> None:
         if not self.store.policy_is_current():
             raise PolicyChanged("process privacy mode changed")
+
+    def _runner_for(self, run_id: str) -> Runner:
+        """#775 asked of the stored run just before it runs, in whichever process claimed it (all or analyst)."""
+        chosen = self.pick_runner(run_id) if self.pick_runner is not None else None
+        return chosen if chosen is not None else self.runner
 
     async def _run_portfolio(self, run_id: str):
         broker = self._account_source(run_id)
@@ -1205,8 +1219,9 @@ class RunManager:
                 if request.use_portfolio:
                     self._account_source(run_id)
                 portfolio = desk_portfolio(book, note, horizon_mandate=mandate)
+                runner = self._runner_for(run_id)
                 watch.mark("desk_pre")
-                result = await asyncio.to_thread(self.runner, subject, emit, portfolio)
+                result = await asyncio.to_thread(runner, subject, emit, portfolio)
                 watch.mark("graph")
                 result = await self._decision_language(run_id, request, result)   # #567
                 # a related set too slow for the prompt still serves the plan (beta, VIX, the panel);

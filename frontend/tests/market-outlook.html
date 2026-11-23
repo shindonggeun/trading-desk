@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>시장 전망 브라우저 회귀 검증</title>
+  <style>
+    main { max-width: 1320px; margin: 0 auto; padding: 16px; }
+    #result[data-result="passed"] { color: var(--ok); }
+    #result[data-result="failed"] { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>시장 전망 브라우저 회귀 검증</h1>
+    <p id="result" role="status" data-result="pending">합성 응답 검증 중…</p>
+    <div id="root"></div>
+  </main>
+  <script type="module">
+    import { runMacroOutlookIntegration, runMarketOutlookRegression } from "./market-outlook-fixture.tsx";
+    const host = document.getElementById("root");
+    const status = document.getElementById("result");
+    if (new URLSearchParams(location.search).has("integration")) {
+      await runMacroOutlookIntegration(host, status);
+    } else {
+      runMarketOutlookRegression(host, status);
+    }
+  </script>
+</body>
+</html>

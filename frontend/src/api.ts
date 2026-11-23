@@ -1,4 +1,5 @@
 import { activityHeaders, BACKGROUND_HEADER } from "./activity";
+import type { MarketOutlookResponse } from "./marketOutlook";
 import type { LoadUsOptions, UsOptionsResponse } from "./usOptionsTypes";
 import type { DayCallSectorsResponse } from "./components/DayCallSectors";
 import type { ChartRead, GapReport, LinesReport, LineTf } from "./types";
@@ -276,6 +277,7 @@ export const api = {
   regime: () => call<RegimeSnapshot>("/api/regime"),
   /** #115 거시 · 정책 뉴스 흐름 — 서버가 30분마다 새로 모은다. */
   macroBrief: () => call<MacroBrief>("/api/macro/brief"),
+  marketOutlook: () => call<MarketOutlookResponse>("/api/macro/market-outlook?market=us"),
   /** #293 실적 프리뷰 — 종목당 서버 캐시. */
   earningsPreview: (ticker: string) => call<EarningsPreview>(`/api/earnings/preview?ticker=${encodeURIComponent(ticker)}`),
   /** 계획 채점 통계(#64 desk/outcome.py) — 서버가 보관 기간까지로 자른다. */

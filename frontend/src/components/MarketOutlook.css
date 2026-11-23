@@ -1,0 +1,112 @@
+.market-outlook {
+  container-type: inline-size;
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.market-outlook :where(p, h2, h3, h4, h5, dl, dd, ul) { margin: 0; }
+.market-outlook h4 { font-size: var(--fs-m); }
+.market-outlook h5 { font-size: var(--fs-s); }
+.market-outlook time { font-variant-numeric: tabular-nums; }
+
+.market-outlook .outlook-row,
+.market-outlook .outlook-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+.market-outlook .outlook-row { justify-content: space-between; }
+.market-outlook .outlook-section { display: grid; gap: 8px; }
+
+.market-outlook .outlook-view-grid,
+.market-outlook .outlook-lower-grid,
+.market-outlook .outlook-signals,
+.market-outlook .outlook-case-grid,
+.market-outlook .outlook-evidence-grid {
+  display: grid;
+  gap: 10px;
+}
+.market-outlook .outlook-view-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); }
+.market-outlook .outlook-lower-grid { grid-template-columns: minmax(0, 1fr); align-items: start; }
+.market-outlook .outlook-signals { grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr)); }
+.market-outlook .outlook-signals > section {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+}
+.market-outlook .outlook-case-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
+.market-outlook .outlook-evidence-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  list-style: none;
+  padding: 0;
+}
+
+.market-outlook .outlook-tile {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+.market-outlook .outlook-view-summary { font-weight: 550; }
+.market-outlook .outlook-byline { margin-top: -5px; }
+.market-outlook strong.outlook-warning { color: var(--warn); }
+.market-outlook p.outlook-warning,
+.market-outlook .outlook-status-stale,
+.market-outlook .outlook-status-error {
+  color: var(--text);
+  border-inline-start: 2px solid var(--warn);
+  padding-inline-start: 6px;
+}
+.market-outlook .outlook-status-error { border-inline-start-color: var(--danger); }
+.market-outlook .outlook-status-missing,
+.market-outlook .outlook-status-disabled { color: var(--muted); }
+
+.market-outlook .outlook-facts { display: grid; gap: 4px; }
+.market-outlook .outlook-facts dt { color: var(--muted); }
+.market-outlook .outlook-dates {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 100px), max-content));
+  gap: 4px 16px;
+}
+.market-outlook .outlook-measure-times { gap: 0; }
+.market-outlook .outlook-measure-times > div { display: flex; flex-wrap: wrap; column-gap: 6px; }
+.market-outlook .outlook-provenance,
+.market-outlook .outlook-filings > article {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.market-outlook .outlook-provenance > a { justify-self: start; }
+
+.market-outlook .outlook-list { display: grid; gap: 2px; padding-inline-start: 16px; }
+.market-outlook .outlook-case-grid > div { display: grid; gap: 4px; align-content: start; }
+.market-outlook .outlook-evidence-item {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  padding: 8px;
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+}
+.market-outlook .outlook-value { font-variant-numeric: tabular-nums; }
+.market-outlook .outlook-holdings { border-top: 1px solid var(--border); }
+.market-outlook .outlook-holdings summary { cursor: pointer; padding: 8px 0; font-weight: 600; }
+.market-outlook .outlook-holdings ul { list-style: none; padding: 0; }
+.market-outlook .outlook-holdings li { border-bottom: 1px solid var(--border); padding: 6px 0; }
+
+@media (min-width: 1100px) {
+  @container (min-width: 310px) and (max-width: 569px) {
+    .market-outlook .outlook-view-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+}
+
+@container (min-width: 880px) {
+  .market-outlook .outlook-lower-grid { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+}

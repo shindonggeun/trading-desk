@@ -393,6 +393,45 @@ async def aput(namespace: str, key: Hashable, value: Any, ttl: float) -> None:
     _count("writes")
 
 
+async def aput_newer(
+    namespace: str, key: Hashable, value: Any, ttl: float, *, rank: Callable[[Any], float | None],
+) -> None:
+    """Write a newer observation without letting a late publisher replace it."""
+    ttl = _life(ttl)
+    if _async is None or ttl <= 0 or not _up():
+        return
+    text = _encode(namespace, key, value, ttl)
+    new_rank = rank(value)
+    if text is None or new_rank is None:
+        return
+
+    from redis.exceptions import WatchError
+
+    client = _async
+    name = _key(namespace, key)
+    try:
+        # Watch the sealed value itself. No observation or ordering metadata is stored in the clear.
+        async with asyncio.timeout(TIMEOUT_SEC):
+            for _ in range(3):
+                try:
+                    async with client.pipeline() as pipe:
+                        await pipe.watch(name)
+                        raw = await pipe.get(name)
+                        old = _decode(namespace, key, raw, await pipe.pttl(name)) if raw is not None else None
+                        old_rank = rank(old[0]) if old is not None else None
+                        if old_rank is not None and old_rank >= new_rank:
+                            return
+                        pipe.multi()
+                        pipe.set(name, text, px=max(1, int(ttl * 1000)))
+                        await pipe.execute()
+                except WatchError:
+                    continue
+                _count("writes")
+                return
+    except Exception as exc:  # noqa: BLE001 - Redis remains an optional cache
+        _failed(exc)
+
+
 def latest(hit: tuple[Any, float, float] | None) -> tuple[dict, float, float] | None:
     """A latest-value entry ``{"value": {...}, "ttl": seconds}`` (market_flow · futures_flow) as
     ``(value, ttl, left)``, or None when its shape is not that - a miss, never an error on a page."""

@@ -18,6 +18,13 @@
   font-size: var(--fs-m);
 }
 
+.weekly-drawdown-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-block-start: 6px;
+}
+
 .weekly-drawdown summary {
   margin-block-start: 6px;
   color: var(--muted);

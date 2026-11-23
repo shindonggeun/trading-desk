@@ -44,9 +44,44 @@ import { css, useColorScheme } from "../chartColors";
 import { every, usePoll } from "../poll";
 import { delayText, LIVE_NOTE, liveLabel, liveMs, useInView } from "../liveBar";
 import ChartReadPanel from "./ChartReadPanel";
+import WeeklyDrawdownGuide from "./WeeklyDrawdownGuide";
+import { sameTicker } from "../ticker";
+import type { WeeklyDrawdownObservation } from "../weeklyDrawdownTypes";
 import AccumulationPanel from "./AccumulationPanel";
 import { useAccumulationOverlay } from "./accumulationOverlay";
 import { beginnerLines, loadReadPrefs, marksOf, MARKS, type ReadPrefs, refIds, refKinds, saveReadPrefs } from "../chartRead";
+
+type WeeklyPriceLine = { price: number; title: string; overlap: boolean };
+const WEEKLY_LEVELS = [
+  ["bollinger", "연구 BB 하단"],
+  ["channel", "연구 채널 하단"],
+  ["fib", "연구 2.618"],
+] as const;
+
+function weeklyPriceLines(observation: WeeklyDrawdownObservation | undefined): WeeklyPriceLine[] {
+  if (observation?.status !== "available" || observation.week.candle !== "closed"
+      || !observation.week.start || !observation.week.source) return [];
+
+  const lines = new Map<string, WeeklyPriceLine>();
+  const add = (value: number | null, title: string, overlap = false) => {
+    if (value === null || !Number.isFinite(value) || value <= 0) return;
+    const key = value.toFixed(2);
+    if (overlap || !lines.has(key)) lines.set(key, { price: value, title, overlap });
+  };
+  for (const [key, title] of WEEKLY_LEVELS) {
+    if (observation.evidence[key].state !== "missing") add(observation.evidence[key].value, title);
+  }
+  const { state, low, high } = observation.overlap;
+  if (state === "overlap" && low !== null && high !== null
+      && Number.isFinite(low) && Number.isFinite(high) && low > 0 && low <= high) {
+    if (low.toFixed(2) === high.toFixed(2)) add(low, "연구 겹침", true);
+    else {
+      add(low, "연구 겹침 하단", true);
+      add(high, "연구 겹침 상단", true);
+    }
+  }
+  return [...lines.values()];
+}
 
 export type Interval = Exclude<CandleInterval, "1m">;
 const INTERVALS: { iv: Interval; label: string; count: number }[] = [
@@ -534,6 +569,15 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     onData: (r) => { setChartRead((cur) => (cur && cur.ticker === r.ticker && cur.generated_at === r.generated_at ? cur : r)); setReadFailed(false); },
     onError: () => setReadFailed(true),
   });
+  const weeklyRead = readOn && interval === "1w" && sameTicker(ticker, "NQ=F");
+  const weeklyObservation = weeklyRead && !readFailed && sameTicker(ticker, chartRead?.ticker)
+    ? chartRead?.weekly_drawdown
+    : undefined;
+  const weeklyLines = useMemo(() => weeklyPriceLines(weeklyObservation), [weeklyObservation]);
+  const [weeklyOverlay, setWeeklyOverlay] = useState(false);
+  useEffect(() => {
+    if (!weeklyLines.length) setWeeklyOverlay(false);
+  }, [weeklyLines.length]);
   const readFrame = useMemo(() => chartRead?.timeframes.find((f) => f.timeframe === interval && !f.error) ?? null, [chartRead, interval]);
   const readMarks = useMemo(() => (readOn ? marksOf(readFrame) : []), [readOn, readFrame]);
   const beginner = readOn && readPrefs.beginner && readMarks.length > 0;
@@ -1249,6 +1293,19 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       if (drawn.alive.current) for (const line of made) series.removePriceLine(line);
     };
   }, [drawn, plan, fills, pickedFill, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines, show.opt, optionData, show.osc, osc, show.bz, bottom, planLabels]);
+
+  // #896의 연구 가격은 사용자가 켠 주봉에서만 추가한다. 계획선과 지지·저항의 축 설정은 그대로 둔다.
+  useEffect(() => {
+    if (!weeklyOverlay || !weeklyLines.length || drawn?.interval !== "1w" || !drawn.alive.current) return;
+    const { series, alive } = drawn;
+    const made = weeklyLines.map((line) => series.createPriceLine({
+      price: line.price, title: line.title, color: css("--warn"), lineWidth: line.overlap ? 2 : 1,
+      lineStyle: line.overlap ? LineStyle.Dashed : LineStyle.Dotted, axisLabelVisible: true,
+    }));
+    return () => {
+      if (alive.current) for (const line of made) series.removePriceLine(line);
+    };
+  }, [drawn, weeklyLines, weeklyOverlay]);
 
   // #440 가격 사다리에서 고른 가격 — 겹친 라벨과 상관없이 그 가격 하나만 굵게
   useEffect(() => {
@@ -2449,6 +2506,11 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
           onInterval={(tf) => setBarInterval(tf as Interval)} marks={readMarks} picked={readPick} onPick={(n) => pickMark(n, "panel")}
           beginner={readPrefs.beginner} applied={beginner} onBeginner={(b) => pickRead({ beginner: b })} idPrefix={readId}
           open={readExpanded} onToggle={setReadExpanded} selectedAccumulation={selectedAccumulation}
+          weeklyDrawdown={weeklyRead && (readFailed || sameTicker(ticker, chartRead?.ticker)) ? (
+            <WeeklyDrawdownGuide observation={weeklyObservation ?? {
+              status: "unavailable", reason: readFailed ? "차트 읽기 자료를 다시 받아야 합니다." : null,
+            }} overlay={weeklyLines.length ? { enabled: weeklyOverlay, onChange: setWeeklyOverlay } : undefined} />
+          ) : undefined}
           accumulation={chartRead && (
             <AccumulationPanel read={chartRead} selected={selectedAccumulation} onSelect={(view) => {
               selectAccumulationView(view);

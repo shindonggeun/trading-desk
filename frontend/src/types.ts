@@ -1,3 +1,5 @@
+import type { WeeklyDrawdownObservation } from "./weeklyDrawdownTypes";
+
 export type RunStatus = "queued" | "running" | "done" | "failed";
 export type Bias = "long" | "short" | "flat" | "review";
 
@@ -2599,6 +2601,7 @@ export interface AccumulationLegs {
 }
 
 export interface ChartRead {
+  weekly_drawdown?: WeeklyDrawdownObservation;
   accumulation?: (Record<AccumulationViewKey, AccumulationView | null> & { note: string }) | null;
   legs?: Record<AccumulationViewKey, AccumulationLegs | null> | null;
   ticker: string;

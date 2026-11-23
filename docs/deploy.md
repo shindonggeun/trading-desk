@@ -593,7 +593,7 @@ Reddit 429의 `Retry-After: 75`에는 60초 대기를 한 번 예약했고, Poly
 
 ### 전환 전 점검
 
-1. 전환 대상 SHA에서 PostgreSQL 17 CI와 `tests/test_account_egress.py`의 리허설이 성공했는지 확인한다. API·collector·analyst를 모두 같은 승인 SHA로 교체할 수 있는지 확인한다. 소유 계정과 실제 브로커 계좌, 사용할 외부 알림 목적지는 각각 대조한다.
+1. 전환 대상 SHA에서 PostgreSQL 17 CI와 `tests/test_privacy_transition.py`, `tests/test_account_egress.py`가 성공했는지 확인한다. DB가 `legacy`인 동안 승인된 배포 절차로 동일 이미지를 준비하고, 호환되는 API 또는 `all` 기동을 통해 Alembic head 적용과 헬스를 확인한다. split의 collector·analyst도 동일 이미지로 기동을 확인한다. 소유 계정과 실제 고정 Toss 계좌를 대조한다. 초기 보호 범위는 승인된 Toss 계좌와 기존 공개 알림으로 제한된다.
 2. 신뢰할 수 있는 운영 셸에서 실행 중인 백엔드 컨테이너의 설정을 점검 프로세스에 직접 전달한다. 다음은 split 구성의 점검이다. `all` 구성은 `docker inspect`에 `trading-desk-backend-prod` 하나만 전달한다. Docker 설정 원문에는 비밀이 있으므로 파일·로그에 남기지 않는다.
 
    ```bash
@@ -605,8 +605,8 @@ Reddit 429의 `Retry-After: 75`에는 60초 대기를 한 번 예약했고, Poly
 
 ### 승인 후 전환 순서
 
-1. 배포 잡을 정지하고 DB와 TradingAgents 볼륨을 백업한다. 인그레스에서 유지보수 503을 응답하고, 열려 있는 스트림과 분석의 종료를 확인한다. DB 정책을 모르는 이미지나 작업자가 있으면 전환 전 모두 중지한다. split 구성에서는 API·collector·analyst가 모두 전환에 참여해야 한다.
-2. 별도로 승인된 정책 전환 경로로 `legacy → isolated`로 이동한다. 정지한 서비스와 같은 DB·메모리 볼륨을 사용하는 단발 관리 컨테이너를 실행한다. 승인된 이미지가 로컬의 `trading-desk-backend:prod`를 가리키는지 확인한 뒤, 승인된 커밋의 저장소 루트에서 아래 함수를 사용한다. `PRIVACY_ENV_FILE`에는 [3절](#3-운영-env--vault-정본--envruntime-손-배포-대체)의 동일 운영 설정을 전달받은 권한 600 파일의 경로를 지정한다. 셸에 별도로 export된 `DESK_DATABASE_URL`과 `DESK_DOCKER_NETWORK`는 env 파일보다 우선하므로 두 키가 없는 관리 셸에서 실행한다. 관리가 끝나면 임시 env 파일을 정리한다.
+1. 배포 잡을 정지하고 DB와 TradingAgents 볼륨을 백업한다. 인그레스에서 유지보수 503을 응답하고, 열려 있는 스트림과 분석의 종료를 확인한다. 기존 API·collector·analyst와 해당 볼륨을 사용하는 작업자를 모두 정지하고 분석 대기열과 브로커 발급자 잠금이 해제됐는지 확인한다. 이 단계는 운영자가 확인한다.
+2. 정지한 서비스와 같은 DB·메모리 볼륨 및 고정 Toss 설정을 쓰는 단발 관리 컨테이너를 아래 함수로 실행한다. 로컬의 `trading-desk-backend:prod`가 승인된 이미지인지 확인한 뒤 승인된 커밋의 저장소 루트에서 실행한다. `PRIVACY_ENV_FILE`에는 [3절](#3-운영-env--vault-정본--envruntime-손-배포-대체)의 동일 운영 설정을 전달받은 권한 600 파일 경로를 지정한다. 현재 셸의 환경이 같은 이름의 파일 설정을 덮어쓰므로 별도로 주입한 운영 설정이 없는 관리 셸을 사용한다. 관리가 끝나면 임시 env 파일을 정리한다.
 
    ```bash
    privacy_admin() {
@@ -614,6 +614,13 @@ Reddit 429의 `Retry-After: 75`에는 60초 대기를 한 번 예약했고, Poly
        -f backend/docker-compose-backend.yml run --no-deps --rm --pull never -T backend-prod \
        python -m desk.privacy_admin "$@"
    }
+   privacy_admin status
+   ```
+
+   명시 소유자 바인딩을 확인한다. 빈 슬롯이면 [명시 소유자 지정 절차](account-owner-binding.md)를 먼저 따른다. 정책 상태가 `legacy`이고 세대가 `0`이면 아래 명령을 실행한 뒤 새 격리 세대를 조회한다. `schema_not_ready`이면 legacy 호환 이미지의 스키마 준비부터 재확인한다. 격리에서 다시 보호 상태로 여는 경우에는 현재 세대를 사용한다.
+
+   ```bash
+   privacy_admin isolate --epoch 0 --confirm
    privacy_admin status
    ```
 
@@ -626,8 +633,20 @@ Reddit 429의 `Retry-After: 75`에는 60초 대기를 한 번 예약했고, Poly
 
    메모리 보관은 해당 볼륨을 사용하는 모든 프로세스를 멈춘 상태에서 백엔드와 같은 UID로 실행한다. Linux의 동일 볼륨에서 그룹·다른 사용자에게 쓰기가 닫힌 디렉터리를 써야 한다. 레거시 메모리 두 파일을 비공개로 보관하며 보호 모드는 보관 파일을 읽지 않는다. `hide-legacy`로 조치 대상 run과 원래 위치에 남은 메모리 파일이 모두 0건인지 다시 확인한다. 바인딩 증거가 없는 run과 보유 알림은 숨긴 채 보존하므로 `status`의 비귀속 건수에는 남을 수 있다.
 
-3. 승인된 정책 전환 경로로 `isolated → protected`를 적용한 뒤 API를 먼저 띄워 헬스를 확인하고, 같은 이미지의 collector·analyst를 띄운다. 인그레스를 열기 전에 소유자와 두 번째 계정의 계좌·분석 접근, 분석 claim, 보유 알림 차단, 공개 알림과 공개 조회를 확인한다. 로그에는 역할·상태·건수만 기록한다.
+3. 셸 명령 추적을 끈 관리 터미널에서 `privacy_admin toss-approval-check --epoch N`을 실행한다. 권한 있는 운영자가 현재 명시 소유자와 실제 고정 Toss 계좌·자격 구성을 별도로 대조한 뒤, JSON의 `challenge` 값을 아래 입력에 붙여 넣는다. 챌린지는 확인 당시의 바인딩·원천·격리 세대를 묶으며 표준 입력으로 전달한다. 발급 명령의 표준 출력은 관리 컨테이너가 종료되기 전 Docker 로그에 기록될 수 있으므로 접근이 제한된 관리 환경에서 실행하고 그 출력을 운영 기록에 복사하지 않는다.
+
+   ```bash
+   set +x
+   read -rs PRIVACY_APPROVAL_CHALLENGE
+   if printf '%s\n' "${PRIVACY_APPROVAL_CHALLENGE:?}" | privacy_admin approve-toss --epoch N --confirm; then
+     privacy_admin activate --epoch N --confirm
+   fi
+   unset PRIVACY_APPROVAL_CHALLENGE
+   ```
+
+   `activate`는 현재 소유자·Toss 설정의 승인과 남은 레거시 run·메모리를 확인한다. `legacy_cleanup_pending`이면 출력된 두 건수를 확인하고 남은 이전을 처리한다. `toss_approval_mismatch`이면 격리 상태에서 바인딩·원천·세대를 다시 대조한다. 같은 소유 세대에 다른 원천을 승인할 수 없으며, 자격이나 계좌 교체에는 별도의 소유 세대 교체 절차가 필요하다.
+4. `activate`가 반환한 보호 세대를 배포 기록에 남긴다. 보호 상태로 전환된 뒤 API를 먼저 띄워 헬스를 확인하고 같은 이미지의 collector·analyst를 띄운다. 인그레스를 열기 전에 소유자와 두 번째 계정의 계좌·분석 접근, 분석 claim, 보유 알림 차단, 공개 알림과 공개 조회를 확인한다. 로그에는 역할·상태·세대·건수만 기록한다.
 
 ### 장애 시 격리로 복귀
 
-인그레스가 유지보수 503을 응답하도록 하고 추가 배포와 작업 시작을 멈춘다. 위 관리 컨테이너의 `privacy_admin status`에서 보호 세대를 확인하고 `privacy_admin rollback --epoch N --confirm`을 실행한다. 보호 상태와 세대가 일치할 때만 `protected → isolated`가 적용된다. 기존 호환 프로세스의 요청은 503이 되고 새 프로세스는 기동이 거절된다. 기존 요청·작업의 종료와 데이터 보존을 확인한 뒤 유지보수 상태를 유지한다. 이미 외부로 전달된 알림은 회수할 수 없다. [12절의 `all` 복귀](#기존-all-경로로-복귀)는 프로세스 배치 변경에만 사용한다.
+인그레스가 유지보수 503을 응답하도록 하고 추가 배포와 작업 시작을 멈춘다. 위 관리 컨테이너의 `privacy_admin status --policy-only`에서 보호 세대를 확인하고 `privacy_admin rollback --epoch N --confirm`을 실행한다. 정책 전용 조회는 메모리 볼륨이나 승인 자료를 읽지 않는다. 바로 전 활성화가 반환한 보호 세대를 배포 기록에서 대조할 수 있다. 보호 상태와 세대가 일치할 때만 `protected → isolated`가 적용된다. 기존 호환 프로세스의 요청은 503이 되고 새 프로세스는 기동이 거절된다. 기존 요청·작업의 종료와 데이터 보존을 확인한 뒤 유지보수 상태를 유지한다. 이미 외부로 전달된 알림은 회수할 수 없다. [12절의 `all` 복귀](#기존-all-경로로-복귀)는 프로세스 배치 변경에만 사용한다.

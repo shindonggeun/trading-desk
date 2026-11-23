@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 
 from .account_owner import OwnerBinding
 from .db import account_owner_binding, owner_toss_attestations, privacy_policy
@@ -29,6 +29,12 @@ class TossSource:
     client_secret: str = field(repr=False)
     account_seq: str = field(repr=False)
 
+    @property
+    def valid(self) -> bool:
+        return all(isinstance(value, str) and value.strip() for value in (
+            self.client_id, self.client_secret, self.account_seq,
+        ))
+
 
 @dataclass(frozen=True)
 class VerifiedTossAttestation:
@@ -49,9 +55,7 @@ def _source_evidence(binding: OwnerBinding, source: TossSource) -> tuple[bytes, 
         return None
     if not isinstance(binding.generation, str) or not binding.generation:
         return None
-    if not all(isinstance(value, str) and value.strip() for value in (
-        source.client_id, source.client_secret, source.account_seq,
-    )):
+    if not source.valid:
         return None
     # Hash the exact secret before HMAC's padding, which otherwise equates some distinct short keys.
     key = hashlib.sha256(_encode(source.client_secret)).digest()
@@ -75,6 +79,18 @@ def _proof_query(binding: OwnerBinding):
     return select(owner_toss_attestations).where(owner_toss_attestations.c.generation == binding.generation)
 
 
+def _source_matches(proof, fingerprint: bytes) -> bool:
+    return proof is not None and proof.version == _VERSION and _same_digest(proof.fingerprint, fingerprint)
+
+
+def _approval_matches(proof, key: bytes, fingerprint: bytes, isolation: int) -> bool:
+    return (
+        _source_matches(proof, fingerprint)
+        and proof.approved_isolation_epoch == isolation
+        and _same_digest(proof.approval_fingerprint, _digest(key, "approval", fingerprint.hex(), isolation))
+    )
+
+
 class TossAttestationStore:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
@@ -84,11 +100,6 @@ class TossAttestationStore:
         """Persist an operator's independent verification of this exact source in the expected isolation."""
         if expected.mode != ISOLATED or not expected.valid:
             return False
-        evidence = _source_evidence(binding, source)
-        if evidence is None:
-            return False
-        key, fingerprint = evidence
-        approval = _digest(key, "approval", fingerprint.hex(), expected.epoch)
         with self.engine.begin() as conn:
             try:
                 ProcessPolicy(self.policy, expected).lock(conn, exclusive=True)
@@ -97,24 +108,65 @@ class TossAttestationStore:
             # Account binding updates and user deletion can commit without taking the policy lock.
             if conn.scalar(_binding_query(binding).with_for_update()) is None:
                 return False
-            prior = conn.execute(_proof_query(binding)).one_or_none()
-            pending = {"approved_isolation_epoch": expected.epoch, "approval_fingerprint": approval}
-            if prior is None:
-                conn.execute(owner_toss_attestations.insert().values(
-                    generation=binding.generation, version=_VERSION, fingerprint=fingerprint, **pending,
-                ))
-                return True
-            if prior.version != _VERSION or not _same_digest(prior.fingerprint, fingerprint):
-                return False
-            approved_epoch = PolicyEpoch(ISOLATED, prior.approved_isolation_epoch)
-            if not approved_epoch.valid or approved_epoch.epoch > expected.epoch:
-                return False
-            if approved_epoch == expected:
-                return _same_digest(prior.approval_fingerprint, approval)
-            conn.execute(owner_toss_attestations.update().where(
-                owner_toss_attestations.c.generation == binding.generation,
-            ).values(**pending))
+            return self.approve_locked(conn, expected=expected, binding=binding, source=source)
+
+    @staticmethod
+    def challenge(conn: Connection, *, expected: PolicyEpoch, binding: OwnerBinding, source: TossSource) -> str | None:
+        """Prepare an operator check from the caller's consistent policy and binding snapshot."""
+        evidence = _source_evidence(binding, source)
+        if evidence is None or expected.mode != ISOLATED or not expected.valid:
+            return None
+        key, fingerprint = evidence
+        prior = conn.execute(_proof_query(binding)).one_or_none()
+        if prior is not None and not _source_matches(prior, fingerprint):
+            return None
+        return _digest(key, "approval-check", fingerprint.hex(), expected.epoch).hex()
+
+    @staticmethod
+    def approve_locked(
+        conn: Connection, *, expected: PolicyEpoch, binding: OwnerBinding, source: TossSource,
+        challenge: bytes | None = None,
+    ) -> bool:
+        """Record approval while the caller holds the exclusive policy and exact binding locks."""
+        evidence = _source_evidence(binding, source)
+        if evidence is None or expected.mode != ISOLATED or not expected.valid:
+            return False
+        key, fingerprint = evidence
+        if challenge is not None and not _same_digest(
+            challenge, _digest(key, "approval-check", fingerprint.hex(), expected.epoch),
+        ):
+            return False
+        approval = _digest(key, "approval", fingerprint.hex(), expected.epoch)
+        prior = conn.execute(_proof_query(binding).with_for_update()).one_or_none()
+        pending = {"approved_isolation_epoch": expected.epoch, "approval_fingerprint": approval}
+        if prior is None:
+            conn.execute(owner_toss_attestations.insert().values(
+                generation=binding.generation, version=_VERSION, fingerprint=fingerprint, **pending,
+            ))
             return True
+        if not _source_matches(prior, fingerprint):
+            return False
+        approved_epoch = PolicyEpoch(ISOLATED, prior.approved_isolation_epoch)
+        if not approved_epoch.valid or approved_epoch.epoch > expected.epoch:
+            return False
+        if approved_epoch == expected:
+            return _same_digest(prior.approval_fingerprint, approval)
+        conn.execute(owner_toss_attestations.update().where(
+            owner_toss_attestations.c.generation == binding.generation,
+        ).values(**pending))
+        return True
+
+    @staticmethod
+    def approved_in_isolation(
+        conn: Connection, *, expected: PolicyEpoch, binding: OwnerBinding, source: TossSource,
+    ) -> bool:
+        """Check this exact source and approval in the activation transaction."""
+        evidence = _source_evidence(binding, source)
+        if evidence is None or expected.mode != ISOLATED or not expected.valid:
+            return False
+        key, fingerprint = evidence
+        proof = conn.execute(_proof_query(binding).with_for_update()).one_or_none()
+        return _approval_matches(proof, key, fingerprint, expected.epoch)
 
     def verify(self, *, expected: PolicyEpoch, binding: OwnerBinding,
                source: TossSource) -> VerifiedTossAttestation | None:
@@ -133,9 +185,7 @@ class TossAttestationStore:
                 active_policy, _binding_query(binding).exists(),
                 owner_toss_attestations.c.approved_isolation_epoch == isolation,
             )).one_or_none()
-        if proof is None or proof.version != _VERSION or not _same_digest(proof.fingerprint, fingerprint):
-            return None
-        if not _same_digest(proof.approval_fingerprint, _digest(key, "approval", fingerprint.hex(), isolation)):
+        if not _approval_matches(proof, key, fingerprint, isolation):
             return None
         seal = _digest(key, "protected-token-seal", fingerprint.hex(), expected.epoch)
         return VerifiedTossAttestation(seal.hex())

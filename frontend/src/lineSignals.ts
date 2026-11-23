@@ -37,17 +37,33 @@ export function splitText(text: string): { title: string; body: string } {
 // 서버의 고유 키와 같게(line_id 에는 종목이 없다)
 export const signalKey = (s: LineSignal) => `${s.ticker}|${s.timeframe}|${s.rule}|${s.line_id}|${s.at}`;
 
+/** #705 알림 피드가 같은 내용으로 곧바로 다시 읽힐 때(첫 화면: 스트림이 붙으며 한 번 더) 선 알림을 또 읽지 않는 간격 */
+const SAME_FEED_MS = 5_000;
+let lastRead: { date: string; feed: string; at: number; items: LineSignal[] } | null = null;
+
 /**
  * 오늘(date, KST) 보낸 선 알림 — 알림 피드가 다시 읽힐 때(refresh 가 바뀔 때) 같이 다시 읽는다.
+ * 피드 내용이 그대로이고 방금(SAME_FEED_MS 안) 읽었으면 그 결과를 쓴다 — 5분 대조 · 새 알림 때는 전처럼 다시 읽는다.
  * 서버에 #613 이 없으면(404 등) 빈 목록 — 타임라인은 수급 알림만 그대로 보인다.
  */
 export function useTodayLineSignals(date: string | null | undefined, refresh: unknown): LineSignal[] {
   const [items, setItems] = useState<LineSignal[]>([]);
   useEffect(() => {
     if (!date) return;
+    const feed = JSON.stringify(refresh ?? null);
+    const last = lastRead;
+    if (last && last.date === date && last.feed === feed && Date.now() - last.at < SAME_FEED_MS) {
+      setItems(last.items);
+      return;
+    }
     let alive = true;
+    const at = Date.now();
     api.lineWatch().then(
-      (w) => alive && setItems(w.recent.filter((s) => s.trade_date === date)),
+      (w) => {
+        const today = w.recent.filter((s) => s.trade_date === date);
+        lastRead = { date, feed, at, items: today };
+        if (alive) setItems(today);
+      },
       () => { /* 없으면 수급 알림만 */ },
     );
     return () => { alive = false; };

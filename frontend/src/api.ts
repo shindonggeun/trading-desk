@@ -41,6 +41,8 @@ const CACHE_TTL: [RegExp, number][] = [
   [/^\/api\/macro\/brief$/, 30_000],
   // 모의 투자 요약은 설정 저장 뒤 서버가 다시 계산하는 동안 3초마다 다시 읽는다 — 기억하지 않는다
   [/^\/api\/market\/fear$/, 30_000],            // 구역 갱신 1분
+  // #705 즐겨찾기 저장소와 바닥권 칸이 첫 화면에서 차례로 따로 읽던 것 — 추가 · 삭제 · 순서(쓰기)는 기억을 지운다
+  [/^\/api\/favorites$/, 15_000],
 ];
 const cached = new Map<string, { at: number; data: unknown }>();
 const inflight = new Map<string, Promise<unknown>>();
@@ -625,11 +627,14 @@ export type StreamState = "live" | "lost";
  * EventSource retries a dropped connection by itself, but any non-200 answer (a 502 while
  * the backend is redeployed, a 401 after logout) ends it for good. Recheck access with
  * the current cookie: 401 shows the login screen, 403 clears the panel, and temporary
- * failures retry with a growing pause. */
+ * failures retry with a growing pause. #705 The stream's first message is the snapshot, so the panel opens
+ * it straight away (no REST read before it — the server built the snapshot twice); the access check's
+ * answer is drawn when the stream fails, and its other errors go to ``onFailure``. */
 export function followPortfolio(
   onSnapshot: (p: Portfolio) => void,
   onState: (s: StreamState) => void,
   onAccessDenied: () => void,
+  onFailure?: (e: unknown) => void,
 ): () => void {
   let source: EventSource | null = null;
   let timer: number | undefined;
@@ -653,12 +658,17 @@ export function followPortfolio(
     es.onerror = () => {
       onState("lost");
       if (es.readyState !== EventSource.CLOSED) return; // the browser is retrying
-      request<Portfolio>("/api/portfolio", { cache: "no-store", headers: { [BACKGROUND_HEADER]: "1" } }).then(retry, (e) => {
+      request<Portfolio>("/api/portfolio", { cache: "no-store", headers: { [BACKGROUND_HEADER]: "1" } }).then((p) => {
+        if (stopped) return;
+        onSnapshot(p);        // the account answers: draw it while the stream comes back
+        retry();
+      }, (e) => {
         if (stopped || e instanceof Unauthorized) return;
         if (e instanceof ApiError && e.status === 403) {
           onAccessDenied();
           return;
         }
+        onFailure?.(e);
         retry();
       });
     };

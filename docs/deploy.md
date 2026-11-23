@@ -536,21 +536,54 @@ ssh homelab-backend-server 'docker logs --since 24h trading-desk-backend-prod 2>
 
 ## 14. 운영 로그의 알려진 외부 원천 실패 (#861)
 
-분석(TradingAgents)의 소셜 · 예측시장 원천은 운영 서버에서 막혀 있다. 라이브러리가 실패를 삼키고 "못 가져옴" 표시
-(`<stocktwits unavailable: …>` · `<Reddit unavailable: … this is not an absence of discussion>` · Polymarket "currently unavailable")를
-넣으므로 분석은 이어지지만, 시장 심리 보고서에 StockTwits · Reddit 근거가, 뉴스 보고서에 Polymarket 확률이 빠진다.
+운영 서버에서 소셜 · 예측시장 조회가 실패해도 TradingAgents 분석은 이어진다. 분석가에게 전달되는
+`<stocktwits unavailable: …>`, `<Reddit unavailable: … this is not an absence of discussion>`, Polymarket
+`currently unavailable`은 조회 실패를 뜻한다. 정상 조회에서 게시물이나 시장이 0건인 경우와 구분한다.
+시장 심리 보고서에는 해당 소셜 근거가, 뉴스 보고서에는 해당 예측시장 확률이 빠질 수 있다.
 
-| 로그 | 원인(2026-11-23, 서버와 PC 에서 같은 요청 한 번씩) | 서버 | PC |
+| 로그 | 관측(2026-11-23, 서버와 PC에서 같은 요청 한 번씩) | 서버 | PC |
 |------|------|------|----|
-| `StockTwits fetch failed … 403 Forbidden` | 서버 공인 IP 에서 즉시 차단(0.03초 403) | 403 | 200 |
-| `Reddit RSS fetch failed for r/a+b+c … 404` | 여러 서브레딧을 `+` 로 묶은 `search.rss` 가 더 이상 안 된다. 하나씩 물어도 인증 없는 RSS 검색은 429 | 404 · 429 | 404 · 429 |
-| `Polymarket search failed … Connection reset` | 서버 네트워크에서 연결이 끊긴다(일시 장애 아님) | 리셋 | 200 |
+| `StockTwits fetch failed … 403 Forbidden` | 서버 요청에 즉시 접근 거부 응답(0.03초) | 403 | 200 |
+| `Reddit RSS fetch failed for r/a+b+c … 404` | `+`로 묶은 `search.rss`는 404, 개별 서브레딧의 인증 없는 검색은 429 | 404 · 429 | 404 · 429 |
+| `Polymarket search failed … Connection reset` | 서버에서 연결 리셋, PC에서 정상 응답 | 리셋 | 200 |
 
-- 지금 지연 비용은 원천마다 0.2초 미만이다. 다만 Reddit 은 429 를 받으면 Retry-After(없으면 약 60초)만큼 기다렸다 한 번 더 묻는다 —
-  묶음 URL 이 404 대신 429 를 받기 시작하면 분석마다 시장 심리 단계가 1분 가까이 멈춘다. 끄거나 고치려면 포크(`shindonggeun/TradingAgents`)
-  패치와 SHA 올리기가 필요하다(sentiment analyst 가 StockTwits · Reddit 을 설정 없이 직접 부른다) — 별도 이슈로 다룬다.
+- 당시 관측한 실패는 원천마다 0.2초 미만이었다. Reddit이 429를 받으면 `Retry-After`(상한 60초)를 기다렸다 한 번 더 묻는다.
+  헤더가 없으면 약 60초를 기다린다. Polymarket HTTP 요청의 라이브러리 타임아웃은 30초다.
 - `Cookie fetch from fc.yahoo.com failed` 는 yfinance 내부 경고다. 바로 뒤 Yahoo 가 빈 일봉을 줄 수 있어 `desk.prices._yahoo_rows` 가
   일봉 이상이 비면 한 번 더 묻는다(로그 `Yahoo returned no 1d bars for …; asking once more`).
+
+### Trading Desk에서 제어할 수 있는 범위
+
+- TradingAgents 핀 `5a74a7a0211932326eaa73f2ac71c95fc91daf22`에서 `sentiment_analyst.py`가 StockTwits와
+  Reddit을 직접 조회한다. 두 원천은 vendor 설정으로 선택할 수 없으며, 원시 HTTP 결과와 재시도는 라이브러리 안에서 처리된다.
+- `get_prediction_markets`는 `data_vendors.prediction_markets`와 `tool_vendors.get_prediction_markets`로 등록된 vendor를
+  고른다. 등록된 vendor는 Polymarket 하나다. 빈 값은 기본 체인으로 돌아가고, 미등록 이름은 `ValueError`가 된다.
+  Polymarket은 연결 오류를 먼저 안내 문자열로 변환하므로 호출자가 구조화된 오류 종류를 받지 못한다.
+- 개별 실행에서 소셜 조회를 생략하려면 새 분석의 **옵션 → 애널리스트 → 심리**를 해제한다. 두 원천과 함께 심리 분석가의
+  뉴스 기반 심리 분석도 빠진다. 뉴스 분석가를 선택한 채 Polymarket만 제외할 공개 설정은 없다.
+- 조회 실패 문구는 분석가에게 전달되는 입력이다. 보고서 본문의 최종 표시는 모델 출력에 달려 있다.
+
+위 핀을 로컬에서 추출해 `urlopen`과 `requests.get`에 가짜 응답을 넣고 실제 대기 없이 확인했다.
+StockTwits 403은 두 번 연속 호출됐고, Reddit 404는 재시도 없이 조회 불가, 정상 빈 피드는 0건으로 처리됐다.
+Reddit 429의 `Retry-After: 75`에는 60초 대기를 한 번 예약했고, Polymarket 연결 리셋은 재시도 없이 조회 불가로 반환됐다.
+
+### 공개 연동점이 생겼을 때의 대체 정책
+
+아래는 구현 전 계약이다. 원천별 호출을 주입하고 HTTP 상태와 전송 오류를 구분해 받을 수 있어야 한다.
+
+| 결과 | 동작 |
+|------|------|
+| 403 접근 거부 | 즉시 중단하고 접근 거부로 기록한다. 차단된 원천과 경로는 운영자가 다시 활성화할 때까지 조회하지 않는다. |
+| 404 | 고정 검색 경로가 사라졌으면 그 경로를 15분 동안 쉬게 한다. 특정 종목이나 검색 대상만의 404는 해당 대상에만 적용한다. |
+| 연결 리셋·일시적 타임아웃 | 첫 요청부터 총 2.5초 예산에서, 남은 시간이 충분하면 200ms 뒤 한 번만 다시 시도한다. |
+| 429 | 분석 실행을 대기시키지 않는다. `Retry-After`가 있으면 그 시각 이후에 다음 조회를 허용한다. 헤더가 없으면 60초 동안 조회하지 않는다. |
+| 정상 응답 0건 | 조회 성공으로 처리하고 일치하는 근거 0건으로 표시한다. |
+
+원천과 요청 경로별로 일시 실패가 연속 3회면 회로를 60초 동안 연다. 재시도를 포함한 요청 한 건을 실패 한 번으로 센다.
+회로가 열려 있는 동안에는 해당 원천에 요청하지 않는다. 만료 뒤 한 요청만 시험을 허용한다. 성공하면 정상 상태로 닫고,
+다시 실패하면 해당 오류의 대기 규칙을 적용한다. 경과 시간 판정에는 단조 시계를 쓴다. 로그에는 원천·오류 종류·회로 상태를
+한 줄로 남기며, 열린 회로에서 반복해서 건너뛴 조회마다 경고를 남기지 않는다. 차단·제외·조회 실패 때는
+`이 원천의 근거 없음(조회 불가)`로 남기고 분석을 이어간다. 조회 실패를 관측된 0건이나 확률 0%로 기록하지 않는다.
 
 ## 15. 계좌 데이터 보호 모드 (#871)
 

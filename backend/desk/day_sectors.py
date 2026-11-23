@@ -176,9 +176,7 @@ def symbols(m: Market) -> list[str]:
 class Excess:
     """One ticker's excess return (%) per session over its market's benchmark, sessions in order."""
 
-    def __init__(self, bars, bench_bars, tz: ZoneInfo, upto: date | None = None) -> None:
-        own = _closes(bars, tz, upto)
-        ref = _closes(bench_bars, tz, upto)
+    def __init__(self, own: dict[date, float], ref: dict[date, float]) -> None:
         days = sorted(set(own) & set(ref))
         self.days: list[date] = []
         self.values: list[float] = []
@@ -223,10 +221,11 @@ class Data:
 def build(m: Market, bars: dict[str, list], upto: date | None = None) -> Data:
     """``bars`` ticker → daily bars (oldest first). ``upto``: drop sessions after this local day (tests)."""
     o = other(m)
-    own = {s.id: Excess(bars.get(s.ticker), bars.get(m.benchmark), m.tz, upto) for s in m.sectors}
-    link = {s.id: Excess(bars.get(s.ticker), bars.get(o.benchmark), o.tz, None) for s in o.sectors}
-    days = sorted(_closes(bars.get(m.benchmark), m.tz, upto))
-    return Data(m, own, link, days)
+    bench = _closes(bars.get(m.benchmark), m.tz, upto)
+    linked_bench = _closes(bars.get(o.benchmark), o.tz, None)
+    own = {s.id: Excess(_closes(bars.get(s.ticker), m.tz, upto), bench) for s in m.sectors}
+    link = {s.id: Excess(_closes(bars.get(s.ticker), o.tz, None), linked_bench) for s in o.sectors}
+    return Data(m, own, link, sorted(bench))
 
 
 def features(data: Data, sector: Sector, day: date) -> dict | None:
@@ -300,10 +299,15 @@ def rows(data: Data, days: list[date]) -> tuple[np.ndarray, np.ndarray]:
 
 
 def train(data: Data, before: date) -> Model | None:
-    x, y = rows(data, [d for d in data.bench_days if d < before])
+    days = [d for d in data.bench_days if d < before]
+    x, y = rows(data, days)
+    return _fit_rows(x, y, days)
+
+
+def _fit_rows(x: np.ndarray, y: np.ndarray, days: list[date]) -> Model | None:
     if len(y) < MIN_ROWS:
         return None
-    return fit(x, y, until=max(d for d in data.bench_days if d < before))
+    return fit(x, y, until=days[-1])
 
 
 # ---------------------------------------------------------------- picks and record
@@ -361,7 +365,10 @@ def record(data: Data, end: date, days: int = HOLDOUT_DAYS) -> dict:
     past = [d for d in data.bench_days if d < end][-days:]
     if not past:
         return {"days": 0}
-    model = train(data, past[0])
+    return _score_record(data, past, train(data, past[0]))
+
+
+def _score_record(data: Data, past: list[date], model: Model | None) -> dict:
     if model is None:
         return {"days": 0}
     model_days, base_days, daily = [], [], []
@@ -497,7 +504,12 @@ def view(m: Market, bars: dict[str, list], now: datetime) -> dict:
 
 
 def _view(m: Market, data: Data, day: date, now: datetime, base: dict) -> dict:
-    model = train(data, day)
+    days = [d for d in data.bench_days if d < day]
+    earlier, holdout = days[:-HOLDOUT_DAYS], days[-HOLDOUT_DAYS:]
+    # The record must fit before its holdout. Today's model uses those same rows plus the holdout rows.
+    x, y = rows(data, earlier)
+    recent_x, recent_y = rows(data, holdout)
+    model = _fit_rows(np.concatenate((x, recent_x)), np.concatenate((y, recent_y)), days)
     if model is None:
         return base
     got = picks(data, model, day)
@@ -512,7 +524,8 @@ def _view(m: Market, data: Data, day: date, now: datetime, base: dict) -> dict:
         r["reasons"] = reasons(m, r, up=False)
     public = [{k: v for k, v in r.items() if not k.startswith("_")} for r in got]
     base.update(ready=True, sectors=public, top=public[:PICKS], bottom=public[::-1][:PICKS],
-                record=record(data, day), result=day_score(got) if closed else None,
+                record=_score_record(data, holdout, _fit_rows(x, y, earlier)),
+                result=day_score(got) if closed else None,
                 model={"rows": model.rows, "trained_until": model.until.isoformat() if model.until else None,
                        "features": list(FEATURES), "weights": {k: round(float(model.w[i + 1]), 4)
                                                                for i, k in enumerate(FEATURES)}})

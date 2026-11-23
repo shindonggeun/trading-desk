@@ -120,6 +120,47 @@ def test_the_model_finds_the_lead_and_beats_following_yesterday(world):
     assert len(rec["daily"]) == rec["days"] and len(rec["daily"][0]["top"]) == ds.PICKS
 
 
+@pytest.mark.parametrize("market", [ds.KR, ds.US], ids=["kr", "us"])
+def test_the_view_reuses_training_rows_without_changing_either_fit(world, market, monkeypatch):
+    now = _kst(LAST, 18)
+    ticker = market.sectors[0].ticker
+    gaps = {**world, ticker: world[ticker][::2]}
+    data = ds.build(market, gaps)
+    model = ds.train(data, LAST)
+    expected_picks = [(row["id"], row["prob"]) for row in ds.picks(data, model, LAST)]
+    expected_record = ds.record(data, LAST)
+
+    model_days = []
+    make_rows = ds.rows
+
+    def counted(series, days):
+        model_days.extend(days)
+        return make_rows(series, days)
+
+    monkeypatch.setattr(ds, "rows", counted)
+    actual = ds.view(market, gaps, now)
+    assert actual["ready"] and actual["date"] == LAST.isoformat()
+    assert [(row["id"], row["prob"]) for row in actual["sectors"]] == expected_picks
+    assert actual["model"]["rows"] == model.rows
+    assert actual["record"] == expected_record
+    assert actual["record"]["trained_until"] < actual["record"]["from"]
+    assert model_days == [day for day in data.bench_days if day < LAST]
+
+
+def test_each_benchmark_is_normalized_once_per_view(world, monkeypatch):
+    benchmarks = [world[ds.KR.benchmark], world[ds.US.benchmark]]
+    reads = []
+    closes = ds._closes
+
+    def counted(bars, tz, upto):
+        reads.extend(i for i, bench in enumerate(benchmarks) if bars is bench)
+        return closes(bars, tz, upto)
+
+    monkeypatch.setattr(ds, "_closes", counted)
+    ds.build(ds.KR, world)
+    assert reads == [0, 1]
+
+
 def test_the_view_before_the_open_has_reasons_and_no_outcome_yet(world):
     v = ds.view(ds.KR, world, _kst(date(2026, 11, 17), 7, 30))
     assert v["ready"] and v["date"] == "2026-11-17" and v["result"] is None

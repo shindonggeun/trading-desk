@@ -141,6 +141,11 @@ export default function DayCallCard() {
   // #705 처음 보이는 시장의 섹터는 판정과 같은 요청(/api/day-call/board)으로 받는다 — 받기 전엔 섹터 칸이 기다린다
   const firstMarket = useRef(market).current;
   const [sectors, setSectors] = useState<SectorsPreset>("wait");
+  // 탭을 한 번 옮긴 뒤엔 처음 시장으로 돌아와도 섹터를 새로 묻는다(장 마감 뒤 세션 적중 같은 갱신이 보이게)
+  const [switched, setSwitched] = useState(false);
+  useEffect(() => {
+    if (market !== firstMarket) setSwitched(true);
+  }, [market, firstMarket]);
 
   useEffect(() => {
     let alive = true;
@@ -152,17 +157,19 @@ export default function DayCallCard() {
         .catch((e: unknown) => { if (alive) missing(m, is404(e)); });
     api.dayCallBoard(firstMarket).then((b) => {
       if (!alive) return;
+      const calls = b?.calls ?? {};
       for (const m of MARKETS) {
-        const got = b.calls[m];
+        const got = calls[m];
         if (got === undefined) void one(m);
         else if (isPartError(got)) missing(m, got.error === 404);
         else setToday((cur) => ({ ...cur, [m]: got }));
       }
-      // 준비된 섹터만 넘긴다 — 받는 중(loading) · 실패면 섹터 칸이 예전처럼 따로 묻는다(그 경로는 더 기다린다)
-      const s = b.sectors;
-      setSectors(s && !isPartError(s) && s.ready ? (s as DayCallSectorsResponse) : null);
-    }, () => {
-      // 묶음 경로가 없는 서버(배포 사이 404) · 실패: 예전처럼 시장마다
+      // 섹터: 받는 중(loading)이면 섹터 칸이 섹터 경로로 묻고(같은 작업을 기다린다), 실패면 다시 묻지 않는다
+      const s = b?.sectors;
+      setSectors(s === undefined ? null : isPartError(s) ? "failed"
+        : (s as DayCallSectorsResponse).ready || !(s as { loading?: boolean }).loading ? (s as DayCallSectorsResponse) : null);
+    }).catch(() => {
+      // 묶음 경로가 없는 서버(배포 사이 404) · 실패 · 뜻밖의 응답: 예전처럼 시장마다
       if (!alive) return;
       setSectors(null);
       for (const m of MARKETS) void one(m);
@@ -214,7 +221,7 @@ export default function DayCallCard() {
             </div>
             </>
           )}
-        <DayCallSectors key={market} market={market} preset={market === firstMarket ? sectors : null} />
+        <DayCallSectors key={market} market={market} preset={market === firstMarket && !switched ? sectors : null} />
         <p className="daycall-note small muted">
           확률은 추정이에요{note ? ` — ${note}` : ""}. <a href="#/day-call">적중 기록</a>
         </p>

@@ -1,7 +1,7 @@
 # 오늘 강할 · 약할 섹터 (#620)
 
 국장 · 미장 따로, 오늘 시장(벤치마크 ETF)보다 **강할 확률**이 높은 섹터 3개와 낮은 섹터 3개를 고르고, 마감 뒤 채점한다.
-코드: `backend/desk/day_sectors.py`. API: `GET /api/day-call/sectors?market=kr|us`(세션 필요). 아침 시황(#571)에 국장 한 줄.
+코드: `backend/desk/day_sectors.py`. API: `GET /api/day-call/sectors?market=kr|us`(세션 필요, 대시보드 카드는 `/api/day-call/board?sectors=` 로 같이 받는다 — day-call.md). 아침 시황(#571)에 국장 한 줄.
 
 ## 섹터 표
 

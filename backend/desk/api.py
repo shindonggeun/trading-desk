@@ -27,6 +27,7 @@ from fastapi import Path as FastPath
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
+from starlette.concurrency import run_in_threadpool
 
 from . import (
     accumulation_live,
@@ -175,9 +176,6 @@ FUNDS_TICKERS_MAX = 30   # #483 tickers per /api/funds/changes call (the favorit
 BOTTOM_NOTE_SEC = 4.0
 BOTTOM_QUOTE_SEC = 2.0   # #310: the price the bottom-zone ladder is cut at, per lookup
 SECTORS_WAIT_SEC = 20.0  # #620: a first /api/day-call/sectors waits this long for the bars, then says "loading"
-# #705 /api/day-call/board waits this little for the sectors: the card's calls (the dashboard's largest text) must not
-# wait for cold sector bars - a "loading" answer sends the card to /api/day-call/sectors, which waits as before
-BOARD_SECTORS_WAIT_SEC = 0.3
 TREND_WAIT_SEC = 8.0     # #460: /api/tips waits this long for the indices' trend, then answers without it
 GAPS_TTL_SEC = 300.0     # #465: a ticker's unfilled gaps are kept as long as its swing levels (desk.horizons sr_ttl_sec)
 GAP_FILL_MAX = 4          # #577: background reads of the gap odds at once (the entry summary never waits for one)
@@ -2043,7 +2041,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     async def sectors_view(market: str, wait: float) -> dict:
         """#620 the market's sector call (desk.day_sectors) from the cache, else built in the background -
-        waited for ``wait`` seconds, then answered ``loading``."""
+        waited for ``wait`` seconds (0: not at all), then answered ``loading``."""
         now = datetime.now(UTC)
         if (v := sector_cache.cached(market, now)) is not None:
             return v
@@ -2053,11 +2051,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if task is None or task.done():
             task = sector_tasks[market] = asyncio.create_task(
                 asyncio.to_thread(sector_cache.read, market, sector_candles, now))
+        loading = {"market": market, "ready": False, "loading": True,
+                   "note": "섹터 ETF 일봉을 받는 중입니다 — 잠시 뒤 다시 보세요."}
+        if wait <= 0:
+            return loading            # #705 the board: the build runs on, the sectors path then waits for it
         try:
             return await asyncio.wait_for(asyncio.shield(task), wait)
         except TimeoutError:
-            return {"market": market, "ready": False, "loading": True,
-                    "note": "섹터 ETF 일봉을 받는 중입니다 — 잠시 뒤 다시 보세요."}
+            return loading
         except Exception as exc:  # noqa: BLE001 - a source down: said, not raised
             log.warning("day sectors %s failed: %s", market, type(exc).__name__)
             raise HTTPException(503, "섹터 판정을 만들지 못했습니다") from None
@@ -2076,8 +2077,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     async def day_call_board(sectors: str | None = None):
         """#705 the dashboard's 오늘 방향 card in one call (it asked three): every market's calls as
         /api/day-call answers them, and with ``sectors=<market>`` that market's sector call as
-        /api/day-call/sectors does - waited BOARD_SECTORS_WAIT_SEC only (``loading`` past it, the card then
-        asks the sectors path). A part that fails is ``{"error": status, "detail": ...}``, the rest still come."""
+        /api/day-call/sectors does, but only from the cache: not built yet, it is ``loading`` at once (the build
+        starts; the card then asks the sectors path, which waits for it) - the calls, the dashboard's largest text,
+        never wait for cold sector bars. A part that fails is ``{"error": status, "detail": ...}``, the rest still
+        come. The calls run in the same worker pool as /api/day-call (not the loop's executor prewarm fills)."""
         if sectors is not None and sectors not in day_sectors.MARKETS:
             raise HTTPException(422, "sectors must be kr or us")
 
@@ -2086,13 +2089,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 return await work
             except HTTPException as exc:
                 return {"error": exc.status_code, "detail": exc.detail}
-            except Exception as exc:  # noqa: BLE001 - one part failing leaves the others
-                log.warning("day-call board part failed: %s", type(exc).__name__)
-                return {"error": 503, "detail": type(exc).__name__}
+            except Exception as exc:  # one part failing leaves the others (logged with its traceback)
+                log.warning("day-call board part failed: %s", type(exc).__name__, exc_info=True)
+                return {"error": 503, "detail": "오늘 방향을 읽지 못했습니다"}      # the type name stays in the log
 
         markets = list(day_calls.dc.MARKETS)
-        got = await asyncio.gather(*(part(asyncio.to_thread(day_desk.view, m)) for m in markets),
-                                   *([part(sectors_view(sectors, BOARD_SECTORS_WAIT_SEC))] if sectors else []))
+        got = await asyncio.gather(*(part(run_in_threadpool(day_desk.view, m)) for m in markets),
+                                   *([part(sectors_view(sectors, 0))] if sectors else []))
         out: dict = {"calls": dict(zip(markets, got[:len(markets)], strict=True))}
         if sectors:
             out["sectors"] = got[-1]

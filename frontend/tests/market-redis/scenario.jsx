@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import QuoteBoard from "../../src/components/QuoteBoard";
 import MarketFlowPanel from "../../src/components/MarketFlowPanel";
@@ -17,12 +17,22 @@ const responses = { ...requests };
 const settledRequests = { ...requests };   // finished either way (an error too) - none in flight when equal
 const channels = Object.keys(requests);
 const remote = ["flow", "futures", "alert"];
+const staleRestMarker = "Redis stale REST race alert";
+let holdNextLiveAlertRest = false;
+let heldAlertRest;
+let alertDataCommits = 0;
 const fetchRequest = window.fetch.bind(window);
 window.fetch = async (path, options) => {
   const key = paths[new URL(String(path), location.origin).pathname];
   if (key) requests[key]++;
+  const hold = key === "alert" && holdNextLiveAlertRest && live("alert");
+  if (hold) holdNextLiveAlertRest = false;
   try {
     const response = await fetchRequest(path, options);
+    if (hold) {
+      // The response is already on the browser, but usePoll still awaits this fetch.
+      await new Promise(release => { heldAlertRest = { response, release }; });
+    }
     if (key && response.ok) responses[key]++;
     return response;
   } finally {
@@ -64,10 +74,7 @@ async function until(predicate, label, seconds = 12) {
   assert(false, label);
 }
 
-// A panel that turns live asks REST once more (livePoll: catch up what the stream missed). That answer carries
-// the REST values as they were when it was asked; landing after a newer SSE event it shows the older value, and
-// nothing newer follows in this fixture. On a slow runner it did land late (#690 flaky "Redis and local updates
-// reached the panels"). So before publishing over SSE: let those effects fire and their REST answers land.
+// Outside the deliberate #866 overlap, let livePoll's catch-up effects and REST requests finish.
 async function restSettled(label) {
   await wait(300);
   await until(() => channels.every(key => settledRequests[key] === requests[key]), `${label}: REST still in flight`);
@@ -79,11 +86,47 @@ async function phase(name) {
   return response.json();
 }
 
+async function verifyStaleAlertRest() {
+  const markerVisible = () => currentText("#test-alert").includes(staleRestMarker);
+  let beforeRelease;
+  let savedAlerts;
+  let batch;
+  const alertRequests = requests.alert;
+  const alertResponses = responses.alert;
+  const alertSettled = settledRequests.alert;
+  try {
+    holdNextLiveAlertRest = true;
+    const openStream = await fetch("/__market_redis_fixture/start-stream", { method: "POST" });
+    assert(openStream.ok, "release initial market stream");
+    await until(() => heldAlertRest, "initial live alert catch-up REST was not held");
+    assert(heldAlertRest.response.ok, "catch-up REST did not return successfully");
+    const snapshot = await heldAlertRest.response.clone().json();
+    savedAlerts = snapshot.items.length;
+    assert(savedAlerts === 1 && !snapshot.items.some(item => item.text === staleRestMarker),
+      "catch-up REST snapshot must contain only the saved alert");
+    ({ batch } = await phase("stale-alert-rest"));
+    assert(batch.complete, `new alert did not cross Redis: ${JSON.stringify(batch)}`);
+    await until(() => alertRows() === 2 && markerVisible(), "new Redis SSE alert did not render while REST was held");
+    assert(responses.alert === alertResponses && settledRequests.alert === alertSettled,
+      "catch-up REST settled before the SSE alert rendered");
+    beforeRelease = alertDataCommits;
+  } finally {
+    holdNextLiveAlertRest = false;
+    heldAlertRest?.release();
+  }
+  await until(() => alertDataCommits > beforeRelease, "released catch-up REST did not commit to the alert panel");
+  assert(requests.alert === alertRequests + 1 && responses.alert === alertResponses + 1
+    && settledRequests.alert === alertSettled + 1, "expected one completed alert catch-up REST request");
+  assert(alertRows() === 2 && markerVisible(), "late REST erased the new Redis SSE alert");
+  return { savedAlerts, markerRetained: true, redisDeltas: batch.deltas };
+}
+
 const watch = [{ ticker: "AAPL" }];
 localStorage.setItem("desk.board.weekend.open", "false");
 
 function Alerts() {
   const alerts = useTodayAlerts();
+  useLayoutEffect(() => { alertDataCommits++; }, [alerts.data]);
   return <div data-live={alerts.live}>
     <ul>{alerts.data?.items.map((item, index) => <li key={index}>{item.text}</li>)}</ul>
   </div>;
@@ -106,7 +149,10 @@ async function verify() {
   const initial = await phase("seed");
   assert(initial.api.received_remote >= 2 && initial.collector.published_remote >= 2, "seed crossed Redis");
   createRoot(document.getElementById("root")).render(<Panels />);
-  await until(() => channels.every(key => live(key) && responses[key] > 0) && alertRows() === 1, "initial panels");
+  await until(() => responses.alert > 0 && settledRequests.alert === requests.alert && alertRows() === 1,
+    "initial REST alert");
+  const staleAlertRest = await verifyStaleAlertRest();
+  await until(() => channels.every(key => live(key) && responses[key] > 0), "initial panels live");
   await restSettled("initial panels");
   await phase("healthy");
   await until(() => flowPrice().includes("2688") && futuresPrice().includes("483") && quotePrice().includes("182"),
@@ -155,7 +201,7 @@ async function verify() {
   assert(channels.every(key => requests[key] === recovered[key] && live(key)) && recoveredMarkersVisible(),
     "polling continued or SSE markers were lost after recovery");
   assert(errors.length === 0, "browser errors");
-  return { ok: true, outage, localQuoteDuringOutage: 193, recoveryRest, receivedRemote: restored.api.received_remote,
+  return { ok: true, staleAlertRest, outage, localQuoteDuringOutage: 193, recoveryRest, receivedRemote: restored.api.received_remote,
     publishedRemote: restored.collector.published_remote, redisReconnects: restored.api.reconnects,
     recoveryBatches: { first: firstRecovery, second: restored.batch } };
 }

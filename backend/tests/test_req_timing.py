@@ -70,7 +70,9 @@ def test_a_slow_request_carries_the_handlers_counts_and_nothing_else(caplog):
 def test_the_batch_and_the_board_tell_the_slow_line_their_counts_not_their_tickers(db_url, caplog, monkeypatch):
     from tests.test_api import _client
 
-    monkeypatch.setattr(rt.TimingMiddleware.__init__, "__defaults__", (0.0,))      # every request is "slow"
+    init = rt.TimingMiddleware.__init__
+    monkeypatch.setattr(rt.TimingMiddleware, "__init__",                            # every request is "slow"
+                        lambda self, app, timings, **kwargs: init(self, app, timings, **{**kwargs, "slow_ms": 0.0}))
     with _client(db_url) as client, caplog.at_level(logging.WARNING, logger="desk.req_timing"):
         client.get("/api/batch/gaps?tickers=ZZTEST1,ZZTEST2")
         client.get("/api/estimates?tickers=ZZTEST1,ZZTEST2,ZZTEST3")

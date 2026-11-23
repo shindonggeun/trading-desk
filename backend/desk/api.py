@@ -703,7 +703,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                                                      count=tips.HISTORY_BARS))
     funds = funds13f.Funds()   # #483 the well-known funds' 13F holdings (SEC EDGAR), refreshed by refresh_funds
     market_outlook_reader = market_outlook_service if market_outlook_service is not None else market_outlook.MarketOutlook(
-        candles=None if settings.fake_runs else prices.candles,
+        candles=None if settings.fake_runs else getattr(prices, "candles", None),
         filing=None if settings.fake_runs else partial(market_outlook_sources.read_duquesne, funds),
         views=market_outlook_sources.read_views,
     )

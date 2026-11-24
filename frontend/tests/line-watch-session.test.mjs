@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createLineFeedCache } from "../src/lineFeedReuse.ts";
-import { chartFallbackLabel, chartHref, chartLineAlert, signalDateTime, signalTime } from "../src/lineWatchNavigation.ts";
+import { chartFallbackHref, chartHref, chartLineAlert, signalDateTime, signalTime } from "../src/lineWatchNavigation.ts";
 
 test("account scopes share only their own feed requests and cached results", async () => {
   const owner = createLineFeedCache();
@@ -45,20 +45,40 @@ test("last subscriber aborts the request and a late completion cannot seed the c
 });
 
 test("navigation keeps the original timeframe and never puts the private line price in the URL", () => {
-  for (const [timeframe, display] of [["10m", "5m"], ["120m", "60m"], ["1w", "1w"]]) {
+  for (const [timeframe, fallback] of [["10m", "5m"], ["120m", "60m"], ["1w", null]]) {
     const href = chartHref({ ticker: "NQ=F", timeframe, line_price: 21430 }, "opaque-selector");
     const query = new URLSearchParams(href.split("?")[1]);
     assert.equal(query.get("t"), "NQ=F");
-    assert.equal(query.get("iv"), display);
+    assert.equal(query.get("iv"), timeframe);
     assert.equal(query.get("signal_tf"), timeframe);
     assert.equal(query.get("signal_ref"), "opaque-selector");
     assert.equal(href.includes("21430"), false);
-    assert.deepEqual(chartLineAlert(query), {
-      timeframe, reference: "opaque-selector", fallback: chartFallbackLabel(timeframe),
-    });
+    const alert = chartLineAlert(query);
+    assert.deepEqual(alert, { timeframe, display: timeframe, fallback,
+      reference: "opaque-selector", signalId: null, exact: fallback !== null });
+    const alternate = chartFallbackHref("NQ=F", alert);
+    if (fallback) {
+      const older = chartLineAlert(new URLSearchParams(alternate.split("?")[1]));
+      assert.deepEqual(older, { ...alert, display: fallback, exact: false });
+    } else assert.equal(alternate, null);
   }
   assert.equal(chartLineAlert(new URLSearchParams("signal_tf=120m&iv=240m")), null);
   assert.equal(chartLineAlert(new URLSearchParams("signal_tf=constructor&iv=constructor")), null);
+});
+
+test("external alert selectors stay attached to the exact signal across an explicit fallback", () => {
+  const query = new URLSearchParams("t=NQ%3DF&signal_tf=120m&iv=120m&signal_id=41");
+  const alert = chartLineAlert(query);
+  assert.equal(alert.signalId, 41);
+  const alternate = chartLineAlert(new URLSearchParams(chartFallbackHref("NQ=F", alert).split("?")[1]));
+  assert.equal(alternate.signalId, 41);
+  assert.equal(alternate.display, "60m");
+  assert.equal(alternate.exact, false);
+  for (const bad of ["0", "-2", "2.5", "2147483648", "x"]) {
+    query.set("signal_id", bad);
+    assert.equal(chartLineAlert(query).signalId, null);
+  }
+  assert.equal(chartLineAlert(new URLSearchParams("t=NQ%3DF&iv=60m")), null);
 });
 
 test("recorded_at controls signal order and accessible time while legacy intraday rows retain candle-end time", () => {

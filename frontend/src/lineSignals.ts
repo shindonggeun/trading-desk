@@ -34,7 +34,7 @@ export const signalKey = (s: LineSignal) => `${s.ticker}|${s.timeframe}|${s.rule
 export function createLineWatchScope() {
   return {
     feed: createLineFeedCache<LineSignal[]>(),
-    chartAlerts: new Map<string, { ticker: string; timeframe: string; price: number }>(),
+    chartAlerts: new Map<string, { ticker: string; timeframe: string; price: number; at: string }>(),
   };
 }
 

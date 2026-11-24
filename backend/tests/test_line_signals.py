@@ -154,7 +154,8 @@ def test_a_scan_sends_once_and_keeps_it(watch, monkeypatch, caplog):
     # #613 "참고": under tone_neutral (a warnings-only device skips it); it opens that chart
     assert kinds == ("line_signal", "tone_neutral") and payload["title"].startswith("🔻 하향 이탈 · 참고 | NQ=F 5분봉")
     assert payload["body"].endswith("※ 매수 · 매도 추천이 아닙니다") and payload["url"] == "/#/charts?t=NQ%3DF&iv=5m"
-    assert payload["tone"] == "neutral" and line_signals.chart_url("005930.KS", "120m") == "/#/charts?t=005930.KS&iv=60m"
+    assert payload["tone"] == "neutral"
+    assert line_signals.chart_url("005930.KS", "120m", 42) == "/#/charts?t=005930.KS&iv=120m&signal_tf=120m&signal_id=42"
     assert watch.recent()[0]["rule"] == "break_down"
     assert watch.scan("NQ=F", "5m", bars, cfg=cfg) == [] and len(sent) == 1   # the same bar again: nothing
     off = watch.save({**cfg, "events": {"break": False}})

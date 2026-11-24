@@ -174,6 +174,17 @@
   - 알림을 누르면 그 종목 · 시간봉 차트(`/#/charts?t=…&iv=…`, 2시간봉은 1시간봉 차트)로 간다.
 - **API**(세션 필요):
   - `GET /api/notify/line-watch`는 소유자에게 `{enabled, tickers, timeframes, events, rules, can_edit, allowed, limits, recent}`를 반환한다. 다른 로그인 사용자는 `can_edit: false`와 공개 지원 정보만 받으며 감시 종목·규칙·최근 신호는 빈 배열이다.
+  - 새 10분·2시간 알림 링크에는 종목·시간봉과 저장된 신호 ID가 들어간다.
+    `GET /api/notify/line-watch?signal_id=<id>`는 발송 당시 소유자와 현재 소유자가 일치할 때만
+    `{signal: {ticker, timeframe, line_price, at}}`을 반환한다. 소유자는 보호 모드에서 바인딩 세대로,
+    레거시 모드에서 계정에 대해 별도로 계산한 지문으로 구분한다. 일반 사용자, 누락·과거 미귀속 신호 및
+    재바인딩 전 신호는 `{signal: null}`이며 최근 신호에서도 가격을 제공하지 않는다.
+    레거시 계정의 비밀번호 변경이나 로그인 중 자동 재해시 이후에는 이전 알림의 가격을 생략한다.
+    기존 레거시 일반 시간봉 타임라인은 유지된다.
+  - 알림 차트의 `GET /api/candles?line_alert=true`는 10분·2시간만 받는다. 기존 5분·60분 원천의 OHLCV를
+    감시와 같은 거래 세션·마감 확인 규칙으로 묶는다. 누락·중복·휴장·지연으로 확인할 수 없는 묶음은 비워 두고,
+    해당 봉을 확인할 수 없는 차트에는 대체 시간봉으로 여는 링크를 표시한다. 예전 알림에 이미 들어간
+    하위 시간봉 링크는 계속 열린다.
   - `PUT /api/notify/line-watch` 는 주인 계정만 쓸 수 있고, 아니면 403 이다.
     - 본문은 `{enabled, tickers(최대 10), timeframes(5m · 15m · 1h/60m · 2h/120m · 4h/240m), events}` 다.
     - 빠진 필드는 지금 값을 유지한다(`events` 도 키마다).

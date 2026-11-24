@@ -25,10 +25,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from hashlib import blake2s
 from urllib.parse import quote
 
-from sqlalchemy import desc, insert, select, update
+from sqlalchemy import and_, desc, insert, or_, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
@@ -221,8 +223,8 @@ def text(sig: dict, ticker: str, tf: str, rates: dict) -> tuple[str, str]:
     if sig.get("closed_at"):
         lines.append(f"확정 봉 마감 {sig['closed_at']} · 원천 {sig['source']} · 지연 여유 {sig['lag_minutes']}분")
         lines.append(f"마감 이후 확인 {sig['fetched_at']}")
-        if (chart_tf := _chart_frame(tf)) != tf:
-            lines.append(f"차트는 {_TF_KO[chart_tf]}으로 열려요")
+        if tf in line_watch_bars.ALERT_CHART_FRAMES:
+            lines.append(f"차트는 {_TF_KO[tf]}으로 열려요")
     lines.append(NO_ADVICE)
     return title, "\n".join(lines)
 
@@ -311,26 +313,45 @@ def _cooldown(tf: str) -> timedelta:
     return timedelta(minutes=max(COOLDOWN_MIN, COOLDOWN_BARS * line_watch_bars.MINUTES[tf]))
 
 
-def _chart_frame(tf: str) -> str:
-    return {"10m": "5m", "120m": "60m"}.get(tf, tf)
-
-
-def chart_url(ticker: str, tf: str) -> str:
+def chart_url(ticker: str, tf: str, signal_id: int | None = None) -> str:
     """Where the alert opens: that ticker · timeframe's chart (the timeline's link, frontend lineSignals.chartHref)."""
-    return f"/#/charts?t={quote(ticker, safe='')}&iv={_chart_frame(tf)}"
+    url = f"/#/charts?t={quote(ticker, safe='')}&iv={tf}"
+    if tf in line_watch_bars.ALERT_CHART_FRAMES:
+        url += f"&signal_tf={tf}"
+        if signal_id is not None:
+            url += f"&signal_id={signal_id}"
+    return url
 
 
 def kst_day(at: str) -> str:
     return datetime.fromisoformat(at).astimezone(channels.KST).date().isoformat()
 
 
+@dataclass(frozen=True)
+class SignalOwner:
+    user_id: int
+    generation: str
+
+    @classmethod
+    def legacy(cls, user_id: int, password_verifier: str) -> SignalOwner:
+        # A salted verifier distinguishes accounts even if SQLite reuses IDs in the same second.
+        version = blake2s(password_verifier.encode(), digest_size=12, person=b"lnsignal").hexdigest()
+        return cls(user_id, f"legacy:{version}")
+
+
+def _signals_owned_by(owner: SignalOwner):
+    return and_(line_signals.c.signal_owner_id == owner.user_id,
+                line_signals.c.signal_owner_generation == owner.generation)
+
+
 class LineWatch:
     """The watch setting (one row of line_watch) and the signals sent (line_signals). A signal is kept
     before it is sent and never sent again: at most once, even if the process stops in between."""
 
-    def __init__(self, engine: Engine, clock=lambda: datetime.now(UTC), *, send_notice=None) -> None:
+    def __init__(self, engine: Engine, clock=lambda: datetime.now(UTC), *, send_notice=None, owner_snapshot=None) -> None:
         self.engine = engine
         self.send_notice = send_notice
+        self.owner_snapshot = owner_snapshot
         self.clock = clock
         self._due: dict[tuple[str, str], datetime] = {}
 
@@ -355,13 +376,33 @@ class LineWatch:
         self._due.clear()
         return self.settings()
 
-    def recent(self, limit: int = 20) -> list[dict]:
+    def recent(self, limit: int = 20, *, owner: SignalOwner | None = None) -> list[dict]:
+        stmt = select(line_signals).order_by(desc(line_signals.c.id)).limit(limit)
+        if owner is not None:
+            allowed = _signals_owned_by(owner)
+            if owner.generation.startswith("legacy:"):
+                # Legacy timelines retain older ordinary frames. An unowned row never opens an exact alert price.
+                allowed = or_(allowed, and_(line_signals.c.signal_owner_id.is_(None),
+                                           line_signals.c.signal_owner_generation.is_(None),
+                                           line_signals.c.timeframe.not_in(line_watch_bars.ALERT_CHART_FRAMES)))
+            stmt = stmt.where(allowed)
         with self.engine.connect() as conn:
-            rows = conn.execute(select(line_signals).order_by(desc(line_signals.c.id)).limit(limit)).mappings().all()
+            rows = conn.execute(stmt).mappings().all()
         return [{"trade_date": r["trade_date"], "ticker": r["ticker"], "timeframe": r["timeframe"],
                  "event": r["event"], "rule": r["rule"], "line_id": r["line_id"], "at": r["at"],
                  "price": r["price"], "line_price": r["line_price"], "text": r["text"],
-                 "recorded_at": aware(r["created_at"]).astimezone(UTC).isoformat()} for r in rows]
+                 "recorded_at": aware(r["created_at"]).astimezone(UTC).isoformat(),
+                 **({"signal_id": r["id"]} if owner is not None
+                    and r["timeframe"] in line_watch_bars.ALERT_CHART_FRAMES else {})} for r in rows]
+
+    def chart_signal(self, signal_id: int, owner: SignalOwner) -> dict | None:
+        stmt = select(line_signals.c.ticker, line_signals.c.timeframe, line_signals.c.line_price, line_signals.c.at).where(
+            line_signals.c.id == signal_id, _signals_owned_by(owner),
+            line_signals.c.timeframe.in_(line_watch_bars.ALERT_CHART_FRAMES),
+        )
+        with self.engine.connect() as conn:
+            row = conn.execute(stmt).mappings().one_or_none()
+        return dict(row) if row is not None else None
 
     def _day(self, conn, day: str) -> list[dict]:
         rows = conn.execute(select(line_signals).where(line_signals.c.trade_date == day)).mappings().all()
@@ -391,7 +432,7 @@ class LineWatch:
         self._due[(ticker, tf)] = nxt
 
     def scan(self, ticker: str, tf: str, bars: list[dict], pusher=None, cfg: dict | None = None,
-             fetched_at: str | None = None) -> list[dict]:
+             fetched_at: str | None = None, *, owner: SignalOwner | None = None) -> list[dict]:
         """Judge the last bar of ``bars`` finished when they were fetched (``fetched_at``: a cached copy
         may predate a bar's end); send and keep the signals that get through. A bar that ended long ago
         (a market closed, the server down) is not news: nothing goes out for it."""
@@ -406,40 +447,47 @@ class LineWatch:
         end = _finished_end(bars, index, tf)
         if end is None or at - end > timedelta(minutes=max(2 * channels.MINUTES[tf], 10)):
             return []
-        return self._deliver(ticker, tf, found, pusher)
+        return self._deliver(ticker, tf, found, pusher, owner=owner)
 
     def _scan_confirmed(self, ticker: str, tf: str, rules: dict, sample: line_watch_bars.Sample,
-                        end: datetime, pusher) -> list[dict]:
+                        end: datetime, pusher, *, owner: SignalOwner | None = None) -> list[dict]:
         found = [{**signal, "closed_at": end.isoformat(), "source": sample.source,
                   "fetched_at": sample.fetched_at.isoformat(), "lag_minutes": sample.lag_minutes}
                  for signal in detect(sample.bars, tf, confirmed=True)
                  if _selected(signal, rules["events"], rules["side"])]
-        return self._deliver(ticker, tf, found, pusher)
+        return self._deliver(ticker, tf, found, pusher, owner=owner)
 
-    def _deliver(self, ticker: str, tf: str, found: list[dict], pusher) -> list[dict]:
+    def _deliver(self, ticker: str, tf: str, found: list[dict], pusher, *,
+                 owner: SignalOwner | None = None) -> list[dict]:
         if not found:
             return []
         rates = lines_bt.rates(ticker, tf)
         sent = []
         order = {"long": 0, "break": 1, "retest": 2, "touch": 3}
         for sig in sorted(found, key=lambda s: order[s["event"]]):
+            if self.owner_snapshot is not None and (owner is None or owner != self.owner_snapshot()):
+                break
             title, body = text(sig, ticker, tf, rates)
             day = kst_day(sig.get("closed_at") or sig["at"])
             try:
                 with self.engine.begin() as conn:
                     if not admit(sig, ticker, tf, self._day(conn, day), self._earlier(conn, day, tf)):
                         continue
-                    conn.execute(insert(line_signals).values(
+                    inserted = conn.execute(insert(line_signals).values(
                         trade_date=day, ticker=ticker, timeframe=tf, event=sig["event"], rule=sig["rule"],
                         line_id=sig["line_id"][:160], at=sig["at"], price=sig["price"], line_price=sig["line_price"],
+                        signal_owner_id=owner.user_id if owner else None,
+                        signal_owner_generation=owner.generation if owner else None,
                         text=f"{title}\n{body}"[:600], created_at=now()))
+                    signal_id = inserted.inserted_primary_key[0]
             except IntegrityError:                     # another pass kept it first
                 continue
             payload = {"title": title, "body": body, "tag": f"line-{ticker}-{tf}",
-                       "url": chart_url(ticker, tf), "tone": TONE}
+                       "url": chart_url(ticker, tf, signal_id if owner else None), "tone": TONE}
             if "closed_at" in sig:
                 payload.update({key: sig[key] for key in ("closed_at", "source", "fetched_at", "lag_minutes")})
-            (self.send_notice or notify.send)(pusher, KIND, f"tone_{TONE}", payload=payload)
+            recipient = {"owner": owner} if self.owner_snapshot is not None else {}
+            (self.send_notice or notify.send)(pusher, KIND, f"tone_{TONE}", payload=payload, **recipient)
             sent.append({**sig, "title": title, "body": body})
         return sent
 
@@ -459,6 +507,9 @@ def _work(cfg: dict):
 
 async def run_pass(watch: LineWatch, prices, pusher) -> int:
     """Read at most PASS_MAX due frames. A missing/uncertain bar never falls back to an older signal."""
+    owner = await asyncio.to_thread(watch.owner_snapshot) if watch.owner_snapshot is not None else None
+    if watch.owner_snapshot is not None and owner is None:
+        return 0
     cfg = await asyncio.to_thread(watch.settings)
     if not cfg["enabled"]:
         return 0
@@ -473,7 +524,7 @@ async def run_pass(watch: LineWatch, prices, pusher) -> int:
                 reads += 1
                 got = await prices.candles(ticker, tf, channels.BARS[tf])
                 sent += len(await asyncio.to_thread(watch.scan, ticker, tf, got["bars"], pusher, cfg,
-                                                    got.get("fetched_at")))
+                                                    got.get("fetched_at"), owner=owner))
                 continue
             market = line_watch_bars.market_of(ticker)
             if market is None:  # a stale stored rule rather than a verified request
@@ -494,7 +545,7 @@ async def run_pass(watch: LineWatch, prices, pusher) -> int:
                 watch._due[(ticker, tf)] = min(plan.next_at, at + timedelta(seconds=TICK_SEC))
                 continue
             sent += len(await asyncio.to_thread(watch._scan_confirmed, ticker, tf, rule, sample, plan.expected.end,
-                                                pusher))
+                                                pusher, owner=owner))
         except Exception as exc:  # noqa: BLE001 - one rule's failure leaves the others
             log.warning("line signals %s failed: %s", tf, type(exc).__name__)
             watch._due[(ticker, tf)] = watch.clock() + timedelta(seconds=IDLE_SEC)

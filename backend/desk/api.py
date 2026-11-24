@@ -67,6 +67,7 @@ from . import (
     language,
     line_basis,
     line_signals,
+    line_watch_bars,
     lines_bt,
     live,
     live_bars,
@@ -509,22 +510,27 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         approved = current_resources()
         return approved.broker if approved is not None else None
 
-    def send_notice(pusher, *kinds, payload, user_id=None):
+    def send_notice(pusher, *kinds, payload, user_id=None, still_owner=None):
         # An account notice must identify the current owner. The protected dispatcher
         # never consults stored Telegram/Kakao settings, even for a public notice.
         if protected and user_id is not None:
             approved = current_resources()
             if approved is None or approved.binding.user_id != user_id:
                 return 0
+        def allowed():
+            return policy.current() and (still_owner is None or still_owner())
+
+        if still_owner is not None and not allowed():
+            return 0
         sent = notify.send(pusher, *kinds, payload=payload, user_id=user_id,
-                           use_channels=not protected, allowed=policy.current)
+                           use_channels=not protected, allowed=allowed)
         approved = current_resources()
         if approved is not None:
             for destination in approved.destinations:
                 if not set(kinds) <= destination.kinds:
                     continue
                 try:
-                    if current_resources() is approved:
+                    if current_resources() is approved and (still_owner is None or still_owner()):
                         destination.deliver(payload)
                 except Exception as exc:  # noqa: BLE001 - a destination's details stay out of the logs
                     log.warning("approved destination delivery failed: %s", type(exc).__name__)
@@ -2602,7 +2608,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(503, f"no price for {ticker}") from None
 
     @app.get("/api/candles")
-    async def candles(ticker: str, interval: str = "1d", count: int = 120, indicators: str = ""):
+    async def candles(ticker: str, interval: str = "1d", count: int = 120, indicators: str = "",
+                      line_alert: bool = False):
         """Bars for the chart, oldest first. 1m/1d: Toss then Yahoo; minute bars, 1w, 1M, 1y
         (and > 200 bars): Yahoo - for KRX minute bars (5m~240m) with their late tail rebuilt from
         Toss 1m (source "yahoo+toss", #379; buckets count from 09:00 KST, ``at`` = bucket start). ``indicators=rsi,stoch,bb`` (or rsi14, bb20, bb50) adds each bar's
@@ -2610,13 +2617,19 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         try:
             raw = ticker.strip().upper()
             ticker, guessed = resolve_ticker(ticker)
-            if interval not in INTERVALS:
-                raise ValueError(f"interval must be one of {', '.join(INTERVALS)}")
+            allowed = sorted(line_watch_bars.ALERT_CHART_FRAMES) if line_alert else INTERVALS
+            if interval not in allowed:
+                raise ValueError(f"interval must be one of {', '.join(allowed)}")
             wanted = normalize_indicators(indicators.split(","))
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
+        async def fetch(symbol: str):
+            if line_alert:
+                return await line_watch_bars.alert_chart(prices.candles, symbol, interval, count, wanted)
+            return await prices.candles(symbol, interval, count, wanted)
+
         try:
-            got = await prices.candles(ticker, interval, count, wanted)
+            got = await fetch(ticker)
         except Exception as exc:  # noqa: BLE001 - both sources failed
             if not guessed:
                 log.warning("candles for %s %s failed: %s", ticker, interval, exc)
@@ -2625,7 +2638,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if guessed and not (got or {}).get("bars"):
             # #477: a code the list does not know was guessed KOSPI; empty there, try KOSDAQ once
             try:
-                kq = await prices.candles(raw + ".KQ", interval, count, wanted)
+                kq = await fetch(raw + ".KQ")
             except Exception as exc:  # noqa: BLE001 - neither market
                 log.warning("candles for %s (.KS / .KQ) failed: %s", raw, exc)
                 kq = None
@@ -2633,10 +2646,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 if len(learned_kr) > 4096:      # KRX lists about 2,700 codes; never grows past a bad loop
                     learned_kr.clear()
                 learned_kr[raw] = ".KQ"
-                return _delayed(_with_session(kq, interval))
+                return kq if line_alert else _delayed(_with_session(kq, interval))
             if got is None:
                 raise HTTPException(503, f"no candles for {ticker}") from None
-        return _delayed(_with_session(got, interval))
+        return got if line_alert else _delayed(_with_session(got, interval))
 
     def _delayed(got: dict) -> dict:
         """#653 about how far the series runs behind (late Yahoo feeds: KRX, CME futures) - added only."""
@@ -4234,6 +4247,7 @@ def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountO
     from . import notify_channels as nc
     from . import otp, push
     from .auth import owner_id as account_owner
+    from .db import users
 
     nc.install_log_filter()
     if owners is None:
@@ -4376,20 +4390,35 @@ def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountO
             raise HTTPException(422, str(exc)) from None
         return holding_view(request)
 
-    def send_line_notice(pusher, *kinds, payload):
-        user_id = owner_id()
-        if user_id is None:
-            return 0
-        return send_notice(pusher, *kinds, payload=payload, user_id=user_id)
+    def line_owner() -> line_signals.SignalOwner | None:
+        if owners is None:
+            with engine.connect() as conn:
+                account = conn.execute(select(users.c.id, users.c.password_hash).order_by(users.c.id).limit(1)).first()
+            return line_signals.SignalOwner.legacy(account.id, account.password_hash) if account is not None else None
+        binding = owners.binding()
+        if binding is None or binding.user_id is None:
+            return None
+        return line_signals.SignalOwner(binding.user_id, binding.generation)
 
-    watch = line_signals.LineWatch(engine, send_notice=send_line_notice)
+    def send_line_notice(pusher, *kinds, payload, owner=None):
+        owner = owner if owner is not None else line_owner()
+        if owner is None:
+            return 0
+        return send_notice(pusher, *kinds, payload=payload, user_id=owner.user_id,
+                           still_owner=lambda: line_owner() == owner)
+
+    watch = line_signals.LineWatch(engine, send_notice=send_line_notice, owner_snapshot=line_owner)
     app.state.line_watch = watch
 
     def watch_view(request: Request, ticker: str | None = None) -> dict:
-        can_edit = request.state.user.id == owner_id()
-        config = watch.settings() if can_edit else {
-            **line_signals.DEFAULT, "tickers": [], "timeframes": [], "rules": [],
-        }
+        owner = line_owner()
+        can_edit = owner is not None and request.state.user.id == owner.user_id
+        if can_edit:
+            config, recent = watch.settings(), watch.recent(owner=owner)
+            can_edit = active_session(request) and owner == line_owner()
+        if not can_edit:
+            config = {**line_signals.DEFAULT, "tickers": [], "timeframes": [], "rules": []}
+            recent = []
         return {**config, "can_edit": can_edit,
                 "allowed": {"timeframes": list(line_signals.TIMEFRAMES), "events": list(line_signals.EVENTS),
                             "max_tickers": line_signals.MAX_TICKERS,
@@ -4397,12 +4426,19 @@ def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountO
                             "support": line_signals.allowed_support(ticker)},
                 "limits": {"cooldown_min": line_signals.COOLDOWN_MIN, "cooldown_bars": line_signals.COOLDOWN_BARS,
                            "daily_max": line_signals.DAILY_MAX, "per_ticker_max": line_signals.PER_TICKER_MAX},
-                "recent": watch.recent() if can_edit else []}
+                "recent": recent}
 
     @app.get("/api/notify/line-watch")
-    def line_watch_get(request: Request, response: Response, ticker: str | None = None):
+    def line_watch_get(request: Request, response: Response, ticker: str | None = None,
+                       signal_id: int | None = Query(default=None, ge=1, le=2_147_483_647)):
         """#613 the watch (off until the owner turns it on), its limits and the signals sent lately."""
         response.headers["Cache-Control"] = "private, no-store"
+        if signal_id is not None:
+            owner = line_owner()
+            if owner is None or request.state.user.id != owner.user_id:
+                return {"signal": None}
+            signal = watch.chart_signal(signal_id, owner)
+            return {"signal": signal if active_session(request) and owner == line_owner() else None}
         try:
             symbol = clean_ticker(ticker) if ticker is not None else None
         except ValueError as exc:

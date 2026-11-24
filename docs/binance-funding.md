@@ -54,10 +54,70 @@ API 프로세스 메모리에서 읽는다. 같은 프로세스에 동시에 들
 
 ## 공개 표본 확인
 
-2026-11-24 로컬에서 전용 HTTPS 호스트의 `exchangeInfo`·`fundingInfo` 및 10개 계약의 `fundingRate?limit=12`를
-확인했다. 모두 HTTP 200이었고, 계약 모두 `TRADING`이었다. 10개 모두 12개 결제 행에 마크 가격 필드가 있었다.
-삼성전자·SK하이닉스는 현재 4시간 조정, 나머지 8개는 8시간 조정과 같은 간격을 표본에서 확인했다. 결제 시각에는
-정시부터 수 밀리초 차이가 있는 행이 있었다. 테스트 및 CI는 합성 응답으로 검증하며 운영 컨테이너의 도달 여부는
-별도 확인 범위다.
-
+2026-11-24 05:49:24.041 UTC에 개발 PC에서 `exchangeInfo`, `fundingInfo`, 계약당 `fundingRate` 1회로
+2026-11-17 00:00 UTC부터 조회 시각까지의 공개 응답을 확인했다. 12회 모두 HTTP 200이었다. 초기 10개 계약은
+모두 `TRADING`이었고 유형·기초자산·USDT 표시 및 증거금 자산이 허용 조건과 일치했다. 삼성전자·SK하이닉스는
+4시간, 나머지 8개는 8시간이었으며, 실제 정규 결제 이력에서도 같은 간격을 확인했다. 결제 260건은 모두
+`rateType=Regular`이고 `markPrice`가 있었다. `fundingTime`은 확정 결제의 UTC epoch 밀리초다. 예를 들어
+삼성전자의 11월 21일 첫 결제는 `00:00:00.001Z`에 기록됐다. 이 값을 그대로 보존하고 21일 UTC 합계에 넣는다.
 [바이낸스 USDⓈ-M 시장 데이터](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data)
+
+| 계약 | 현재 간격(시간) | 확정 결제 건수 | 양수 / 음수 / 0 |
+| --- | ---: | ---: | ---: |
+| BTCUSDT | 8 | 22 | 17 / 5 / 0 |
+| ETHUSDT | 8 | 22 | 13 / 9 / 0 |
+| XRPUSDT | 8 | 22 | 13 / 9 / 0 |
+| SOLUSDT | 8 | 22 | 10 / 12 / 0 |
+| SAMSUNGUSDT | 4 | 44 | 15 / 10 / 19 |
+| SKHYNIXUSDT | 4 | 44 | 16 / 12 / 16 |
+| NVDAUSDT | 8 | 22 | 14 / 0 / 8 |
+| AMDUSDT | 8 | 22 | 4 / 0 / 18 |
+| MUUSDT | 8 | 22 | 15 / 0 / 7 |
+| SOXXUSDT | 8 | 18 | 5 / 0 / 13 |
+
+### UTC 이틀 경계와 표시 조건
+
+공식 응답을 로컬 서비스에 재생하면서 조회 시각을 아래처럼 고정했다. 표의 숫자는 원천의 비율 단위이며
+화면은 100을 곱해 백분율로 표시한다. 예를 들어 XRP의 미완료 합계 `-0.00012757`은 `-0.012757%`다.
+양수 결제는 롱에서 숏으로, 음수 결제는 숏에서 롱으로 지급된다.
+[바이낸스 펀딩비 안내](https://www.binance.com/en/support/faq/detail/360033525031)
+
+| 계약 · 재생 시각 (UTC, 2026년) | 직전 UTC 날짜 두 개의 상태와 합계 | 당일 확정분 | 연속 음수 표시 |
+| --- | --- | --- | --- |
+| SAMSUNGUSDT · 11-21 04:10 | 11-19 완료 `-0.00095282`, 11-20 완료 `-0.00250968` | 미완료 2건 `-0.00009663` | 2일. 11-18 완료일은 양수다. |
+| SOXXUSDT · 11-19 00:10 | 11-17 결측 0건, 11-18 상장 첫날 미완료 2건. 두 날 모두 합계 `null`. | 미완료 1건 `0` | 산정 불가 |
+| AMDUSDT · 11-23 00:10 | 11-21 완료 `0.00029257`, 11-22 완료 `0` | 미완료 1건 `0.00002257` | 없음. 11-22의 실제 0은 표에 표시한다. |
+| XRPUSDT · 11-24 05:49:24.041 | 11-22 완료 `0.00013559`, 11-23 완료 `0.00014358` | 미완료 1건 `-0.00012757` | 없음. 당일 음수는 연속 일수에서 제외한다. |
+
+시장 수급의 펀딩비 화면은 7일·30일을 선택할 수 있다. 완료일 차트에서 불완전한 날짜의 합계는 비워 두고
+오늘 확정분은 별도 영역에 표시한다. 최신 결제의 마크 가격이 있으면 USDT로 표시한다.
+`available`, `stale`, `no_data` 응답에서는 이력 영역을 표시하고, `unsupported`, `inactive`,
+`source_error`에서는 상태 안내를 표시한다. [화면 구현](../frontend/src/components/FundingRatePanel.tsx)
+
+### 재현과 환경 범위
+
+아래 PowerShell 예제는 인증 없이 표본과 동일한 UTC 범위를 질의한다. `fundingRate`는 시작·종료 시각을
+모두 포함한다. 공개 요청이 실패하면 예제를 종료한다. 실패 기록에는 조회 시각, HTTP 상태와 응답에 제공된
+`Retry-After`를 남긴다.
+
+```powershell
+$hostUrl = 'https://fapi.binance.com/fapi/v1'
+$start = ([DateTimeOffset]'2026-11-17T00:00:00Z').ToUnixTimeMilliseconds()
+$end = ([DateTimeOffset]'2026-11-24T05:49:24.041Z').ToUnixTimeMilliseconds()
+$symbols = 'BTCUSDT ETHUSDT XRPUSDT SOLUSDT SAMSUNGUSDT SKHYNIXUSDT NVDAUSDT AMDUSDT MUUSDT SOXXUSDT'.Split()
+$exchange = Invoke-RestMethod "$hostUrl/exchangeInfo" -TimeoutSec 7 -ErrorAction Stop
+$funding = Invoke-RestMethod "$hostUrl/fundingInfo" -TimeoutSec 7 -ErrorAction Stop
+$history = @{}
+foreach ($symbol in $symbols) {
+    $history[$symbol] = Invoke-RestMethod (
+        "$hostUrl/fundingRate?symbol=$symbol&startTime=$start&endTime=$end&limit=200"
+    ) -TimeoutSec 7 -ErrorAction Stop
+}
+```
+
+- 개발 PC에서는 위의 고정 표본과 별도로 제품의 HTTPS 클라이언트로 `BTCUSDT`를 조회해 `available` 응답을 확인했다.
+  #924와 #931의 CI 및 브라우저 검증은 합성 응답을 사용했다. 홈랩 운영 컨테이너에서 공개 원천에 도달하는지는 미확인이다.
+- 이번 공개 조회에서 429나 지역 차단은 관측되지 않았다. 429 또는 418이면 `rate_limited`로 처리하고
+  대기 시간 안에는 원천을 다시 호출하지 않는다. 예를 들어 공개 호스트가 지역 제한으로 451을 응답하면
+  `upstream_error`로 처리한다. 지역 제한 시 그 환경의 조회를 중단한다. 두 경우 모두 남아 있는 정상값은
+  `stale`, 정상값이 없으면 `source_error`로 표시한다. 429·451의 캐시 없는 응답은 합성으로 대조했다.

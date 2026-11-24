@@ -2,7 +2,8 @@ import { type ReactNode, useMemo, useState } from "react";
 import type { LineSignal, MarketAlert } from "../api";
 import { alertHref, alertKey, alertLines, badgeOf, hhmm, isWarning, KIND_LABEL, kindLabel, sideOf, useTodayAlerts } from "../alertsFeed";
 import LiveBadge from "./LiveBadge";
-import { chartHref, kstHhmm, signalTime, LINE_TF_KO, signalKey, splitText, useTodayLineSignals } from "../lineSignals";
+import { chartFallbackLabel, kstHhmm, signalDateTime, signalTime, LINE_TF_KO, signalKey, splitText, useTodayLineSignals } from "../lineSignals";
+import LineSignalLink from "./LineSignalLink";
 
 /** #581 오늘 알림 타임라인 — 수급 전향 · 수급 흐름 변화 · 나스닥 선물 이상 징후(주인 계정은 보유 종목 손절 · 익절도)를 시각 순서로.
  *  색만으로 구분하지 않게 강도는 글자(참고 · 주의 · 강함), 방향은 ▲▼ 로 함께 쓴다. */
@@ -26,11 +27,12 @@ export function LineRow({ s }: { s: LineSignal }) {
   const { title, body } = splitText(s.text);
   return (
     <li className="alert-row line-row">
-      <time className="alert-time" dateTime={s.at}>{kstHhmm(signalTime(s))}</time>
+      <time className="alert-time" dateTime={signalDateTime(s)}>{kstHhmm(signalTime(s))}</time>
       <span className="alert-sev line-sev">선</span>
       <span className="alert-kind muted small">차트 선 · {LINE_TF_KO[s.timeframe] ?? s.timeframe}</span>
       <span className="alert-text">
-        <a href={chartHref(s)}>{title}</a>
+        <LineSignalLink signal={s}>{title}</LineSignalLink>
+        {chartFallbackLabel(s.timeframe) && <span className="muted small"> · {chartFallbackLabel(s.timeframe)}</span>}
         {body && <span className="muted small"> · {body.split("\n")[0]}</span>}
       </span>
     </li>

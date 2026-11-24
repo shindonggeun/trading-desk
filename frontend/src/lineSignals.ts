@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import { api, type LineSignal, type LineWatchEvent } from "./api";
-import { type LastRead, reusable } from "./lineFeedReuse";
+import { createLineFeedCache } from "./lineFeedReuse";
+export { LINE_TF_KO, chartFallbackLabel, chartHref, signalDateTime, signalTime } from "./lineWatchNavigation";
 
 /** #614 차트 선 알림(#613) — 설정 · 알림 타임라인 · 최근 알림 띠가 같이 쓴다 */
-export const LINE_TF_KO: Record<string, string> = { "5m": "5분봉", "15m": "15분봉", "60m": "1시간봉", "120m": "2시간봉", "240m": "4시간봉", "1d": "일봉" };
-export const LINE_EVENT_KO: Record<LineWatchEvent, string> = { touch: "닿음", break: "이탈", retest: "되돌림", long: "장기 선" };
+export const LINE_EVENT_KO: Record<LineWatchEvent, string> = { touch: "닿음", break: "돌파·이탈", retest: "되돌림", long: "장기 선" };
 export const LINE_EVENT_NOTE: Record<LineWatchEvent, string> = {
   touch: "가격이 채널 하단 · 상단이나 추세선에 닿았을 때",
   break: "종가가 추세선 · 채널을 넘었을 때",
@@ -12,15 +12,7 @@ export const LINE_EVENT_NOTE: Record<LineWatchEvent, string> = {
   long: "일봉: 몇 달 이어 온 장기 지지 · 저항선을 시험하거나 종가 이틀로 넘었을 때(일봉 마감 뒤)",
 };
 /** 짧은 봉 — 잡음이 많아 자주 틀린다고 적는 시간봉 */
-export const SHORT_TFS = new Set(["5m", "15m", "60m", "120m"]);
-
-/** 그 종목 · 시간봉 차트(차트 화면에 2시간봉이 없어 2시간봉 알림은 1시간봉으로 연다) */
-export const chartHref = (s: Pick<LineSignal, "ticker" | "timeframe">) =>
-  `#/charts?t=${encodeURIComponent(s.ticker)}&iv=${s.timeframe === "120m" ? "60m" : s.timeframe}`;
-
-const TF_MIN: Record<string, number> = { "5m": 5, "15m": 15, "60m": 60, "120m": 120, "240m": 240, "1d": 1440 };
-/** 그 알림의 시각 — at 은 판정한 봉의 시작이라 봉이 끝난 시각(알림이 나간 즈음)으로 보이고 정렬한다 */
-export const signalTime = (s: Pick<LineSignal, "at" | "timeframe">): number => Date.parse(s.at) + (TF_MIN[s.timeframe] ?? 0) * 60_000;
+export const SHORT_TFS = new Set(["5m", "10m", "15m", "60m", "120m"]);
 
 /** 시각(UTC ISO 또는 ms)을 한국 시각 HH:MM 으로 */
 export function kstHhmm(at: string | number): string {
@@ -38,34 +30,35 @@ export function splitText(text: string): { title: string; body: string } {
 // 서버의 고유 키와 같게(line_id 에는 종목이 없다)
 export const signalKey = (s: LineSignal) => `${s.ticker}|${s.timeframe}|${s.rule}|${s.line_id}|${s.at}`;
 
-let lastRead: LastRead<LineSignal[]> | null = null;
+/** 소유자의 읽은 이력과 강조 가격을 이 인증 화면 수명에만 보관한다. */
+export function createLineWatchScope() {
+  return {
+    feed: createLineFeedCache<LineSignal[]>(),
+    chartAlerts: new Map<string, { ticker: string; timeframe: string; price: number }>(),
+  };
+}
 
-/**
- * 오늘(date, KST) 보낸 선 알림 — 알림 피드가 다시 읽힐 때(refresh 가 바뀔 때) 같이 다시 읽는다.
- * 피드 내용이 그대로이고 방금(SAME_FEED_MS 안) 읽었으면 그 결과를 쓴다 — 5분 대조 · 새 알림 때는 전처럼 다시 읽는다.
- * 서버에 #613 이 없으면(404 등) 빈 목록 — 타임라인은 수급 알림만 그대로 보인다.
- */
+export const LineWatchScopeContext = createContext<ReturnType<typeof createLineWatchScope> | null>(null);
+
+/** 알림 띠와 타임라인의 동일 피드 조회를 현재 로그인에서만 공유한다. */
 export function useTodayLineSignals(date: string | null | undefined, refresh: unknown): LineSignal[] {
-  const [items, setItems] = useState<LineSignal[]>([]);
+  const scope = useContext(LineWatchScopeContext);
+  const [result, setResult] = useState<{ scope: typeof scope; date: string; items: LineSignal[] } | null>(null);
   useEffect(() => {
-    if (!date) return;
+    if (!date || !scope) return;
     const feed = JSON.stringify(refresh ?? null);
-    const again = reusable(lastRead, date, feed, Date.now());
-    if (again) {
-      setItems(again);
-      return;
-    }
+    const read = scope.feed.acquire(date, feed, async signal => {
+      const view = await api.lineWatch(undefined, signal);
+      return view.can_edit === true ? view.recent.filter(item => item.trade_date === date) : [];
+    });
     let alive = true;
-    const at = Date.now();
-    api.lineWatch().then(
-      (w) => {
-        const today = w.recent.filter((s) => s.trade_date === date);
-        lastRead = { date, feed, at, items: today };
-        if (alive) setItems(today);
-      },
-      () => { /* 없으면 수급 알림만 */ },
-    );
-    return () => { alive = false; };
-  }, [date, refresh]);
-  return items;
+    void read.promise.then(items => {
+      if (alive) setResult({ scope, date, items });
+    }, () => { /* 기존 수급 알림은 그대로 표시한다 */ });
+    return () => {
+      alive = false;
+      read.release();
+    };
+  }, [scope, date, refresh]);
+  return result && result.scope === scope && result.date === date ? result.items : [];
 }

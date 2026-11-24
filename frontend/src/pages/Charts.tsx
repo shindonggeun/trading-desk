@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import InstrumentSearch, { type Picked } from "../components/InstrumentSearch";
 import type { ExtraLine, Interval } from "../components/PriceChart";
@@ -10,6 +10,8 @@ import { sameTicker } from "../ticker";
 import { isFullRun } from "../runRead";
 import { nextLines, WEEKLY_WORDS, weeklyLink } from "../weekly";
 import { css, useColorScheme } from "../chartColors";
+import { LineWatchScopeContext } from "../lineSignals";
+import { chartLineAlert, LINE_TF_KO } from "../lineWatchNavigation";
 
 const PriceChart = lazy(() => import("../components/PriceChart"));
 
@@ -80,6 +82,12 @@ export default function Charts({ query }: { query: URLSearchParams }) {
   const ticker = (query.get("t") ?? "").trim().toUpperCase();
   const ivRaw = query.get("iv");
   const iv = INTERVALS.includes(ivRaw as Interval) ? (ivRaw as Interval) : undefined;
+  const lineWatch = useContext(LineWatchScopeContext);
+  const alert = chartLineAlert(query);
+  const alertLine = alert?.reference ? lineWatch?.chartAlerts.get(alert.reference) : undefined;
+  const alertPrice = alertLine && sameTicker(alertLine.ticker, ticker) && alertLine.timeframe === alert?.timeframe
+    && Number.isFinite(alertLine.price) && alertLine.price > 0 ? alertLine.price : null;
+  const fromAlert = alert !== null;
   const [search, setSearch] = useState<Picked>({ ticker: "" });
   const [recent, setRecent] = useState<Picked[]>(loadRecent);
   const favorites = useFavorites().list ?? [];
@@ -150,7 +158,10 @@ export default function Charts({ query }: { query: URLSearchParams }) {
     saveWeeklyOn(on);
   };
 
-  const onInterval = useCallback((next: Interval) => go(ticker, next, false), [ticker]);
+  const onInterval = useCallback((next: Interval) => {
+    // 첫 차트 마운트는 알림 주소를 보존한다. 사용자가 다른 봉을 고르면 일반 차트로 이동한다.
+    if (!fromAlert || next !== iv) go(ticker, next, fromAlert);
+  }, [ticker, iv, fromAlert]);
   const analyze = `#/?ticker=${encodeURIComponent(ticker)}${name ? `&name=${encodeURIComponent(name)}` : ""}`;
 
   return (
@@ -225,8 +236,14 @@ export default function Charts({ query }: { query: URLSearchParams }) {
 
       {ticker ? (
         <Suspense fallback={<p className="muted">차트를 여는 중…</p>}>
-          <PriceChart key={ticker} ticker={ticker} tradeDate={today()} plan={null} title={name ?? ticker}
-            initialInterval={iv} onIntervalChange={onInterval} extraLines={weeklyLines} readable />
+          <PriceChart key={fromAlert ? query.toString() : ticker} ticker={ticker} tradeDate={today()} plan={null} title={name ?? ticker}
+            initialInterval={iv} onIntervalChange={onInterval} extraLines={weeklyLines} highlight={alertPrice} readable
+            banner={alert && (
+              <p className="muted small chart-limit">
+                {alert.fallback ?? LINE_TF_KO[alert.timeframe] + " 선 알림"}
+                {alertPrice != null && " · 알림 당시 선 가격 " + price(alertPrice)}
+              </p>
+            )} />
         </Suspense>
       ) : (
         <section className="card charts-empty">

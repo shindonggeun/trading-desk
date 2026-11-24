@@ -102,6 +102,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // #762 사람이 2분 넘게 손대지 않은 동안의 요청은 활동이 아니라고 알린다(activity.ts)
     headers: { "Content-Type": "application/json", ...activityHeaders(), ...init?.headers },
   });
+  // 이 화면을 떠난 요청의 늦은 응답은 현재 로그인 상태에 영향을 주면 안 된다.
+  init?.signal?.throwIfAborted();
   if (res.status === 401 && path !== "/api/auth/login") {
     clearApiCache();
     onUnauthorized();
@@ -354,7 +356,8 @@ export const api = {
   /** #155 빚투 · 예탁금(금융투자협회) */
   credit: (days = 90) => call<CreditView>(`/api/market/credit?days=${days}`),
   /** #134 즐겨찾기(계정별 · 순서대로). 추가 · 교체도 전체 목록을 돌려준다. */
-  favorites: () => call<Favorite[]>("/api/favorites"),
+  favorites: (signal?: AbortSignal) => signal ? request<Favorite[]>("/api/favorites", { signal, cache: "no-store" })
+    : call<Favorite[]>("/api/favorites"),
   addFavorite: (ticker: string, name?: string) =>
     call<Favorite[]>("/api/favorites", { method: "POST", body: JSON.stringify({ ticker, name }) }),
   replaceFavorites: (items: { ticker: string; name?: string | null }[]) =>
@@ -428,7 +431,7 @@ export const api = {
   lines: (ticker: string, tf: LineTf) => call<LinesReport>(`/api/lines?ticker=${encodeURIComponent(ticker)}&tf=${tf}`),
   tips: (ticker?: string) => call<TipsView>(`/api/tips${ticker ? `?ticker=${encodeURIComponent(ticker)}` : ""}`),
   /** #362 웹 푸시(#361): 서버 공개키 · 이 기기 구독 · 시험 알림 */
-  pushKey: () => call<{ enabled: boolean; public_key: string | null }>("/api/push/key"),
+  pushKey: (signal?: AbortSignal) => call<{ enabled: boolean; public_key: string | null }>("/api/push/key", { signal }),
   pushSubscribe: (sub: PushSubscriptionJSON, device: string, kinds: PushKinds) =>
     call<{ endpoint: string; device: string; kinds: PushKinds }>("/api/push/subscriptions", {
       method: "POST", body: JSON.stringify({ endpoint: sub.endpoint, keys: sub.keys, device, kinds }),
@@ -467,9 +470,12 @@ export const api = {
   kakaoConnect: () => call<{ url: string }>("/api/notify/kakao/connect", { method: "POST" }),
   kakaoDisconnect: () => call<void>("/api/notify/kakao", { method: "DELETE" }),
   /** #614 차트 선 알림(#613) 감시 설정 · 최근 보낸 선 알림 */
-  lineWatch: () => call<LineWatch>("/api/notify/line-watch"),
-  saveLineWatch: (body: Partial<Pick<LineWatch, "enabled" | "tickers" | "timeframes" | "events">>) =>
-    call<LineWatch>("/api/notify/line-watch", { method: "PUT", body: JSON.stringify(body) }),
+  lineWatch: (ticker?: string, signal?: AbortSignal) =>
+    request<LineWatch>(`/api/notify/line-watch${ticker ? `?ticker=${encodeURIComponent(ticker)}` : ""}`, { cache: "no-store", signal }),
+  lineWatchChannels: (signal?: AbortSignal) =>
+    request<LineWatchChannels>("/api/notify/channels", { cache: "no-store", signal }),
+  saveLineWatch: (body: LineWatchPatch, signal?: AbortSignal) =>
+    call<LineWatch>("/api/notify/line-watch", { method: "PUT", body: JSON.stringify(body), signal }),
   /** #714 보유 종목 손절 · 익절 알림(#694) — 설정과 지난 판정의 종목별 선 */
   holdingWatch: () => call<HoldingWatch>("/api/holding-watch"),
   saveHoldingWatch: (body: HoldingWatchBody) =>
@@ -616,6 +622,14 @@ export interface NotifyChannels {
   can_edit: boolean;
   channels: NotifyChannel[];
 }
+
+/** 정책 기반 수신처는 서버에서 승인하며 이 화면에서 편집할 수 없다. */
+export type ApprovedLineWatchChannel = Pick<NotifyChannel, "label" | "configured" | "enabled" | "kinds"> & {
+  name: NotifyChannelId;
+};
+export type LineWatchChannels = Omit<NotifyChannels, "channels"> & {
+  channels: (NotifyChannel | ApprovedLineWatchChannel)[];
+};
 
 /** #361 수급 전향 한 건 */
 export interface FlowAlert {
@@ -828,6 +842,19 @@ export interface DeskStatus { now: string; jobs: StatusJob[]; cooldowns: StatusC
 
 /** #614 차트 선 알림(#613 GET · PUT /api/notify/line-watch) — 감시는 주인이 켜기 전까지 꺼짐 */
 export type LineWatchEvent = "touch" | "break" | "retest" | "long";
+export type LineWatchSide = "both" | "support" | "resistance";
+export interface LineWatchSupport {
+  market: string | null;
+  supported: string[];
+  unsupported: Record<string, string>;
+}
+export interface LineWatchRule {
+  ticker: string;
+  enabled: boolean;
+  timeframes: string[];
+  events: Partial<Record<LineWatchEvent, boolean>>;
+  side: LineWatchSide;
+}
 export interface LineSignal {
   trade_date: string;        // KST 날짜
   ticker: string;
@@ -835,7 +862,8 @@ export interface LineSignal {
   event: LineWatchEvent;
   rule: string;
   line_id: string;
-  at: string;                // 그 봉 시각(ISO)
+  at: string;                // 판정한 봉의 시작(ISO)
+  recorded_at?: string | null; // 실제 저장 시각(UTC ISO)
   price: number;
   line_price: number;
   text: string;              // "제목\n본문"
@@ -846,10 +874,20 @@ export interface LineWatch {
   timeframes: string[];
   events: Partial<Record<LineWatchEvent, boolean>>;
   can_edit: boolean;
-  allowed: { timeframes: string[]; events: LineWatchEvent[]; max_tickers: number };
+  rules?: LineWatchRule[] | null;
+  allowed: {
+    timeframes: string[];
+    events: LineWatchEvent[];
+    max_tickers: number;
+    sides?: LineWatchSide[];
+    support?: Record<string, LineWatchSupport>;
+  };
   limits: { cooldown_min: number; cooldown_bars: number; daily_max: number; per_ticker_max: number };
   recent: LineSignal[];
 }
+
+/** rules 생략은 유지, 배열은 전체 교체, null은 보존한 공통 모드로 돌아간다. */
+export type LineWatchPatch = Partial<Pick<LineWatch, "enabled" | "tickers" | "timeframes" | "events" | "rules">>;
 
 /** #714 보유 종목 손절 · 익절 알림(#694 GET · PUT /api/holding-watch) — 감시는 주인이 켜기 전까지 꺼짐.
  *  수량 · 금액은 없다. 손절선이 최대 손실선(평단 −n%)이면 stop 은 null(가격을 쓰면 평단이 드러난다). */

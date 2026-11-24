@@ -30,6 +30,8 @@ const REASONS: Readonly<Record<string, string>> = {
   rate_limited: "출처 조회 한도 도달",
   source_timeout: "출처 응답 지연",
   source_error: "출처 조회 오류",
+  partial_source: "확인된 일부 발행사 자료만 표시합니다.",
+  no_recent_items: "기간 안에 확인된 공시가 없습니다.",
 };
 
 const SOURCES: Readonly<Record<string, string>> = {
@@ -38,6 +40,7 @@ const SOURCES: Readonly<Record<string, string>> = {
   google_news: "Google News",
   yahoo_news: "Yahoo News",
   open_dart: "Open DART",
+  dart_rss: "금융감독원 DART RSS",
   issuer_ir: "발행사 IR",
   reddit: "Reddit",
   stocktwits: "Stocktwits",
@@ -76,11 +79,19 @@ function EvidenceTime({ item }: { item: StockSocialItem }) {
   if (item.time_basis === "edgar_acceptance") {
     return <>접수 시각 <DateTime value={item.at} /></>;
   }
+  if (item.time_basis === "dart_rss_pubdate") {
+    return <>RSS 제공 시각 <DateTime value={item.at} /></>;
+  }
   return <>공시일 {item.filed_date ? <time dateTime={item.filed_date}>{item.filed_date}</time> : "미제공"}</>;
 }
 
 function sourceLabel(id: string) {
   return SOURCES[id] ?? id;
+}
+
+function relevanceLabel(item: StockSocialItem) {
+  if (item.relevance === "direct") return "종목 직접";
+  return item.source === "dart_rss" ? "반도체 업종 간접" : "섹터·구성종목 간접";
 }
 
 function reasonText(reason: string | null) {
@@ -148,7 +159,7 @@ function Evidence({ item }: { item: StockSocialItem }) {
         <h5>{item.title}</h5>
         <p className="stock-social__meta"><EvidenceTime item={item} /></p>
         <ul className="stock-social__labels" role="list" aria-label="근거 분류">
-          <li>{item.relevance === "direct" ? "종목 직접" : "섹터·구성종목 간접"}</li>
+          <li>{relevanceLabel(item)}</li>
           {item.sentiment && <li>{KIND_LABEL[item.sentiment]}</li>}
           {item.tags.filter((tag) => tag !== "filing").map((tag) => <li key={tag}>{TOPICS[tag] ?? tag}</li>)}
           {item.stale && <li>지연 자료</li>}
@@ -173,7 +184,7 @@ function SourceStatus({ source }: { source: StockSocialSource }) {
     <li className="stock-social__source">
       <strong>{sourceLabel(source.id)}</strong><span> · {source.status === "available" ? "사용 가능" : STATUS[source.status]}</span>
       {reasonText(source.reason) && <span> · {reasonText(source.reason)}</span>}
-      {source.updated_at && <span> · {source.id === "sec_edgar" ? "조회 기준" : "자료 기준"} <DateTime value={source.updated_at} /></span>}
+      {source.updated_at && <span> · {source.id === "sec_edgar" || source.id === "dart_rss" ? "조회 기준" : "자료 기준"} <DateTime value={source.updated_at} /></span>}
       {source.prior_http_status != null && <span> · 과거 응답 HTTP {source.prior_http_status}</span>}
     </li>
   );

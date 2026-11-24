@@ -26,7 +26,9 @@ Pure functions but ``bands_for``'s cache - the sending, the daily cap per rule a
 from __future__ import annotations
 
 import logging
+from concurrent.futures import Future
 from datetime import date, datetime, time, timedelta
+from threading import Lock
 
 from . import flow_intraday
 from .futures_flow import KST
@@ -51,7 +53,9 @@ WHO_KO = {"prog_total": "프로그램 전체", "prog_nonarb": "프로그램 비�
 MARKET_KO = {"kospi": "코스피", "kosdaq": "코스닥"}
 RULE_KO = {"buy_turn": "매수 전환", "sell_turn": "매도 전환"}
 
-_cache: dict[str, dict] = {}
+_cache: dict[tuple[date, object], dict] = {}
+_pending: dict[tuple[date, object], Future[dict]] = {}
+_cache_lock = Lock()
 
 
 def bands(days: list[list[dict]]) -> dict:
@@ -75,15 +79,44 @@ def bands(days: list[list[dict]]) -> dict:
 
 
 def cached(day: date) -> bool:
-    return day.isoformat() in _cache
+    """The alerts' prefetch hint. A lookup still checks its own history source."""
+    with _cache_lock:
+        return any(cached_day == day for cached_day, _ in _cache)
 
 
 def bands_for(history, day: date, days_points: list[list[dict]] | None = None) -> dict:
     """``bands`` over the HISTORY_DAYS trading days before ``day`` (desk.futures_history), once a day per process;
     ``days_points``: those days already read (desk.market_alerts reads them for its own thresholds)."""
+    key = (day, history)
+    with _cache_lock:
+        if key in _cache:
+            return _cache[key]
+        pending = _pending.get(key)
+        first = pending is None
+        if pending is None:
+            pending = _pending[key] = Future()
+    if not first:
+        return pending.result()
+
+    try:
+        got = _read_bands(history, day, days_points)
+        with _cache_lock:
+            if len(_cache) >= KEEP_CACHED:
+                oldest = min(_cache, key=lambda entry: entry[0])
+                _cache.pop(oldest)
+            _cache[key] = got
+            del _pending[key]
+    except BaseException as exc:
+        with _cache_lock:
+            del _pending[key]
+        pending.set_exception(exc)
+        raise
+    pending.set_result(got)
+    return got
+
+
+def _read_bands(history, day: date, days_points: list[list[dict]] | None) -> dict:
     key = day.isoformat()
-    if key in _cache:
-        return _cache[key]
     if days_points is None:
         days = [d["date"] for d in history.daily(HISTORY_DAYS + 1) if d.get("date") and d["date"] < key]
         days_points = [history.intraday(date.fromisoformat(d)) for d in days[:HISTORY_DAYS]]
@@ -96,9 +129,6 @@ def bands_for(history, day: date, days_points: list[list[dict]] | None = None) -
         f"{m} {who.removeprefix('program_')} {got['band'][(m, who)]:,.0f}"
         f"({'default' if got['days'].get((m, who), 0) < MIN_DAYS else 'measured'}, {got['days'].get((m, who), 0)} days)"
         for m, who in DEFAULT))
-    for old in sorted(_cache)[:-KEEP_CACHED + 1] if len(_cache) >= KEEP_CACHED else []:
-        _cache.pop(old, None)
-    _cache[key] = got
     return got
 
 

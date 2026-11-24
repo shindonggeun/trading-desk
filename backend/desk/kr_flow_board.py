@@ -15,6 +15,8 @@ MAX_DAYS = 22
 RANK_LIMIT = 50
 _VENUE = "krx"
 _CURRENCY = "KRW"
+_TRADE_SCOPES = frozenset({"regular", "all_sessions"})
+_OWNERSHIP_BASIS = "listed_shares"
 _SUFFIX = {market.lower(): suffix for market, suffix in KR_SUFFIX.items()}
 _TICKER = re.compile(r"([0-9][0-9A-Z]{5})(\.KS|\.KQ)?")
 
@@ -31,6 +33,8 @@ class Turnover:
     unit: str = _CURRENCY
     published_at: datetime | None = None
     confirmed: bool = True
+    # Source-confirmed execution window. A KRX venue alone does not identify it.
+    trade_scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -42,10 +46,11 @@ class ForeignFlow:
     buy_krw: int | None
     sell_krw: int | None
     net_krw: int | None = None
-    venue: str = _VENUE
-    unit: str = _CURRENCY
+    venue: str | None = None
+    unit: str | None = None
     published_at: datetime | None = None
     confirmed: bool = True
+    trade_scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,8 @@ class Ownership:
     ratio_pct: float | None
     published_at: datetime | None = None
     confirmed: bool = True
+    # The denominator is the same share class's listed shares on as_of.
+    denominator: str | None = None
 
 
 @dataclass(frozen=True)
@@ -163,33 +170,48 @@ def _foreign_flow(row: ForeignFlow | None, now: datetime, empty: str) -> dict:
             "buy_krw": buy, "sell_krw": sell, "net_krw": net}
 
 
+def _ownership_status(row: Ownership, now: datetime) -> str:
+    status = _publication_status(row, now)
+    if status != "available":
+        return status
+    ratio = row.ratio_pct
+    if row.denominator != _OWNERSHIP_BASIS or type(ratio) not in (int, float) or not 0 <= ratio <= 100:
+        return "no_data"
+    return "available"
+
+
 def _ownership(row: Ownership | None, now: datetime, empty: str) -> dict:
-    status = _publication_status(row, now) if row else empty
+    status = _ownership_status(row, now) if row else empty
     ratio = row.ratio_pct if row and status == "available" else None
-    if status == "available" and (type(ratio) not in (int, float) or not 0 <= ratio <= 100):
-        ratio, status = None, "no_data"
     return {**_metadata(row, status), "unit": "percent", "ratio_pct": ratio}
 
 
-def _ratios(turnover: dict, foreign_flow: dict) -> dict:
+def _ratios(turnover: dict, foreign_flow: dict, turnover_scope: str | None, flow_scope: str | None) -> dict:
     total, buy, sell = turnover["value_krw"], foreign_flow["buy_krw"], foreign_flow["sell_krw"]
     participation = imbalance = None
-    inconsistent = total is not None and buy is not None and sell is not None and max(buy, sell) > total
+    comparable = flow_scope in _TRADE_SCOPES and flow_scope == turnover_scope
+    inconsistent = comparable and total is not None and buy is not None and sell is not None and max(buy, sell) > total
     if buy is None or sell is None:
         imbalance_status = foreign_flow["status"] if foreign_flow["status"] != "partial" else "missing_input"
     elif inconsistent:
         imbalance_status = "inconsistent_amounts"
     elif buy + sell == 0:
         imbalance_status = "zero_denominator"
+    elif flow_scope not in _TRADE_SCOPES:
+        imbalance_status = "no_data"
     else:
         imbalance, imbalance_status = (buy - sell) / (buy + sell), "available"
 
     if total is None:
         participation_status = turnover["status"]
-    elif total == 0:
+    elif total == 0 and comparable:
         participation_status = "zero_denominator"
     elif buy is None or sell is None:
         participation_status = imbalance_status
+    elif turnover_scope not in _TRADE_SCOPES or flow_scope not in _TRADE_SCOPES:
+        participation_status = "no_data"
+    elif not comparable:
+        participation_status = "scope_mismatch"
     elif inconsistent:
         participation_status = "inconsistent_amounts"
     else:
@@ -214,7 +236,7 @@ def _index(rows: Sequence[_Row] | None, market: str, latest: date, now: datetime
 
 def _preference(row: Turnover | ForeignFlow | Ownership, now: datetime) -> tuple[bool, datetime, str]:
     at = row.published_at
-    status = _publication_status(row, now) if isinstance(row, Ownership) else _money_status(row, now)
+    status = _ownership_status(row, now) if isinstance(row, Ownership) else _money_status(row, now)
     return status == "available", at if at and at.utcoffset() is not None else datetime.min.replace(tzinfo=UTC), row.source
 
 
@@ -276,10 +298,14 @@ def build_board(
 
     def point(ticker: str, day: date, ranked: Turnover | None = None) -> dict:
         key = (ticker, day)
-        amount = _turnover(ranked or turnover.get(key), now, empty_turnover)
-        flow = _foreign_flow(foreign.get(key), now, empty_foreign)
+        amount_row = ranked or turnover.get(key)
+        flow_row = foreign.get(key)
+        amount = _turnover(amount_row, now, empty_turnover)
+        flow = _foreign_flow(flow_row, now, empty_foreign)
+        ratios = _ratios(amount, flow, amount_row.trade_scope if amount_row else None,
+                         flow_row.trade_scope if flow_row else None)
         return {"date": day.isoformat(), "turnover": amount, "foreign_flow": flow,
-                "ownership": _ownership(ownership.get(key), now, empty_ownership), **_ratios(amount, flow)}
+                "ownership": _ownership(ownership.get(key), now, empty_ownership), **ratios}
 
     def latest_ownership(ticker: str, cutoff: date) -> dict:
         for day, row in ownership_by_ticker.get(ticker, ()):
@@ -325,7 +351,9 @@ def build_board(
         "favorites": {"status": favorites_status, "items": favorite_items},
         "sources": {
             "turnover": {"status": "available" if turnover else empty_turnover},
-            "foreign_flow": {"status": "available" if foreign else empty_foreign},
-            "ownership": {"status": "available" if ownership else empty_ownership},
+            "foreign_flow": {"status": "available" if any(
+                _money_status(row, now) == "available" for row in foreign.values()
+            ) else empty_foreign},
+            "ownership": {"status": "available" if ownership_by_ticker else empty_ownership},
         },
     }

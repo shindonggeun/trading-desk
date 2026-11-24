@@ -179,6 +179,16 @@ favorites = Table(
     Column("created_at", Timestamp, nullable=False),
 )
 
+# One private chart memo per exact product and account (#925).
+chart_memos = Table(
+    "chart_memos", metadata,
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("ticker", String(20), primary_key=True),
+    Column("text", Text, nullable=False),
+    Column("created_at", Timestamp, nullable=False),
+    Column("updated_at", Timestamp, nullable=False),
+)
+
 # Sector tabs per account (#156): a named, ordered group of tickers ([{ticker, name}] in JSON).
 # KOSPI200 front-month futures, a snapshot every few minutes of the session (#254): investor net
 # contracts / value (million won), price, open interest, basis. The day's last one is its daily row.

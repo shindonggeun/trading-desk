@@ -39,6 +39,7 @@ from . import (
     bottom_zone,
     calibration,
     channels,
+    chart_memos,
     chart_read,
     chat,
     credit,
@@ -3862,6 +3863,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         return StreamingResponse(frames(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    app.include_router(chart_memos.create_router(engine))
 
     # --- favorites (#134): per account, ordered ----------------------------------------
 

@@ -6,12 +6,12 @@ import { createLineWatchScope, LineWatchScopeContext } from "./lineSignals";
 import Dashboard from "./pages/Dashboard";
 import SectionBoundary from "./components/SectionBoundary";
 import ChunkFailed from "./components/ChunkFailed";
-import { activeNav, KR_FLOW_BOARD_ROUTE, MARKET_WATCHBOARD_ROUTE, NAV, navigation } from "./nav";
+import { activeNav, KR_FLOW_BOARD_ROUTE, MARKET_WATCHBOARD_ROUTE, NAV, navigation, US_FLOW_BOARD_ROUTE } from "./nav";
 import { openMini } from "./miniWindow";
 // #537 대시보드 밖 화면은 갈 때 받는다(메뉴에 올리면 미리)
 import {
   Backtest, CalendarView, Charts, ChartView, Chat, DayCallRecord, FuturesView, Funds, Halving, History, KrFlowBoard, Live, MarketWatchboard, MiniWindow, MorningBriefPage, Paper, prefetchRoute,
-  Reports, Review, RunView, Sectors, Settings, Tips, WeeklyMap,
+  Reports, Review, RunView, Sectors, Settings, Tips, UsFlowBoard, WeeklyMap,
 } from "./lazyPages";
 import ChatWidget from "./components/ChatWidget";
 import AppNotices from "./components/AppNotices";
@@ -117,6 +117,7 @@ export default function App() {
   const onLive = route.startsWith("#/live");
   const onWatchboard = MARKET_WATCHBOARD_ROUTE.test(route);
   const onKrFlowBoard = KR_FLOW_BOARD_ROUTE.test(route);
+  const onUsFlowBoard = US_FLOW_BOARD_ROUTE.test(route);
   const onHistory = route.startsWith("#/history");
   const onSectors = route.startsWith("#/sectors");
   const onBacktest = route.startsWith("#/backtest");
@@ -213,7 +214,7 @@ export default function App() {
       {user && (route === "" || route === "#/" || route.startsWith("#/?")) && <TourPrompt />}
       {/* #451 연결 없음 · 앱으로 설치 안내 */}
       <AppNotices />
-      {user && here && !chartMatch && <ScreenHelp id={here.item.id} />}
+      {user && here && !chartMatch && <ScreenHelp id={onUsFlowBoard ? "usFlowBoard" : here.item.id} />}
 
       {/* #537 화면 코드를 받는 동안은 짧은 안내 — 머리줄 · 메뉴는 그대로 */}
       {/* 배포 뒤 오래 열어 둔 탭은 옛 화면 조각이 없어 받기에 실패한다 — 앱 전체가 내려가지 않게 이 자리만 안내(화면을 바꾸면 다시 시도) */}
@@ -236,6 +237,8 @@ export default function App() {
         <MarketWatchboard />
       ) : onKrFlowBoard ? (
         <KrFlowBoard />
+      ) : onUsFlowBoard ? (
+        <UsFlowBoard />
       ) : onSectors ? (
         <Sectors />
       ) : onReview ? (

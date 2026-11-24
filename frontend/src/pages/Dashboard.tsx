@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { Layout as GridLayoutItems } from "react-grid-layout";
 import { api } from "../api";
+import { opensMarketFlow } from "../krFlowLinks";
 import { balanceColumns, CLOSED_PX, loadColumns, loadHeights, saveColumns, saveHeights, TYPICAL_PX, type Col } from "../dashBalance";
 import FavoritesPanel from "../components/FavoritesPanel";
 import FuturesQuoteCard from "../components/FuturesQuoteCard";
@@ -254,7 +255,7 @@ export default function Dashboard() {
   // 해시는 패널이 읽고 지운다 — 여기서는 구역만 편다.
   useEffect(() => {
     const reveal = () => {
-      if (!/[?&]flow=intraday(?:&|$)/.test(window.location.hash)) return;
+      if (!opensMarketFlow(window.location.hash)) return;
       const cur = loadPrefs();               // 저장은 updater 밖에서(StrictMode 이중 실행에도 한 번)
       if (!cur.closed.includes("flow") && cur.mobileOpen.includes("flow")) return;
       const next = {
@@ -267,7 +268,7 @@ export default function Dashboard() {
     };
     // #487 저장 배치에서 시장 수급을 숨겨 두었으면 다시 보이게(맨 아래) — 알림 클릭이 아무 일도 안 하지 않게
     const revealInGrid = () => {
-      if (!/[?&]flow=intraday(?:&|$)/.test(window.location.hash)) return;
+      if (!opensMarketFlow(window.location.hash)) return;
       for (const b of ["wide", "mid"] as const) if (unhideSection(b, "flow")) setSaved((cur) => (cur && bandSeen.current === b ? loadBand(b, DEFAULT_ORDER, TOP_SECTIONS) : cur));
     };
     revealInGrid();
@@ -583,7 +584,7 @@ export default function Dashboard() {
             <div className="dash-body-inner" ref={inGrid ? auto.register(id) : undefined}>
               {/* #537 화면 밖 구역은 보일 때 그리고(그 전엔 API 도 안 부른다), 코드가 따로인 구역은 받는 동안 안내 */}
               {/* #362 알림(#/?flow=intraday)이 연 수급 구역은 화면 밖이어도 바로 그려 "오늘 장중" 탭 · 스크롤이 일어나게 */}
-              <WhenVisible eager={id === "flow" && /[?&]flow=intraday(?:&|$)/.test(window.location.hash)}
+              <WhenVisible eager={id === "flow" && opensMarketFlow(window.location.hash)}
                 placeholderPx={layout === "wide" && !inGrid ? waitPx(id) : undefined}>
                 <SectionBoundary fallback={<ChunkFailed />}>
                   <Suspense fallback={<p className="muted small">불러오는 중…</p>}>{s.render()}</Suspense>

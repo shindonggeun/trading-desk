@@ -39,10 +39,11 @@ const farText = (l: ChartReadLevel) => `${price(l.price)} ${l.name}(${distText(l
  * 한 줄 요약 → 위에서 막힐 수 있는 곳 → 아래에서 받쳐 줄 수 있는 곳 → 조심할 때 / 볼 때 → 먼 레벨(접힘) → 예측 · 추천 아님.
  * 번호(①…)를 누르면 차트에서 그 선을 강조하고 나머지 선은 흐리게. 시간봉 탭은 차트 주기와 같이 움직인다.
  */
-export default function ChartReadPanel({ read, failed, frame, interval, onInterval, marks, picked, onPick, beginner, applied, onBeginner, idPrefix, open, onToggle, accumulation, selectedAccumulation, weeklyDrawdown }: {
+export default function ChartReadPanel({ read, failed, frame, interval, onInterval, marks, picked, onPick, beginner, applied, onBeginner, idPrefix, open, onToggle, accumulation, selectedAccumulation, weeklyDrawdown, dailyResistance }: {
   read: ChartRead | null;
   accumulation?: ReactNode;
   weeklyDrawdown?: ReactNode;
+  dailyResistance?: ReactNode;
   selectedAccumulation: AccumulationViewKey;
   failed: boolean;
   frame: ChartReadFrame | null;
@@ -109,6 +110,7 @@ export default function ChartReadPanel({ read, failed, frame, interval, onInterv
           <p><strong>이미 갖고 있다면</strong> {guide.holder}</p>
           <p><strong>새로 들어가려면</strong> {guide.entry}</p>
         </section>}
+        {dailyResistance}
         {weeklyDrawdown}
         {accumulation}
         {frame && (

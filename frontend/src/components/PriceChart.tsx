@@ -46,6 +46,9 @@ import { delayText, LIVE_NOTE, liveLabel, liveMs, useInView } from "../liveBar";
 import ChartReadPanel from "./ChartReadPanel";
 import ChartDrawingPanel, { type DrawingQuote } from "./ChartDrawingPanel";
 import WeeklyDrawdownGuide from "./WeeklyDrawdownGuide";
+import DailyResistancePanel from "./DailyResistancePanel";
+import { dailyResistanceFocus, isDailyResistanceExample, findDailyResistanceCandle } from "../dailyResistance";
+import { revealDailyResistanceBar, useDailyResistanceOverlay, type DailyOverlayTarget } from "./dailyResistanceOverlay";
 import { sameTicker } from "../ticker";
 import type { WeeklyDrawdownObservation } from "../weeklyDrawdownTypes";
 import AccumulationPanel from "./AccumulationPanel";
@@ -651,6 +654,31 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     };
   }, [ticker, oscInterval, show.osc]);
   const [drawn, setDrawn] = useState<Drawn | null>(null);
+  const dailyRead = readOn && interval === "1d";
+  const dailyResponse = dailyRead && sameTicker(ticker, chartRead?.ticker) ? chartRead : null;
+  const dailyObservation = !readFailed && sameTicker(ticker, dailyResponse?.daily_reaction?.ticker)
+    ? dailyResponse?.daily_reaction : undefined;
+  const dailyEvidence = useMemo(() => dailyObservation ? dailyResistanceFocus(dailyObservation) : null, [dailyObservation]);
+  const dailyTarget = useMemo((): DailyOverlayTarget | null => {
+    if (!dailyEvidence || !drawn?.alive.current || drawn.interval !== "1d" || !sameTicker(ticker, drawn.ticker)) return null;
+    const row = findDailyResistanceCandle(drawn.rows, dailyEvidence.barAt, row => row.bar.at);
+    return row ? {
+      time: row.key as Time, high: dailyEvidence.high, low: dailyEvidence.low,
+      resistancePrice: dailyEvidence.resistance?.price ?? null,
+    } : null;
+  }, [dailyEvidence, drawn, ticker]);
+  const dailyKey = dailyTarget && dailyEvidence ? JSON.stringify([ticker, dailyEvidence.barAt, dailyTarget.resistancePrice]) : null;
+  const [dailyPicked, setDailyPicked] = useState<string | null>(null);
+  const dailyActive = dailyKey !== null && dailyPicked === dailyKey;
+  useEffect(() => setDailyPicked(null), [dailyKey]);
+  useDailyResistanceOverlay(drawn, dailyActive ? dailyTarget : null);
+  const toggleDailyResistance = () => {
+    if (!drawn?.alive.current || !dailyTarget || !dailyKey) return;
+    setDailyPicked(dailyActive ? null : dailyKey);
+    if (dailyActive) return;
+    revealDailyResistanceBar(drawn.chart, dailyTarget.time);
+    box.current?.scrollIntoView({ block: "nearest" });
+  };
   const [accumulationView, selectAccumulationView] = useState<AccumulationViewKey | null>(null);
   const selectedAccumulation = accumulationView
     ?? (interval === "1d" ? "mid" : isIntradayTf(interval) ? "short" : "long");
@@ -2552,6 +2580,12 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
           onInterval={(tf) => setBarInterval(tf as Interval)} marks={readMarks} picked={readPick} onPick={(n) => pickMark(n, "panel")}
           beginner={readPrefs.beginner} applied={beginner} onBeginner={(b) => pickRead({ beginner: b })} idPrefix={readId}
           open={readExpanded} onToggle={setReadExpanded} selectedAccumulation={selectedAccumulation}
+          dailyResistance={dailyObservation ? (
+            <DailyResistancePanel observation={dailyObservation}
+              focus={dailyEvidence ? { available: dailyTarget !== null, active: dailyActive, onToggle: toggleDailyResistance } : undefined} />
+          ) : dailyRead && isDailyResistanceExample(ticker) && (readFailed || dailyResponse) ? (
+            <p className="muted small" role="status">일봉 저항 반응 자료를 받지 못했어요. 차트 읽기를 다시 확인해 주세요.</p>
+          ) : undefined}
           weeklyDrawdown={weeklyRead && (readFailed || sameTicker(ticker, chartRead?.ticker)) ? (
             <WeeklyDrawdownGuide observation={weeklyObservation ?? {
               status: "unavailable", reason: readFailed ? "차트 읽기 자료를 다시 받아야 합니다." : null,

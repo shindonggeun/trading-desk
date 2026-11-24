@@ -513,7 +513,7 @@ export interface ExtraLine {
  * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
  * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
  */
-function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, banner, onIntervalChange, highlight = null, outlook = null, planLabels, onLineClick, trendPick, onTrendPick, readable = false, readOpen = false }: {
+function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, banner, onIntervalChange, highlight = null, includeHighlightInScale = false, outlook = null, planLabels, onLineClick, trendPick, onTrendPick, readable = false, readOpen = false }: {
   ticker: string;
   tradeDate: string;
   plan: Plan | null;
@@ -536,6 +536,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   onIntervalChange?: (interval: Interval) => void;
   /** #440 가격 사다리에서 고른 가격 — 같은 가격에 굵은 강조선을 잠깐 긋는다 */
   highlight?: number | null;
+  includeHighlightInScale?: boolean;
   /** #438 run 의 1주 · 1개월 방향 전망 — 일봉에서 마지막 봉 오른쪽에 원뿔 · 경로를 그리고 아래에 한 줄 요약 */
   outlook?: RunOutlook | null;
   /** #466 진입 · 손절 · 목표 선 제목 · 색(시나리오 · 근거 한 단어) — 없으면 "진입" · "손절" · "목표" */
@@ -1249,6 +1250,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   }, [candles]);
 
   // 계획선 · 마커 · 축 범위 — 차트를 다시 만들지 않고 갈아 끼운다. 끈 선은 축 범위에서도 뺀다.
+  const selectedScalePrice = includeHighlightInScale ? highlight : null;
   useEffect(() => {
     if (!drawn) return;
     const { series, markers, rows, intraday, lastClose } = drawn;
@@ -1307,6 +1309,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     // 오른쪽 축의 가까운 라벨은 하나로(좌표는 그려진 뒤에 나온다)
     const stopLabels = keepAxisLabelsApart(drawn.chart, series, labelled, 16, () => drawn.alive.current);
     const near = planLines.map(([v]) => v).filter((v): v is number => v != null && Math.abs(v - lastClose) / lastClose <= AUTOSCALE_MAX_GAP);
+    if (selectedScalePrice != null) near.push(selectedScalePrice);
     series.applyOptions({
       autoscaleInfoProvider: (base: () => { priceRange: { minValue: number; maxValue: number } } | null) => {
         const r = base();
@@ -1367,7 +1370,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       stopLabels(drawn.alive.current);
       if (drawn.alive.current) for (const line of made) series.removePriceLine(line);
     };
-  }, [drawn, plan, fills, pickedFill, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines, show.opt, optionData, show.osc, osc, show.bz, bottom, planLabels]);
+  }, [drawn, plan, fills, pickedFill, tradeDate, ticker, show.levels, show.analysis, show.fills, extraLines, show.opt, optionData, show.osc, osc, show.bz, bottom, planLabels, selectedScalePrice]);
 
   // #896의 연구 가격은 사용자가 켠 주봉에서만 추가한다. 계획선과 지지·저항의 축 설정은 그대로 둔다.
   useEffect(() => {

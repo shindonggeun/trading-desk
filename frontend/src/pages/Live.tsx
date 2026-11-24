@@ -179,7 +179,7 @@ export default function Live() {
           mark={mark && sameTicker(mark.ticker, shown.ticker) ? mark : null} />
       )}
       {focus && view === "live" && <LiveChart ticker={focus.ticker} plan={null} />}
-      {shown && infoOn && <StockProfileCard key={shown.ticker} ticker={shown.ticker} onClose={() => setInfoOn(false)} />}
+      {shown && infoOn && <StockProfileCard ticker={shown.ticker} name={shown.name} onClose={() => setInfoOn(false)} />}
       {!focus && tab && (
         <>
           <div className="live-plan muted small">

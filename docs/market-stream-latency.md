@@ -93,3 +93,34 @@ node frontend/benchmarks/market-stream-latency.mjs --quick
 - 판정: 시세 · 수급의 `sse.observed.p95` 가 2초 이하면 목표 충족. 원천 → 관측은 전송과 무관한 수집 주기라 따로 적는다.
 - 표본이 10개 미만인 칸, `degraded` 가 뜬 시간, `skew_rtt_ms` 가 큰(예: 200 ms 넘는) 경우는 그대로 적고 판정에서 뺀다.
 - 운영 Redis · 인그레스가 끊긴 조건의 채널별 폴링 복귀는 별도 결과로 기록한다(#854 는 CI 의 실제 Redis 로 확인).
+
+## split 전환 뒤 확인 범위
+
+2026-11-24 검증은 KRX 정규장 종료 뒤에 시작했고 이번 세션에서 승인된 운영 인증 연결을
+확인하지 못했다. 운영 시세·수급의 원천→관측→패널 지연과 장중 1~2초 기준은 미측정이다.
+Jenkins #101 기록은 세 역할의 Healthy와 API의 Redis 시장 스트림 구독을 확인했다.
+#962의 공유 캐시 합성 p95는 REST 처리시간 비교다. #860은 Redis·Kafka 호스트 왕복과 화면
+계측을 다뤘고, #865는 느린 러너의 시장 스트림 리허설을 보강했다. 어느 기록에도 같은 장중
+원천 표본의 폴링·SSE 패널 지연은 없다.
+[Jenkins #101 기록](https://github.com/shindonggeun/trading-desk/issues/776#issuecomment-7123816411) ·
+[#962 캐시 검증](shared-cache-operations.md) · [#860 계측과 왕복](https://github.com/shindonggeun/trading-desk/pull/860) ·
+[#865 리허설](https://github.com/shindonggeun/trading-desk/pull/865)
+
+`node --test frontend/src/marketLatency.test.mjs`로 격리 검증한다. `observed_at`이 비어
+있거나 파싱할 수 없으면 SSE 표본과 폴링 짝에서 제외된다. `source_at`이 없는 표본은
+관측→패널 통계에는 들어갈 수 있어 두 구간의 `n`은 다를 수 있다. ready 전 스냅숏과
+동일값 반복에서 새 지연을 세지 않고, 유효한 왕복 중 가장 짧은 응답의 오프셋을 양·음
+부호 모두 확인했다. 백엔드의 `tests/test_market_stream.py`는 격리 Redis 대역으로 봉인
+전달, 자기 에코 제외, 구독 장애와 복구를 확인한다.
+
+다음 장중 증거에는 채널별 `n`, 시각 누락과 `unmatched`·`self`, 보정 전후 지연,
+`skew_ms`·`skew_rtt_ms`, 저하 상태를 함께 남긴다. `report()`에는 제외된 관측 시각
+누락 건수가 없고 두 구간의 `n` 차이는 남은 표본 내 원천 시각 누락만 나타낸다.
+`skew()`가 `null`이면 새 보정값을 얻지 못한 경우이므로 이전 보정값이 표시되어도
+그 측정은 직접 비교에서 제외한다. 시세와 선물 수급에 `source_at`이
+없으면 원천→관측 및 원천→패널은 미측정이다. 현물 수급의 시각이 원천 제공값 대신 데스크의
+변동 관측 시각이면 그 한계를 표시한다. `rest`는 준비된 스트림과 일치한 값만 포함하고
+`sse`는 스트림에서 반영 가능한 변화를 집계하므로, 두 요약의 집단이 같다고 가정하지 않는다.
+직접 비교는 같은 채널·시간 창에서 전후가 짝지어진 경우에 한한다. 다른 집단의 p95를
+더하거나 빼서 종단 지연을 계산하지 않는다. 운영 계측의 종점은 패널 상태이며 브라우저
+DOM 변경을 관측하는 합성 벤치마크의 종점과 구분한다.

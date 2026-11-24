@@ -60,15 +60,77 @@ test("원천 시각이 있으면 원천 → 화면도 낸다", () => {
   assert.equal(sse.source.p50, 30100);
 });
 
-test("시계 차이는 서버 − 브라우저로 더해 보정한다", async () => {
+test("관측 시각이 없거나 잘못된 프레임은 스트림 표본과 폴링 짝에서 제외한다", () => {
   m.resetLatency();
-  const serverAhead = 2000;
-  globalThis.fetch = async () => ({ json: async () => ({ now: new Date(Date.now() + serverAhead).toISOString() }) });
-  const got = await m.measureSkew(3);
-  assert.ok(Math.abs(got.skew_ms - serverAhead) <= 20);
+  const stamps = (id) => [{ key: "latency-missing-observed", id }];
+  m.recordRest("quote", stamps(300), T, T + 50);
+  m.recordStream("quote", stamps(300), stamps(301), undefined, iso(T + 100), true, T + 200);
+  m.recordStream("quote", stamps(301), stamps(302), "invalid", iso(T + 200), true, T + 300);
+  m.recordRest("quote", stamps(301), T + 400, T + 450);
+  m.recordRest("quote", stamps(302), T + 500, T + 550);
+  const { sse, rest } = m.latencyReport().channels.quote;
+  assert.equal(sse.observed, null);
+  assert.equal(sse.source, null);
+  assert.equal(rest.observed, null);
+  assert.equal(rest.unmatched, 2);
+  assert.equal(rest.self, 0);
+});
+
+test("ready 전 재생과 같은 값의 반복을 제외하고 원천 시각은 있는 표본에서만 잰다", () => {
+  m.resetLatency();
+  const stamps = (id) => [{ key: "latency-reconnected-flow", id }];
+  m.recordStream("flow", stamps("before"), stamps("same"), iso(T), null, false, T + 25);
+  m.recordStream("flow", stamps("same"), stamps("same"), iso(T), null, true, T + 30);
+  m.recordStream("flow", stamps("same"), stamps("a"), iso(T + 100), null, true, T + 150);
+  m.recordStream("flow", stamps("a"), stamps("b"), iso(T + 200), "invalid", true, T + 250);
+  m.recordStream("flow", stamps("b"), stamps("c"), iso(T + 300), iso(T + 50), true, T + 350);
+  m.recordStream("flow", stamps("c"), stamps("c"), iso(T + 310), iso(T + 60), true, T + 360);
+  const r = m.latencyReport();
+  assert.deepEqual(r.channels.flow.sse.observed_raw, { n: 3, p50: 50, p95: 50, max: 50 });
+  const sourceDelay = 300 + r.skew_ms;
+  assert.deepEqual(r.channels.flow.sse.source, { n: 1, p50: sourceDelay, p95: sourceDelay, max: sourceDelay });
+});
+
+test("시계 차이는 가장 짧은 유효 왕복의 서버 − 브라우저 값으로 보정한다", async (t) => {
+  m.resetLatency();
+  let now = T;
+  t.mock.method(Date, "now", () => now);
+  const replies = [
+    { rtt: 1, now: "invalid" },
+    { rtt: 200, now: iso(T + 1 + 100 + 3000) },
+    { rtt: 20, now: iso(T + 201 + 10 - 2000) },
+  ];
+  t.mock.method(globalThis, "fetch", async () => {
+    const reply = replies.shift();
+    now += reply.rtt;
+    return { json: async () => ({ now: reply.now }) };
+  });
+  assert.deepEqual(await m.measureSkew(3), { skew_ms: -2000, rtt_ms: 20 });
   const f = (id) => [{ key: "view", id }];
-  m.recordStream("futures", f("a"), f("b"), iso(T), null, true, T + 100 - serverAhead);   // 브라우저 시계가 2초 늦다
+  m.recordStream("futures", f("a"), f("b"), iso(T), null, true, T + 2100);
   const sse = m.latencyReport().channels.futures.sse;
-  assert.ok(Math.abs(sse.observed.p50 - 100) <= 20);
-  assert.ok(Math.abs(sse.observed_raw.p50 - (100 - serverAhead)) <= 1);
+  assert.equal(sse.observed.p50, 100);
+  assert.equal(sse.observed_raw.p50, 2100);
+  assert.equal(sse.source, null);
+});
+
+test("서버 시계가 앞서면 양의 보정으로 원시 음수 지연을 복원한다", async (t) => {
+  m.resetLatency();
+  t.mock.method(Date, "now", () => T);
+  t.mock.method(globalThis, "fetch", async () => ({ json: async () => ({ now: iso(T + 2000) }) }));
+  assert.deepEqual(await m.measureSkew(1), { skew_ms: 2000, rtt_ms: 0 });
+  const f = (id) => [{ key: "view", id }];
+  m.recordStream("futures", f("a"), f("b"), iso(T), null, true, T - 1900);
+  const sse = m.latencyReport().channels.futures.sse;
+  assert.equal(sse.observed.p50, 100);
+  assert.equal(sse.observed_raw.p50, -1900);
+});
+
+test("시각 보정에 쓸 수 없는 응답뿐이면 새 오프셋을 결정하지 않는다", async (t) => {
+  t.mock.method(Date, "now", () => T);
+  const fetch = t.mock.method(globalThis, "fetch", async () => ({ json: async () => ({ now: iso(T + 500) }) }));
+  assert.deepEqual(await m.measureSkew(1), { skew_ms: 500, rtt_ms: 0 });
+  fetch.mock.mockImplementation(async () => ({ json: async () => ({}) }));
+  assert.equal(await m.measureSkew(2), null);
+  assert.equal(m.latencyReport().skew_ms, 500);
 });

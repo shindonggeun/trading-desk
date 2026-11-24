@@ -3,6 +3,7 @@ import {
   dailyResistanceFocus, dailyResistancePresentation, dailyResistanceProduct,
   formatDailyDistance, formatDailyPrice, formatDailyRatio, type DailyResistanceObservation,
 } from "../dailyResistance";
+import DailyResistanceContext from "./DailyResistanceContext";
 import "./DailyResistancePanel.css";
 
 const KST_TIME = new Intl.DateTimeFormat("ko-KR", {
@@ -35,7 +36,7 @@ export default function DailyResistancePanel({ observation, focus }: {
   const waitingForClose = observation.status === "in_progress" || observation.reason === "source_delayed"
     || observation.reason === "confirmation_unverified";
 
-  return (
+  const priceEvidence = (
     <section className="daily-resistance-panel" aria-labelledby={title}>
       <div className="daily-resistance-heading">
         <h4 id={title}>일봉 마감과 저항 반응</h4>
@@ -103,5 +104,12 @@ export default function DailyResistancePanel({ observation, focus }: {
         </dl>
       </details>
     </section>
+  );
+
+  return (
+    <>
+      {priceEvidence}
+      <DailyResistanceContext ticker={ticker} observedAt={observed_at} />
+    </>
   );
 }

@@ -1,0 +1,77 @@
+.chart-drawing {
+  margin: .55rem 0;
+  min-width: 0;
+}
+
+.chart-drawing-panel {
+  display: grid;
+  gap: .65rem;
+  margin-top: .4rem;
+  padding: .65rem;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+}
+
+.chart-drawing-panel p { margin: 0; }
+.chart-drawing-buttons { display: flex; flex-wrap: wrap; gap: .35rem; }
+.chart-drawing-buttons button,
+.chart-drawing-fields button,
+.chart-drawing-anchors button {
+  min-height: 2.2rem;
+  min-width: 2.2rem;
+  padding: .32rem .6rem;
+}
+.chart-drawing-panel summary { cursor: pointer; min-height: 2rem; }
+.chart-drawing-help > p { margin-bottom: .45rem; }
+.chart-drawing-placement, .chart-drawing-review {
+  padding: .55rem;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border-radius: .4rem;
+}
+.chart-drawing-guide-value { display: block; font-size: .86rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.chart-drawing-placement > .chart-drawing-buttons { margin-top: .35rem; }
+.chart-drawing-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: .4rem;
+}
+.chart-drawing-fields label, .chart-drawing-selection {
+  display: grid;
+  gap: .15rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.chart-drawing-fields select, .chart-drawing-selection select {
+  max-width: 100%;
+}
+.chart-drawing-fields input {
+  width: 10rem;
+  max-width: 100%;
+}
+.chart-drawing-selection textarea {
+  min-height: 7rem;
+  resize: vertical;
+}
+.chart-drawing-anchors {
+  display: grid;
+  gap: .35rem;
+  padding-left: 0;
+  list-style: none;
+}
+.chart-drawing-anchors li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .4rem;
+  overflow-wrap: anywhere;
+}
+.chart-drawing-result { font-weight: 700; padding-block: .45rem; }
+.chart-drawing-capture .read-mark { pointer-events: none; }
+.chart-drawing-capture .sr-tip { display: none; }
+
+@media (max-width: 600px) {
+  .chart-drawing-buttons button,
+  .chart-drawing-fields button,
+  .chart-drawing-anchors button { min-height: 2.5rem; }
+}

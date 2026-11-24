@@ -44,6 +44,7 @@ import { css, useColorScheme } from "../chartColors";
 import { every, usePoll } from "../poll";
 import { delayText, LIVE_NOTE, liveLabel, liveMs, useInView } from "../liveBar";
 import ChartReadPanel from "./ChartReadPanel";
+import ChartDrawingPanel, { type DrawingQuote } from "./ChartDrawingPanel";
 import WeeklyDrawdownGuide from "./WeeklyDrawdownGuide";
 import { sameTicker } from "../ticker";
 import type { WeeklyDrawdownObservation } from "../weeklyDrawdownTypes";
@@ -365,6 +366,7 @@ type Drawn = {
   stoch: ISeriesApi<"Line"> | null;
   markers: ISeriesMarkersPluginApi<Time>;
   rows: Row[];
+  ticker: string;
   intraday: boolean;
   /** 그린 봉 주기 — 같은 주기의 추세선은 봉 순서로 */
   interval: Interval;
@@ -385,7 +387,7 @@ const STEP_SEC: Record<Interval, number> = {
  * 추정 값이 실제 봉 칸에 들면(price_only) 봉은 그대로 두고 "추정" 점선만. 실패(503)면 그린 봉 그대로 둔다.
  * 이 이름표만 몇 초마다 다시 그려진다(큰 차트 컴포넌트는 그대로).
  */
-function LiveBarTag({ drawn, ticker, interval, watch, fallback, onStale }: {
+function LiveBarTag({ drawn, ticker, interval, watch, fallback, onStale, onQuote }: {
   drawn: Drawn | null;
   ticker: string;
   interval: Interval;
@@ -395,12 +397,22 @@ function LiveBarTag({ drawn, ticker, interval, watch, fallback, onStale }: {
   fallback: string;
   /** 봉 한 칸보다 오래 쉬었다 돌아왔다 — 봉을 다시 받아 달라 */
   onStale: () => void;
+  onQuote: (drawn: Drawn, quote: DrawingQuote | null) => void;
 }) {
   const inView = useInView(watch);
   const [live, setLive] = useState<CandleLive | null>(null);
   useEffect(() => setLive(null), [ticker, interval]);
   const poll = usePoll(drawn && inView ? `candle-live:${ticker}:${interval}` : null, () => api.candlesLive(ticker, interval),
     liveMs(INTRADAY.has(interval)), { onData: setLive });
+  useEffect(() => {
+    if (!drawn || !live || live.interval !== interval || !sameTicker(ticker, live.ticker)) return;
+    const quote = live.price;
+    if (quote == null || !Number.isFinite(quote) || quote <= 0) return;
+    const label = live.estimated ? "추정 시세" : poll.failing ? "마지막 확인 시세"
+      : live.delay_sec ? "지연 시세" : live.live === false ? "마지막 거래 가격" : "시세";
+    onQuote(drawn, { price: quote, label, observedAt: live.price_at });
+    return () => onQuote(drawn, null);
+  }, [drawn, live, interval, ticker, poll.failing, onQuote]);
   const painted = useRef<{ drawn: Drawn; key: Key; bar: Row["bar"] } | null>(null);
   const beforeEstimate = useRef<{
     drawn: Drawn;
@@ -590,6 +602,17 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   const [preset, setPreset] = useState<Preset>(prefs.preset);
   const [custom, setCustom] = useState<Show>(prefs.custom);   // "직접" 으로 돌아오면 이 고름으로
   const [candles, setCandles] = useState<Candles | null>(null);
+  const drawingCapture = useRef(false);
+  const [drawingActive, setDrawingActive] = useState(false);
+  const captureDrawing = useCallback((active: boolean) => {
+    drawingCapture.current = active;
+    setDrawingActive(active);
+  }, []);
+  const drawingQuote = useRef<{ drawn: Drawn; quote: DrawingQuote } | null>(null);
+  const recordDrawingQuote = useCallback((drawn: Drawn, quote: DrawingQuote | null) => {
+    if (quote) drawingQuote.current = { drawn, quote };
+    else if (drawingQuote.current?.drawn === drawn) drawingQuote.current = null;
+  }, []);
   // 과거 봉 배수(1 · 2 · 4 …) — 종목 · 주기가 바뀌면 처음으로
   const [older, setOlder] = useState({ key: "", times: 1 });
   const olderKey = `${ticker}|${interval}`;
@@ -1159,7 +1182,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
           setOlder((o) => ({ key: olderKeyRef.current, times: (o.key === olderKeyRef.current ? o.times : 1) * 2 }));
         });
       }
-      setDrawn({ chart, series, volume, rsi, stoch, markers: createSeriesMarkers(series, []), rows, intraday, interval: iv, lastClose: rows[rows.length - 1].bar.close, alive });
+      setDrawn({ chart, series, volume, rsi, stoch, markers: createSeriesMarkers(series, []), rows, ticker: candles.ticker, intraday, interval: iv, lastClose: rows[rows.length - 1].bar.close, alive });
     } catch {
       chart?.remove(); // 봉 데이터가 이상하면 앱 전체가 아니라 차트만 실패로
       setFailed(true);
@@ -1435,6 +1458,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     const { chart, series, rows } = drawn;
     const gaps = gapRep.open.filter((g) => Math.abs(g.to_fill_pct) <= 30);
     const onClick = (param: MouseEventParams<Time>) => {
+      if (drawingCapture.current) return;
       if (!drawn.alive.current) return;
       const pt = param.point;
       if (!pt || (param.paneIndex ?? 0) !== 0 || rows.length === 0) return;
@@ -1466,6 +1490,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     const prices = [...own, ...(extraLines ?? []).map((l) => l.price)]
       .filter((p): p is number => p != null && Number.isFinite(p));
     const onClick = (param: MouseEventParams<Time>) => {
+      if (drawingCapture.current) return;
       const y = param.point?.y;
       if (y == null) return;
       let best: { p: number; d: number } | null = null;
@@ -1841,6 +1866,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     if (!drawn || lineDrawn.length === 0) return;
     const { chart } = drawn;
     const onClick = (param: MouseEventParams<Time>) => {
+      if (drawingCapture.current) return;
       if (!drawn.alive.current || !param.point || (param.paneIndex ?? 0) !== 0) return;
       setLinePick(nearestLine(param)?.pick ?? null);
     };
@@ -1876,6 +1902,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     if (!drawn || trendDrawn.length === 0) return;
     const { chart, series } = drawn;
     const onClick = (param: MouseEventParams<Time>) => {
+      if (drawingCapture.current) return;
       const pt = param.point;
       if (!pt || (param.paneIndex ?? 0) !== 0) return;
       const hit = nearestTrend(param);
@@ -2295,6 +2322,19 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   }, [drawn, srShown, srSource, fib, vp, trendDrawn]);
 
   const currency = isKorean(ticker) ? "원" : "달러";
+  const drawingChart = drawn?.interval === interval && sameTicker(ticker, drawn.ticker) ? drawn : null;
+  const product = drawingChart?.ticker ?? ticker;
+  const drawingUnit = /^\^|^(?:NQ|ES|YM|RTY|MNQ|MES|MYM|M2K)=F$|^(?:NAS100|US100)$/i.test(product)
+    ? "포인트" : isKorean(product) ? "원" : "달러";
+  const drawingCandles = useMemo(() => drawingChart?.rows.map(({ key, bar: { at, open, high, low, close } }) => ({
+    time: key, stamp: at, open, high, low, close,
+  })) ?? [], [drawingChart]);
+  const readDrawingQuote = useCallback((): DrawingQuote | null => {
+    if (!drawingChart) return null;
+    if (drawingQuote.current?.drawn === drawingChart) return drawingQuote.current.quote;
+    return { price: drawingChart.lastClose, label: "최근 봉 종가", observedAt: drawingCandles.at(-1)?.stamp };
+  }, [drawingChart, drawingCandles]);
+  const focusDrawingChart = useCallback(() => box.current?.focus({ preventScroll: true }), []);
   const planShown = !!plan && !levelsContradict(plan);   // #436 모순이라 그리지 않은 값은 경고 · 범위 안내에서도 뺀다
   const levels = [...(plan && planShown ? [plan.entry_price, plan.stop_loss, plan.price_target] : []), ...(extraLines ?? []).map((l) => l.price)];
   const hasLevels = levels.some((v) => v != null);
@@ -2336,7 +2376,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
           {title ?? "가격 차트"}{" "}
           <span className="muted small">{title !== ticker && `${ticker} · `}{currency}</span>
           <span className="muted small">
-            <LiveBarTag drawn={drawn} ticker={ticker} interval={interval} watch={section} onStale={reloadBars}
+            <LiveBarTag drawn={drawn} ticker={ticker} interval={interval} watch={section} onStale={reloadBars} onQuote={recordDrawingQuote}
               fallback={candles ? [candles.source, delayText(candles.delay_sec)].filter(Boolean).join(" · ") : ""} />
           </span>
         </h3>
@@ -2391,6 +2431,11 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       </div>
       {notice && <p className="error small chart-limit">{notice}</p>}
       {banner}
+      {drawingChart && (
+        <ChartDrawingPanel key={JSON.stringify([product, interval])} ticker={product} interval={interval} currency={drawingUnit}
+          drawingChart={drawingChart} candles={drawingCandles} currentQuote={readDrawingQuote}
+          focusChart={focusDrawingChart} onPlacement={captureDrawing} />
+      )}
       {show.entry && <EntrySummary entry={entry} failed={entryFailed} fromRun={!!plan}
         elapsed={interval === "1d" ? candles?.session_elapsed ?? null : null} />}
       {oscLines.length > 0 && (
@@ -2422,7 +2467,8 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       ) : (
         <div
           ref={box}
-          className={`price-chart-box ${rsiOn || stochOn ? "with-rsi" : ""}${rsiOn && stochOn ? " with-osc2" : ""}`}
+          tabIndex={-1}
+          className={`price-chart-box ${drawingActive ? "chart-drawing-capture " : ""}${rsiOn || stochOn ? "with-rsi" : ""}${rsiOn && stochOn ? " with-osc2" : ""}`}
           role="img"
           aria-label={`${ticker} ${LABEL[interval]}봉 가격 차트${rsiOn ? "와 RSI" : ""}${stochOn ? " · 스토캐스틱" : ""}${drawn ? `, 마지막 종가 ${price(drawn.lastClose)}` : ""}`}
           aria-describedby={hasLevels && show.levels ? legendId : undefined}

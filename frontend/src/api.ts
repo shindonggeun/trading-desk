@@ -245,6 +245,11 @@ export interface ReviewResponse {
   errors: string[];
 }
 
+export type ChartMemoResponse = {
+  ticker: string;
+  memo: { text: string; created_at: string; updated_at: string; source: "user" } | null;
+};
+
 export const api = {
   /** #315 채팅처럼 이 파일 밖에서 같은 인증 · 오류 처리로 부를 때 */
   raw: <T>(path: string, init?: RequestInit) => call<T>(path, init),
@@ -423,6 +428,15 @@ export const api = {
   stockProfile: (ticker: string) => call<StockProfile>(`/api/stock/profile?ticker=${encodeURIComponent(ticker)}`),
   stockSocial: (ticker: string, signal?: AbortSignal) =>
     call<StockSocialResponse>(`/api/stock-social?ticker=${encodeURIComponent(ticker)}&days=7`, { signal, cache: "no-store" }),
+  chartMemo: (ticker: string, account: string, signal?: AbortSignal) =>
+    request<ChartMemoResponse>(`/api/chart-memo?ticker=${encodeURIComponent(ticker)}`, {
+      headers: { "X-Desk-Memo-Account": encodeURIComponent(account) }, signal, cache: "no-store",
+    }),
+  saveChartMemo: (ticker: string, text: string, account: string, signal?: AbortSignal) =>
+    request<ChartMemoResponse>(`/api/chart-memo?ticker=${encodeURIComponent(ticker)}`, {
+      method: "PUT", body: JSON.stringify({ text }),
+      headers: { "X-Desk-Memo-Account": encodeURIComponent(account) }, signal, cache: "no-store",
+    }),
   /** #484 유명 기관 13F(#483): 목록 · 한 기관의 분기 보유 */
   funds: () => call<{ funds: FundBrief[]; checked_at: string | null }>("/api/funds"),
   /** 즐겨찾기 배지: 종목별 각 기관 최신 분기 변화(최대 30개, 변화 없는 종목은 빠짐) */

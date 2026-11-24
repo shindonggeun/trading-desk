@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import PriceChart from "../src/components/PriceChart";
+import { ChartMemoAccount } from "../src/chartMemoAccount";
 import "../src/styles.css";
 
 function Fixture() {
@@ -18,4 +19,6 @@ function Fixture() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(
+  <ChartMemoAccount.Provider value="합성 계정"><Fixture /></ChartMemoAccount.Provider>,
+);

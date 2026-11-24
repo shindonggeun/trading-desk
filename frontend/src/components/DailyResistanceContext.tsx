@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from "react";
 import { api } from "../api";
 import { canReadDailyResistanceNews, dailyResistanceNews, dailyResistanceNewsUnavailable } from "../dailyResistanceContext";
 import type { StockSocialResponse } from "../stockSocial";
+import ChartMemoPanel from "./ChartMemoPanel";
 import "./DailyResistanceContext.css";
 
 const KST_TIME = new Intl.DateTimeFormat("ko-KR", {
@@ -28,6 +29,7 @@ function ContextForTicker({ ticker, observedAt }: Props) {
   const eligible = canReadDailyResistanceNews(ticker, observedAt);
   const [attempt, setAttempt] = useState(0);
   const [news, setNews] = useState<NewsState>({ kind: "loading" });
+  const [showMemo, setShowMemo] = useState(false);
 
   useEffect(() => {
     if (!eligible || attempt === 0) return;
@@ -51,7 +53,9 @@ function ContextForTicker({ ticker, observedAt }: Props) {
   return (
     <section className="daily-resistance-context" aria-labelledby={title}>
       <details onToggle={(event) => {
-        if (event.currentTarget.open && eligible) retry();
+        if (!event.currentTarget.open) return;
+        if (eligible) retry();
+        setShowMemo(true);
       }}>
         <summary id={title}>뉴스·사용자 메모</summary>
         <p className="small muted">가격 판정은 일봉과 저항선의 관찰에 근거해요.</p>
@@ -89,10 +93,7 @@ function ContextForTicker({ ticker, observedAt }: Props) {
             <p className="small muted">조회한 자료에서 관찰 시각까지 발견된 같은 상품의 뉴스를 찾지 못했어요.</p>
           )}
         </div>
-        <div className="daily-resistance-context__group">
-          <h5>사용자 메모</h5>
-          <p className="small muted">이 상품에 연결된 사용자 메모가 제공되지 않았어요.</p>
-        </div>
+        {showMemo && <ChartMemoPanel ticker={ticker} />}
       </details>
     </section>
   );

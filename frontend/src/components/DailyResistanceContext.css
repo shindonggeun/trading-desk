@@ -31,3 +31,22 @@
   margin-block: 0;
   padding-inline-start: 20px;
 }
+
+.chart-memo-form {
+  display: grid;
+  gap: 6px;
+  min-inline-size: 0;
+}
+
+.chart-memo-form textarea {
+  box-sizing: border-box;
+  inline-size: 100%;
+  min-inline-size: 0;
+  resize: vertical;
+  font: inherit;
+}
+
+.chart-memo-form button {
+  justify-self: start;
+  min-block-size: 2.5rem;
+}

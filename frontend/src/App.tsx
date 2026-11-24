@@ -3,6 +3,7 @@ import { api, clearApiCache, setUnauthorizedHandler, Unauthorized } from "./api"
 import type { DeskConfig } from "./types";
 import LoginForm from "./components/LoginForm";
 import { createLineWatchScope, LineWatchScopeContext } from "./lineSignals";
+import { ChartMemoAccount } from "./chartMemoAccount";
 import Dashboard from "./pages/Dashboard";
 import SectionBoundary from "./components/SectionBoundary";
 import ChunkFailed from "./components/ChunkFailed";
@@ -219,6 +220,7 @@ export default function App() {
       {/* #537 화면 코드를 받는 동안은 짧은 안내 — 머리줄 · 메뉴는 그대로 */}
       {/* 배포 뒤 오래 열어 둔 탭은 옛 화면 조각이 없어 받기에 실패한다 — 앱 전체가 내려가지 않게 이 자리만 안내(화면을 바꾸면 다시 시도) */}
       <LineWatchScopeContext.Provider value={lineWatchScope}>
+      <ChartMemoAccount.Provider value={user ?? null}>
       <SectionBoundary key={JSON.stringify([user, route.split("?")[0]])} fallback={<main className="page-loading"><ChunkFailed /></main>}>
       <Suspense fallback={<main className="page-loading"><p className="empty-state">화면 불러오는 중…</p></main>}>
       {user === undefined ? null : user === null ? (
@@ -278,6 +280,7 @@ export default function App() {
       )}
       </Suspense>
       </SectionBoundary>
+      </ChartMemoAccount.Provider>
       </LineWatchScopeContext.Provider>
       {/* #340 어디서든 오른쪽 아래에서 여는 AI 채팅(채팅 크게 보기 화면에선 숨김) */}
       {user && <ChatWidget />}

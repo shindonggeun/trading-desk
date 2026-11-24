@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { price } from "../format";
 import type { ProfileStep, StockProfile } from "../types";
+import StockSocialPanel from "./StockSocialPanel";
 
 const RSI_KO = { overbought: "과매수", neutral: "중립", oversold: "과매도" } as const;
 
@@ -67,8 +68,9 @@ export default function StockProfileCard({ ticker, onClose }: { ticker: string; 
       {onClose && <button type="button" className="link small sp-close" onClick={onClose} aria-label="종목 정보 닫기">닫기</button>}
     </header>
   );
-  if (failed) return <section className="card sp-card">{head}<p className="muted small">종목 정보를 불러오지 못했습니다: {failed}</p></section>;
-  if (!card) return <section className="card sp-card">{head}<p className="muted small">불러오는 중…</p></section>;
+  const social = <StockSocialPanel key={ticker} ticker={ticker} load={api.stockSocial} />;
+  if (failed) return <section className="card sp-card">{head}<p className="muted small">종목 정보를 불러오지 못했습니다: {failed}</p>{social}</section>;
+  if (!card) return <section className="card sp-card">{head}<p className="muted small">불러오는 중…</p>{social}</section>;
 
   const ind = card.indicators;
   const f = card.facts;
@@ -119,6 +121,7 @@ export default function StockProfileCard({ ticker, onClose }: { ticker: string; 
         </div>
       )}
       <p className="muted small">지지/저항은 90거래일 거래량 기준, 참고용{card.errors && Object.keys(card.errors).length ? ` · 일부 항목 없음(${Object.keys(card.errors).join(", ")})` : ""}</p>
+      {social}
     </section>
   );
 }

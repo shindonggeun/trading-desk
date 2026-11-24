@@ -4,6 +4,7 @@ import type { WatchboardGroup, WatchboardResponse } from "./marketWatchboard";
 import type { ExtremeFearResponse, ExtremeFearSymbol } from "./extremeFear";
 import type { LoadUsOptions, UsOptionsResponse } from "./usOptionsTypes";
 import type { FundingRateResponse, LoadFundingRate } from "./fundingRateTypes";
+import type { StockSocialResponse } from "./stockSocial";
 import type { DayCallSectorsResponse } from "./components/DayCallSectors";
 import type { ChartRead, GapReport, LinesReport, LineTf } from "./types";
 import type { RunRead } from "./types";
@@ -414,6 +415,8 @@ export const api = {
     call<{ source: string; count: number; updated_at: string | null; error: string | null }>("/api/instruments/status"),
   /** #296 종목 정보 카드(#295) */
   stockProfile: (ticker: string) => call<StockProfile>(`/api/stock/profile?ticker=${encodeURIComponent(ticker)}`),
+  stockSocial: (ticker: string, signal?: AbortSignal) =>
+    call<StockSocialResponse>(`/api/stock-social?ticker=${encodeURIComponent(ticker)}&days=7`, { signal, cache: "no-store" }),
   /** #484 유명 기관 13F(#483): 목록 · 한 기관의 분기 보유 */
   funds: () => call<{ funds: FundBrief[]; checked_at: string | null }>("/api/funds"),
   /** 즐겨찾기 배지: 종목별 각 기관 최신 분기 변화(최대 30개, 변화 없는 종목은 빠짐) */

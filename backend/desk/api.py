@@ -22,7 +22,7 @@ from functools import partial
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi import Path as FastPath
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -60,6 +60,7 @@ from . import (
     halving,
     holding_watch,
     horizons,
+    kr_flow_data,
     kr_short_sales,
     krx,
     krx_etp,
@@ -2238,6 +2239,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return {**got, "premarket": flow_intraday.premarket(hit[1], market.lower()),
                 "program": await program_latest.read(local.date(), market.lower()),
                 "expected": kis_feed.expected(market.lower()) if kis_feed is not None else None}
+
+    @app.get("/api/market/flow-board/kr")
+    async def korean_flow_board(request: Request, market: Literal["kospi", "kosdaq"] = "kospi",
+                                days: Annotated[int, Query(ge=1, le=22)] = 22):
+        """Load the closed-session KRX board and the current account's favorites."""
+        starred = await asyncio.to_thread(favorites.list, request.state.user.id)
+        result = await kr_flow_data.read(engine, market, days, starred, datetime.now(UTC))
+        return JSONResponse(result, headers={"Cache-Control": "private, no-store"})
 
     @app.get("/api/market/futures")
     async def market_futures():

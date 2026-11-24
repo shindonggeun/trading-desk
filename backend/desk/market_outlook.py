@@ -73,13 +73,13 @@ def _utcnow() -> datetime:
 
 
 def _timestamp(value: object) -> datetime | None:
-    if isinstance(value, str):
-        try:
+    try:
+        if isinstance(value, str):
             value = datetime.fromisoformat(value)
-        except ValueError:
-            return None
-    if isinstance(value, datetime) and value.tzinfo is not None:
-        return value.astimezone(UTC)
+        if isinstance(value, datetime) and value.utcoffset() is not None:
+            return value.astimezone(UTC)
+    except (ValueError, OverflowError):
+        return None
     return None
 
 
@@ -90,26 +90,41 @@ def _iso(stamp: datetime | None) -> str | None:
 def _number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (float, int)):
         return None
-    return float(value) if math.isfinite(value) else None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
 
 
-def _last_closed_day(symbol: str, now: datetime) -> date:
+def _last_closed_day(now: datetime) -> date:
     day = market_calendar.local_today("us", now)
-    zone, close = day_call.CLOSES[symbol]
     # day_call과 같은 보수적인 마감 기준을 써서 단축장 봉도 정규 시각까지 기다린다.
-    if market_calendar.is_open("us", day) and now >= datetime.combine(day, close, zone):
+    if market_calendar.is_open("us", day) and now >= market_calendar.session_close("us", day, early_close=False):
         return day
     return market_calendar.previous_open("us", day)
 
 
-def _daily(symbol: str, snapshot: dict, now: datetime) -> _Daily:
+def _daily(symbol: str, snapshot: dict | _Daily, now: datetime) -> _Daily:
+    if isinstance(snapshot, _Daily):
+        return snapshot
+    try:
+        return _daily_bars(symbol, snapshot, now)
+    except Exception as exc:  # noqa: BLE001 - invalid bars must leave other sources readable
+        log.info("market outlook %s snapshot failed (%s)", symbol, type(exc).__name__)
+        return _Daily(status="error", reason="source_error")
+
+
+def _daily_bars(symbol: str, snapshot: dict, now: datetime) -> _Daily:
     raw_source = snapshot.get("source")
     source = raw_source.strip() if isinstance(raw_source, str) and raw_source.strip() else None
     fetched = _timestamp(snapshot.get("fetched_at"))
+    if source is None or fetched is None or fetched > now:
+        return _Daily(source=source, reason="invalid_observation")
     # 장중 내려받은 캐시를 마감 봉으로 승격시키지 않는다.
-    cutoff = min(now, fetched) if fetched is not None else now
+    rows = snapshot.get("bars") or ()
     closed = {}
-    for row in snapshot.get("bars") or ():
+    for row in rows:
         if not isinstance(row, dict):
             continue
         opened = _timestamp(row.get("at"))
@@ -119,15 +134,16 @@ def _daily(symbol: str, snapshot: dict, now: datetime) -> _Daily:
         day = market_calendar.local_today("us", opened)
         if not market_calendar.is_open("us", day):
             continue
-        observed = day_call.closed_at(symbol, SimpleNamespace(at=row["at"]))
-        if opened <= observed <= cutoff:
+        observed = day_call.closed_at(symbol, SimpleNamespace(at=opened.isoformat()))
+        if opened <= observed <= fetched:
             closed[observed] = price
     if not closed:
         return _Daily(source=source, fetched_at=fetched, reason="no_closed_bars")
     sessions = sorted(closed)
     latest = sessions[-1].astimezone(UTC)
     latest_day = market_calendar.local_today("us", latest)
-    stale = latest_day < _last_closed_day(symbol, now)
+    # 지수가 먼저 마감한 당일에는 직전 거래일 VIX를 새 지수 관측에 대조하지 않는다.
+    stale = latest_day < _last_closed_day(now)
     # 중간에 빠진 거래일을 건너뛰면 5일 수익률과 20·50일 평균의 관측 기간이 바뀐다.
     contiguous = []
     day = latest_day
@@ -155,6 +171,32 @@ def _daily_evidence(id_: str, unit: str, daily: _Daily, now: datetime, value: fl
     return _Evidence(id_, unit, status, reason, daily.source, _iso(at), _iso(daily.fetched_at),
                      _age(now, at) if at else None, round(value, 2) if value is not None else None,
                      direction, {key: round(amount, 2) for key, amount in details.items()})
+
+
+def _measure_evidence(id_: str, unit: str, item: Observation | _Evidence | None, now: datetime) -> _Evidence:
+    if isinstance(item, _Evidence):
+        return item
+    if item is None:
+        return _Evidence(id_, unit, "missing", "no_observation")
+    if not isinstance(item, Observation):
+        return _Evidence(id_, unit, "missing", "invalid_observation")
+    at = _timestamp(item.observed_at)
+    fetched = _timestamp(item.fetched_at)
+    val = _number(item.value)
+    if (at is None or fetched is None or not at <= fetched <= now or val is None
+            or not isinstance(item.source, str) or not item.source.strip()
+            or item.direction not in ("positive", "negative", "neutral")):
+        return _Evidence(id_, unit, "missing", "invalid_observation")
+    try:
+        day = market_calendar.local_today("us", at)
+    except OverflowError:
+        return _Evidence(id_, unit, "missing", "invalid_observation")
+    if not market_calendar.is_open("us", day) or fetched < market_calendar.session_close("us", day, early_close=False):
+        return _Evidence(id_, unit, "missing", "invalid_observation")
+    # 보조 지표는 공개 지연을 감안해 직전 거래일 자료까지 판정에 쓴다.
+    stale = day < market_calendar.previous_open("us", _last_closed_day(now))
+    return _Evidence(id_, unit, "stale" if stale else "available", "publication_lag" if stale else None,
+                     item.source, _iso(at), _iso(fetched), _age(now, at), val, item.direction)
 
 
 def _pct(value: float, base: float) -> float:
@@ -227,7 +269,7 @@ def _regime(index: _Daily, vix: _Daily, breadth: _Evidence, credit: _Evidence, n
                 state = "rebound_candidate"
                 checks = ["5거래일 반등이 이어지는지 확인", "20일·50일 구조와 시장 폭·신용을 별도로 확인"]
             elif (trend.direction == "negative" and rebound.direction != "positive"
-                  and not confirmations.intersection(positives)):
+                  and cross_checks.intersection(negatives) and not cross_checks.intersection(positives)):
                 state = "downtrend"
                 checks = ["낙폭이 더 커지거나 5거래일 반등이 나타나는지 확인", "변동성·시장 폭·신용 악화를 확인"]
     supporting, opposing = (negatives, positives) if state == "downtrend" else (positives, negatives)
@@ -249,44 +291,29 @@ class MarketOutlook:
         self._timeout = timeout
         self._flights = Flights()
 
-    async def _read_daily(self, symbol: str, now: datetime) -> _Daily:
+    async def _read_daily(self, symbol: str) -> dict | _Daily:
         if self._candles is None:
             return _Daily(status="disabled", reason="source_unconfigured")
         try:
             async with asyncio.timeout(self._timeout):
-                snapshot = await self._candles(symbol, "1d", VIX_HISTORY if symbol == VIX else HISTORY)
-            return _daily(symbol, snapshot, now)
+                return await self._candles(symbol, "1d", VIX_HISTORY if symbol == VIX else HISTORY)
         except TimeoutError:
             return _Daily(status="error", reason="timeout")
         except Exception as exc:  # noqa: BLE001 - one failed source must leave the other sections readable
             log.info("market outlook %s failed (%s)", symbol, type(exc).__name__)
             return _Daily(status="error", reason="source_error")
 
-    async def _measure(self, id_: str, unit: str, read: Measure | None, now: datetime) -> _Evidence:
+    async def _read_measure(self, id_: str, unit: str, read: Measure | None) -> Observation | _Evidence | None:
         if read is None:
             return _Evidence(id_, unit, "disabled", "source_unconfigured")
         try:
             async with asyncio.timeout(self._timeout):
-                item = await read()
+                return await read()
         except TimeoutError:
             return _Evidence(id_, unit, "error", "timeout")
         except Exception as exc:  # noqa: BLE001 - one failed source must leave the other sections readable
             log.info("market outlook %s failed (%s)", id_, type(exc).__name__)
             return _Evidence(id_, unit, "error", "source_error")
-        if item is None:
-            return _Evidence(id_, unit, "missing", "no_observation")
-        if not isinstance(item, Observation):
-            return _Evidence(id_, unit, "missing", "invalid_observation")
-        at = _timestamp(item.observed_at)
-        val = _number(item.value)
-        if (at is None or at > now or val is None or not isinstance(item.source, str) or not item.source.strip()
-                or item.direction not in ("positive", "negative", "neutral")):
-            return _Evidence(id_, unit, "missing", "invalid_observation")
-        # 보조 지표는 공개 지연을 감안해 직전 거래일 자료까지 판정에 쓴다.
-        recent = _last_closed_day(INDEX, now)
-        stale = market_calendar.local_today("us", at) < market_calendar.previous_open("us", recent)
-        return _Evidence(id_, unit, "stale" if stale else "available", "publication_lag" if stale else None,
-                         item.source, _iso(at), _iso(_timestamp(item.fetched_at)), _age(now, at), val, item.direction)
 
     async def _read_filing(self) -> dict:
         if self._filing is None:
@@ -316,14 +343,17 @@ class MarketOutlook:
         return items, {"status": "available" if items else "missing", "reason": None if items else "no_views"}
 
     async def read(self) -> dict:
-        now = self._clock().astimezone(UTC)
-        index, vix, breadth, credit, filings = await asyncio.gather(
-            self._read_daily(INDEX, now),
-            self._read_daily(VIX, now),
-            self._measure("breadth", "%", self._breadth, now),
-            self._measure("credit_spread", "bps", self._credit, now),
+        index_snapshot, vix_snapshot, breadth_observation, credit_observation, filings = await asyncio.gather(
+            self._read_daily(INDEX),
+            self._read_daily(VIX),
+            self._read_measure("breadth", "%", self._breadth),
+            self._read_measure("credit_spread", "bps", self._credit),
             self._read_filing(),
         )
+        now = self._clock().astimezone(UTC)
+        index, vix = _daily(INDEX, index_snapshot, now), _daily(VIX, vix_snapshot, now)
+        breadth = _measure_evidence("breadth", "%", breadth_observation, now)
+        credit = _measure_evidence("credit_spread", "bps", credit_observation, now)
         views, views_status = self._read_views(now)
         filed = {key: value for key, value in filings.items() if key != "items"}
         return {"market": "us", "as_of": _iso(now), "views": views, "filings": filings.get("items", []),

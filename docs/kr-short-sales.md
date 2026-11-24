@@ -8,6 +8,24 @@
 
 `desk.kr_short_sales.KrxShortSales`는 승인된 공급자가 제공하는 공표 행을 입력받는다. 현재 기본 구성은 공급자 미설정으로 응답하며, 공표 화면의 내부 요청을 호출하거나 다른 원천의 거래대금으로 분모를 대체하지 않는다.
 
+### 공식 공급 경로 재확인
+
+2026-11-24 공개 명세와 저장소의 공급 계약을 대조했다. 거래대금 비중과 잔고 비중을 함께 읽어
+인증 화면에 제공할 수 있는 승인된 경로는 확인되지 않았다.
+
+| 후보 | 확인한 제공 범위와 제약 |
+| --- | --- |
+| KRX Data Marketplace | 개별종목 거래 화면과 종목별 순보유잔고 화면을 각각 대조 기준으로 쓴다. 거래 비중의 산식은 상위 50 전용 화면에도 있으며, 그 화면은 2026-09-14부터 당일 자료를 22시 이후 제공한다. 순보유잔고는 보고대상 투자자의 합계로, T+2일 18시 이후에 제출된 신규·정정 보고에 따라 바뀔 수 있다. 공개 안내에서 두 통계의 서버 조회 계약과 잔고의 정확한 공개 시각은 확인되지 않았다. [종목별 거래](https://data.krx.co.kr/contents/MDC/STAT/srt/MDCSTAT301.jsp) · [종목별 잔고](https://data.krx.co.kr/contents/MDC/STAT/srt/MDCSTAT305.jsp) · [상위 50 통계](https://data.krx.co.kr/contents/MDC/STAT/srt/MDCSTAT304.jsp) |
+| KRX OPEN API | 공개 목록의 유가증권·코스닥 일별매매 서비스에서 두 공매도 통계의 명세를 찾지 못했다. 키 신청과 서비스별 신청은 각 관리자 승인이 필요하다. 약관은 비상업 이용과 화면 출처 표시를 요구하고 제3자 제공을 제한한다. 기존 일반 일별매매 승인으로 두 통계를 사용할 수 있다는 근거는 없다. [서비스 목록](https://openapi.krx.co.kr/contents/OPP/INFO/service/OPPINFO004.cmd) · [이용방법](https://openapi.krx.co.kr/contents/OPP/INFO/OPPINFO003.jsp) · [이용약관 제6·10·11조](https://openapi.krx.co.kr/contents/OPP/INFO/OPPINFO002.jsp) |
+| KRX 데이터 분배 | 주식 실시간 상품의 항목에 공매도가 기재돼 있다. 제품 개요로는 KRX·NXT 합산 전체 거래대금, 별도 잔고 비중, 과거 조회 범위의 제공을 확인할 수 없다. 기관 내부 이용과 외부 제공 권한은 계약에서 구분되며 이 기능에 두 통계를 제공하는 계약과 명세를 확인하지 못했다. [분배상품](https://openapi.krx.co.kr/contents/OPP/DATA/OPPDATA002.jsp) · [데이터 라이선스](https://openapi.krx.co.kr/contents/OPP/DATA/OPPDATA004.jsp) |
+| 한국투자증권 | 공식 국내주식 공매도 일별추이 견본에 공매도 거래대금과 거래대금 비중 필드가 있다. 개별종목 순보유잔고 비중, KRX·NXT 합산과의 동등성, 이번 사용 목적의 권한은 확인되지 않았다. 별도 상품인 대차거래나 신용잔고를 순보유잔고 대신 사용하지 않는다. [KIS 공식 API 목록](https://apiportal.koreainvestment.com/apiservice-summary) · [응답 필드 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/daily_short_sale/chk_daily_short_sale.py) |
+| 토스증권 | 공개 OpenAPI 1.2.28의 국내 일별 공매도는 원화 공매도 거래대금과 시간외를 포함한 소수 비율을 제공하고 일별 확정치는 저녁에 반영한다고 안내한다. 순보유잔고 비중과 전체 거래대금 원필드가 없다. 분모 0도 비율 0을 반환하므로 이 값만으로 공표된 실제 0과 분모 0을 구분할 수 없다. KRX·NXT 합산 동등성과 이 기능의 사용 승인도 확인되지 않았다. [토스증권 OpenAPI 명세](https://openapi.tossinvest.com/openapi-docs/latest/openapi.json) |
+
+KRX 공개 문서에서 표의 항목과 공표 기준을 확인했다. 공개 정적 화면에서 삼성전자·SK하이닉스의
+동일 거래일 행을 확보하지 못했고, 대조 가능한 승인된 공급 표본도 없었다. 기본 `source_unavailable`을
+유지한다. 공급자 평가에는 수신·캐시·파생 비중 표시의 권한, 종목 매핑,
+세션과 시장 범위, 공표 및 정정 기준, 거래대금 두 필드와 독립 잔고 기준일을 확인할 수 있는 명세가 필요하다.
+
 ## 응답과 캐시
 
 - 기존 세션으로 인증한 단일 `GET /api/positioning?ticker=005930.KS`에서 국내 6자리 `.KS`·`.KQ` 종목의 응답에 `kr_short`를 추가한다. 국내 거래·잔고는 이 필드에서 읽는다. 미국 단일과 기존 배치의 응답 계약은 유지한다.

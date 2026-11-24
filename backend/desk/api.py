@@ -4119,12 +4119,21 @@ class NotifyChannelIn(BaseModel):
     kinds: dict[str, bool] | None = None
 
 
+class LineWatchRuleIn(BaseModel):
+    ticker: str
+    enabled: bool = False
+    timeframes: list[str] = Field(default_factory=list, max_length=len(line_signals.TIMEFRAMES))
+    events: dict[str, bool] = Field(default_factory=dict, max_length=len(line_signals.EVENTS))
+    side: Literal["both", "support", "resistance"] = "both"
+
+
 class LineWatchIn(BaseModel):
     """#613 the channel / trendline signal watch (desk.line_signals)."""
     enabled: bool = False
     tickers: list[str] = Field(default_factory=list, max_length=line_signals.MAX_TICKERS)
     timeframes: list[str] = Field(default_factory=list, max_length=len(line_signals.TIMEFRAMES))
     events: dict[str, bool] = Field(default_factory=dict, max_length=len(line_signals.EVENTS))
+    rules: list[LineWatchRuleIn] | None = Field(default=None, max_length=line_signals.MAX_TICKERS)
 
 
 class HoldingTickerIn(BaseModel):
@@ -4309,32 +4318,52 @@ def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountO
             raise HTTPException(422, str(exc)) from None
         return holding_view(request)
 
-    watch = line_signals.LineWatch(engine, send_notice=send_notice)
+    def send_line_notice(pusher, *kinds, payload):
+        user_id = owner_id()
+        if user_id is None:
+            return 0
+        return send_notice(pusher, *kinds, payload=payload, user_id=user_id)
+
+    watch = line_signals.LineWatch(engine, send_notice=send_line_notice)
     app.state.line_watch = watch
 
-    def watch_view(request: Request) -> dict:
-        return {**watch.settings(), "can_edit": request.state.user.id == owner_id(),
+    def watch_view(request: Request, ticker: str | None = None) -> dict:
+        can_edit = request.state.user.id == owner_id()
+        config = watch.settings() if can_edit else {
+            **line_signals.DEFAULT, "tickers": [], "timeframes": [], "rules": [],
+        }
+        return {**config, "can_edit": can_edit,
                 "allowed": {"timeframes": list(line_signals.TIMEFRAMES), "events": list(line_signals.EVENTS),
-                            "max_tickers": line_signals.MAX_TICKERS},
+                            "max_tickers": line_signals.MAX_TICKERS,
+                            "sides": ["both", "support", "resistance"],
+                            "support": line_signals.allowed_support(ticker)},
                 "limits": {"cooldown_min": line_signals.COOLDOWN_MIN, "cooldown_bars": line_signals.COOLDOWN_BARS,
                            "daily_max": line_signals.DAILY_MAX, "per_ticker_max": line_signals.PER_TICKER_MAX},
-                "recent": watch.recent()}
+                "recent": watch.recent() if can_edit else []}
 
     @app.get("/api/notify/line-watch")
-    def line_watch_get(request: Request):
+    def line_watch_get(request: Request, response: Response, ticker: str | None = None):
         """#613 the watch (off until the owner turns it on), its limits and the signals sent lately."""
-        return watch_view(request)
+        response.headers["Cache-Control"] = "private, no-store"
+        try:
+            symbol = clean_ticker(ticker) if ticker is not None else None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return watch_view(request, symbol)
 
     @app.put("/api/notify/line-watch")
-    def line_watch_set(body: LineWatchIn, request: Request):
+    def line_watch_set(body: LineWatchIn, request: Request, response: Response):
         must_own(request)
         try:
             given = body.model_dump(exclude_unset=True)     # what is left out keeps its value
             if "tickers" in given:
                 given["tickers"] = [clean_ticker(t) for t in body.tickers]
+            for rule in given.get("rules") or []:
+                rule["ticker"] = clean_ticker(rule["ticker"])
             watch.save(given)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
+        response.headers["Cache-Control"] = "private, no-store"
         return watch_view(request)
 
     @app.post("/api/notify/kakao/connect")

@@ -255,10 +255,11 @@ def _same_as_trend(t: Trendline, lines: list[dict], bars: list[dict], unit: floa
     return False
 
 
-def pick(bars: list[dict], tf: str, unit: float, atr_now: float) -> tuple[list[Channel], list[Trendline]]:
+def pick(bars: list[dict], tf: str, unit: float, atr_now: float, *, swing_k: int | None = None
+         ) -> tuple[list[Channel], list[Trendline]]:
     """The channels and the short trendlines shown for ``bars`` - those desk.trend draws (every swing
     scale, as desk.sr asks it) left to it. The API and the backtest (desk.lines_bt) both read this."""
-    k = SWING_K[tf]
+    k = SWING_K[tf] if swing_k is None else swing_k
     theirs = trend.trendlines(bars, tf, k, bars[-1]["close"], atr_now, scales=trend.SCALES)
     return (find_channels(bars, k, unit),
             find_trendlines(bars, k, unit, exclude=lambda t: _same_as_trend(t, theirs, bars, unit)))

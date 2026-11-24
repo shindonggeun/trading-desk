@@ -117,7 +117,7 @@ def test_the_text_follows_the_issue_example():
 
 def test_the_setting_is_checked():
     assert line_signals.clean({"timeframes": ["1h", "2h", "60m"]})["timeframes"] == ["60m", "120m"]
-    for bad in ({"timeframes": ["1w"]}, {"events": {"cross": True}},
+    for bad in ({"timeframes": ["1M"]}, {"events": {"cross": True}},
                 {"tickers": [f"T{i}" for i in range(line_signals.MAX_TICKERS + 1)]}):
         with pytest.raises(ValueError):
             line_signals.clean(bad)
@@ -208,7 +208,7 @@ def test_api_line_watch(db_url):
         body = client.get("/api/notify/line-watch").json()
         assert body["enabled"] is False and body["can_edit"] is True and body["recent"] == []
         assert body["allowed"]["timeframes"] == list(line_signals.TIMEFRAMES)
-        assert client.put("/api/notify/line-watch", json={"timeframes": ["1w"]}).status_code == 422
+        assert client.put("/api/notify/line-watch", json={"timeframes": ["1M"]}).status_code == 422
         assert client.put("/api/notify/line-watch", json={"tickers": ["bad ticker!"]}).status_code == 422
         too_many = {"tickers": [f"T{i}" for i in range(line_signals.MAX_TICKERS + 1)]}
         assert client.put("/api/notify/line-watch", json=too_many).status_code == 422
@@ -298,9 +298,9 @@ def test_a_pass_reads_at_most_pass_max_and_survives_a_failure(watch, monkeypatch
 
     now = datetime.fromisoformat(bars[-1]["at"]) + timedelta(minutes=5, seconds=30)
     watch.clock = lambda: now
-    watch.save({"enabled": True, "tickers": [f"T{i}" for i in range(6)], "timeframes": list(line_signals.TIMEFRAMES)})
+    watch.save({"enabled": True, "tickers": [f"T{i}" for i in range(6)], "timeframes": list(channels.TIMEFRAMES)})
     asyncio.run(line_signals.run_pass(watch, Prices(), None))
     assert len(asked) == line_signals.PASS_MAX and ("T1", "5m") in asked     # T0 failed, the rest went on
     assert not watch.due("T0", "5m")                                         # the failed one waits IDLE_SEC
     asyncio.run(line_signals.run_pass(watch, Prices(), None))
-    assert len(asked) == 6 * len(line_signals.TIMEFRAMES)                   # the rest on the next pass
+    assert len(asked) == 6 * len(channels.TIMEFRAMES)                       # the rest on the next pass

@@ -22,6 +22,7 @@ the price · the past rate (desk.lines_bt), that short bars often mislead, and t
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from datetime import UTC, datetime, timedelta
@@ -31,15 +32,20 @@ from sqlalchemy import desc, insert, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from . import channels, lines_bt, long_lines, long_lines_bt, notify
-from .db import line_signals, line_watch, now
+from . import channels, line_watch_bars, lines_bt, long_lines, long_lines_bt, notify
+from .db import aware, line_signals, line_watch, now
 
 log = logging.getLogger(__name__)
 
 KIND = "line_signal"
-TIMEFRAMES = ("5m", "15m", "60m", "120m", "240m", "1d")  # watched; 1d for the long lines of months (#679)
-SHORT = {"5m", "15m", "60m", "120m"}                    # bars short enough to warn about
+TIMEFRAMES = line_watch_bars.TIMEFRAMES
+SHORT = {"5m", "10m", "15m", "60m", "120m"}              # bars short enough to warn about
 EVENTS = ("touch", "break", "retest", "long")
+SIDES = ("both", "support", "resistance")
+_RESISTANCE = {"touch_resistance", "break_up", "retest_up", "long_resistance", "long_break_up"}
+_TF_KO = {**channels.TF_KO, "10m": "10분봉", "1w": "주봉"}
+_SWING_K = {**channels.SWING_K, "10m": 3, "1w": 3}
+_HORIZON = {**channels.HORIZON, "10m": 8, "1w": 5}
 MAX_TICKERS = 10
 COOLDOWN_MIN = 30
 COOLDOWN_BARS = 2
@@ -51,7 +57,7 @@ IDLE_SEC = 15 * 60         # the longest wait when no bar is trading (a closed m
 TICK_SEC = 30
 PASS_MAX = 20              # market data reads in one pass; the rest wait for the next (a 4-hour mark makes all due)
 DEFAULT = {"enabled": False, "tickers": ["NQ=F"], "timeframes": ["60m"],
-           "events": {e: True for e in EVENTS}}
+           "events": {e: True for e in EVENTS}, "rules": None}
 NO_ADVICE = "※ 매수 · 매도 추천이 아닙니다"
 # #613 a line's edge is thin (#679: long supports 40% against 35-36%): every line signal is "참고" - the
 # title says it and it goes out under tone_neutral, so a device or channel taking warnings only skips it
@@ -79,7 +85,7 @@ _DIR_KO = {"up": "상승", "down": "하락", "flat": "횡보"}
 
 def _bar_end(bar: dict, tf: str) -> datetime:
     """When a bar ends by its length (for a folded 2h / 4h bar, an estimate - see _finished_end)."""
-    return datetime.fromisoformat(bar["at"]) + timedelta(minutes=channels.MINUTES[tf])
+    return datetime.fromisoformat(bar["at"]) + timedelta(minutes=line_watch_bars.MINUTES[tf])
 
 
 def _finished_end(bars: list[dict], i: int, tf: str) -> datetime | None:
@@ -91,14 +97,14 @@ def _finished_end(bars: list[dict], i: int, tf: str) -> datetime | None:
     return _bar_end(bars[i], tf)
 
 
-def detect(bars: list[dict], tf: str, now: datetime | None = None) -> list[dict]:
+def detect(bars: list[dict], tf: str, now: datetime | None = None, *, confirmed: bool = False) -> list[dict]:
     """The signals of the last finished bar of ``bars`` (oldest first; a last bar still trading at
     ``now`` is left out)."""
     now = now or datetime.now(UTC)
     usable = [b for b in bars if b["low"] > 0 and b["close"] > 0 and b["high"] >= b["low"]]
-    if usable and (tf in channels.GROUPED or _bar_end(usable[-1], tf) > now):
+    if usable and not confirmed and (tf in channels.GROUPED or _bar_end(usable[-1], tf) > now):
         usable = usable[:-1]
-    k = channels.SWING_K[tf]
+    k = _SWING_K[tf]
     a = channels.atr(usable)
     if len(usable) < channels.MIN_SPAN + 4 * k + 1 or not a:
         return []
@@ -108,7 +114,7 @@ def detect(bars: list[dict], tf: str, now: datetime | None = None) -> list[dict]
     lo = [math.log(b["low"]) for b in usable]
     hi = [math.log(b["high"]) for b in usable]
     cl = [math.log(b["close"]) for b in usable]
-    found_channels, found_lines = channels.pick(usable, tf, unit, a)
+    found_channels, found_lines = channels.pick(usable, tf, unit, a, swing_k=k)
     out: list[dict] = []
 
     def add(rule, role, line_id, name, f):
@@ -145,7 +151,7 @@ def detect(bars: list[dict], tf: str, now: datetime | None = None) -> list[dict]
                 add("touch_resistance", "trend_resistance", tid, name, t.at)
         elif t.broken_at == c:
             add("break_down" if support else "break_up", "trend_break", tid, name, t.at)
-        elif c - t.broken_at <= channels.HORIZON[tf]:    # back at the line from the broken side, arriving
+        elif c - t.broken_at <= _HORIZON[tf]:    # back at the line from the broken side, arriving
             if support and hi[c] >= t.at(c) - touch and cl[c] < t.at(c) and hi[c - 1] < t.at(c - 1) - touch:
                 add("retest_down", "trend_retest", tid, name, t.at)
             elif not support and lo[c] <= t.at(c) + touch and cl[c] > t.at(c) and lo[c - 1] > t.at(c - 1) + touch:
@@ -205,30 +211,84 @@ def _rate_line(sig: dict, rates: dict) -> str:
 def text(sig: dict, ticker: str, tf: str, rates: dict) -> tuple[str, str]:
     """(title, body) of a signal: what happened and what to watch / the line, the price, the past rate /
     the short-bar warning / no advice."""
-    tf_ko = channels.TF_KO[tf]
+    tf_ko = _TF_KO[tf]
     title = f"{_ICON[sig['rule']]} · {REFERENCE} | {ticker} {tf_ko} — {_SAY[sig['rule']].format(line=sig['line'])}"
     gap = (sig["price"] / sig["line_price"] - 1) * 100
-    lines = [f"선 {_fmt(sig['line_price'])} · 지금 {_fmt(sig['price'])} ({gap:+.2f}%)", _rate_line(sig, rates)]
+    price_label = "관측가" if sig.get("closed_at") else "지금"
+    lines = [f"선 {_fmt(sig['line_price'])} · {price_label} {_fmt(sig['price'])} ({gap:+.2f}%)", _rate_line(sig, rates)]
     if tf in SHORT:
         lines.append(f"⚠️ {tf_ko}은 짧은 봉이라 신호가 자주 틀릴 수 있어요")
+    if sig.get("closed_at"):
+        lines.append(f"확정 봉 마감 {sig['closed_at']} · 원천 {sig['source']} · 지연 여유 {sig['lag_minutes']}분")
+        lines.append(f"마감 이후 확인 {sig['fetched_at']}")
+        if (chart_tf := _chart_frame(tf)) != tf:
+            lines.append(f"차트는 {_TF_KO[chart_tf]}으로 열려요")
     lines.append(NO_ADVICE)
     return title, "\n".join(lines)
 
 
-def clean(body: dict) -> dict:
-    """A watch setting as stored: known timeframes and events, tickers as given (the API checks them)."""
-    tfs = [channels.TF_ALIASES.get(t, t) for t in body.get("timeframes") or []]
-    bad = [t for t in tfs if t not in TIMEFRAMES]
-    if bad:
+def _timeframes(values: list[str]) -> list[str]:
+    tfs = [channels.TF_ALIASES.get(t, t) for t in values]
+    if any(t not in TIMEFRAMES for t in tfs):
         raise ValueError(f"timeframes must be among {', '.join(TIMEFRAMES)}")
-    events = body.get("events") or {}
+    return list(dict.fromkeys(tfs))
+
+
+def _events(events: dict) -> dict:
     if set(events) - set(EVENTS):
         raise ValueError(f"events must be among {', '.join(EVENTS)}")
+    return {e: bool(events.get(e, True)) for e in EVENTS}
+
+
+def _clean_rules(rules: list[dict] | None) -> list[dict] | None:
+    if rules is None:
+        return None
+    if len(rules) > MAX_TICKERS:
+        raise ValueError(f"at most {MAX_TICKERS} rules")
+    cleaned = []
+    seen = set()
+    for rule in rules:
+        ticker = rule.get("ticker")
+        if not ticker or ticker in seen:
+            raise ValueError("each rule needs a unique ticker")
+        seen.add(ticker)
+        tfs = _timeframes(rule.get("timeframes") or [])
+        side = rule.get("side", "both")
+        if side not in SIDES:
+            raise ValueError(f"side must be among {', '.join(SIDES)}")
+        enabled = bool(rule.get("enabled"))
+        if enabled and not tfs:
+            raise ValueError("an enabled rule needs timeframes")
+        if tfs and line_watch_bars.market_of(ticker) is None:
+            raise ValueError(f"unsupported_market: {ticker}")
+        cleaned.append({"ticker": ticker, "enabled": enabled, "timeframes": tfs,
+                        "events": _events(rule.get("events") or {}), "side": side})
+    return cleaned
+
+
+def allowed_support(ticker: str | None = None) -> dict:
+    return line_watch_bars.allowed_support(ticker)
+
+
+def clean(body: dict) -> dict:
+    """A watch setting as stored: known timeframes and events, tickers as given (the API checks them)."""
+    tfs = _timeframes(body.get("timeframes") or [])
     tickers = list(dict.fromkeys(body.get("tickers") or []))
     if len(tickers) > MAX_TICKERS:
         raise ValueError(f"at most {MAX_TICKERS} tickers")
-    return {"enabled": bool(body.get("enabled")), "tickers": tickers, "timeframes": list(dict.fromkeys(tfs)),
-            "events": {e: bool(events.get(e, True)) for e in EVENTS}}
+    rules = _clean_rules(body.get("rules"))
+    if rules is None and any(tf not in channels.TIMEFRAMES for tf in tfs):
+        for ticker in tickers:
+            if line_watch_bars.market_of(ticker) is None:
+                raise ValueError(f"unsupported_market: {ticker}")
+    return {"enabled": bool(body.get("enabled")), "tickers": tickers, "timeframes": tfs,
+            "events": _events(body.get("events") or {}), "rules": rules}
+
+
+def _selected(sig: dict, events: dict, side: str) -> bool:
+    if not events.get(sig["event"], False):
+        return False
+    return side == "both" or (sig["rule"] in _RESISTANCE) == (side == "resistance")
 
 
 def admit(sig: dict, ticker: str, tf: str, today: list[dict], before: list[dict] = ()) -> bool:
@@ -238,7 +298,7 @@ def admit(sig: dict, ticker: str, tf: str, today: list[dict], before: list[dict]
            for r in today):
         return False                                   # the same line, the same signal: once a day
     at = datetime.fromisoformat(sig["at"])
-    gap = max(timedelta(minutes=COOLDOWN_MIN), timedelta(minutes=COOLDOWN_BARS * channels.MINUTES[tf]))
+    gap = _cooldown(tf)
     if any(r["ticker"] == ticker and r["timeframe"] == tf and r["event"] == sig["event"]
            and abs(at - datetime.fromisoformat(r["at"])) < gap for r in [*before, *today]):
         return False
@@ -247,9 +307,17 @@ def admit(sig: dict, ticker: str, tf: str, today: list[dict], before: list[dict]
     return sum(1 for r in today if r["ticker"] == ticker) < PER_TICKER_MAX
 
 
+def _cooldown(tf: str) -> timedelta:
+    return timedelta(minutes=max(COOLDOWN_MIN, COOLDOWN_BARS * line_watch_bars.MINUTES[tf]))
+
+
+def _chart_frame(tf: str) -> str:
+    return {"10m": "5m", "120m": "60m"}.get(tf, tf)
+
+
 def chart_url(ticker: str, tf: str) -> str:
     """Where the alert opens: that ticker · timeframe's chart (the timeline's link, frontend lineSignals.chartHref)."""
-    return f"/#/charts?t={quote(ticker, safe='')}&iv={'60m' if tf == '120m' else tf}"
+    return f"/#/charts?t={quote(ticker, safe='')}&iv={_chart_frame(tf)}"
 
 
 def kst_day(at: str) -> str:
@@ -277,7 +345,8 @@ class LineWatch:
         """Write the setting: the fields ``body`` leaves out keep their value."""
         cur = self.settings()
         value = clean({**cur, **body, "events": {**cur["events"], **(body.get("events") or {})}})
-        if value["enabled"] and not (value["tickers"] and value["timeframes"]):
+        if (value["enabled"] and value["rules"] is None
+                and not (value["tickers"] and value["timeframes"])):
             raise ValueError("a watch that is on needs tickers and timeframes")
         with self.engine.begin() as conn:
             hit = conn.execute(update(line_watch).where(line_watch.c.id == 1).values(body=value, updated_at=now()))
@@ -291,10 +360,18 @@ class LineWatch:
             rows = conn.execute(select(line_signals).order_by(desc(line_signals.c.id)).limit(limit)).mappings().all()
         return [{"trade_date": r["trade_date"], "ticker": r["ticker"], "timeframe": r["timeframe"],
                  "event": r["event"], "rule": r["rule"], "line_id": r["line_id"], "at": r["at"],
-                 "price": r["price"], "line_price": r["line_price"], "text": r["text"]} for r in rows]
+                 "price": r["price"], "line_price": r["line_price"], "text": r["text"],
+                 "recorded_at": aware(r["created_at"]).astimezone(UTC).isoformat()} for r in rows]
 
     def _day(self, conn, day: str) -> list[dict]:
         rows = conn.execute(select(line_signals).where(line_signals.c.trade_date == day)).mappings().all()
+        return [dict(r) for r in rows]
+
+    def _earlier(self, conn, day: str, tf: str) -> list[dict]:
+        gap_days = math.ceil(_cooldown(tf) / timedelta(days=1))
+        first = (datetime.fromisoformat(day) - timedelta(days=gap_days)).date().isoformat()
+        rows = conn.execute(select(line_signals).where(line_signals.c.trade_date >= first,
+                                                       line_signals.c.trade_date < day)).mappings().all()
         return [dict(r) for r in rows]
 
     def due(self, ticker: str, tf: str, at: datetime | None = None) -> bool:
@@ -329,16 +406,28 @@ class LineWatch:
         end = _finished_end(bars, index, tf)
         if end is None or at - end > timedelta(minutes=max(2 * channels.MINUTES[tf], 10)):
             return []
+        return self._deliver(ticker, tf, found, pusher)
+
+    def _scan_confirmed(self, ticker: str, tf: str, rules: dict, sample: line_watch_bars.Sample,
+                        end: datetime, pusher) -> list[dict]:
+        found = [{**signal, "closed_at": end.isoformat(), "source": sample.source,
+                  "fetched_at": sample.fetched_at.isoformat(), "lag_minutes": sample.lag_minutes}
+                 for signal in detect(sample.bars, tf, confirmed=True)
+                 if _selected(signal, rules["events"], rules["side"])]
+        return self._deliver(ticker, tf, found, pusher)
+
+    def _deliver(self, ticker: str, tf: str, found: list[dict], pusher) -> list[dict]:
+        if not found:
+            return []
         rates = lines_bt.rates(ticker, tf)
         sent = []
         order = {"long": 0, "break": 1, "retest": 2, "touch": 3}
         for sig in sorted(found, key=lambda s: order[s["event"]]):
             title, body = text(sig, ticker, tf, rates)
-            day = kst_day(sig["at"])
-            yesterday = (datetime.fromisoformat(day) - timedelta(days=1)).date().isoformat()
+            day = kst_day(sig.get("closed_at") or sig["at"])
             try:
                 with self.engine.begin() as conn:
-                    if not admit(sig, ticker, tf, self._day(conn, day), self._day(conn, yesterday)):
+                    if not admit(sig, ticker, tf, self._day(conn, day), self._earlier(conn, day, tf)):
                         continue
                     conn.execute(insert(line_signals).values(
                         trade_date=day, ticker=ticker, timeframe=tf, event=sig["event"], rule=sig["rule"],
@@ -346,31 +435,67 @@ class LineWatch:
                         text=f"{title}\n{body}"[:600], created_at=now()))
             except IntegrityError:                     # another pass kept it first
                 continue
-            (self.send_notice or notify.send)(pusher, KIND, f"tone_{TONE}", payload={"title": title, "body": body, "tag": f"line-{ticker}-{tf}",
-                                                               "url": chart_url(ticker, tf), "tone": TONE})
+            payload = {"title": title, "body": body, "tag": f"line-{ticker}-{tf}",
+                       "url": chart_url(ticker, tf), "tone": TONE}
+            if "closed_at" in sig:
+                payload.update({key: sig[key] for key in ("closed_at", "source", "fetched_at", "lag_minutes")})
+            (self.send_notice or notify.send)(pusher, KIND, f"tone_{TONE}", payload=payload)
             sent.append({**sig, "title": title, "body": body})
         return sent
 
 
-async def run_pass(watch: LineWatch, prices, pusher) -> int:
-    """One pass of the watch loop: each watched ticker · timeframe whose bar has just ended, at most
-    PASS_MAX reads (the rest on the next pass)."""
-    import asyncio
+def _work(cfg: dict):
+    if cfg["rules"] is None:
+        fallback = {"events": cfg["events"], "side": "both"}
+        for ticker in cfg["tickers"]:
+            for tf in cfg["timeframes"]:
+                yield ticker, tf, fallback, tf not in channels.TIMEFRAMES
+        return
+    for rule in cfg["rules"]:
+        if rule["enabled"] and any(rule["events"].values()):
+            for tf in rule["timeframes"]:
+                yield rule["ticker"], tf, rule, True
 
+
+async def run_pass(watch: LineWatch, prices, pusher) -> int:
+    """Read at most PASS_MAX due frames. A missing/uncertain bar never falls back to an older signal."""
     cfg = await asyncio.to_thread(watch.settings)
     if not cfg["enabled"]:
         return 0
     sent = reads = 0
-    for ticker in cfg["tickers"]:
-        for tf in cfg["timeframes"]:
-            if not watch.due(ticker, tf) or reads >= PASS_MAX:
-                continue
-            reads += 1
-            try:
+    for ticker, tf, rule, verified in _work(cfg):
+        if reads >= PASS_MAX:
+            break
+        if not watch.due(ticker, tf):
+            continue
+        try:
+            if not verified:
+                reads += 1
                 got = await prices.candles(ticker, tf, channels.BARS[tf])
                 sent += len(await asyncio.to_thread(watch.scan, ticker, tf, got["bars"], pusher, cfg,
                                                     got.get("fetched_at")))
-            except Exception as exc:  # noqa: BLE001 - one ticker's failure leaves the others
-                log.warning("line signals for %s %s failed: %s", ticker, tf, type(exc).__name__)
+                continue
+            market = line_watch_bars.market_of(ticker)
+            if market is None:  # a stale stored rule rather than a verified request
                 watch._due[(ticker, tf)] = watch.clock() + timedelta(seconds=IDLE_SEC)
+                continue
+            plan = line_watch_bars.plan(market, tf, watch.clock())
+            watch._due[(ticker, tf)] = plan.next_at
+            if plan.expected is None:
+                log.debug("line watch %s %s: %s", market, tf, plan.reason)
+                continue
+            reads += 1
+            interval, count = line_watch_bars.source_request(tf)
+            got = await prices.candles(ticker, interval, count)
+            at = watch.clock()
+            sample = line_watch_bars.sample(market, tf, plan, got, at)
+            if sample.reason is not None:
+                log.debug("line watch %s %s: %s", market, tf, sample.reason)
+                watch._due[(ticker, tf)] = min(plan.next_at, at + timedelta(seconds=TICK_SEC))
+                continue
+            sent += len(await asyncio.to_thread(watch._scan_confirmed, ticker, tf, rule, sample, plan.expected.end,
+                                                pusher))
+        except Exception as exc:  # noqa: BLE001 - one rule's failure leaves the others
+            log.warning("line signals %s failed: %s", tf, type(exc).__name__)
+            watch._due[(ticker, tf)] = watch.clock() + timedelta(seconds=IDLE_SEC)
     return sent

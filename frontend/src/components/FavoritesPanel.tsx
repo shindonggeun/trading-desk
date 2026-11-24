@@ -255,7 +255,7 @@ export default function FavoritesPanel() {
               {all || editing ? "접기" : `나머지 ${shown.length - FOLD}개 더 보기`}
             </button>
           )}
-          {info && <StockProfileCard ticker={info} onClose={() => setInfo(null)} />}
+          {info && <StockProfileCard ticker={info} name={list?.find((item) => item.ticker === info)?.name} onClose={() => setInfo(null)} />}
           <p className="muted small qb-note">추정가 · 점선은 바이낸스 무기한 선물로 낸 장외 추정이며 실제 체결가가 아닙니다.</p>
         </>
       )}

@@ -88,6 +88,10 @@ export default function Charts({ query }: { query: URLSearchParams }) {
   const alertPrice = alertLine && sameTicker(alertLine.ticker, ticker) && alertLine.timeframe === alert?.timeframe
     && Number.isFinite(alertLine.price) && alertLine.price > 0 ? alertLine.price : null;
   const fromAlert = alert !== null;
+  const rawLevel = Number(query.get("p"));
+  const levelPrice = !fromAlert && ticker && iv && query.getAll("p").length === 1
+    && Number.isFinite(rawLevel) && rawLevel > 0 && rawLevel <= Number.MAX_SAFE_INTEGER ? rawLevel : null;
+  const targeted = fromAlert || levelPrice != null;
   const [search, setSearch] = useState<Picked>({ ticker: "" });
   const [recent, setRecent] = useState<Picked[]>(loadRecent);
   const favorites = useFavorites().list ?? [];
@@ -159,9 +163,9 @@ export default function Charts({ query }: { query: URLSearchParams }) {
   };
 
   const onInterval = useCallback((next: Interval) => {
-    // 첫 차트 마운트는 알림 주소를 보존한다. 사용자가 다른 봉을 고르면 일반 차트로 이동한다.
-    if (!fromAlert || next !== iv) go(ticker, next, fromAlert);
-  }, [ticker, iv, fromAlert]);
+    // 첫 차트 마운트는 가격선 주소를 보존한다. 사용자가 다른 봉을 고르면 일반 차트로 이동한다.
+    if (!targeted || next !== iv) go(ticker, next, targeted);
+  }, [ticker, iv, targeted]);
   const analyze = `#/?ticker=${encodeURIComponent(ticker)}${name ? `&name=${encodeURIComponent(name)}` : ""}`;
 
   return (
@@ -236,14 +240,17 @@ export default function Charts({ query }: { query: URLSearchParams }) {
 
       {ticker ? (
         <Suspense fallback={<p className="muted">차트를 여는 중…</p>}>
-          <PriceChart key={fromAlert ? query.toString() : ticker} ticker={ticker} tradeDate={today()} plan={null} title={name ?? ticker}
-            initialInterval={iv} onIntervalChange={onInterval} extraLines={weeklyLines} highlight={alertPrice} readable
-            banner={alert && (
+          <PriceChart key={targeted ? query.toString() : ticker} ticker={ticker} tradeDate={today()} plan={null} title={name ?? ticker}
+            initialInterval={iv} onIntervalChange={onInterval} extraLines={weeklyLines} highlight={alertPrice ?? levelPrice}
+            includeHighlightInScale={levelPrice != null} readable
+            banner={alert ? (
               <p className="muted small chart-limit">
                 {alert.fallback ?? LINE_TF_KO[alert.timeframe] + " 선 알림"}
                 {alertPrice != null && " · 알림 당시 선 가격 " + price(alertPrice)}
               </p>
-            )} />
+            ) : levelPrice != null ? (
+              <p className="muted small chart-limit">종목 요약에서 선택한 가격선 {price(levelPrice)}</p>
+            ) : undefined} />
         </Suspense>
       ) : (
         <section className="card charts-empty">

@@ -1,0 +1,49 @@
+.stock-profile-summary .sp-head {
+  flex-wrap: wrap;
+}
+
+.stock-profile-analysis-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+}
+
+.stock-profile-analysis {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+}
+
+.stock-profile-analysis > summary {
+  min-height: 44px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.stock-profile-analysis > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.stock-profile-analysis > :not(summary) {
+  margin: 0 12px 12px;
+}
+
+.stock-profile-trend {
+  display: grid;
+  gap: 6px;
+  padding: 8px 0;
+}
+
+.stock-profile-trend-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 32px;
+  border-bottom: 1px solid var(--border);
+}
+
+.stock-profile-trend-bars > span {
+  flex: 1;
+  background: var(--muted);
+}

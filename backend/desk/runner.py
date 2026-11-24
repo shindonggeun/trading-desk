@@ -18,6 +18,7 @@ from typing import Any
 
 from . import (
     all_horizons,
+    analysis_sources,
     calibration,
     horizons,
     language,
@@ -66,6 +67,7 @@ ANALYSTS = ("market", "social", "news", "fundamentals")
 # #171: the analysts whose reports are data rather than a read of the price (agent, state field) -
 # reusable from a recent run of the same ticker; market and sentiment are always fresh.
 REUSABLE = {"news": ("news_analyst", "news_report"), "fundamentals": ("fundamentals_analyst", "fundamentals_report")}
+_SOURCE_REPORTS = {"social": ("sentiment_analyst", "sentiment_report"), "news": REUSABLE["news"]}
 
 Emit = Callable[[dict], None]
 
@@ -175,12 +177,23 @@ def _stream_graph(
     from tradingagents.dataflows.config import get_config, run_config, set_config
     from tradingagents.graph.trading_graph import TradingAgentsGraph
 
+    requested = request.graph_analysts()
+    managed = [analyst for analyst in requested if analyst in _SOURCE_REPORTS]
+    native = [analyst for analyst in requested if analyst not in managed]
+    managed_agents = {_SOURCE_REPORTS[analyst][0] for analyst in managed}
+    if managed:
+        # The public checkpoint signature includes config as well as native analysts.
+        config = {**config, "desk_analysis_source_reports": managed}
+    market_fallback = bool(managed and not native)
+    if market_fallback:
+        # The pinned graph requires at least one native analyst to run its debate pipeline.
+        native = ["market"]
     # The pinned graph constructor also sets the library's process-wide fallback.
     # Keep temporary paths out of later unrelated reads as soon as setup is done.
     with _GRAPH_SETUP:
         previous = get_config() if isolated else None
         try:
-            graph = TradingAgentsGraph(selected_analysts=request.graph_analysts(), config=config)
+            graph = TradingAgentsGraph(selected_analysts=native, config=config)
         finally:
             if previous is not None:
                 set_config(previous)
@@ -202,8 +215,23 @@ def _stream_graph(
             args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = thread_id
         try:
             graph_input = init_state if isolated else graph.checkpoint_input(init_state)
+            if graph_input is not None and managed:
+                korean = language.korean(config.get("output_language"))
+                reports = analysis_sources.prepare_reports(
+                    managed, ticker, dt.date.fromisoformat(date), graph.config, korean=korean,
+                )
+                for analyst, report in reports.items():
+                    agent, key = _SOURCE_REPORTS[analyst]
+                    if market_fallback and analyst == managed[0]:
+                        report += ("\n\n대체 입력과 함께 기본 시장 분석을 실행합니다." if korean
+                                   else "\n\nThe market analyst runs alongside the prepared evidence.")
+                    graph_input[key] = report
+                    differ.seed(key, report)
+                    emit({"type": "message", "agent": agent, "content": report, "data": {"source_evidence": True}})
             for messages, chunk in graph.stream_run(graph_input, **args):
                 for event in differ.feed(messages, chunk):
+                    if event["agent"] in managed_agents:
+                        event["data"] = {"source_evidence": True}
                     emit(event)
                 if chunk is not None:
                     final_state.update(chunk)
@@ -1085,7 +1113,8 @@ class RunManager:
         picked: dict[str, dict] = {}
         for row in rows:                                   # newest first
             options, analyst = row["options"] or {}, by_agent[row["agent"]]
-            if (analyst in picked or not (row["content"] or "").strip() or (row["data"] or {}).get("reused")
+            data = row["data"] or {}
+            if (analyst in picked or not (row["content"] or "").strip() or data.get("reused") or data.get("source_evidence")
                     or options.get("horizon") != request.horizon
                     or options.get("output_language") != request.output_language):
                 continue

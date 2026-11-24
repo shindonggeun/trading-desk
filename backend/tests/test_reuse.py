@@ -61,6 +61,31 @@ def test_a_rerun_takes_over_news_and_fundamentals_and_redoes_the_rest(db_url):
     assert "reused" not in second["options"] or second["options"]["reused"] is None
 
 
+def test_a_prepared_source_report_is_not_carried_past_the_circuit_cooldown(db_url):
+    seen = []
+    fake = make_fake_runner(0)
+
+    def graph(request, emit, portfolio):
+        seen.append(request)
+
+        def mark_evidence(event):
+            if event["type"] == "message" and event["agent"] == "news_analyst":
+                event = {**event, "data": {"source_evidence": True}}
+            emit(event)
+
+        return fake(request, mark_evidence, portfolio)
+
+    with _client(db_url, 30, graph) as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        _run(client)
+        second, events = _run(client)
+
+    assert second["status"] == "done"
+    assert "news" in seen[1].graph_analysts()
+    assert set(seen[1].reused) == {"fundamentals"}
+    assert [e["data"] for e in _said(events, "news_analyst")] == [{"source_evidence": True}]
+
+
 def test_no_reuse_across_horizons_or_when_off(db_url):
     client = _client(db_url, 30)
     with client:

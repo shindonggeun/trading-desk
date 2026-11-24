@@ -4,6 +4,8 @@ import asyncio
 from datetime import UTC, datetime, time, timedelta
 from threading import Event
 
+import pytest
+
 from desk import market_calendar
 from desk.market_outlook import INDEX, VIX, MarketOutlook, Observation
 
@@ -107,7 +109,7 @@ def test_conflicting_or_old_measurements_do_not_confirm_recovery():
     assert "credit_spread" in result["regime"]["opposing"]
     assert _evidence(result)["credit_spread"]["value"] == 345
 
-    old = _read(_candles(RECOVERY, VIX_DOWN), breadth=_measure(67, observed=LAST_CLOSE - timedelta(days=6)))
+    old = _read(_candles(RECOVERY, VIX_DOWN), breadth=_measure(67, observed=LAST_CLOSE - timedelta(days=7)))
     assert old["regime"]["state"] == "undetermined"
     assert "breadth" not in old["regime"]["supporting"]
     evidence = _evidence(old)
@@ -143,11 +145,133 @@ def test_cached_intraday_sample_stays_unfinished_after_close():
     assert evidence["details"]["close"] == round(DOWN[-1], 2)
 
 
+@pytest.mark.parametrize("bad_metadata", [
+    {"fetched_at": None},
+    {"fetched_at": "not-a-timestamp"},
+    {"fetched_at": "0001-01-01T00:00:00+14:00"},
+    {"fetched_at": (NOW + timedelta(days=1)).isoformat()},
+    {"source": " "},
+])
+def test_unverified_candle_metadata_cannot_confirm_a_close(bad_metadata):
+    as_of = NOW.replace(hour=22)
+    bars = _bars(DOWN) + _bars([10_000], NOW)
+    candles = _candles(DOWN, VIX_UP, **{
+        INDEX: {"bars": bars, "fetched_at": as_of.isoformat(), **bad_metadata},
+    })
+    result = asyncio.run(MarketOutlook(candles=candles, clock=lambda: as_of).read())
+    assert result["regime"]["state"] == "undetermined"
+    for indicator in ("index_trend", "index_drawdown", "index_rebound"):
+        evidence = _evidence(result)[indicator]
+        assert (evidence["status"], evidence["reason"]) == ("missing", "invalid_observation")
+        assert evidence["observed_at"] is evidence["direction"] is evidence["value"] is None
+
+
+def test_completed_read_sets_one_cutoff_for_newly_fetched_evidence():
+    now = NOW
+    fetched = NOW + timedelta(seconds=1)
+    completed = fetched + timedelta(seconds=1)
+
+    async def candles(symbol, _interval, count):
+        nonlocal now
+        now = completed
+        bars = _bars(RECOVERY if symbol == INDEX else VIX_DOWN)
+        return {"source": "fixture", "fetched_at": fetched.isoformat(), "bars": bars[-count:]}
+
+    async def breadth():
+        return Observation(64, "fixture", LAST_CLOSE, "positive", fetched)
+
+    result = asyncio.run(MarketOutlook(candles=candles, breadth=breadth, clock=lambda: now).read())
+    assert result["as_of"] == completed.isoformat()
+    assert result["regime"]["state"] == "recovery_watch"
+    evidence = _evidence(result)
+    for indicator in ("index_trend", "volatility", "breadth"):
+        assert evidence[indicator]["status"] == "available"
+        assert evidence[indicator]["fetched_at"] == fetched.isoformat()
+
+
+def test_malformed_bar_timestamp_isolated_from_other_sources():
+    candles = _candles(DOWN, VIX_UP, **{
+        VIX: {"bars": [{"at": "0001-01-01T00:00:00+00:00", "close": 21}]},
+    })
+    views = [{"expert": "a", "stance": "bullish"}]
+    filings = [{"quarter": "2026Q3"}]
+    result = _read(candles, views=lambda _: views, filing=lambda: {"status": "available", "items": filings})
+    evidence = _evidence(result)
+    assert result["views"] == views
+    assert result["filings"] == filings
+    assert evidence["index_trend"]["status"] == "available"
+    assert (evidence["volatility"]["status"], evidence["volatility"]["reason"]) == ("error", "source_error")
+    assert result["regime"]["state"] == "undetermined"
+
+
+@pytest.mark.parametrize("source", ["breadth", "credit"])
+@pytest.mark.parametrize(("observed", "fetched"), [
+    (LAST_CLOSE, None),
+    (LAST_CLOSE, NOW + timedelta(seconds=1)),
+    (LAST_CLOSE, LAST_CLOSE - timedelta(seconds=1)),
+    (LAST_CLOSE - timedelta(minutes=30), LAST_CLOSE - timedelta(minutes=10)),
+    (LAST_CLOSE + timedelta(days=1), NOW),  # US Saturday
+    (NOW - timedelta(minutes=10), NOW),  # US Monday regular session is still open
+])
+def test_invalid_auxiliary_timestamp_cannot_confirm_recovery(source, observed, fetched):
+    async def measure():
+        return Observation(64, "fixture", observed, "positive", fetched)
+
+    result = _read(_candles(RECOVERY, VIX_DOWN), **{source: measure})
+    indicator = source if source == "breadth" else "credit_spread"
+    evidence = _evidence(result)[indicator]
+    assert (evidence["status"], evidence["reason"]) == ("missing", "invalid_observation")
+    assert indicator not in result["regime"]["supporting"]
+    assert result["regime"]["state"] == "undetermined"
+
+
+def test_previous_open_session_remains_eligible_for_delayed_auxiliary_evidence():
+    breadth = _measure(64, observed=LAST_CLOSE - timedelta(days=1))
+    result = _read(_candles(RECOVERY, VIX_DOWN), breadth=breadth)
+    assert result["regime"]["state"] == "recovery_watch"
+    assert _evidence(result)["breadth"]["status"] == "available"
+
+
+@pytest.mark.parametrize(("vix", "breadth", "expected"), [
+    ([], None, "undetermined"),
+    ([22] * 6, None, "undetermined"),
+    (VIX_DOWN, None, "undetermined"),
+    (VIX_DOWN, _measure(30, direction="negative"), "undetermined"),
+    ([], _measure(30, direction="negative"), "downtrend"),
+])
+def test_downtrend_requires_independent_directional_confirmation(vix, breadth, expected):
+    result = _read(_candles(DOWN, vix), breadth=breadth)
+    regime = result["regime"]
+    assert regime["state"] == expected
+    if vix == VIX_DOWN:
+        assert "volatility" in regime["supporting"]
+        assert "index_trend" in regime["opposing"]
+
+
+@pytest.mark.parametrize(("minutes", "status", "state"), [
+    (5, "stale", "undetermined"),
+    (15, "available", "rebound_candidate"),
+])
+def test_vix_must_confirm_the_index_session_after_its_own_close(minutes, status, state):
+    as_of = NOW.replace(hour=21, minute=minutes)
+    candles = _candles(REBOUND, VIX_DOWN, **{
+        INDEX: {"bars": _bars(REBOUND, NOW), "fetched_at": as_of.isoformat()},
+        VIX: {"bars": _bars(VIX_DOWN) + _bars([20], NOW), "fetched_at": as_of.isoformat()},
+    })
+    result = asyncio.run(MarketOutlook(candles=candles, clock=lambda: as_of).read())
+    evidence = _evidence(result)
+    assert evidence["index_rebound"]["status"] == "available"
+    assert evidence["volatility"]["status"] == status
+    assert evidence["volatility"]["reason"] == ("latest_session_missing" if minutes == 5 else None)
+    assert result["regime"]["state"] == state
+
+
 def test_partial_history_and_source_failures_do_not_gain_evidence():
     async def candles(symbol, _interval, _count):
         if symbol == VIX:
             raise OSError("upstream secret")
-        return {"source": "fixture", "bars": _bars(DOWN[-11:]) + _bars([float("nan")], NOW)}
+        return {"source": "fixture", "fetched_at": NOW.isoformat(),
+                "bars": _bars(DOWN[-11:]) + _bars([float("nan")], NOW)}
 
     result = _read(candles, breadth=_measure(60, observed=NOW + timedelta(minutes=1)))
     assert result["regime"]["state"] == "undetermined"
@@ -219,5 +343,5 @@ def test_timeouts_are_per_source_and_concurrent_requests_share_the_filing_read()
     for result in results:
         assert result["sources"]["filings"] == {"status": "error", "reason": "timeout"}
         assert result["views"] == opinions
-        assert result["regime"]["state"] == "downtrend"
+        assert result["regime"]["state"] == "undetermined"
         assert _evidence(result)["volatility"]["reason"] == "timeout"

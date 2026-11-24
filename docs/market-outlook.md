@@ -41,10 +41,10 @@
 
 | `state` | 조건 |
 | --- | --- |
-| `downtrend` | 60거래일 종가 고점 대비 5% 이상 낙폭, 20·50일선 하락 구조, 5거래일 반등 기준 미달. 신선한 시장 폭 또는 신용 개선 근거가 있으면 유보한다. |
+| `downtrend` | 60거래일 종가 고점 대비 5% 이상 낙폭, 20·50일선 하락 구조, 5거래일 반등 기준 미달. 변동성·시장 폭·신용 중 신선한 악화 근거가 하나 이상 필요하며 같은 보조 지표 집합에서 신선한 개선 근거가 있으면 유보한다. |
 | `rebound_candidate` | 낙폭이 남은 하락·중립 구조에서 5거래일 종가 +2% 이상, 별도 시장 폭·신용·변동성 중 개선이 있으며 악화 증거와 충돌하지 않는다. |
 | `recovery_watch` | 최근 20거래일에 위 낙폭 조건을 충족했던 뒤 종가 > 20일선 > 50일선과 20일선 상승이 관측된다. 신선한 시장 폭 또는 신용 개선이 필요하고 변동성 등 보조 지표의 악화가 있으면 유보한다. |
-| `undetermined` | 자료·과거 봉이 부족하거나 위 조건에 부합하지 않는다. 확인 가능한 개선·악화 근거를 함께 표시한다. |
+| `undetermined` | 자료·과거 봉이 부족하거나 독립 지표에서 방향을 확인할 수 없거나 위 조건에 맞지 않는다. 확인 가능한 개선·악화 근거를 함께 표시한다. |
 
 `evidence`는 지표별 `id`, `value`, `unit`, `direction`, `details`,
 `source`, `observed_at`(원천 관측 시각), `fetched_at`(데스크 조회 시각),
@@ -57,4 +57,17 @@
 
 신선한 `available` 지표만 판정에 쓴다. 세션 마감에 뒤처진 `stale`, 관측이 없거나 표본이
 짧은 `missing`, 원천 오류·시간 초과 `error`, 미설정 `disabled`도 이유와 함께 표시한다.
+
+- `as_of`는 조회가 끝난 후 고정한 공통 UTC 시각이다. 지수와 VIX는 출처가 있고 조회 시각이
+  `as_of` 이내이며 해당 일봉의 마감 기준 시각이 조회 시각 이내인 경우에 사용한다.
+  조회 시각이 없거나 확인되지 않거나 미래이면 `missing/invalid_observation`이다.
+- S&P 500은 16:00 ET, VIX는 16:15 ET를 일봉에 적용하는 보수적 마감 기준으로 쓰며
+  단축장에도 같은 시각을 적용한다. 지수의 완료 거래일이 VIX보다 앞서면 직전 거래일 VIX를
+  `stale/latest_session_missing`으로 표시하고 판정에서 제외한다. 이 시각들은 원천의 최초
+  공표 시각을 확인한 값이 아니다. [NYSE 거래 시간 및 휴장일](https://www.nyse.com/trade/hours-calendars) · [Cboe VIX 방법론](https://cdn.cboe.com/resources/indices/governance/Volatility_Index_Methodology_Cboe_Volatility_Index.pdf)
+- 시장 폭·신용 스프레드는 미국 개장일의 관측이며 `observed_at ≤ fetched_at ≤ as_of`와
+  관측 거래일의 보수적 지수 마감 이후 조회를 모두 확인한다. 해당 조건을 확인할 수 없으면
+  `missing/invalid_observation`이다. 발표 지연을 고려해 지수의 최근 완료 거래일과 바로
+  전 개장일의 값까지 허용하고 더 오래된 값에는 `stale/publication_lag`를 표시한다.
+
 발언·13F와 장세 판정은 서로 다른 데이터 흐름이며 시장 상태는 지표 기반의 관찰 구분이다.

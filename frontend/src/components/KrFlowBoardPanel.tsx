@@ -61,7 +61,7 @@ function MarketSummary({ data }: { data: KrFlowBoardResponse }) {
         <article className="kr-flow-metric">
           <h3>지수 종가</h3>
           <strong className="kr-flow-value">{index ? `${index.value.toLocaleString("ko-KR", { maximumFractionDigits: 2 })} 포인트` : "자료 없음"}</strong>
-          <p className="small">등락률 <b className={tone(change)}>{krFlowPercent(change, true)}</b></p>
+          <p className="small">전 거래일 대비 <b className={tone(change)}>{krFlowPercent(change, true)}</b></p>
           <Basis date={index?.as_of} source={index?.source} publishedAt={index?.published_at} />
         </article>
         <article className="kr-flow-metric">

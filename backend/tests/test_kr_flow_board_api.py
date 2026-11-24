@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from desk import kr_flow_data, kr_flow_import
 from desk.db import make_engine
+from desk.krx import KrxDaily
 from tests.test_favorites import OTHER, _app, _login
 
 URL = "/api/market/flow-board/kr"
@@ -55,3 +56,53 @@ def test_flow_board_auth_and_per_account_favorites_with_a_shared_ranking(db_url,
         assert [r["ticker"] for r in kosdaq["favorites"]["items"]] == ["247540.KQ"]
         assert other.get(URL, params={"market": "nxt"}).status_code == 422
         assert other.get(URL, params={"days": 23}).status_code == 422
+
+
+def test_flow_board_index_change_follows_completed_kst_sessions(db_url, monkeypatch):
+    app = _app(db_url)
+    read = kr_flow_data.read
+    now = datetime(2026, 10, 8, 6, 29, tzinfo=UTC)  # 15:29 KST
+    wednesday = date(2026, 10, 7)
+    thursday = date(2026, 10, 8)
+    holiday = date(2026, 10, 9)
+
+    async def read_at(engine, market, days, favorites, _now):
+        return await read(engine, market, days, favorites, now)
+
+    monkeypatch.setattr(kr_flow_data, "read", read_at)
+    engine = make_engine(db_url)
+    try:
+        store = KrxDaily(engine, client=None)
+
+        def row(day, name, close, change):
+            return {"BAS_DD": day.strftime("%Y%m%d"), "IDX_NM": name, "CLSPRC_IDX": close,
+                    "FLUC_RT": change, "OPNPRC_IDX": "600"}
+
+        store.store("kospi_dd_trd", wednesday, [row(wednesday, "코스피", "3000", "0.75")])
+        store.store("kospi_dd_trd", thursday, [row(thursday, "코스피", "3000", "0.00")])
+        store.store("kospi_dd_trd", holiday, [row(holiday, "코스피", "9999", "233.30")])
+        store.store("kosdaq_dd_trd", thursday, [row(thursday, "코스닥", "850", "-1.25")])
+    finally:
+        engine.dispose()
+
+    def check(client, market, latest, close, change, *, as_of=None):
+        response = client.get(URL, params={"market": market})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["latest_session"] == latest.isoformat()
+        assert body["market_summary"]["index"] == {
+            "as_of": (as_of or latest).isoformat(), "source": "krx_open_api", "published_at": None,
+            "unit": "index_points", "value": close, "change_pct": change,
+        }
+
+    with _login(app) as client:
+        check(client, "kospi", wednesday, 3000, 0.75)
+        now = datetime(2026, 10, 8, 6, 30, tzinfo=UTC)  # 15:30 KST
+        check(client, "kospi", thursday, 3000, 0)
+        check(client, "kosdaq", thursday, 850, -1.25)
+        now = datetime(2026, 10, 8, 15, 1, tzinfo=UTC)  # 00:01 KST on Hangul Day
+        check(client, "kospi", thursday, 3000, 0)
+        now = datetime(2026, 10, 11, 3, tzinfo=UTC)  # Sunday in Korea
+        check(client, "kospi", thursday, 3000, 0)
+        now = datetime(2026, 10, 12, 7, tzinfo=UTC)  # Monday's close is not yet published
+        check(client, "kospi", date(2026, 10, 12), 3000, 0, as_of=thursday)

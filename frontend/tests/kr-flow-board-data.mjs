@@ -66,7 +66,7 @@ export const flowFixtures = {
     favorites: { status: "partial", items: [favorite(samsung, "삼성전자", 47.5, true), favorite(sk, "SK하이닉스", 0)] },
     market_summary: {
       status: "stale", scope: "market",
-      index: { ...metadata(last, "지수", "index_points"), value: 4869.96, change_pct: 0 },
+      index: { ...metadata(rankDate, "지수", "index_points"), value: 4869.96, change_pct: 0 },
       flow: { ...metadata(rankDate, "시장 수급", "KRW"), investors: { foreigner: { buy: 30, sell: 50, net: -20 } } },
     },
     sources: { turnover: { status: "available" }, foreign_flow: { status: "available" }, ownership: { status: "available" } },
@@ -75,7 +75,11 @@ export const flowFixtures = {
     market: "kosdaq", venue: "krx", status: "partial", latest_session: last, sessions,
     ranking: { ...metadata(null, "순위", "KRW", "source_unavailable"), items: [] },
     favorites: { status: "partial", items: [favorite("247540.KQ", "에코프로비엠", 3.2)] },
-    market_summary: { status: "source_unavailable", scope: "market", index: null, flow: null },
+    market_summary: {
+      status: "partial", scope: "market",
+      index: { ...metadata(last, "지수", "index_points"), value: 932.51 },
+      flow: null,
+    },
     sources: { turnover: { status: "source_unavailable" }, foreign_flow: { status: "source_unavailable" }, ownership: { status: "available" } },
   },
 };

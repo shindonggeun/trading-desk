@@ -36,7 +36,8 @@ def _run(sessions, bars, cnns, vixs, *, as_of=None, symbol="SOXL", cost_bps=0):
                     as_of=as_of or sessions[-1].closes_at + timedelta(hours=1), cost_bps=cost_bps)
 
 
-def test_wilder_inclusive_thresholds_fixed_horizons_mae_and_separate_peak():
+@pytest.mark.parametrize("symbol", ["SOXL", "KORU"])
+def test_wilder_inclusive_thresholds_fixed_horizons_mae_and_separate_peak(symbol):
     sessions = _sessions(280, holidays=(date(2024, 7, 4),), early_close=(date(2024, 7, 3),))
     closes = [20, 23] + [16] * 13 + [90] * (len(sessions) - 15)
     bars = [_bar(session, value) for session, value in zip(sessions, closes, strict=True)]
@@ -44,15 +45,15 @@ def test_wilder_inclusive_thresholds_fixed_horizons_mae_and_separate_peak():
     bars[17] = _bar(sessions[17], 90, low=80)
     bars[30] = _bar(sessions[30], 90, high=145)
     bars[266] = _bar(sessions[266], 80)
-    cnn = _fixings(sessions, {14: 10, 15: 11}, 30)
-    vix = _fixings(sessions, {14: 30, 15: 32}, 15)
-    current = _run(sessions, {"SOXL": bars}, cnn, vix,
+    cnn = _fixings(sessions, {13: 11, 14: 10, 15: 11}, 30)
+    vix = _fixings(sessions, {13: 32, 14: 30, 15: 32}, 15)
+    current = _run(sessions, {symbol: bars}, cnn, vix, symbol=symbol,
                    as_of=sessions[14].closes_at + timedelta(minutes=40))["current"]
     assert current["date"] == sessions[14].day.isoformat()
     assert current["matched_count"] == 3
     assert [item["value"] for item in current["conditions"].values()] == [30.0, 10, 30]
 
-    report = _run(sessions, {"SOXL": bars}, cnn, vix, cost_bps=10)
+    report = _run(sessions, {symbol: bars}, cnn, vix, symbol=symbol, cost_bps=10)
     [sample] = report["signal_history"]
     assert sample["entry_date"] == sessions[15].day.isoformat()
     for horizon in (5, 20, 60, 252):
@@ -60,8 +61,18 @@ def test_wilder_inclusive_thresholds_fixed_horizons_mae_and_separate_peak():
         assert outcome["exit_date"] == sessions[14 + horizon].day.isoformat()
         assert outcome["status"] == "complete"
         exit_price = 80 if horizon == 252 else 90
-        assert outcome["return_pct"] == pytest.approx(100 * (exit_price * .999 / (100 * 1.001) - 1))
+        expected = 100 * (exit_price * .999 / (100 * 1.001) - 1)
+        assert outcome["return_pct"] == pytest.approx(expected)
         assert outcome["mae_pct"] == -20
+        rsi_only = report["strategies"]["rsi_only"]["horizons"][str(horizon)]
+        assert (rsi_only["n"], rsi_only["wins"], rsi_only["losses"]) == (1, 0, 1)
+        assert rsi_only["median_return_pct"] == pytest.approx(expected)
+        assert rsi_only["worst_mae_pct"] == -20
+        buy_hold = report["strategies"]["buy_hold"]["horizons"][str(horizon)]
+        # The first common macro date is one session before the RSI warms up.
+        assert (buy_hold["n"], buy_hold["wins"], buy_hold["losses"], buy_hold["overlap_skipped"]) == (1, 1, 0, 2)
+        assert buy_hold["median_return_pct"] == pytest.approx(100 * (90 * .999 / (16 * 1.001) - 1))
+        assert buy_hold["worst_mae_pct"] == 0
     five = report["strategies"]["triple"]["horizons"]["5"]
     assert (five["n"], five["wins"], five["losses"], five["win_rate"]) == (1, 0, 1, 0)
     assert five["median_loss_pct"] == five["worst_return_pct"] == five["median_return_pct"]
@@ -69,8 +80,7 @@ def test_wilder_inclusive_thresholds_fixed_horizons_mae_and_separate_peak():
     assert five["win_rate_ci95"][0] == 0 and 0 < five["win_rate_ci95"][1] < 1
     assert sample["ex_post_252"]["max_return_pct"] == pytest.approx(100 * (145 * .999 / (100 * 1.001) - 1))
     assert report["strategies"]["triple"]["ex_post_252"]["n"] == 1
-    assert report["strategies"]["buy_hold"]["horizons"]["5"]["overlap_skipped"] > 0
-    assert report["strategies"]["buy_hold"]["signal_count"] == 2
+    assert report["strategies"]["buy_hold"]["signal_count"] == 3
     assert report["cost_bps"] == 10
 
 
@@ -174,8 +184,9 @@ def test_prelisting_and_separate_soxl_signal_for_koru():
     assert report["signal_history"] == []
 
 
-def test_absent_real_archive_cannot_produce_rates_or_baseline_win_counts():
-    result = evaluate("SOXL", [], {}, [], [], as_of=datetime(2024, 6, 1, tzinfo=UTC))
+@pytest.mark.parametrize("symbol", ["SOXL", "KORU"])
+def test_absent_real_archive_cannot_produce_rates_or_baseline_win_counts(symbol):
+    result = evaluate(symbol, [], {}, [], [], as_of=datetime(2024, 6, 1, tzinfo=UTC))
     assert result["status"] == "unverified" and result["current"]["date"] is None
     assert result["signal_history"] == []
     for strategy in result["strategies"].values():

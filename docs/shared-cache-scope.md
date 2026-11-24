@@ -67,6 +67,6 @@ p95는 43.5→18.0ms, 선물 수급은 38.5→15.9ms였다. 두 경로에서 합
 브라우저 전체·운영 Redis·실제 브로커 호출 수를 측정한 결과는 아니다.
 [수급 비교 #844](https://github.com/shindonggeun/trading-desk/pull/844) · [화면 비교 #883](https://github.com/shindonggeun/trading-desk/pull/883) · [재현 명령](screen-cache-benchmark.md)
 
-2026-11-23 16:23 KST의 기존 운영 관측은 `all`, 공유 캐시 비활성, 시장 SSE 로컬이었다. 역할 분리 뒤 실제 운영
-적중률과 p95, API의 토스·KIS 호출 수는 별도 확인이 필요하다.
+2026-11-23 16:23 KST의 기존 운영 관측은 `all`, 공유 캐시 비활성, 시장 SSE 로컬이었다.
+전환 뒤의 기존 운영 기록과 현재 재현 결과는 [공유 Redis 전환 검증](shared-cache-operations.md)에 정리했다.
 [기존 운영 관측 #776](https://github.com/shindonggeun/trading-desk/issues/776)

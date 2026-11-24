@@ -64,6 +64,7 @@ lookup_pr() {
 
 classify_commit() {
   local commit=$1 sha parent extra path role metadata number merged labels
+  local fallback=''
   local -A required=()
   metadata=$(git rev-list --parents -n 1 "$commit" 2>/dev/null) || finish all history-unavailable
   read -r sha parent extra <<< "$metadata"
@@ -76,27 +77,28 @@ classify_commit() {
       backend/desk/prewarm.py) required[api]=1 ;;
       backend/desk/nq_fast.py) required[collector]=1 ;;
       backend/desk/events.py) required[analyst]=1 ;;
-      backend/desk/migrations/*) finish all migration ;;
-      *) finish all shared-path ;;
+      backend/desk/migrations/*) fallback=migration ;;
+      *) fallback=${fallback:-shared-path} ;;
     esac
   done < "$paths"
-  if [ "${#required[@]}" -eq 0 ]; then
+  if [ -z "$fallback" ] && [ "${#required[@]}" -eq 0 ]; then
     commit_labels[$commit]=-
     return
   fi
-  (( SECONDS - start < 30 )) || finish all lookup-budget
-  metadata=$(lookup_pr "$commit") || finish all github-pr-unverified
+  (( SECONDS - start < 30 )) || finish all "${fallback:-lookup-budget}"
+  metadata=$(lookup_pr "$commit") || finish all "${fallback:-github-pr-unverified}"
   read -r number merged labels <<< "$metadata"
   # Git must be able to prove this PR's merge is on the promotion path and
   # includes the queried commit. A PR merged later than the target is stale evidence.
   git merge-base --is-ancestor "$commit" "$merged" 2>/dev/null &&
-    git merge-base --is-ancestor "$merged" "$REVISION" 2>/dev/null || finish all pr-outside-history
+    git merge-base --is-ancestor "$merged" "$REVISION" 2>/dev/null || finish all "${fallback:-pr-outside-history}"
   if [[ -v 'reported_prs[$number]' ]]; then
-    [[ ${reported_prs[$number]} == "$labels" ]] || finish all pr-labels-changed
+    [[ ${reported_prs[$number]} == "$labels" ]] || finish all "${fallback:-pr-labels-changed}"
   else
     reported_prs[$number]=$labels
     evidence+=("#$number:$labels")
   fi
+  if [ -n "$fallback" ]; then finish all "$fallback"; fi
   for role in "${!required[@]}"; do
     [[ ,$labels, == *",backend-$role,"* ]] || finish all missing-role-label
   done

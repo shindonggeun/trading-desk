@@ -56,9 +56,9 @@ export async function currentSubscription(): Promise<PushSubscription | null> {
 }
 
 /** 지금 이 기기의 상태(서버 키 확인 포함). */
-export async function pushState(): Promise<PushState> {
+export async function pushState(signal?: AbortSignal): Promise<PushState> {
   if (!pushSupported()) return isIOS() && !isStandalone() ? "ios-browser" : "unsupported";
-  const key = await api.pushKey().catch(() => ({ enabled: false, public_key: null }));
+  const key = await api.pushKey(signal).catch(() => ({ enabled: false, public_key: null }));
   if (!key.enabled || !key.public_key) return "server-off";
   if (Notification.permission === "denied") return "denied";
   return (await currentSubscription()) ? "on" : "off";

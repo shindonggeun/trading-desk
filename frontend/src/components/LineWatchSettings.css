@@ -1,0 +1,30 @@
+.line-watch-form, .line-watch-fields fieldset {
+  min-inline-size: 0;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.line-watch-form, .line-watch-personal, .line-watch-fields { display: grid; gap: .65rem; }
+.line-watch-form h4 { margin: .6rem 0 .3rem; }
+.line-watch-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+.line-watch-actions h3, .line-watch-actions p, .line-watch-personal > p { margin: 0; }
+.line-watch-picker { display: grid; min-width: 0; gap: .5rem; }
+.line-watch-picker .line-watch-add { margin: 0; }
+.line-watch-add > .search { min-width: 0; flex: 1 1 12rem; }
+.line-watch-select { display: grid; gap: .25rem; min-width: 0; }
+.line-watch-select select { min-width: 0; max-width: 100%; }
+.line-watch-fields legend { margin-bottom: .3rem; font-weight: 600; }
+.line-watch-checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr)); gap: .25rem .65rem; }
+.line-watch-checks label { min-inline-size: 0; display: grid; gap: .15rem; padding: .28rem 0; overflow-wrap: anywhere; }
+.line-watch-checks label span { display: flex; align-items: center; gap: .3rem; }
+.line-watch-checks small { padding-inline-start: 1.3rem; }
+.line-watch-remove { justify-self: start; }
+.line-watch-examples { margin-block: .65rem; }
+.line-watch-examples p { margin: .25rem 0; }
+.line-watch-delivery dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .3rem .65rem; }
+.line-watch-delivery dd { margin: 0; overflow-wrap: anywhere; }
+.line-watch-fallback { display: block; }
+@media (min-width: 53rem) {
+  .line-watch-picker { grid-template-columns: minmax(12rem, .8fr) minmax(0, 1.2fr); align-items: end; }
+  .line-watch-select { justify-self: start; }
+}

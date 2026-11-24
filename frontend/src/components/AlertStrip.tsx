@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { alertKey, alertLines, badgeOf, hhmm, isNotable, kindLabel, sideOf, useTodayAlerts } from "../alertsFeed";
-import { chartHref, kstHhmm, signalTime, signalKey, splitText, useTodayLineSignals } from "../lineSignals";
+import { chartFallbackLabel, kstHhmm, signalDateTime, signalTime, signalKey, splitText, useTodayLineSignals } from "../lineSignals";
+import LineSignalLink from "./LineSignalLink";
 
 /** #581 대시보드 맨 위 "최근 알림" 한 줄 띠 — 오늘 알림 가운데 최근 3건(참고는 빼고), 누르면 시장 수급 카드의 "오늘 장중"(타임라인)으로.
  *  알림이 없거나 못 읽으면 아무것도 그리지 않는다(자리를 차지하지 않게). */
@@ -33,11 +34,13 @@ export default function AlertStrip() {
     ...lines.map((s) => ({
       t: signalTime(s), key: signalKey(s), node: (
         <li key={signalKey(s)} className="line-row">
-          <a href={chartHref(s)}>
-            <time dateTime={s.at}>{kstHhmm(signalTime(s))}</time>{" "}
+          <LineSignalLink signal={s}>
+            <time dateTime={signalDateTime(s)}>{kstHhmm(signalTime(s))}</time>{" "}
             <span className="alert-sev line-sev">선</span>{" "}
-            <span className="alert-strip-text">{splitText(s.text).title}</span>
-          </a>
+            <span className="alert-strip-text">{splitText(s.text).title}
+              {chartFallbackLabel(s.timeframe) && <small> · {chartFallbackLabel(s.timeframe)}</small>}
+            </span>
+          </LineSignalLink>
         </li>
       ),
     })),

@@ -1,5 +1,6 @@
 import { activityHeaders, BACKGROUND_HEADER } from "./activity";
 import type { MarketOutlookResponse } from "./marketOutlook";
+import type { ExtremeFearResponse, ExtremeFearSymbol } from "./extremeFear";
 import type { LoadUsOptions, UsOptionsResponse } from "./usOptionsTypes";
 import type { FundingRateResponse, LoadFundingRate } from "./fundingRateTypes";
 import type { DayCallSectorsResponse } from "./components/DayCallSectors";
@@ -286,6 +287,8 @@ export const api = {
   /** #185 저장소에 커밋한 바스켓 백테스트 스냅샷 — 보기별 요약과 한 보기의 리포트 */
   backtestReports: () => call<BacktestSummary[]>("/api/backtest/reports"),
   backtestReport: (horizon: string) => call<BacktestReport>(`/api/backtest/reports/${encodeURIComponent(horizon)}`),
+  extremeFear: (symbol: ExtremeFearSymbol, signal?: AbortSignal) =>
+    call<ExtremeFearResponse>(`/api/research/extreme-fear?symbol=${encodeURIComponent(symbol)}`, { signal }),
   /** #202 주간 시장 지도 — 주요 지수별(한 지수 실패는 그 지수만 error), symbol 로 하나만 */
   weeklyMaps: (symbol?: string) =>
     call<{ maps: (WeeklyMap | WeeklyMapError)[]; generated_at?: string }>(

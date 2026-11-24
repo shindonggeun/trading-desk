@@ -112,6 +112,7 @@ from . import (
     session_progress,
     sessions,
     shared_cache,
+    stock_social,
     tips,
     verdict,
     web_search,
@@ -3015,6 +3016,17 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if ticker:
             return await profiles.one(names[0])
         return {"items": await profiles.many(names)}
+
+    @app.get("/api/stock-social")
+    async def stock_social_get(ticker: str = "SOXX", days: int = 7):
+        """#934 observed headline sentiment and public filing evidence."""
+        if not 1 <= days <= 30:
+            raise HTTPException(422, "days must be between 1 and 30")
+        try:
+            ticker = clean_ticker(ticker)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return await stock_social.read(ticker, days, now=datetime.now(UTC), include_filings=not settings.fake_runs)
 
     # #299 차트 예상도: 확률 원뿔 · 레벨 경로 · 설명(모델 문장은 슬롯이 빌 때만, 숫자는 데스크 것만)
     projections = projection.Projections(projection.fake_note if settings.fake_runs else projection.llm_note)

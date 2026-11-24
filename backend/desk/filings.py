@@ -34,6 +34,9 @@ EIGHT_K_DAYS = 30
 INSIDER_DAYS = 30
 MAX_8K = 5
 SUBS_MAX = 64
+PUBLIC_GAP_SEC = 0.5   # a cold lookup can make two requests; allow at most four per second here
+PUBLIC_FORMS = frozenset({"8-K", "8-K/A", "10-Q", "10-Q/A", "10-K", "10-K/A", "6-K", "6-K/A", "20-F", "20-F/A"})
+ACCESSION = re.compile(r"[0-9]{10}-[0-9]{2}-[0-9]{6}")
 
 # 8-K items (sec.gov/fast-answers/answersform8khtm) worth a line in a trading note
 ITEMS = {
@@ -72,6 +75,8 @@ class Filings:
         self._ciks: tuple[float, dict[str, int]] | None = None
         self._subs: TTLCache[int, dict] = TTLCache(SUBS_MAX, SUBMISSIONS_TTL_SEC, clock=lambda: self._clock())
         self._lock = asyncio.Lock()
+        self._public_lock = asyncio.Lock()
+        self._public_next = 0.0
 
     async def _get_json(self, url: str):
         client = self._client or net.async_client(timeout=TIMEOUT_SEC)
@@ -95,6 +100,10 @@ class Filings:
     async def recent(self, ticker: str, today: date | None = None) -> dict | None:
         """{8k: [{date, items: [words]}], insider: {count, last}, company} or None for a non-US
         ticker or one SEC does not know."""
+        submission = await self._submission(ticker)
+        return summarise(submission[1], today or datetime.now(UTC).date()) if submission else None
+
+    async def _submission(self, ticker: str) -> tuple[int, dict] | None:
         if not is_us_ticker(ticker):
             return None
         cik = await self.cik(ticker)
@@ -104,7 +113,64 @@ class Filings:
         if data is None:
             data = await self._get_json(SUBMISSIONS_URL.format(cik=cik))   # a failure raises: nothing is kept
             self._subs.put(cik, data)
-        return summarise(data, today or datetime.now(UTC).date())
+        return cik, data
+
+    async def public_recent(self, ticker: str, since: datetime, until: datetime) -> list[dict] | None:
+        """Public form metadata from the same cached submission. Never reads filing text."""
+        async with self._public_lock:
+            clock = asyncio.get_running_loop().time
+            wait = self._public_next - clock()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._public_next = clock() + PUBLIC_GAP_SEC
+            submission = await self._submission(ticker)
+        return public_filings(*submission, since, until) if submission else None
+
+
+def _accepted(value: object) -> datetime | None:
+    try:
+        stamp = datetime.fromisoformat(value) if isinstance(value, str) else None
+        return stamp.astimezone(UTC) if stamp is not None and stamp.tzinfo is not None else None
+    except (ValueError, OverflowError):
+        return None
+
+
+def public_filings(cik: int, data: dict, since: datetime, until: datetime) -> list[dict]:
+    """A bounded list of labeled dates and SEC Archives index links."""
+    recent = (data.get("filings") or {}).get("recent")
+    if not isinstance(recent, dict):
+        raise TypeError("EDGAR submission metadata unavailable")
+    columns = []
+    for key in ("form", "filingDate", "accessionNumber", "acceptanceDateTime", "items"):
+        column = recent.get(key, [])
+        if not isinstance(column, list):
+            raise TypeError("EDGAR submission column unavailable")
+        columns.append(column)
+    forms, dates, accessions, accepted, item_codes = columns
+    found = []
+    seen = set()
+    for i, (form, filed, accession) in enumerate(zip(forms, dates, accessions, strict=False)):
+        if not (isinstance(form, str) and form in PUBLIC_FORMS and isinstance(accession, str)
+                and ACCESSION.fullmatch(accession) and accession not in seen):
+            continue
+        try:
+            filed_date = date.fromisoformat(filed)
+        except (TypeError, ValueError):
+            continue
+        at = _accepted(accepted[i]) if i < len(accepted) else None
+        in_window = since <= at <= until if at else since.date() <= filed_date <= until.date()
+        if not in_window:
+            continue
+        codes = {code.strip() for code in item_codes[i].split(",")} if (
+            i < len(item_codes) and isinstance(item_codes[i], str)
+        ) else set()
+        found.append({
+            "form": form, "filed_date": filed_date.isoformat(), "at": at.isoformat() if at else None,
+            "url": f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession.replace('-', '')}/{accession}-index.htm",
+            "items": [ITEMS[code] for code in sorted(codes & ITEMS.keys())],
+        })
+        seen.add(accession)
+    return sorted(found, key=lambda row: (row["filed_date"], row["at"] or "", row["url"]), reverse=True)[:8]
 
 
 def summarise(data: dict, today: date) -> dict:

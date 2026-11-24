@@ -1,6 +1,7 @@
 import { activityHeaders, BACKGROUND_HEADER } from "./activity";
 import type { MarketOutlookResponse } from "./marketOutlook";
 import type { LoadUsOptions, UsOptionsResponse } from "./usOptionsTypes";
+import type { FundingRateResponse, LoadFundingRate } from "./fundingRateTypes";
 import type { DayCallSectorsResponse } from "./components/DayCallSectors";
 import type { ChartRead, GapReport, LinesReport, LineTf } from "./types";
 import type { RunRead } from "./types";
@@ -339,6 +340,10 @@ export const api = {
     if (expiration) query.set("expiration", expiration);
     return call<UsOptionsResponse>(`/api/positioning/options?${query}`, { signal });
   }) satisfies LoadUsOptions,
+  fundingRate: ((symbol, days, signal) => {
+    const query = new URLSearchParams({ symbol, days: String(days) });
+    return call<FundingRateResponse>(`/api/positioning/funding?${query}`, { signal });
+  }) satisfies LoadFundingRate,
   /** #240 장기 바닥권(인생 타점) */
   bottomZone: (ticker: string) => call<BottomZone>(`/api/bottom-zone?ticker=${encodeURIComponent(ticker)}`),
   positioningBatch: (tickers: string[]) =>

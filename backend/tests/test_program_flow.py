@@ -1,8 +1,71 @@
 """#743 program trading in the intraday flow bars and its buy / sell turns as market alerts."""
 
+from asyncio import CancelledError
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
+from threading import Event
+
+import pytest
 
 from desk import alert_tone, flow_intraday, market_alerts, program_flow
+
+
+@pytest.mark.parametrize("error", [None, ValueError, CancelledError])
+def test_parallel_band_reads_share_the_date_and_retry_after_failure(monkeypatch, error):
+    monkeypatch.setattr(program_flow, "_cache", {})
+    entered, waiting, release = Event(), Event(), Event()
+    day = date(2026, 11, 10)
+    other = day - timedelta(days=1)
+    calls = []
+    cleaned_up = []
+
+    class ObservedFuture(Future):
+        def result(self, timeout=None):
+            waiting.set()
+            return super().result(timeout)
+
+        def set_exception(self, exc):
+            with program_flow._cache_lock:
+                cleaned_up.append(self not in program_flow._pending.values())
+            super().set_exception(exc)
+
+    class History:
+        def daily(self, _):
+            calls.append("daily")
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(5)
+                if error:
+                    raise error("snapshot lookup failed")
+            return []
+
+    monkeypatch.setattr(program_flow, "Future", ObservedFuture)
+    history = History()
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        first = pool.submit(program_flow.bands_for, history, day)
+        try:
+            assert entered.wait(5)
+            second = pool.submit(program_flow.bands_for, history, day)
+            assert waiting.wait(5)
+            assert not program_flow.cached(day)
+            other_day = pool.submit(program_flow.bands_for, history, other, [])
+            assert other_day.result(5)["band"] == program_flow.DEFAULT
+            other_source = pool.submit(program_flow.bands_for, History(), day, [_day([i * 30 for i in range(40)])])
+            source_result = other_source.result(5)
+            assert source_result["days"][("kospi", "program_total")] == 1
+        finally:
+            release.set()
+        if error:
+            for result in (first, second):
+                with pytest.raises(error, match="snapshot lookup failed"):
+                    result.result(5)
+            assert program_flow.bands_for(history, day)["days"] == dict.fromkeys(program_flow.DEFAULT, 0)
+        else:
+            assert first.result(5) is second.result(5) and first.result(5) is not source_result
+
+    assert calls == ["daily"] * (2 if error else 1)
+    assert cleaned_up == ([True] if error else [])
+    assert program_flow.cached(day)
 
 
 def _at(h, m):                       # Tuesday 2026-11-10 KST
@@ -121,14 +184,15 @@ def test_bands_for_reads_once_a_day_and_logs_it(caplog):
         def intraday(self, d):
             return _day([i * 10 for i in range(40)])
 
+    history = History()
     program_flow._cache.clear()
     with caplog.at_level(logging.INFO, logger="desk.program_flow"):
-        got = program_flow.bands_for(History(), date(2026, 11, 10))
-        assert program_flow.bands_for(History(), date(2026, 11, 10)) is got
+        got = program_flow.bands_for(history, date(2026, 11, 10))
+        assert program_flow.bands_for(history, date(2026, 11, 10)) is got
     assert calls == [program_flow.HISTORY_DAYS + 1] and got["days"][("kospi", "program_total")] == 1
     assert "program bands 2026-11-10: kospi total 500(default, 1 days)" in caplog.text
     for d in range(11, 16):
-        program_flow.bands_for(History(), date(2026, 11, d))
+        program_flow.bands_for(history, date(2026, 11, d))
     assert len(program_flow._cache) <= program_flow.KEEP_CACHED
     program_flow._cache.clear()
 

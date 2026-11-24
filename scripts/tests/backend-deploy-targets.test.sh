@@ -131,13 +131,15 @@ new_case
 change backend/desk/migrations/versions/9999_new.py
 pr "$commit" "$commit" 15 '["backend-api"]'
 expect all migration
-test ! -s "$tmp/requests"
+grep -qF '#15:backend-api' "$tmp/stderr"
+FAKE_GITHUB_STATUS=503 expect all migration
+grep -qF 'PR=-' "$tmp/stderr"
 
 new_case
 change backend/desk/api.py
 pr "$commit" "$commit" 16 '["backend-api"]'
 expect all shared-path
-test ! -s "$tmp/requests"
+grep -qF '#16:backend-api' "$tmp/stderr"
 rm -- backend/desk/api.py
 git add -- backend/desk/api.py
 git commit -qm 'intervening deletion'
@@ -147,7 +149,7 @@ new_case
 change backend/desk/req_timing.py
 pr "$commit" "$commit" 16 '["backend-api"]'
 expect all shared-path
-test ! -s "$tmp/requests"
+grep -qF '#16:backend-api' "$tmp/stderr"
 
 new_case
 change backend/desk/prewarm.py
@@ -182,7 +184,7 @@ new_case
 git mv -- backend/desk/api.py backend/desk/prewarm.py
 git commit -qm 'shared rename into an API path'
 expect all shared-path
-test ! -s "$tmp/requests"
+grep -qF 'PR=-' "$tmp/stderr"
 
 new_case
 change backend/desk/prewarm.py

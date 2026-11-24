@@ -10,8 +10,46 @@
 | KRX 외국인 보유 | 웹 통계는 지분율과 한도소진율을 별도 열과 순위 방식으로 제공한다. 보유수량·한도소진율은 장 개시 시 표시하는 전일 확정치다. | 승인된 자동 수집 경로가 확인되지 않아 웹 통계에 요청하지 않는다. 별도 보유 기준일과 공표 시각이 있는 지분율 계약을 제공한다. [KRX 보유 지분 통계](https://data.krx.co.kr/contents/MDC/EASY/ranking/MDCEASY021.jsp) · [KRX 데이터 수신과 이용](https://openapi.krx.co.kr/contents/OPP/DATA/OPPDATA003.jsp) |
 
 KRX OPEN API 약관은 비상업적 이용, 화면의 원천 표시 및 제3자 정보 제공 제한을 명시한다. 제공 범위는
-기존 인증 화면과 승인된 데이터 사용 범위 안에서 확인한다. 삼성전자와 SK하이닉스의 실측 원천 대조는
-승인된 종목 응답과 보유 자료가 필요하다. 합성 자료는 라이브 데이터의 단위와 기준일 검증을 대체하지 않는다.
+기존 인증 화면과 승인된 데이터 사용 범위 안에서 확인한다.
+
+### 공식 자료 대조 (2026-11-24)
+
+- 한국투자 공개 예제는 `J`, `NX`, `UN`을 각각 KRX, NXT, 통합 요청으로 구분한다.
+  `FID_INPUT_DATE_1`은 조회에 넣는 기준일이며 행의 거래일은 `output2.stck_bsop_date`에서 읽어야 한다.
+  `acml_tr_pbmn`과 외국인 매수·매도·순매수 대금 필드는 거래량 필드와 별도다. 공개 예제의 열 이름만으로는
+  종목·거래 범위별 실제 값, 배율과 반올림, 당일 정규장 집계와 최종 집계의 대응을 재현할 수 없었다.
+  이미 연결된 시장 합계나 다른 KIS TR의 금액 단위를 옮겨 쓰지 않는다.
+  [한국투자 공식 요청 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/investor_trade_by_stock_daily/investor_trade_by_stock_daily.py) ·
+  [한국투자 응답 필드 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/investor_trade_by_stock_daily/chk_investor_trade_by_stock_daily.py)
+- KRX 개별종목 거래실적은 거래량과 거래대금 각각의 매도·매수·순매수 열 및 외국인·기타외국인 분류를
+  보여 준다. 정규장 마감분은 15:45경, 시간외를 포함한 최종분은 20:00경 제공한다고 안내한다(한국 시각).
+  표에 표시된 투자자 구분과 집계 범위를 확인한 경우에만 분자·분모를 맞출 수 있다. 시각은 공개 화면의
+  예정 시각이므로 종목 응답의 `published_at`을 이 시각으로 채우지 않는다. KRX의 다른 웹 통계에서는
+  ‘정규시장’ 열에 일부 시간외 거래를 합산하므로 열 이름만으로 두 화면을 결합할 수 없다.
+  [KRX 개별종목 투자자별 거래실적](https://data.krx.co.kr/contents/MDC/MDI/outerLoader/index.cmd?screenId=MDCSTAT023) ·
+  [KRX 시장동향 거래 범위](https://data.krx.co.kr/contents/MDC/EASY/main/MDCEASY002.jsp)
+- 토스 시세 문서는 토큰이 필요한 호가·체결·캔들 계약을 공개한다. 기존 토스 시장 단위 수급을 사용해도
+  두 종목의 같은 날 외국인 매수·매도 대금으로 좁힐 수 없다. 실시간 체결의 방향 또는 체결량을 외국인 매매로
+  환산하지 않는다. [토스증권 시세](https://developers.tossinvest.com/docs/market-data) ·
+  [토스증권 실시간 체결](https://developers.tossinvest.com/docs/trade)
+
+KRX 외국인 보유 화면은 외국인 보유주식수, 종목의 상장주식수, 외국인 한도수량을 따로 제공한다. 같은
+종목·종류주·보유 기준일에서 지분율은 보유주식수 ÷ 상장주식수, 한도소진율은 보유주식수 ÷ 한도수량이다.
+화면은 장 개시 시점의 외국인 보유수량에 전일 확정치를 사용하므로 거래일이나 화면 조회일을 그대로
+보유 기준일에 붙일 수 없다. 실제 정규장 거래일의 주식 수와 보유수량은 같은 기준일의 공식 행으로 확인해야 한다.
+[KRX 외국인보유 상위](https://data.krx.co.kr/contents/MDC/EASY/ranking/MDCEASY021.jsp)
+
+| 공개 발행사 표본 | 확인한 기준과 범위 | 현황판에서 사용할 수 없는 근거 |
+| --- | --- | --- |
+| 삼성전자 `005930.KS` | 2026-09-30 IR 상장현황의 발행 보통주 5,846,278,608주와 우선주 802,371,203주는 별도 종류다. 같은 분기말 IR 주주구성에서 외국인은 보통주 45%, 우선주 72%로 표시된다. | 분기 IR 값은 종류주를 구분하는 근거다. 다른 거래일의 상장주식수, 일별 외국인 보유 수량 또는 KRX 지분율을 제공하지 않는다. [삼성전자 상장현황](https://www.samsung.com/sec/ir/stock-information/listing-info/) · [삼성전자 주주구성](https://www.samsung.com/sec/ir/stock-information/ownership-structure/) |
+| SK하이닉스 `000660.KS` | 2026-09-30 IR 주주구성에서 상장주식 730,492,365주는 모두 보통주다. 같은 페이지의 BlackRock 보유는 2026-02-10의 개별 신고(36,407,157주, 5.1%)다. | 개별 주주의 보유량을 같은 페이지의 다른 날짜 상장주식수로 나눠 외국인 전체 일별 지분율을 만들 수 없다. [SK하이닉스 주주구성](https://www.skhynix.com/ir/UI-FR-IR04/) |
+
+공식 문서와 공개 발행사 표본을 읽기 전용으로 대조했다. 저장소의 KRX fixture는 지수·ETF·파생 등
+기존 수집 서비스용이며, 두 종목의 같은 거래일에 대한 승인된 KIS 종목 응답, 토스 종목 외국인 대금,
+KRX 주권 거래대금과 외국인 보유 행을 한 쌍으로 확인할 수 없었다. 발행사 IR 값은 이력을 채우는 데 사용하지
+않는다. 원천 연결에는 서비스 이용 승인과 표시 가능 범위를 먼저 확인한 종목별 원본 또는 승인된 전용 fixture가
+필요하다. [KRX OPEN API 이용약관](https://openapi.krx.co.kr/contents/OPP/INFO/OPPINFO002.jsp) ·
+[KRX 데이터 수신과 이용](https://openapi.krx.co.kr/contents/OPP/DATA/OPPDATA003.jsp)
 
 ## 지표
 
@@ -22,6 +60,13 @@ KRX OPEN API 약관은 비상업적 이용, 화면의 원천 표시 및 제3자 
 - 종목·거래일·시장·거래소·단위가 같은 확정 값끼리 계산한다. KRX와 NXT 또는 통합 금액의 혼합,
   한쪽 금액 결측, 순매수만 있는 경우에는 비율을 제공하지 않는다. 양쪽 모두 0이고 종목 거래대금이
   양수이면 참여율은 0이고 우위는 null이다. 외국인 지분율은 별도 기준일과 원천을 유지한다.
+- 정규화 입력의 `trade_scope`에는 공급자가 확인한 정규장(`regular`) 또는 시간외 포함 전체
+  거래(`all_sessions`) 범위를 지정한다. 참여율에는 양쪽의 동일한 범위가 필요하다. 매수·매도 우위에는
+  외국인 매수·매도가 같은 확인된 범위에 속하면 된다. 거래 범위가 다르면 참여율은 `scope_mismatch`,
+  비교에 필요한 범위가 없으면 `no_data`다. 단위가 확인되지 않은 외국인 대금은 원으로 가정하지 않는다.
+- 정규화 지분율은 분모가 같은 종류주·기준일의 상장주식수임을 `denominator=listed_shares`로
+  확인한 경우에만 표시한다. 분모가 확인되지 않거나 한도수량을 쓰면 해당 날짜의 값은 `null`이다.
+  이전에 확인된 지분율이 있으면 원래 기준일로 `latest_ownership`에 표시한다.
 
 ## 조회 계약 (#917)
 

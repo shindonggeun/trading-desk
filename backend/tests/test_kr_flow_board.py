@@ -24,14 +24,19 @@ def _view(
 
 
 def _turnover(ticker=SEC, as_of=TODAY, value=100_000, **extra) -> board.Turnover:
+    extra.setdefault("trade_scope", "all_sessions")
     return board.Turnover(ticker, extra.pop("market", MARKET), as_of, "krx_turnover", value, **extra)
 
 
 def _flow(ticker=SEC, as_of=TODAY, buy=12_000, sell=8_000, **extra) -> board.ForeignFlow:
+    extra.setdefault("trade_scope", "all_sessions")
+    extra.setdefault("venue", "krx")
+    extra.setdefault("unit", "KRW")
     return board.ForeignFlow(ticker, extra.pop("market", MARKET), as_of, "kis_stock_daily", buy, sell, **extra)
 
 
 def _ownership(ticker=SEC, as_of=PREVIOUS, percent=47.5, **extra) -> board.Ownership:
+    extra.setdefault("denominator", "listed_shares")
     return board.Ownership(ticker, extra.pop("market", MARKET), as_of, "krx_ownership", percent, **extra)
 
 
@@ -88,6 +93,7 @@ def test_confirmed_trade_ratios_and_independent_ownership_date():
     (0, 0, 0, None, None, "zero_denominator", None, "zero_denominator"),
     (100, 7, None, None, None, "missing_input", None, "missing_input"),
     (100, None, None, 13, None, "missing_input", None, "missing_input"),
+    (100, None, None, 0, None, "missing_input", None, "missing_input"),
     (100, None, None, None, None, "no_data", None, "no_data"),
     (None, 20, 10, None, None, "no_data", 1 / 3, "available"),
     (100, 120, 12, None, None, "inconsistent_amounts", None, "inconsistent_amounts"),
@@ -110,17 +116,61 @@ def test_zero_denominators_missing_and_net_only(total, buy, sell, net, participa
     ({}, {"venue": "consolidated"}, "foreign_flow", "scope_mismatch"),
     ({"venue": "nxt"}, {}, "turnover", "scope_mismatch"),
     ({}, {"unit": "million_krw"}, "foreign_flow", "unit_mismatch"),
+    ({}, {"unit": None}, "foreign_flow", "unit_mismatch"),
+    ({}, {"venue": None}, "foreign_flow", "scope_mismatch"),
     ({}, {"market": "kosdaq"}, "foreign_flow", "no_data"),
 ])
 def test_different_market_venue_or_unverified_amount_unit_does_not_join(turnover_extra, flow_extra, field, status):
-    got = _view(board.Publication(
+    response = _view(board.Publication(
         turnover=[_turnover(**turnover_extra)], foreign_flow=[_flow(**flow_extra)],
-    ))["favorites"]["items"][0]["history"][-1]
+    ))
+    got = response["favorites"]["items"][0]["history"][-1]
     assert got[field]["status"] == status
     assert got["participation_pct"] is None
     assert got["participation_status"] == status
     if field == "foreign_flow":
         assert got["buy_sell_imbalance"] is None
+        assert response["sources"]["foreign_flow"]["status"] == "no_data"
+
+
+@pytest.mark.parametrize(("turnover_scope", "flow_scope", "status", "bias"), [
+    ("regular", "all_sessions", "scope_mismatch", 0.2),
+    ("all_sessions", "regular", "scope_mismatch", 0.2),
+    (None, "all_sessions", "no_data", 0.2),
+    ("all_sessions", None, "no_data", None),
+    ("unverified", "unverified", "no_data", None),
+])
+def test_same_venue_needs_matching_confirmed_execution_windows(turnover_scope, flow_scope, status, bias):
+    # Buy amount exceeds the unrelated denominator. It must not invalidate the same-row imbalance.
+    got = _view(board.Publication(
+        turnover=[_turnover(HYNIX, value=100, trade_scope=turnover_scope)],
+        foreign_flow=[_flow(HYNIX, buy=120, sell=80, trade_scope=flow_scope)],
+    ), favorites=({"ticker": HYNIX},))["favorites"]["items"][0]["history"][-1]
+    assert got["turnover"]["value_krw"] == 100
+    assert got["foreign_flow"]["buy_krw"] == 120
+    assert got["participation_pct"] is None
+    assert got["participation_status"] == status
+    assert got["buy_sell_imbalance"] == bias
+    assert got["imbalance_status"] == ("available" if bias is not None else "no_data")
+
+
+def test_ownership_requires_listed_share_basis_and_preserves_older_valid_day():
+    publication = board.Publication(ownership=[
+        _ownership(as_of=PREVIOUS, percent=0),
+        _ownership(as_of=TODAY, percent=75, denominator="foreign_limit"),
+        _ownership(HYNIX, as_of=TODAY, percent=20, denominator=None),
+        _ownership(HYNIX, as_of=PREVIOUS, percent=50, published_at=NOW - timedelta(hours=2)),
+        _ownership(HYNIX, as_of=PREVIOUS, percent=5, denominator="foreign_limit", published_at=NOW),
+    ])
+    samsung, hynix = _view(publication, favorites=({"ticker": SEC}, {"ticker": HYNIX}))["favorites"]["items"]
+    for row in (samsung, hynix):
+        assert row["history"][-1]["ownership"]["ratio_pct"] is None
+        assert row["history"][-1]["ownership"]["status"] == "no_data"
+        assert row["latest_ownership"]["as_of"] == PREVIOUS.isoformat()
+    assert samsung["latest_ownership"]["ratio_pct"] == 0
+    assert hynix["latest_ownership"]["ratio_pct"] == 50
+    wrong_basis = _view(board.Publication(ownership=[_ownership(denominator="foreign_limit")]))
+    assert wrong_basis["sources"]["ownership"]["status"] == "no_data"
 
 
 def test_completed_rank_only_for_selected_market_and_stable_top_50():

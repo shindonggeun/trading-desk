@@ -1,0 +1,22 @@
+# Keep the exclusive paths aligned with scripts/jenkins/backend-deploy-targets.sh.
+# Every other path outside docs/ and frontend/ is treated as shared.
+backend-api:
+  - changed-files:
+      - any-glob-to-any-file: backend/desk/prewarm.py
+      - all-globs-to-any-file: &shared-paths
+          - '**'
+          - '!docs/**'
+          - '!frontend/**'
+          - '!backend/desk/prewarm.py'
+          - '!backend/desk/nq_fast.py'
+          - '!backend/desk/events.py'
+
+backend-collector:
+  - changed-files:
+      - any-glob-to-any-file: backend/desk/nq_fast.py
+      - all-globs-to-any-file: *shared-paths
+
+backend-analyst:
+  - changed-files:
+      - any-glob-to-any-file: backend/desk/events.py
+      - all-globs-to-any-file: *shared-paths

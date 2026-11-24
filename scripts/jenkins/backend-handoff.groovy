@@ -23,10 +23,11 @@ List rolesFor(String selection) {
     if (selection == 'all') {
         return roles
     }
-    if (!(selection in roles)) {
-        throw new IllegalArgumentException('SERVICES는 all, api, collector, analyst 중 하나여야 한다')
+    List selected = selection.tokenize(',')
+    if (selected.isEmpty() || selection != roles.findAll { selected.contains(it) }.join(',')) {
+        throw new IllegalArgumentException('서비스 배포 인계의 선택 목록이 유효하지 않다')
     }
-    return [selection]
+    return selected
 }
 
 def dispatchRelease(Map release, List roles, Map adapter) {

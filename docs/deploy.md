@@ -46,19 +46,19 @@ develop push ─▶ Jenkins 폴더 trading-desk
                   └─ trading-desk-web     (Jenkinsfile-web)     ─┘
    1. CI 확인     label builder (ai-host-builder)        GitHub Actions `ci` 가 그 커밋에서 성공할 때까지 (최대 45분)
    2. 배포 대상   label deploy-backend-prod · deploy-frontend-prod (둘 다 backend-server)
-                  운영 컨테이너의 커밋 라벨과 비교해 backend/ (웹은 frontend/) 가 바뀌었을 때만
+                  백엔드 역할별 커밋·PR 라벨 또는 기존 backend/ 차이, 웹은 frontend/ 차이
    3. 운영 배포   Vault → 임시 env 파일(600) → scripts/deploy-compose.sh → env 파일 삭제
 ```
 
 | 단계 | 하는 일 | 멈추면 |
 |------|---------|--------|
 | CI 확인 | `scripts/jenkins/wait-ci.sh` 가 Actions API 로 그 커밋의 push 실행(워크플로 `ci`)을 10초마다 본다. 다시 돌린 실행이 있으면 마지막 시도 | 실패 → 빌드 실패, 운영 그대로. **밀림** → NOT_BUILT(실패 아님), 뒤 커밋의 빌드가 배포. 밀림 = CI 취소, 또는 기다리는 동안 develop 머리가 실패하지 않은 더 새 커밋(아래) |
-| 배포 대상 | 운영 컨테이너 이미지 라벨의 커밋과 대상 커밋 사이 `git diff -- backend`(웹 `frontend`). 라벨이 없는 옛 이미지면 배포 | 차이가 없으면 아무것도 하지 않는다("변경 없음") |
+| 배포 대상 | 활성화된 백엔드 역할 잡은 각 컨테이너의 커밋과 대상 커밋 사이의 변경 경로·머지 PR 라벨을 대조한다. 종합 경로는 기존 `git diff -- backend`(웹 `frontend`)를 사용한다. | 역할 판정 실패는 전체 배포로 복귀한다. 배포할 변화가 없으면 "변경 없음"을 기록한다. |
 | Vault | `scripts/jenkins/vault-env.sh` 가 `kv/trading-desk/{backend,frontend}/prod/env` 를 읽어 compose 가 쓰는 키만 `KEY='value'` 로 쓴다(3절) | 봉인 · 네트워크 · 권한 · 필수 키 없음 → **아무것도 바꾸기 전에** 멈춘다. 운영 그대로 |
 | 빌드 | `<이름>:<커밋 12자>` 이미지, 라벨에 커밋 | 빌드 실패 → 운영 그대로 |
 | 분석 대기 (#431, 백엔드) | 컨테이너를 바꾸기 직전 `desk.cli unfinished` 로 묻고 최대 30분 기다린다 | 넘기면 멈춘다(종료 코드 3, 운영 그대로) → 끊어도 되면 `FORCE_STOP_RUNS` |
 | 교체 | 운영 이미지를 `:rollback` 으로 남기고 새 이미지를 `:prod` 로. **api(`primaryService`, 기동 시 Alembic `upgrade head`)를 먼저** `--wait`, compose 의 나머지 서비스(#688 collector · analyst)를 그다음 | → 되돌림(2-2) |
-| 확인 | 모든 서비스 컨테이너의 커밋 라벨 = 대상 커밋 · 컨테이너 안에서 `/api/health` 가 `{"ok":true}`(웹은 `/`) · 30초 동안 재시작 없이 running · healthy | → 되돌림(2-2) |
+| 확인 | 교체 대상 컨테이너의 커밋 라벨 = 대상 커밋 · 컨테이너 안에서 `/api/health` 가 `{"ok":true}`(웹은 `/`) · 30초 동안 재시작 없이 running · healthy | → 되돌림(2-2) |
 
 잡 파라미터(Build with Parameters):
 
@@ -68,6 +68,7 @@ develop push ─▶ Jenkins 폴더 trading-desk
 | `FORCE_DEPLOY` | 운영과 차이가 없어도 다시 빌드 · 배포 (첫 배포 · Vault 값만 바꿨을 때) |
 | `FORCE_STOP_RUNS` | (백엔드) 진행 중인 분석을 기다리지 않는다 — 그 분석은 실패로 끝난다 |
 | `ROLLBACK_DRILL` | 새 이미지로 바꾼 뒤 확인을 일부러 실패시켜 되돌림을 시험한다(2-2) |
+| `SERVICES` | (백엔드) 기본 `auto`는 머지 PR에 따라 역할을 선택한다. `all`은 전체 배포를 요청한다. 활성화된 역할 잡에서는 역할 하나를 직접 요청할 수 있다. |
 
 - 같은 커밋에서 backend/ · frontend/ 가 함께 바뀌면 두 잡이 lock 을 차례로 잡는다 — 어느 쪽이 먼저 바뀔지 정해져 있지 않으니 API 를 바꾸는 PR 은 이전 · 다음 화면 둘 다와 맞게 둔다.
 - Jenkins 는 `~/deploy/trading-desk/src` 를 고치지 않는다. 운영 커밋은 컨테이너 라벨로 본다(2-3).
@@ -94,6 +95,44 @@ develop 에 커밋이 연달아 들어오면 앞 빌드는 실패가 아니라 *
 - `disableConcurrentBuilds(abortPrevious: true)` 는 쓰지 않는다. 앞 빌드를 '운영 배포' 단계(`deploy-compose.sh` 의 이미지 교체 · compose up 사이)에서도 끊어 서비스가 내려간 채 남을 수 있다. 밀림 검사로 같은 결과(밀린 빌드 실패 0, 마지막 초록 커밋만 배포)를 끊김 없이 얻는다.
 - 콘솔에는 `밀림: <커밋 12자> → 더 새 <커밋 12자>` 한 줄이 남고, 빌드 설명 끝에 `밀림` 이 붙는다.
 - GitHub API 요청은 한 바퀴에 최대 3회(10초 간격이면 45분에 810회)로, 토큰 한도(시간당 5000회) 안이다.
+
+#### 백엔드 역할별 선택 배포 (#965)
+
+develop push CI는 배포용 결과를 내기 전에 머지 PR에 `backend-api`, `backend-collector`,
+`backend-analyst`를 [라벨 규칙](../.github/labeler.yml)에 따라 동기화한다.
+초기 전용 경로는 각 역할이 실제로 실행하는 `backend/desk/prewarm.py`, `backend/desk/nq_fast.py`,
+`backend/desk/events.py`다. `docs/`와 `frontend/`는 백엔드 선택 대상에서 제외한다. 그 밖의
+경로는 모두 공용으로 분류한다. `desk/api.py`·`settings.py`·`db.py`·`roles.py`,
+Alembic 리비전, 의존성, Dockerfile·Compose·배포 스크립트 변경은 세 역할에 적용한다.
+전용 경로를 추가할 때 호출처를 확인하고 라벨 규칙과 배포 선택기를 함께 갱신한다.
+
+1. 상위 잡은 대상 커밋의 CI와 밀림 검사를 통과한 뒤 호스트 펜스 안에서 세 컨테이너의
+   OCI 커밋 라벨을 읽는다. 역할별 운영 커밋부터 대상 커밋까지 확인하므로, 밀린 빌드나
+   이전 부분 배포의 차이도 다음 판정에 들어간다.
+2. 그 범위의 배포 관련 커밋에 대응하는 develop 머지 PR의 역할 라벨과 변경 경로를 대조한다.
+   공용 경로 또는 신규 마이그레이션, 라벨 누락·불일치, 확인할 수 없는 범위나 PR 조회
+   실패는 전체 배포로 복귀한다. 배포 로그 한 줄에서 선택·이유·확인한 PR 번호와 역할 라벨을
+   대조한다.
+3. `auto`에서 필요한 역할이 없으면 빌드와 교체를 건너뛴다. 대상이 있으면 이미지 한 개를
+   준비한다. 같은 이미지 ID로 정해진 API → collector →
+   analyst 순서에서 선택된 잡만 실행한다. analyst의 진행 중 분석 대기, collector의
+   토큰 재발급 검사와 역할별 상태 확인·복구는 기존 계약을 사용한다.
+
+수동 실행에서 `SERVICES=all`은 세 역할 전체를 지정한다. 준비된 split 환경에서
+`SERVICES=api`, `collector`, `analyst` 중 하나를 요청할 수 있다. 필요한 역할이 더 있으면
+판정 결과가 요청 범위를 넓힌다. `auto`에서 `FORCE_DEPLOY`·`ROLLBACK_DRILL`을 사용하거나
+`DEPLOY_COMMIT`으로 커밋을 직접 지정할 때는 전체가 대상이다. 최초 split 전환과 종합 경로
+복귀는 기존 절차를 따른다.
+
+운영 활성화 전에는 [Jenkins 역할 잡 명세](../deploy/jenkins/README.md#운영-연결-전-검증과-등록)와
+[`backend-role-preflight.sh`](../scripts/jenkins/backend-role-preflight.sh)로 기존 전용 노드,
+호스트 펜스, 잡·권한 조건을 대조한다. 기존 Jenkins GitHub 조회 자격의 `Pull requests: read`
+가능 여부도 확인한다. 활성화와 실측은 별도 승인으로 진행한다.
+
+운영 기록에는 API 전용 PR 머지 전후 세 컨테이너의 ID·시작 시각·이미지 ID·커밋 라벨을
+남긴다. API만 바뀌고 두 워커가 유지되는지 확인한다. 공용 파일이나 새 리비전이 들어간
+별도의 승인된 배포에서는 세 잡 순서, 이미지 빌드 한 번, API 스키마 및 각 역할의 헬스를
+확인한다.
 
 ### 2-2. 되돌림
 
@@ -199,7 +238,7 @@ python -B -X utf8 scripts/jenkins/register-disabled-backend-jobs.py --apply -- j
    |----|------|-----|
    | `trading-desk-vault-role-id` | Secret text | 1 의 role_id |
    | `trading-desk-vault-secret-id` | Secret text | 1 의 secret_id |
-   | `trading-desk-github` | Username with password (또는 GitHub App) | username `shindonggeun`, password = fine-grained PAT — 저장소 `shindonggeun/trading-desk` 만, 권한 Contents · Actions · Metadata **읽기**만. 홈랩 GitHub App 을 이 저장소에 설치할 수 있으면 그 App credential 을 같은 ID 로 |
+   | `trading-desk-github` | Username with password (또는 GitHub App) | username `shindonggeun`, password = fine-grained PAT — 저장소 `shindonggeun/trading-desk` 만, 기존 권한은 Contents · Actions · Metadata **읽기**. #965 선택 배포는 Pull requests **읽기**도 필요하며 운영 자격은 별도 승인으로 확인한다. 홈랩 GitHub App 을 이 저장소에 설치할 수 있으면 그 App credential 을 같은 ID 로 |
 
    전역 env `VAULT_ADDR`(`https://vault.8llow8llowme.com`)는 commerce-foundry 때 이미 있다. 잡 파라미터로 `VAULT_ADDR` 를 만들지 않는다(전역 값을 가린다).
 4. **멀티브랜치 파이프라인 2개** — 폴더 `trading-desk` 안에 `trading-desk-backend`(Script Path `Jenkinsfile-backend`) · `trading-desk-web`(Script Path `Jenkinsfile-web`).

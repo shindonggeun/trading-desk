@@ -9,20 +9,24 @@ String trustedNode() {
     return name
 }
 
-Map prepare(String revision, List roles) {
+Map prepare(String revision, String selection) {
     String agent = trustedNode()
     if (env.NODE_NAME != agent) { error '설정된 전용 노드에서만 분리 배포를 준비한다' }
     String parent = env.BUILD_NUMBER
     String record
-    withEnv(["TD_NODE=${agent}", "TD_PARENT_BUILD=${parent}", "TD_ROLES=${roles.join(',')}",
+    withEnv(["TD_NODE=${agent}", "TD_PARENT_BUILD=${parent}", "TD_ROLES=${selection}",
              "TD_FORCE_RECREATE=${params.FORCE_DEPLOY ? 1 : 0}"]) {
         record = sh(returnStdout: true, script: 'bash scripts/jenkins/backend-deploy-lease.sh begin .deploy-src').trim()
     }
+    if (record == 'none') {
+        return null
+    }
     List values = record.tokenize()
-    if (values.size() != 3 || !(values[0] ==~ /[a-f0-9-]{36}/)) {
+    if (values.size() != 4 || !(values[0] ==~ /[a-f0-9-]{36}/)) {
         error '배포 인계 기록이 유효하지 않다'
     }
-    return [revision: revision, imageId: values[1], agent: agent, daemon: values[2], token: values[0], parent: parent]
+    return [revision: revision, imageId: values[1], agent: agent, daemon: values[2],
+            token: values[0], parent: parent, selection: values[3]]
 }
 
 String resultDescription(Map release, String role, int code) {

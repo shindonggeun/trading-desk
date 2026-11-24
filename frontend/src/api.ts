@@ -1,6 +1,7 @@
 import { activityHeaders, BACKGROUND_HEADER } from "./activity";
 import type { MarketOutlookResponse } from "./marketOutlook";
 import type { WatchboardGroup, WatchboardResponse } from "./marketWatchboard";
+import type { KrFlowBoardResponse, KrFlowMarket } from "./krFlowBoard";
 import type { ExtremeFearResponse, ExtremeFearSymbol } from "./extremeFear";
 import type { LoadUsOptions, UsOptionsResponse } from "./usOptionsTypes";
 import type { FundingRateResponse, LoadFundingRate } from "./fundingRateTypes";
@@ -309,6 +310,8 @@ export const api = {
     call<FuturesIntraday>(`/api/market/futures/intraday${date ? `?date=${encodeURIComponent(date)}` : ""}`),
   marketWatchboard: (group: WatchboardGroup, signal?: AbortSignal) =>
     call<WatchboardResponse>(`/api/market/watchboard?group=${encodeURIComponent(group)}&days=30`, { signal }),
+  krFlowBoard: (market: KrFlowMarket, signal?: AbortSignal) =>
+    call<KrFlowBoardResponse>(`/api/market/flow-board/kr?market=${encodeURIComponent(market)}&days=22`, { signal, cache: "no-store" }),
   /** 코스피 · 코스닥 투자자별 매매대금(#76). 장중 60초 · 장 밖 10분 서버 캐시. */
   marketFlow: (market: FlowMarket, interval: FlowInterval, count = 20) =>
     call<MarketFlow>(`/api/market/flow?market=${market}&interval=${interval}&count=${count}`),

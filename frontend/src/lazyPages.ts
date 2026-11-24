@@ -1,5 +1,5 @@
 import { lazy } from "react";
-import { MARKET_WATCHBOARD_ROUTE } from "./nav";
+import { KR_FLOW_BOARD_ROUTE, MARKET_WATCHBOARD_ROUTE } from "./nav";
 
 /**
  * #537 대시보드 밖 화면은 그 화면에 갈 때 받는다 — 첫 화면은 대시보드 · 로그인만 싣는다.
@@ -10,6 +10,7 @@ const load = {
   Review: () => import("./pages/Review"),
   Live: () => import("./pages/Live"),
   MarketWatchboard: () => import("./pages/MarketWatchboard"),
+  KrFlowBoard: () => import("./pages/KrFlowBoard"),
   Sectors: () => import("./pages/Sectors"),
   History: () => import("./pages/History"),
   ChartView: () => import("./pages/ChartView"),
@@ -34,6 +35,7 @@ export const RunView = lazy(load.RunView);
 export const Review = lazy(load.Review);
 export const Live = lazy(load.Live);
 export const MarketWatchboard = lazy(load.MarketWatchboard);
+export const KrFlowBoard = lazy(load.KrFlowBoard);
 export const Sectors = lazy(load.Sectors);
 export const History = lazy(load.History);
 export const ChartView = lazy(load.ChartView);
@@ -59,6 +61,7 @@ const ROUTES: [RegExp, keyof typeof load][] = [
   [/^#\/history/, "History"],
   [/^#\/live/, "Live"],
   [MARKET_WATCHBOARD_ROUTE, "MarketWatchboard"],
+  [KR_FLOW_BOARD_ROUTE, "KrFlowBoard"],
   [/^#\/sectors/, "Sectors"],
   [/^#\/review/, "Review"],
   [/^#\/charts/, "Charts"],

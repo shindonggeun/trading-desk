@@ -1,4 +1,4 @@
-import { useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
 import { api } from "../api";
 import { usePoll } from "../poll";
 import type { KrShortPoint, KrShortSeries, KrShortStatus } from "../types";
@@ -110,13 +110,25 @@ function ShortSaleData({ ticker }: { ticker: string }) {
   );
 }
 
-export default function KrShortSaleCard() {
+function initialPick(ticker: string | null): Picked {
+  if (!ticker) return QUICK_PICKS[0];
+  return QUICK_PICKS.find((item) => item.ticker === ticker) ?? { ticker };
+}
+
+export default function KrShortSaleCard({ linkedTicker = null }: { linkedTicker?: string | null }) {
   const headingId = useId();
   const inputId = useId();
-  const [selected, setSelected] = useState<Picked>(QUICK_PICKS[0]);
+  const [selected, setSelected] = useState<Picked>(() => initialPick(linkedTicker));
   const [draft, setDraft] = useState<Picked>({ ticker: "" });
   const [searchVersion, setSearchVersion] = useState(0);
   const [invalid, setInvalid] = useState(false);
+
+  useEffect(() => {
+    if (linkedTicker) {
+      setSelected(initialPick(linkedTicker));
+      setInvalid(false);
+    }
+  }, [linkedTicker]);
 
   function select(candidate: Picked) {
     const ticker = candidate.ticker.trim().toUpperCase();
@@ -134,7 +146,7 @@ export default function KrShortSaleCard() {
   }
 
   return (
-    <section className="kr-short-card" aria-labelledby={headingId}>
+    <section className="kr-short-card" id="kr-short-sale" aria-labelledby={headingId}>
       <header>
         <h4 id={headingId}>국내 공매도</h4>
         <p className="muted small">거래대금 비중은 전체 거래대금 중 공매도 거래대금의 비율입니다.</p>

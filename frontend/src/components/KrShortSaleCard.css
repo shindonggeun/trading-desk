@@ -127,3 +127,4 @@
 }
 
 .kr-short-history tbody th { font-weight: 400; }
+#kr-short-sale { scroll-margin-block-start: calc(var(--topbar-h, 52px) + 8px); }

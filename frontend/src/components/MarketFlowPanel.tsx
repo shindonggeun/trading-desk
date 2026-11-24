@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { krwShort, price } from "../format";
+import { shortSaleFlowTicker } from "../krFlowLinks";
 import { isMarketFlowMenuRoute } from "../nav";
 import type { FlowInterval, FlowMarket, FlowRecord, FlowSide, InstitutionKind, Investor } from "../types";
 import FuturesFlowView from "./FuturesFlowView";
@@ -276,6 +277,7 @@ function TrendChart({ records, on, interval }: { records: FlowRecord[]; on: Reco
 /** 메인 화면 시장 수급 패널 — 오늘(최신 기간) 4분류 순매수, 기관 세부, 최근 흐름(#78, API #76). */
 export default function MarketFlowPanel() {
   const [prefs, setPrefs] = useState(loadPrefs);
+  const [linkedShort, setLinkedShort] = useState(() => shortSaleFlowTicker(window.location.hash));
   const [data, setData] = useState<MarketFlowWithExpected | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const liveRef = useRef(true); // 최신 기록이 아직 바뀔 수 있나(잠정)
@@ -291,6 +293,12 @@ export default function MarketFlowPanel() {
   useEffect(() => {
     const open = () => {
       const route = window.location.hash;
+      const ticker = shortSaleFlowTicker(route);
+      setLinkedShort(ticker);
+      if (ticker) {
+        window.requestAnimationFrame(() => card.current?.querySelector("#kr-short-sale")?.scrollIntoView({ block: "start" }));
+        return;
+      }
       if (!/[?&]flow=intraday(?:&|$)/.test(route)) return;
       update({ market: "INTRADAY" });
       if (!isMarketFlowMenuRoute(route)) window.history.replaceState(null, "", "#/"); // 기존 알림은 한 번만 연다
@@ -463,7 +471,7 @@ export default function MarketFlowPanel() {
         </>
       )}
       </>}
-      <KrShortSaleCard />
+      <KrShortSaleCard linkedTicker={linkedShort} />
     </section>
   );
 }

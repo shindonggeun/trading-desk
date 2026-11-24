@@ -35,6 +35,7 @@ from . import (
     accumulation_live,
     alert_tone,
     backtest_reports,
+    binance_funding,
     bottom_zone,
     calibration,
     channels,
@@ -434,7 +435,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                pictures: report_images.ReportImages | None = None, *, protect_run_reads: bool | None = None,
                owner_resources: OwnerResources | None = None,
                options_provider: options_detail.OptionSource | None = None,
-               market_outlook_service: market_outlook.MarketOutlook | None = None) -> FastAPI:
+               market_outlook_service: market_outlook.MarketOutlook | None = None,
+               funding_history: binance_funding.FundingHistory | None = None) -> FastAPI:
     settings = settings or load()
     log_setup.configure(settings.log_level)     # #676 the desk.* INFO lines reach the container log
     if settings.role in ("all", "api"):
@@ -3825,6 +3827,16 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # --- #154 short selling & options positioning ------------------------------------------
 
     option_details = options_detail.OptionsDetail(options_provider)
+    funding = funding_history if funding_history is not None else binance_funding.FundingHistory(
+        enabled=not settings.fake_runs)
+
+    @app.get("/api/positioning/funding")
+    async def ticker_funding(symbol: str, days: int = 30):
+        """#912 Public, settled USDⓈ-M funding history."""
+        try:
+            return await funding.read(symbol, days)
+        except ValueError:
+            raise HTTPException(422, "funding requires a supported symbol and days between 1 and 30") from None
 
     @app.get("/api/positioning/options")
     async def ticker_option_details(ticker: str, expiration: str | None = None, strike_min: float | None = None,

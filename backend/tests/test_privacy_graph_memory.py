@@ -53,7 +53,7 @@ def test_protected_graph_has_fresh_memory_and_no_checkpoint_or_report(tmp_path, 
     monkeypatch.setattr(default_config, "build_default_config", lambda: dict(cfg))
     monkeypatch.setattr(trading_graph, "TradingAgentsGraph", Graph)
 
-    request = RunRequest("SYNTHETIC", "2026-11-20")
+    request = RunRequest("SYNTHETIC", "2026-11-20", analysts=["market"])
     if fails:
         with pytest.raises(RuntimeError, match="synthetic graph failure"):
             run_tradingagents(request, lambda _event: None, None, isolate_artifacts=True)
@@ -114,7 +114,7 @@ def test_a_public_run_reads_and_writes_a_memory_apart_from_the_account_runs(tmp_
     monkeypatch.setattr(default_config, "build_default_config", lambda: dict(cfg))
     monkeypatch.setattr(trading_graph, "TradingAgentsGraph", Graph)
 
-    result = run_tradingagents(RunRequest("SYNTHETIC", "2026-11-20"), lambda _event: None, None,
+    result = run_tradingagents(RunRequest("SYNTHETIC", "2026-11-20", analysts=["market"]), lambda _event: None, None,
                                public_memory=public)
     public_file = tmp_path / "trading_memory.public.md"
     if public:

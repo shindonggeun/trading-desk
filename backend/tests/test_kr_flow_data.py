@@ -121,9 +121,39 @@ def test_index_snapshot_reads_only_the_requested_krx_series_and_dates(engine):
                                          index(TUE, "코스피 200", "300")])
     assert kr_flow_data.index_snapshot(engine, "kospi", (MON, TUE)) == {
         "as_of": MON.isoformat(), "source": "krx_open_api", "published_at": None,
-        "unit": "index_points", "value": 2300.25,
+        "unit": "index_points", "value": 2300.25, "change_pct": None,
     }
     assert kr_flow_data.index_snapshot(engine, "kosdaq", (MON, TUE)) is None
+
+
+@pytest.mark.parametrize(("raw", "basis", "expected"), [
+    ("0.00", "20261124", 0),
+    ("-0.53", "2026-11-24", -0.53),
+    ("+1.25", "20261124", 1.25),
+    (None, "20261124", None),
+    ("-", "20261124", None),
+    ("NaN", "20261124", None),
+    ("inf", "20261124", None),
+    ("1,25", "20261124", None),
+    ("1_0", "20261124", None),
+    ("1e2", "20261124", None),
+    (True, "20261124", None),
+    ("1.25", "20261123", None),
+    ("1.25", None, None),
+])
+def test_index_change_uses_published_percent_only_on_the_matching_basis(engine, raw, basis, expected):
+    payload = {"CLSPRC_IDX": "2,300.25", "OPNPRC_IDX": "2,280", "CMPPREVDD_IDX": "25.25"}
+    if raw is not None:
+        payload["FLUC_RT"] = raw
+    if basis is not None:
+        payload["BAS_DD"] = basis
+    with engine.begin() as conn:
+        conn.execute(insert(krx_daily).values(api="kosdaq_dd_trd", bas_dd=TUE, code="코스닥",
+                                             payload=payload, fetched_at=NOW))
+    result = kr_flow_data.index_snapshot(engine, "kosdaq", (MON, TUE))
+    assert result["value"] == 2300.25
+    assert result["as_of"] == TUE.isoformat()
+    assert result["change_pct"] == expected
 
 
 def test_market_summary_reuses_sealed_page_and_skips_provisional_records(monkeypatch):

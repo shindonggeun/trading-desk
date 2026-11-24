@@ -46,9 +46,12 @@ try {
     const board = page.locator(".kr-flow-board");
     await board.getByRole("heading", { name: "국장 수급 현황판", exact: true }).waitFor();
     const plot = board.locator(".kr-flow-scatter");
+    const indexCard = board.locator("article").filter({ has: page.getByRole("heading", { name: "지수 종가", exact: true }) });
     const samsung = plot.getByRole("button", { name: /삼성전자 .*산점도 선택/ });
     const sk = plot.getByRole("button", { name: /SK하이닉스 .*산점도 선택/ });
     await samsung.waitFor();
+    assert.match(await indexCard.innerText(), /전 거래일 대비\s+0%/);
+    assert.equal(await indexCard.locator("time").first().getAttribute("datetime"), flowFixtures.kospi.market_summary.index.as_of);
     assert.equal(await plot.getByRole("button").count(), 49);
     assert.match(await plot.innerText(), /우위 0%/);
     assert.match(await plot.innerText(), /참여율 중앙값/);
@@ -87,6 +90,8 @@ try {
     assert.equal(await short.count(), 1);
     await board.getByRole("button", { name: "코스닥", exact: true }).click();
     await board.getByRole("heading", { name: /에코프로비엠.*247540\.KQ/ }).waitFor();
+    assert.match(await indexCard.innerText(), /932\.51 포인트/);
+    assert.match(await indexCard.innerText(), /전 거래일 대비\s+자료 없음/);
     assert.equal(await plot.count(), 0);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
 

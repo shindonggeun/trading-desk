@@ -27,6 +27,7 @@ MARKET_NAMES = {"kospi": {"KOSPI", "유가증권", "유가증권시장"}, "kosda
 MAX_LISTINGS = 5000
 _CODE = re.compile(r"[0-9][0-9A-Z]{5}")
 _WON = re.compile(r"[0-9]{1,16}|[0-9]{1,3}(?:,[0-9]{3}){1,5}")
+_INDEX_RATE = re.compile(r"[+-]?[0-9]+(?:\.[0-9]+)?")
 
 
 def _stock_code(value: object) -> str | None:
@@ -114,6 +115,7 @@ def _market_flow(market: str, dates: Sequence[date], page: dict) -> dict | None:
 
 
 def index_snapshot(engine: Engine, market: str, dates: Sequence[date]) -> dict | None:
+    """Read the close and published change for the same completed index session."""
     try:
         with engine.connect() as conn:
             row = conn.execute(select(krx_daily.c.bas_dd, krx_daily.c.payload).where(
@@ -127,8 +129,15 @@ def index_snapshot(engine: Engine, market: str, dates: Sequence[date]) -> dict |
     level = krx.num(row.payload.get("CLSPRC_IDX"))
     if level is None or not isfinite(level) or level <= 0:
         return None
-    return {"as_of": row.bas_dd.isoformat(), "source": "krx_open_api", "published_at": None,
-            "unit": "index_points", "value": level}
+    as_of = row.bas_dd.isoformat()
+    change = None
+    raw_change = row.payload.get("FLUC_RT")
+    if (row.payload.get("BAS_DD") in (row.bas_dd.strftime("%Y%m%d"), as_of)
+            and isinstance(raw_change, str) and _INDEX_RATE.fullmatch(raw_change)):
+        # Use the percentage KRX published on this row, without inferring it from other prices.
+        change = float(raw_change)
+    return {"as_of": as_of, "source": "krx_open_api", "published_at": None, "unit": "index_points",
+            "value": level, "change_pct": change if change is not None and isfinite(change) else None}
 
 
 async def market_summary(market: str, dates: Sequence[date], now: datetime, index: dict | None) -> dict:

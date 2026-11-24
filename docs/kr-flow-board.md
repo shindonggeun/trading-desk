@@ -36,6 +36,7 @@ KRX OPEN API 약관은 비상업적 이용, 화면의 원천 표시 및 제3자 
 | `ranking` | `status`, `as_of`, `source`, `published_at`, `items[]`. 각 시장에서 같은 날의 종목 거래대금 내림차순, 동률은 종목 코드순이다. 최근 마감보다 이전에 발표된 순위는 `stale`이다. |
 | `favorites` | 인증 계정이 저장한 선택 시장 관심종목만 기존 표시 순서로 제공한다. `items[].history[]`는 자료가 없는 날짜도 포함한다. 다른 계정의 관심종목은 응답이나 공유 캐시에 들어가지 않는다. |
 | `market_summary` | `scope: "market"`, `flow`, `index`의 별도 시점·출처와 상태를 표시한다. 시장 전체 외국인 수급이나 지수는 개별 종목 계산에 사용하지 않는다. |
+| `market_summary.index.change_pct` | 지수 종가와 같은 KRX 대표지수 일별 행의 `FLUC_RT`를 퍼센트 단위로 표시한다. 현재 종가는 `CLSPRC_IDX`이며 기준일은 `index.as_of`다. [KOSPI 일별시세](https://openapi.krx.co.kr/contents/OPP/USES/service/OPPUSES001_S2.cmd?BO_ID=EREKZauXnMmxyIlqzeDN) · [KOSDAQ 일별시세](https://openapi.krx.co.kr/contents/OPP/USES/service/OPPUSES001_S2.cmd?BO_ID=nimebcamqFNIPNcRrHoO) |
 | `sources` | `turnover`, `foreign_flow`, `ownership`의 사용 가능 여부를 표시한다. 각 관측의 세부 상태와 기준일은 행 안에 있다. |
 
 `ranking.items[]`는 `ticker`, `name`, `rank`, `latest`, `latest_ownership`를 제공하고,
@@ -48,6 +49,9 @@ KRX OPEN API 약관은 비상업적 이용, 화면의 원천 표시 및 제3자 
   `published_at`, `unit`을 가진다. 원천이 공표 시각을 주지 않으면 `published_at`은 null이다.
 - `ownership`은 해당 거래일의 기준일이 명시된 지분율이다. `latest_ownership`에는
   표시 기준일 이하의 최근 확정치를 담고 원래 기준일을 보존한다.
+- 지수는 한국 정규장이 마감된 거래일 중 저장된 최신 행을 사용한다. 공표가 늦으면 저장된 행의 기준일을
+  그대로 표시한다. 원본 `BAS_DD`가 저장 기준일과 일치하고 `FLUC_RT`가 유한한 십진수 문자열일 때만
+  전 거래일 대비 값으로 사용한다. 실제 0은 0%이며 `null`이나 이전 응답의 필드 생략은 자료 없음으로 표시한다.
 - `status`는 `available`, `partial`, `no_data`, `source_unavailable`, `stale` 등을
   구분한다. 관측·산식 상태는 `scope_mismatch`, `unit_mismatch`, `not_published`,
   `missing_input`, `zero_denominator`, `inconsistent_amounts`도 반환할 수 있다.

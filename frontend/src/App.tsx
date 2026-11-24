@@ -14,6 +14,7 @@ import {
 } from "./lazyPages";
 import ChatWidget from "./components/ChatWidget";
 import AppNotices from "./components/AppNotices";
+import ScreenHelp from "./components/ScreenHelp";
 import FlowAlertToast, { FLOW_ROUTE } from "./components/FlowAlertToast";
 import FundsAlert from "./components/FundsAlert";
 import StatusDot from "./components/StatusDot";
@@ -208,6 +209,7 @@ export default function App() {
       {user && (route === "" || route === "#/" || route.startsWith("#/?")) && <TourPrompt />}
       {/* #451 연결 없음 · 앱으로 설치 안내 */}
       <AppNotices />
+      {user && here && !chartMatch && <ScreenHelp id={here.item.id} />}
 
       {/* #537 화면 코드를 받는 동안은 짧은 안내 — 머리줄 · 메뉴는 그대로 */}
       {/* 배포 뒤 오래 열어 둔 탭은 옛 화면 조각이 없어 받기에 실패한다 — 앱 전체가 내려가지 않게 이 자리만 안내(화면을 바꾸면 다시 시도) */}

@@ -1,43 +1,57 @@
+import type { ScreenHelpId } from "./screenHelp";
+
 /** 이 탭에서 앱 안 이동(hashchange)이 있었나 — 큰 차트의 "닫기"가 앱 밖으로 뒤로 가지 않게(#97). */
 export const navigation: { moved: boolean; prev: string | null } = { moved: false, prev: null };  // prev: 직전 앱 안 주소(#435)
 
-/**
- * #341 상단 메뉴 — 대메뉴(대시보드 · 시장 · 분석 · 캘린더) 아래 하위 메뉴. 주소는 예전 그대로(#/live, #/review …)라
- * 링크 · 즐겨찾기가 깨지지 않는다. 설정은 오른쪽 위, 채팅은 오른쪽 아래 위젯(#340).
- */
-export type NavItem = { label: string; href: string; match: (route: string) => boolean };
+/** 목적별 메뉴. 페이지와 알림이 사용하는 기존 hash를 그대로 가리킨다. */
+export type NavItem = { id: ScreenHelpId; label: string; href: string; match: (route: string) => boolean };
 export type NavGroup = { id: string; label: string; items: NavItem[] };
 
 const starts = (...prefixes: string[]) => (route: string) => prefixes.some((p) => route === p || route.startsWith(`${p}?`) || route.startsWith(`${p}/`));
+const item = (id: ScreenHelpId, label: string, href: string, ...aliases: string[]): NavItem =>
+  ({ id, label, href, match: starts(href, ...aliases) });
+export const MARKET_FLOW_MENU = "#/?flow=intraday&view=flow";
+export const isMarketFlowMenuRoute = (route: string) =>
+  route.startsWith("#/?") && /[?&]flow=intraday(?:&|$)/.test(route) && /[?&]view=flow(?:&|$)/.test(route);
 
 export const NAV: NavGroup[] = [
-  { id: "dash", label: "대시보드", items: [{ label: "대시보드", href: "#/", match: (r) => r === "" || r === "#" || r === "#/" || r.startsWith("#/?") }] },
+  { id: "dash", label: "대시보드", items: [{
+    id: "dashboard", label: "대시보드", href: "#/",
+    match: (route) => !isMarketFlowMenuRoute(route) && (route === "" || route === "#" || route === "#/" || route.startsWith("#/?")),
+  }] },
   {
     id: "market", label: "시장", items: [
-      { label: "시세판", href: "#/live", match: starts("#/live") },
-      { label: "차트", href: "#/charts", match: starts("#/charts", "#/chart") },
-      { label: "선물 시세", href: "#/futures", match: starts("#/futures") },
-      { label: "섹터", href: "#/sectors", match: starts("#/sectors") },
-      { label: "주간 지도", href: "#/weekly", match: starts("#/weekly") },
-      { label: "반감기 사이클", href: "#/halving", match: starts("#/halving") },
+      item("live", "실시간 시세", "#/live"),
+      { id: "flow", label: "수급·포지셔닝", href: MARKET_FLOW_MENU, match: isMarketFlowMenuRoute },
+      item("futures", "선물 시세", "#/futures"),
+      item("sectors", "섹터", "#/sectors"),
+      item("weekly", "주간 지도", "#/weekly"),
+      item("halving", "반감기 사이클", "#/halving"),
+      item("calendar", "시장 일정", "#/calendar"),
     ],
   },
   {
     id: "analysis", label: "분석", items: [
-      { label: "분석 기록", href: "#/history", match: starts("#/history", "#/runs") },
-      { label: "매매 복기", href: "#/review", match: starts("#/review") },
-      { label: "백테스트", href: "#/backtest", match: starts("#/backtest") },
-      { label: "매매 팁", href: "#/tips", match: starts("#/tips") },
-      { label: "기관 포트폴리오", href: "#/funds", match: starts("#/funds") },
-      { label: "리포트", href: "#/reports", match: starts("#/reports") },
-      { label: "모의 투자", href: "#/paper", match: starts("#/paper") },
-      { label: "오늘 방향 기록", href: "#/day-call", match: starts("#/day-call") },
+      item("history", "분석 기록", "#/history", "#/runs"),
+      item("backtest", "백테스트", "#/backtest"),
+      item("tips", "매매 팁", "#/tips"),
+      item("funds", "기관 포트폴리오", "#/funds"),
+      item("reports", "리포트", "#/reports"),
+      item("morning", "아침 시황", "#/briefs/morning"),
     ],
   },
-  { id: "calendar", label: "캘린더", items: [{ label: "캘린더", href: "#/calendar", match: starts("#/calendar") }] },
+  { id: "chart", label: "차트", items: [item("charts", "차트", "#/charts", "#/chart")] },
+  {
+    id: "operations", label: "운영", items: [
+      item("review", "매매 복기", "#/review"),
+      item("paper", "모의 투자", "#/paper"),
+      item("dayCall", "오늘 방향 기록", "#/day-call"),
+      item("settings", "설정", "#/settings"),
+    ],
+  },
 ];
 
-/** 지금 주소의 대메뉴 · 하위 메뉴(설정 · 채팅처럼 메뉴에 없는 화면이면 null) */
+/** 지금 주소의 대메뉴 · 하위 메뉴. 독립 화면은 null이다. */
 export function activeNav(route: string): { group: NavGroup; item: NavItem } | null {
   for (const group of NAV) {
     const item = group.items.find((i) => i.match(route));

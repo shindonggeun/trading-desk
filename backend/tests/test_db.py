@@ -15,6 +15,42 @@ def test_migrations_build_exactly_the_declared_schema(db_url):
     assert diff == [], "db.py and the Alembic revisions disagree — add a revision"
 
 
+def test_0033_round_trip_keeps_saved_alerts_and_does_not_guess_owners(db_url):
+    from alembic import command
+    from sqlalchemy import inspect, select, text, update
+
+    from desk.db import alembic_config, line_signals
+
+    config = alembic_config(db_url)
+    command.upgrade(config, "0032")
+    engine = make_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO line_signals (id, trade_date, ticker, timeframe, event, rule, line_id, at, "
+                "price, line_price, text, created_at) VALUES "
+                "(7, '2026-11-24', 'SOXL', '10m', 'touch', 'touch_resistance', 'upper', "
+                "'2026-11-24T14:30:00+00:00', 101, 102, 'old alert', CURRENT_TIMESTAMP)"
+            ))
+        command.upgrade(config, "0033")
+        with engine.begin() as conn:
+            row = conn.execute(select(line_signals)).mappings().one()
+            assert (row["id"], row["line_price"], row["signal_owner_id"], row["signal_owner_generation"]) == (
+                7, 102, None, None,
+            )
+            conn.execute(update(line_signals).values(signal_owner_id=1, signal_owner_generation="a" * 32))
+        command.downgrade(config, "0032")
+        assert "signal_owner_id" not in {c["name"] for c in inspect(engine).get_columns("line_signals")}
+        with engine.connect() as conn:
+            assert tuple(conn.execute(text("SELECT id, line_price, text FROM line_signals")).one()) == (7, 102, "old alert")
+        command.upgrade(config, "0033")
+        with engine.connect() as conn:
+            assert conn.execute(select(line_signals.c.signal_owner_id, line_signals.c.signal_owner_generation)
+                                ).one() == (None, None)
+    finally:
+        engine.dispose()
+
+
 def test_store_keeps_order_json_and_utc_times(db_url):
     migrate(db_url)
     engine = make_engine(db_url)

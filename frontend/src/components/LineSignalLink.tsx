@@ -7,11 +7,11 @@ export default function LineSignalLink({ signal, children }: { signal: LineSigna
   const scope = useContext(LineWatchScopeContext);
   const [reference] = useState(() => Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16)).join("-"));
   return (
-    <a href={chartHref(signal, scope ? reference : undefined)} onClick={() => {
+    <a href={chartHref(signal, scope ? reference : undefined, signal.timeframe, signal.signal_id)} onClick={() => {
       if (!scope) return;
-      const { ticker, timeframe, line_price: price } = signal;
+      const { ticker, timeframe, line_price: price, at } = signal;
       scope.chartAlerts.delete(reference);
-      scope.chartAlerts.set(reference, { ticker, timeframe, price });
+      scope.chartAlerts.set(reference, { ticker, timeframe, price, at });
       if (scope.chartAlerts.size > 32) {
         const oldest = scope.chartAlerts.keys().next().value;
         if (oldest !== undefined) scope.chartAlerts.delete(oldest);

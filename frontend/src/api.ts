@@ -149,6 +149,7 @@ export interface Me {
 
 /** 봉 주기(backend desk/prices.py INTERVALS). 대소문자 구분: 1m = 1분, 1M = 월봉. */
 export type CandleInterval = "1m" | "5m" | "15m" | "30m" | "60m" | "120m" | "240m" | "1d" | "1w" | "1M" | "1y";
+export type LineAlertInterval = "10m" | "120m";
 
 /** GET /api/candles — 봉은 오래된 것부터, at 은 봉 시작 시각(UTC ISO). */
 export interface Candles {
@@ -376,11 +377,12 @@ export const api = {
     call<EstimatedCandles | { ticker: string; supported: false }>(
       `/api/estimate/candles?ticker=${encodeURIComponent(ticker)}&interval=${interval}`),
   /** indicators: true = RSI 만(예전 호출), 또는 ["rsi", "stoch", "bb"] 처럼 고른 지표(#206) */
-  candles: (ticker: string, interval: CandleInterval, count: number, indicators: boolean | string[] = false) => {
+  candles: (ticker: string, interval: CandleInterval | LineAlertInterval, count: number,
+    indicators: boolean | string[] = false, lineAlert = false) => {
     const wanted = indicators === true ? ["rsi14"] : indicators === false ? [] : indicators;
     return call<Candles>(
       `/api/candles?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(interval)}&count=${count}` +
-        (wanted.length ? `&indicators=${encodeURIComponent(wanted.join(","))}` : ""),
+        (wanted.length ? `&indicators=${encodeURIComponent(wanted.join(","))}` : "") + (lineAlert ? "&line_alert=true" : ""),
     );
   },
   /** #631 · #632 차트만 읽기 — 시간봉(5분 ~ 일)별 흐름 · 가까운 선 · 쉬운 문장(규칙 기반, 가장 짧은 봉이 끝날 때까지 캐시) */
@@ -482,6 +484,9 @@ export const api = {
   /** #614 차트 선 알림(#613) 감시 설정 · 최근 보낸 선 알림 */
   lineWatch: (ticker?: string, signal?: AbortSignal) =>
     request<LineWatch>(`/api/notify/line-watch${ticker ? `?ticker=${encodeURIComponent(ticker)}` : ""}`, { cache: "no-store", signal }),
+  lineWatchSignal: (id: number, signal: AbortSignal) =>
+    request<{ signal: Pick<LineSignal, "ticker" | "timeframe" | "line_price" | "at"> | null }>(
+      `/api/notify/line-watch?signal_id=${id}`, { cache: "no-store", signal }),
   lineWatchChannels: (signal?: AbortSignal) =>
     request<LineWatchChannels>("/api/notify/channels", { cache: "no-store", signal }),
   saveLineWatch: (body: LineWatchPatch, signal?: AbortSignal) =>
@@ -871,6 +876,7 @@ export interface LineWatchRule {
   side: LineWatchSide;
 }
 export interface LineSignal {
+  signal_id?: number;         // current account's persistent exact-chart reference
   trade_date: string;        // KST 날짜
   ticker: string;
   timeframe: string;         // 5m · 15m · 60m · 120m · 240m

@@ -17,7 +17,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { type ReactNode, type RefObject, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { api, ApiError, type CandleInterval, type CandleLive, type Candles, type OscillatorView, type OscReading, type ReviewRow } from "../api";
+import { api, ApiError, type CandleInterval, type CandleLive, type Candles, type LineAlertInterval, type OscillatorView, type OscReading, type ReviewRow } from "../api";
 import { price } from "../format";
 import FillsTable from "./FillsTable";
 import { drawEntry, useEntryNow } from "./chartEntry";
@@ -92,7 +92,7 @@ function weeklyPriceLines(observation: WeeklyDrawdownObservation | undefined): W
   return [...lines.values()];
 }
 
-export type Interval = Exclude<CandleInterval, "1m">;
+export type Interval = Exclude<CandleInterval, "1m"> | LineAlertInterval;
 const INTERVALS: { iv: Interval; label: string; count: number }[] = [
   // 분봉은 야후 보관 한도 안에서(5 · 15 · 30분 60일, 1 · 4시간 730일), 일봉 이상은 백엔드 최대 500개 안에서.
   { iv: "5m", label: "5분", count: 300 },
@@ -105,11 +105,17 @@ const INTERVALS: { iv: Interval; label: string; count: number }[] = [
   { iv: "1M", label: "월", count: 120 },
   { iv: "1y", label: "년", count: 30 },
 ];
-const INTRADAY = new Set<Interval>(["5m", "15m", "30m", "60m", "240m"]);
+const ALERT_INTERVALS: Record<LineAlertInterval, { iv: LineAlertInterval; label: string; count: number }> = {
+  // Read the whole bounded source window before deciding whether an older alert has its candle.
+  "10m": { iv: "10m", label: "10분", count: 820 },
+  "120m": { iv: "120m", label: "2시간", count: 820 },
+};
+const INTRADAY = new Set<Interval>(["5m", "10m", "15m", "30m", "60m", "120m", "240m"]);
 // 주 · 월 · 년봉은 몇 배씩 오른 긴 기간이라 로그 눈금 — 0 근처에서 시작해도 축이 음수로 내려가지 않는다.
 const LOG_SCALE = new Set<Interval>(["1w", "1M", "1y"]);
-const LABEL = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.label])) as Record<Interval, string>;
-const COUNT = Object.fromEntries(INTERVALS.map((i) => [i.iv, i.count])) as Record<Interval, number>;
+const CONFIG = Object.fromEntries([...INTERVALS, ...Object.values(ALERT_INTERVALS)].map(i => [i.iv, i])) as
+  Record<Interval, (typeof INTERVALS)[number]>;
+const LABEL = Object.fromEntries(Object.values(CONFIG).map(i => [i.iv, i.label])) as Record<Interval, string>;
 // #206 왼쪽 끝까지 끌면 과거 봉을 두 배씩 더 받는다 — 백엔드 최대(prices.MAX_COUNT)까지.
 const MAX_BARS = 2000;
 // 보이는 범위의 왼쪽 끝이 첫 봉에서 이만큼 안쪽이면 더 받는다
@@ -386,7 +392,7 @@ type Drawn = {
 const ohlc = (b: Row["bar"]) => ({ open: b.open, high: b.high, low: b.low, close: b.close });
 /** 봉 한 칸(초) — 실시간 값이 이보다 오래 끊겼다 오면(가린 탭 · 화면 밖) 그 사이 봉이 빠지므로 봉을 다시 받는다 */
 const STEP_SEC: Record<Interval, number> = {
-  "5m": 300, "15m": 900, "30m": 1800, "60m": 3600, "120m": 7200, "240m": 14400, "1d": 86400, "1w": 7 * 86400, "1M": 28 * 86400, "1y": 365 * 86400,
+  "5m": 300, "10m": 600, "15m": 900, "30m": 1800, "60m": 3600, "120m": 7200, "240m": 14400, "1d": 86400, "1w": 7 * 86400, "1M": 28 * 86400, "1y": 365 * 86400,
 };
 
 /**
@@ -398,7 +404,7 @@ const STEP_SEC: Record<Interval, number> = {
 function LiveBarTag({ drawn, ticker, interval, watch, fallback, onStale, onQuote }: {
   drawn: Drawn | null;
   ticker: string;
-  interval: Interval;
+  interval: Exclude<Interval, "10m">;
   /** 이 요소가 화면 밖이면 쉰다 */
   watch: RefObject<HTMLElement | null>;
   /** 실시간 값이 아직 없을 때 적을 봉 원천 */
@@ -513,7 +519,7 @@ export interface ExtraLine {
  * 분석 화면의 가격 차트 — 분봉 · 일 · 주 · 월 · 년 캔들 · 거래량, RSI(14) 보조 차트,
  * 진입 · 손절 · 목표선, 지지 · 저항선, 분석일 · 내 체결 마커(#18 · #25 · #61). 겹친 표시는 하나씩 켜고 끈다.
  */
-function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, banner, onIntervalChange, highlight = null, includeHighlightInScale = false, outlook = null, planLabels, onLineClick, trendPick, onTrendPick, readable = false, readOpen = false }: {
+function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialInterval, lists = true, startExpanded = false, onClose, notice, banner, onIntervalChange, highlight = null, includeHighlightInScale = false, outlook = null, planLabels, onLineClick, trendPick, onTrendPick, readable = false, readOpen = false, lineAlert }: {
   ticker: string;
   tradeDate: string;
   plan: Plan | null;
@@ -537,6 +543,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   /** #440 가격 사다리에서 고른 가격 — 같은 가격에 굵은 강조선을 잠깐 긋는다 */
   highlight?: number | null;
   includeHighlightInScale?: boolean;
+  lineAlert?: { interval: LineAlertInterval; at: string | null; fallbackHref: string; fallbackLabel: string };
   /** #438 run 의 1주 · 1개월 방향 전망 — 일봉에서 마지막 봉 오른쪽에 원뿔 · 경로를 그리고 아래에 한 줄 요약 */
   outlook?: RunOutlook | null;
   /** #466 진입 · 손절 · 목표 선 제목 · 색(시나리오 · 근거 한 단어) — 없으면 "진입" · "손절" · "목표" */
@@ -563,6 +570,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   };
   const [prefs] = useState(loadPrefs);
   const [interval, setBarInterval] = useState<Interval>(initialInterval ?? prefs.interval);
+  const alertFrame = lineAlert?.interval === interval;
   const [showSaved, setShow] = useState<Show>(prefs.show);
   // #632 · #672 지금 이 차트 읽기 — 칸 켜기 · 초보 모드(기본 켬)는 이 브라우저에 기억, 초보 모드면 설명에 나온 선만 남긴다
   const [readPrefs, setReadPrefs] = useState<ReadPrefs>(() => {
@@ -637,7 +645,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   const olderKeyRef = useRef(olderKey);
   olderKeyRef.current = olderKey;
   const times = older.key === olderKey ? older.times : 1;
-  const wanted = Math.min(COUNT[interval] * times, MAX_BARS);
+  const wanted = Math.min(CONFIG[interval].count * times, MAX_BARS);
   // 더 받은 뒤 새 차트에서 보던 자리를 지키려고: 받기 전 보이던 논리 범위와 봉 수
   const keepView = useRef<{ from: number; to: number; bars: number } | null>(null);
   // #654 실시간 값이 오래 끊겼다 돌아오면 봉을 다시 받는다 — 지우지 않고 받은 뒤 갈아 끼운다
@@ -811,7 +819,8 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   const when = mode === "plan" ? "분석 당시" : "지금";
   const [trendDrawn, setTrendDrawn] = useState<{ line: Trendline; series: ISeriesApi<"Line">; base: string }[]>([]);
 
-  useEffect(() => savePrefs(interval, showSaved, preset, custom), [interval, showSaved, preset, custom]);
+  useEffect(() => savePrefs(alertFrame ? prefs.interval : interval, showSaved, preset, custom),
+    [alertFrame, prefs.interval, interval, showSaved, preset, custom]);
   useEffect(() => onIntervalChange?.(interval), [interval, onIntervalChange]);
   const toggle = (k: keyof Show) => {
     // 초보 모드에서 손으로 고르면 그 모드를 끄고 저장해 둔 고름에서 — 보이던 칸만 뒤집는다
@@ -1059,7 +1068,8 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
 
   // #612 평행 채널 · 짧은 추세선 — 분봉은 1분마다 다시 받는다(서버는 같은 마지막 봉 · 종가면 다시 계산하지 않는다).
   // DEV 에서 API 가 없으면(#611 전) 그린 봉으로 만든 가짜를 쓴다
-  const wantLines = (show.chan || show.ltrend || (show.long && interval === "1d")) && isLineTf(interval);
+  // The general 2h channel feed uses a different candle path from the confirmed alert chart.
+  const wantLines = !alertFrame && (show.chan || show.ltrend || (show.long && interval === "1d")) && isLineTf(interval);
   useEffect(() => {
     setLinesRep(null);
     setLinePick(null);
@@ -1091,8 +1101,12 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     setFailed(false);
     api
       .candles(ticker, interval, wanted,
-        [...(show.rsi ? ["rsi"] : []), ...(show.stoch ? ["stoch"] : []), ...(show.bb ? ["bb20"] : [])])
-      .then((c) => live && setCandles(c))
+        [...(show.rsi ? ["rsi"] : []), ...(show.stoch ? ["stoch"] : []), ...(show.bb ? ["bb20"] : [])], alertFrame)
+      .then((c) => {
+        if (!live) return;
+        if (alertFrame && (c.interval !== interval || !sameTicker(ticker, c.ticker))) setFailed(true);
+        else setCandles(c);
+      })
       .catch(() => {
         if (!live) return;
         if (times === 1 && !quiet) setFailed(true);
@@ -1105,7 +1119,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       live = false;
       loadingOlder.current = false;
     };
-  }, [ticker, interval, wanted, show.rsi, show.stoch, show.bb, refreshed]);
+  }, [ticker, interval, wanted, show.rsi, show.stoch, show.bb, refreshed, alertFrame]);
 
   // 현재 세션으로 복기를 조회한다. 권한이 없거나 조회에 실패하면 마커 없이 그린다.
   useEffect(() => {
@@ -1385,6 +1399,21 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     };
   }, [drawn, weeklyLines, weeklyOverlay]);
 
+  const alertAt = Date.parse(lineAlert?.at ?? "");
+  const alertBarIndex = useMemo(() => alertFrame && drawn?.interval === interval && Number.isFinite(alertAt)
+    ? drawn.rows.findIndex(row => Date.parse(row.bar.at) === alertAt) : -1, [alertFrame, drawn, interval, alertAt]);
+  const focusedAlert = useRef<number | null>(null);
+  useEffect(() => {
+    if (!drawn?.alive.current || alertBarIndex < 0 || focusedAlert.current === alertAt) return;
+    const scale = drawn.chart.timeScale();
+    const range = scale.getVisibleLogicalRange();
+    if (!range) return;
+    focusedAlert.current = alertAt;
+    if (alertBarIndex < range.from || alertBarIndex > range.to) {
+      const half = (range.to - range.from) / 2;
+      scale.setVisibleLogicalRange({ from: alertBarIndex - half, to: alertBarIndex + half });
+    }
+  }, [drawn, alertBarIndex, alertAt]);
   // #440 가격 사다리에서 고른 가격 — 겹친 라벨과 상관없이 그 가격 하나만 굵게
   useEffect(() => {
     if (!drawn || highlight == null) return;
@@ -2431,12 +2460,13 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
           {title ?? "가격 차트"}{" "}
           <span className="muted small">{title !== ticker && `${ticker} · `}{currency}</span>
           <span className="muted small">
-            <LiveBarTag drawn={drawn} ticker={ticker} interval={interval} watch={section} onStale={reloadBars} onQuote={recordDrawingQuote}
-              fallback={candles ? [candles.source, delayText(candles.delay_sec)].filter(Boolean).join(" · ") : ""} />
+            {alertFrame ? candles?.source && [candles.source, delayText(candles.delay_sec), "확정 봉"].filter(Boolean).join(" · ")
+              : interval !== "10m" && <LiveBarTag drawn={drawn} ticker={ticker} interval={interval} watch={section} onStale={reloadBars} onQuote={recordDrawingQuote}
+                fallback={candles ? [candles.source, delayText(candles.delay_sec)].filter(Boolean).join(" · ") : ""} />}
           </span>
         </h3>
         <div className="chips chart-intervals" role="group" aria-label="봉 주기">
-          {INTERVALS.map(({ iv, label }) => (
+          {(lineAlert ? [ALERT_INTERVALS[lineAlert.interval], ...INTERVALS] : INTERVALS).map(({ iv, label }) => (
             <button key={iv} type="button" className={`chip ${iv === interval ? "chip-on" : ""}`} aria-pressed={iv === interval} onClick={() => setBarInterval(iv)}>
               {label}
             </button>
@@ -2515,10 +2545,16 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       )}
       <div className={`chart-read-wrap${readOn ? " on" : ""}`}>
       <div className={`chart-and-fills${tableFills.length > 0 ? " has-fills" : ""}`}>
+      {alertFrame && lineAlert && (failed || (candles && (!candles.bars.length || (drawn && Number.isFinite(alertAt) && alertBarIndex < 0)))) && (
+        <p className="muted small" role="status">
+          {(candles?.bars.length && !failed) ? "알림 시각의 " : ""}{LABEL[interval]}봉 공급을 확인할 수 없습니다.{" "}
+          <a href={lineAlert.fallbackHref}>{lineAlert.fallbackLabel}으로 보기</a>
+        </p>
+      )}
       {failed ? (
-        <p className="muted small">시세를 불러오지 못했습니다.</p>
+        !alertFrame && <p className="muted small">시세를 불러오지 못했습니다.</p>
       ) : candles && candles.bars.length === 0 ? (
-        <p className="muted small">표시할 봉이 없습니다.</p>
+        !alertFrame && <p className="muted small">표시할 봉이 없습니다.</p>
       ) : (
         <div
           ref={box}

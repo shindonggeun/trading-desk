@@ -23,6 +23,20 @@ def _result(rows, fetched):
     return {"bars": rows, "source": "yahoo", "fetched_at": fetched.isoformat()}
 
 
+def test_alert_chart_does_not_join_hourly_bars_across_krx_sessions():
+    at = _stamp("2026-11-24T04:00:00+00:00")
+    starts = ("2026-11-23T06:00:00+00:00", "2026-11-23T07:00:00+00:00",
+              "2026-11-24T00:00:00+00:00", "2026-11-24T02:00:00+00:00",
+              "2026-11-24T03:00:00+00:00")
+    got = _result([_row(_stamp(value)) for value in starts], at)
+    history = bars.alert_chart_history("KRX", "120m", got, at)
+    # Nov 23's verified, shortened session-close bucket stands alone. Nov 24's buckets
+    # are missing one member and not past the delay margin, respectively.
+    assert [(row["at"], row["volume"]) for row in history.bars] == [(starts[0], 5)]
+    assert history.source == "yahoo" and history.lag_minutes == 20
+    assert bars.alert_chart_history("KRX", "120m", {**got, "source": "estimated"}, at).bars == []
+
+
 @pytest.mark.parametrize("ticker,market", [
     ("NQ=F", "CME"), ("^KS11", "KRX"), ("005930.KS", "KRX"), ("000660.KS", "KRX"),
     ("SOXL", "US"), ("KORU", "US"),
@@ -174,7 +188,7 @@ def test_confirmed_resistance_is_recorded_once_after_restart(watch_engine, monke
     assert payload["source"] == "yahoo" and payload["fetched_at"] == now[0].isoformat()
     assert payload["lag_minutes"] == 10 and "지연 여유 10분" in payload["body"]
     assert "관측가" in payload["body"]
-    assert "5분봉" in payload["body"] and payload["url"] == "/#/charts?t=NQ%3DF&iv=5m"
+    assert "10분봉" in payload["body"] and payload["url"] == "/#/charts?t=NQ%3DF&iv=10m&signal_tf=10m"
 
     restarted = line_signals.LineWatch(watch_engine, clock=lambda: now[0],
                                       send_notice=lambda *a, **kw: sent.append(kw["payload"]))

@@ -441,6 +441,8 @@ line_signals = Table(
     Column("line_price", Float, nullable=False),
     Column("text", String(600), nullable=False),
     Column("created_at", Timestamp, nullable=False),
+    Column("signal_owner_id", Integer),
+    Column("signal_owner_generation", String(32)),
     UniqueConstraint("ticker", "timeframe", "rule", "line_id", "at", name="uq_line_signals_bar"),
     Index("ix_line_signals_trade_date", "trade_date"),
 )

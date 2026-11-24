@@ -1,4 +1,4 @@
-"""Closed market bars for the line watch, independent of chart/live-bar merging."""
+"""Closed market bars for line monitoring and the corresponding alert chart."""
 
 from __future__ import annotations
 
@@ -9,9 +9,11 @@ from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 
 from . import market_calendar as calendar
+from .indicators import annotate
 
 TIMEFRAMES = ("5m", "10m", "15m", "60m", "120m", "240m", "1d", "1w")
 MINUTES = dict(zip(TIMEFRAMES, (5, 10, 15, 60, 120, 240, 1440, 10080), strict=True))
+ALERT_CHART_FRAMES = frozenset({"10m", "120m"})
 _INPUT = {
     "5m": ("5m", 400), "10m": ("5m", 800), "15m": ("15m", 400),
     "60m": ("60m", 500), "120m": ("60m", 820), "240m": ("60m", 1220),
@@ -25,6 +27,7 @@ _CLOSE_DELAY = timedelta(seconds=20)
 _FETCH_SLACK = timedelta(seconds=5)
 _DAY = timedelta(days=1)
 _WEEK = timedelta(days=7)
+_SOURCES = frozenset({"yahoo", "toss", "yahoo+toss", "mock"})
 
 
 @dataclass(frozen=True)
@@ -242,6 +245,50 @@ def market_calendar_day(market: str, stamp: datetime) -> date:
     return stamp.astimezone(_zone(market)).date()
 
 
+def _unique_rows(got: dict) -> dict[datetime, dict]:
+    stamps = {}
+    duplicates = set()
+    for row in got.get("bars") or []:
+        if _valid_row(row) and (stamp := _timestamp(row.get("at"))) is not None:
+            if stamp in stamps:
+                duplicates.add(stamp)
+            stamps[stamp] = row
+    for stamp in duplicates:
+        stamps.pop(stamp)
+    return stamps
+
+
+def alert_chart_history(market: str, tf: str, got: dict, now: datetime) -> Sample:
+    """Reuse the watch's session grid and cutoff without requiring a currently due signal."""
+    source = got.get("source")
+    checked = _timestamp(got.get("fetched_at"))
+    if checked is None or checked > now + _FETCH_SLACK:
+        return Sample([], "confirmation_unverified")
+    if not isinstance(source, str) or source not in _SOURCES:
+        return Sample([], "source_unverified")
+    lag_minutes = _LAG_MINUTES[market]
+    cutoff = min(now, checked - _FETCH_SLACK) - timedelta(minutes=lag_minutes)
+    bars = _intraday(market, tf, _unique_rows(got), cutoff)
+    return Sample([bars[end] for end in sorted(bars)], None if bars else "bar_missing",
+                  source, checked, lag_minutes)
+
+
+async def alert_chart(candles, ticker: str, tf: str, count: int, indicators: tuple[str, ...]) -> dict:
+    market = market_of(ticker)
+    if market is None:
+        history = Sample([], "unsupported_market")
+    else:
+        interval, source_count = source_request(tf)
+        got = await candles(ticker, interval, source_count)
+        history = alert_chart_history(market, tf, got, datetime.now(UTC))
+    annotate(history.bars, indicators)
+    count = max(count, 1)
+    return {"ticker": ticker, "interval": tf, "bars": history.bars[-count:],
+            "source": history.source or "", "fetched_at": history.fetched_at.isoformat() if history.fetched_at else "",
+            "delay_sec": history.lag_minutes * 60 if history.lag_minutes is not None else None,
+            "indicators": list(indicators), "truncated": len(history.bars) < count}
+
+
 def sample(market: str, tf: str, plan: Plan, got: dict, now: datetime) -> Sample:
     """Only the exact due bar can trigger; missing/stale/partial source data cannot substitute another."""
     if plan.expected is None:
@@ -256,20 +303,12 @@ def sample(market: str, tf: str, plan: Plan, got: dict, now: datetime) -> Sample
     cutoff = min(now, checked - _FETCH_SLACK) - lag
     if plan.expected.end > cutoff:
         return Sample([], "source_delayed")
-    stamps = {}
-    duplicates = set()
-    for row in got.get("bars") or []:
-        if _valid_row(row) and (stamp := _timestamp(row.get("at"))) is not None:
-            if stamp in stamps:
-                duplicates.add(stamp)
-            stamps[stamp] = row
-    for stamp in duplicates:
-        stamps.pop(stamp)
+    stamps = _unique_rows(got)
     bars = (_daily if tf in {"1d", "1w"} else _intraday)(market, tf, stamps, cutoff)
     if plan.expected.end not in bars or (plan.prior is not None and plan.prior.end not in bars):
         return Sample([], "bar_missing")
     source = got.get("source")
-    source = source if source in ("yahoo", "toss", "yahoo+toss", "mock") else None
+    source = source if isinstance(source, str) and source in _SOURCES else None
     if source is None:
         return Sample([], "source_unverified")
     history = [bars[end] for end in sorted(bars) if end <= plan.expected.end]

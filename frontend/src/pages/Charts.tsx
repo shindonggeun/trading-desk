@@ -11,7 +11,7 @@ import { isFullRun } from "../runRead";
 import { nextLines, WEEKLY_WORDS, weeklyLink } from "../weekly";
 import { css, useColorScheme } from "../chartColors";
 import { LineWatchScopeContext } from "../lineSignals";
-import { chartLineAlert, LINE_TF_KO } from "../lineWatchNavigation";
+import { chartFallbackHref, chartHref, chartLineAlert, LINE_TF_KO } from "../lineWatchNavigation";
 
 const PriceChart = lazy(() => import("../components/PriceChart"));
 
@@ -81,12 +81,30 @@ function go(ticker: string, iv: Interval | null, push: boolean) {
 export default function Charts({ query }: { query: URLSearchParams }) {
   const ticker = (query.get("t") ?? "").trim().toUpperCase();
   const ivRaw = query.get("iv");
-  const iv = INTERVALS.includes(ivRaw as Interval) ? (ivRaw as Interval) : undefined;
   const lineWatch = useContext(LineWatchScopeContext);
   const alert = chartLineAlert(query);
-  const alertLine = alert?.reference ? lineWatch?.chartAlerts.get(alert.reference) : undefined;
+  const exactInterval = alert?.exact && (alert.timeframe === "10m" || alert.timeframe === "120m") ? alert.timeframe : null;
+  const iv = exactInterval ?? (INTERVALS.includes(ivRaw as Interval) ? (ivRaw as Interval) : undefined);
+  const signalId = alert?.signalId ?? null;
+  const [external, setExternal] = useState<{
+    scope: typeof lineWatch; id: number; signal: Awaited<ReturnType<typeof api.lineWatchSignal>>["signal"];
+  } | null>(null);
+  useEffect(() => {
+    if (!lineWatch || signalId === null) return;
+    const controller = new AbortController();
+    const settle = (signal: NonNullable<typeof external>["signal"]) => {
+      if (!controller.signal.aborted) setExternal({ scope: lineWatch, id: signalId, signal });
+    };
+    void api.lineWatchSignal(signalId, controller.signal).then(reply => settle(reply.signal), () => settle(null));
+    return () => controller.abort();
+  }, [lineWatch, signalId]);
+  const local = alert?.reference ? lineWatch?.chartAlerts.get(alert.reference) : undefined;
+  const recorded = external && external.scope === lineWatch && external.id === signalId ? external.signal : null;
+  const alertLine = local ?? (recorded ? { ...recorded, price: recorded.line_price } : undefined);
   const alertPrice = alertLine && sameTicker(alertLine.ticker, ticker) && alertLine.timeframe === alert?.timeframe
     && Number.isFinite(alertLine.price) && alertLine.price > 0 ? alertLine.price : null;
+  const fallbackHref = alert && chartFallbackHref(ticker, alert);
+  const showAlertPricePending = lineWatch && signalId !== null && (external?.scope !== lineWatch || external.id !== signalId);
   const fromAlert = alert !== null;
   const rawLevel = Number(query.get("p"));
   const levelPrice = !fromAlert && ticker && iv && query.getAll("p").length === 1
@@ -108,7 +126,7 @@ export default function Charts({ query }: { query: URLSearchParams }) {
     setRecent(next);
     saveRecent(next);
     setSearch({ ticker: "" });
-    go(t, iv ?? null, true);
+    go(t, exactInterval ? null : iv ?? null, true);
   };
 
   // 주소로 바로 연 종목도 최근 목록에
@@ -242,11 +260,21 @@ export default function Charts({ query }: { query: URLSearchParams }) {
         <Suspense fallback={<p className="muted">차트를 여는 중…</p>}>
           <PriceChart key={targeted ? query.toString() : ticker} ticker={ticker} tradeDate={today()} plan={null} title={name ?? ticker}
             initialInterval={iv} onIntervalChange={onInterval} extraLines={weeklyLines} highlight={alertPrice ?? levelPrice}
-            includeHighlightInScale={levelPrice != null} readable
+            includeHighlightInScale={alertPrice != null || levelPrice != null} readable
+            lineAlert={exactInterval && alert?.fallback && fallbackHref ? {
+              interval: exactInterval, at: alertPrice != null ? alertLine?.at ?? null : null,
+              fallbackHref, fallbackLabel: LINE_TF_KO[alert.fallback],
+            } : undefined}
             banner={alert ? (
               <p className="muted small chart-limit">
-                {alert.fallback ?? LINE_TF_KO[alert.timeframe] + " 선 알림"}
-                {alertPrice != null && " · 알림 당시 선 가격 " + price(alertPrice)}
+                {LINE_TF_KO[alert.timeframe]} 선 알림
+                {alert.display !== alert.timeframe && " · " + LINE_TF_KO[alert.display] + " 대체 차트"}
+                {alertPrice != null ? " · 알림 당시 선 가격 " + price(alertPrice)
+                  : showAlertPricePending ? " · 선 가격 불러오는 중" : " · 알림 당시 선 가격을 확인할 수 없습니다."}
+                {alert.display !== alert.timeframe && (
+                  <>{" "}<a href={chartHref({ ticker, timeframe: alert.timeframe }, alert.reference ?? undefined,
+                    alert.timeframe, alert.signalId ?? undefined)}>{LINE_TF_KO[alert.timeframe]}으로 보기</a></>
+                )}
               </p>
             ) : levelPrice != null ? (
               <p className="muted small chart-limit">종목 요약에서 선택한 가격선 {price(levelPrice)}</p>

@@ -76,6 +76,7 @@ from . import (
     market_calendar,
     market_outlook,
     market_outlook_sources,
+    market_watchboard,
     morning_brief,
     net,
     news_digest,
@@ -3232,6 +3233,22 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     return ticker, {"error": 503, "detail": type(exc).__name__}
 
         return {"kind": kind, "items": dict(await asyncio.gather(*(one(t) for t in names)))}
+
+    @app.get("/api/market/watchboard")
+    async def watchboard(group: str = "semiconductors", days: int = 30):
+        """#921 completed daily history and comparison for a fixed public watch group."""
+        if group not in market_watchboard.GROUPS:
+            raise HTTPException(422, f"group must be one of {', '.join(market_watchboard.GROUPS)}")
+        if not 1 <= days <= 90:
+            raise HTTPException(422, "days must be between 1 and 90")
+
+        async def fetch(symbol: str) -> dict:
+            async with batch_gates["candles"], screen_gate:
+                with stale_ok(BATCH_STALE_SEC):
+                    # This fixed daily count uses Yahoo through the existing PriceSource.
+                    return await prices.candles(symbol, "1d", 300)
+
+        return await market_watchboard.read(group, days, fetch, clock=lambda: datetime.now(UTC))
 
     @app.get("/api/entry-now")
     async def entry_now_of(ticker: str, horizon: str | None = None):

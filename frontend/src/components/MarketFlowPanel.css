@@ -1,0 +1,25 @@
+.flow-head > .seg {
+  max-inline-size: 100%;
+  flex-wrap: wrap;
+}
+
+.flow-head .flow-options-link {
+  padding: 4px 12px;
+  color: var(--muted);
+}
+
+.flow-head .flow-options-link:hover,
+.flow-head .flow-options-link:focus-visible {
+  color: var(--text);
+}
+
+.flow-head .flow-options-link:focus-visible {
+  outline-offset: -2px;
+}
+
+@media (max-width: 440px) {
+  .flow-head > .seg > button,
+  .flow-head .flow-options-link {
+    padding-inline: 8px;
+  }
+}

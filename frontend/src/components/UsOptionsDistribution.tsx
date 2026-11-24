@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { LoadUsOptions, UsOptionsMetric, UsOptionsRank, UsOptionsResponse, UsOptionsStrike, UsOptionsTotals } from "../usOptionsTypes";
 import "./UsOptionsDistribution.css";
 
-const TICKERS = ["NVDA", "AAPL", "SPY", "QQQ", "MSFT", "TSLA"];
+const TICKERS = ["NVDA", "AMD", "AAPL", "SPY", "QQQ", "MSFT", "TSLA"];
 const METRIC_LABEL: Record<UsOptionsMetric, string> = { volume: "당일 거래량", oi: "미결제약정 (OI)" };
 const CONTRACTS = new Intl.NumberFormat("ko-KR");
 const COMPACT_CONTRACTS = new Intl.NumberFormat("ko-KR", { notation: "compact", maximumFractionDigits: 1 });

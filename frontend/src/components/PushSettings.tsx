@@ -14,9 +14,12 @@ export default function PushSettings() {
   const [markets, setMarkets] = useState<ToastMarkets>(loadToastMarkets);
   const [extra, setExtra] = useState<ExtraKinds>(loadExtraKinds);
 
-  // #581 카카오 연결에서 돌아오면(#/settings?kakao=ok|fail) 이 칸으로
+  // 카카오 연결에서 돌아오거나 차트의 수신 채널 링크를 눌렀으면 이 칸으로.
   useEffect(() => {
-    if (/[?&]kakao=(ok|fail)(?:&|$)/.test(window.location.hash)) document.getElementById("notify")?.scrollIntoView({ block: "start" });
+    const query = new URLSearchParams(window.location.hash.split("?")[1]);
+    if (query.has("notify") || query.get("kakao") === "ok" || query.get("kakao") === "fail") {
+      document.getElementById("notify")?.scrollIntoView({ block: "start" });
+    }
   }, []);
   useEffect(() => {
     let alive = true;

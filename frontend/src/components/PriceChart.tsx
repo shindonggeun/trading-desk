@@ -46,6 +46,11 @@ import { delayText, LIVE_NOTE, liveLabel, liveMs, useInView } from "../liveBar";
 import ChartReadPanel from "./ChartReadPanel";
 import ChartDrawingPanel, { type DrawingQuote } from "./ChartDrawingPanel";
 import WeeklyDrawdownGuide from "./WeeklyDrawdownGuide";
+import NqWeeklyOversoldPanel from "./NqWeeklyOversoldPanel";
+import NqWeeklyOversoldMarkers from "./NqWeeklyOversoldMarkers";
+import { confirmedNqMarkers } from "../nqWeeklyOversold";
+import { useNqWeeklyOversold } from "../useNqWeeklyOversold";
+import { nqMarkedRows } from "../nqWeeklyChart";
 import DailyResistancePanel from "./DailyResistancePanel";
 import { dailyResistanceFocus, isDailyResistanceExample, findDailyResistanceCandle } from "../dailyResistance";
 import { revealDailyResistanceBar, useDailyResistanceOverlay, type DailyOverlayTarget } from "./dailyResistanceOverlay";
@@ -585,6 +590,15 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     onError: () => setReadFailed(true),
   });
   const weeklyRead = readOn && interval === "1w" && sameTicker(ticker, "NQ=F");
+  const nqOversold = useNqWeeklyOversold(weeklyRead);
+  const [nqMarkersOn, setNqMarkersOn] = useState(true);
+  const [nqPicked, setNqPicked] = useState<string | null>(null);
+  const nqDetailId = useId();
+  const nqMatches = useMemo(() => nqOversold.view ? confirmedNqMarkers(nqOversold.view) : [], [nqOversold.view]);
+  const nqSelected = nqPicked && nqMatches.some(item => item.week.start === nqPicked) ? nqPicked : null;
+  useEffect(() => {
+    if (!weeklyRead) setNqPicked(null);
+  }, [weeklyRead]);
   const weeklyObservation = weeklyRead && !readFailed && sameTicker(ticker, chartRead?.ticker)
     ? chartRead?.weekly_drawdown
     : undefined;
@@ -654,6 +668,16 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     };
   }, [ticker, oscInterval, show.osc]);
   const [drawn, setDrawn] = useState<Drawn | null>(null);
+  const nqMarkerPoints = useMemo(() => {
+    if (!weeklyRead || !nqMarkersOn || drawn?.interval !== "1w" || !sameTicker(drawn.ticker, "NQ=F")) return [];
+    const matched = nqMarkedRows(drawn.rows, nqMatches.map(item => item.week.start), row => row.bar.at);
+    return [...matched].map(([week, row]) => ({ week, time: row.key as Time, low: row.bar.low }));
+  }, [drawn, weeklyRead, nqMarkersOn, nqMatches]);
+  const pickNqMarker = (week: string) => {
+    setNqPicked(week);
+    setReadExpanded(true);
+    requestAnimationFrame(() => document.getElementById(nqDetailId)?.scrollIntoView({ block: "nearest" }));
+  };
   const dailyRead = readOn && interval === "1d";
   const dailyResponse = dailyRead && sameTicker(ticker, chartRead?.ticker) ? chartRead : null;
   const dailyObservation = !readFailed && sameTicker(ticker, dailyResponse?.daily_reaction?.ticker)
@@ -2503,6 +2527,8 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
         >
           {!candles && <p className="muted small">불러오는 중…</p>}
           <div ref={ohlc} className="chart-ohlc small" aria-hidden />
+          {weeklyRead && <NqWeeklyOversoldMarkers drawn={drawn} markers={nqMarkerPoints}
+            selected={nqSelected} disabled={drawingActive} onSelect={pickNqMarker} />}
           {markPos.map(({ n, x, y }) => {
             const m = readMarks.find((r) => r.n === n);
             if (!m) return null;
@@ -2591,6 +2617,8 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
               status: "unavailable", reason: readFailed ? "차트 읽기 자료를 다시 받아야 합니다." : null,
             }} overlay={weeklyLines.length ? { enabled: weeklyOverlay, onChange: setWeeklyOverlay } : undefined} />
           ) : undefined}
+          weeklyOversold={weeklyRead && <NqWeeklyOversoldPanel state={nqOversold}
+            markersOn={nqMarkersOn} onMarkers={setNqMarkersOn} selectedWeek={nqSelected} onSelectWeek={setNqPicked} detailId={nqDetailId} />}
           accumulation={chartRead && (
             <AccumulationPanel read={chartRead} selected={selectedAccumulation} onSelect={(view) => {
               selectAccumulationView(view);

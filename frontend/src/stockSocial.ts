@@ -25,7 +25,7 @@ export interface StockSocialItem {
   url: string;
   at: string | null;
   filed_date: string | null;
-  time_basis: "gdelt_seen" | "edgar_acceptance" | "edgar_filing_date";
+  time_basis: "gdelt_seen" | "edgar_acceptance" | "edgar_filing_date" | "dart_rss_pubdate";
   relevance: "direct" | "indirect";
   tags: string[];
   sentiment: "positive" | "negative" | "neutral" | null;

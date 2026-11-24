@@ -38,6 +38,8 @@ function response(ticker, status = "available") {
       { id: "gdelt", status, reason: null, updated_at: available || stale ? found : null, prior_http_status: null },
       { id: "sec_edgar", status: available ? "available" : "unavailable", reason: available ? null : "not_configured",
         updated_at: available ? found : null, prior_http_status: null },
+      ...(available ? [{ id: "dart_rss", status: "partial", reason: "partial_source",
+        updated_at: found, prior_http_status: null }] : []),
       { id: "reddit", status: "unavailable", reason: "not_authorized", updated_at: null, prior_http_status: 404 },
     ],
     items: available ? [
@@ -50,6 +52,10 @@ function response(ticker, status = "available") {
       item({ kind: "filing", source: "sec_edgar", publisher: "SEC EDGAR", title: "합성 SEC 공시",
         summary: "접수 메타데이터", url: "https://www.sec.example/filing",
         at: null, filed_date: "2026-11-20", time_basis: "edgar_filing_date", tags: ["filing"], sentiment: null,
+        reason: "filing_metadata_unscored", weight: null, contribution: null }),
+      item({ kind: "filing", source: "dart_rss", publisher: "금융감독원 DART", title: "삼성전자 공시 (20261124000001)",
+        summary: "공식 공시 RSS 메타데이터입니다.", url: "https://dart.fss.or.kr/api/link.jsp?rcpNo=20261124000001",
+        time_basis: "dart_rss_pubdate", relevance: "indirect", tags: ["filing"], sentiment: null,
         reason: "filing_metadata_unscored", weight: null, contribution: null }),
     ] : stale ? [
       item({ title: "SOXL 합성 이전 근거", weight: null, contribution: null, stale: true }),
@@ -211,6 +217,14 @@ try {
     await page.getByText("SOXX 합성 긍정 기사").waitFor();
     await page.getByText("반도체 합성 부정 기사").waitFor();
     await page.getByText("합성 SEC 공시").waitFor();
+    const dart = page.getByRole("article").filter({
+      has: page.getByRole("heading", { name: "삼성전자 공시 (20261124000001)", exact: true }),
+    });
+    assert.match(await dart.innerText(), /RSS 제공 시각.*KST/);
+    assert.match(await dart.innerText(), /반도체 업종 간접/);
+    assert.match(await dart.innerText(), /공시 · 점수 미반영/);
+    assert.equal(await dart.getByRole("link", { name: /원문 열기/ }).getAttribute("href"),
+      "https://dart.fss.or.kr/api/link.jsp?rcpNo=20261124000001");
     assert.match(await main.innerText(), /직접/);
     assert.match(await main.innerText(), /간접/);
     assert.match(await main.innerText(), /발견/);

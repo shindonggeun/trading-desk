@@ -13,7 +13,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
-from . import filings, macro_news
+from . import dart_rss, filings, macro_news
 
 VERSION = "headline-rules-v1"
 MIN_SAMPLES = 3
@@ -204,7 +204,8 @@ def _observed(row: object, fetched: datetime, now: datetime) -> tuple | None:
     link = _link(row.get("url"))
     stamp = _at(row.get("seen"))
     title = _clean_title(row.get("title"))
-    if not link or stamp is None or not title or stamp > min(now, fetched + timedelta(minutes=15)):
+    if (not link or dart_rss.receipt_number(link[0]) or stamp is None or not title
+            or stamp > min(now, fetched + timedelta(minutes=15))):
         return None
     return stamp, title, link
 
@@ -342,12 +343,48 @@ async def _edgar(ticker: str, since: datetime, now: datetime, enabled: bool) -> 
     return _source("sec_edgar", "available", updated_at=now), items
 
 
+async def _dart(ticker: str, since: datetime, now: datetime, enabled: bool) -> tuple[dict, list[dict]]:
+    if ticker in dart_rss.COMPANIES:
+        companies, relevance = (ticker,), "direct"
+    elif ticker in {"SOXX", "SOXL"}:
+        companies, relevance = tuple(dart_rss.COMPANIES), "indirect"
+    else:
+        return _source("dart_rss", "unavailable", "unsupported_symbol"), []
+    if not enabled:
+        return _source("dart_rss", "unavailable", "not_configured"), []
+
+    feeds = await asyncio.gather(*(dart_rss.RSS.read(company, now) for company in companies))
+    checked = [feed.checked_at for feed in feeds if feed.checked_at is not None]
+    if not checked:
+        reasons = {feed.reason for feed in feeds}
+        reason = next(iter(reasons)) if len(reasons) == 1 else "source_error"
+        return _source("dart_rss", "unavailable", reason), []
+
+    items = {}
+    for company, feed in zip(companies, feeds, strict=True):
+        name = dart_rss.COMPANIES[company].name
+        for notice in feed.notices:
+            if since <= notice.published_at <= now and notice.receipt not in items:
+                items[notice.receipt] = {
+                    "kind": "filing", "source": "dart_rss", "publisher": "금융감독원 DART",
+                    "title": f"{name} 공시 ({notice.receipt})", "summary": "공식 공시 RSS 메타데이터입니다.",
+                    "url": dart_rss.LINK_PREFIX + notice.receipt, "at": _time(notice.published_at), "filed_date": None,
+                    "time_basis": "dart_rss_pubdate", "relevance": relevance,
+                    "tags": ["filing"], "sentiment": None, "reason": "filing_metadata_unscored",
+                    "weight": None, "contribution": None, "stale": False,
+                }
+    status = (_source("dart_rss", "partial", "partial_source", min(checked)) if len(checked) < len(feeds)
+              else _source("dart_rss", "available", None if items else "no_recent_items", min(checked)))
+    return status, sorted(items.values(), key=lambda item: (item["at"], item["url"]), reverse=True)
+
+
 async def read(ticker: str, days: int, *, now: datetime | None = None, include_filings: bool = True) -> dict:
     """Read approved metadata and compute a deterministic score without a news fetch or an LLM call."""
     now = (now or datetime.now(UTC)).astimezone(UTC)
     since = now - timedelta(days=days)
-    persisted, (edgar, disclosures) = await asyncio.gather(
+    persisted, (edgar, disclosures), (dart, notices) = await asyncio.gather(
         asyncio.to_thread(_saved_themes), _edgar(ticker, since, now, include_filings),
+        _dart(ticker, since, now, include_filings),
     )
     news, gdelt, headlines = _news(ticker, max(since, now - NEWS_WINDOW), now, persisted)
     return {
@@ -360,9 +397,9 @@ async def read(ticker: str, days: int, *, now: datetime | None = None, include_f
         "sources": [gdelt, edgar,
                     _source("google_news", "unavailable", "usage_not_verified"),
                     _source("yahoo_news", "unavailable", "usage_not_verified"),
-                    _source("open_dart", "unavailable", "not_configured"),
+                    _source("open_dart", "unavailable", "not_configured"), dart,
                     _source("issuer_ir", "unavailable", "not_configured"),
                     _source("reddit", "unavailable", "not_authorized", prior_http=404),
                     _source("stocktwits", "unavailable", "not_authorized", prior_http=403)],
-        "items": headlines + disclosures,
+        "items": headlines + disclosures + notices,
     }

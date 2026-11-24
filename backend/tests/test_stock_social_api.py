@@ -2,8 +2,11 @@
 
 from datetime import UTC, datetime
 
-from desk import api, filings, macro_news
+import httpx
+
+from desk import api, dart_rss, filings, macro_news, stock_social
 from tests.test_api import OWNER, PASSWORD, _client
+from tests.test_dart_rss import RECEIPT, SAMSUNG, SAMSUNG_ID, document, item
 
 URL = "/api/stock-social"
 NOW = datetime(2026, 11, 24, 8, tzinfo=UTC)
@@ -22,6 +25,7 @@ def test_stock_social_reads_news_only_without_an_analysis_run(db_url, monkeypatc
         raise AssertionError("fake-run API must not fetch SEC filings")
 
     monkeypatch.setattr(filings.FILINGS, "public_recent", unexpected_filings, raising=False)
+    monkeypatch.setattr(dart_rss.RSS, "read", unexpected_filings)
     heads = [
         {"title": "SOXX semiconductor ETF rises after chips beat estimates", "url": "https://first.example/one"},
         {"title": "SOXX warns of weakening chip demand", "url": "https://second.example/two"},
@@ -53,6 +57,40 @@ def test_stock_social_reads_news_only_without_an_analysis_run(db_url, monkeypatc
         assert {item["kind"] for item in body["items"]} == {"news"}
         sources = {item["id"]: item for item in body["sources"]}
         assert sources["sec_edgar"]["status"] == "unavailable"
+        assert sources["dart_rss"]["reason"] == "not_configured"
         assert sources["reddit"]["prior_http_status"] == 404
         assert sources["stocktwits"]["prior_http_status"] == 403
         assert client.get(URL).json() == body
+
+
+def test_dart_rss_metadata_uses_existing_authentication_and_validation(db_url, monkeypatch, tmp_path):
+    calls = []
+
+    def serve(request):
+        calls.append(request.url)
+        return httpx.Response(200, content=document("삼성전자", item()))
+
+    # Keep all background jobs in their fake mode while enabling this read's synthetic filing source.
+    read = stock_social.read
+
+    async def read_with_synthetic_rss(ticker, days, **_):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as client:
+            monkeypatch.setattr(dart_rss, "RSS", dart_rss.DartRss(client))
+            return await read(ticker, days, now=NOW, include_filings=True)
+
+    monkeypatch.setattr(stock_social, "read", read_with_synthetic_rss)
+    monkeypatch.setattr(macro_news, "CACHE", macro_news.Cache(cache_file=tmp_path / "macro_news.json"))
+    with _client(db_url, login=False, role="api") as client:
+        assert client.get(URL, params={"ticker": SAMSUNG}).status_code == 401
+        assert not calls
+        assert client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD}).status_code == 204
+        assert client.get(URL, params={"ticker": SAMSUNG, "days": 31}).status_code == 422
+        assert not calls
+        response = client.get(URL, params={"ticker": SAMSUNG})
+        assert response.status_code == 200
+        body = response.json()
+        [notice] = body["items"]
+        assert notice["source"] == "dart_rss" and notice["relevance"] == "direct"
+        assert notice["url"] == dart_rss.LINK_PREFIX + RECEIPT
+        assert body["news"]["score"] is None
+    assert [str(url) for url in calls] == [f"{dart_rss.RSS_URL}?crpCd={SAMSUNG_ID}"]

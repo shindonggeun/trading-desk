@@ -7,7 +7,8 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
-from desk import filings, macro_news, stock_social
+from desk import dart_rss, filings, macro_news, stock_social
+from tests.test_dart_rss import HYNIX_ID, RECEIPT, SAMSUNG, SAMSUNG_ID, document, item
 
 NOW = datetime(2026, 11, 24, 14, tzinfo=UTC)
 
@@ -243,3 +244,79 @@ def test_provider_error_is_independent_and_normalized(cache, monkeypatch, status
     assert result["sources"][1]["reason"] == reason
     assert result["community"]["score"] is None
     assert "raw test marker" not in json.dumps(result)
+
+
+@pytest.mark.parametrize(("titles", "score"), [
+    (["SOXX misses estimates after event", "SOXX faces export ban", "SOXX follows profit warning"], 0),
+    (["SOXX publishes its new calendar", "SOXX posts current index changes", "SOXX gives meeting notice"], 50),
+])
+def test_dart_metadata_is_deduplicated_filtered_and_cannot_change_the_news_score(cache, monkeypatch, titles, score):
+    monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
+    cache.themes["chips"] = theme(
+        *(head(title, f"news{i}", str(i)) for i, title in enumerate(titles)),
+        {**head("SOXX beats estimates in a DART notice", "dart", "filing"),
+         "url": f"https://dart.fss.or.kr:443/dsaf001/main.do?rcpNo={RECEIPT}&dcmNo=1&utm_source=fixture"},
+    )
+    calls = []
+
+    def serve(request):
+        code = request.url.params["crpCd"]
+        calls.append(code)
+        if code == SAMSUNG_ID:
+            body = document("삼성전자", item(), item(), item("20261124000999", "Tue, 24 Nov 2026 14:01:00 GMT"))
+        else:
+            body = document("SK하이닉스", item(), item("20261119000999", "Thu, 19 Nov 2026 08:00:00 GMT"))
+        return httpx.Response(200, content=body)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as client:
+            monkeypatch.setattr(dart_rss, "RSS", dart_rss.DartRss(client))
+            disabled = await stock_social.read("SOXX", 2, now=NOW, include_filings=False)
+            assert not calls
+            etf = await stock_social.read("SOXX", 2, now=NOW)
+            samsung = await stock_social.read(SAMSUNG, 2, now=NOW + timedelta(seconds=1))
+            other_etf = await stock_social.read("SOXL", 2, now=NOW + timedelta(seconds=2))
+        return disabled, etf, samsung, other_etf
+
+    disabled, etf, samsung, other_etf = asyncio.run(scenario())
+    assert sorted(calls) == sorted([SAMSUNG_ID, HYNIX_ID])
+    assert etf["news"] == disabled["news"]
+    assert etf["news"]["score"] == score and etf["news"]["sample_count"] == 3
+    assert etf["community"]["score"] is None
+    assert len([row for row in etf["items"] if row["kind"] == "news"]) == 3
+    for result, relevance in ((etf, "indirect"), (samsung, "direct"), (other_etf, "indirect")):
+        [notice] = [row for row in result["items"] if row["kind"] == "filing"]
+        assert notice == {
+            "kind": "filing", "source": "dart_rss", "publisher": "금융감독원 DART",
+            "title": f"삼성전자 공시 ({RECEIPT})", "summary": "공식 공시 RSS 메타데이터입니다.",
+            "url": dart_rss.LINK_PREFIX + RECEIPT, "at": "2026-11-23T06:04:00+00:00", "filed_date": None,
+            "time_basis": "dart_rss_pubdate", "relevance": relevance,
+            "tags": ["filing"], "sentiment": None, "reason": "filing_metadata_unscored",
+            "weight": None, "contribution": None, "stale": False,
+        }
+        source = next(row for row in result["sources"] if row["id"] == "dart_rss")
+        assert source["updated_at"] == NOW.isoformat() and source["status"] == "available"
+        assert next(row for row in result["sources"] if row["id"] == "open_dart")["reason"] == "not_configured"
+
+
+def test_dart_valid_empty_feed_is_available_and_independent_of_other_issuer_failure(cache, monkeypatch):
+    monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
+
+    def serve(request):
+        if request.url.params["crpCd"] == SAMSUNG_ID:
+            return httpx.Response(200, content=document("삼성전자"))
+        return httpx.Response(429)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as client:
+            monkeypatch.setattr(dart_rss, "RSS", dart_rss.DartRss(client))
+            return [await stock_social.read(ticker, 7, now=NOW) for ticker in (SAMSUNG, "SOXL", "000660.KS", "NVDA")]
+
+    results = asyncio.run(scenario())
+    expected = [("available", "no_recent_items"), ("partial", "partial_source"),
+                ("unavailable", "rate_limited"), ("unavailable", "unsupported_symbol")]
+    for result, (status, reason) in zip(results, expected, strict=True):
+        source = next(row for row in result["sources"] if row["id"] == "dart_rss")
+        assert (source["status"], source["reason"]) == (status, reason)
+        assert result["items"] == []
+        assert result["news"]["score"] is None and result["news"]["sample_count"] == 0

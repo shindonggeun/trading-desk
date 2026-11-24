@@ -1,3 +1,4 @@
+import type { NqWeeklyOversoldSettings, NqWeeklyOversoldView } from "./nqWeeklyOversold";
 import { activityHeaders, BACKGROUND_HEADER } from "./activity";
 import type { MarketOutlookResponse } from "./marketOutlook";
 import type { WatchboardGroup, WatchboardResponse } from "./marketWatchboard";
@@ -485,6 +486,11 @@ export const api = {
     request<LineWatchChannels>("/api/notify/channels", { cache: "no-store", signal }),
   saveLineWatch: (body: LineWatchPatch, signal?: AbortSignal) =>
     call<LineWatch>("/api/notify/line-watch", { method: "PUT", body: JSON.stringify(body), signal }),
+  nqWeeklyOversold: (signal?: AbortSignal) =>
+    request<NqWeeklyOversoldView>("/api/nq/weekly-oversold?weeks=52", { cache: "no-store", signal }),
+  saveNqWeeklyOversold: (settings: NqWeeklyOversoldSettings, signal?: AbortSignal) =>
+    call<{ settings: NqWeeklyOversoldSettings; revision: number }>("/api/nq/weekly-oversold/settings",
+      { method: "PUT", body: JSON.stringify(settings), signal }),
   /** #714 보유 종목 손절 · 익절 알림(#694) — 설정과 지난 판정의 종목별 선 */
   holdingWatch: () => call<HoldingWatch>("/api/holding-watch"),
   saveHoldingWatch: (body: HoldingWatchBody) =>

@@ -17,22 +17,39 @@ permissions:
   actions: write        # buildx gha 캐시
 
 jobs:
-  # 바뀐 영역만 돌린다(#748). PR 은 base 와, push 는 직전 브랜치 끝(before)과 비교한다.
-  # 이 파일이 바뀌면 모두 돈다. 건너뛴 잡은 실패가 아니다 — 묶음 판정은 맨 아래 ci-ok 가 한다
+  # develop push 는 이벤트 before→SHA 를 비교한다(#748). 범위를 확인할 수 없거나 공용·배포 파일이 바뀌면 모두 돈다.
+  # PR 에서 이 파일이 바뀌면 모두 돈다. 묶음 판정은 맨 아래 ci-ok 가 한다.
   changes:
     runs-on: ubuntu-latest
     outputs:
-      backend: ${{ steps.f.outputs.backend }}
-      frontend: ${{ steps.f.outputs.frontend }}
-      market-redis: ${{ steps.f.outputs.market-redis }}
-      images: ${{ steps.f.outputs.images }}
-      scripts: ${{ steps.f.outputs.scripts }}
+      backend: ${{ steps.push-range.outputs.force_all == 'true' && 'true' || steps.f.outputs.backend }}
+      frontend: ${{ steps.push-range.outputs.force_all == 'true' && 'true' || steps.f.outputs.frontend }}
+      market-redis: ${{ steps.push-range.outputs.force_all == 'true' && 'true' || steps.f.outputs.market-redis }}
+      images: ${{ steps.push-range.outputs.force_all == 'true' && 'true' || steps.f.outputs.images }}
+      scripts: ${{ steps.push-range.outputs.force_all == 'true' && 'true' || steps.f.outputs.scripts }}
     steps:
-      - if: github.event_name != 'pull_request'     # PR 은 API 로 파일 목록을 읽는다 — 체크아웃이 필요 없다
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/checkout@v4
+      - name: Verify develop push range
+        id: push-range
+        if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_HEAD: ${{ github.event.after }}
+          PUSH_FORCED: ${{ github.event.forced }}
+        run: bash scripts/ci-push-range.sh
+      # PR 은 API 로 파일 목록을 읽는다. main 푸시는 액션의 기본 ref · base 를 사용한다.
       - uses: dorny/paths-filter@v3
         id: f
+        if: steps.push-range.outputs.force_all != 'true'
         with:
+          base: ${{ steps.push-range.outputs.base }}
+          ref: ${{ steps.push-range.outputs.ref }}
           filters: |
             ci: &ci
               - .github/workflows/ci.yml
@@ -238,6 +255,7 @@ jobs:
       - run: bash scripts/tests/backend-deploy-targets.test.sh
       - run: bash scripts/tests/backend-deploy-lease.test.sh
       - run: bash scripts/tests/wait-ci-require-head.test.sh
+      - run: bash scripts/tests/ci-push-range.test.sh
 
   backend-role-labels:
     if: github.event_name == 'push' && github.ref == 'refs/heads/develop'

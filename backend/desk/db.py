@@ -463,6 +463,31 @@ broker_tokens = Table(
     Column("lease_owner", String(16)),                             # that minter's nonce (writes check it)
 )
 
+nq_weekly_rules = Table(
+    "nq_weekly_rules", metadata,
+    Column("scope", String(96), primary_key=True),
+    Column("revision", Integer, nullable=False),
+    Column("settings", Json, nullable=False),
+    Column("changed_at", Timestamp, nullable=False),
+    Column("last_week", Date),
+    Column("last_match", Boolean),
+)
+
+nq_weekly_deliveries = Table(
+    "nq_weekly_deliveries", metadata,
+    Column("scope", String(96), primary_key=True),
+    Column("revision", Integer, primary_key=True),
+    Column("week", Date, primary_key=True),
+    Column("channel", String(16), primary_key=True),
+    Column("payload", Json, nullable=False),
+    Column("status", String(20), nullable=False),
+    Column("attempts", Integer, nullable=False),
+    Column("updated_at", Timestamp, nullable=False),
+    Column("expires_at", Timestamp, nullable=False),
+    Column("retry_at", Timestamp),
+)
+
+
 def now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 

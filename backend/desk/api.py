@@ -82,6 +82,7 @@ from . import (
     notify,
     nq_fast,
     nq_watch,
+    nq_weekly_alerts,
     options_detail,
     oscillator,
     otp,
@@ -1309,6 +1310,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
               and getattr(futures, "rest", None) is not None,
               snapshot_futures, lambda: seconds_to_next(datetime.now(UTC), futures_every), "futures snapshot failed")
         start("nq_watch", feeds_on, watch_nq, lambda: nq_watch.seconds_to_next(datetime.now(UTC)), "NQ alarms failed")
+        start("nq_weekly", feeds_on, weekly_alerts.step, nq_weekly_alerts.TICK_SEC, "NQ weekly alerts failed")
         start("nq_fast", feeds_on and estimator is not None, watch_nq_fast, nq_fast.TICK_SEC * 3,
               "NQ 1-minute alarms failed")
         start("line_signals", feeds_on, watch_lines, line_signals.TICK_SEC, "line signals failed")
@@ -3983,6 +3985,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     _push_routes(app, engine, settings, hide_holding_alerts=protected, send_notice=send_notice)
     _notify_routes(app, engine, settings, owners=owners, current_resources=current_resources,
                    active_session=active_session, send_notice=send_notice)
+    weekly_alerts = nq_weekly_alerts.Service(
+        nq_weekly_alerts.Ledger(engine, policy), prices, getattr(app.state, "notify_store", None), current_resources,
+    )
+    nq_weekly_alerts.register(app, weekly_alerts)
     # outermost (added last): the session check and every other middleware count in the time
     app.add_middleware(req_timing.TimingMiddleware, timings=timings, loop_max=lag.max_since)
     return app

@@ -16,6 +16,9 @@ XML 구조는 Jenkins [Pipeline Job](https://javadoc.jenkins.io/plugin/workflow-
 
 저장소 루트에서 `python -B -X utf8 scripts/tests/test_jenkins_disabled_jobs.py`, `bash scripts/tests/backend-deploy-lease.test.sh`, `groovy scripts/tests/backend-production.test.groovy`를 실행한다. XML·등록 계약, 담당 역할·중복 소비·실패 및 고아 릴리스 차단, 상위 잡의 종합 경로·역할 호출 순서를 대역으로 확인한다. Jenkins 또는 Docker 연결은 필요 없다.
 
+[`backend-deploy-targets.test.sh`](../../scripts/tests/backend-deploy-targets.test.sh)는 가짜 GitHub
+응답과 Docker 조회로 역할별 커밋 범위, 라벨 누락과 공용 변경의 전체 배포 복귀를 확인한다.
+
 ## 운영 연결 전 검증과 등록
 
 - 실제 Jenkins에서 폴더·잡·트리거·플러그인을 읽기 전용으로 대조하고 아래 비운영 리허설로 정상·취소·실행기 단절을 검증한다. #842 드릴은 격리 Docker에서 API만 교체·복구하고 양쪽 워커의 ID와 시작 시간이 유지됐음을 확인한다. 컨트롤러 큐·권한·호스트 경계에는 별도 증거가 필요하다.
@@ -23,9 +26,25 @@ XML 구조는 Jenkins [Pipeline Job](https://javadoc.jenkins.io/plugin/workflow-
 - 백엔드 배포 노드와 수동 배포 SSH 실행 주체가 같은 Docker 호스트·같은 UID에서 **같은 파일시스템 디렉터리** `/var/lib/trading-desk/deploy-fence`를 사용해야 한다. 호스트 디렉터리는 배포 계정 소유의 mode 700이며 애플리케이션 컨테이너에는 연결하지 않는다. 해당 경로를 같은 이름으로 전용 에이전트에 연결하고 `flock`·Docker CLI를 사용할 수 있는지 확인한다. 펜스가 설치된 배포는 `unix:///var/run/docker.sock`으로 고정된다. 이 소켓이 전용 에이전트와 수동 호스트에서 동일한 데몬을 가리키는지 확인한다.
 - 검증 후 Jenkins 전역 설정에 `TD_SPLIT_DEPLOY_NODE`를 전용 노드의 실제 이름으로 설정하고 `TD_SPLIT_JOBS_ENABLED=true`를 별도로 적용한다. 기본값은 종합 배포다. 역할 잡을 끄더라도 호스트 펜스와 전용 노드 설정은 남은 하위 작업을 확인하고 종료하기 전까지 유지한다. 펜스를 사용하는 수동 배포는 최신 `scripts/deploy.sh`를 `TD_DEPLOY_FENCE_REQUIRED=1`로 호출한다. 이전 커밋은 배포 SHA로만 지정할 수 있다. 펜스가 없는 예전 수동 스크립트를 역할 잡과 함께 사용하지 않는다.
 
+### #965 자동 선택 배포 활성화 점검
+
+전용 노드에서 배포 계정으로 [`scripts/jenkins/backend-role-preflight.sh`](../../scripts/jenkins/backend-role-preflight.sh)를
+읽기 전용으로 실행한다. 기존 환경의 `TD_SPLIT_JOBS_ENABLED=true`, `TD_SPLIT_DEPLOY_NODE`와
+`NODE_NAME`의 일치, mode 700인 펜스의 소유권, 활성 인계 유무를 확인한다. 기존
+`trading-desk-github` 자격으로 대상 저장소의 머지 PR을 조회할 수 있는지도 확인한다.
+선택기에 필요한 권한은 `Pull requests: read`다. GitHub 조회를 확인할 수 없는 경우
+판정은 전체 배포로 복귀한다.
+
+develop 머지 뒤 push CI에서 [역할 라벨 워크플로](../../.github/workflows/backend-role-labeler.yml)가
+푸시된 커밋과 머지 PR의 관계를 확인하고 세 가지 역할 라벨을 동기화한다. 이 잡은
+배포용 CI 결과를 내기 전에 완료된다. PR 확인이나 라벨 동기화가 실패하면
+Jenkins는 필수 라벨을 확인할 수 없는 변경을 전체 배포로 처리한다.
+대상 PR의 라벨과 Jenkins 판정을 함께 대조한다. 운영 노드·잡 활성화 및 실제 교체 검증은
+승인 뒤 진행한다.
+
 ## #776 이미지 인계와 복구
 
-1. 부모 잡이 기존 `trading-desk-prod-deploy` 락을 잡는다. `SERVICES=all`은 기본 종합 경로다. 독립 잡을 활성화하고 Vault의 split이 켜져 있으며 기존 split API가 healthy일 때만 API → collector → analyst의 역할별 순서로 전환한다. 이 상태에서 `SERVICES=api|collector|analyst`로 대상 하나를 선택할 수 있다. 신규 전환이나 split 해제는 종합 경로로 수행한다.
+1. 부모 잡이 기존 `trading-desk-prod-deploy` 락을 잡는다. 독립 잡을 활성화하고 Vault의 split이 켜져 있으며 기존 split API가 healthy일 때 API → collector → analyst의 역할별 순서를 사용한다. 이 상태에서 기본 `SERVICES=auto`는 역할별 운영 커밋과 머지 PR 라벨을 대조한다. `all`과 역할 하나를 직접 선택할 수도 있다. 신규 전환이나 split 해제는 종합 경로로 수행한다. [선택 배포 규칙](../../docs/deploy.md#백엔드-역할별-선택-배포-965)
 2. 자동 역할별 배포는 CI 성공과 develop 최신 SHA를 이미지 준비 전과 직후에 다시 확인한다. 명시한 `DEPLOY_COMMIT`은 기존 develop ancestry·CI 게이트를 사용한다. 전용 노드에서 이미지 한 번과 단일 Vault 스냅샷을 준비한다. 호스트 펜스 아래에 mode 600 스냅샷, 대상 Compose, 실행 스크립트와 릴리스 기록을 보존한다. 파라미터나 빌드 산출물로 스냅샷을 전달하지 않는다.
 3. 부모는 노드 실행기를 반납하고 각 역할 잡이 완료될 때까지 동기 대기한다. 하위 잡은 부모가 아직 활성 상태인지 확인한 뒤 동일 호스트의 `flock`에서 릴리스·부모·SHA·이미지·노드·데몬·순서를 검증하고 해당 역할을 한 번 소비한다. 교체부터 검증과 복구까지 잠금을 유지한다. #808의 단독 배포가 API 스키마 호환, collector 발급 검사, analyst 드레인 및 헬스·이전 이미지 복구를 처리한다. 같은 이미지의 정상 컨테이너는 건너뛴다. `FORCE_DEPLOY`는 재생성을 강제하며 `FORCE_STOP_RUNS`는 analyst 대기를 우회할 때만 사용한다.
 4. 확인된 종료 코드 0만 다음 역할을 시작한다. 종료 코드 2는 대상 서비스 복구, 3은 분석 대기 종료로 기록한다. 나머지 실패와 임의 종료도 후속 잡을 차단한다. 부모는 일치하는 자식의 종료 기록을 확인한 경우에만 자기 릴리스를 정리한다.

@@ -217,8 +217,12 @@ check "전달한 이미지 ID가 일치하지 않으면 교체·스키마 조회
   "1 0 rev11 rev11 rev11" "$rc $(grep -cE '^docker (compose .* up |exec )' "$STATE/calls") $(current_revs)"
 rc=$(one "$stable_sha" --service api --image-id)
 check "전달할 이미지 ID가 비어 있으면 거부한다" "1 " "$rc $(up_services)"
+cp "$STATE/ctr/collector-prod" "$STATE/collector-before-api"
+cp "$STATE/ctr/analyst-prod" "$STATE/analyst-before-api"
 rc=$(one "$stable_sha" --service api --image-id "$stable_id")
 check "API만 같은 스키마로 교체한다" "0 $stable_sha rev11 rev11" "$rc $(current_revs)"
+cmp "$STATE/collector-before-api" "$STATE/ctr/collector-prod"
+cmp "$STATE/analyst-before-api" "$STATE/ctr/analyst-prod"
 check "API 교체에서 의존 서비스를 올리거나 분석을 기다리지 않는다" "backend-prod 0" "$(up_services) $(grep -c unfinished "$STATE/calls")"
 check "대상 이미지는 로컬 ID로 고정하고 pull과 의존성 기동을 막는다" 1 "$(grep -c -- '--no-deps --pull never backend-prod$' "$STATE/calls")"
 check "단독 교체는 다시 빌드하거나 공유 태그를 이동하지 않는다" "0 rev11" "$(grep -cE '^docker (build|tag) ' "$STATE/calls") $(prod_rev)"

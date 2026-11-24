@@ -12,6 +12,39 @@ validate_release() {
       && ${TD_NODE:-} =~ ^[a-zA-Z0-9_.-]{1,128}$ ]]
 }
 
+resolve_roles() {
+  local requested=$1 calculated role list=''
+  case "$requested" in
+    all|api,collector,analyst)
+      echo '백엔드 배포 대상: all (explicit-all)' >&2
+      echo api,collector,analyst
+      return
+      ;;
+    auto|api|collector|analyst) ;;
+    *) return 1 ;;
+  esac
+  # The running revisions are read while this process still owns the host fence.
+  if ! calculated=$(bash scripts/jenkins/backend-deploy-targets.sh); then
+    echo '백엔드 배포 대상: all (selector-failed)' >&2
+    calculated=all
+  fi
+  case "$calculated" in
+    none|api|collector|analyst|api,collector|api,analyst|collector,analyst) ;;
+    all) echo api,collector,analyst; return ;;
+    *)
+      echo '백엔드 배포 대상: all (invalid-selection)' >&2
+      echo api,collector,analyst
+      return
+      ;;
+  esac
+  for role in api collector analyst; do
+    if [[ $requested == "$role" || ,$calculated, == *,"$role",* ]]; then
+      list="${list:+$list,}$role"
+    fi
+  done
+  echo "${list:-none}"
+}
+
 backend_fence_lock
 ticket="$TD_FENCE/active"
 case "${1:-}" in
@@ -23,8 +56,14 @@ case "${1:-}" in
     backend_fence_idle
     backend_fence_route || { echo "분리 배포 준비 중 API 경로가 바뀌었다" >&2; exit 1; }
     validate_release
-    case "${TD_ROLES:-}" in api|collector|analyst|api,collector,analyst) ;; *) exit 1 ;; esac
     [[ ${TD_FORCE_RECREATE:-} =~ ^[01]$ && ${FORCE:-} =~ ^[01]$ && ${ROLLBACK_DRILL:-} =~ ^[01]$ ]]
+    roles=$(resolve_roles "${TD_ROLES:-}") || exit 1
+    unset GITHUB_TOKEN GITHUB_USER
+    if [ "$roles" = none ]; then
+      echo none
+      exit 0
+    fi
+    printf '백엔드 배포 인계: %s\n' "$roles" >&2
     source_dir=$2
     nonce=$(cat /proc/sys/kernel/random/uuid)
     daemon=$(docker info --format '{{.ID}}')
@@ -41,10 +80,10 @@ case "${1:-}" in
     cp -- "$source_dir/backend/docker-compose-backend.yml" "$ticket/backend/"
     cp -- scripts/deploy-compose.sh "$ticket/scripts/"
     cp -- scripts/jenkins/backend-fence.sh "$ticket/scripts/jenkins/"
-    printf '%s\n' "$TD_ROLES" > "$ticket/remaining"
+    printf '%s\n' "$roles" > "$ticket/remaining"
     printf '%s\n' "$nonce" "$TD_PARENT_BUILD" "$REVISION" "$image" "$TD_NODE" "$daemon" \
       "$TD_FORCE_RECREATE" "$FORCE" "$ROLLBACK_DRILL" > "$ticket/release"
-    printf '%s %s %s\n' "$nonce" "$image" "$daemon"
+    printf '%s %s %s %s\n' "$nonce" "$image" "$daemon" "$roles"
     ;;
   deploy)
     validate_release

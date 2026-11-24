@@ -1,0 +1,97 @@
+name: Backend role labels
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  label:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Resolve merged pull requests
+        id: merged
+        continue-on-error: true
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const branch = 'develop';
+            const { owner, repo } = context.repo;
+            const { before, after, commits, created, deleted, forced } = context.payload;
+            const fullSha = value => typeof value === 'string' && /^[0-9a-f]{40}$/.test(value)
+              && value !== '0'.repeat(40);
+            const maxCommits = 30;
+            const pageSize = 100;
+            const warn = () => core.warning(
+              'Could not verify merged PRs for this push. Jenkins will use the full deployment fallback if labels are unavailable.'
+            );
+
+            if (created !== false || deleted !== false || forced !== false
+                || !fullSha(before) || !fullSha(after) || before === after
+                || after !== context.sha || !Array.isArray(commits)
+                || commits.length === 0 || commits.length > maxCommits) {
+              warn();
+              return;
+            }
+            const shas = commits.map(commit => commit?.id);
+            if (shas.some(sha => !fullSha(sha)) || new Set(shas).size !== shas.length
+                || !shas.includes(after)) {
+              warn();
+              return;
+            }
+
+            const numbers = new Set();
+            try {
+              for (const sha of shas) {
+                const { data } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner,
+                  repo,
+                  commit_sha: sha,
+                  per_page: pageSize,
+                  request: { timeout: 5000 },
+                });
+                if (!Array.isArray(data) || data.length >= pageSize) {
+                  warn();
+                  return;
+                }
+                const matches = data.filter(pr => pr?.state === 'closed' && pr.merged_at != null
+                  && pr.base?.ref === branch
+                  && typeof pr.base?.repo?.full_name === 'string'
+                  && pr.base.repo.full_name.toLowerCase() === (owner + '/' + repo).toLowerCase());
+                const [pr] = matches;
+                if (matches.length !== 1 || !Number.isSafeInteger(pr.number)
+                    || pr.number < 1 || pr.number > 2147483647 || !fullSha(pr.merge_commit_sha)
+                    || typeof pr.merged_at !== 'string'
+                    || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/.test(pr.merged_at)
+                    || !Number.isFinite(Date.parse(pr.merged_at))) {
+                  warn();
+                  return;
+                }
+                numbers.add(matches[0].number);
+              }
+            } catch {
+              warn();
+              return;
+            }
+            core.setOutput('pr_numbers', [...numbers].join('\n'));
+
+      # The action retrieves its configuration at the trusted develop push SHA.
+      - name: Sync backend role labels
+        id: labels
+        if: steps.merged.outputs.pr_numbers != ''
+        continue-on-error: true
+        uses: actions/labeler@b8dd2d9be0f68b860e7dae5dae7d772984eacd6d # v6.2.0
+        with:
+          pr-number: ${{ steps.merged.outputs.pr_numbers }}
+          sync-labels: true
+          dot: true
+
+      - name: Report unavailable labels
+        if: steps.merged.outcome == 'failure' || steps.labels.outcome == 'failure'
+        run: echo '::warning::Backend role labeling did not complete. Jenkins checks for labels before selecting roles.'

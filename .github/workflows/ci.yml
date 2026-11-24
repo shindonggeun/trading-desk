@@ -73,6 +73,8 @@ jobs:
               - "**/docker-compose-*.yml"
             scripts:
               - *ci
+              - .github/labeler.yml
+              - .github/workflows/backend-role-labeler.yml
               - scripts/**
               - Jenkinsfile*
               - "**/docker-compose-*.yml"
@@ -233,18 +235,33 @@ jobs:
       - run: shellcheck -S warning scripts/*.sh scripts/jenkins/*.sh scripts/tests/*.sh
       - run: bash scripts/tests/deploy-compose.test.sh
       - run: bash scripts/tests/jenkins-scripts.test.sh
+      - run: bash scripts/tests/backend-deploy-targets.test.sh
+      - run: bash scripts/tests/backend-deploy-lease.test.sh
+      - run: bash scripts/tests/wait-ci-require-head.test.sh
+
+  backend-role-labels:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    uses: ./.github/workflows/backend-role-labeler.yml
 
   # 필수 체크로 걸 하나(#748): 돈 잡이 모두 성공이고, 건너뛴 잡은 "변경 없음"으로 통과한다
   ci-ok:
-    needs: [changes, backend, frontend, market-redis, images, deploy-scripts]
+    needs: [changes, backend, frontend, market-redis, images, deploy-scripts, backend-role-labels]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: every job passed or was skipped
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+          NEEDS: ${{ toJSON(needs) }}
+          ROLE_LABEL_RESULT: ${{ needs.backend-role-labels.result }}
         run: |
-          echo "결과: $RESULTS"
-          for r in $RESULTS; do
+          results=$(jq -r 'del(."backend-role-labels") | .[].result' <<< "$NEEDS")
+          echo "결과: $results"
+          # Jenkins defaults to a full deployment when routing evidence is missing.
+          echo "역할 라벨 갱신: $ROLE_LABEL_RESULT"
+          for r in $results; do
             case "$r" in success|skipped) ;; *) echo "실패한 잡이 있다: $r"; exit 1 ;; esac
           done

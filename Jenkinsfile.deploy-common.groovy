@@ -29,8 +29,8 @@ def run(Map config) {
             booleanParam(name: 'ROLLBACK_DRILL', defaultValue: false,
                          description: '배포 뒤 확인을 일부러 실패시켜 직전 이미지로 돌아가는지 시험한다'),
         ] + (config.target == 'backend' ? [
-            choice(name: 'SERVICES', choices: ['all', 'api', 'collector', 'analyst'],
-                   description: '분리 배포가 준비된 백엔드에서 교체할 역할'),
+            choice(name: 'SERVICES', choices: ['auto', 'all', 'api', 'collector', 'analyst'],
+                   description: 'auto는 머지 PR과 운영 역할별 revision을 대조, all은 전체, 개별 역할은 자동 대상에 추가'),
         ] : [])),
     ])
 
@@ -44,20 +44,23 @@ def run(Map config) {
         currentBuild.result = 'NOT_BUILT'
         return
     }
-    String selection = config.target == 'backend' ? (params.SERVICES ?: 'all') : 'all'
+    String selection = config.target == 'backend' ? (params.SERVICES ?: 'auto') : 'all'
     boolean splitEnabled = config.target == 'backend' && env.TD_SPLIT_JOBS_ENABLED == 'true'
     String splitNode = config.target == 'backend' ? (env.TD_SPLIT_DEPLOY_NODE ?: '') : ''
     boolean fenceRequired = splitEnabled || splitNode != ''
     if (fenceRequired && !(splitNode ==~ /[a-zA-Z0-9_.-]{1,128}/)) {
         error '분리 배포 또는 활성 잠금에 전용 백엔드 배포 노드 설정이 필요하다'
     }
-    if (!(selection in ['all', 'api', 'collector', 'analyst']) || (!splitEnabled && selection != 'all')) {
+    if (!(selection in ['auto', 'all', 'api', 'collector', 'analyst']) || (!splitEnabled && !(selection in ['auto', 'all']))) {
         error '서비스 선택에는 승인된 분리 배포 설정이 필요하다'
     }
 
     String sha = null
     // 이 빌드의 커밋(develop 끝)을 배포할 때만 밀림 검사를 한다. DEPLOY_COMMIT(되돌리기)은 일부러 옛 커밋이다
     boolean followHead = !(params.DEPLOY_COMMIT ?: '').trim()
+    if (!splitEnabled || !followHead || (selection == 'auto' && (params.FORCE_DEPLOY || params.ROLLBACK_DRILL))) {
+        selection = 'all'
+    }
     String newer = null
     stage('CI 확인') {
         node(config.gateAgentLabel) {
@@ -145,9 +148,22 @@ def run(Map config) {
                             if (route == 0) {
                                 production = load 'scripts/jenkins/backend-production.groovy'
                                 handoff = load 'scripts/jenkins/backend-handoff.groovy'
-                                roles = handoff.rolesFor(selection)
                                 if (followHead && !confirmSplitHead(config, sha)) { return }
-                                release = production.prepare(sha, roles)
+                                if (selection == 'all') {
+                                    release = production.prepare(sha, selection)
+                                } else {
+                                    withEnv(["CI_REPO=${config.githubRepo}", "CI_BRANCH=${config.branch}"]) {
+                                        withCredentials([usernamePassword(credentialsId: config.githubCredentialId,
+                                                           usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN')]) {
+                                            release = production.prepare(sha, selection)
+                                        }
+                                    }
+                                }
+                                if (release == null) {
+                                    currentBuild.description += ' 변경 없음'
+                                    return
+                                }
+                                roles = handoff.rolesFor(release.selection)
                                 // No child has been queued yet. If the image preparation took
                                 // long enough for a new head, retire this unused release.
                                 boolean stillLatest
@@ -163,7 +179,7 @@ def run(Map config) {
                                 }
                                 return
                             }
-                            if (route != 10 || selection != 'all') {
+                            if (route != 10 || !(selection in ['auto', 'all'])) {
                                 error '현재 상태에서 선택한 백엔드 서비스를 배포할 수 없다'
                             }
                             if (!needsDeploy(config, sha)) {

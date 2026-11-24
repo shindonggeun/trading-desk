@@ -11,6 +11,7 @@ const starts = (...prefixes: string[]) => (route: string) => prefixes.some((p) =
 const item = (id: ScreenHelpId, label: string, href: string, ...aliases: string[]): NavItem =>
   ({ id, label, href, match: starts(href, ...aliases) });
 export const MARKET_FLOW_MENU = "#/?flow=intraday&view=flow";
+export const MARKET_WATCHBOARD_ROUTE = /^#\/market-watchboard(?:\?|$)/;
 export const isMarketFlowMenuRoute = (route: string) =>
   route.startsWith("#/?") && /[?&]flow=intraday(?:&|$)/.test(route) && /[?&]view=flow(?:&|$)/.test(route);
 
@@ -22,6 +23,7 @@ export const NAV: NavGroup[] = [
   {
     id: "market", label: "시장", items: [
       item("live", "실시간 시세", "#/live"),
+      { id: "watchboard", label: "시장 모니터", href: "#/market-watchboard", match: (route) => MARKET_WATCHBOARD_ROUTE.test(route) },
       { id: "flow", label: "수급·포지셔닝", href: MARKET_FLOW_MENU, match: isMarketFlowMenuRoute },
       item("futures", "선물 시세", "#/futures"),
       item("sectors", "섹터", "#/sectors"),

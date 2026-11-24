@@ -6,11 +6,11 @@ import { createLineWatchScope, LineWatchScopeContext } from "./lineSignals";
 import Dashboard from "./pages/Dashboard";
 import SectionBoundary from "./components/SectionBoundary";
 import ChunkFailed from "./components/ChunkFailed";
-import { activeNav, NAV, navigation } from "./nav";
+import { activeNav, MARKET_WATCHBOARD_ROUTE, NAV, navigation } from "./nav";
 import { openMini } from "./miniWindow";
 // #537 대시보드 밖 화면은 갈 때 받는다(메뉴에 올리면 미리)
 import {
-  Backtest, CalendarView, Charts, ChartView, Chat, DayCallRecord, FuturesView, Funds, Halving, History, Live, MiniWindow, MorningBriefPage, Paper, prefetchRoute,
+  Backtest, CalendarView, Charts, ChartView, Chat, DayCallRecord, FuturesView, Funds, Halving, History, Live, MarketWatchboard, MiniWindow, MorningBriefPage, Paper, prefetchRoute,
   Reports, Review, RunView, Sectors, Settings, Tips, WeeklyMap,
 } from "./lazyPages";
 import ChatWidget from "./components/ChatWidget";
@@ -115,6 +115,7 @@ export default function App() {
   const onSettings = route.startsWith("#/settings");
   const onReview = route.startsWith("#/review");
   const onLive = route.startsWith("#/live");
+  const onWatchboard = MARKET_WATCHBOARD_ROUTE.test(route);
   const onHistory = route.startsWith("#/history");
   const onSectors = route.startsWith("#/sectors");
   const onBacktest = route.startsWith("#/backtest");
@@ -230,6 +231,8 @@ export default function App() {
         <History />
       ) : onLive ? (
         <Live />
+      ) : onWatchboard ? (
+        <MarketWatchboard />
       ) : onSectors ? (
         <Sectors />
       ) : onReview ? (

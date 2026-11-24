@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { watchboardCalendarPoints, watchboardChartHref, watchboardSegments } from "../src/marketWatchboard.ts";
+import { activeNav, MARKET_WATCHBOARD_ROUTE } from "../src/nav.ts";
 import { watchboardFixtures } from "./market-watchboard-data.mjs";
 
 test("날짜 축은 실제 간격을 사용하고 누락일을 값으로 채우지 않는다", () => {
@@ -38,5 +39,16 @@ test("합성 비교 수익률은 각 상품의 공통 기준일 종가를 기준
         assert.ok(Math.abs(100 * (prices.get(point.trade_date) / base - 1) - point.return_pct) < 1e-5);
       }
     }
+  }
+});
+
+test("시장 모니터의 메뉴와 라우터는 같은 주소 경계를 사용한다", () => {
+  for (const route of ["#/market-watchboard", "#/market-watchboard?from=bookmark"]) {
+    assert.equal(MARKET_WATCHBOARD_ROUTE.test(route), true);
+    assert.equal(activeNav(route)?.item.id, "watchboard");
+  }
+  for (const route of ["#/market", "#/market-watchboard/", "#/market-watchboard/other"]) {
+    assert.equal(MARKET_WATCHBOARD_ROUTE.test(route), false);
+    assert.notEqual(activeNav(route)?.item.id, "watchboard");
   }
 });

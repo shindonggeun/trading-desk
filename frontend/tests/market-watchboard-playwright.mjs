@@ -17,6 +17,7 @@ try {
     let failCrypto = true;
     let japanBreak = false;
     const requests = [];
+    const candleRequests = [];
     if (inMenu) {
       await page.route("**/api/**", async (route) => {
         const url = new URL(route.request().url());
@@ -33,6 +34,7 @@ try {
         }
         if (url.pathname === "/api/candles") {
           const ticker = url.searchParams.get("ticker"), interval = url.searchParams.get("interval");
+          candleRequests.push([ticker, interval]);
           return route.fulfill({ json: {
             ticker, interval, source: "synthetic", fetched_at: watchboardFixtures.semiconductors.as_of,
             bars: [19, 20, 23].map((day, index) => ({
@@ -84,16 +86,10 @@ try {
       await chartLink.waitFor();
       assert.ok(requests.every(([, days]) => days === "30"));
       assert.ok(requests.some(([group]) => group === "gold_miners"));
-      await Promise.all([
-        page.waitForResponse((response) => {
-          const { pathname, searchParams } = new URL(response.url());
-          return pathname === "/api/candles" && searchParams.get("ticker") === "2330.TW" && searchParams.get("interval") === "1d";
-        }),
-        chartLink.click(),
-      ]);
-      const hash = new URL(page.url()).hash;
-      assert.match(hash, /^#\/charts\?t=2330\.TW&iv=1d$/);
+      await chartLink.click();
+      await page.waitForURL((url) => url.hash === "#/charts?t=2330.TW&iv=1d");
       await page.locator(".price-chart-box canvas").first().waitFor({ state: "visible" });
+      assert.ok(candleRequests.some(([ticker, interval]) => ticker === "2330.TW" && interval === "1d"));
       await page.goBack();
       await board.getByText("키옥시아", { exact: true }).waitFor();
       japanBreak = true;

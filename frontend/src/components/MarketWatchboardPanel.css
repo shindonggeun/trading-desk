@@ -1,0 +1,159 @@
+.market-watchboard {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  --watchboard-plot-height: clamp(160px, 22vw, 270px);
+}
+.market-watchboard :is(h1, h2, h3, p, dl, dd) { margin: 0; }
+.market-watchboard h1 { font-size: var(--fs-xl); }
+.market-watchboard h2 { font-size: var(--fs-l); }
+.market-watchboard h3 { font-size: var(--fs-m); }
+.market-watchboard :is(time, strong, td) { font-variant-numeric: tabular-nums; }
+.market-watchboard .up { color: var(--up); }
+.market-watchboard .down { color: var(--down); }
+
+.watchboard-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 3px 14px;
+}
+.watchboard-groups { margin-top: 10px; gap: 5px; }
+.watchboard-groups button { min-height: 44px; padding-inline: 14px; }
+.watchboard-error {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.watchboard-error button { min-height: 44px; }
+
+.watchboard-market { min-width: 0; }
+.watchboard-market > .watchboard-section-head { margin: 0 0 7px; }
+.watchboard-session { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.watchboard-session [data-state="open"] { color: var(--ok); }
+.watchboard-session :is([data-state="break"], [data-state="unknown"]) { color: var(--warn); }
+.watchboard-session :is([data-state="closed"], [data-state="holiday"]) { color: var(--muted); }
+.watchboard-instruments {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 268px), 1fr));
+  gap: 8px;
+}
+.watchboard-instrument {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  align-content: start;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.watchboard-instrument-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px 8px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.watchboard-instrument-head p { font-size: var(--fs-s); overflow-wrap: anywhere; }
+.watchboard-data-status, .watchboard-reason, .watchboard-partial { color: var(--warn); font-size: var(--fs-s); }
+.watchboard-data-status { white-space: nowrap; }
+.watchboard-quote {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 8px;
+  flex-wrap: wrap;
+}
+.watchboard-quote > strong { font-size: var(--fs-xl); }
+.watchboard-quote > strong span { font-weight: normal; color: var(--muted); font-size: var(--fs-s); }
+.watchboard-change { display: inline-flex; align-items: baseline; gap: 5px; }
+.watchboard-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 12px; font-size: var(--fs-s); }
+.watchboard-meta dt { color: var(--muted); }
+.watchboard-meta dd { overflow-wrap: anywhere; }
+.watchboard-instrument-footer { font-size: var(--fs-s); border-top: 1px solid var(--border); }
+.watchboard-instrument-footer a { display: inline-flex; align-items: center; min-height: 40px; }
+.watchboard-instrument-footer > span { display: inline-block; padding-block: 7px 1px; }
+.watchboard-spark {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.watchboard-spark svg { display: block; width: 100%; height: 35px; color: var(--accent); }
+.market-watchboard polyline { fill: none; stroke: currentColor; stroke-width: 1.6; }
+.market-watchboard circle { fill: currentColor; }
+
+.watchboard-comparison { display: grid; min-width: 0; gap: 8px; }
+.watchboard-comparison-note, .watchboard-observations { font-size: var(--fs-s); }
+.watchboard-plot {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 8px;
+  margin: 5px 0 2px;
+}
+.watchboard-plot svg { display: block; width: 100%; height: var(--watchboard-plot-height); }
+.watchboard-y-axis {
+  position: relative;
+  min-width: 7ch;
+  height: var(--watchboard-plot-height);
+  text-align: right;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.watchboard-y-axis span { position: absolute; right: 0; transform: translateY(-50%); white-space: nowrap; }
+.watchboard-x-axis { grid-column: 2; display: flex; justify-content: space-between; gap: 8px; }
+.watchboard-gridline { stroke: var(--border); }
+.watchboard-zero { stroke: var(--muted); stroke-dasharray: 3 3; }
+.market-watchboard [data-series="0"] { --watchboard-series-color: var(--down); }
+.market-watchboard [data-series="1"] { --watchboard-series-color: var(--warn); }
+.market-watchboard [data-series="2"] { --watchboard-series-color: var(--ok); }
+.market-watchboard [data-series="3"] { --watchboard-series-color: var(--up); }
+.market-watchboard [data-series="4"] { --watchboard-series-color: color-mix(in srgb, var(--team-research) 70%, var(--text)); }
+.watchboard-plot g { color: var(--watchboard-series-color); }
+.watchboard-series {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.watchboard-series li { min-width: 0; padding: 7px 8px; border-radius: var(--radius-s); background: var(--surface-2); }
+.watchboard-series-head {
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr) max-content;
+  gap: 5px;
+  align-items: baseline;
+  font-size: var(--fs-s);
+}
+.watchboard-series-key {
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--watchboard-series-color);
+}
+.watchboard-series li p { margin-inline-start: 14px; }
+.watchboard-observations summary { width: fit-content; padding: 5px 0; cursor: pointer; }
+.watchboard-observations > div {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 205px), 1fr));
+  gap: 8px;
+}
+.watchboard-observations table { width: 100%; align-self: start; border-collapse: collapse; }
+.watchboard-observations caption { text-align: left; font-weight: 650; }
+.watchboard-observations :is(th, td) { padding: 4px; border-bottom: 1px solid var(--border); text-align: left; }
+.watchboard-observations :is(th, td):last-child { text-align: right; }
+
+@media (max-width: 520px) {
+  .market-watchboard { gap: 12px; }
+  .market-watchboard > .card { padding: 12px; }
+  .watchboard-plot { gap: 4px; }
+  .watchboard-y-axis { min-width: 6ch; }
+}

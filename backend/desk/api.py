@@ -42,6 +42,7 @@ from . import (
     chart_read,
     chat,
     credit,
+    daily_resistance,
     day_calls,
     day_sectors,
     earnings,
@@ -2914,7 +2915,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return {"ticker": ticker, "interval": interval, "source": got.get("source"), "live_bar": live, **memo[3],
                 "backtest": lines_bt.summary(ticker)}
 
-    chart_reads: dict[tuple[str, tuple[str, ...]], tuple[float, dict]] = {}
+    chart_reads: dict[tuple[str, tuple[str, ...], tuple[date, str] | None], tuple[float, dict]] = {}
 
     @app.get("/api/chart-read")
     async def chart_read_get(ticker: str = "NQ=F", tf: str | None = None):
@@ -2931,7 +2932,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             tfs = tuple(sorted(tfs, key=channels.TIMEFRAMES.index))       # one cache entry whatever the order
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
-        key = (ticker, tfs)
+        phase = daily_resistance.cache_phase(ticker, datetime.now(UTC)) if "1d" in tfs else None
+        key = (ticker, tfs, phase)
         hit = chart_reads.get(key)
         if hit and hit[0] > time.monotonic():
             return hit[1]
@@ -2986,6 +2988,18 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             out["accumulation"], out["legs"] = await accumulation_live.read(tfs, got, weeks, now, price)
             if out["accumulation"] is None or None in (out["accumulation"].get("mid"), out["accumulation"].get("long")):
                 keep = min(keep, CHART_READ_MIN_SEC * 4)                        # a view missing: ask again soon
+            if daily_resistance.eligible(ticker):
+                key = (ticker, tfs, daily_resistance.cache_phase(ticker, now))
+                daily = got[tfs.index("1d")]
+                try:
+                    out["daily_reaction"] = await asyncio.to_thread(
+                        daily_resistance.build, ticker, daily if isinstance(daily, dict) else None, now,
+                    )
+                except Exception as exc:  # noqa: BLE001 - daily evidence must not break the chart
+                    log.warning("chart read daily reaction failed: %s", type(exc).__name__)
+                    out["daily_reaction"] = daily_resistance.unavailable(ticker, now, "reaction_error")
+                if out["daily_reaction"]["status"] != "confirmed":
+                    keep = min(keep, CHART_READ_MIN_SEC * 4)
             if ticker == "NQ=F":
                 try:
                     reference = weekly_chart_evidence.chart_price(tfs, got, now)

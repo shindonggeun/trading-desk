@@ -5,8 +5,9 @@ import asyncio
 import json
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import fakeredis
 import pytest
@@ -185,20 +186,113 @@ def test_a_failed_market_flow_read_is_not_shared(redis):
     assert redis.keys("td:market_flow:*") == [sc._key("market_flow", ("KOSPI", "1d"))]
 
 
-def test_the_futures_card_reads_what_the_snapshot_job_fetched(redis):
+def test_the_futures_card_preserves_the_collectors_completed_read_time(redis, monkeypatch):
     from desk import futures_flow as ff
 
     collector_calls, api_calls = [], []
-    now = lambda: datetime(2026, 11, 6, 2, 0, tzinfo=UTC)
+    started = datetime(2026, 11, 6, 2, 0, tzinfo=UTC)
+    completed = started + timedelta(seconds=8)
+    clock = [started]
+    now = lambda: clock[0]
 
     async def go():
-        snap = await ff.FuturesFlow(_rest(collector_calls), None, now=now).get(fresh=True)
-        card = await ff.FuturesFlow(_rest(api_calls), None, now=now).get()
-        return snap, card
+        collector, api = _rest(collector_calls), _rest(api_calls)
+        try:
+            get = collector.get
 
-    snap, card = asyncio.run(go())
+            async def source(path, tr, params):
+                response = await get(path, tr, params)
+                if path == ff.INVESTOR_PATH:
+                    clock[0] = completed
+                return response
+
+            monkeypatch.setattr(collector, "get", source)
+            snapshot = await ff.FuturesFlow(collector, None, now=now).get(fresh=True)
+            card = ff.FuturesFlow(api, None, now=now)
+            clock[0] += timedelta(seconds=5)
+            shared = await card.get()
+            redis.flushall()  # the next read can only reuse L1
+            clock[0] += timedelta(seconds=3)
+            return snapshot, shared, await card.get()
+        finally:
+            await collector.aclose()
+            await api.aclose()
+
+    snapshot, shared, local = asyncio.run(go())
     assert collector_calls and not api_calls
-    assert card == snap
+    for age, value in zip((0, 5, 8), (snapshot, shared, local), strict=True):
+        assert value["fetched_at"] == completed.astimezone(KST).isoformat()
+        assert value["freshness"]["source_updated_at"] is None
+        assert value["freshness"]["age_sec"] == age
+        assert value["investors"] == snapshot["investors"]
+
+
+@pytest.mark.parametrize("redis_failure", ["stale_replay", "unavailable"])
+def test_the_futures_card_checks_the_source_when_redis_has_no_usable_value(redis, monkeypatch, redis_failure):
+    from desk import futures_flow as ff
+
+    now = lambda: datetime(2026, 11, 6, 2, 0, tzinfo=UTC)
+    api_calls = []
+
+    async def go():
+        if redis_failure == "stale_replay":
+            real_time = time.time
+            with monkeypatch.context() as old:
+                old.setattr(sc, "time", SimpleNamespace(time=lambda: real_time() - sc.LATEST_KEEP_SEC - 1,
+                                                        monotonic=time.monotonic))
+                await sc.aput(ff.SHARED_NS, "view", {"value": {"fetched_at": "stale"}, "ttl": ff.CACHE_OPEN_SEC},
+                              sc.LATEST_KEEP_SEC)
+            assert redis.pttl(sc._key(ff.SHARED_NS, "view")) > 0
+        else:
+            monkeypatch.setattr(sc._async, "pipeline", Mock(side_effect=ConnectionError("fake Redis down")))
+        api = _rest(api_calls)
+        try:
+            return await ff.FuturesFlow(api, None, now=now).get()
+        finally:
+            await api.aclose()
+
+    card = asyncio.run(go())
+    assert any(call.url.path == ff.INVESTOR_PATH for call in api_calls)
+    assert card["fetched_at"] == now().astimezone(KST).isoformat()
+    assert card["freshness"]["source_updated_at"] is None
+
+
+def test_the_futures_partial_error_keeps_the_last_shared_confirmation(redis, monkeypatch):
+    from desk import futures_flow as ff
+
+    started = datetime(2026, 11, 6, 2, 0, tzinfo=UTC)
+    clock = [started]
+    now = lambda: clock[0]
+    api_calls = []
+
+    async def go():
+        collector, api = _rest([]), _rest(api_calls)
+        try:
+            flow = ff.FuturesFlow(collector, None, now=now)
+            good = await flow.get(fresh=True)
+            clock[0] += timedelta(seconds=10)
+            get = collector.get
+
+            async def source(path, tr, params):
+                if path == ff.INVESTOR_PATH:
+                    clock[0] += timedelta(seconds=2)
+                    raise ff.KisError("synthetic investor failure")
+                return await get(path, tr, params)
+
+            monkeypatch.setattr(collector, "get", source)
+            partial = await flow.get(fresh=True)
+            card = await ff.FuturesFlow(api, None, now=now).get()
+            return good, partial, card
+        finally:
+            await collector.aclose()
+            await api.aclose()
+
+    good, partial, card = asyncio.run(go())
+    assert partial["price"] and partial["investors_error"] and partial["investors"] is None
+    assert partial["fetched_at"] == (started + timedelta(seconds=12)).astimezone(KST).isoformat()
+    assert not api_calls and card["fetched_at"] == good["fetched_at"]
+    assert card["investors"] == good["investors"]
+    assert partial["freshness"]["source_updated_at"] is None
 
 
 class _QuoteBroker(MockBroker):

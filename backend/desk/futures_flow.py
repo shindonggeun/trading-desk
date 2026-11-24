@@ -402,6 +402,8 @@ class FuturesFlow:
                           {"FID_INPUT_ISCD": INVESTOR_MARKET[0], "FID_INPUT_ISCD_2": INVESTOR_MARKET[1]}),
             self.spot.get("KOSPI", "1d", 1) if self.spot is not None else _none(),
             return_exceptions=True)
+        # The response records when the reads finished. Keep the request-start date for the contract.
+        base["fetched_at"] = self._now().astimezone(KST).isoformat(timespec="seconds")
         if isinstance(price_res, BaseException):
             log.warning("futures price failed: %s", _short(price_res))
             return {**base, "error": f"선물 시세를 받지 못했습니다 — {_short(price_res)}"}, False

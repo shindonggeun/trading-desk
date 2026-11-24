@@ -981,11 +981,11 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         async def refresh_credit() -> float:
             # #155: margin loans and investor deposits (KOFIA) - a few reads a day catch the new day
-            ok = await credit.CACHE.refresh()
+            ok = await credit.CACHE.refresh_and_publish()
             log.info("KOFIA credit: %s", "refreshed" if ok else f"failed ({credit.CACHE.error})")
             if not ok:
                 jobs.mark_error("credit", "refresh failed")
-            # a failure (KOFIA slow at boot) is retried soon: the cache lives in memory only
+            # A failed source refresh is retried sooner and leaves the last good data in place.
             return CREDIT_INTERVAL_SEC if ok else CREDIT_RETRY_SEC
 
         snapshot_marks: dict[str, date | None] = {"pruned_on": None, "closed_on": None}
@@ -2102,10 +2102,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return {"supported": True, "source": broker.name, **result}
 
     @app.get("/api/market/credit")
-    def market_credit(days: int = 90):
+    async def market_credit(days: int = 90):
         """#155: Korean margin loans (신용융자), investor deposits (투자자예탁금), their ratio (빚투 비율)
         with its 1-year percentile, and forced sales (KOFIA, refreshed in the background)."""
-        return credit.CACHE.view(min(max(days, 7), 400))
+        return await credit.CACHE.shared_view(min(max(days, 7), 400))
 
     def _day_market(market: str) -> str:
         if market not in day_calls.dc.MARKETS:

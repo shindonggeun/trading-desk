@@ -126,7 +126,8 @@ def test_mid_range_percentile_and_limits():
 
 def test_an_empty_or_failed_cache_still_answers():
     view = credit.CreditCache(error="HTTPStatusError").view()
-    assert view == {"summary": None, "series": [], "source": "kofia", "refreshed_at": None, "error": "HTTPStatusError"}
+    assert view == {"summary": None, "series": [], "source": "kofia", "source_date": None,
+                    "refreshed_at": None, "error": "HTTPStatusError"}
 
 
 def test_the_credit_note_reaches_korean_same_day_runs_only(db_url):

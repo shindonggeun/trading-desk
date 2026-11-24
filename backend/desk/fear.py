@@ -347,6 +347,12 @@ class Fear:
         self._cache: dict[str, tuple[float, dict]] = {}
         self._lock = asyncio.Lock()
 
+    def us_observations(self) -> tuple[dict, ...]:
+        """Expose fresh cached US observations without fetching or promoting them to published closes."""
+        now = self._clock()
+        return tuple(row[1].copy() for key in ("cnn", "vix")
+                     if (row := self._cache.get(key)) is not None and row[0] > now and row[1].get("value") is not None)
+
     def _one(self, key: str) -> tuple[dict, float]:
         try:
             return self._fetch[key](), TTL_SEC[key]

@@ -49,6 +49,7 @@ from . import (
     entry_now,
     events_calendar,
     explain,
+    extreme_fear_reports,
     fear,
     filings,
     flow_intraday,
@@ -2687,6 +2688,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     def backtest_report_list():
         """#185: the basket backtest snapshots shipped with the image, one line per horizon."""
         return backtest_reports.summaries()
+
+    @app.get("/api/research/extreme-fear")
+    def extreme_fear_research(symbol: Literal["SOXL", "KORU"]):
+        """#919: archived fixed-horizon research and observed US fear gauges."""
+        observations = fear_gauges.us_observations() if fear_gauges is not None else ()
+        return extreme_fear_reports.get(symbol, as_of=datetime.now(UTC), observations=observations)
 
     @app.get("/api/backtest/reports/{horizon}")
     def backtest_report(horizon: str):

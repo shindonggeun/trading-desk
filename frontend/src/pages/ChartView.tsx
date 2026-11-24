@@ -17,6 +17,14 @@ function today(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+function researchDate(ticker: string, interval: Interval | undefined, raw: string | null): string | null {
+  if ((ticker !== "SOXL" && ticker !== "KORU") || interval !== "1d" || !raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return null;
+  }
+  const timestamp = Date.parse(`${raw}T00:00:00Z`);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === raw ? raw : null;
+}
+
 /**
  * 주소로 여는 큰 차트(#97): `#/chart/<티커>?run=<분석 id>&interval=<주기>`. 분석을 주면 그 타점선까지.
  * #539 기본은 차트 분석(쿼터 없음) — 에이전트 토론 상세 분석은 위쪽 "상세 분석 시작"(확인 한 번)으로만, 같은 종목의
@@ -26,6 +34,7 @@ export default function ChartView({ ticker, query }: { ticker: string; query: UR
   const runId = query.get("run");
   const iv = query.get("interval");
   const interval = INTERVALS.includes(iv as Interval) ? (iv as Interval) : undefined;
+  const signalDate = runId ? null : researchDate(ticker, interval, query.get("signalDate"));
   const { response, error } = useRunRead(runId);
   const run = response && isFullRun(response) ? response : null;
   const [recent, setRecent] = useState<Run | null>(null);
@@ -55,6 +64,7 @@ export default function ChartView({ ticker, query }: { ticker: string; query: UR
   const name = run?.options.name ?? query.get("name") ?? recent?.options.name ?? shown;
   const banner = (
     <div className="chart-view-deep">
+      {signalDate && <span className="muted small">백테스트 신호일 <time dateTime={signalDate}>{signalDate}</time></span>}
       {!asking && (
         <button type="button" className="secondary small" onClick={() => setAsking(true)}
           title="에이전트들이 토론해 진입 · 손절 · 목표가를 냅니다(확인 한 번 · 구독 사용량 차감)">

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import ExtremeFearResearch from "../components/ExtremeFearResearch";
 import { REGIME, SETUP } from "../components/PlaybookCard";
 import type { BacktestAgg, BacktestReport, BacktestSummary, RegimeId } from "../types";
 
@@ -272,6 +273,7 @@ export default function Backtest() {
         )}
       </section>
 
+      <ExtremeFearResearch />
       {report && (
         <section className="card">
           <div className="chips" role="group" aria-label="나눠 보기">

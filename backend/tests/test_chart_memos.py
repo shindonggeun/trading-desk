@@ -1,3 +1,4 @@
+from contextlib import closing
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
@@ -6,13 +7,30 @@ from alembic import command
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect
 
+from desk.api import create_app
 from desk.auth import Auth
 from desk.db import alembic_config, make_engine
-from tests.test_favorites import OTHER, OWNER, PASSWORD, _app, _login
+from desk.settings import Settings
+from tests.test_favorites import OTHER, OWNER, PASSWORD, _login
 
 URL = "/api/chart-memo"
 PRIVATE = "private, no-store"
 ACCOUNT_HEADER = "X-Desk-Memo-Account"
+
+
+@pytest.fixture
+def memo_app(db_url):
+    app = create_app(Settings(database_url=db_url, fake_runs=True, fake_delay=0, role="api"))
+    engine = make_engine(db_url)
+    try:
+        auth = Auth(engine, timedelta(hours=1), timedelta(hours=1))
+        for username in (OWNER, OTHER, "샘플+사용자%20"):
+            auth.create_user(username, PASSWORD)
+    finally:
+        engine.dispose()
+    # Start the API role once, without a broker issuer or a lifespan per account.
+    with TestClient(app, base_url="https://testserver"):
+        yield app
 
 
 def _memo_login(app, username=OWNER):
@@ -21,13 +39,12 @@ def _memo_login(app, username=OWNER):
     return client
 
 
-def test_chart_memos_use_session_and_origin(db_url):
-    app = _app(db_url)
+def test_chart_memos_use_session_and_origin(memo_app):
     params = {"ticker": "SOXX"}
-    with TestClient(app, base_url="https://testserver") as anonymous:
+    with closing(TestClient(memo_app, base_url="https://testserver")) as anonymous:
         assert anonymous.get(URL, params=params).status_code == 401
         assert anonymous.put(URL, params=params, json={"text": "memo"}).status_code == 401
-    with _memo_login(app) as client:
+    with closing(_memo_login(memo_app)) as client:
         assert client.put(URL, params=params, json={"text": "memo"},
                           headers={"Origin": "https://foreign.test"}).status_code == 403
         response = client.get(URL, params=params)
@@ -36,9 +53,8 @@ def test_chart_memos_use_session_and_origin(db_url):
         assert response.json() == {"ticker": "SOXX", "memo": None}
 
 
-def test_chart_memos_keep_exact_product_account_and_utc_times(db_url):
-    app = _app(db_url)
-    with _memo_login(app) as owner, _memo_login(app, OTHER) as other:
+def test_chart_memos_keep_exact_product_account_and_utc_times(memo_app):
+    with closing(_memo_login(memo_app)) as owner, closing(_memo_login(memo_app, OTHER)) as other:
         params = {"ticker": "SOXL"}
         response = owner.put(URL, params={"ticker": " soxl "}, json={"text": "  <b>my note</b>\n"})
         assert response.status_code == 200
@@ -67,10 +83,9 @@ def test_chart_memos_keep_exact_product_account_and_utc_times(db_url):
         assert other.get(URL, params=params).json()["memo"]["text"] == "a different account"
 
 
-def test_chart_memos_reject_account_hint_from_a_tab_with_a_new_session(db_url):
-    app = _app(db_url)
+def test_chart_memos_reject_account_hint_from_a_tab_with_a_new_session(memo_app):
     params = {"ticker": "SOXX"}
-    with _memo_login(app) as owner, _memo_login(app, OTHER) as other:
+    with closing(_memo_login(memo_app)) as owner, closing(_memo_login(memo_app, OTHER)) as other:
         owner_memo = owner.put(URL, params=params, json={"text": "first tab memo"}).json()
         other_memo = other.put(URL, params=params, json={"text": "new session memo"}).json()
         stale_headers = {ACCOUNT_HEADER: OWNER}
@@ -86,16 +101,10 @@ def test_chart_memos_reject_account_hint_from_a_tab_with_a_new_session(db_url):
         assert other.get(URL, params=params).json() == other_memo
 
 
-def test_chart_memos_require_a_valid_utf8_account_hint(db_url):
-    app = _app(db_url)
+def test_chart_memos_require_a_valid_utf8_account_hint(memo_app):
     params = {"ticker": "SOXX"}
     username = "샘플+사용자%20"
-    engine = make_engine(db_url)
-    try:
-        Auth(engine, timedelta(hours=1), timedelta(hours=1)).create_user(username, PASSWORD)
-    finally:
-        engine.dispose()
-    with _login(app, username) as client:
+    with closing(_login(memo_app, username)) as client:
         for headers in ({}, {ACCOUNT_HEADER: "%FF"}):
             for response in (
                 client.get(URL, params=params, headers=headers),
@@ -110,23 +119,23 @@ def test_chart_memos_require_a_valid_utf8_account_hint(db_url):
 
 
 @pytest.mark.parametrize("ticker", [" ", "x" * 21, "ＳＯＸＬ", "SOXL/USDT", "SOXL!"])
-def test_chart_memos_reject_invalid_product(db_url, ticker):
-    with _memo_login(_app(db_url)) as client:
+def test_chart_memos_reject_invalid_product(memo_app, ticker):
+    with closing(_memo_login(memo_app)) as client:
         params = {"ticker": ticker}
         assert client.get(URL, params=params).status_code == 422
         assert client.put(URL, params=params, json={"text": "memo"}).status_code == 422
 
 
-def test_chart_memos_validate_input_without_taking_owner_from_request(db_url):
-    with _memo_login(_app(db_url)) as client:
+def test_chart_memos_validate_input_without_taking_owner_from_request(memo_app):
+    with closing(_memo_login(memo_app)) as client:
         params = {"ticker": "SOXL"}
         for body in ({}, {"text": 123}, {"text": "x" * 2001}, {"text": "x\0y"}, {"text": "x", "user_id": 2}):
             assert client.put(URL, params=params, json=body).status_code == 422
         assert client.get(URL, params=params).json() == {"ticker": "SOXL", "memo": None}
 
 
-def test_chart_memos_validation_does_not_echo_private_input(db_url):
-    with _memo_login(_app(db_url)) as client:
+def test_chart_memos_validation_does_not_echo_private_input(memo_app):
+    with closing(_memo_login(memo_app)) as client:
         params = {"ticker": "SOXX"}
         secret = "synthetic private note"
         responses = (

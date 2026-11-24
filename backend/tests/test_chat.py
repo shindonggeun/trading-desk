@@ -171,7 +171,8 @@ def test_tool_results_never_carry_secrets_or_account_figures():
 def test_the_desk_tools_are_read_only_and_the_fake_model_uses_one(tmp_path):
     url = f"sqlite:///{(tmp_path / 'desk.db').as_posix()}"
     app = create_app(Settings(database_url=url, fake_runs=True, fake_delay=0), runner=make_fake_runner(0))
-    assert "/api/chat/threads/{thread_id}/messages" in {r.path for r in app.routes}
+    messages = app.openapi()["paths"]["/api/chat/threads/{thread_id}/messages"]
+    assert {"get", "post"} <= messages.keys()
     tools = set(app.state.chat_tools)
     assert {"macro_brief", "market_risk", "calendar_week", "quote", "levels", "playbooks", "bottom_zone",
             "recent_runs"} <= tools <= {"macro_brief", "market_risk", "calendar_week", "quote", "levels", "playbooks",

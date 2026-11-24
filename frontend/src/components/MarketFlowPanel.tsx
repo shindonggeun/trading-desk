@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { krwShort, price } from "../format";
+import { isMarketFlowMenuRoute } from "../nav";
 import type { FlowInterval, FlowMarket, FlowRecord, FlowSide, InstitutionKind, Investor } from "../types";
 import FuturesFlowView from "./FuturesFlowView";
 import KrShortSaleCard from "./KrShortSaleCard";
@@ -289,9 +290,10 @@ export default function MarketFlowPanel() {
   const card = useRef<HTMLElement>(null);
   useEffect(() => {
     const open = () => {
-      if (!/[?&]flow=intraday(?:&|$)/.test(window.location.hash)) return;
+      const route = window.location.hash;
+      if (!/[?&]flow=intraday(?:&|$)/.test(route)) return;
       update({ market: "INTRADAY" });
-      window.history.replaceState(null, "", "#/"); // 새로고침 · 뒤로 가기에 다시 끌려오지 않게
+      if (!isMarketFlowMenuRoute(route)) window.history.replaceState(null, "", "#/"); // 기존 알림은 한 번만 연다
       window.requestAnimationFrame(() => card.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
     };
     open();

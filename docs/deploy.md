@@ -504,7 +504,9 @@ api · collector · analyst(#688) 가 따로 뜨면 같은 수급 · 시세를 �
 | 공유 이름(`td:<이름>:…`) | 쓰는 쪽 → 읽는 쪽 | TTL |
 |------|------|-----|
 | `market_flow` · `futures_flow` | collector 스냅샷 잡(`fresh`) → api 카드. 실패한 읽기는 넣지 않는다 | 각 캐시 TTL, 최소 90초(1분 스냅샷 사이를 잇는다) |
-| `quote` | 먼저 읽은 프로세스 → 나머지 | 10초 |
+| `quote` | 먼저 읽은 프로세스 → 나머지. 역할을 나누면 collector 의 수요 수집(`demand`)이 화면이 읽는 종목을 10초마다 받아 쓴다 | 10초(직접), 30초(수집). api 만 10초 넘은 값을 받는다 |
+| `futures_quote` | collector 의 수요 수집 → api 의 선물 시세 카드(현재가 · 분봉). 실패한 읽기는 넣지 않는다 | 카드 TTL 이상 |
+| `want` | api(`demand_wants`, 2초마다, 바뀌었거나 10초 지났을 때) → collector(`demand`, 5초마다) | 20초 |
 | `sr` · `gap_fill` · `oscillator` | 계산한 프로세스 → 나머지(메모리 → Redis 2단) | 각 캐시 TTL |
 
 나머지 메모리 캐시(추정치 종가 · 바이낸스 추정 · 공시 · 실시간 봉 · 롱숏 · NQ 한도 · 종목 프로필 · 예상치)는 한 프로세스만 쓰거나 값이 JSON 으로 돌아오지 않아 그대로 둔다.
@@ -556,6 +558,9 @@ unset REDISCLI_AUTH
 2. 켠 **뒤** 같은 요일 · 같은 시간대에 똑같이 한다.
 3. 비교: `/api/market/flow` · `/api/market/futures` · `/api/quote` · `/api/levels` · `/api/gaps` · `/api/oscillator` 의 p95,
    그리고 `/api/status` `outbound` 의 `toss` · `kis`(그 프로세스가 `since` 부터 부른 수). api 프로세스의 수가 0 에 가까우면 완료.
+4. 수요 수집(#689): api 의 `/api/status` `demand` 는 `wanted`(최근 30초에 읽힌 키 수) · `flushes`, collector 의 `demand` 는
+   `collecting` · `served` · `failed` 다. 화면을 닫으면 1분 안에 둘 다 0 이 된다. collector 의 `shared_cache.misses` 에는 want 조회(쉬는 동안 분당 12번)가 들어간다.
+   수집 뒤에도 api 에 남는 직접 호출: 국장 1분봉 채우기 · `/api/live/stream` 1분봉, 포트폴리오의 보유 · 환율(계좌 데이터라 공유하지 않음), 종목마다 처음 한 번(콜드).
 
 ### 이벤트 루프 지연 (#859)
 

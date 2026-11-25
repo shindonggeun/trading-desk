@@ -28,6 +28,16 @@ A held quote keeps its own ``as_of`` (``held_at``); one taken more than HELD_CLO
 ended is ``held_early`` - not the close. So that the close is what is held, the ``futures_close_quote`` job
 reads each session ``CLOSE_READ_SEC`` before it ends (``seconds_to_close_read``). KIS answering a price
 of 0 counts as empty.
+
+#689 split roles (api · collector, Redis on - desk.demand): the api answers the card from the collector's
+values instead of calling KIS every 15 s itself. Each read in the api marks its answer's key wanted
+(``quote:night:2026-11-16``, ``candles:day:2026-11-17`` - answer, session and opening day, what the memory
+cache keys on). The collector's ``serve`` reads that key as its own reads would (its memory first, never the
+shared tier) and shares the answer - the held close and the last-bar stand-in too: its ``futures_close_quote``
+job is what holds the close - for at least SHARED_KEEP_SEC. A failure or a stale answer is not shared. The api
+reads Redis on a memory miss (and over a failure it keeps), fills its memory and held values from it, and calls
+KIS itself only when Redis has nothing (a cold start, the collector or Redis down), keeping that answer at most
+FALLBACK_SEC so that the collector's replaces it.
 """
 
 from __future__ import annotations
@@ -35,9 +45,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time as _time
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
-from . import market_calendar
+from . import demand, market_calendar, shared_cache
 from .futures_flow import KST, PRICE_PATH, PRICE_TR, KisRest, _num, _short, front_month
 
 log = logging.getLogger(__name__)
@@ -58,6 +68,14 @@ LOOKBACK_DAYS = 10                # to find the last session past a long holiday
 CLOSE_READ_SEC = 30.0             # #713 each session's quote read this long before it ends (its close, held)
 HELD_CLOSE_SEC = 120.0            # a held quote taken earlier than this before the end is not the close
 MAX_SLEEP_SEC = 3600.0
+SHARED_NS = "futures_quote"       # #689 desk.demand's namespace, and the shared values'
+ANSWERS = ("quote", "candles")    # what a key names: the quote, or the session's one-minute bars
+# #689 a shared value lives at least this long in Redis: the collector rewrites a wanted key every
+# demand.EVERY (15 s) and waits 30 s after a failed fetch, so three periods carry the api over one failed or
+# late pass on the collector's value (older than its own ttl then - its as_of says so) instead of KIS
+SHARED_KEEP_SEC = 3 * demand.EVERY[SHARED_NS]
+FALLBACK_SEC = 60.0               # #689 the api's own fetch (Redis had nothing) is kept at most this long
+HELD_KEYS = ("held", "held_at", "held_early")
 
 
 def _kst(now: datetime) -> datetime:
@@ -171,6 +189,28 @@ def resample(bars: list[dict], minutes: int, start: datetime) -> list[dict]:
     return out
 
 
+def demand_key(key: tuple) -> str:
+    """#689 a memory cache key ("quote", "night", "2026-11-16") as desk.demand's and the shared value's key."""
+    return ":".join(key)
+
+
+def parse_key(text: str) -> tuple[str, str, str]:
+    """``demand_key``'s inverse: (answer, session, opening day); ValueError for anything else."""
+    parts = text.split(":") if isinstance(text, str) else []
+    if len(parts) == 3 and parts[0] in ANSWERS and parts[1] in SESSIONS:
+        try:
+            if date.fromisoformat(parts[2]).isoformat() == parts[2]:
+                return parts[0], parts[1], parts[2]
+        except ValueError:
+            pass
+    raise ValueError("not a futures quote key")
+
+
+def _sound(value) -> bool:
+    """A cached answer that is the fetch's own: not a failure, nor the last one marked stale after one."""
+    return not isinstance(value, BaseException) and not value.get("stale")
+
+
 class FuturesQuote:
     """The cached quote and minute bars for /api/market/futures/quote and /candles."""
 
@@ -193,27 +233,77 @@ class FuturesQuote:
         return {**picked, "now": current["now"], "shown": kind}
 
     async def _cached(self, key: tuple, live: bool, fetch) -> dict:
+        split = demand.enabled()       # #689 the api of split roles: the collector keeps what it reads in Redis
+        if split:
+            demand.want(SHARED_NS, demand_key(key))   # every read, a memory hit too: it keeps the key collected
         async with self._locks.setdefault(key, asyncio.Lock()):
             hit = self._cache.get(key)
-            if hit and self._clock() - hit[0] < hit[1]:
+            fresh = hit is not None and self._clock() - hit[0] < hit[1]
+            if fresh and _sound(hit[2]):
+                return hit[2]
+            if split:   # a miss, or a failure kept here: the collector's value comes first
+                shared = await self._shared(key)
+                if shared is not None:
+                    return shared
+            if fresh:
                 if isinstance(hit[2], BaseException):
                     raise hit[2]
                 return hit[2]
-            try:
-                value = await fetch()
-            except Exception as exc:   # KIS down, refused or slow: the last answer, marked
-                log.warning("futures quote %s failed: %s", key[0], _short(exc))
-                if hit and not isinstance(hit[2], BaseException):
-                    stale = {**hit[2], "stale": True, "error": f"새 값을 받지 못해 마지막 값을 보입니다 — {_short(exc)}"}
-                    # kept a little while too: a KIS outage is not asked again on every request
-                    self._cache[key] = (self._clock(), CACHE_FAIL_SEC, stale)
-                    return stale
-                # #713 nothing to show either: the failure itself is kept a little while (every poll would ask)
-                self._cache[key] = (self._clock(), CACHE_FAIL_SEC, exc)
-                raise
-            self._cache[key] = (self._clock(), CACHE_OPEN_SEC if live else CACHE_CLOSED_SEC, value)
-            self._forget_before(key)
+            value, _ttl = await self._refresh(key, live, fetch, hit, FALLBACK_SEC if split else None)
             return value
+
+    async def _refresh(self, key: tuple, live: bool, fetch, hit, keep: float | None = None) -> tuple[dict, float]:
+        """Fetch ``key`` into memory now: (the answer, its ttl), kept ``keep`` at most. A failure answers the
+        last one marked stale (ttl 0 - never shared) or raises."""
+        try:
+            value = await fetch()
+        except Exception as exc:   # KIS down, refused or slow: the last answer, marked
+            log.warning("futures quote %s failed: %s", key[0], _short(exc))
+            if hit and not isinstance(hit[2], BaseException):
+                stale = {**hit[2], "stale": True, "error": f"새 값을 받지 못해 마지막 값을 보입니다 — {_short(exc)}"}
+                # kept a little while too: a KIS outage is not asked again on every request
+                self._cache[key] = (self._clock(), CACHE_FAIL_SEC, stale)
+                return stale, 0.0
+            # #713 nothing to show either: the failure itself is kept a little while (every poll would ask)
+            self._cache[key] = (self._clock(), CACHE_FAIL_SEC, exc)
+            raise
+        ttl = CACHE_OPEN_SEC if live else CACHE_CLOSED_SEC
+        self._cache[key] = (self._clock(), ttl if keep is None else min(ttl, keep), value)
+        self._forget_before(key)
+        return value, ttl
+
+    async def _shared(self, key: tuple) -> dict | None:
+        """#689 the collector's answer for ``key`` from Redis into memory (and the held values), or None."""
+        hit = await shared_cache.aget(SHARED_NS, demand_key(key))
+        got = shared_cache.latest(hit)
+        if got is None or (key[0] == "candles" and not isinstance(got[0].get("bars"), list)):
+            return None
+        value, ttl, left = got
+        # held for what is left of the answer's own ttl (written ``age`` ago), so the next read takes the
+        # collector's next write; one past its ttl (a late pass) answers while Redis keeps it, read each time
+        hold = max(0.0, min(left, ttl - hit[1]))
+        self._cache[key] = (self._clock() - (ttl - hold), ttl, value)
+        self._keep_good(key, value)
+        self._forget_before(key)
+        return value
+
+    def _keep_good(self, key: tuple, value: dict) -> None:
+        """#713 a shared answer is the session's last good one here too: when Redis has nothing later and KIS
+        answers the closed session empty, the api holds it as the collector would (not a newer one it has)."""
+        name, kind, day = key
+        if name == "quote":
+            price = value.get("price")
+            if value.get("from_bars") or not isinstance(price, int | float) or price <= 0:
+                return
+            kept = self._good.get((kind, day))
+            if kept is None or str(value.get("as_of") or "") >= str(kept.get("as_of") or ""):
+                self._good[(kind, day)] = {k: v for k, v in value.items() if k not in HELD_KEYS}
+            return
+        bars = value.get("bars")
+        if bars and isinstance(bars[-1], dict):
+            kept = self._good.get(("bars", kind, day))
+            if not kept or str(bars[-1].get("t") or "") >= str(kept[-1].get("t") or ""):
+                self._good[("bars", kind, day)] = bars
 
     def _forget_before(self, key: tuple) -> None:
         """#713 one day per (answer, session) kept: an older day's cache, lock and held values go."""
@@ -235,24 +325,24 @@ class FuturesQuote:
         s = self._session(session)
         if self.rest is None:
             return {"supported": False, "error": self.off, "session": s["shown"], "market": s["now"]}
+        return await self._cached(("quote", s["shown"], s["date"]), s["now"] == s["shown"],
+                                  lambda: self._fetch_quote(s))
+
+    async def _fetch_quote(self, s: dict) -> dict:
         front = front_month(_kst(self._now()).date())
-
-        async def fetch() -> dict:
-            res = await self.rest.get(PRICE_PATH, PRICE_TR, {"FID_COND_MRKT_DIV_CODE": DIVISION[s["shown"]],
-                                                             "FID_INPUT_ISCD": front["code"]})
-            q = normalize_quote(res.get("output1") or {}, s["shown"])
-            if q["price"] is None or q["price"] <= 0:          # KIS' empty: "" or 0
-                kept = await self._closed_stand_in(s, front)
-                if kept is not None:
-                    return kept
-                raise RuntimeError(f"빈 시세(종목 {front['code']})")
-            name = q.pop("name")
-            out = self._base(s, front)
-            got = {**out, "contract": {**out["contract"], "name": name}, **q}
-            self._good[(s["shown"], s["date"])] = got
-            return got
-
-        return await self._cached(("quote", s["shown"], s["date"]), s["now"] == s["shown"], fetch)
+        res = await self.rest.get(PRICE_PATH, PRICE_TR, {"FID_COND_MRKT_DIV_CODE": DIVISION[s["shown"]],
+                                                         "FID_INPUT_ISCD": front["code"]})
+        q = normalize_quote(res.get("output1") or {}, s["shown"])
+        if q["price"] is None or q["price"] <= 0:          # KIS' empty: "" or 0
+            kept = await self._closed_stand_in(s, front)
+            if kept is not None:
+                return kept
+            raise RuntimeError(f"빈 시세(종목 {front['code']})")
+        name = q.pop("name")
+        out = self._base(s, front)
+        got = {**out, "contract": {**out["contract"], "name": name}, **q}
+        self._good[(s["shown"], s["date"])] = got
+        return got
 
     async def _closed_stand_in(self, s: dict, front: dict) -> dict | None:
         """#713 a closed session answered empty: its last good quote (``held``), else its last minute bar's
@@ -307,34 +397,64 @@ class FuturesQuote:
         s = self._session(session)
         if self.rest is None:
             return {"supported": False, "error": self.off, "session": s["shown"], "market": s["now"], "bars": []}
-        front = front_month(_kst(self._now()).date())
-
-        async def fetch() -> dict:
-            end = min(_kst(self._now()), s["end"])
-            rows: list[dict] = []
-            for page_no in range(MAX_PAGES):
-                if page_no:
-                    await asyncio.sleep(PAGE_PAUSE_SEC)   # KIS counts calls a second, on the key the snapshots share
-                res = await self.rest.get(CANDLE_PATH, CANDLE_TR, {
-                    "FID_COND_MRKT_DIV_CODE": DIVISION[s["shown"]], "FID_INPUT_ISCD": front["code"],
-                    "FID_HOUR_CLS_CODE": "60", "FID_PW_DATA_INCU_YN": "Y", "FID_FAKE_TICK_INCU_YN": "N",
-                    "FID_INPUT_DATE_1": end.strftime("%Y%m%d"), "FID_INPUT_HOUR_1": end.strftime("%H%M%S")})
-                page = res.get("output2") or []
-                rows += page
-                times = [t for t in (bar_time(r, s) for r in page) if t]
-                if len(page) < PAGE_ROWS or not times or min(times) <= s["start"]:
-                    break
-                end = min(times) - timedelta(minutes=1)
-            bars = normalize_bars(rows, s)
-            key = ("bars", s["shown"], s["date"])
-            if bars:
-                self._good[key] = bars
-            elif s["now"] != s["shown"] and key in self._good:
-                # #713 KIS answers a closed session's minutes empty (night bars at 11:37, 2026-11-20): the
-                # ones taken while it traded
-                return {**self._base(s, front), "bars": self._good[key], "held": True}
-            return {**self._base(s, front), "bars": bars}
-
         # the one-minute bars are fetched once a session; each interval is cut from them
-        one = await self._cached(("candles", s["shown"], s["date"]), s["now"] == s["shown"], fetch)
+        one = await self._cached(("candles", s["shown"], s["date"]), s["now"] == s["shown"],
+                                 lambda: self._fetch_candles(s))
         return {**one, "interval": interval, "bars": resample(one["bars"], INTERVALS[interval], s["start"])}
+
+    async def _fetch_candles(self, s: dict) -> dict:
+        front = front_month(_kst(self._now()).date())
+        end = min(_kst(self._now()), s["end"])
+        rows: list[dict] = []
+        for page_no in range(MAX_PAGES):
+            if page_no:
+                await asyncio.sleep(PAGE_PAUSE_SEC)   # KIS counts calls a second, on the key the snapshots share
+            res = await self.rest.get(CANDLE_PATH, CANDLE_TR, {
+                "FID_COND_MRKT_DIV_CODE": DIVISION[s["shown"]], "FID_INPUT_ISCD": front["code"],
+                "FID_HOUR_CLS_CODE": "60", "FID_PW_DATA_INCU_YN": "Y", "FID_FAKE_TICK_INCU_YN": "N",
+                "FID_INPUT_DATE_1": end.strftime("%Y%m%d"), "FID_INPUT_HOUR_1": end.strftime("%H%M%S")})
+            page = res.get("output2") or []
+            rows += page
+            times = [t for t in (bar_time(r, s) for r in page) if t]
+            if len(page) < PAGE_ROWS or not times or min(times) <= s["start"]:
+                break
+            end = min(times) - timedelta(minutes=1)
+        bars = normalize_bars(rows, s)
+        key = ("bars", s["shown"], s["date"])
+        if bars:
+            self._good[key] = bars
+        elif s["now"] != s["shown"] and key in self._good:
+            # #713 KIS answers a closed session's minutes empty (night bars at 11:37, 2026-11-20): the
+            # ones taken while it traded
+            return {**self._base(s, front), "bars": self._good[key], "held": True}
+        return {**self._base(s, front), "bars": bars}
+
+    async def serve(self, key: str) -> None:
+        """#689 the collector (desk.demand's handler): the wanted ``key`` (``demand_key``) read as this process
+        answers it - its own memory first, then KIS; never the shared tier (it would read its own value back) -
+        and shared for the api with the ttl left. A closed session's held close (or last-bar stand-in) is shared
+        too: this process' ``futures_close_quote`` job holds it, the api answers the card. A failure, or the
+        last answer marked stale after one, raises (desk.demand backs the key off) and shares nothing. A key
+        that is not one raises ValueError; one of a session no longer shown here (the api's next read wants
+        the new one) does nothing."""
+        name, kind, day = parse_key(key)
+        if self.rest is None:
+            raise RuntimeError("no KIS client")
+        s = self._session(kind)
+        if s["date"] != day:
+            log.debug("futures quote: the %s session of %s is not the one shown now", kind, day)
+            return
+        mem = (name, kind, day)
+        fetch = self._fetch_quote if name == "quote" else self._fetch_candles
+        async with self._locks.setdefault(mem, asyncio.Lock()):
+            hit = self._cache.get(mem)
+            left = hit[1] - (self._clock() - hit[0]) if hit is not None else 0.0
+            if left > 0:   # what this process' reads answer now (a failure kept: not asked again yet)
+                if isinstance(hit[2], BaseException):
+                    raise hit[2]
+                value, ttl = hit[2], left
+            else:
+                value, ttl = await self._refresh(mem, s["now"] == s["shown"], lambda: fetch(s), hit)
+        if not _sound(value):
+            raise RuntimeError("futures quote refresh failed: the last answer is not shared")
+        await shared_cache.aput(SHARED_NS, key, {"value": value, "ttl": ttl}, max(ttl, SHARED_KEEP_SEC))

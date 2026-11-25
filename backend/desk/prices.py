@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from datetime import time as clock_time
 
-from . import market_bus, market_calendar, shared_cache
+from . import demand, market_bus, market_calendar, shared_cache
 from .broker.base import Bar, Broker
 from .indicators import WARMUP, annotate, normalize
 from .single_flight import Flights
@@ -30,6 +30,7 @@ from .single_flight import Flights
 log = logging.getLogger(__name__)
 
 QUOTE_TTL_SEC = 10.0
+DEMAND_TTL_SEC = 30.0  # #689 desk.demand: the collector shares a quote this long, the api takes one this old
 SHARED_NS = "quote"   # #689 desk.shared_cache: a Quote dict per ticker, QUOTE_TTL_SEC
 CANDLE_TTL_SEC = 30.0
 # #858 how far past their TTL a caller takes the bars it had, at once, while a background read brings new ones.
@@ -373,13 +374,35 @@ class PriceSource:
             return cached[1]
         return await self._quote_reads.run(ticker, lambda: self._read_quote(ticker))
 
+    async def refresh_quote(self, ticker: str) -> None:
+        """#689 the collector's ``demand`` job (desk.demand.serve): a quote the api's screens read, from the broker,
+        shared for DEMAND_TTL_SEC. Never reads the shared tier (it would read its own value back) and never falls
+        back to Yahoo: a failure propagates - demand.serve backs the ticker off and the api reads it itself."""
+        async def fetch() -> None:
+            if off_broker(ticker):
+                raise ValueError("not a broker symbol")
+            price, currency = await self.broker.quote(broker_symbol(ticker))
+            quote = Quote(ticker, _tidy(price), currency, self.broker.name, _now())   # fetched_at: this read
+            _remember(self._quotes, ticker, (self._clock(), quote), QUOTE_TTL_SEC, self._clock)
+            await shared_cache.aput(SHARED_NS, ticker, quote.to_dict(), DEMAND_TTL_SEC)
+            market_bus.publish("quote", ticker, quote.to_dict(), quote.source)   # #690 open market streams
+
+        # its own flight: joining a quote() read in flight could take a shared value and write it back as new
+        await self._quote_reads.run(("demand", ticker), fetch)
+
     async def _read_quote(self, ticker: str) -> Quote:
-        # #689 a quote another process (collector · analyst · api) read in the last QUOTE_TTL_SEC
+        # #689 a quote another process (collector · analyst · api) read in the last QUOTE_TTL_SEC - in the api of
+        # split roles (desk.demand) up to DEMAND_TTL_SEC: the collector keeps fresh what the api marks here, on
+        # every read past the tick and memory (a hit too - marking only misses would stop the collection)
+        if not off_broker(ticker):
+            demand.want(SHARED_NS, ticker)
         hit = await shared_cache.aget(SHARED_NS, ticker)
         if hit is not None:
             quote = _shared_quote(ticker, hit[0])
-            if quote is not None:
-                _remember(self._quotes, ticker, (self._clock() - max(0.0, QUOTE_TTL_SEC - hit[2]), quote),
+            if quote is not None and hit[1] <= (DEMAND_TTL_SEC if demand.enabled() else QUOTE_TTL_SEC):
+                # kept until QUOTE_TTL_SEC after its fetch (or the shared value's end), not for a longer ttl's rest
+                life = max(1.0, min(QUOTE_TTL_SEC - hit[1], hit[2]))
+                _remember(self._quotes, ticker, (self._clock() - (QUOTE_TTL_SEC - life), quote),
                           QUOTE_TTL_SEC, self._clock)
                 return quote
         try:

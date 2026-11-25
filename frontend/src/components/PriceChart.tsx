@@ -385,7 +385,9 @@ type Drawn = {
   /** 그린 봉 주기 — 같은 주기의 추세선은 봉 순서로 */
   interval: Interval;
   lastClose: number;
-  /** chart.remove() 뒤에는 false — 지운 차트에 선을 지우면 다시 그리기가 예약돼 throw 한다. */
+  /** chart.remove() 뒤에는 false — 지운 차트에 선을 지우면 다시 그리기가 예약돼 throw 한다.
+   * #983 effect 는 정리뿐 아니라 시작할 때도 본다: 봉이 바뀌는 커밋에서 차트 effect 가 옛 차트를 지운 뒤, deps 가 함께 바뀐 다른 effect 가
+   * 아직 옛 `drawn` 으로 다시 돌며 선 · 시리즈 · 띠를 붙이면 지운 차트에 그리기가 예약돼 "Object is disposed" 가 난다. */
   alive: { current: boolean };
 };
 
@@ -419,7 +421,7 @@ function LiveBarTag({ drawn, ticker, interval, watch, fallback, onStale, onQuote
   const poll = usePoll(drawn && inView ? `candle-live:${ticker}:${interval}` : null, () => api.candlesLive(ticker, interval),
     liveMs(INTRADAY.has(interval)), { onData: setLive });
   useEffect(() => {
-    if (!drawn || !live || live.interval !== interval || !sameTicker(ticker, live.ticker)) return;
+    if (!drawn?.alive.current || !live || live.interval !== interval || !sameTicker(ticker, live.ticker)) return;
     const quote = live.price;
     if (quote == null || !Number.isFinite(quote) || quote <= 0) return;
     const label = live.estimated ? "추정 시세" : poll.failing ? "마지막 확인 시세"
@@ -438,7 +440,7 @@ function LiveBarTag({ drawn, ticker, interval, watch, fallback, onStale, onQuote
   const heard = useRef<{ drawn: Drawn | null; at: number }>({ drawn: null, at: 0 });
   if (heard.current.drawn !== drawn) heard.current = { drawn, at: Date.now() };
   useEffect(() => {
-    if (!drawn || !live || !drawn.alive.current || live.interval !== drawn.interval) return;
+    if (!drawn?.alive.current || !live || live.interval !== drawn.interval) return;
     const away = Date.now() - heard.current.at > STEP_SEC[drawn.interval] * 1000;
     heard.current = { drawn, at: Date.now() };
     const { series, volume, rows, intraday } = drawn;
@@ -663,7 +665,8 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   const [linesRep, setLinesRep] = useState<LinesReport | "fake" | null>(null);
   const [linePick, setLinePick] = useState<LinePick | null>(null);
   const closeLine = useCallback(() => setLinePick(null), []);
-  const [lineDrawn, setLineDrawn] = useState<{ pick: LinePick; series: ISeriesApi<"Line"> }[]>([]);
+  // #983 alive: 그 선을 붙인 차트가 살아 있는지 — 차트가 null 을 거치지 않고 바뀌면(과거 봉 더 받기 · 조용한 재요청) 한 렌더 동안 옛 선이 남는다
+  const [lineDrawn, setLineDrawn] = useState<{ pick: LinePick; series: ISeriesApi<"Line">; alive: { current: boolean } }[]>([]);
   const [failed, setFailed] = useState(false);
   // #206 과열 · 침체 판정(일봉 · 주봉만 — 분봉 · 월 · 년봉은 일봉 판정을 배지로만)
   const [osc, setOsc] = useState<OscillatorView | null>(null);
@@ -817,7 +820,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   const wantSr = show.sr || show.trend || show.pattern || show.fib || show.vp;
   // 분석 당시 값이면 "지금" 이라 하지 않는다 — 선은 오늘까지 그어도 거리 · 상태는 그때 기준
   const when = mode === "plan" ? "분석 당시" : "지금";
-  const [trendDrawn, setTrendDrawn] = useState<{ line: Trendline; series: ISeriesApi<"Line">; base: string }[]>([]);
+  const [trendDrawn, setTrendDrawn] = useState<{ line: Trendline; series: ISeriesApi<"Line">; base: string; alive: { current: boolean } }[]>([]);
 
   useEffect(() => savePrefs(alertFrame ? prefs.interval : interval, showSaved, preset, custom),
     [alertFrame, prefs.interval, interval, showSaved, preset, custom]);
@@ -928,7 +931,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   const maShown = show.ma && !!maValues;
   // #550 이동평균선 — 가는 선, 축 범위 · 마지막 값 라벨 없이(가격 축을 늘이거나 타점 라벨과 겹치지 않게). 켜고 끌 때 차트는 그대로
   useEffect(() => {
-    if (!drawn || !maValues || !show.ma) return;
+    if (!drawn?.alive.current || !maValues || !show.ma) return;
     const { chart, rows, intraday } = drawn;
     const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
     const added: ISeriesApi<"Line">[] = [];
@@ -953,7 +956,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // 거래량은 가격 칸 아래쪽(축 여백 0.82)에 겹쳐 있다.
   useEffect(() => {
     const el = box.current;
-    if (!drawn || !el) {
+    if (!drawn?.alive.current || !el) {
       setPaneTops({});
       return;
     }
@@ -983,7 +986,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // 마우스가 움직일 때마다 렌더하지 않게 DOM 을 직접 고친다.
   const ohlc = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!drawn) return;
+    if (!drawn?.alive.current) return;
     const { chart, series, volume, rsi, stoch, rows } = drawn;
     const last = rows[rows.length - 1];
     const write = (o: number, h: number, l: number, c: number, v: number | null, r: number | null, prev: number | null,
@@ -1266,7 +1269,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // 계획선 · 마커 · 축 범위 — 차트를 다시 만들지 않고 갈아 끼운다. 끈 선은 축 범위에서도 뺀다.
   const selectedScalePrice = includeHighlightInScale ? highlight : null;
   useEffect(() => {
-    if (!drawn) return;
+    if (!drawn?.alive.current) return;
     const { series, markers, rows, intraday, lastClose } = drawn;
     const nearPrice = (v: number) => Math.abs(v - lastClose) / lastClose <= WALL_RANGE;
     const optionLines: [number, string, string, LineStyle][] = show.opt && optionData ? [
@@ -1416,7 +1419,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   }, [drawn, alertBarIndex, alertAt]);
   // #440 가격 사다리에서 고른 가격 — 겹친 라벨과 상관없이 그 가격 하나만 굵게
   useEffect(() => {
-    if (!drawn || highlight == null) return;
+    if (!drawn?.alive.current || highlight == null) return;
     const line = drawn.series.createPriceLine({ price: highlight, title: "▶", color: css("--warn"), lineWidth: 3,
       lineStyle: LineStyle.Solid, axisLabelVisible: true });
     return () => {
@@ -1426,7 +1429,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
 
   // 지지 · 저항 구역 띠 · 타점의 손실 · 이익 영역 · 피보나치(#98) — 캔들 아래에 칠하고 축 라벨은 달지 않는다.
   useEffect(() => {
-    if (!drawn) return;
+    if (!drawn?.alive.current) return;
     const { series, rows, intraday } = drawn;
     const bands = new PriceBands(`11px ${getComputedStyle(document.body).fontFamily}`);
     series.attachPrimitive(bands);
@@ -1538,7 +1541,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // #578 세션 갭 띠 안을 누르면 그 갭의 메움 확률 카드 — 띠 밖을 누르면 닫는다. 그린 띠(지금에서 30% 안, 갭이 생긴 봉부터 오른쪽)만
   // 반응하고, 추세선 가까이를 누른 것은 추세선 카드(#531)에 맡긴다
   useEffect(() => {
-    if (!drawn || !gapRep || !show.gaps || gapRep.basis.leverage != null || gapRep.basis.symbol !== gapRep.ticker) return;
+    if (!drawn?.alive.current || !gapRep || !show.gaps || gapRep.basis.leverage != null || gapRep.basis.symbol !== gapRep.ticker) return;
     const { chart, series, rows } = drawn;
     const gaps = gapRep.open.filter((g) => Math.abs(g.to_fill_pct) <= 30);
     const onClick = (param: MouseEventParams<Time>) => {
@@ -1568,7 +1571,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // #466 계획선 가까이(12px)를 누르면 그 선의 가격을 알린다 — 해설 패널이 근거를 펼친다
   useEffect(() => {
     // 실제로 그린 선만 — 타점선을 끄면 없고, 진입을 사이에 두지 않는 계획(#436)은 진입 · 손절 · 목표를 그리지 않는다
-    if (!drawn || !onLineClick || !show.levels) return;
+    if (!drawn?.alive.current || !onLineClick || !show.levels) return;
     const { chart, series } = drawn;
     const own = levelsContradict(plan) ? [] : [plan?.entry_price, plan?.stop_loss, plan?.price_target];
     const prices = [...own, ...(extraLines ?? []).map((l) => l.price)]
@@ -1596,7 +1599,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
 
   // #313 타점 보기 — 자기 띠 · 선을 붙이고 뗀다(다른 그리기와 섞지 않는다)
   useEffect(() => {
-    if (!drawn || !show.entry || !entry) return;
+    if (!drawn?.alive.current || !show.entry || !entry) return;
     return drawEntry(drawn.series, entry, {
       long: css("--long"), short: css("--short"), loss: css("--danger"),
       profit: css("--ok"), muted: css("--muted"),
@@ -1606,7 +1609,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // RSI 패널은 차트 높이(크게 보기 · 가로 모드 · 창 크기)에 맞춰 다시 잰다
   useEffect(() => {
     const el = box.current;
-    if (!drawn?.rsi || !el) return;
+    if (!drawn?.rsi || !drawn.alive.current || !el) return;
     const apply = () => {
       if (drawn.alive.current) drawn.chart.panes()[1]?.setHeight(rsiHeight(el.clientHeight));
     };
@@ -1618,7 +1621,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // 추세선 — 앵커부터 오늘까지 잇는 선, 터치 봉에 번호, 이탈한 선은 흐린 점선. 축 범위엔 넣지 않는다(먼 선이 봉을 누르지 않게).
   // 피보나치 — 비율 제목이 붙은 가는 가로선 + 스윙 구간(시작 → 끝) 점선.
   useEffect(() => {
-    if (!drawn || (trendLines.length === 0 && !fib)) return;
+    if (!drawn?.alive.current || (trendLines.length === 0 && !fib)) return;
     const { chart, series, rows, intraday } = drawn;
     const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
     const keys = rows.map((r) => r.key);
@@ -1634,7 +1637,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       return barFor(keys, intraday ? kstStamp(iso) : kstDay(iso));
     };
     const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, autoscaleInfoProvider: () => null };
-    const lines: { line: Trendline; series: ISeriesApi<"Line">; base: string }[] = [];
+    const lines: { line: Trendline; series: ISeriesApi<"Line">; base: string; alive: { current: boolean } }[] = [];
     const marks: { key: Key; m: Omit<SeriesMarker<Time>, "time"> }[] = [];
     let swing: ISeriesApi<"Line"> | null = null;
     const marked = new Set<string>(); // 같은 봉 · 같은 쪽엔 앞(더 강한) 선의 번호 하나만 — 비슷한 선끼리 겹쳐 찍지 않게
@@ -1674,7 +1677,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
           lineStyle: broken ? LineStyle.Dashed : line.status === "far" ? LineStyle.Dotted : LineStyle.Solid,
           lastValueVisible: true, title: trendLabel(line),
         });
-        lines.push({ line, series: s, base });
+        lines.push({ line, series: s, base, alive: drawn.alive });
         s.setData(data);
         line.touches.forEach((at, i) => {
           const key = Date.parse(at) < first ? null : keyOf(at, line.timeframe);
@@ -1718,7 +1721,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // 짧은 추세선은 다른 색(주황), 이탈한 선은 파선 + 이탈 봉에 화살표. 선은 로그 가격 × 봉 순서 직선(#611 과 같게),
   // 축 범위엔 넣지 않는다(바깥 선이 봉을 누르지 않게). 가격축 이름표는 첫 채널 상 · 하단과 추세선만.
   useEffect(() => {
-    if (!drawn || !lines || lines.timeframe !== drawn.interval || (!show.chan && !show.ltrend && !show.long)) return;
+    if (!drawn?.alive.current || !lines || lines.timeframe !== drawn.interval || (!show.chan && !show.ltrend && !show.long)) return;
     const { chart, series, rows, intraday } = drawn;
     if (rows.length < 2) return;
     const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
@@ -1733,7 +1736,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       return k == null ? null : index.get(k) ?? null;
     };
     const quiet = { priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, autoscaleInfoProvider: () => null };
-    const made: { pick: LinePick; series: ISeriesApi<"Line"> }[] = [];
+    const made: { pick: LinePick; series: ISeriesApi<"Line">; alive: { current: boolean } }[] = [];
     const marks: { key: Key; m: Omit<SeriesMarker<Time>, "time"> }[] = [];
     type Style = { color: string; lineWidth: 1 | 2 | 3 | 4; lineStyle: LineStyle; lastValueVisible?: boolean; title?: string };
     // 두 점(또는 끝점 + 봉당 기울기)으로, 그 선이 시작한 봉(보는 기간 전이면 첫 봉)부터 마지막 봉까지
@@ -1751,7 +1754,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       if (data.length < 2) return;
       const s = chart.addSeries(LineSeries, { ...quiet, ...style });
       s.setData(data);
-      made.push({ pick, series: s });
+      made.push({ pick, series: s, alive: drawn.alive });
     };
     try {
       if (show.chan) {
@@ -1817,7 +1820,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
             if (data.length >= 2) {
               const s = chart.addSeries(LineSeries, { ...quiet, ...style });
               s.setData(data);
-              made.push({ pick: { kind: "long", id: t.id }, series: s });
+              made.push({ pick: { kind: "long", id: t.id }, series: s, alive: drawn.alive });
             }
           } else {
             draw(t.anchors[0], t.end, t.slope_pct_per_bar, style, { kind: "long", id: t.id });
@@ -1849,7 +1852,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // #672 번호 표식 — 설명 칸의 ①… 을 차트 오른쪽 끝(마지막 봉 위) 그 가격 높이에. 확대 · 이동 · 크기 변화 때 다시 놓는다
   const [markPos, setMarkPos] = useState<{ n: number; x: number; y: number }[]>([]);
   useEffect(() => {
-    if (!drawn || readMarks.length === 0) {
+    if (!drawn?.alive.current || readMarks.length === 0) {
       setMarkPos([]);
       return;
     }
@@ -1901,14 +1904,15 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // #672 번호를 누르면 그 가격에 굵은 강조선 + 그 채널 · 추세선은 굵게, 나머지 채널 · 추세선은 흐리게
   useEffect(() => {
     const m = readPick == null ? null : readMarks.find((x) => x.n === readPick);
-    if (!drawn || !m) return;
+    if (!drawn?.alive.current || !m) return;
     const { series } = drawn;
     const ids = refIds(m.level);
     const short = m.level.name.split(" · ")[0];
     const line = series.createPriceLine({ price: m.level.price, title: `${MARKS[m.n]} ${short}`, color: css("--warn"), lineWidth: 2,
       lineStyle: LineStyle.Solid, axisLabelVisible: true });
     const restore: [ISeriesApi<"Line">, { color?: string; lineWidth?: 1 | 2 | 3 | 4 }][] = [];
-    for (const { pick, series: s } of lineDrawn) {
+    for (const { pick, series: s, alive } of lineDrawn) {
+      if (!alive.current) continue;          // #983 지운 차트의 선은 건드리지 않는다
       try {   // 선을 다시 그리는 사이(초보 모드 · 표시를 바꿈)엔 지운 선이 남아 있을 수 있다
         const o = s.options();
         if (ids.has(pick.id)) {
@@ -1947,7 +1951,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
 
   // #612 채널 · 짧은 추세선 가까이(10px)를 누르면 그 선의 설명 카드, 선이 아닌 곳을 누르면 닫는다
   useEffect(() => {
-    if (!drawn || lineDrawn.length === 0) return;
+    if (!drawn?.alive.current || lineDrawn.length === 0) return;
     const { chart } = drawn;
     const onClick = (param: MouseEventParams<Time>) => {
       if (drawingCapture.current) return;
@@ -1968,7 +1972,8 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
 
   // #531 고른 추세선 강조 · 나머지 흐리게. 먼 선(far)을 고르면 그 선 값까지 가격축을 넓혀 보이게 한다
   useEffect(() => {
-    for (const { line, series: s, base } of trendDrawn) {
+    for (const { line, series: s, base, alive } of trendDrawn) {
+      if (!alive.current) continue;          // #983 지운 차트의 선은 건드리지 않는다
       const sel = pickedId != null && trendKey(line) === pickedId;
       const dim = pickedId != null && !sel;
       const alpha = dim ? "40" : line.state === "broken" ? "80" : "";
@@ -1983,7 +1988,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
 
   // #531 추세선 가까이(10px)를 누르면 그 선을 고른다. 선이 아닌 곳을 누르면 고름을 푼다
   useEffect(() => {
-    if (!drawn || trendDrawn.length === 0) return;
+    if (!drawn?.alive.current || trendDrawn.length === 0) return;
     const { chart, series } = drawn;
     const onClick = (param: MouseEventParams<Time>) => {
       if (drawingCapture.current) return;
@@ -2029,7 +2034,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // #321 휩소 — 직전 저점(고점)을 깨고 구역에 들어왔다가 되돌아 마감한 봉에 "스윕 후 회복". 지지 · 저항을 켰을 때만.
   const sweeps = show.sr ? srSource?.events ?? null : null;
   useEffect(() => {
-    if (!drawn || !sweeps?.length) return;
+    if (!drawn?.alive.current || !sweeps?.length) return;
     const tf = srSource?.intervals?.primary ?? "1d";
     if (tf !== interval) return;                     // 다른 주기 봉에는 달지 않는다
     const { rows, intraday } = drawn;
@@ -2058,7 +2063,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // #298 삼각수렴 · 쐐기 — 윗선 · 아랫선을 첫 터치부터 마지막 봉까지 점선으로, 윗선 끝에 종류 · 상태 · 정점까지 남은 봉.
   // 추세선과 같은 규칙(같은 주기는 로그 가격 × 봉 순서 직선, 다른 주기는 시각으로)이고 축 범위엔 넣지 않는다.
   useEffect(() => {
-    if (!drawn || patterns.length === 0) return;
+    if (!drawn?.alive.current || patterns.length === 0) return;
     const { chart, rows, intraday } = drawn;
     const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
     const keys = rows.map((r) => r.key);
@@ -2157,7 +2162,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
 
   // #695 헤드앤숄더 넥라인(점선, 왼쪽 골부터 마지막 봉까지)과 깬 뒤의 목표(가격선) — 축 범위엔 넣지 않는다
   useEffect(() => {
-    if (!drawn || hsList.length === 0) return;
+    if (!drawn?.alive.current || hsList.length === 0) return;
     const { chart, rows, intraday } = drawn;
     const time = (k: Key) => (intraday ? (k as UTCTimestamp) : (k as Time));
     const first = Date.parse(rows[0].bar.at);
@@ -2202,7 +2207,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // #300 예상도 — 마지막 봉 뒤 미래 칸에 확률 원뿔(68% 실선 · 95% 점선 · 가운데 점선)과 시나리오 경로(강세 · 약세 · 범위)를 그린다.
   // 축 범위엔 95% 띠를 넣지 않는다(먼 범위가 봉을 누르지 않게). 이 차트 주기와 같은 시간축의 예상도만 그린다.
   useEffect(() => {
-    if (!drawn || !proj || proj.timeframe !== drawn.interval || proj.cone.length === 0 || !proj.price) return;
+    if (!drawn?.alive.current || !proj || proj.timeframe !== drawn.interval || proj.cone.length === 0 || !proj.price) return;
     const { chart, rows, intraday } = drawn;
     const time = (k: string | number) => (intraday ? (k as UTCTimestamp) : (k as Time));
     const last = rows[rows.length - 1].key;
@@ -2268,7 +2273,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     return false;
   })();
   useEffect(() => {
-    if (!drawn || !outlook || !outlookPrefs.on || drawn.interval !== "1d" || outlookFar) return;
+    if (!drawn?.alive.current || !outlook || !outlookPrefs.on || drawn.interval !== "1d" || outlookFar) return;
     const cone = outlookCone(outlook, outlookPeriod);
     if (cone.length < 2) return;
     const { chart, series, rows } = drawn;
@@ -2347,7 +2352,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   // #438 전망 무효 가격 — 가는 선, 축 라벨 없이(#434 타점 라벨과 겹치지 않게). 계획 손절선이 같은 가격에 그려져 있으면 생략
   // (#436 모순인 계획은 손절선을 그리지 않으므로 그때는 이 선을 긋는다).
   useEffect(() => {
-    if (!drawn || !outlook || !outlookPrefs.on || drawn.interval !== "1d" || outlookOutside || outlookFar) return;
+    if (!drawn?.alive.current || !outlook || !outlookPrefs.on || drawn.interval !== "1d" || outlookOutside || outlookFar) return;
     const inv = outlook.invalidation;
     const stopDrawn = show.levels && !!plan && !levelsContradict(plan) && plan.stop_loss != null && inv != null && price(plan.stop_loss) === price(inv);
     if (inv == null || !(inv > 0) || stopDrawn) return;
@@ -2360,7 +2365,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
 
   // 선 근처(5px)에 마우스를 올리면 근거 — 지지 · 저항 · 피보나치(가로선)와 추세선(그 봉에서의 선 높이).
   useEffect(() => {
-    if (!drawn) return;
+    if (!drawn?.alive.current) return;
     const { chart, series } = drawn;
     const onMove = (param: MouseEventParams<Time>) => {
       if (!drawn.alive.current) return;          // #585 지운 차트의 시리즈는 좌표를 묻지 않는다
@@ -2442,7 +2447,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
   const pickFill = (filledAt: string) => {
     setPickedFill(filledAt);
     const f = fills.find((x) => x.filled_at === filledAt);
-    if (!drawn || !f) return;
+    if (!drawn?.alive.current || !f) return;
     const at = fillBar(f, drawn.rows, drawn.intraday, ticker);
     const i = drawn.rows.findIndex((r) => r.key === at);
     if (i < 0) return;

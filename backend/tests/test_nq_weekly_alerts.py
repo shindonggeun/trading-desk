@@ -2,27 +2,19 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import UTC, date, datetime, timedelta
-from threading import Event
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, insert, select
 
-from desk import notify, otp, roles
+from desk import notify, roles
 from desk import nq_weekly_alerts as alerts
 from desk.account_owner import AccountOwnerStore
 from desk.auth import Auth
-from desk.db import make_engine, migrate, users
-from desk.notify_channels import (
-    ChannelRateLimited,
-    ChannelStopped,
-    ChannelStore,
-    ChannelUnknown,
-    Kakao,
-    Telegram,
-)
+from desk.db import make_engine, migrate, nq_weekly_deliveries, users
+from desk.notify_channels import ChannelRateLimited, ChannelStopped, ChannelUnknown, Telegram
 from desk.nq_weekly_ledger import Ledger
 from desk.nq_weekly_signal import DEFAULT_SETTINGS
 from desk.privacy import (
@@ -74,7 +66,7 @@ def test_concurrent_evaluation_revisions_and_gap_do_not_backfill(state):
     with ThreadPoolExecutor(4) as executor:
         winners = list(executor.map(lambda _: record(ledger, rule, 1, "matched"), range(4)))
     assert winners.count(True) == 1
-    assert {row["channel"] for row in ledger.latest(rule)} == {"telegram", "kakao"}
+    assert {row["channel"] for row in ledger.latest(rule)} == {"telegram"}
     assert not record(ledger, rule, 1, "not_matched")  # revised old bar does not rearm
     assert not record(ledger, rule, 2, "unavailable")
     assert not record(ledger, rule, 3, "matched")
@@ -101,10 +93,7 @@ class FakeChannel:
         self.outcomes = iter(outcomes)
         self.sent = []
 
-    def status(self):
-        return {"connected": True, "needs_reconnect": False}
-
-    def send_once(self, payload, *, allowed, fence=None, kinds=()):
+    def send_once(self, payload, *, allowed):
         assert allowed()
         self.sent.append(payload)
         error = next(self.outcomes, None)
@@ -112,7 +101,8 @@ class FakeChannel:
             raise error
 
 
-def _service(ledger, monkeypatch, now, telegram, kakao):
+def _service(ledger, monkeypatch, now, telegram, kakao=None):
+    """``kakao``: a channel by the retired name, there only to prove nothing reaches it (#986)."""
     targets = {"telegram": telegram, "kakao": kakao}
     monkeypatch.setattr(notify, "channel", targets.get)
 
@@ -120,35 +110,32 @@ def _service(ledger, monkeypatch, now, telegram, kakao):
         assert name in targets and kinds == ("nq_alert", "tone_warning")
         return True
 
-    store = SimpleNamespace(wants=wants, get=lambda _name: {"needs_reconnect": False})
+    store = SimpleNamespace(wants=wants)
     return alerts.Service(ledger, None, store, lambda: None, now=lambda: now[0])
 
 
-def test_partial_failure_and_rate_limit_survive_service_restart(state, monkeypatch):
+def test_a_rate_limit_survives_service_restart(state, monkeypatch):
     ledger, rule = state
     assert not record(ledger, rule, 0, "not_matched")
     assert record(ledger, rule, 1, "matched")
     now = [CONFIRMED + timedelta(weeks=1, minutes=1)]
-    telegram = FakeChannel()
-    kakao = FakeChannel([ChannelRateLimited(120)])
-    svc = _service(ledger, monkeypatch, now, telegram, kakao)
-    asyncio.run(svc.deliver(rule, "kakao"))
+    telegram = FakeChannel([ChannelRateLimited(120)])
+    svc = _service(ledger, monkeypatch, now, telegram)
     asyncio.run(svc.deliver(rule, "telegram"))
-    assert {r["channel"]: r["status"] for r in ledger.latest(rule)} == {"telegram": "sent", "kakao": "rate_limited"}
+    assert {r["channel"]: r["status"] for r in ledger.latest(rule)} == {"telegram": "rate_limited"}
 
-    restarted = _service(Ledger(ledger.engine, ledger.policy), monkeypatch, now, telegram, kakao)
-    asyncio.run(restarted.deliver(rule, "kakao"))
-    assert len(kakao.sent) == 1
-    now[0] += timedelta(minutes=2)
-    asyncio.run(restarted.deliver(rule, "kakao"))
+    restarted = _service(Ledger(ledger.engine, ledger.policy), monkeypatch, now, telegram)
     asyncio.run(restarted.deliver(rule, "telegram"))
-    assert len(kakao.sent) == 2 and len(telegram.sent) == 1
+    assert len(telegram.sent) == 1                     # not before retry_after
+    now[0] += timedelta(minutes=2)
+    asyncio.run(restarted.deliver(rule, "telegram"))
+    assert len(telegram.sent) == 2
     assert all(row["status"] == "sent" for row in ledger.latest(rule))
     assert "26.00" in telegram.sent[0]["body"] and "123.00" in telegram.sent[0]["body"]
     assert telegram.sent[0]["url"] == "/#/charts?t=NQ%3DF&iv=1w"
 
 
-def test_claimed_on_restart_becomes_unknown_without_replaying_other_channel(state, monkeypatch):
+def test_claimed_on_restart_becomes_unknown_without_replaying(state, monkeypatch):
     original, rule = state
     record(original, rule, 0, "not_matched")
     assert record(original, rule, 1, "matched")
@@ -156,12 +143,11 @@ def test_claimed_on_restart_becomes_unknown_without_replaying_other_channel(stat
     assert original.claim(rule, "telegram", tick)
     restarted = Ledger(original.engine, original.policy)
     now = [tick + timedelta(minutes=6)]
-    telegram, kakao = FakeChannel(), FakeChannel()
-    svc = _service(restarted, monkeypatch, now, telegram, kakao)
+    telegram = FakeChannel()
+    svc = _service(restarted, monkeypatch, now, telegram)
     asyncio.run(svc.deliver(rule, "telegram"))
-    asyncio.run(svc.deliver(rule, "kakao"))
-    assert telegram.sent == [] and len(kakao.sent) == 1
-    assert {r["channel"]: r["status"] for r in restarted.latest(rule)} == {"telegram": "unknown", "kakao": "sent"}
+    assert telegram.sent == []
+    assert {r["channel"]: r["status"] for r in restarted.latest(rule)} == {"telegram": "unknown"}
 
 
 def test_disabled_or_replaced_setting_stops_pending_delivery(state, monkeypatch):
@@ -170,44 +156,32 @@ def test_disabled_or_replaced_setting_stops_pending_delivery(state, monkeypatch)
     assert record(ledger, rule, 1, "matched")
     tick = CONFIRMED + timedelta(weeks=1, minutes=1)
     disabling = ledger.save(rule.owner, DEFAULT_SETTINGS, tick)
-    telegram, kakao = FakeChannel(), FakeChannel()
-    svc = _service(ledger, monkeypatch, [tick], telegram, kakao)
+    telegram = FakeChannel()
+    svc = _service(ledger, monkeypatch, [tick], telegram)
     asyncio.run(svc.deliver(rule, "telegram"))
-    asyncio.run(svc.deliver(disabling, "kakao"))
-    assert telegram.sent == kakao.sent == []
+    asyncio.run(svc.deliver(disabling, "telegram"))
+    assert telegram.sent == []
     assert all(row["status"] == "superseded" for row in ledger.latest(rule))
 
 
-def test_kakao_queue_cannot_block_telegram_and_expiry_is_checked_again(state, monkeypatch):
+def test_expiry_is_checked_again_after_the_claim(state, monkeypatch):
     ledger, rule = state
     record(ledger, rule, 0, "not_matched")
     assert record(ledger, rule, 1, "matched")
     now = [CONFIRMED + timedelta(weeks=1, hours=23, minutes=59)]
-    telegram, kakao = FakeChannel(), FakeChannel()
-    svc = _service(ledger, monkeypatch, now, telegram, kakao)
-    queued, release = Event(), Event()
+    telegram = FakeChannel()
+    svc = _service(ledger, monkeypatch, now, telegram)
+    claim = ledger.claim
 
-    def wait_on_kakao_worker(fn):
-        queued.set()
-        assert release.wait(10)
-        return fn()
+    def claimed_just_before_expiry(*args):
+        row = claim(*args)
+        now[0] += timedelta(minutes=2)
+        return row
 
-    monkeypatch.setattr(notify, "run", wait_on_kakao_worker)
-
-    async def send():
-        pending = asyncio.create_task(svc.deliver(rule, "kakao"))
-        try:
-            assert await asyncio.to_thread(queued.wait, 10)
-            await svc.deliver(rule, "telegram")
-            assert len(telegram.sent) == 1
-            now[0] += timedelta(minutes=2)
-        finally:
-            release.set()
-            await pending
-
-    asyncio.run(send())
-    assert kakao.sent == []
-    assert {r["channel"]: r["status"] for r in ledger.latest(rule)} == {"telegram": "sent", "kakao": "expired"}
+    monkeypatch.setattr(ledger, "claim", claimed_just_before_expiry)
+    asyncio.run(svc.deliver(rule, "telegram"))
+    assert telegram.sent == []
+    assert {r["channel"]: r["status"] for r in ledger.latest(rule)} == {"telegram": "expired"}
 
 
 def test_single_post_respects_denial_and_does_not_retry_uncertain_provider_result():
@@ -237,48 +211,6 @@ def test_single_post_respects_denial_and_does_not_retry_uncertain_provider_resul
         assert len(attempts) == 3 and "private detail" not in str(timeout.value)
 
 
-def test_kakao_delayed_refresh_cannot_overwrite_or_message_a_replaced_recipient(state):
-    ledger, _ = state
-    store = ChannelStore(ledger.engine, otp.SecretBox(otp.new_key(), "synthetic"))
-    deadline = CONFIRMED + timedelta(hours=8)
-    store.save_tokens("kakao", {"access_token": "old", "refresh_token": "old-refresh"}, CONFIRMED, deadline, True)
-    messages = []
-
-    def altered_recipient(request):
-        if request.url.path == "/oauth/token":
-            store.forget("kakao")
-            store.save_tokens("kakao", {"access_token": "replacement", "refresh_token": "new-refresh"},
-                              CONFIRMED + timedelta(hours=1), deadline, True)
-            return httpx.Response(200, json={"access_token": "late-refresh", "expires_in": 3600})
-        messages.append(request)
-        return httpx.Response(200, json={"result_code": 0})
-
-    with httpx.Client(transport=httpx.MockTransport(altered_recipient)) as client:
-        kakao = Kakao("key", "secret", "https://desk.test/callback", store, client=client, clock=lambda: CONFIRMED)
-        with pytest.raises(ChannelStopped):
-            kakao.send_once({}, allowed=lambda: True)
-        assert store.tokens("kakao")["access_token"] == "replacement" and messages == []
-        kakao.send_once({}, allowed=lambda: True)
-        assert len(messages) == 1
-        assert messages[0].headers["Authorization"] == "Bearer replacement"
-
-        def reconnected_while_checking_rule():
-            store.save_tokens("kakao", {"access_token": "newer"}, CONFIRMED + timedelta(hours=1), deadline, True)
-            return True
-
-        with pytest.raises(ChannelStopped):
-            kakao.send_once({}, allowed=reconnected_while_checking_rule)
-        assert len(messages) == 1
-
-        def muted_while_checking_rule():
-            store.set_prefs("kakao", True, {"nq_alert": False})
-            return True
-
-        with pytest.raises(ChannelStopped):
-            kakao.send_once({}, allowed=muted_while_checking_rule, kinds=("nq_alert",))
-        assert len(messages) == 1
-
-
 def test_protected_scope_uses_only_current_owner_and_attested_destination(state, monkeypatch):
     old, legacy_rule = state
     engine = old.engine
@@ -304,14 +236,13 @@ def test_protected_scope_uses_only_current_owner_and_attested_destination(state,
     monkeypatch.setattr(notify, "channel", unwanted)
     sent = []
     resource = OwnerResources(binding, destinations=(
-        AttestedDestination("kakao", sent.append, frozenset(alerts.KINDS)),
+        AttestedDestination("telegram", sent.append, frozenset(alerts.KINDS)),
     ))
     svc = alerts.Service(ledger, None, None, lambda: resource if resource.current(owners) else None,
                          now=lambda: CONFIRMED + timedelta(weeks=1, minutes=1))
     asyncio.run(svc.deliver(rule, "telegram"))
-    asyncio.run(svc.deliver(rule, "kakao"))
     assert len(sent) == 1
-    assert {r["channel"]: r["status"] for r in ledger.latest(rule)} == {"telegram": "unavailable", "kakao": "sent"}
+    assert {r["channel"]: r["status"] for r in ledger.latest(rule)} == {"telegram": "sent"}
 
 
 def test_weekly_read_and_settings_use_the_existing_sessions_and_owner(db_url, monkeypatch):
@@ -331,10 +262,38 @@ def test_weekly_read_and_settings_use_the_existing_sessions_and_owner(db_url, mo
         assert response.headers["cache-control"] == "private, no-store"
         assert response.json()["can_edit"]
         assert response.json()["current"]["status"] == "unavailable"
-        assert {item["channel"] for item in response.json()["channels"]} == {"telegram", "kakao"}
+        assert response.json()["channels"] == [{"channel": "telegram", "status": "unavailable",
+                                                 "needs_reconnect": False}]
         public = other.get(alerts.URL).json()
         assert not public["can_edit"]
         assert public["channels"] == public["deliveries"] == []
         assert owner.get(alerts.URL, params={"weeks": 105}).status_code == 422
     assert roles.runs("collector", "nq_weekly") and roles.runs("all", "nq_weekly")
     assert not roles.runs("api", "nq_weekly") and not roles.runs("analyst", "nq_weekly")
+
+
+def test_a_leftover_kakao_outbox_row_is_neither_listed_nor_sent(state, monkeypatch):
+    """#986 KakaoTalk was dropped: the row it left for the same week stays as it was and the tick sends Telegram only."""
+    ledger, rule = state
+    record(ledger, rule, 0, "not_matched")
+    assert record(ledger, rule, 1, "matched")
+    now = [CONFIRMED + timedelta(weeks=1, minutes=1)]
+    table = nq_weekly_deliveries
+    with ledger.engine.begin() as conn:
+        conn.execute(delete(table).where(table.c.channel == "kakao"))
+        conn.execute(insert(table).values(
+            scope=rule.scope, revision=rule.revision, week=WEEK + timedelta(weeks=1), channel="kakao", payload={},
+            status="pending", attempts=0, updated_at=now[0], expires_at=now[0] + timedelta(hours=23)))
+    telegram, kakao = FakeChannel(), FakeChannel()
+    svc = _service(ledger, monkeypatch, now, telegram, kakao)
+
+    async def offline(_self):
+        return None
+
+    monkeypatch.setattr(alerts.Service, "weekly", offline)
+    assert asyncio.run(svc.step()) == alerts.TICK_SEC
+    assert len(telegram.sent) == 1 and kakao.sent == []
+    assert [(r["channel"], r["status"]) for r in ledger.latest(rule)] == [("telegram", "sent")]
+    assert [c["channel"] for c in svc.channels(rule)] == ["telegram"]
+    with ledger.engine.connect() as conn:
+        assert conn.scalar(select(table.c.status).where(table.c.channel == "kakao")) == "pending"

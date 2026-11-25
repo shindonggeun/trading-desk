@@ -82,7 +82,7 @@ def _client(path: Path, tier: str, failure: Exception | None = None):
             session_max_hours=1, session_idle_hours=1, cookie_secure=True, enable_docs=False,
             otp_key="", public_url="", cors_origins=[], log_level="WARNING",
             vapid_public_key="", vapid_private_key="", vapid_subject="",
-            telegram_bot_token="", telegram_chat_id="", kakao_rest_key="", kakao_client_secret="", notify_key="",
+            telegram_bot_token="", telegram_chat_id="",
             chat_model_tier=tier, chat_reasoning_effort="", chat_models=list(MODELS.values()), chat_model="",
             rate_limit_cooldown_min=1, max_concurrent_runs=1, reuse_reports_min=0,
         )

@@ -1,4 +1,4 @@
-"""#580 Telegram · KakaoTalk alert channels: sending, retries, token refresh, isolation, the settings API."""
+"""#580 the Telegram alert channel: sending, retries, isolation, the settings API (#986 Telegram only)."""
 
 import json
 import logging
@@ -8,7 +8,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from desk import notify, otp
+from desk import notify
 from desk import notify_channels as nc
 from desk.api import create_app
 from desk.auth import Auth
@@ -17,7 +17,6 @@ from desk.runner import make_fake_runner
 from desk.settings import Settings
 
 TOKEN, CHAT = "123456:SECRET-bot-token", "987654321"
-KEY = otp.new_key()
 NOW = datetime(2026, 11, 18, 3, 0, tzinfo=UTC)
 ALERT = {"title": "수급 흐름 변화", "body": "🔵 기관 코스피 현물 매도 확대 · 10:42", "url": "/#/market"}
 
@@ -42,7 +41,7 @@ class _Http:
 def _store(db_url):
     migrate(db_url)
     engine = make_engine(db_url)
-    return engine, nc.ChannelStore(engine, otp.SecretBox(KEY, "DESK_NOTIFY_KEY"))
+    return engine, nc.ChannelStore(engine)
 
 
 def test_telegram_sends_plain_text_with_a_link_and_honours_retry_after():
@@ -82,79 +81,6 @@ def test_httpx_request_lines_never_show_the_bot_token(caplog):
         logger.setLevel(logging.WARNING)
 
 
-def _kakao(store, http, clock=lambda: NOW):
-    return nc.Kakao("rest-key", "client-secret", "https://desk.test/kakao-callback.html", store, "https://desk.test",
-                    http.client(), sleep=lambda s: None, clock=clock)
-
-
-def _tokens(access="acc-1", refresh="ref-1", refresh_in=5_000_000):
-    return {"access_token": access, "refresh_token": refresh, "expires_in": 21599,
-            "refresh_token_expires_in": refresh_in, "token_type": "bearer"}
-
-
-def test_kakao_connects_seals_the_tokens_and_sends_to_me(db_url):
-    engine, store = _store(db_url)
-    http = _Http((200, _tokens()), (200, {"result_code": 0}))
-    kakao = _kakao(store, http)
-    assert "scope=talk_message" in kakao.authorize_url("st") and "state=st" in kakao.authorize_url("st")
-    kakao.connect("the-code")
-    form = dict(httpx.QueryParams(http.requests[0].content.decode()))
-    assert form == {"client_id": "rest-key", "client_secret": "client-secret", "grant_type": "authorization_code",
-                    "redirect_uri": "https://desk.test/kakao-callback.html", "code": "the-code"}
-    with engine.connect() as conn:
-        raw = conn.execute(notify_channels.select()).mappings().one()
-    assert "acc-1" not in raw["secret"] and "ref-1" not in raw["secret"] and raw["enabled"] is True
-    kakao.send(ALERT)
-    memo = http.requests[1]
-    assert memo.headers["Authorization"] == "Bearer acc-1"
-    template = json.loads(dict(httpx.QueryParams(memo.content.decode()))["template_object"])
-    assert template["object_type"] == "text" and template["text"].startswith("수급 흐름 변화\n")
-    assert template["link"] == {"web_url": "https://desk.test/#/market", "mobile_web_url": "https://desk.test/#/market"}
-    assert kakao.status() == {"connected": True, "needs_reconnect": False,
-                              "refresh_expires_at": (NOW + timedelta(seconds=5_000_000)).isoformat(timespec="seconds")}
-    engine.dispose()
-
-
-def test_kakao_refreshes_before_expiry_and_after_a_401_keeping_the_refresh_token(db_url):
-    engine, store = _store(db_url)
-    clock = {"now": NOW}
-    http = _Http((200, _tokens()))
-    kakao = _kakao(store, http, clock=lambda: clock["now"])
-    kakao.connect("c")
-    clock["now"] = NOW + timedelta(hours=6)                 # 59 s left on the access token
-    http.answers += [(200, {"access_token": "acc-2", "expires_in": 21599}), (200, {"result_code": 0})]
-    kakao.send(ALERT)
-    refresh = dict(httpx.QueryParams(http.requests[1].content.decode()))
-    assert refresh["grant_type"] == "refresh_token" and refresh["refresh_token"] == "ref-1"
-    assert http.requests[2].headers["Authorization"] == "Bearer acc-2"
-    assert store.tokens("kakao") == {"access_token": "acc-2", "refresh_token": "ref-1"}   # no new one: kept
-    http.answers += [(401, {"code": -401}), (200, {"access_token": "acc-3", "refresh_token": "ref-2",
-                                                   "expires_in": 21599}), (200, {"result_code": 0})]
-    kakao.send(ALERT)
-    assert http.requests[-1].headers["Authorization"] == "Bearer acc-3" and store.tokens("kakao")["refresh_token"] == "ref-2"
-    engine.dispose()
-
-
-def test_a_refused_refresh_asks_to_reconnect_and_so_does_a_refresh_token_near_its_end(db_url):
-    engine, store = _store(db_url)
-    http = _Http((200, _tokens(refresh_in=3 * 86400)))
-    kakao = _kakao(store, http)
-    kakao.connect("c")
-    assert kakao.status()["needs_reconnect"] is True                     # 3 days left
-    http.answers += [(401, {"code": -401}), (400, {"error": "invalid_grant", "error_code": "KOE322"})]
-    with pytest.raises(nc.ChannelError) as got:
-        kakao.send(ALERT)
-    assert str(got.value) == "kakao token invalid_grant" and store.get("kakao")["needs_reconnect"] is True
-    store.forget("kakao")
-    assert kakao.status()["connected"] is False
-    with pytest.raises(nc.ChannelError, match="not connected"):
-        kakao.send(ALERT)
-    no_secret = nc.Kakao("rest-key", "", "https://desk.test/kakao-callback.html", store)
-    no_key = nc.Kakao("rest-key", "s", "https://desk.test/kakao-callback.html", nc.ChannelStore(engine, otp.SecretBox("")))
-    assert not no_secret.configured and not no_key.configured and "rest-key" not in repr(no_secret)
-    engine.dispose()
-
-
 class _Channel:
     def __init__(self, name, fail=None):
         self.name, self.fail, self.got, self.configured = name, fail, [], True
@@ -172,19 +98,19 @@ class _Pusher:
 
 def test_notify_sends_to_the_channels_that_want_the_kind_and_isolates_failures(db_url):
     engine, store = _store(db_url)
-    good, bad = _Channel("telegram"), _Channel("kakao", RuntimeError(f"https://x/bot{TOKEN}"))
+    good, bad = _Channel("telegram"), _Channel("other", RuntimeError(f"https://x/bot{TOKEN}"))
     notify.install([good, bad], store)
     try:
         assert notify.send(_Pusher(), "flow_shift", payload=ALERT) == 2      # both off by default
         notify.drain()
         assert good.got == []
         store.set_prefs("telegram", True, {"nq_alert": False})
-        store.set_prefs("kakao", True)
+        store.set_prefs("other", True)
         assert notify.send(_Pusher(), "flow_shift", payload=ALERT) == 2
         assert notify.send(None, "nq_alert", payload=ALERT) == 0              # telegram has nq_alert off
         notify.drain()
         assert good.got == [ALERT]
-        assert notify.test("kakao", ALERT) == "RuntimeError" and notify.test("telegram", ALERT) is None
+        assert notify.test("other", ALERT) == "RuntimeError" and notify.test("telegram", ALERT) is None
         assert notify.test("line", ALERT) == "unknown channel"
     finally:
         notify.install([], None)
@@ -234,97 +160,43 @@ def test_the_channel_routes_need_a_session_and_only_the_owner_changes_them(db_ur
     app = _app(db_url)
     with TestClient(app, base_url="https://testserver") as client:
         for method, path in (("GET", "/api/notify/channels"), ("PUT", "/api/notify/channels/telegram"),
-                             ("POST", "/api/notify/channels/telegram/test"), ("POST", "/api/notify/kakao/connect"),
-                             ("POST", "/api/notify/kakao/callback"), ("DELETE", "/api/notify/kakao")):
+                             ("POST", "/api/notify/channels/telegram/test")):
             assert client.request(method, path, json={}).status_code == 401, path
         _login(client, OTHER)
         body = client.get("/api/notify/channels").json()
         assert body["can_edit"] is False and TOKEN not in json.dumps(body) and CHAT not in json.dumps(body)
         tg = next(c for c in body["channels"] if c["id"] == "telegram")
         assert tg["configured"] is True and tg["enabled"] is False and tg["kinds"]["flow_shift"] is True
-        kakao = next(c for c in body["channels"] if c["id"] == "kakao")
-        assert kakao["configured"] is False and kakao["connected"] is False
         assert client.put("/api/notify/channels/telegram", json={"enabled": True}).status_code == 403
         assert client.post("/api/notify/channels/telegram/test").status_code == 403
-        assert client.post("/api/notify/kakao/connect").status_code == 403
         _login(client, OWNER)
         assert client.put("/api/notify/channels/line", json={"enabled": True}).status_code == 404
         assert client.put("/api/notify/channels/telegram", json={"kinds": {"sms": True}}).status_code == 422
         got = client.put("/api/notify/channels/telegram", json={"enabled": True, "kinds": {"nq_alert": False}}).json()
         assert got["enabled"] is True and got["kinds"]["nq_alert"] is False and got["kinds"]["flow"] is True
-        assert client.post("/api/notify/kakao/connect").status_code == 503              # not set up
         sent = []
         notify.channel("telegram").send = sent.append
         assert client.post("/api/notify/channels/telegram/test").json() == {"ok": True, "error": None}
         assert sent[0]["body"] == "시험 알림입니다."
         assert client.post("/api/notify/channels/telegram/test").status_code == 429       # one every few seconds
-        assert client.post("/api/notify/channels/kakao/test").status_code == 429
 
 
-def test_kakao_connect_and_callback_bind_the_state_to_the_owner_once(db_url, monkeypatch):
-    app = _app(db_url, kakao_rest_key="rest-key", kakao_client_secret="client-secret", notify_key=KEY)
-    with TestClient(app, base_url="https://testserver") as client:
-        _login(client, OWNER)
-        url = client.post("/api/notify/kakao/connect").json()["url"]
-        assert url.startswith("https://kauth.kakao.com/oauth/authorize?")
-        params = dict(httpx.QueryParams(url.split("?", 1)[1]))
-        assert params["redirect_uri"] == "https://desk.test/kakao-callback.html" and len(params["state"]) >= 40
-        codes = []
-        monkeypatch.setattr(notify.channel("kakao"), "connect", codes.append)
-        assert client.post("/api/notify/kakao/callback", json={"code": "c", "state": "forged"}).status_code == 400
-        assert client.post("/api/notify/kakao/callback", json={"code": "c", "state": params["state"]},
-                           headers={"Origin": "https://evil.test"}).status_code == 403
-        assert client.post("/api/notify/kakao/callback", json={"code": "c", "state": params["state"]}).status_code == 204
-        assert codes == ["c"]
-        assert client.post("/api/notify/kakao/callback", json={"code": "c", "state": params["state"]}).status_code == 400
-        assert client.delete("/api/notify/kakao").status_code == 204
-
-
-def test_the_app_starts_with_no_channel_keys_or_a_bad_notify_key_and_only_that_channel_is_off(db_url, caplog):
+def test_the_app_starts_with_no_channel_keys_and_the_channel_is_off(db_url):
     """The compose keys are optional (${KEY:-}): a deploy before the owner fills them must still start."""
-    for env, telegram_on in (({"telegram_bot_token": "", "telegram_chat_id": ""}, False),
-                             ({"kakao_rest_key": "rest-key", "kakao_client_secret": "client-secret",
-                               "notify_key": "not-a-fernet-key"}, True)):
-        app = _app(db_url, **env)
-        with TestClient(app, base_url="https://testserver") as client:
-            assert client.get("/api/health").status_code == 200
-            _login(client, OWNER)
-            chans = {c["id"]: c for c in client.get("/api/notify/channels").json()["channels"]}
-            assert chans["kakao"]["configured"] is False and chans["telegram"]["configured"] is telegram_on
-            assert client.post("/api/notify/kakao/connect").status_code == 503
-            if not telegram_on:
-                assert client.post("/api/notify/channels/telegram/test").json() == {"ok": False, "error": "not configured"}
-        migrate(db_url)
-        with make_engine(db_url).begin() as conn:            # the next round makes the same accounts again
-            conn.exec_driver_sql("DELETE FROM sessions")
-            conn.exec_driver_sql("DELETE FROM users")
-    assert "not-a-fernet-key" not in caplog.text and "DESK_NOTIFY_KEY is not a valid Fernet key" in caplog.text
-
-
-def test_reconnecting_turns_kakao_back_on_and_a_rotated_key_asks_to_reconnect(db_url):
-    engine, store = _store(db_url)
-    http = _Http((200, _tokens()), (200, _tokens(access="acc-9")))
-    kakao = _kakao(store, http)
-    store.set_prefs("kakao", None, {"flow": False})          # a switch changed before the first connection
-    kakao.connect("c")
-    assert store.get("kakao")["enabled"] is True and store.get("kakao")["kinds"] == {"flow": False}
-    store.forget("kakao")
-    kakao.connect("c2")
-    assert store.get("kakao")["enabled"] is True
-    rotated = nc.Kakao("rest-key", "client-secret", "https://desk.test/kakao-callback.html",
-                       nc.ChannelStore(engine, otp.SecretBox(otp.new_key(), "DESK_NOTIFY_KEY")), clock=lambda: NOW)
-    assert rotated.status()["needs_reconnect"] is True and rotated.status()["connected"] is True
-    with pytest.raises(nc.ChannelError, match="kakao key mismatch"):
-        rotated.send(ALERT)
-    assert store.get("kakao")["needs_reconnect"] is True
-    engine.dispose()
+    app = _app(db_url, telegram_bot_token="", telegram_chat_id="")
+    with TestClient(app, base_url="https://testserver") as client:
+        assert client.get("/api/health").status_code == 200
+        _login(client, OWNER)
+        chans = client.get("/api/notify/channels").json()["channels"]
+        assert [(c["id"], c["configured"], c["connected"]) for c in chans] == [("telegram", False, False)]
+        assert client.post("/api/notify/channels/telegram/test").json() == {"ok": False, "error": "not configured"}
 
 
 def test_an_upsert_that_loses_the_race_still_writes_its_values(db_url):
     engine, store = _store(db_url)
-    store._upsert("kakao", {"enabled": False})
-    store._upsert("kakao", {"enabled": True, "kinds": {"flow": False}})
-    assert store.get("kakao")["enabled"] is True and store.get("kakao")["kinds"] == {"flow": False}
+    store._upsert("telegram", {"enabled": False})
+    store._upsert("telegram", {"enabled": True, "kinds": {"flow": False}})
+    assert store.get("telegram")["enabled"] is True and store.get("telegram")["kinds"] == {"flow": False}
     engine.dispose()
 
 
@@ -340,9 +212,41 @@ def test_after_shutdown_nothing_is_queued_and_a_slow_test_send_answers(db_url, m
         notify.run(lambda: None)
     notify.install([ch], store)
     monkeypatch.setattr(notify, "TEST_TIMEOUT_SEC", 0.05)
-    slow = _Channel("kakao")
+    slow = _Channel("other")
     slow.send = lambda payload: __import__("time").sleep(0.3)
     notify.install([ch, slow], store)
     with pytest.raises(nc.ChannelError, match="timeout"):
-        notify.test("kakao", ALERT)
+        notify.test("other", ALERT)
     engine.dispose()
+
+
+def test_a_leftover_kakao_row_is_ignored_and_the_kakao_routes_are_gone(db_url):
+    """#986 KakaoTalk was dropped: the row it left in notify_channels neither shows nor sends, its routes are gone."""
+    migrate(db_url)
+    engine = make_engine(db_url)
+    with engine.begin() as conn:
+        conn.execute(notify_channels.insert().values(
+            channel="kakao", enabled=True, kinds={}, secret="sealed-by-a-retired-key", access_expires_at=NOW,
+            refresh_expires_at=NOW + timedelta(days=60), needs_reconnect=True, updated_at=NOW))
+    engine.dispose()
+    app = _app(db_url)
+    with TestClient(app, base_url="https://testserver") as client:
+        assert client.get("/api/health").status_code == 200
+        _login(client, OWNER)
+        body = client.get("/api/notify/channels").json()
+        assert set(body) == {"kinds", "can_edit", "channels"} and [c["id"] for c in body["channels"]] == ["telegram"]
+        tg = body["channels"][0]
+        assert tg["connected"] is True and tg["needs_reconnect"] is False and tg["refresh_expires_at"] is None
+        for method, path, payload in (("POST", "/api/notify/kakao/connect", None),
+                                      ("POST", "/api/notify/kakao/callback", {"code": "c", "state": "s"}),
+                                      ("DELETE", "/api/notify/kakao", None),
+                                      ("PUT", "/api/notify/channels/kakao", {"enabled": True}),
+                                      ("POST", "/api/notify/channels/kakao/test", None)):
+            assert client.request(method, path, json=payload).status_code == 404, path
+        assert notify.channel("kakao") is None
+        assert client.put("/api/notify/channels/telegram", json={"enabled": True}).status_code == 200
+        sent = []
+        notify.channel("telegram").send = sent.append
+        notify.send(None, "flow", payload=ALERT)
+        notify.drain()
+        assert sent == [ALERT]

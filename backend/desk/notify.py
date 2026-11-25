@@ -1,11 +1,11 @@
 """Where every alert leaves the server (#579): one ``send`` for each channel.
 
 Web push (desk.push, per-kind switches on each subscription) is sent here and now, as before. #580's
-Telegram and KakaoTalk (desk.notify_channels) are installed by the app (``install``) and sent on one
-worker thread: a slow or rate-limited channel (retries, Telegram's ``retry_after``) never holds up the
-alert's own thread (the snapshot loop), and one thread also keeps Kakao's token refresh from racing
-itself. A channel's failure is logged as a short code and never stops the alert from being recorded,
-nor the other channels. Each channel has its own on/off and per-kind switches (``ChannelStore.wants``).
+Telegram (desk.notify_channels) is installed by the app (``install``) and sent on one worker thread: a
+slow or rate-limited channel (retries, Telegram's ``retry_after``) never holds up the alert's own thread
+(the snapshot loop). A channel's failure is logged as a short code and never stops the alert from being
+recorded, nor the other channels. Each channel has its own on/off and per-kind switches
+(``ChannelStore.wants``).
 
 The queue holds ``QUEUE_MAX`` sends; past it a send is dropped (logged). Sends still queued when the
 server stops are lost - the alert itself stays in the database and on the web push.
@@ -23,12 +23,12 @@ from .notify_channels import ChannelError
 log = logging.getLogger(__name__)
 
 QUEUE_MAX = 50
-# a test send waits for the worst case: Kakao's refresh + memo + a 401's refresh and memo again, each
-# up to TRIES x 10 s with its back-off (desk.notify_channels)
+# a test send waits behind the queued sends on the one worker, then for its own worst case: TRIES x 10 s
+# with the back-off between (desk.notify_channels)
 TEST_TIMEOUT_SEC = 150.0
 
 _lock = threading.Lock()
-_channels: dict = {}                 # name -> channel (desk.notify_channels.Telegram / Kakao)
+_channels: dict = {}                 # name -> channel (desk.notify_channels.Telegram)
 _store = None                        # desk.notify_channels.ChannelStore
 _pool: ThreadPoolExecutor | None = None
 _closed = False                      # after shutdown: nothing new is queued (until the next install)
@@ -125,7 +125,7 @@ def send(pusher, *kinds: str, payload: dict, user_id: int | None = None,
 
 
 def run(fn, timeout: float | None = None):
-    """``fn()`` on the channels' worker (a test send, Kakao's connect: never beside a refresh); its result."""
+    """``fn()`` on the channels' worker (a test send); its result."""
     try:
         future = _executor().submit(fn)
     except RuntimeError:

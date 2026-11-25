@@ -1,30 +1,25 @@
-"""Telegram and KakaoTalk "send to me" as alert channels (#580), next to web push in desk.notify.
+"""Telegram as an alert channel (#580), next to web push in desk.notify.
 
-- **Telegram**: a BotFather bot's ``sendMessage`` to one chat. The token and the chat id come from the
-  server env (``DESK_TELEGRAM_BOT_TOKEN`` · ``DESK_TELEGRAM_CHAT_ID``); either empty = the channel is off.
-  The token sits in the request path, so httpx's request log line is redacted (``_RedactBotToken``).
-- **KakaoTalk** "나에게 보내기" (free; sending to friends and AlimTalk are paid / reviewed): the owner
-  connects once with Kakao OAuth (``talk_message`` consent). The tokens are Fernet-sealed with
-  ``DESK_NOTIFY_KEY`` in ``notify_channels.secret``; the access token (hours) is refreshed with the
-  refresh token (about two months) shortly before it expires, or once after a 401. A refused refresh
-  (``invalid_grant``) marks the channel to reconnect - the settings screen asks for it.
+**Telegram**: a BotFather bot's ``sendMessage`` to one chat. The token and the chat id come from the
+server env (``DESK_TELEGRAM_BOT_TOKEN`` · ``DESK_TELEGRAM_CHAT_ID``); either empty = the channel is off.
+The token sits in the request path, so httpx's request log line is redacted (``_RedactBotToken``).
 
-Both send plain text: the alert's title, body and a link back to the desk (``DESK_PUBLIC_URL``).
-Errors carry a short code only (HTTP status, Kakao / Telegram error code, exception type) - never a
-token, the chat id or a URL holding them. A 429 or a 5xx is retried (Telegram's ``retry_after``
-honoured, capped); the caller (desk.notify) runs channels off the alert's thread.
+It sends plain text: the alert's title, body and a link back to the desk (``DESK_PUBLIC_URL``).
+Errors carry a short code only (HTTP status, Telegram error code, exception type) - never the token,
+the chat id or a URL holding them. A 429 or a 5xx is retried (Telegram's ``retry_after`` honoured,
+capped); the caller (desk.notify) runs the channel off the alert's thread.
+
+#986 retired the other channel #580 had. The row it left in ``notify_channels`` stays in the table and
+is never read: the app installs and lists Telegram only.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import re
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
-from urllib.parse import urlencode, urlsplit
 
 import httpx
 from sqlalchemy import select, update
@@ -33,20 +28,15 @@ from sqlalchemy.engine import Engine
 
 from . import net
 from .db import notify_channels, now
-from .otp import OtpUnavailable
 
 log = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org"
-KAKAO_AUTH = "https://kauth.kakao.com"
-KAKAO_API = "https://kapi.kakao.com"
-CHANNELS = ("telegram", "kakao")
+CHANNELS = ("telegram",)
 TIMEOUT_SEC = 10.0
 TRIES = 3
 RETRY_CAP_SEC = 30.0
-REFRESH_AHEAD_SEC = 60
-RECONNECT_AHEAD = timedelta(days=7)      # the refresh token this close to its end: ask to reconnect
-TEXT_MAX = 900                           # Kakao's text template takes 200 shown / 1000 sent; Telegram 4096
+TEXT_MAX = 900                           # an alert is a few lines; Telegram takes up to 4096
 
 
 class ChannelError(Exception):
@@ -203,11 +193,12 @@ def _json(resp: httpx.Response) -> dict:
 
 
 class ChannelStore:
-    """The ``notify_channels`` rows: per channel on/off, per-kind switches and (Kakao) the sealed tokens."""
+    """The ``notify_channels`` rows: per channel on/off and per-kind switches. The token columns
+    (``secret`` · ``*_expires_at`` · ``needs_reconnect``) belonged to the channel #986 retired: nothing
+    writes them now but the NOT NULL default on insert."""
 
-    def __init__(self, engine: Engine, box) -> None:
+    def __init__(self, engine: Engine) -> None:
         self.engine = engine
-        self.box = box                      # desk.otp.SecretBox over DESK_NOTIFY_KEY
 
     def get(self, channel: str) -> dict:
         with self.engine.connect() as conn:
@@ -240,221 +231,3 @@ class ChannelStore:
     def wants(self, channel: str, kinds: tuple[str, ...]) -> bool:
         row = self.get(channel)
         return bool(row["enabled"]) and all((row["kinds"] or {}).get(k, True) for k in kinds)
-
-    def tokens(self, channel: str) -> dict | None:
-        sealed = self.get(channel)["secret"]
-        return json.loads(self.box.open(sealed)) if sealed else None
-
-    def save_tokens(self, channel: str, tokens: dict, access_expires_at: datetime,
-                    refresh_expires_at: datetime | None, enable: bool = False) -> None:
-        """Seal and keep the tokens; ``enable`` (a new connection, not a refresh) turns the channel on."""
-        cur = self.get(channel)
-        values = {"secret": self.box.seal(json.dumps(tokens)), "access_expires_at": access_expires_at,
-                  "refresh_expires_at": refresh_expires_at or cur["refresh_expires_at"], "needs_reconnect": False,
-                  **({"enabled": True} if enable else {})}
-        with self.engine.begin() as conn:
-            hit = conn.execute(update(notify_channels).where(notify_channels.c.channel == channel)
-                               .values(updated_at=now(), **values))
-        if not hit.rowcount:
-            self._upsert(channel, {**values, "enabled": enable, "kinds": cur["kinds"] or {}})
-
-    def mark_reconnect(self, channel: str) -> None:
-        with self.engine.begin() as conn:
-            conn.execute(update(notify_channels).where(notify_channels.c.channel == channel)
-                         .values(needs_reconnect=True, updated_at=now()))
-
-    def rotate_tokens(self, channel: str, expected: dict, tokens: dict, access_expires_at: datetime,
-                      refresh_expires_at: datetime | None, fence) -> str:
-        """A delayed single-send refresh cannot replace a disabled or reconnected recipient."""
-        sealed = self.box.seal(json.dumps(tokens))
-        with self.engine.begin() as conn:
-            if fence is not None:
-                fence(conn)
-            hit = conn.execute(update(notify_channels).where(
-                notify_channels.c.channel == channel, notify_channels.c.secret == expected["secret"],
-                notify_channels.c.enabled.is_(True), notify_channels.c.needs_reconnect.is_(False),
-            ).values(
-                secret=sealed, access_expires_at=access_expires_at, updated_at=now(),
-                refresh_expires_at=refresh_expires_at or expected["refresh_expires_at"],
-            ))
-            if hit.rowcount != 1:
-                raise ChannelStopped("channel authorization changed")
-        return sealed
-
-    def forget(self, channel: str) -> None:
-        with self.engine.begin() as conn:
-            conn.execute(update(notify_channels).where(notify_channels.c.channel == channel).values(
-                secret=None, access_expires_at=None, refresh_expires_at=None, needs_reconnect=False,
-                enabled=False, updated_at=now()))
-
-
-def _aware(at: datetime | None) -> datetime | None:
-    return None if at is None else (at if at.tzinfo else at.replace(tzinfo=UTC))
-
-
-class Kakao:
-    name = "kakao"
-
-    def __init__(self, rest_key: str, client_secret: str, redirect_uri: str, store: ChannelStore,
-                 base_url: str = "", client: httpx.Client | None = None,
-                 sleep: Callable[[float], None] = time.sleep, clock: Callable[[], datetime] | None = None) -> None:
-        self._key, self._secret = rest_key.strip(), client_secret.strip()
-        self.redirect_uri = redirect_uri
-        self.store = store
-        self.base_url = base_url
-        self._client = client
-        self._sleep = sleep
-        self._clock = clock or (lambda: datetime.now(UTC))
-
-    def __repr__(self) -> str:
-        return f"Kakao(configured={self.configured})"
-
-    @property
-    def configured(self) -> bool:
-        # the client secret too: an OAuth code left in an access log is then useless on its own
-        return bool(self._key and self._secret and self.redirect_uri.startswith("https://")
-                    and self.store.box.available)
-
-    def authorize_url(self, state: str) -> str:
-        return f"{KAKAO_AUTH}/oauth/authorize?" + urlencode({
-            "client_id": self._key, "redirect_uri": self.redirect_uri, "response_type": "code",
-            "scope": "talk_message", "state": state})
-
-    def _token_call(self, form: dict) -> dict:
-        form = {"client_id": self._key, "client_secret": self._secret, **form}
-        client = self._client or net.client()
-        try:
-            resp = _post(client, f"{KAKAO_AUTH}/oauth/token", self._sleep, data=form)
-        finally:
-            if self._client is None:
-                client.close()
-        got = _json(resp)
-        if resp.status_code != 200 or "access_token" not in got:
-            raise ChannelError(f"kakao token {got.get('error') or resp.status_code}")
-        return got
-
-    def _credentials(self, got: dict, refresh_token: str | None) -> tuple[dict, datetime, datetime | None]:
-        at = self._clock()
-        tokens = {"access_token": got["access_token"], "refresh_token": got.get("refresh_token") or refresh_token}
-        refresh_end = (at + timedelta(seconds=int(got["refresh_token_expires_in"]))
-                       if got.get("refresh_token_expires_in") else None)
-        access_end = at + timedelta(seconds=int(got.get("expires_in") or 0))
-        return tokens, access_end, refresh_end
-
-    def _keep(self, got: dict, refresh_token: str | None = None, enable: bool = False) -> dict:
-        tokens, access_end, refresh_end = self._credentials(got, refresh_token)
-        self.store.save_tokens(self.name, tokens, access_end, refresh_end, enable)
-        return tokens
-
-    def connect(self, code: str) -> None:
-        """The OAuth callback's code -> sealed tokens; the channel turned on (a reconnect too)."""
-        self._keep(self._token_call({"grant_type": "authorization_code", "redirect_uri": self.redirect_uri,
-                                     "code": code}), enable=True)
-
-    def _refresh(self, tokens: dict) -> dict:
-        try:
-            got = self._token_call({"grant_type": "refresh_token", "refresh_token": tokens.get("refresh_token") or ""})
-        except ChannelError as exc:
-            if "invalid_grant" in str(exc) or str(exc).endswith(" 401"):    # the refresh token is done
-                self.store.mark_reconnect(self.name)
-            raise
-        return self._keep(got, tokens.get("refresh_token"))
-
-    def _tokens(self) -> dict | None:
-        """The stored tokens; a DESK_NOTIFY_KEY that no longer opens them (rotated) asks to reconnect."""
-        try:
-            return self.store.tokens(self.name)
-        except OtpUnavailable:
-            self.store.mark_reconnect(self.name)
-            raise ChannelError("kakao key mismatch") from None
-
-    def status(self) -> dict:
-        row = self.store.get(self.name)
-        refresh_end = _aware(row["refresh_expires_at"])
-        soon = refresh_end is not None and refresh_end - self._clock() < RECONNECT_AHEAD
-        unreadable = False
-        if row["secret"] and not row["needs_reconnect"]:
-            try:
-                self.store.tokens(self.name)
-            except OtpUnavailable:
-                unreadable = True
-        return {"connected": bool(row["secret"]),
-                "needs_reconnect": bool(row["needs_reconnect"]) or soon or unreadable,
-                "refresh_expires_at": refresh_end.isoformat(timespec="seconds") if refresh_end else None}
-
-    def send(self, payload: dict) -> None:
-        self._send(payload)
-
-    def send_once(self, payload: dict, *, allowed=None, fence=None, kinds: tuple[str, ...] = ()) -> None:
-        self._send(payload, once=True, allowed=allowed, fence=fence, kinds=kinds)
-
-    def _single_tokens(self, allowed, fence) -> tuple[dict, str]:
-        row = self.store.get(self.name)
-        sealed = row["secret"]
-        if not sealed or not row["enabled"] or row["needs_reconnect"]:
-            raise ChannelStopped("channel authorization changed")
-        try:
-            tokens = json.loads(self.store.box.open(sealed))
-        except OtpUnavailable:
-            raise ChannelError("kakao key mismatch") from None
-        expires = _aware(row["access_expires_at"])
-        if expires is None or expires - self._clock() < timedelta(seconds=REFRESH_AHEAD_SEC):
-            if (allowed is not None and not allowed()) or self.store.get(self.name)["secret"] != sealed:
-                raise ChannelStopped("channel authorization changed")
-            refresh = tokens.get("refresh_token") or ""
-            data = self._token_call({"grant_type": "refresh_token", "refresh_token": refresh})
-            tokens, access_end, refresh_end = self._credentials(data, refresh)
-            sealed = self.store.rotate_tokens(self.name, row, tokens, access_end, refresh_end, fence)
-        return tokens, sealed
-
-    def _send(self, payload: dict, *, once: bool = False, allowed=None, fence=None, kinds: tuple[str, ...] = ()) -> None:
-        if not self.configured:
-            raise ChannelError("not configured")
-        if once:
-            tokens, sealed = self._single_tokens(allowed, fence)
-
-            def current():
-                if allowed is not None and not allowed():
-                    return False
-                row = self.store.get(self.name)
-                return (row["secret"] == sealed and row["enabled"] and not row["needs_reconnect"]
-                        and all((row["kinds"] or {}).get(kind, True) for kind in kinds))
-        else:
-            current = None
-            tokens = self._tokens()
-            if not tokens:
-                raise ChannelError("not connected")
-            expires = _aware(self.store.get(self.name)["access_expires_at"])
-            if expires is None or expires - self._clock() < timedelta(seconds=REFRESH_AHEAD_SEC):
-                tokens = self._refresh(tokens)
-        text, link = message(payload, self.base_url)
-        template = {"object_type": "text", "text": text, "button_title": "열기",
-                    "link": {"web_url": link, "mobile_web_url": link} if link else {}}
-        resp = self._memo(tokens, template, once=once, allowed=current)
-        if resp.status_code == 401 and not once:
-            resp = self._memo(self._refresh(tokens), template)
-        if resp.status_code != 200:
-            if once:
-                raise ChannelError("kakao rejected")
-            raise ChannelError(f"kakao {_json(resp).get('code') or resp.status_code}")
-        if once:
-            result_code = _json(resp).get("result_code")
-            if type(result_code) is not int or result_code != 0:
-                raise ChannelUnknown("channel result unknown")
-
-    def _memo(self, tokens: dict, template: dict, *, once: bool = False, allowed=None) -> httpx.Response:
-        client = self._client or net.client()
-        try:
-            url = f"{KAKAO_API}/v2/api/talk/memo/default/send"
-            headers = {"Authorization": f"Bearer {tokens['access_token']}"}
-            data = {"template_object": json.dumps(template, ensure_ascii=False)}
-            return (_post_once(client, url, allowed, headers=headers, data=data) if once
-                    else _post(client, url, self._sleep, headers=headers, data=data))
-        finally:
-            if self._client is None:
-                client.close()
-
-
-def origin_of(url: str) -> str:
-    parts = urlsplit(url)
-    return f"{parts.scheme}://{parts.netloc}" if parts.scheme and parts.netloc else ""

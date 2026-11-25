@@ -111,8 +111,8 @@ Jenkins 가 배포할 때마다 읽어 임시 env 파일(600)로 compose 에 넘
 | ChatGPT 로그인 | 볼륨 `trading-desk-tradingagents-home` 의 `chatgpt-auth.json` | 없음 |
 | 한국투자증권(KIS) 앱키 · 앱시크릿 | 서버 `.env.runtime` 의 `DESK_KIS_APP_KEY` · `DESK_KIS_APP_SECRET` | `.env.example` 에 이름만 |
 | 토스 접근 토큰 · KIS REST 접근 토큰 · KIS 웹소켓 접속키 (#688) | DB `broker_tokens.sealed`에 Fernet으로 봉인. KIS와 legacy Toss는 공급자 시크릿, 보호 Toss는 검증된 보호 세대의 봉인 재료에서 키를 파생한다. 발급자는 `DESK_ROLE` all · collector 프로세스(아래 §5.1) | 없음 |
-| 텔레그램 봇 토큰 · chat_id · 카카오 REST 키 · 클라이언트 시크릿 · `DESK_NOTIFY_KEY` (#580) | 서버 `.env.runtime` | `.env.example` 에 이름만 |
-| 카카오 액세스 · 리프레시 토큰 (#580) | DB `notify_channels.secret`, `DESK_NOTIFY_KEY`(Fernet)로 봉인 | 없음 |
+| 텔레그램 봇 토큰 · chat_id (#580) | 서버 `.env.runtime` | `.env.example` 에 이름만 |
+| 걷어 낸 알림 채널의 봉인 토큰 (#580, #986) | DB `notify_channels.secret` 에 남아 있으나 읽지 않는다. 봉인 키 `DESK_NOTIFY_KEY` 와 그 채널의 REST 키 · 클라이언트 시크릿은 앱이 읽지 않으니 Vault 에서 지운다(운영은 지움). KV v2 이전 버전 · 백업에는 남으므로, 토큰을 무효로 만드는 것은 그 채널 콘솔의 연결 끊기 · 시크릿 폐기다 | 없음 |
 | KRX OPEN API 인증키 (#601) | 서버 `.env.runtime` 의 `DESK_KRX_API_KEY`. 요청 헤더 `AUTH_KEY` 로만 보내고 로그 · URL · DB 에 남기지 않는다 | `.env.example` 에 이름만 |
 | 홈랩 Redis 비밀번호 · 공유 캐시 키 (#689, 선택) | Vault `kv/trading-desk/backend/prod/env` 의 `DESK_REDIS_PASSWORD` · `DESK_REDIS_CACHE_KEY`(아래 §5.2). 설정 repr · 로그 · `/api/status` 에 나오지 않는다 | `.env.example` 에 이름만 |
 
@@ -181,15 +181,13 @@ Jenkins 가 배포할 때마다 읽어 임시 env 파일(600)로 compose 에 넘
 - **로그 · 응답:** 키 · 시크릿 · 토큰은 로그 · 오류 응답에 넣지 않는다. 화면 응답의 실패 문구는 TR 코드 · HTTP 상태 · KIS 메시지 코드(`msg_cd`)뿐이다. KIS 의 사유(`msg1`, 80자)는 서버 로그에만, 키 · 시크릿 · 토큰과 같은 부분을 `***` 로 지운 뒤 남긴다. `KisRest` 의 `repr` 에도 URL 만 나온다.
 - **전송 구간 · 끄기:** 웹소켓과 같은 키 · `DESK_KIS_REST_URL` 을 쓴다. 키가 없거나 URL 이 `https://` 가 아니면 부르지 않고 `/api/market/futures` 는 `supported: false` 를 준다. 가짜 실행(`DESK_FAKE_RUNS`)에서도 부르지 않는다.
 
-### 알림 채널 — 텔레그램 · 카카오톡 (#580)
+### 알림 채널 — 텔레그램 (#580)
 
-- **용도:** 웹 푸시와 같은 알림(수급 흐름 · 나스닥 선물 · 아침 시황 …)을 텔레그램 봇 `sendMessage` 와 카카오톡 "나에게 보내기"로도 보낸다. 받는 사람은 소유자 한 명이다. 채널 설정(켬 · 종류별 켬 · 시험 · 카카오 연결 · 끊기)은 **소유자(첫 계정)만** 바꾼다 — 알림은 모든 계정의 기기로 가는 공용이라서.
+- **용도:** 웹 푸시와 같은 알림(수급 흐름 · 나스닥 선물 · 아침 시황 …)을 텔레그램 봇 `sendMessage` 로도 보낸다. 받는 사람은 소유자 한 명이다. 채널 설정(켬 · 종류별 켬 · 시험)은 **소유자(첫 계정)만** 바꾼다 — 알림은 모든 계정의 기기로 가는 공용이라서.
 - **텔레그램:** 토큰 · chat_id 는 env 에만 있고 화면 · 응답에는 "설정됨" 여부만 나간다. 토큰이 요청 URL 경로에 들어가므로 `httpx` 로거는 WARNING 으로 고정하고, 혹시 낮아져도 `/bot<토큰>` 을 `/bot***` 로 지우는 필터를 단다. 채널 오류는 예외 메시지(URL 포함)가 아니라 HTTP 상태 · 텔레그램 `error_code` · 예외 타입 이름만 남긴다.
-- **카카오 OAuth:** `POST /api/notify/kakao/connect`(세션 · Origin 검사 · 소유자)가 state(32바이트 무작위)를 만들어 해시로 메모리에 10분 두고 authorize URL 을 준다. 카카오는 정적 `/kakao-callback.html` 로 돌려보낸다 — 교차 사이트 최상위 이동이라 `SameSite=Strict` 쿠키가 없으므로, 그 페이지가 주소창의 code · state 를 지우고 **같은 사이트 POST** `/api/notify/kakao/callback` 으로 넘긴다. 그래서 콜백도 세션 · Origin 검사를 그대로 받고, 세션 없이 열리는 경로는 여전히 둘뿐이다. state 는 요청한 계정에 묶여 한 번만 쓰인다(워커 프로세스 1개 전제 — 재시작하면 연결을 다시 시작한다).
-- **code 유출:** code 는 쿼리로 와서 인그레스 접근 로그에 남을 수 있다. 토큰 교환에 **클라이언트 시크릿이 필수**라(없으면 카카오 채널이 꺼진다) code 만으로는 토큰을 받을 수 없다. 페이지는 `Referrer-Policy: same-origin`(nginx)에 `no-referrer` 메타까지 둔다.
-- **토큰 보관 · 갱신:** 액세스 · 리프레시 토큰은 `DESK_NOTIFY_KEY`(Fernet, OTP 키와 분리 — 하나를 돌려도 다른 쪽이 끊기지 않는다)로 봉인해 `notify_channels.secret` 에 둔다. 액세스 토큰은 만료 60초 전 또는 401 뒤 한 번 갱신하고, 리프레시 토큰은 새로 올 때만 바꾼다. 갱신이 거절(`invalid_grant`)되거나 리프레시 토큰이 7일 안에 끝나면 화면이 "다시 연결"을 띄운다. 키가 없거나 틀리면 카카오만 꺼진다.
-- **전송:** 채널은 알림 스레드가 아닌 전용 워커 1개에서 보낸다(429 · 5xx 는 최대 3번, 텔레그램 `retry_after` 는 30초까지). 실패해도 알림 기록 · 웹 푸시 · 다른 채널은 그대로다. 대기열은 50건, 재시작 때 대기 중인 것은 버린다.
-- **회전:** 텔레그램은 BotFather `/revoke` → `.env.runtime` → 백엔드 재배포. 카카오는 콘솔에서 시크릿 재발급 → `.env.runtime` → 재배포 → 설정에서 다시 연결. `DESK_NOTIFY_KEY` 를 바꾸면 저장된 카카오 토큰을 못 열므로 다시 연결한다.
+- **전송:** 채널은 알림 스레드가 아닌 전용 워커 1개에서 보낸다(429 · 5xx 는 최대 3번, 텔레그램 `retry_after` 는 30초까지). 실패해도 알림 기록 · 웹 푸시는 그대로다. 대기열은 50건, 재시작 때 대기 중인 것은 버린다.
+- **회전:** BotFather `/revoke` → `.env.runtime` → 백엔드 재배포.
+- **걷어 낸 채널 (#986):** 예전 두 번째 채널의 OAuth 연결 · 콜백 · 끊기 경로는 없어졌다(404). 세션 없이 열리는 경로는 그대로 둘뿐이다. DB `notify_channels` 에 남은 그 채널의 행(봉인된 토큰 포함)은 읽지 않으며, 봉인 키 `DESK_NOTIFY_KEY` 도 앱이 더는 읽지 않는다 — 키를 지워도 Vault 이전 버전 · 백업에는 남을 수 있으니, 연결된 적이 있으면 그 채널 콘솔에서 연결을 끊거나 시크릿을 폐기해 토큰 자체를 무효로 만든다(운영은 연결된 적이 없다). 세션이 없으면 지운 경로도 다른 경로처럼 401 이다.
 
 ## 6. OTP 2단계 인증 (#6)
 

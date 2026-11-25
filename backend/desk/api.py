@@ -6,12 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import hashlib
 import json
 import logging
 import os
 import re
-import secrets
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -515,7 +513,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     def send_notice(pusher, *kinds, payload, user_id=None, still_owner=None):
         # An account notice must identify the current owner. The protected dispatcher
-        # never consults stored Telegram/Kakao settings, even for a public notice.
+        # never consults stored Telegram settings, even for a public notice.
         if protected and user_id is not None:
             approved = current_resources()
             if approved is None or approved.binding.user_id != user_id:
@@ -4255,48 +4253,34 @@ class HoldingWatchIn(BaseModel):
     tickers: dict[str, HoldingTickerIn | None] = Field(default_factory=dict, max_length=holding_watch.MAX_TICKERS)
 
 
-class KakaoCallbackIn(BaseModel):
-    code: str = Field(min_length=1, max_length=512)
-    state: str = Field(min_length=1, max_length=128)
-
-
 # #631 GET /api/chart-read: kept until the shortest timeframe's bar ends, within these bounds
 CHART_READ_MIN_SEC = 15.0
 CHART_READ_MAX_SEC = 300.0
 CHART_READ_WEEKS = 120
 
-NOTIFY_LABELS = {"telegram": "텔레그램", "kakao": "카카오톡"}
-KAKAO_STATE_TTL_SEC = 600
+# #986 Telegram only: a row another channel left in notify_channels is never listed, set or tested (404)
+NOTIFY_LABELS = {"telegram": "텔레그램"}
 NOTIFY_TEST_GAP_SEC = 5.0
 
 
 def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountOwnerStore | None = None,
                    current_resources, active_session, send_notice) -> None:
-    """#580 Telegram · KakaoTalk beside web push (desk.notify_channels), sent through desk.notify.
+    """#580 Telegram beside web push (desk.notify_channels), sent through desk.notify.
 
     One set of channels for the desk (the alerts go to every account's devices, as web push does), so
-    only the owner - the first account - changes them, tests them or connects Kakao; others read.
-    Kakao's OAuth comes back to the static /kakao-callback.html, which POSTs the code and state here: the
-    callback keeps the session and the Origin check (no open path). A state is 32 random bytes, kept
-    hashed in this process for 10 minutes, for the account that asked, once (one worker process)."""
+    only the owner - the first account - changes them or tests them; others read."""
     from . import notify_channels as nc
-    from . import otp, push
+    from . import push
     from .auth import owner_id as account_owner
     from .db import users
 
     nc.install_log_filter()
     if owners is None:
-        store = nc.ChannelStore(engine, otp.SecretBox(settings.notify_key, "DESK_NOTIFY_KEY"))
-    if owners is None and store.box.error:
-        log.error("%s", store.box.error)
-    if owners is None:
+        store = nc.ChannelStore(engine)
         base = settings.public_url if settings.public_url.startswith("https://") else ""
         telegram = nc.Telegram(settings.telegram_bot_token, settings.telegram_chat_id, base)
-        kakao = nc.Kakao(settings.kakao_rest_key, settings.kakao_client_secret,
-                         f"{base}/kakao-callback.html" if base else "", store, base)
-        notify.install([telegram, kakao], store)
+        notify.install([telegram], store)
         app.state.notify_store = store
-    states: dict[str, tuple[int, float]] = {}
     last_test = {"at": 0.0}
 
     def owner_id() -> int | None:
@@ -4310,14 +4294,11 @@ def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountO
             raise HTTPException(403, "only the desk's owner changes the alert channels")
 
     def view(name: str) -> dict:
+        # connected · needs_reconnect · refresh_expires_at stay in the answer the settings screen reads (#986)
         ch, row = notify.channel(name), store.get(name)
-        out = {"id": name, "label": NOTIFY_LABELS[name], "configured": ch.configured, "enabled": bool(row["enabled"]),
-               "kinds": {k: bool((row["kinds"] or {}).get(k, True)) for k in push.KINDS},
-               "connected": ch.configured, "needs_reconnect": False, "refresh_expires_at": None}
-        if name == "kakao":
-            out.update(kakao.status())
-            out["connected"] = out["connected"] and ch.configured
-        return out
+        return {"id": name, "label": NOTIFY_LABELS[name], "configured": ch.configured, "enabled": bool(row["enabled"]),
+                "kinds": {k: bool((row["kinds"] or {}).get(k, True)) for k in push.KINDS},
+                "connected": ch.configured, "needs_reconnect": False, "refresh_expires_at": None}
 
     def approved_destination(name: str, request: Request):
         approved = current_resources()
@@ -4494,41 +4475,6 @@ def _notify_routes(app: FastAPI, engine, settings: Settings, *, owners: AccountO
             raise HTTPException(422, str(exc)) from None
         response.headers["Cache-Control"] = "private, no-store"
         return watch_view(request)
-
-    @app.post("/api/notify/kakao/connect")
-    def kakao_connect(request: Request):
-        require_legacy_channel_settings(request)
-        if not kakao.configured:
-            raise HTTPException(503, "kakao is not set up on the server")
-        moment = time.monotonic()
-        for key in [k for k, (_, at) in states.items() if moment - at > KAKAO_STATE_TTL_SEC]:
-            states.pop(key, None)
-        state = secrets.token_urlsafe(32)
-        states[hashlib.sha256(state.encode()).hexdigest()] = (request.state.user.id, moment)
-        return {"url": kakao.authorize_url(state)}
-
-    @app.post("/api/notify/kakao/callback", status_code=204)
-    async def kakao_callback(body: KakaoCallbackIn, request: Request):
-        require_legacy_channel_settings(request)
-        got = states.pop(hashlib.sha256(body.state.encode()).hexdigest(), None)
-        if got is None or got[0] != request.state.user.id or time.monotonic() - got[1] > KAKAO_STATE_TTL_SEC:
-            raise HTTPException(400, "the connect request expired - start again")
-        try:
-            def connect():
-                if active_session(request):
-                    kakao.connect(body.code)
-
-            await asyncio.to_thread(notify.run, connect)
-        except nc.ChannelError as exc:
-            log.warning("kakao connect failed: %s", exc)
-            if str(exc) == "timeout":           # still running on the worker: it may yet connect
-                raise HTTPException(504, "kakao is slow - check the channel again in a minute") from None
-            raise HTTPException(502, f"kakao refused: {exc}") from None
-
-    @app.delete("/api/notify/kakao", status_code=204)
-    def kakao_disconnect(request: Request):
-        require_legacy_channel_settings(request)
-        store.forget("kakao")
 
 
 def _client_ip(request: Request) -> str:

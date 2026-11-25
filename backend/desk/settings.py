@@ -132,17 +132,11 @@ class Settings:
     vapid_private_key: str = field(default_factory=lambda: os.getenv("DESK_VAPID_PRIVATE_KEY", ""), repr=False)
     vapid_subject: str = field(default_factory=lambda: os.getenv("DESK_VAPID_SUBJECT", ""))
 
-    # #580 alert channels (desk.notify_channels). The desk's own https origin, for links in the messages
-    # and Kakao's redirect (<public_url>/kakao-callback.html, registered in the Kakao console).
+    # #580 alert channels (desk.notify_channels). The desk's own https origin, for links in the messages.
     public_url: str = field(default_factory=lambda: os.getenv("DESK_PUBLIC_URL", "").rstrip("/"))
     # Telegram: a BotFather bot and the owner's chat. Either empty = Telegram off.
     telegram_bot_token: str = field(default_factory=lambda: os.getenv("DESK_TELEGRAM_BOT_TOKEN", ""), repr=False)
     telegram_chat_id: str = field(default_factory=lambda: os.getenv("DESK_TELEGRAM_CHAT_ID", ""), repr=False)
-    # KakaoTalk "send to me": the app's REST API key and client secret (required: an OAuth code left in an
-    # access log cannot be traded without it), and the Fernet key that seals the tokens. Any empty = off.
-    kakao_rest_key: str = field(default_factory=lambda: os.getenv("DESK_KAKAO_REST_KEY", ""), repr=False)
-    kakao_client_secret: str = field(default_factory=lambda: os.getenv("DESK_KAKAO_CLIENT_SECRET", ""), repr=False)
-    notify_key: str = field(default_factory=lambda: os.getenv("DESK_NOTIFY_KEY", ""), repr=False)
 
     def __post_init__(self) -> None:
         # #688 a role passed in code (tests, cli) is checked like DESK_ROLE

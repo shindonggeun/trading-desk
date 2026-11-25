@@ -3590,6 +3590,19 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             return None
         return price, at
 
+    async def _nxt_open_trade(ticker: str):
+        """#1010 a KRX stock's NXT trade while NXT trades: (price, traded at UTC), or None - read from its own
+        short cache (desk.estimate.NXT_TTL_SEC), not the copy inside an estimate (behind the estimate's cache)."""
+        reader = getattr(estimator, "_nxt_trade", None)
+        if reader is None:
+            return None
+        try:
+            found = await reader(ticker[:-3])
+        except Exception as exc:  # noqa: BLE001 - Naver down: the estimate's copy stands
+            log.info("NXT trade for %s failed: %s", ticker, exc)
+            return None
+        return (found[0], found[1]) if found and len(found) > 2 and found[2] else None
+
     async def _krx_overtime(ticker: str):
         """#283: a KRX stock's own after-hours trade today (closing-price 15:40-16:00, single-price
         16:00-18:00) - the only real price after the close for a stock that does not trade on NXT."""
@@ -3743,7 +3756,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 if est and est.market_state == "nxt":
                     # #209: NXT trading (08:00-08:50, 15:40-20:00 KST) - its last trade is a real price
                     row["session"] = session if session in ("pre", "post") else "post"
-                    return live_row(est.estimate, "nxt", est.fetched_at, est.change_pct)
+                    # #1010 the trade as last read (seconds old), stamped with its own time: the estimate's copy
+                    # waits behind the estimate's cache, and its fetched_at is when the estimate was computed
+                    if (nxt := await _nxt_open_trade(ticker)) is not None:
+                        at = nxt[1].isoformat(timespec="seconds")
+                        return {**live_row(nxt[0], "nxt", at), "traded_at": at}
+                    return live_row(est.estimate, "nxt", est.anchor_at or est.fetched_at, est.change_pct)
                 if session == "regular":
                     if not asked:
                         live.watch(prices, ticker)
@@ -3752,7 +3770,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 elif session in ("pre", "post") and kis_stream.market_of(ticker) == "KR":
                     # #250: any KRX stock trading on NXT / after hours - not only those with a contract
                     if (nxt := await _nxt_today(ticker)) is not None:
-                        return live_row(nxt[0], "nxt", nxt[1].isoformat(timespec="seconds"))
+                        at = nxt[1].isoformat(timespec="seconds")
+                        return {**live_row(nxt[0], "nxt", at), "traded_at": at}
                     # #283: no NXT trade (not listed there): the KRX's own after-hours auction
                     if session == "post" and (ot := await _krx_overtime(ticker)) is not None:
                         today = datetime.now(UTC).astimezone(sessions.KST).date().isoformat()

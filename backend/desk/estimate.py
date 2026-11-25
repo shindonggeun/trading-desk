@@ -300,7 +300,10 @@ def _iso(moment: datetime) -> str:
     return moment.astimezone(UTC).isoformat(timespec="seconds")
 
 
-AFTER_HOURS_TTL_SEC = 15.0   # an open NXT session is live trading: read it often (one call per ticker)
+AFTER_HOURS_TTL_SEC = 15.0   # the KRX's own after-hours trade (#283): an auction every 10 minutes at most
+# #1010 an open NXT session is live trading: its trade is read this fresh (one call per code at a time). Naver's
+# quote is itself ~5-7 s behind; at 15 s, stacked on the board's own poll, a price stayed up to a minute old
+NXT_TTL_SEC = 5.0
 NAVER_URL = "https://m.stock.naver.com/api/stock/{code}/basic"
 NXT_SESSIONS = ("AFTER_MARKET", "PRE_MARKET")
 
@@ -785,12 +788,16 @@ class BinanceEstimator:
         return close, close_at, at_close, "close", False
 
     async def _nxt_trade(self, code: str) -> tuple[float, datetime, bool] | None:
-        """The NXT trade, cached for a few seconds (a board polls every few seconds)."""
+        """The NXT trade, cached for NXT_TTL_SEC (a board polls every few seconds); askers of one code at once
+        share one read (#1010)."""
         if self._after_hours is None:
             return None
         cached = self._nxt.get(code)
-        if cached and self._clock() - cached[0] < AFTER_HOURS_TTL_SEC:
+        if cached and self._clock() - cached[0] < NXT_TTL_SEC:
             return cached[1]  # type: ignore[return-value]
+        return await self._flights.run(("nxt", code), lambda: self._read_nxt(code))
+
+    async def _read_nxt(self, code: str) -> tuple[float, datetime, bool] | None:
         found = await asyncio.to_thread(self._after_hours, code)
         if found:
             if len(self._nxt_listed) >= CACHE_MAX:

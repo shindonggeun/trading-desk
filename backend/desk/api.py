@@ -1532,6 +1532,14 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             return owner_binding(request) is not None
         return request.state.user.id == auth.owner_id()
 
+    def sees_diagnostics(request: Request) -> bool:
+        """#995 process diagnostics (status counters, per-route timings) in protected mode: the owner whose
+        resources are current only - fails closed when the binding moved or its approval lapsed."""
+        if not protected:
+            return True
+        approved = current_resources()
+        return approved is not None and approved.binding.user_id == request.state.user.id
+
     def must_own_account(request: Request) -> None:
         if not owns(request):
             raise HTTPException(403, "only the desk's owner sees the account")
@@ -1560,12 +1568,21 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return out
 
     @app.get("/api/status")
-    def status():
+    def status(request: Request, response: Response):
         """#623 the background jobs (state fresh · stale · error · starting · stopped · off, last success,
-        last error as a type name, next pass) and the providers' rate-limit waits. Session required."""
+        last error as a type name, next pass) and the providers' rate-limit waits. Session required.
+
+        #995 the process diagnostics (role, cache and broker-call counts, screen demand, stream, loop lag,
+        prewarm) go to the owner only in protected mode: their changes would tell another account roughly
+        what the owner is looking at. The page reads only now · jobs · cooldowns."""
+        full = sees_diagnostics(request)         # before the stamp: its DB read must not skew `now`
+        response.headers.update(_RUN_READ_CACHE)  # the body differs by account
         # now to the millisecond: the browser's latency probe (#690 marketLatency.ts) sets its clock skew by it
-        return {"now": datetime.now(UTC).isoformat(timespec="milliseconds"), "role": settings.role,
-                "jobs": jobs.status(), "cooldowns": cooldowns(),
+        body = {"now": datetime.now(UTC).isoformat(timespec="milliseconds"), "jobs": jobs.status(),
+                "cooldowns": cooldowns()}
+        if not full:
+            return body
+        return {**body, "role": settings.role,
                 # #689 this process's shared-cache hits and its own calls to the brokers (Toss · KIS REST)
                 "shared_cache": shared_cache.stats(), "outbound": outbound.snapshot(), "demand": demand.stats(),
                 "market_stream": market_bus.BUS.stats(),
@@ -1577,8 +1594,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     app.state.timings = timings
 
     @app.get("/api/perf/timings")
-    def perf_timings(reset: bool = False):
-        """#536: since the start (or the last ``reset=1``): per route the count, p50 · p95 · max ms, slowest p95 first."""
+    def perf_timings(request: Request, response: Response, reset: bool = False):
+        """#536: since the start (or the last ``reset=1``): per route the count, p50 · p95 · max ms, slowest p95 first.
+        #995 the owner's only in protected mode: per-route counts would show another account the owner's
+        account pages being read (and a reset would wipe the owner's numbers)."""
+        if not sees_diagnostics(request):
+            raise HTTPException(403, "only the desk's owner sees the process diagnostics", headers=_RUN_READ_CACHE)
+        response.headers.update(_RUN_READ_CACHE)
         out = {"since": datetime.fromtimestamp(timings.since, UTC).isoformat(timespec="seconds"),
                "slow_ms": req_timing.SLOW_MS, "routes": timings.stats()}
         if reset:

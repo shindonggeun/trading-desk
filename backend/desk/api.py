@@ -4102,6 +4102,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         nq_weekly_alerts.Ledger(engine, policy), prices, getattr(app.state, "notify_store", None), current_resources,
     )
     nq_weekly_alerts.register(app, weekly_alerts)
+    # #689 a request's reads mark what the collector keeps fresh; background jobs' do not (desk.demand)
+    app.add_middleware(demand.ScreenReads)
     # outermost (added last): the session check and every other middleware count in the time
     app.add_middleware(req_timing.TimingMiddleware, timings=timings, loop_max=lag.max_since)
     return app

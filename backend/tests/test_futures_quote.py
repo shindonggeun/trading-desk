@@ -351,9 +351,10 @@ def redis(monkeypatch):
     server = fakeredis.FakeServer()
     sync = fakeredis.FakeRedis(server=server, decode_responses=True)
     sc.use(sync, fakeredis.FakeAsyncRedis(server=server, decode_responses=True))
-    monkeypatch.setattr(demand, "_sent", (frozenset(), 0.0))     # a flush in another test is not this one's
     monkeypatch.setattr(fq, "PAGE_PAUSE_SEC", 0.0)
+    token = demand.SCREEN.set(True)                  # these reads stand for a screen's (desk.demand.ScreenReads)
     yield sync
+    demand.SCREEN.reset(token)
     sc.use(None, None)
     demand.configure("")
 

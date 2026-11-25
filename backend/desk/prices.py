@@ -416,7 +416,10 @@ class PriceSource:
             price, currency = await asyncio.to_thread(self._yahoo_quote, ticker)
             quote = Quote(ticker, _tidy(price), currency, "yahoo", _now())
         _remember(self._quotes, ticker, (self._clock(), quote), QUOTE_TTL_SEC, self._clock)
-        await shared_cache.aput(SHARED_NS, ticker, quote.to_dict(), QUOTE_TTL_SEC)
+        # the collector's own reads (holdings) keep the collected lifetime: a 10 s write over its 30 s value
+        # would leave the api a gap before the next collection
+        await shared_cache.aput(SHARED_NS, ticker, quote.to_dict(),
+                                DEMAND_TTL_SEC if demand.serving() else QUOTE_TTL_SEC)
         market_bus.publish("quote", ticker, quote.to_dict(), quote.source)   # #690 open market streams
         return quote
 

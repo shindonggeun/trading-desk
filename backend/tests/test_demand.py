@@ -1,6 +1,7 @@
 """#689 demand-driven collection (desk.demand): the api writes what its screens read, the collector serves it."""
 
 import asyncio
+from types import SimpleNamespace
 
 import fakeredis
 import pytest
@@ -14,7 +15,9 @@ def redis():
     server = fakeredis.FakeServer()
     sync = fakeredis.FakeRedis(server=server, decode_responses=True)
     sc.use(sync, fakeredis.FakeAsyncRedis(server=server, decode_responses=True))
+    token = demand.SCREEN.set(True)                  # these reads stand for a screen's
     yield sync
+    demand.SCREEN.reset(token)
     sc.use(None, None)
     demand.configure("")
 
@@ -22,7 +25,8 @@ def redis():
 @pytest.fixture
 def clock(monkeypatch):
     now = [1000.0]
-    monkeypatch.setattr(demand.time, "monotonic", lambda: now[0])
+    # demand's own name only: patching time.monotonic itself would stop the event loop's clock too
+    monkeypatch.setattr(demand, "time", SimpleNamespace(monotonic=lambda: now[0]))
     return now
 
 
@@ -163,3 +167,75 @@ def test_the_collector_stops_when_the_api_stops_writing(redis, clock):
 def test_the_api_never_serves(redis):
     demand.configure("api")
     assert asyncio.run(demand.serve({"quote": lambda k: None})) == 0
+
+
+def test_a_background_read_marks_nothing(redis):
+    demand.configure("api")
+    token = demand.SCREEN.set(False)                 # prewarm's playbooks, every few minutes with no screen
+    try:
+        demand.want("quote", "005930")
+    finally:
+        demand.SCREEN.reset(token)
+    assert demand.stats()["wanted"] == 0
+
+
+def test_only_reads_inside_a_request_mark(redis):
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    async def read(request):
+        demand.want("quote", request.query_params["t"])
+        return JSONResponse({})
+
+    token = demand.SCREEN.set(False)                 # outside: the test's own context, like a background job
+    try:
+        demand.configure("api")
+        app = Starlette(routes=[Route("/q", read)])
+        app.add_middleware(demand.ScreenReads)
+        with TestClient(app) as client:
+            client.get("/q", params={"t": "NVDA"})
+        demand.want("quote", "005930")
+        assert demand.stats()["wanted"] == 1 and ("quote", "NVDA") in demand._seen
+    finally:
+        demand.SCREEN.reset(token)
+
+
+def test_a_flush_lost_to_a_redis_outage_is_written_once_redis_is_back(redis, monkeypatch, clock):
+    demand.configure("api")
+    demand.want("quote", "005930")
+    monkeypatch.setattr(sc, "_up", lambda: False)    # the write did not land
+    asyncio.run(demand.flush())
+    monkeypatch.setattr(sc, "_up", lambda: True)
+    redis.flushall()
+    clock[0] += 2
+    asyncio.run(demand.flush())                      # same set 2 s later: written now, not FLUSH_EVERY later
+    assert redis.keys("td:want:*")
+
+
+def test_configure_starts_from_nothing_sent(redis):
+    demand.configure("api")
+    demand.want("quote", "005930")
+    asyncio.run(demand.flush())
+    demand.configure("api")
+    assert demand._sent == (frozenset(), 0.0) and demand.stats()["flushes"] == 0
+
+
+def test_a_slow_fetch_is_cut_and_backed_off(redis, clock, monkeypatch):
+    monkeypatch.setattr(demand, "HANDLER_SEC", 0.05)
+    _wanted(redis, {"quote": ["SLOW"]})
+
+    async def slow(key):
+        await asyncio.sleep(1)
+
+    assert asyncio.run(demand.serve({"quote": slow})) == 0
+    assert demand.stats()["failed"] == 1
+
+
+def test_an_expired_want_is_ignored(redis):
+    import time as real_time
+    demand.configure("collector")
+    asyncio.run(sc.aput(demand.WANT_NS, demand.WANT_KEY, {"quote": ["005930"]}, 0.05))
+    real_time.sleep(0.1)
+    assert asyncio.run(demand.read()) == {}

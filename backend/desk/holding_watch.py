@@ -21,7 +21,7 @@ Rules, each once a KST day per holding (desk.market_alerts, kind ``holding_alert
 - ``hold_take_profit`` 🟢 익절 고려: a range's top reached in profit.
 
 Quantities and amounts are never read past the holdings call, stored, logged or sent. What goes out to
-the channels (Telegram, Kakao, a lock screen) carries no number that gives the average away with the
+the channels (Telegram, a lock screen) carries no number that gives the average away with the
 public price: no return against the average, and the max-loss line only by name ("평단 손실 한도"),
 neither its price nor the distance to it. That an alert fired at a time still bounds the average (a
 max-loss stop fires near average x (1 - max loss)). The return against the average stays in the app

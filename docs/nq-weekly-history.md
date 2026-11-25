@@ -121,5 +121,5 @@ view = signal.view(fixture["_source"](rows, now), fixture["_rules"](), now, week
 print(json.dumps(view["study"]["horizons"]))
 ```
 
-운영 인계 항목은 승인된 텔레그램·카카오의 실제 시험 수신과 첫 실신호 발송 확인이다.
+운영 인계 항목은 승인된 텔레그램의 실제 시험 수신과 첫 실신호 발송 확인이다.
 이번 검증에는 운영 채널이나 설정 변경이 포함되지 않는다.

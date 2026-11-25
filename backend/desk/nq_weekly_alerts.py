@@ -14,7 +14,6 @@ from . import notify
 from . import nq_weekly_signal as signal
 from .notify_channels import ChannelError, ChannelRateLimited, ChannelStopped, ChannelUnknown
 from .nq_weekly_ledger import CHANNELS, Ledger, Rule
-from .privacy import PolicyChanged
 
 log = logging.getLogger(__name__)
 KINDS = ("nq_alert", "tone_warning")
@@ -66,27 +65,17 @@ class Service:
         channel = notify.channel(name)
         if self.legacy_store is None or channel is None or not channel.configured:
             return "unavailable", None
-        if name == "kakao":
-            state = channel.status()
-            if not state["connected"]:
-                return "unavailable", None
-            if self.legacy_store.get(name)["needs_reconnect"]:
-                return "needs_reconnect", None
         return ("ready", channel) if self.legacy_store.wants(name, KINDS) else ("disabled", None)
 
     def channels(self, rule: Rule) -> list[dict]:
+        # needs_reconnect stays in the answer the screen reads; Telegram never asks for it (#986)
         result = []
         for name in CHANNELS:
-            warning = False
             try:
-                state, target = self._target(rule, name)
-                warning = state == "needs_reconnect" or (
-                    name == "kakao" and target is not None and not self.ledger.policy.protected
-                    and target.status()["needs_reconnect"]
-                )
+                state, _ = self._target(rule, name)
             except Exception:  # noqa: BLE001 - channel details stay inside the transport
                 state = "unavailable"
-            result.append({"channel": name, "status": state, "needs_reconnect": warning})
+            result.append({"channel": name, "status": state, "needs_reconnect": False})
         return result
 
     def _deliver(self, rule: Rule, name: str, row: dict) -> None | str:
@@ -106,16 +95,6 @@ class Service:
             if not allowed():
                 return "expired" if self.now() >= row["expires_at"] else "superseded"
             target.deliver(row["payload"])
-        elif name == "kakao":
-            def fence(conn):
-                try:
-                    current = self.ledger.locked_active(conn, rule)
-                except PolicyChanged:
-                    current = False
-                if not current or self.now() >= row["expires_at"]:
-                    raise ChannelStopped("channel authorization changed")
-
-            target.send_once(row["payload"], allowed=allowed, fence=fence, kinds=KINDS)
         else:
             target.send_once(row["payload"], allowed=allowed)
         return None
@@ -130,21 +109,16 @@ class Service:
             return self._deliver(rule, name, row)
 
         try:
-            # Kakao alone shares the existing OAuth worker with connect and token refresh.
-            if name == "kakao" and not self.ledger.policy.protected:
-                status = await asyncio.to_thread(notify.run, send)
-            else:
-                status = await asyncio.to_thread(send)
-            status = status or "sent"
+            status = await asyncio.to_thread(send) or "sent"
         except ChannelRateLimited as exc:
             status, retry = "rate_limited", exc.retry_after
         except ChannelStopped:
             status = "expired" if self.now() >= row["expires_at"] else "superseded"
         except ChannelUnknown:
             status = "unknown"
-        except ChannelError as exc:
-            status = "unknown" if self.ledger.policy.protected or str(exc) == "timeout" else "failed"
-        except Exception as exc:  # noqa: BLE001 - a failure in one channel must not skip the other
+        except ChannelError:
+            status = "unknown" if self.ledger.policy.protected else "failed"
+        except Exception as exc:  # noqa: BLE001 - a channel's failure must not stop the tick
             log.warning("NQ weekly %s delivery outcome unknown: %s", name, type(exc).__name__)
             status = "unknown"
         await asyncio.to_thread(self.ledger.finish, rule, row, status, self.now(), retry)

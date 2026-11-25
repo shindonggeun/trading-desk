@@ -302,10 +302,11 @@ market_alerts = Table(
 # #580 the alert channels beside web push (desk.notify_channels): one row per channel, the desk's own
 notify_channels = Table(
     "notify_channels", metadata,
-    Column("channel", String(16), primary_key=True),              # telegram | kakao
+    Column("channel", String(16), primary_key=True),              # telegram (#986: another name is left unread)
     Column("enabled", Boolean, nullable=False),
     Column("kinds", Json, nullable=False),                        # kind -> on; a kind not stored is on
-    Column("secret", Text),                                       # Kakao tokens, Fernet-sealed (DESK_NOTIFY_KEY)
+    # the token columns below belonged to the channel #986 retired: unused, kept to spare a migration
+    Column("secret", Text),
     Column("access_expires_at", Timestamp),
     Column("refresh_expires_at", Timestamp),
     Column("needs_reconnect", Boolean, nullable=False),

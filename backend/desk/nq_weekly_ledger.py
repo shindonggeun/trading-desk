@@ -12,7 +12,8 @@ from .db import account_owner_binding, nq_weekly_deliveries, nq_weekly_rules, us
 from .nq_weekly_signal import DEFAULT_SETTINGS
 from .privacy import ProcessPolicy
 
-CHANNELS = ("telegram", "kakao")
+# #986 Telegram only: an outbox row of a retired channel stays in the table, never claimed or shown
+CHANNELS = ("telegram",)
 WINDOW = timedelta(hours=24)
 MAX_ATTEMPTS = 3
 CLAIM_TIMEOUT = timedelta(minutes=5)
@@ -152,12 +153,6 @@ class Ledger:
         return bool(current and current.scope == rule.scope and current.revision == rule.revision
                     and current.settings["enabled"])
 
-    def locked_active(self, conn: Connection, rule: Rule) -> bool:
-        if self._owner(conn, lock=True) != (rule.scope, rule.owner):
-            return False
-        current = self._row(conn, rule.scope)
-        return bool(current and current["revision"] == rule.revision and current["settings"]["enabled"])
-
     def finish(self, rule: Rule, row: dict, status: str, now: datetime, retry_after: float = 0) -> None:
         retry_at = None
         if status == "rate_limited" and row["attempts"] + 1 < MAX_ATTEMPTS:
@@ -176,7 +171,7 @@ class Ledger:
     def latest(self, rule: Rule) -> list[dict]:
         table = nq_weekly_deliveries
         with self.engine.connect() as conn:
-            rows = conn.execute(select(table).where(*self._where(rule))
+            rows = conn.execute(select(table).where(*self._where(rule), table.c.channel.in_(CHANNELS))
                                 .order_by(table.c.week.desc(), table.c.channel).limit(len(CHANNELS))).mappings()
             return [{"week": row["week"].isoformat(), "channel": row["channel"], "status": row["status"],
                      "attempts": row["attempts"], "updated_at": _utc(row["updated_at"]).isoformat(),

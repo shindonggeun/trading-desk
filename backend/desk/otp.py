@@ -38,8 +38,7 @@ class OtpUnavailable(RuntimeError):
 
 
 class SecretBox:
-    """Fernet sealing under one env key (``name``): DESK_OTP_KEY for TOTP secrets, DESK_NOTIFY_KEY for
-    the alert channels' tokens (#580) - separate keys, so rotating one never breaks the other."""
+    """Fernet sealing under one env key (``name``, named in the error): DESK_OTP_KEY for TOTP secrets."""
 
     def __init__(self, key: str | None, name: str = "DESK_OTP_KEY") -> None:
         self.error: str | None = None

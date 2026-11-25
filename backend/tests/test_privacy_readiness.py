@@ -184,9 +184,9 @@ def test_attested_broker_and_destination_do_not_follow_rebinding(db_url, desk_da
         assert approved.holdings_count == 1
         channels = api.get("/api/notify/channels").json()
         assert not channels["can_edit"]
-        assert {row["name"]: row["configured"] for row in channels["channels"]} == {"kakao": False, "telegram": True}
+        assert {row["name"]: row["configured"] for row in channels["channels"]} == {"telegram": True}
         assert api.put("/api/notify/channels/telegram", json={"enabled": False}).status_code == 403
-        assert api.post("/api/notify/kakao/connect").status_code == 403
+        assert api.post("/api/notify/kakao/connect").status_code == 404           # #986 retired
         assert api.post("/api/notify/channels/telegram/test").json()["ok"] is True
         assert len(notices) == 1
 

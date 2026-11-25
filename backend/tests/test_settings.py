@@ -48,7 +48,7 @@ def test_no_secret_reaches_the_repr(monkeypatch):
     secret_fields = [f for f in dataclasses.fields(Settings)
                      if SECRET_FIELD.search(f.name) and "public" not in f.name]   # a VAPID public key is public
     assert {f.name for f in secret_fields} >= {"database_url", "otp_key", "toss_client_secret", "kis_app_key",
-                                               "telegram_bot_token", "notify_key"}
+                                               "telegram_bot_token"}
     assert [f.name for f in secret_fields if f.repr] == []
     monkeypatch.setenv("DESK_DATABASE_URL", "postgresql+psycopg://desk:marker-db-pw@db:5432/desk")
     monkeypatch.setenv("DESK_OTP_KEY", "marker-otp")

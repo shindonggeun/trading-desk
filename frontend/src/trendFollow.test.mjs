@@ -73,6 +73,18 @@ test("확정 돌파와 재이탈", () => {
   assert.match(back.signal, /다시 내려왔/);
 });
 
+test("돌파 기준(선 + 0.3 ATR) 안에서 마감해 신호가 없으면 판정 근거를 보인다", () => {
+  const p = trendPresentation(base({ stage: { state: "awaiting_confirmation", signal: null, confirmed_at: null, basis: "선 위 0.3 ATR 안에서 마감 — 돌파 확인 전" } }));
+  assert.equal(p.line, "일봉 하락 추세 · 확인 대기");
+  assert.match(p.signal, /돌파 확인 전/);
+});
+
+test("세션을 모르는 시장 · 호가 통화 단위", () => {
+  assert.match(trendPresentation(base({ status: "unavailable", reason: "unsupported_market", instrument: null, trend: null, stage: null })).reason, /세션을 모르는 시장/);
+  assert.equal(trendProduct({ ticker: "BTC-KRW", instrument: { kind: "spot", unit: "KRW", symbol: "BTC-KRW", provider: "yahoo", session: "24h", rollover: null, note: null } }).unit, "원");
+  assert.equal(trendProduct({ ticker: "ETH-BTC", instrument: { kind: "spot", unit: "BTC", symbol: "ETH-BTC", provider: "yahoo", session: "24h", rollover: null, note: null } }).unit, "BTC");
+});
+
 test("진행 중 봉이면 판정은 앞 확정봉 기준임을 표시한다", () => {
   assert.equal(trendPresentation(base({ status: "in_progress" })).pending, true);
 });

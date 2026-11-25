@@ -63,6 +63,7 @@ Git 규칙의 정본은 [docs/git-workflow.md](../../../docs/git-workflow.md) �
 
 - `T0` 이거나 위치가 이미 특정되면 생략한다.
 - 위치가 불명확할 때만 `explorer` 를 부른다. 질문과 범위(`backend/desk/...`, `frontend/src/...`)를 좁혀 넘긴다.
+- 서로 답을 기다릴 필요 없는 질문이 여럿이면 질문마다 `explorer` 하나씩, **한 메시지에서 병렬로** 띄운다(BE 흐름 · FE 사용처 · 테스트 위치 등).
 - TradingAgents 내부 동작은 설치된 패키지(`backend/.venv/Lib/site-packages/tradingagents`) 또는 포크 `D:\ProjectWorkSpace\TradingAgents` 에서 확인한다. 포크는 고치지 않는다.
 
 ## 4. PLAN
@@ -79,12 +80,18 @@ Git 규칙의 정본은 [docs/git-workflow.md](../../../docs/git-workflow.md) �
 | `T1` | 메인 세션 또는 `implementer` (범위 · 대상 테스트를 고정해 넘긴다) |
 | `T2` · `T3` · 치명적 버그 | `senior_implementer` (고정한 설계 · 보존할 동작 · 검증 방법을 넘긴다) |
 
-- 공유 파일(`api.py`, `store.py`, `settings.py`, `frontend/src/api.ts`)을 고치는 쓰기 작업은 한 번에 하나만. 구현 역할을 병렬로 띄우지 않는다.
+- **병렬 구현**: 계획에서 파일이 겹치지 않는 조각(BE · FE, 서로 다른 모듈)으로 나뉘면 조각마다 구현 역할을 **한 메시지에서 병렬로** 띄운다.
+  조각마다 맡을 파일 목록을 프롬프트에 적고 그 밖의 파일은 고치지 않게 한다. 같은 워크트리를 쓰되 커밋 · 스테이징은 메인 세션이 모두 끝난 뒤 한다.
+  앞 조각의 결과(API 계약 등)가 필요하면 계약을 먼저 고정해 프롬프트에 넣고, 고정할 수 없으면 순서대로 한다.
+- 공유 파일(`api.py`, `store.py`, `settings.py`, `frontend/src/api.ts`)을 고치는 쓰기는 한 조각에만 맡긴다 — 두 구현 역할이 같은 파일을 동시에 고치지 않는다.
 - 구현 역할이 범위 밖 신호(인증 · 브로커 · 스키마 · 동시성)로 멈추면 등급을 올려 다시 고정한다.
 
 ## 6. VERIFY
 
 메인 세션이 직접 돌린다. 하위 에이전트의 "통과했다" 를 완료 근거로 쓰지 않는다.
+
+- **무거운 검사는 한 번에 하나**: 전체 `pytest` · `npm run build` · Playwright · 백테스트는 이 PC 의 메모리가 빠듯해(전체 pytest 가 시스템에 중단된 적 있음)
+  세션 안에서도, 병렬 구현 역할끼리도 동시에 돌리지 않는다. 병렬 구현 역할에는 **대상 테스트만** 돌리게 하고 전체 검사는 메인 세션이 모은 뒤 한 번 돌린다.
 
 ```bash
 cd backend && .venv/Scripts/python -m ruff check desk tests && .venv/Scripts/python -m pytest -q

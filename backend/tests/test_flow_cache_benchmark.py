@@ -1,5 +1,6 @@
 import asyncio
 
+from desk.futures_flow import OPTION_MARKETS
 from tests.flow_cache_benchmark import URLS, benchmark
 
 
@@ -15,6 +16,8 @@ def test_benchmark_separates_cold_collector_and_local_warm_requests():
         ("futures", {"spot_flow", "spot_index", "futures_price", "futures_investors"}),
     ):
         full = dict.fromkeys(methods, samples)
+        if "futures_investors" in full:   # #1007 the investor screen read for futures, calls and puts
+            full["futures_investors"] = samples * (1 + len(OPTION_MARKETS))
         for enabled in (False, True):
             cold = cases[URLS[endpoint], enabled, "cold"]
             assert cold["api_origin_by_method"] == full

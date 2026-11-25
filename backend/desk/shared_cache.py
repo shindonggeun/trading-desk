@@ -19,7 +19,8 @@ fetch - a cache must never make a page fail or wait.
 - ``get``/``put`` are for code in worker threads (``asyncio.to_thread``); called on the event loop's thread
   they skip Redis (a blocking socket call there would stall every request). ``aget``/``aput`` are for
   coroutines.
-- What is never put here: broker tokens (#688 keeps them in the DB), session data, anything per user.
+- What is never put here: broker tokens (#688 keeps them in the DB), session data, anything per user - but
+  the screens' wanted tickers (desk.demand, one sealed value: the same tickers the ``quote`` keys already hold).
   The password and the cache key come from Vault (``kv/trading-desk/backend/prod/env`` ``DESK_REDIS_PASSWORD`` ·
   ``DESK_REDIS_CACHE_KEY``) and are never logged.
 

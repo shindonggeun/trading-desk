@@ -4,13 +4,16 @@ The api answers screens from Redis when the collector has the value; the collect
 read lately, so with no screen open neither of them calls Toss or KIS.
 
 - **api** (``want``): every read of a demand-collected value (a quote past the KIS tick and the memory cache,
-  the futures quote card) marks its (namespace, key) - on every read, not only on a miss: while the collector
-  keeps a value fresh the api never misses, and a "want on miss" would stop the collection it relies on.
-  ``flush`` (the ``demand_wants`` job, every few seconds) writes the keys read in the last ``KEEP_SEC`` as one
-  sealed value under one name (``td:want:<HMAC>``, desk.shared_cache): the name carries no ticker, nor the
-  count of them. Nothing read - nothing written, and the value runs out in ``WANT_TTL``.
+  the futures quote card) made for a screen marks its (namespace, key) - on every read, not only on a miss:
+  while the collector keeps a value fresh the api never misses, and a "want on miss" would stop the collection
+  it relies on. Only reads inside an HTTP request mark (``ScreenReads`` sets ``SCREEN`` per request): the api's
+  own background reads (prewarm's playbooks every few minutes) must not keep the collector calling with no
+  screen open. ``flush`` (the ``demand_wants`` job, every few seconds) writes the keys read in the last
+  ``KEEP_SEC`` as one sealed value under one name (``td:want:<HMAC>``, desk.shared_cache): the name carries no
+  ticker (its length, and the ``quote`` keys' count, still tell roughly how many - docs/security.md §5.2).
+  Nothing read - nothing written, and the value runs out in ``WANT_TTL``.
 - **collector** (``serve``, the ``demand`` job): reads that value and calls a handler per namespace for each key
-  due (``EVERY``), two at a time, a pass ending by ``PASS_SEC``. A handler fetches from the source without
+  due (``EVERY``), two at a time, each within ``HANDLER_SEC``, a pass starting none after ``PASS_SEC``. A handler fetches from the source without
   reading the shared tier (it would read its own value back) and writes the value for the api. The collector
   keeps no wanted set of its own - a restart picks up where Redis is.
 - Off unless the process is the api with Redis on (or the collector, for ``serve``): one process (``all``) or no
@@ -27,6 +30,7 @@ import logging
 import threading
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 
 from . import shared_cache
 
@@ -42,9 +46,13 @@ MAX_KEY_CHARS = 40
 EVERY = {"quote": 10.0, "futures_quote": 15.0}     # a key's collection period per namespace
 PARALLEL = 2               # handlers running at once in a pass
 PASS_SEC = 10.0            # a pass stops starting handlers after this long
+HANDLER_SEC = 20.0         # one fetch past this is a failure (a slow KIS page run must not hold the next pass)
 BACKOFF_MAX_SEC = 60.0     # a key that failed waits twice as long each time, up to this
 
 Handler = Callable[[str], Awaitable[None]]
+
+# True inside an HTTP request (ScreenReads): only a screen's reads are wanted
+SCREEN: ContextVar[bool] = ContextVar("desk_demand_screen", default=False)
 
 _lock = threading.Lock()
 _role = ""
@@ -57,12 +65,15 @@ _stats = {"flushes": 0, "dropped": 0, "served": 0, "failed": 0}
 
 def configure(role: str) -> None:
     """``role``: desk.roles' role of this process (api / collector / analyst / all)."""
-    global _role
+    global _role, _sent
     with _lock:
         _role = role
+        _sent = (frozenset(), 0.0)
         _seen.clear()
         _due.clear()
         _fails.clear()
+        for k in _stats:
+            _stats[k] = 0
 
 
 def enabled() -> bool:
@@ -76,7 +87,7 @@ def serving() -> bool:
 
 def want(namespace: str, key: str) -> None:
     """Mark ``key`` of ``namespace`` as read now (no I/O - the ``demand_wants`` job writes the set)."""
-    if not enabled() or namespace not in EVERY or not isinstance(key, str) or not 0 < len(key) <= MAX_KEY_CHARS:
+    if not enabled() or not SCREEN.get() or namespace not in EVERY or not isinstance(key, str)             or not 0 < len(key) <= MAX_KEY_CHARS:
         return
     with _lock:
         if (namespace, key) not in _seen and len(_seen) >= MAX_KEYS:
@@ -108,6 +119,8 @@ async def flush() -> None:
     if keys == _sent[0] and now - _sent[1] < FLUSH_EVERY:
         return
     await shared_cache.aput(WANT_NS, WANT_KEY, wanted, WANT_TTL)
+    if not shared_cache._up():
+        return                                     # not written (Redis down): write it again once it is back
     _sent = (keys, now)
     _stats["flushes"] += 1
 
@@ -158,7 +171,7 @@ async def serve(handlers: dict[str, Handler]) -> int:
             if time.monotonic() - started > PASS_SEC:
                 return                                     # the next pass takes it (still due)
             try:
-                await handlers[ns](key)
+                await asyncio.wait_for(handlers[ns](key), HANDLER_SEC)
             except Exception as exc:  # noqa: BLE001 - one key failing leaves the others; the api falls back
                 with _lock:
                     n = _fails[(ns, key)] = _fails.get((ns, key), 0) + 1
@@ -180,3 +193,16 @@ def stats() -> dict:
     """For /api/status: counts only, no keys."""
     with _lock:
         return {"role": _role, "on": enabled() or serving(), "wanted": len(_seen), "collecting": len(_due), **_stats}
+
+
+class ScreenReads:
+    """ASGI middleware: an HTTP request's reads (and the tasks it starts) mark what they read; background jobs'
+    do not. Each request runs in its own task, so the flag ends with it."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "http":
+            SCREEN.set(True)
+        await self.app(scope, receive, send)

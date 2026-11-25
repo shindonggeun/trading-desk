@@ -56,7 +56,9 @@ class _Down:
 
 @pytest.fixture(autouse=True)
 def demand_reset():
+    token = demand.SCREEN.set(True)                  # these reads stand for a screen's (desk.demand.ScreenReads)
     yield
+    demand.SCREEN.reset(token)
     demand.configure("")
 
 
@@ -250,3 +252,21 @@ def test_redis_down_leaves_the_api_on_its_own_broker_reads():
         assert (first.price, first.source, broker.calls) == (101.5, "toss", 2)
     finally:
         sc.use(None, None)
+
+
+def test_the_collectors_own_reads_keep_the_collected_lifetime(redis):
+    """The collector's holdings watch reads quote() too: its write must not cut a collected value to 10 s."""
+    async def go(role):
+        sc.use(*_fresh())
+        demand.configure(role)
+        await PriceSource(Broker(price=101.5), yahoo_quote=_no_yahoo).quote("AAPL")
+        return (await sc.aget("quote", "AAPL"))[2]
+
+    assert QUOTE_TTL_SEC < asyncio.run(go("collector")) <= DEMAND_TTL_SEC
+    assert asyncio.run(go("analyst")) <= QUOTE_TTL_SEC
+
+
+def _fresh():
+    server = fakeredis.FakeServer()
+    return (fakeredis.FakeRedis(server=server, decode_responses=True),
+            fakeredis.FakeAsyncRedis(server=server, decode_responses=True))

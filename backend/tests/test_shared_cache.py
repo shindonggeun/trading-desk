@@ -277,7 +277,8 @@ def test_the_futures_partial_error_keeps_the_last_shared_confirmation(redis, mon
 
             async def source(path, tr, params):
                 if path == ff.INVESTOR_PATH:
-                    clock[0] += timedelta(seconds=2)
+                    if params["FID_INPUT_ISCD_2"] == ff.INVESTOR_MARKET[1]:   # the futures read (#1007: options too)
+                        clock[0] += timedelta(seconds=2)
                     raise ff.KisError("synthetic investor failure")
                 return await get(path, tr, params)
 

@@ -12,6 +12,9 @@ Three KIS REST calls, cached together:
   for a market code. The futures codes (``INVESTOR_MARKET``) come from KIS' list for that screen and
   are checked on the first live answer: an answer that does not look like futures is reported, not shown.
 - the spot foreign net from desk.market_flow for the split.
+- #1007 the same investor screen for KOSPI200 call and put options (``OPTION_MARKETS``): whether foreigners
+  bought calls or puts, which the futures' net contracts do not say. Checked like the futures answer; a failure
+  or a wrong-looking answer keeps the last good one and never fails the futures view.
 
 Secrets: the app key and secret go to KIS over HTTPS only (``/oauth2/tokenP``); the access token
 lives in process memory for a day. Neither is logged nor returned (docs/security.md, KIS).
@@ -39,6 +42,15 @@ INVESTOR_TR = "FHPTJ04030000"
 # HTS [0403] market / sector codes for KOSPI200 futures (KIS' code list for the screen; the sample
 # in the KIS repository shows the stock-futures pair "999" / "S001").
 INVESTOR_MARKET = ("K2I", "F001")
+# #1007 KOSPI200 call / put options on the same screen. KIS' code list (open-trading-api, legacy/postman
+# 실전계좌_POSTMAN_샘플코드_v2.6.json, FID_INPUT_ISCD_2): "fid_input_iscd 가 K2I 인 경우 F001(선물) OC01(콜옵션)
+# OP01(풋옵션)" - the futures pair above is the same list's
+OPTION_MARKETS = {"call": ("K2I", "OC01"), "put": ("K2I", "OP01")}
+# an option's premium per contract against one futures contract's notional: far below 1 (a futures answer is ~1)
+OPTION_VALUE_MAX = 0.2
+OPTION_NOTE = ("순매수 금액은 산 프리미엄에서 판 프리미엄을 뺀 값입니다. 풋을 팔아도(상승 · 횡보 쪽) 풋 순매수가 음수로, "
+               "콜을 팔아도 콜 순매수가 음수로 보입니다. 풋 − 콜이 크면 하락 대비가 많다는 뜻일 수 있지만 매매 신호로 "
+               "단정하지 말고 선물 · 현물 수급과 함께 보세요.")
 # The foreign class in a spot market-flow record (desk.market_flow.normalize, Toss keys) - not the
 # "foreign" key the KIS futures classes use here (#370).
 SPOT_FOREIGNER = "foreigner"
@@ -197,6 +209,34 @@ def _looks_like_futures(investors: dict | None, price: dict) -> bool:
     return True
 
 
+def _looks_like_options(investors: dict | None, price: dict, futures: dict | None) -> bool:
+    """#1007 guards a wrong option code: not the futures answer again, and no class whose value per contract is
+    near a futures contract's notional (a premium is a small part of it). Contracts and value may part in sign -
+    buying cheap far options while selling dearer near ones - so the sign is not checked."""
+    if not investors:
+        return False
+    if futures and investors == futures:
+        return False
+    notional = (price.get("price") or 0) * MULTIPLIER_MN
+    for v in investors.values():
+        qty, value = v.get("net_contracts"), v.get("net_value_mn")
+        if not qty or value is None or abs(qty) < 50 or not notional:
+            continue
+        if abs(value / qty) / notional > OPTION_VALUE_MAX:
+            return False
+    return True
+
+
+def option_view(call: dict, put: dict, as_of: str) -> dict:
+    """#1007 the call and put investors and the derived put - call net value (million won) of foreigners and
+    institutions - a number and a note, not a signal (see OPTION_NOTE)."""
+    def put_minus_call(cls: str) -> float | None:
+        p, c = (put.get(cls) or {}).get("net_value_mn"), (call.get(cls) or {}).get("net_value_mn")
+        return None if p is None or c is None else round(p - c, 1)
+    return {"call": call, "put": put, "foreign_put_minus_call_mn": put_minus_call("foreign"),
+            "institution_put_minus_call_mn": put_minus_call("institution"), "as_of": as_of, "note": OPTION_NOTE}
+
+
 class KisRest:
     """KIS REST with its access token cached in memory (one issue a minute at most)."""
 
@@ -352,6 +392,7 @@ class FuturesFlow:
         self._clock, self._now = clock, now
         self._cache: tuple[float, float, dict] | None = None
         self._lock = asyncio.Lock()
+        self._options: dict | None = None                # #1007 the last good options view (with its as_of)
 
     async def get(self, fresh: bool = False) -> dict:
         """The cached view; ``fresh`` fetches now (the #254 snapshots: no pre-open or 30 s old value)."""
@@ -393,14 +434,17 @@ class FuturesFlow:
         base = {"source": "kis", "fetched_at": now.astimezone(KST).isoformat(timespec="seconds"),
                 "front": front, "market_open": futures_open(now), "supported": True, "error": None,
                 "price": None, "investors": None, "investors_error": None,
-                "investors_unit": {"value": "백만원", "qty": "계약"}, "split": None}
+                "investors_unit": {"value": "백만원", "qty": "계약"}, "split": None,
+                "options": None, "options_error": None}
         if self.rest is None:
             return {**base, "supported": False, "error": self.off}, True
-        price_res, inv_res, spot_res = await asyncio.gather(
+        price_res, inv_res, spot_res, call_res, put_res = await asyncio.gather(
             self.rest.get(PRICE_PATH, PRICE_TR, {"FID_COND_MRKT_DIV_CODE": "F", "FID_INPUT_ISCD": front["code"]}),
             self.rest.get(INVESTOR_PATH, INVESTOR_TR,
                           {"FID_INPUT_ISCD": INVESTOR_MARKET[0], "FID_INPUT_ISCD_2": INVESTOR_MARKET[1]}),
             self.spot.get("KOSPI", "1d", 1) if self.spot is not None else _none(),
+            *(self.rest.get(INVESTOR_PATH, INVESTOR_TR, {"FID_INPUT_ISCD": m[0], "FID_INPUT_ISCD_2": m[1]})
+              for m in OPTION_MARKETS.values()),
             return_exceptions=True)
         # The response records when the reads finished. Keep the request-start date for the contract.
         base["fetched_at"] = self._now().astimezone(KST).isoformat(timespec="seconds")
@@ -426,7 +470,37 @@ class FuturesFlow:
                 investors, inv_error = None, "투자자별 동향의 시장 코드가 선물과 맞지 않습니다(확인 필요)"
         spot = spot_res if isinstance(spot_res, dict) else None
         split = foreign_split(spot, investors, now.astimezone(KST).date())
-        return {**base, "price": price, "investors": investors, "investors_error": inv_error, "split": split}, ok
+        # #1007 the options never fail the view: their trouble shows as options_error beside the last good one
+        options, opt_error = self._options_from(call_res, put_res, price, investors, base["fetched_at"])
+        return {**base, "price": price, "investors": investors, "investors_error": inv_error, "split": split,
+                "options": options, "options_error": opt_error}, ok
+
+    def _options_from(self, call_res, put_res, price: dict, futures: dict | None,
+                      as_of: str) -> tuple[dict | None, str | None]:
+        """#1007 (view, error): this read's call and put investors when both look like options, else the last
+        good view (or None) with why. Empty answers (before the open) keep the last good view without an error."""
+        got: dict[str, dict | None] = {}
+        error = None
+        for side, res in (("call", call_res), ("put", put_res)):
+            if isinstance(res, BaseException):
+                log.warning("%s options investors failed: %s", side, _short(res))
+                error = f"옵션 투자자별 동향을 받지 못했습니다 — {_short(res)}"
+                continue
+            inv = normalize_investors(res.get("output"))
+            if inv is not None and not _looks_like_options(inv, price, futures):
+                log.warning("options investors: the answer for %s does not look like %s options",
+                            OPTION_MARKETS[side], side)
+                error = "옵션 투자자별 동향의 시장 코드가 맞지 않습니다(확인 필요)"
+                continue
+            got[side] = inv
+        call, put = got.get("call"), got.get("put")
+        if error is None and call is not None and call == put:
+            log.warning("options investors: the call and put answers are the same")
+            error = "콜 · 풋 투자자별 동향이 같게 왔습니다(시장 코드 확인 필요)"
+        if error is None and call is not None and put is not None:
+            self._options = option_view(call, put, as_of)
+            return self._options, None
+        return self._options, error
 
     async def aclose(self) -> None:
         if self.rest is not None:

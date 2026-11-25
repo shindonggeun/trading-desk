@@ -1,7 +1,7 @@
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { api } from "../api";
 import { usePoll } from "../poll";
-import type { KrShortPoint, KrShortSeries, KrShortStatus } from "../types";
+import type { KrShortPoint, KrShortSales, KrShortSeries, KrShortStatus } from "../types";
 import InstrumentSearch, { type Picked } from "./InstrumentSearch";
 import "./KrShortSaleCard.css";
 
@@ -29,7 +29,11 @@ function formatRatio(ratio: number | null) {
   return `${RATIO_FORMAT.format(ratio)}%`;
 }
 
-function RatioMetric({ label, dateLabel, series }: { label: string; dateLabel: string; series: KrShortSeries }) {
+const SOURCE_LABEL: Record<NonNullable<KrShortSales["source"]>, string> = {
+  kis: "한국투자증권 공매도 일별추이(KRX 시장 기준)",
+};
+
+function RatioMetric({ label, dateLabel, series, note }: { label: string; dateLabel: string; series: KrShortSeries; note?: string }) {
   return (
     <div className="kr-short-metric">
       <dt>{label}</dt>
@@ -38,9 +42,10 @@ function RatioMetric({ label, dateLabel, series }: { label: string; dateLabel: s
         <span className="muted small">{dateLabel} {series.latest?.as_of ?? "—"}</span>
         {series.status !== "available" && (
           <span className={`pill ${series.status === "source_error" ? "pill-bad" : series.stale ? "pill-warn" : ""}`}>
-            {series.stale && "지연 · "}{STATUS_LABEL[series.status]}
+            {series.stale && "지연 · "}{note ? "공급자 미제공" : STATUS_LABEL[series.status]}
           </span>
         )}
+        {note && <span className="muted small">{note}</span>}
       </dd>
     </div>
   );
@@ -101,9 +106,17 @@ function ShortSaleData({ ticker }: { ticker: string }) {
         <>
           <dl className="kr-short-metrics">
             <RatioMetric label="공매도 거래대금 비중" dateLabel="최신 공표일" series={short.trade} />
-            <RatioMetric label="공매도 순보유잔고 비중" dateLabel="잔고 기준일" series={short.balance} />
+            <RatioMetric
+              label="공매도 순보유잔고 비중"
+              dateLabel="잔고 기준일"
+              series={short.balance}
+              note={short.source && short.balance.status === "source_unavailable"
+                ? "연결된 공급자가 순보유잔고를 제공하지 않아 KRX 잔고 원천을 연결하기 전까지 비어 있습니다."
+                : undefined}
+            />
           </dl>
           <TradeHistory points={short.trade.history} />
+          {short.source && <p className="muted small">출처: {SOURCE_LABEL[short.source]}</p>}
         </>
       )}
     </div>

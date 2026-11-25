@@ -1125,6 +1125,8 @@ export interface KrShortSales {
   ticker: string;
   market: "KOSPI" | "KOSDAQ" | null;
   status: KrShortStatus;
+  /** #979 연결된 공급자(지금은 KIS 공매도 일별추이). 미연결이면 null */
+  source: "kis" | null;
   trade: KrShortSeries & { history: KrShortPoint[] };
   balance: KrShortSeries;
 }

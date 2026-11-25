@@ -66,6 +66,7 @@ LATEST_KEEP_SEC = 90.0      # a latest value (flows) stays shared at least this 
                             # jobs read every minute, while the card's own cache (and its "ttl") is 30-60 s
 SKEW_SEC = 5.0              # clocks of the api · collector · analyst hosts
 LATE_FACTOR = 2.0          # an async timeout woken past this many bounds: the loop was blocked, not Redis
+LATE_STREAK = 3             # ...but this many in a row with no async call landing between: treated as down
 
 _lock = threading.Lock()
 _sync = None                # redis.Redis (or a test double)
@@ -73,6 +74,7 @@ _async = None               # redis.asyncio.Redis (or a test double)
 _box: Fernet | None = None  # seals values
 _name_key = b""             # HMAC key for key names
 _down_until = 0.0
+_late_streak = 0            # late async timeouts since the last async call that landed
 _stats = {"hits": 0, "misses": 0, "writes": 0, "skipped": 0, "rejected": 0, "errors": 0, "late": 0}
 _unshareable: set[str] = set()
 _warned_rejected = False
@@ -182,10 +184,10 @@ def _host_port(text: str) -> tuple[str, int]:
 def use(sync_client, async_client, secret: str | bytes | None = None) -> None:
     """Set the clients directly (tests pass fakeredis; ``None, None`` turns the tier off). ``secret`` is
     ``DESK_REDIS_CACHE_KEY``; None = a random one (this process only - what a test of one module needs)."""
-    global _sync, _async, _down_until, _box, _name_key, _warned_rejected
+    global _sync, _async, _down_until, _box, _name_key, _warned_rejected, _late_streak
     secret = os.urandom(32) if secret is None else secret
     with _lock:
-        _sync, _async, _down_until = sync_client, async_client, 0.0
+        _sync, _async, _down_until, _late_streak = sync_client, async_client, 0.0, 0
         _box = Fernet(base64.urlsafe_b64encode(_derive(secret, "seal")))
         _name_key = _derive(secret, "name")
         for k in _stats:
@@ -236,11 +238,27 @@ def _async_failed(exc: BaseException, started: float) -> None:
     """An awaited call that failed. A timeout that woke well past its bound is this process's event loop having
     been blocked (a first holiday-calendar build, a GIL-heavy worker), not Redis: that read is a miss (``late``)
     and the tier stays up - marking it down would turn every path, the worker threads' too, to memory for
-    DOWN_SEC right after a restart, when the shared values matter most (#993)."""
-    if isinstance(exc, TimeoutError) and time.monotonic() - started > TIMEOUT_SEC * LATE_FACTOR:
-        _count("late")
-        return
-    _failed(exc)
+    DOWN_SEC right after a restart, when the shared values matter most (#993). ``LATE_STREAK`` late ones in a row,
+    no awaited call landing between them, mark it down after all (a Redis that only answers late looks the same)."""
+    global _late_streak
+    late = isinstance(exc, TimeoutError) and time.monotonic() - started > TIMEOUT_SEC * LATE_FACTOR
+    with _lock:
+        if late:
+            _stats["late"] += 1
+            _late_streak += 1
+            # a loop blocked again and again, or a Redis that only ever answers late: no excuse any more
+            late = _late_streak < LATE_STREAK
+        if not late:                        # down now: the next streak counts from nothing
+            _late_streak = 0
+    if not late:
+        _failed(exc)
+
+
+def _async_ok() -> None:
+    """An awaited call landed: the late streak starts again."""
+    global _late_streak
+    with _lock:
+        _late_streak = 0
 
 
 def _count(name: str) -> None:
@@ -325,10 +343,10 @@ def _decode(namespace: str, key: Hashable, raw: str | None, left_ms: int | None,
         if age < -SKEW_SEC or age >= ttl:
             raise ValueError("expired")
         value = env["v"]
+        left = min(ttl - max(0.0, age), int(left_ms or 0) / 1000.0)   # a PTTL reply that is no number: a miss
     except Exception:  # noqa: BLE001 - a bad token, bad JSON, deep nesting, a wrong shape: all just "no value"
         _rejected(namespace)
         return None
-    left = min(ttl - max(0.0, age), (left_ms or 0) / 1000.0)
     if left <= 0:
         return None
     return value, max(0.0, age), left
@@ -414,30 +432,35 @@ async def _aget(namespace: str, key: Hashable, head: str | None) -> tuple[Any, f
     except Exception as exc:  # noqa: BLE001
         _async_failed(exc, started)
         return None
+    _async_ok()
     hit = _decode(namespace, key, raw, left, head)
     _count("hits" if hit else "misses")
     return hit
 
 
-async def aput(namespace: str, key: Hashable, value: Any, ttl: float) -> None:
-    await _aput(namespace, key, value, ttl, None)
+async def aput(namespace: str, key: Hashable, value: Any, ttl: float) -> bool:
+    """Whether the value was written: False when the tier is off or down, the value is not kept (``ttl <= 0``, not
+    JSON, too big), or the write failed or woke late (desk.demand writes it again at once)."""
+    return await _aput(namespace, key, value, ttl, None)
 
 
-async def _aput(namespace: str, key: Hashable, value: Any, ttl: float, head: str | None) -> None:
+async def _aput(namespace: str, key: Hashable, value: Any, ttl: float, head: str | None) -> bool:
     ttl = _life(ttl)
     if _async is None or ttl <= 0 or not _up():
-        return
+        return False
     text = _encode(namespace, key, value, ttl, head)
     if text is None:
-        return
+        return False
     started = time.monotonic()
     try:
         await asyncio.wait_for(_async.set(_key(namespace, key, head), text, px=max(1, int(ttl * 1000))),
                                TIMEOUT_SEC)
     except Exception as exc:  # noqa: BLE001
         _async_failed(exc, started)
-        return
+        return False
+    _async_ok()
     _count("writes")
+    return True
 
 
 # -- #993 versioned keys: a value that outlives a deploy
@@ -464,9 +487,9 @@ async def aget_versioned(namespace: str, version: int, key: Hashable) -> tuple[A
     return await _aget(namespace, key, _versioned(version))
 
 
-async def aput_versioned(namespace: str, version: int, key: Hashable, value: Any, ttl: float) -> None:
-    """``aput`` under ``v<version>`` instead of this build - for coroutines."""
-    await _aput(namespace, key, value, ttl, _versioned(version))
+async def aput_versioned(namespace: str, version: int, key: Hashable, value: Any, ttl: float) -> bool:
+    """``aput`` under ``v<version>`` instead of this build - for coroutines. Whether it was written, as ``aput``."""
+    return await _aput(namespace, key, value, ttl, _versioned(version))
 
 
 async def aput_newer(
@@ -497,14 +520,17 @@ async def aput_newer(
                         old = _decode(namespace, key, raw, await pipe.pttl(name)) if raw is not None else None
                         old_rank = rank(old[0]) if old is not None else None
                         if old_rank is not None and old_rank >= new_rank:
+                            _async_ok()
                             return
                         pipe.multi()
                         pipe.set(name, text, px=max(1, int(ttl * 1000)))
                         await pipe.execute()
                 except WatchError:
                     continue
+                _async_ok()
                 _count("writes")
                 return
+            _async_ok()                     # three writers in between: it answered, someone else's value stands
     except Exception as exc:  # noqa: BLE001 - Redis remains an optional cache
         _async_failed(exc, started)
 

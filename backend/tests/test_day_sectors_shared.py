@@ -219,9 +219,45 @@ def test_a_full_read_json_cannot_hold_is_kept_here_and_the_build_goes_on(server,
     {"day": "2026-11-23", "at": [20261120], "close": [1.0]},
     {"day": "2026-11-23", "at": ["2026-11-20T05:00:00+00:00"], "close": [10 ** 400]},
     {"day": "2026-11-23", "close": [1.0]},
+    {"day": "2026-11-23", "at": ["2026-11-20T05:00:00+00:00"], "close": [0.0]},           # no price
+    {"day": "2026-11-23", "at": ["2026-11-20T05:00:00+00:00"], "close": [-1.0]},
+    {"day": "2026-11-23", "at": ["0001-01-01T00:00:00+23:59"], "close": [1.0]},           # KST overflows
 ])
 def test_a_shared_value_of_another_shape_is_a_miss(value):
     assert ds.shared_bars(value, DAY) is None
+
+
+def test_the_other_markets_build_keeps_the_shared_bars_a_failed_refresh_left(server, monkeypatch):
+    """#993 리뷰: kr 빌드가 복원한 봉의 최근 읽기에 실패하면, 같은 패스의 us 빌드(실패 재사용)가 봉을 잃지 않는다."""
+    old = _flat(30, date(2026, 11, 20))
+    _process(server, monkeypatch, "build-a")
+    ds.Cache()._read_bars(TICKERS, _source(lambda t, n: old[-n:], []), _kst(DAY, 9))
+    _process(server, monkeypatch, "build-b")
+
+    def down(t, interval, n):
+        raise TimeoutError()
+
+    cache = ds.Cache()
+    cache._read_bars(TICKERS, down, _kst(DAY, 10))                       # one market: restored, refresh failed
+    asked = []
+    bars, complete, reads = cache._read_bars(TICKERS, _source(lambda t, n: old[-n:], asked), _kst(DAY, 10))
+    assert asked == [] and not complete and {r.status for r in reads} == {"reused_failure"}   # asked again soon
+    assert all(r.restored for r in reads)
+    assert all([b.close for b in bars[t]] == [b.close for b in old] for t in TICKERS)
+
+
+def test_a_shared_read_that_raises_is_a_miss_not_a_failed_build(server, monkeypatch):
+    _process(server, monkeypatch, "build-a")
+
+    def broken(*args):
+        raise RuntimeError("not a client error")
+
+    monkeypatch.setattr(sc, "get_versioned", broken)
+    asked = []
+    bars, complete, _ = ds.Cache()._read_bars(
+        TICKERS, _source(lambda t, n: _flat(min(n, 30), date(2026, 11, 20)), asked), _kst(DAY, 9))
+    assert complete and set(bars) == set(TICKERS)
+    assert sorted(asked) == sorted((t, ds.HISTORY_BARS) for t in TICKERS)
 
 
 def test_a_shared_value_of_another_shape_reads_the_full_history(server, monkeypatch):

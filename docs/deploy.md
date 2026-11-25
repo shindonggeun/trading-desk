@@ -488,6 +488,7 @@ api · collector · analyst(#688) 가 따로 뜨면 같은 수급 · 시세를 �
   - 예외(#993): `sector_bars` 는 코드 지문 대신 손으로 올리는 버전을 넣어 배포를 넘겨 남는다. 그래서 재기동 뒤 첫 prewarm 패스가 섹터 ETF 이력을 처음부터 다시 읽지 않는다. 이 이득은 프로세스가 하나(`all`)여도 있다.
 - 운영 `DESK_REDIS_CACHE_KEY` 는 운영에만 쓴다. 개발 · 가짜 실행(`DESK_FAKE_RUNS`) 프로세스가 같은 Redis 를 가리켜도 키가 다르면 서로의 값을 보지도 덮지도 못한다.
 - Redis 가 응답하지 않을 때: 비동기 호출은 0.25초에서 끊고, 워커 스레드의 동기 호출(갭 · 오실레이터 · 섹터 봉)은 Sentinel 3대를 차례로 물어 최대 1초 남짓이다. 그 뒤 30초는 건너뛴다.
+  - 예외(#993): 비동기 호출의 타임아웃이 한도의 2배(0.5초)를 넘겨 깼으면 Redis 가 아니라 이 프로세스의 이벤트 루프가 막혔던 것이다(기동 직후 등). 그 읽기 · 쓰기만 miss 로 세고(`late`) 건너뛰지 않는다. 다만 그런 `late` 가 비동기 호출 성공 없이 3번 이어지면 30초 건너뛴다.
 
 | 키 | 값 |
 |----|----|
@@ -539,7 +540,8 @@ ssh homelab-backend-server 'docker logs trading-desk-backend-prod 2>&1 | grep -E
 
 - 보호 모드(§15)에서는 아래 `/api/status` 진단 계수와 `/api/perf/timings` 를 **소유자 세션**으로 읽는다. 다른 계정에는 계수가 빠지고(오류 없음) timings 는 403 이다(#995).
 - `/api/status` 의 `shared_cache`: `on` · `down_sec`(건너뛰는 남은 초) · `hits` · `misses` · `writes` · `skipped` ·
-  `rejected`(봉인 · 검사에 걸린 값 — 0 이 아니면 캐시 키가 바뀌었거나 누가 `td:` 아래에 쓴다) · `errors` — 이 프로세스 것.
+  `rejected`(봉인 · 검사에 걸린 값 — 0 이 아니면 캐시 키가 바뀌었거나 누가 `td:` 아래에 쓴다) · `errors` ·
+  `late`(이벤트 루프가 막혀 늦게 깬 비동기 호출 — miss 로만 센다, #993) — 이 프로세스 것.
 - 키 확인(master 호스트 main-server 에서). 키 이름은 `td:<종류>:<HMAC>` 라 종목이 보이지 않고 값은 봉인돼 있다. 비밀번호는 argv 대신 env 로:
 
 ```bash

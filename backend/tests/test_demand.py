@@ -1,6 +1,7 @@
 """#689 demand-driven collection (desk.demand): the api writes what its screens read, the collector serves it."""
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 import fakeredis
@@ -76,11 +77,12 @@ def test_an_unchanged_set_is_rewritten_only_every_flush_period(redis, clock, mon
 
     async def counted(*args, **kwargs):
         writes.append(args)
-        await real(*args, **kwargs)
+        return await real(*args, **kwargs)
 
     monkeypatch.setattr(sc, "aput", counted)
     demand.want("quote", "005930")
     asyncio.run(demand.flush())
+    assert redis.keys("td:want:*")
     clock[0] += 2
     demand.want("quote", "005930")
     asyncio.run(demand.flush())                       # same set, 2 s later: kept
@@ -90,6 +92,34 @@ def test_an_unchanged_set_is_rewritten_only_every_flush_period(redis, clock, mon
     demand.want("quote", "NVDA")
     asyncio.run(demand.flush())                       # unchanged but due again
     assert len(writes) == 3
+
+
+def test_a_write_that_woke_late_is_sent_again_at_the_next_flush(redis, clock, monkeypatch):
+    """#993 a late timeout (the loop was blocked) leaves the tier up but the set unwritten: not counted as sent."""
+    class LateOnce:
+        def __init__(self, real):
+            self.real, self.late = real, True
+
+        def __getattr__(self, name):
+            return getattr(self.real, name)
+
+        async def set(self, *args, **kwargs):
+            if self.late:
+                self.late = False
+                time.sleep(sc.TIMEOUT_SEC * (sc.LATE_FACTOR + 2))   # noqa: ASYNC251 - the loop blocked meanwhile
+                await asyncio.sleep(10)
+            return await self.real.set(*args, **kwargs)
+
+    demand.configure("api")
+    monkeypatch.setattr(sc, "TIMEOUT_SEC", 0.02)
+    monkeypatch.setattr(sc, "_async", LateOnce(sc._async))
+    demand.want("quote", "005930")
+    asyncio.run(demand.flush())
+    assert redis.keys("td:want:*") == [] and sc._up() and sc.stats()["late"] == 1
+    clock[0] += 2
+    demand.want("quote", "005930")
+    asyncio.run(demand.flush())                       # the same set 2 s later: written now, not "already sent"
+    assert redis.keys("td:want:*") and demand.stats()["flushes"] == 1
 
 
 def test_the_wanted_set_is_capped(redis):

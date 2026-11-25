@@ -600,3 +600,130 @@ def test_the_holiday_tables_are_built_ahead():
     market_calendar.warm(date(2026, 11, 25))
     assert market_calendar._closed.cache_info().currsize == 6
     assert market_calendar.holiday("kr", date(2026, 12, 25)) is not None
+
+
+def test_a_failed_holiday_build_does_not_stop_the_start(db_url, monkeypatch, caplog):
+    from desk import market_calendar
+    from tests.test_api import _client
+
+    def broken():
+        raise RuntimeError("holidays: secret-ish detail")
+
+    monkeypatch.setattr(market_calendar, "warm", broken)
+    with _client(db_url) as client:
+        assert client.get("/api/health").status_code == 200
+    assert "holiday tables not built ahead: RuntimeError" in caplog.text
+    assert "secret-ish detail" not in caplog.text                # the type name only
+
+
+SECRET = "0123456789abcdef0123456789abcdef"
+
+
+class _Blocking:
+    """An async client whose calls block the event loop past the bound (a GIL-heavy worker on a busy restart),
+    then wait for an answer that never comes - or raise ``fail``. ``ok``: answer at once instead."""
+
+    def __init__(self, fail: BaseException | None = None):
+        self.fail, self.ok = fail, False
+
+    def pipeline(self, transaction=False):
+        return self
+
+    def get(self, *args):
+        return self
+
+    def pttl(self, *args):
+        return self
+
+    async def _late(self, answer):
+        if self.ok:
+            return answer
+        time.sleep(sc.TIMEOUT_SEC * (sc.LATE_FACTOR + 1))   # noqa: ASYNC251 - the loop blocked past the bound
+        if self.fail is not None:
+            raise self.fail
+        await asyncio.sleep(10)
+
+    async def execute(self):
+        return await self._late([None, -2])
+
+    async def set(self, *args, **kwargs):
+        return await self._late(True)
+
+
+@pytest.fixture
+def blocking(monkeypatch):
+    monkeypatch.setattr(sc, "TIMEOUT_SEC", 0.02)            # a late call costs ~60 ms here
+    client = _Blocking()
+    sc.use(None, client, SECRET)
+    yield client
+    sc.use(None, None)
+
+
+def test_late_timeouts_in_a_row_mark_the_tier_down_after_all(blocking):
+    """#993 리뷰: 늦게 깨는 타임아웃이 계속되면 막힌 루프가 아니라 늦게만 답하는 Redis 와 같다 - 결국 down."""
+    async def go():
+        for _ in range(sc.LATE_STREAK - 1):
+            assert await sc.aget("ns", "k") is None
+        up_before = sc._up()
+        assert await sc.aget("ns", "k") is None
+        return up_before
+
+    assert asyncio.run(go()) is True
+    assert sc.stats()["late"] == sc.LATE_STREAK and sc.stats()["errors"] == 1 and not sc._up()
+
+
+@pytest.mark.parametrize("landed", ["aget", "aput", "aput_newer"])
+def test_a_call_that_lands_starts_the_late_streak_again(blocking, monkeypatch, landed):
+    fake = fakeredis.FakeAsyncRedis(server=fakeredis.FakeServer(), decode_responses=True)
+
+    async def go():
+        for step in ("late", "late", landed, "late", "late"):
+            if step == "late":
+                assert await sc.aget("ns", "k") is None
+                continue
+            monkeypatch.setattr(sc, "_async", fake)              # this one call answers in time
+            if step == "aget":
+                await sc.aget("ns", "k")
+            elif step == "aput":
+                assert await sc.aput("ns", "k", {"a": 1}, 10) is True
+            else:
+                await sc.aput_newer("ns", "k", {"t": 1}, 10, rank=lambda v: v["t"])
+            monkeypatch.setattr(sc, "_async", blocking)
+
+    asyncio.run(go())
+    assert sc.stats()["late"] == 4 and sc.stats()["errors"] == 0 and sc._up()
+
+
+def test_a_late_write_is_counted_late_and_reported_unwritten(blocking):
+    assert asyncio.run(sc.aput("ns", "k", {"a": 1}, 10)) is False
+    assert sc.stats()["late"] == 1 and sc.stats()["errors"] == 0 and sc.stats()["writes"] == 0 and sc._up()
+    blocking.ok = True
+    assert asyncio.run(sc.aput("ns", "k", {"a": 1}, 10)) is True and sc.stats()["writes"] == 1
+
+
+def test_a_late_redis_timeout_is_still_an_outage(blocking):
+    """redis' own TimeoutError (its socket timed out) is Redis not answering, however late the loop woke."""
+    from redis.exceptions import TimeoutError as RedisTimeout
+
+    blocking.fail = RedisTimeout("socket")
+    assert asyncio.run(sc.aget("ns", "k")) is None
+    assert sc.stats()["late"] == 0 and sc.stats()["errors"] == 1 and not sc._up()
+
+
+def test_aput_says_whether_it_wrote(redis):
+    async def go():
+        return (await sc.aput("ns", "k", {"a": 1}, 10), await sc.aput("ns", "k", {"a": 1}, 0),
+                await sc.aput("ns", "k", {"pair": (1, 2)}, 10),
+                await sc.aput_versioned("sector_bars", 1, "SPY", {"c": [1.0]}, 10))
+
+    assert asyncio.run(go()) == (True, False, False, True)
+    sc.use(None, None)
+    assert asyncio.run(sc.aput("ns", "k", {"a": 1}, 10)) is False           # off
+
+
+def test_a_pttl_reply_that_is_no_number_is_a_miss(redis):
+    sc.put("quote", "AAPL", {"p": 1}, 10)
+    raw = redis.get(sc._key("quote", "AAPL"))
+    assert sc._decode("quote", "AAPL", raw, "soon") is None and sc.stats()["rejected"] == 1
+    assert sc._decode("quote", "AAPL", raw, [5000]) is None and sc.stats()["rejected"] == 2
+    assert sc._decode("quote", "AAPL", raw, 5000)[0] == {"p": 1}

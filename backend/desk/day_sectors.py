@@ -80,7 +80,7 @@ RECENT_BARS = 10             # after the day's full read, a rebuild asks only th
 SHARED_BARS = "sector_bars"
 SHARED_BARS_VERSION = 1
 SHARED_BARS_TTL_SEC = 24 * 3600   # read only on the KST day of its full read, which ends within a day of it
-FEATURES =("own_1d", "own_5d", "own_20d", "link_1d", "link_5d")
+FEATURES = ("own_1d", "own_5d", "own_20d", "link_1d", "link_5d")
 
 
 @dataclass(frozen=True)
@@ -604,9 +604,9 @@ def shared_bars(value: object, today: date) -> list | None:
         bars = []
         for at, c in zip(ats, closes, strict=True):
             if (not isinstance(at, str) or isinstance(c, bool) or not isinstance(c, int | float)
-                    or not math.isfinite(c) or (bars and at <= bars[-1].at)):
+                    or not math.isfinite(c) or c <= 0 or (bars and at <= bars[-1].at)):
                 return None
-            datetime.fromisoformat(at)       # what _closes reads it with
+            datetime.fromisoformat(at).astimezone(KST)   # what _closes does with it (an extreme offset overflows)
             bars.append(Bar(at=at, open=float(c), high=float(c), low=float(c), close=float(c), volume=0.0))
     except (TypeError, KeyError, ValueError, OverflowError):
         return None
@@ -640,9 +640,14 @@ class Cache:
 
     @staticmethod
     def _restore(ticker: str, today: date) -> list | None:
-        """#993 today's full read of ``ticker`` from the shared tier, or None (off, down, a miss, another day's)."""
-        hit = shared_cache.get_versioned(SHARED_BARS, SHARED_BARS_VERSION, ticker)
-        return shared_bars(hit[0], today) if hit is not None else None
+        """#993 today's full read of ``ticker`` from the shared tier, or None (off, down, a miss, another day's). Never
+        raises: it runs outside the per-ETF try, where one error would fail the whole market's build."""
+        try:
+            hit = shared_cache.get_versioned(SHARED_BARS, SHARED_BARS_VERSION, ticker)
+            return shared_bars(hit[0], today) if hit is not None else None
+        except Exception as exc:  # noqa: BLE001 - a cache is never a reason for a failed build
+            log.info("day sectors: %s shared bars not read: %s", ticker, type(exc).__name__)
+            return None
 
     def _share(self, ticker: str, today: date, bars: list) -> None:
         """#993 a full read for the next process of the day. One too big for the shared tier stays here only."""
@@ -676,6 +681,9 @@ class Cache:
                 return result
             if failed_at is not None and stamp - failed_at < BARS_FRESH_SEC:
                 result.status = "reused_failure"
+                if had is None:              # #993 the other market's build restored them but could not refresh them
+                    result.bars = self._restore(t, today)
+                    result.restored = result.bars is not None
                 return result
             if had is None and (shared := self._restore(t, today)) is not None:
                 # #993 a fresh process: the day's full read another one shared stands in for its own - the last few

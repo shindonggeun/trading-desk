@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import statistics
+import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, is_dataclass
@@ -309,6 +310,30 @@ _CACHE = TieredCache("gap_fill", TTLCache(CACHE_MAX, CACHE_TTL_SEC))
 
 
 _READS = KeyLocks()   # #993 one report per ticker at a time
+FAIL_HOLD_SEC = 5.0   # a ticker whose report just failed is not read again this soon
+_failed: dict[str, tuple[float, str]] = {}   # key -> (failed at on the clock, the failure's class name)
+_failed_lock = threading.Lock()
+
+
+class RecentFailure(RuntimeError):
+    """The ticker's report failed a moment ago (FAIL_HOLD_SEC) - not read again yet."""
+
+
+def _recent_failure(key: str, now: float) -> str | None:
+    with _failed_lock:
+        got = _failed.get(key)
+        return got[1] if got is not None and now - got[0] < FAIL_HOLD_SEC else None
+
+
+def _note_failure(key: str, now: float, exc: BaseException | None) -> None:
+    """Keep a failure for FAIL_HOLD_SEC (None: forget it). Bounded: only the last few seconds' failures stay."""
+    with _failed_lock:
+        for k in [k for k, (at, _) in _failed.items() if now - at >= FAIL_HOLD_SEC]:
+            del _failed[k]
+        if exc is None:
+            _failed.pop(key, None)
+        else:
+            _failed[key] = (now, type(exc).__name__)
 
 
 def read(fetch: Fetch, ticker: str, events: Events | None = None, clock: Callable[[], float] = time.monotonic,
@@ -317,7 +342,8 @@ def read(fetch: Fetch, ticker: str, events: Events | None = None, clock: Callabl
 
     #993 a cold start's asks for one ticker at once (the prewarm, the tips page, a run's note) each read eight years
     of bars: a second asker now waits for the first one's report and takes it from the cache. A fresh report never
-    waits behind a refresh (checked before the lock)."""
+    waits behind a refresh (checked before the lock). A failed one is kept FAIL_HOLD_SEC: the askers queued behind
+    it fail at once (RecentFailure) instead of each reading the eight years again."""
     key = ticker.upper()
     hit = _CACHE.get(key, ahead=ahead, now=clock())
     if hit is not None:
@@ -326,7 +352,14 @@ def read(fetch: Fetch, ticker: str, events: Events | None = None, clock: Callabl
         hit = _CACHE.get(key, ahead=ahead, now=clock())
         if hit is not None:
             return hit
-        result = report(fetch, key, events)   # a failure raises: nothing is kept
+        if (name := _recent_failure(key, clock())) is not None:
+            raise RecentFailure(f"{key}: the last read failed ({name}) a moment ago")
+        try:
+            result = report(fetch, key, events)   # a failure raises: nothing is kept
+        except Exception as exc:
+            _note_failure(key, clock(), exc)
+            raise
+        _note_failure(key, clock(), None)
         _CACHE.put(key, result, now=clock())
         return result
 

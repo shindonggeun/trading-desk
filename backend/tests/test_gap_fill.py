@@ -224,9 +224,10 @@ def test_cold_asks_for_one_ticker_at_once_read_its_bars_once():
     assert len(gap_fill._READS) == 0                # nobody left holding or waiting
 
 
-def test_a_failed_read_is_not_handed_to_the_next_asker():
+def test_a_failed_read_is_held_a_moment_then_read_again():
     gap_fill._CACHE.clear()
-    reads = []
+    gap_fill._failed.clear()
+    reads, clock = [], [1000.0]
 
     def fetch(symbol):
         reads.append(symbol)
@@ -234,6 +235,40 @@ def test_a_failed_read_is_not_handed_to_the_next_asker():
             raise TimeoutError()
         return series()
 
-    with pytest.raises(TimeoutError):
-        gap_fill.read(fetch, "QQQ")
-    assert gap_fill.read(fetch, "QQQ")["gaps_counted"] == 2 and reads == ["QQQ", "QQQ"]
+    try:
+        with pytest.raises(TimeoutError):
+            gap_fill.read(fetch, "DIA", clock=lambda: clock[0])
+        clock[0] += gap_fill.FAIL_HOLD_SEC - 1
+        with pytest.raises(gap_fill.RecentFailure, match="TimeoutError"):
+            gap_fill.read(fetch, "DIA", clock=lambda: clock[0])      # a moment later: not read again
+        assert reads == ["DIA"]
+        clock[0] += 1
+        assert gap_fill.read(fetch, "DIA", clock=lambda: clock[0])["gaps_counted"] == 2 and reads == ["DIA", "DIA"]
+        assert gap_fill._failed == {}                                  # a good read forgets the failure
+    finally:
+        gap_fill._failed.clear()
+
+
+def test_askers_queued_behind_a_failed_read_fail_with_it():
+    """#993 리뷰: 실패한 첫 읽기 뒤에 줄 선 요청이 8년 일봉을 하나씩 다시 읽지 않는다."""
+    gap_fill._CACHE.clear()
+    gap_fill._failed.clear()
+    reads, release = [], threading.Event()
+
+    def fetch(symbol):
+        reads.append(symbol)
+        assert release.wait(5)
+        raise TimeoutError()
+
+    try:
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            asks = [pool.submit(gap_fill.read, fetch, "IWM") for _ in range(3)]
+            deadline = time.monotonic() + 5
+            while not reads and time.monotonic() < deadline:
+                time.sleep(0.01)
+            time.sleep(0.2)                         # the other two wait at the ticker's lock meanwhile
+            release.set()
+            failures = sorted(type(a.exception(timeout=5)).__name__ for a in asks)
+        assert reads == ["IWM"] and failures == ["RecentFailure", "RecentFailure", "TimeoutError"]
+    finally:
+        gap_fill._failed.clear()

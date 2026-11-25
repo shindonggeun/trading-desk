@@ -123,9 +123,8 @@ async def flush() -> None:
     keys = frozenset((ns, k) for ns, ks in wanted.items() for k in ks)
     if keys == _sent[0] and now - _sent[1] < FLUSH_EVERY:
         return
-    await shared_cache.aput(WANT_NS, WANT_KEY, wanted, WANT_TTL)
-    if not shared_cache._up():
-        return                                     # not written (Redis down): write it again once it is back
+    if not await shared_cache.aput(WANT_NS, WANT_KEY, wanted, WANT_TTL):
+        return                                     # not written (down, late, too big): again on the next flush
     _sent = (keys, now)
     _stats["flushes"] += 1
 

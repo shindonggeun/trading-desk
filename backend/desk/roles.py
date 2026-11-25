@@ -19,13 +19,13 @@ lifespan in ``desk.api`` starts a job only when ``runs(role, name)`` - and its o
 The broker tokens are shared already (desk.token_store: only ``all`` | ``collector`` issue, the ``tokens`` job
 below). Production stays on ``all`` until the later steps of #688 land, because these still live in one
 process's memory:
-- caches read both by the screens and by a run's notes: credit, market / futures flow, tips (prewarm) and
-  ``calibration.TABLE``'s live record (scoring) - the economic calendar, macro news and earnings calendar are
-  followed from the files their passes save (#996, desk.feed_snapshots: the ``snapshots`` jobs), and so are the
-  news digest (the headlines' Korean reads) and the sector news (#1004);
-- still one process's memory after #996, left for follow-up issues (not fixed there): the earnings ``want`` set
-  (the favorites the api's month calendar asks for never reach the collector's pass) and ``calibration.TABLE``'s
-  live record (the analyst's scoring sets it, the api's playbooks read only the backtest prior);
+- caches read both by the screens and by a run's notes: credit, market / futures flow and tips (prewarm) - the
+  economic calendar, macro news and earnings calendar are followed from the files their passes save (#996,
+  desk.feed_snapshots: the ``snapshots`` jobs), and so are the news digest (the headlines' Korean reads) and the
+  sector news (#1004);
+- read back from the database where they are not made (#1005): the earnings ``want`` set (the collector's earnings
+  pass reads every account's favorites itself) and ``calibration.TABLE``'s live record (the analyst's scoring
+  sets it, the api's ``calibration_live`` job reads the scored runs back for the playbooks);
 - the KIS live quotes (``kis_stream``, api) that ``nq_fast`` (collector) reads for QQQ;
 - the run gate's ``spare_slot`` the news digest, the brief and the reports wait on, and its rate-limit cooldown
   the chat (api) reads.
@@ -80,6 +80,8 @@ JOBS: tuple[tuple[str, str, str, str | None, str], ...] = (
     ("reports", "정기 리포트", "ChatGPT · 야후", None, ANALYST),
     ("funds", "13F 기관 보유", "SEC EDGAR", None, COLLECTOR),
     ("scoring", "분석 채점", "야후", None, ANALYST),
+    # #1005 the playbooks' live record read back from the scored runs where the scoring runs elsewhere - off in all
+    ("calibration_live", "플레이북 보정 live 기록 따라 읽기", "DB 채점 결과", None, API),
     ("purge", "오래된 분석 정리", "DB", None, COLLECTOR),
     ("kis_stream", "실시간 시세 스트림", "한투(KIS)", None, API),   # #677 + 장전 1시간 예상체결(지수 · NXT): GET /api/market/flow 가 같은 api 에서 읽음
     ("run_events", "분석 이벤트 알림", "PostgreSQL LISTEN", None, API),   # wakes this process's SSE streams

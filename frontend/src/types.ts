@@ -921,6 +921,20 @@ export interface FuturesFlow {
     split: boolean; kind: "spot_buy_futures_sell" | "spot_sell_futures_buy" | null;
     reason: "spot_not_today" | "small" | "no_data" | null;
   } | null;
+  /** #1007 코스피200 콜 · 풋 옵션 투자자별 순매수. 원천 실패면 마지막 정상값(as_of)과 options_error */
+  options?: FuturesOptions | null;
+  options_error?: string | null;
+}
+export type FuturesClass = "foreign" | "individual" | "institution";
+export interface FuturesOptions {
+  call: Partial<Record<FuturesClass, FuturesInvestor>>;
+  put: Partial<Record<FuturesClass, FuturesInvestor>>;
+  /** 풋 순매수 금액 − 콜 순매수 금액(백만 원) */
+  foreign_put_minus_call_mn: number | null;
+  institution_put_minus_call_mn: number | null;
+  /** 이 값을 읽은 시각(KST ISO) — 응답의 fetched_at 과 다르면 마지막 정상값 */
+  as_of: string;
+  note: string;
 }
 export type FlowInterval = "1d" | "1w" | "1mo" | "1y";
 export type Investor = "individual" | "foreigner" | "institution" | "other_corporation";

@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { api } from "../api";
 import { krwShort, price } from "../format";
 import type { FuturesFlow, FuturesInvestor } from "../types";
+import { optionsAsOf, putCallLine, PUT_CALL_TIP } from "../optionFlow";
 import FuturesHistoryView from "./FuturesHistoryView";
 import { useLivePoll } from "../livePoll";
 import LiveBadge from "./LiveBadge";
@@ -50,6 +51,47 @@ function Bar({ label, side, max }: { label: string; side: FuturesInvestor | unde
       </span>
       <span className="flow-sides muted small">금액 {valueMn(side.net_value_mn)}</span>
     </li>
+  );
+}
+
+/** #1008 콜 · 풋 옵션 투자자별 순매수(금액 위 · 계약 아래)와 외국인 풋 − 콜 한 줄. 없으면 이유만, 이유도 없으면 숨긴다 */
+function OptionFlow({ data }: { data: FuturesFlow }) {
+  const o = data.options;
+  if (!o) return data.options_error ? <p className="muted small">옵션: {data.options_error}</p> : null;
+  const line = putCallLine(o.foreign_put_minus_call_mn);
+  const inst = putCallLine(o.institution_put_minus_call_mn);
+  const asOf = optionsAsOf(data);
+  const tone = (v: number | null | undefined) => (v == null || v === 0 ? "" : v > 0 ? "up" : "down");
+  const cell = (side: FuturesInvestor | undefined) => (
+    <td>
+      <strong className={tone(side?.net_value_mn)}>{valueMn(side?.net_value_mn)}</strong>
+      <span className="muted opt-qty">{contracts(side?.net_contracts)}</span>
+    </td>
+  );
+  return (
+    <section className="opt" aria-label="코스피200 옵션 투자자별 순매수">
+      {line && (
+        <p className="opt-lean small" title={PUT_CALL_TIP}>
+          외국인 풋 − 콜 <strong>{line.value}</strong>
+          <span className="muted"> — {line.lean}</span>
+          {inst && <span className="muted"> · 기관 {inst.value}</span>}
+        </p>
+      )}
+      <table className="opt-table small">
+        <caption className="muted">옵션 순매수(장중 누적) · 금액 / 계약{asOf && ` · ${asOf.text}`}</caption>
+        <thead><tr><th scope="col">구분</th><th scope="col">콜옵션</th><th scope="col">풋옵션</th></tr></thead>
+        <tbody>
+          {CLASSES.map((c) => (
+            <tr key={c.key}>
+              <th scope="row">{c.label}</th>
+              {cell(o.call[c.key])}
+              {cell(o.put[c.key])}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {asOf?.stale && data.options_error && <p className="muted small">{data.options_error}</p>}
+    </section>
   );
 }
 
@@ -147,6 +189,7 @@ export default function FuturesFlowView() {
           ) : (
             <p className="muted small">{data.investors_error ?? "투자자별 동향이 없습니다."}</p>
           )}
+          <OptionFlow data={data} />
           {inv && <p className="muted small flow-note">
             장중 누적 순매수(계약, 금액은 {data.investors_unit.value}). 선물은 현물보다 먼저 방향을 거는 곳이라
             외국인 선물 순매수 · 미결제약정 증감을 함께 봅니다. 출처 한국투자증권 · {data.fetched_at.slice(11, 16)} 확인

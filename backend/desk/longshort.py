@@ -9,7 +9,10 @@ A ticker uses the contract the off-hours estimate uses (``BinanceEstimator.resol
 proxy's (an index via its ETF) or, for a leveraged ETF, its base's. Nothing from another exchange is
 mixed in: no Binance contract, ``contract: None``. Each contract is read once per CACHE_TTL_SEC (the
 statistics move every 5 minutes); a failure is kept for FAIL_TTL_SEC so a polling page does not
-hammer Binance, and it fails that ticker only.
+hammer Binance, and it fails that ticker only. #859 past the five minutes a reader gets the contract's
+last good summary (up to STALE_MAX_SEC old) when one background read does not refresh it within
+REFRESH_WAIT_SEC: a board's first poll after the expiry no longer waits out Binance round trips in waves
+of PARALLEL (~1.3 s), and a single contract usually still answers fresh.
 """
 
 from __future__ import annotations
@@ -36,6 +39,9 @@ PERIOD = "5m"
 DAY_POINTS = 289          # 24 h of 5-minute points plus the one 24 h ago
 TAKER_HOUR = 12           # 5-minute points summed for the taker's last hour
 PARALLEL = 4              # contracts read at once (three calls each)
+STALE_MAX_SEC = 30 * 60   # #859 the last good summary still answered while a refresh runs behind it
+REFRESH_WAIT_SEC = 0.3    # #859 ... after waiting this long for the refresh (a page polls every 5 minutes,
+                          # so without the wait every poll would land just past the expiry and read the last cycle)
 
 Resolve = Callable[[str], Awaitable[tuple[str, str, str | None, float] | None]]
 
@@ -99,8 +105,17 @@ class LongShort:
         self._resolve_failed = -FAIL_TTL_SEC      # the contract list failed: skip it for a while
         self._locks: dict[str, asyncio.Lock] = {}
         self._gate = asyncio.Semaphore(PARALLEL)
+        self._good: TTLCache[str, dict] = TTLCache(CACHE_MAX, STALE_MAX_SEC, clock=lambda: self._clock())
+        self._refreshing: dict[str, asyncio.Task] = {}
+
+    async def settled(self) -> None:
+        """Wait for the background refreshes now running (tests, shutdown)."""
+        await asyncio.gather(*self._refreshing.values(), return_exceptions=True)
 
     async def aclose(self) -> None:
+        for task in self._refreshing.values():
+            task.cancel()
+        await self.settled()
         await self._http.aclose()
 
     async def _get(self, path: str, contract: str, limit: int) -> list[dict]:
@@ -113,6 +128,29 @@ class LongShort:
         return sorted((x for x in rows if isinstance(x, dict)), key=lambda x: _num(x.get("timestamp")) or 0)
 
     async def _contract(self, contract: str) -> dict:
+        cached = self._cache.get(contract)
+        if isinstance(cached, dict):
+            return cached
+        good = self._good.get(contract)
+        if good is None:
+            return await self._read(contract)
+        task = self._refreshing.get(contract)
+        if task is None and cached is None:     # a failure kept: no retry until it ends
+            task = asyncio.create_task(self._read(contract))
+            self._refreshing[contract] = task
+            task.add_done_callback(lambda t, c=contract: self._refreshed(c, t))
+        if task is not None:
+            done, _ = await asyncio.wait({task}, timeout=REFRESH_WAIT_SEC)   # a timeout leaves it running
+            if done and not task.cancelled() and task.exception() is None:
+                return task.result()
+        return good
+
+    def _refreshed(self, contract: str, task: asyncio.Task) -> None:
+        self._refreshing.pop(contract, None)
+        if not task.cancelled() and task.exception() is not None:
+            log.info("long/short %s: background refresh failed: %s", contract, task.exception())
+
+    async def _read(self, contract: str) -> dict:
         lock = self._locks.setdefault(contract, asyncio.Lock())
         async with lock:                          # a board asking twice reads Binance once
             cached = self._cache.get(contract)
@@ -133,6 +171,7 @@ class LongShort:
                 self._remember(contract, f"{type(exc).__name__}: {exc}")
                 raise
             self._remember(contract, out)
+            self._good.put(contract, out)
             return out
 
     def _remember(self, contract: str, value: dict | str) -> None:

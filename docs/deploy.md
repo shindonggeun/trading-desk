@@ -534,6 +534,7 @@ ssh homelab-backend-server 'docker logs trading-desk-backend-prod 2>&1 | grep -E
 #   shared cache unreachable (...) - memory only for 30s  ← 닿지 않음: 앱은 메모리 캐시로 계속 돈다
 ```
 
+- 보호 모드(§15)에서는 아래 `/api/status` 진단 계수와 `/api/perf/timings` 를 **소유자 세션**으로 읽는다. 다른 계정에는 계수가 빠지고(오류 없음) timings 는 403 이다(#995).
 - `/api/status` 의 `shared_cache`: `on` · `down_sec`(건너뛰는 남은 초) · `hits` · `misses` · `writes` · `skipped` ·
   `rejected`(봉인 · 검사에 걸린 값 — 0 이 아니면 캐시 키가 바뀌었거나 누가 `td:` 아래에 쓴다) · `errors` — 이 프로세스 것.
 - 키 확인(master 호스트 main-server 에서). 키 이름은 `td:<종류>:<HMAC>` 라 종목이 보이지 않고 값은 봉인돼 있다. 비밀번호는 argv 대신 env 로:

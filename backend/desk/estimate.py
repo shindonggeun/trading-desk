@@ -57,7 +57,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from . import market_calendar
+from . import market_calendar, pools
 from .single_flight import Flights, KeyLocks
 from .ttl_cache import TTLCache
 
@@ -201,9 +201,11 @@ def _read_closes(ticker: str, session: Session, ahead: float) -> list[tuple[date
         if usable is not None:
             return usable
         raise YahooEmpty(f"Yahoo gave no daily bars for {ticker} (asking again in {CLOSES_RETRY_SEC:.0f}s)")
-    rows = _yahoo_rows(ticker, session)
+    with pools.yahoo_slot():                       # #874 the process's Yahoo reads at once (desk.pools.YAHOO)
+        rows = _yahoo_rows(ticker, session)
     if not rows and usable is None:
-        rows = _yahoo_rows(ticker, session)        # one quick retry: nothing to fall back on
+        with pools.yahoo_slot():
+            rows = _yahoo_rows(ticker, session)    # one quick retry: nothing to fall back on
     if not rows:
         _CLOSES_FAILED.put(ticker, True, now=mono)   # never the empty rows themselves (#391)
         if usable is not None:

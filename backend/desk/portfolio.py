@@ -21,6 +21,7 @@ import time
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 
+from . import pools
 from .broker.base import Broker, Holding
 from .prices import PriceSource
 
@@ -45,8 +46,9 @@ class FxRate:
 def yahoo_usd_krw() -> float:
     import yfinance as yf
 
-    info = yf.Ticker(YAHOO_FX_TICKER).fast_info
-    rate = info.get("lastPrice") or info.get("last_price")
+    with pools.yahoo_slot():                  # #874 the process's Yahoo reads at once (desk.pools.YAHOO)
+        info = yf.Ticker(YAHOO_FX_TICKER).fast_info
+        rate = info.get("lastPrice") or info.get("last_price")
     if not rate:
         raise ValueError("Yahoo has no USD/KRW rate")
     return float(rate)

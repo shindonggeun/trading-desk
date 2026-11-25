@@ -15,6 +15,8 @@ import time
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 
+from . import pools
+
 log = logging.getLogger(__name__)
 
 SYMBOL = "BTC-USD"
@@ -187,7 +189,8 @@ def fake_closes() -> Closes:
 def yahoo_closes() -> Closes:
     import yfinance as yf
 
-    frame = yf.Ticker(SYMBOL).history(period="max", interval="1d", auto_adjust=False)
+    with pools.yahoo_slot():                  # #874 the process's Yahoo reads at once (desk.pools.YAHOO)
+        frame = yf.Ticker(SYMBOL).history(period="max", interval="1d", auto_adjust=False)
     frame = frame.dropna(subset=["Close"])
     return [(idx.to_pydatetime().astimezone(UTC).date() if idx.tzinfo else idx.date(), float(row["Close"]))
             for idx, row in frame.iterrows()]

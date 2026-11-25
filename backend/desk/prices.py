@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from datetime import time as clock_time
 
-from . import demand, market_bus, market_calendar, shared_cache
+from . import demand, market_bus, market_calendar, pools, shared_cache
 from .broker.base import Bar, Broker
 from .indicators import WARMUP, annotate, normalize
 from .single_flight import Flights
@@ -41,6 +41,25 @@ CANDLE_TTL_SEC = 30.0
 # REFRESH_PARALLEL at a time; a caller that would wait for one still in that queue reads at once instead.
 STALE_OK: ContextVar[float] = ContextVar("desk_prices_stale_ok", default=0.0)
 REFRESH_PARALLEL = 4
+# #874 a fresh entry read in the last fifth of its TTL answers at once and is read again in the background (the
+# REFRESH_PARALLEL gate, as a stale one): a page polling the bars every half TTL or so never meets an expired one.
+# Four fifths: early enough that the read (a source's 0.2-1 s) lands before the TTL, late enough that a key read
+# once is not read twice
+REFRESH_AHEAD = 0.8
+# #874 the same bars asked with different counts (the market board's 1d 63, the levels' 1d 200, the bottom zone's
+# 1d 5) are one read: a family - ticker, interval, indicators and the source its count goes to (``lane``: the
+# broker for 1m / 1d up to BROKER_MAX_COUNT, else Yahoo - their bars differ, adjusted or not, so a count never
+# changes its source by riding another's read) - is read with the widest count asked of it in the last
+# MERGE_REMEMBER_SEC, and each asker takes its last ``count`` bars. A count past MERGE_MAX_COUNT (the chart
+# scrolling back to MAX_COUNT) is a family of its own: the dashboard's small reads never carry 2,000 bars. 500 is
+# the batch's own cap (desk.api BATCH_MAX_COUNT) and the widest count the screens' levels and channels ask.
+# Remembered five minutes: past the screens' one-minute polls and the levels' 300 s, so a polled family keeps
+# one read; a wide count asked once stops widening the reads after that
+MERGE_MAX_COUNT = 500
+MERGE_REMEMBER_SEC = 300.0
+# #874 rows x (indicators + 1) past this are built on desk.pools.COMPUTE, not the event loop: a 2,000-bar chart
+# with every indicator takes ~25 ms; the dashboard's 63 / 78 bars without one ~0.4 ms (not worth a thread hop)
+COMPUTE_MIN_CELLS = 2000
 # #858 (#391) an empty answer when bars are kept: the kept bars answer, and are asked for again this soon
 CANDLES_EMPTY_RETRY_SEC = 30.0
 CACHE_MAX = 256
@@ -122,11 +141,13 @@ def _now() -> str:
 def yahoo_quote(ticker: str) -> tuple[float, str | None]:
     import yfinance as yf
 
-    info = yf.Ticker(ticker).fast_info
-    price = info.get("lastPrice") or info.get("last_price")
+    with pools.yahoo_slot():                  # #874 fast_info reads on first use
+        info = yf.Ticker(ticker).fast_info
+        price = info.get("lastPrice") or info.get("last_price")
+        currency = info.get("currency")
     if not price:
         raise ValueError(f"Yahoo has no price for {ticker}")
-    return float(price), info.get("currency")
+    return float(price), currency
 
 
 def _yahoo_period(interval: str, count: int, ticker: str = "") -> str:
@@ -155,7 +176,8 @@ def _yahoo_rows(ticker: str, period: str, interval: str) -> list[tuple[object, B
     """yfinance's bars as (index in the exchange's own time zone, Bar stamped UTC), oldest first."""
     import yfinance as yf
 
-    frame = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
+    with pools.yahoo_slot():                  # #874 the process's Yahoo reads at once (desk.pools.YAHOO)
+        frame = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
     if frame.empty and interval in _YAHOO_LONG:
         # #861 Yahoo now and then answers a live symbol with nothing ("possibly delisted; no price data found"),
         # right after yfinance's cookie fetch failed - once more after a breath; still nothing: no bars, as before.
@@ -163,7 +185,8 @@ def _yahoo_rows(ticker: str, period: str, interval: str) -> list[tuple[object, B
         # session are (asking again there would only slow every such read)
         log.info("Yahoo returned no %s bars for %s; asking once more", interval, ticker)
         time.sleep(YAHOO_EMPTY_RETRY_SEC)
-        frame = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
+        with pools.yahoo_slot():
+            frame = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
         log.info("Yahoo %s bars for %s on the second ask: %s", interval, ticker,
                  "still none" if frame.empty else f"{len(frame)} row(s)")
     frame = frame.dropna(subset=["Open", "High", "Low", "Close"])
@@ -358,8 +381,16 @@ class PriceSource:
         self._yahoo_candles = yahoo_candles or (lambda *args: globals()["yahoo_candles"](*args))
         self._clock = clock
         self._quotes: dict[str, tuple[float, Quote]] = {}
-        self._candles: dict[tuple[str, str, int, tuple[str, ...]], tuple[float, dict, float]] = {}
-        self._inflight: dict[tuple[str, str, int, tuple[str, ...]], asyncio.Future] = {}   # #536 single-flight
+        # #874 a family (family_key) -> (when read, result, TTL, the count it was read with)
+        self._candles: dict[tuple, tuple[float, dict, float, int]] = {}
+        self._inflight: dict[tuple, asyncio.Future] = {}   # #536 single-flight, per family
+        self._widths: dict[asyncio.Future, int] = {}         # #874 the count each read in flight reads
+        self._asked: dict[tuple, dict[int, float]] = {}      # #874 a family's counts asked lately -> when
+        # #874 review: a family's read came back empty or failed - no read ahead of its TTL before this (clock)
+        self._quiet: dict[tuple, float] = {}
+        # #874 review: a read wider than the kept bars came back empty: (until, kept count, its count, answer) -
+        # asks between the two counts take that answer until then instead of asking the source each time
+        self._empty: dict[tuple, tuple[float, int, int, dict]] = {}
         self._quote_reads = Flights()     # #858 the bottom zone, the playbooks and the board asking one ticker at once
         self._refresh_gate: asyncio.Semaphore | None = None    # #858 background reads of stale bars, per loop
         self._refresh_loop: asyncio.AbstractEventLoop | None = None
@@ -413,7 +444,7 @@ class PriceSource:
         except Exception as exc:  # noqa: BLE001 - any broker miss falls back to Yahoo
             if not isinstance(exc, NotImplementedError):
                 log.info("broker quote for %s failed, using Yahoo: %s", ticker, exc)
-            price, currency = await asyncio.to_thread(self._yahoo_quote, ticker)
+            price, currency = await pools.run(pools.SOURCE, pools.yahoo, self._yahoo_quote, ticker)
             quote = Quote(ticker, _tidy(price), currency, "yahoo", _now())
         _remember(self._quotes, ticker, (self._clock(), quote), QUOTE_TTL_SEC, self._clock)
         # the collector's own reads (holdings) keep the collected lifetime: a 10 s write over its 30 s value
@@ -432,20 +463,27 @@ class PriceSource:
             raise ValueError(f"interval must be one of {INTERVALS}")
         indicators = normalize(indicators)
         count = min(max(count, 1), MAX_COUNT)
-        key = (ticker, interval, count, indicators)
+        key = family_key(ticker, interval, count, indicators)
         ttl = _CANDLE_TTL[interval]
+        now = self._clock()
+        width = self._width(key, count, now)
         cached = self._candles.get(key)
-        if cached:
-            age = self._clock() - cached[0]
+        if cached and cached[3] >= count:
+            age = now - cached[0]
             if age < ttl:
-                return cached[1]
+                # #874 nearly stale: read again behind this answer - as wide as the entry (a narrower read would not
+                # take its place), and not while a read just came back empty or failed (it is asked again then)
+                if age >= ttl * REFRESH_AHEAD and now >= self._quiet.get(key, 0.0):
+                    self._refresh(key, ticker, interval, max(width, cached[3]), indicators, ttl)
+                return cut(cached[1], count)
             if age < ttl + STALE_OK.get():
                 # #858 a screen's batch read: the bars it had, at once; a background read brings the new ones
-                if self._pending(key) is None:      # queued from the start: until it holds the gate
-                    self._queued.add(self._start(key, self._refresh_candles(ticker, interval, count, indicators,
-                                                                            key, ttl)))
-                return cached[1]
-        # #536: one fetch per key at a time - a page's cards (and the playbooks' bars and the levels) asking
+                self._refresh(key, ticker, interval, width, indicators, ttl)
+                return cut(cached[1], count)
+        empty = self._empty.get(key)
+        if empty is not None and now < empty[0] and empty[1] < count <= empty[2]:
+            return cut(empty[3], count)          # #874 review: what a read this wide got a moment ago (no bars)
+        # #536: one fetch per family at a time - a page's cards (and the playbooks' bars and the levels) asking
         # for the same bars together share it. A caller that gives up does not cancel it for the others.
         pending = self._pending(key)
         if pending is not None and pending in self._queued:
@@ -454,22 +492,56 @@ class PriceSource:
             self._queued.discard(pending)
             pending.cancel()
             pending = None
+        if pending is not None and self._widths.get(pending, 0) < count:
+            pending = None           # #874 a narrower read under way: this one reads wider (and the family's next)
         if pending is None:
-            pending = self._start(key, self._fetch_candles(ticker, interval, count, indicators, key, ttl))
-        return await asyncio.shield(pending)
+            pending = self._start(key, width, self._fetch_candles(ticker, interval, width, indicators, key, ttl))
+        got = await asyncio.shield(pending)
+        if not got["bars"]:
+            kept = self._candles.get(key)
+            if kept and kept[3] >= count and kept[1].get("bars"):
+                got = kept[1]          # #874 review: a wider read came back empty; the kept bars cover this count
+        return cut(got, count)
+
+    def _width(self, key: tuple, count: int, now: float) -> int:
+        """#874 the count a read of ``key``'s family reads: the widest asked of it in the last
+        MERGE_REMEMBER_SEC, this ask included."""
+        if not isinstance(key[2], str):               # past MERGE_MAX_COUNT: a family of one count
+            return count
+        asked = self._asked.get(key)
+        if asked is None:
+            if len(self._asked) >= CACHE_MAX * 4:      # forget the families nobody asked lately
+                for k in [k for k, a in self._asked.items() if now - max(a.values()) >= MERGE_REMEMBER_SEC]:
+                    del self._asked[k]
+                if len(self._asked) >= CACHE_MAX * 4:
+                    self._asked.clear()
+            asked = self._asked[key] = {}
+        asked[count] = now
+        for c in [c for c, at in asked.items() if now - at >= MERGE_REMEMBER_SEC]:
+            del asked[c]
+        return max(asked)
+
+    def _refresh(self, key: tuple, ticker: str, interval: str, width: int, indicators: tuple[str, ...],
+                 ttl: float) -> None:
+        """A background read of ``key`` unless one is under way (queued from the start: until it holds the gate)."""
+        if self._pending(key) is None:
+            self._queued.add(self._start(key, width, self._refresh_candles(ticker, interval, width, indicators,
+                                                                           key, ttl)))
 
     def _pending(self, key: tuple) -> asyncio.Future | None:
         pending = self._inflight.get(key)
         return pending if pending is not None and pending.get_loop() is asyncio.get_running_loop() else None
 
-    def _start(self, key: tuple, fetch) -> asyncio.Future:
+    def _start(self, key: tuple, width: int, fetch) -> asyncio.Future:
         task = asyncio.ensure_future(fetch)
         self._inflight[key] = task
+        self._widths[task] = width
 
         def done(t: asyncio.Future) -> None:
             if self._inflight.get(key) is t:
                 self._inflight.pop(key, None)
             self._queued.discard(t)
+            self._widths.pop(t, None)
             if not t.cancelled():
                 t.exception()                  # retrieved: nobody may be left waiting for it
 
@@ -491,6 +563,7 @@ class PriceSource:
             return await self._fetch_candles(ticker, interval, count, indicators, key, ttl)
         except Exception as exc:  # the kept bars stand; the next ask past the TTL reads again
             log.info("background candles for %s %s failed: %s", ticker, interval, type(exc).__name__)
+            self._hush(key)                            # #874 review: not read ahead again at every ask
             raise
         finally:
             self._refresh_gate.release()
@@ -514,27 +587,54 @@ class PriceSource:
         except Exception as exc:  # noqa: BLE001
             if not isinstance(exc, NotImplementedError):
                 log.info("broker candles for %s failed, using Yahoo: %s", ticker, exc)
-            bars = await asyncio.to_thread(self._yahoo_candles, ticker, interval, fetch)
+            bars = await pools.run(pools.SOURCE, pools.yahoo, self._yahoo_candles, ticker, interval, fetch)
             source = "yahoo"
             if interval in _MINUTES and is_krx(ticker):
                 if interval != "1m":
                     bars = await self._close_krx(ticker, interval, bars)
                 bars, source = await self._fill_krx(ticker, interval, bars)
-        rows = [asdict(bar) for bar in bars]
-        annotate(rows, indicators)
+        if len(bars) * (len(indicators) + 1) >= COMPUTE_MIN_CELLS:
+            rows = await pools.run(pools.COMPUTE, _rows, bars, indicators)
+        else:
+            rows = _rows(bars, indicators)
         rows = rows[-count:]
         result = {"ticker": ticker, "interval": interval, "source": source, "fetched_at": _now(),
                   "bars": rows, "indicators": list(indicators),
                   "history_limit_days": HISTORY_LIMIT_DAYS.get(interval), "truncated": len(rows) < count}
         kept = self._candles.get(key)
+        now = self._clock()
         if not rows and kept and kept[1].get("bars"):
             # #858 (#391) an empty answer never replaces kept bars: they answer, and stay fresh for
-            # CANDLES_EMPTY_RETRY_SEC - not every ask past the TTL asking Yahoo again
-            _remember(self._candles, key, (self._clock() - max(0.0, ttl - CANDLES_EMPTY_RETRY_SEC), kept[1], ttl),
-                      ttl, self._clock)
-            return kept[1]
-        _remember(self._candles, key, (self._clock(), result, ttl), ttl, self._clock)
+            # CANDLES_EMPTY_RETRY_SEC - not every ask past the TTL asking Yahoo again. #874 review: never older than
+            # they are (a narrower read under way may come back empty just after a wider one landed), and not read
+            # ahead before that retry (at a long TTL that age is past REFRESH_AHEAD: a read at every ask)
+            stamp = max(kept[0], now - max(0.0, ttl - CANDLES_EMPTY_RETRY_SEC))
+            _remember(self._candles, key, (stamp, kept[1], ttl, kept[3]), ttl, self._clock)
+            self._hush(key)
+            if kept[3] >= count:
+                return kept[1]
+            # #874 review: wider than the kept bars, and empty: its askers get no bars, as before #874 - never fewer
+            # bars passing for the count they asked (levels on 63 days as if on 200); the narrower ones still get
+            # the kept bars (candles), and the counts between take this answer until the retry
+            if len(self._empty) >= CACHE_MAX:
+                self._empty = {k: e for k, e in self._empty.items() if e[0] > now}
+            self._empty[key] = (now + CANDLES_EMPTY_RETRY_SEC, kept[3], count, result)
+            return result
+        if kept is None or kept[3] <= count or now - kept[0] >= ttl:
+            # #874 a narrower read never takes the place of a wider one still fresh (its askers have their bars)
+            _remember(self._candles, key, (now, result, ttl, count), ttl, self._clock)
+            if rows:
+                self._quiet.pop(key, None)
+                if (empty := self._empty.get(key)) is not None and count >= empty[2]:
+                    del self._empty[key]
         return result
+
+    def _hush(self, key: tuple) -> None:
+        """#874 review: no read of ``key`` ahead of its TTL for CANDLES_EMPTY_RETRY_SEC."""
+        now = self._clock()
+        if len(self._quiet) >= CACHE_MAX:
+            self._quiet = {k: until for k, until in self._quiet.items() if until > now}
+        self._quiet[key] = now + CANDLES_EMPTY_RETRY_SEC
 
     async def _close_krx(self, ticker: str, interval: str, bars: list[Bar]) -> list[Bar]:
         """Each finished day's 15:00 - 15:30 bucket from Yahoo's daily bars (close_tail) - Yahoo,
@@ -543,7 +643,7 @@ class PriceSource:
             return bars
         span = len({_at(b.at).astimezone(KST).date() for b in bars})
         try:
-            daily = await asyncio.to_thread(self._yahoo_candles, ticker, "1d", span + 5)
+            daily = await pools.run(pools.SOURCE, pools.yahoo, self._yahoo_candles, ticker, "1d", span + 5)
         except Exception as exc:  # noqa: BLE001 - the minutes still stand
             log.info("daily bars for %s failed, no closing bucket: %s", ticker, exc)
             return bars
@@ -561,6 +661,35 @@ class PriceSource:
             return bars, "yahoo"                 # Yahoo's own 1m lags just the same
         filled = fill_recent(bars, [Bar(**b) for b in recent["bars"]], _MINUTES[interval])
         return filled, ("yahoo" if filled is bars else f"yahoo+{self.broker.name}")
+
+
+def family_key(ticker: str, interval: str, count: int, indicators: tuple[str, ...] = ()) -> tuple:
+    """#874 the cache key ``count`` bars of ``ticker`` are read and kept under (``indicators`` normalized):
+    (ticker, interval, lane, indicators) - lane "broker" or "yahoo", the source that count goes to first
+    (_fetch_candles), or the count itself past MERGE_MAX_COUNT."""
+    if count > MERGE_MAX_COUNT:
+        lane: str | int = count
+    elif interval in BROKER_INTERVALS and count <= BROKER_MAX_COUNT and not off_broker(ticker):
+        lane = "broker"
+    else:
+        lane = "yahoo"
+    return (ticker, interval, lane, indicators)
+
+
+def cut(result: dict, count: int) -> dict:
+    """#874 a family's bars as one asker wants them: the last ``count`` (``truncated`` for that count)."""
+    bars = result["bars"]
+    rows = bars[-count:] if len(bars) > count else bars
+    truncated = len(rows) < count
+    if rows is bars and result.get("truncated") == truncated:
+        return result
+    return {**result, "bars": rows, "truncated": truncated}
+
+
+def _rows(bars: list[Bar], indicators: tuple[str, ...]) -> list[dict]:
+    rows = [asdict(bar) for bar in bars]
+    annotate(rows, indicators)
+    return rows
 
 
 def kis_quote(ticker: str, tick) -> Quote:

@@ -53,7 +53,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import httpx
 
-from .. import market_calendar
+from .. import market_calendar, pools
 from ..token_store import Issued, TokenStore, TokenUnavailable
 
 log = logging.getLogger(__name__)
@@ -135,7 +135,8 @@ def yahoo_exchange(ticker: str) -> str | None:
     """The KIS market code of a US ticker from Yahoo's exchange (blocking; run it in a thread)."""
     import yfinance as yf
 
-    code = (yf.Ticker(ticker).fast_info.get("exchange") or "").upper()
+    with pools.yahoo_slot():                  # #874 the process's Yahoo reads at once (desk.pools.YAHOO)
+        code = (yf.Ticker(ticker).fast_info.get("exchange") or "").upper()
     return _EXCHANGES.get(code)
 
 

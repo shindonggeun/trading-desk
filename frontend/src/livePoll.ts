@@ -25,6 +25,9 @@ export type LiveSpec<T> = {
   /** 받은 값의 키 · 동일성 · 시각(시세는 가격 · fetched_at, 수급 · 선물은 fetched_at). #690 지연 실측(marketLatency.ts)과
    *  #866 늦은 REST 응답 위에 스트림 값을 다시 얹을 때 더 오래된 메시지를 거르는 데 쓴다. 없으면 시각 비교 없이 얹는다 */
   stamps?: (data: T) => LatencyStamp[];
+  /** #1000 메시지가 도착할 때마다(다시 얹기와 별개 — 한 번씩) 지금 값과 함께. true 면 REST 를 바로 한 번 맞춘다
+   *  (ms 에 한 번까지 — 예: 정규장 칸에 추정이 오면 장이 닫힌 것이라 칸 상태를 서버에서 다시 읽는다) */
+  received?: (data: T | undefined, m: StreamMessage) => boolean;
 };
 
 export function useLivePoll<T>(
@@ -66,6 +69,7 @@ export function useLivePoll<T>(
   dataRef.current = poll.data;
   // #690 지연 실측: 스트림만으로 이어 간 값(화면 값과 따로 — 폴링 · 맞춤 REST 가 바꾼 것과 섞지 않는다)
   const shadow = useRef<{ key: string | null; data: T | undefined }>({ key: null, data: undefined });
+  const wokeAt = useRef(0);
   const { live: coveredKeys } = useMarketStream(live?.channel ?? "alert", live?.keys ?? null, (m) => {
     const l = liveRef.current;
     if (!key || !l || l.channel !== m.kind || (l.keys && !l.keys.includes(m.key))) return;
@@ -80,6 +84,10 @@ export function useLivePoll<T>(
       } catch { /* 계측은 화면을 막지 않는다 */ }
     }
     if (latencyMode() === "poll") return;   // 이 탭은 폴링으로만 그린다
+    if (l.received?.(dataRef.current, m) && Date.now() - wokeAt.current >= ms) {
+      wokeAt.current = Date.now();
+      poll.refresh(true);
+    }
     applied.current = remember(applied.current, key, m.key, m, !!l.stamps, Date.now());
     pushPollData<T>(key, (prev) => l.apply(prev, m));
   }, !!key && !!live && (live.keys === null || live.keys.length > 0));

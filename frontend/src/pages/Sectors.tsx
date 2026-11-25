@@ -13,8 +13,9 @@ import { byAsked, sameTicker } from "../ticker";
 import { isFullRun } from "../runRead";
 import type { BoardItem, CreditView, DeskConfig, Positioning, Run, Sector } from "../types";
 import { usePoll } from "../poll";
+import { useLivePoll } from "../livePoll";
+import { BOARD_POLL_MS, boardLive } from "../boardLive";
 
-const QUOTE_MS = 15_000;
 const POSITIONING_MS = 15 * 60_000;
 const US = /^[A-Z]{1,6}(?:[.-][A-Z])?$/;
 const isKorean = (t: string) => /\.(KS|KQ)$/i.test(t);
@@ -245,14 +246,15 @@ export default function Sectors() {
   const tickers = useMemo(() => sector?.tickers.map((t) => t.ticker) ?? [], [sector]);
   const key = tickers.join(",");
 
-  // 시세: 15초마다(가려진 탭은 쉰다)
-  // #626 15초마다(가려진 탭은 쉰다) — 같은 종목 묶음이면 시세판 · 즐겨찾기와 요청 하나를 함께 쓴다
-  usePoll(key ? `board:${key}` : null, () => api.board(key.split(",")), QUOTE_MS, {
+  // #626 · #1000 시세: 10초마다(가려진 탭은 쉰다) — 같은 종목 묶음이면 시세판 · 즐겨찾기 · 작은 창과 요청 하나를 함께 쓴다.
+  // 스트림(실시간 · #999 추정)이 모든 칸을 덮는 동안은 쉰다(boardLive.ts)
+  const liveSpec = useMemo(() => boardLive(tickers), [tickers]);
+  useLivePoll(key ? `board:${key}` : null, () => api.board(key.split(",")), BOARD_POLL_MS, {
     onData: (r) => {
       setItems((cur) => ({ ...cur, ...byAsked(key.split(","), r.items) }));
       setUpdated(new Date().toISOString());
     },
-  });
+  }, liveSpec);
 
   // 공매도 · 옵션: 미국 종목만, 15분마다
   // #626 미국 종목 포지셔닝은 15분마다(가려진 탭은 쉬고, 다시 보이면 건너뛴 차례를 바로)

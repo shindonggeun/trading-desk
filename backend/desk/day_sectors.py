@@ -50,7 +50,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from . import market_calendar
+from . import market_calendar, pools
 from .day_call import CSAT_DAYS
 
 log = logging.getLogger(__name__)
@@ -145,7 +145,9 @@ def yahoo_adjusted(ticker: str, interval: str, count: int) -> list:
     from .broker.base import Bar
     from .prices import _yahoo_period
 
-    frame = yf.Ticker(ticker).history(period=_yahoo_period(interval, count, ticker), interval="1d", auto_adjust=True)
+    with pools.yahoo_slot():                  # #874 the process's Yahoo reads at once (desk.pools.YAHOO)
+        frame = yf.Ticker(ticker).history(period=_yahoo_period(interval, count, ticker), interval="1d",
+                                          auto_adjust=True)
     return frame_bars(frame, count, Bar)
 
 

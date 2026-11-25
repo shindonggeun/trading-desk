@@ -5,15 +5,13 @@ Every route needs a login session except the two in OPEN_PATHS. See docs/securit
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import json
 import logging
 import os
 import re
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, nullcontext, suppress
 from datetime import UTC, date, datetime, timedelta, timezone
 from datetime import time as dtime
 from functools import partial
@@ -95,6 +93,7 @@ from . import (
     outlook,
     paper,
     playbook_live,
+    pools,
     positioning,
     prewarm,
     primary_trend,
@@ -147,6 +146,7 @@ from .jobs import Jobs
 from .leverage_analyst import fake_analyst, llm_analyst
 from .longshort import LongShort
 from .market_flow import MarketFlow
+from .open_fill import OpenFill
 from .owner_attestation import TossAttestationStore, TossSource
 from .portfolio import Portfolio
 from .prices import INTERVALS, PriceSource, kis_quote, stale_ok
@@ -178,11 +178,19 @@ CREDIT_RETRY_SEC = 15 * 60
 BOARD_PARALLEL = 6      # concurrent Binance / quote lookups per call
 BATCH_PARALLEL = 4      # #705 /api/batch/{kind}: tickers worked on at once, for the whole app (as a browser asked before)
 BATCH_PARALLEL_BARS = 8  # bars (candles · estimate-candles) are light and cached: the market tiles draw sooner
+# #874 the candles kind's blocking reads run on desk.pools.SOURCE, not the default executor SCREEN_PARALLEL keeps
+# for the other kinds, so it is not under that gate: its own and SOURCE's threads bound it. A cold burst's bars
+# took this gate's rounds of source reads (tests/cold_burst_profile.py, 170 ms origins: 8 at a time, the stress
+# bundle's 72 reads - 9 rounds, p95 1.66 s; 12: 1.13 s; 16 with 20 source threads: 1.00 s, but then the bars and
+# the levels hold every Yahoo permit and the quote board waits). (The estimated bars still read their daily
+# closes on the default executor: as before.)
+BATCH_PARALLEL_CANDLES = 12
 # #858 batch items worked on at once for the whole app, over the kinds' own gates: in the dashboard's first-look
 # burst their thread work (Yahoo reads and parsing, levels) took every thread of the loop's default executor (20 at
 # 16 CPUs) and every other route's to_thread queued behind it (a chart, the paper desk: 2-3 s). Measured on a cold
 # burst: 14 keeps the others at their own source time and costs the burst ~30%; 10 the same for the others at ~50%.
-# The quote board is not under it (BOARD_PARALLEL; in the session its rows are async reads and cached closes)
+# The quote board is not under it (BOARD_PARALLEL; in the session its rows are async reads and cached closes), nor
+# is the candles kind (BATCH_PARALLEL_CANDLES, #874)
 SCREEN_PARALLEL = 14
 BATCH_MAX_COUNT = 500    # bars a ticker in one batch (the chart's own path allows more, one ticker at a time)
 # #858 /api/batch/candles takes bars up to this long past their TTL at once while a background read brings new ones
@@ -211,13 +219,10 @@ KST = timezone(timedelta(hours=9))   # Toss dates (order history from/to) are KS
 # #858 every request's policy and session checks (small DB reads) run on threads of their own: on the loop's
 # default executor they queued behind the sources' blocking reads (Yahoo ~1 s each, dozens in the dashboard's
 # first-look burst) and every request in that burst - a /api/auth/me included - waited seconds before its handler
-_ADMISSION = ThreadPoolExecutor(max_workers=4, thread_name_prefix="desk-admission")
-
-
+# (#874 desk.pools.ADMISSION)
 async def _admit(fn, /, *args, **kwargs):
     """``asyncio.to_thread`` on the admission threads (the caller's context goes along, as to_thread's does)."""
-    ctx = contextvars.copy_context()
-    return await asyncio.get_running_loop().run_in_executor(_ADMISSION, partial(ctx.run, fn, *args, **kwargs))
+    return await pools.run(pools.ADMISSION, fn, *args, **kwargs)
 REVIEW_CACHE_SEC = 60
 REVIEW_FAIL_CACHE_SEC = 30
 log = logging.getLogger(__name__)
@@ -1305,6 +1310,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         app.state.prewarm_jobs, app.state.prewarm_tickers = prewarm_jobs, prewarm_tickers   # tests run them once
         app.state.prewarm_then = prewarm_then
+        # #874 the favorites' spark bars just before their market opens, planned beside each prewarm pass
+        open_fill = OpenFill(lambda *a: prices.candles(*a), favorites.tickers)   # read when asked: tests swap prices
+        app.state.open_fill = open_fill
         # the same switch as the news flow: off in tests and scripted runs
         # #623 the jobs: each loop through jobs.run_forever (a failed pass is logged, the next one runs),
         # started only when its switch is on - the others show "off" in GET /api/status
@@ -1368,7 +1376,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         start("calendar", feeds_on, refresh_calendar, CALENDAR_INTERVAL_SEC)
         if here("prewarm") and feeds_on:
             started.append(jobs.spawn("prewarm", prewarm.run(prewarm_jobs, prewarm_tickers, _positioning,
-                                                             then=prewarm_then)))
+                                                             then=prewarm_then, aside=open_fill.plan)))
         start("briefs", brief_desk.at is not None, write_briefs, morning_brief.RETRY_SEC)
         day_calls.bind(day_desk)          # desk.day_call.today_call (#571) reads this app's calls
         start("day_call", day_desk.candles is not None, make_day_calls, day_calls.TICK_SEC)
@@ -3281,7 +3289,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return result
 
     # one gate a kind for the whole app: two pages batching at once do not double the load on the sources
-    batch_gates = {k: asyncio.Semaphore(BATCH_PARALLEL_BARS if k in ("candles", "estimate-candles") else BATCH_PARALLEL)
+    batch_gates = {k: asyncio.Semaphore(BATCH_PARALLEL_CANDLES if k == "candles"
+                                        else BATCH_PARALLEL_BARS if k == "estimate-candles" else BATCH_PARALLEL)
                    for k in ("bottom-zone", "candles", "levels", "playbooks", "projection", "gaps", "estimate-candles")}
     screen_gate = asyncio.Semaphore(SCREEN_PARALLEL)     # #858 over the kinds' gates (taken last)
 
@@ -3314,11 +3323,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(422, f"count must be 1 to {BATCH_MAX_COUNT}")
         request.state.timing_note = {"kind": kind, "n": len(names)}    # #858 the slow-request line: no tickers
         gate = batch_gates[kind]
+        screen = nullcontext() if kind == "candles" else screen_gate     # #874 its reads: SOURCE's threads
 
         stale = BATCH_STALE_SEC if kind == "candles" else 0.0
 
         async def one(ticker: str) -> tuple[str, dict]:
-            async with gate, screen_gate:
+            async with gate, screen:
                 try:
                     with stale_ok(stale):
                         return ticker, await fn(ticker)
@@ -3339,7 +3349,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise HTTPException(422, "days must be between 1 and 90")
 
         async def fetch(symbol: str) -> dict:
-            async with batch_gates["candles"], screen_gate:
+            async with batch_gates["candles"]:            # #874 the candles kind's gate alone
                 with stale_ok(BATCH_STALE_SEC):
                     # This fixed daily count uses Yahoo through the existing PriceSource.
                     return await prices.candles(symbol, "1d", 300)

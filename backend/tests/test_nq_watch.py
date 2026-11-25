@@ -66,3 +66,20 @@ def test_cme_hours_skip_the_daily_break_and_the_weekend():
     assert not nq_watch.cme_open(et(22, 17, 59))
     assert nq_watch.cme_open(et(22, 18, 0))                  # Sunday evening opens Monday
     assert nq_watch.seconds_to_next(datetime(2026, 11, 17, 15, 3, 0, tzinfo=UTC)) == 120 + nq_watch.SETTLE_SEC
+
+
+def test_a_bar_long_over_is_not_judged_however_it_moved():
+    # #674 11-21 07:00 KST: an nq_drop went out on a Yahoo bar ~2,940 minutes old (never judged while current)
+    bars = _bars(last_ret=-0.004, last_volume=400)
+    assert nq_watch.judge(bars, _after(bars) + timedelta(minutes=2940)) == []
+    late = _bars()
+    late[-1] = {**late[-1], "close": late[-1]["close"] * 0.98}
+    assert nq_watch.judge(late, _after(late) + timedelta(minutes=2940)) == []          # nor the session high
+
+
+def test_yahoos_usual_ten_minute_lag_is_still_judged_up_to_the_stale_limit():
+    bars = _bars(last_ret=-0.004, last_volume=400)
+    lag = timedelta(seconds=nq_watch.STALE_SEC)
+    assert [a["rule"] for a in nq_watch.judge(bars, _after(bars) + timedelta(minutes=10))] == ["nq_drop"]
+    assert [a["rule"] for a in nq_watch.judge(bars, _after(bars) + lag)] == ["nq_drop"]
+    assert nq_watch.judge(bars, _after(bars) + lag + timedelta(seconds=1)) == []

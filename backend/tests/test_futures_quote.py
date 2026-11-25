@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, timedelta
+from unittest.mock import Mock
 
+import fakeredis
 import pytest
 
+from desk import demand
 from desk import futures_quote as fq
+from desk import shared_cache as sc
 from desk.futures_flow import KST, KisError
 from tests.test_api import OWNER, PASSWORD, _client
 
@@ -332,3 +336,241 @@ def test_an_older_days_answers_and_held_values_are_dropped():
     asyncio.run(quotes.both())
     days = {k[2] for k in quotes._cache if k[1] == "night"}
     assert days == {"2026-11-17"} and ("night", "2026-11-16") not in quotes._good
+
+
+# #689 split roles: the collector's ``serve`` shares what the api's card reads (desk.demand)
+
+NIGHT_OPEN = at("2026-11-16", "22:23")
+COLLECTED = ("quote:day:2026-11-16", "quote:night:2026-11-16", "candles:night:2026-11-16")
+
+
+@pytest.fixture
+def redis(monkeypatch):
+    """One fake Redis for an api and a collector FuturesQuote (two instances = two processes; the role is
+    desk.demand's, set per step)."""
+    server = fakeredis.FakeServer()
+    sync = fakeredis.FakeRedis(server=server, decode_responses=True)
+    sc.use(sync, fakeredis.FakeAsyncRedis(server=server, decode_responses=True))
+    monkeypatch.setattr(demand, "_sent", (frozenset(), 0.0))     # a flush in another test is not this one's
+    monkeypatch.setattr(fq, "PAGE_PAUSE_SEC", 0.0)
+    yield sync
+    sc.use(None, None)
+    demand.configure("")
+
+
+def _cm(rest) -> list:
+    return [p for _, p in rest.calls if p["FID_COND_MRKT_DIV_CODE"] == "CM"]
+
+
+def test_a_key_names_the_answer_the_session_and_its_opening_day():
+    assert fq.demand_key(("candles", "night", "2026-11-16")) == "candles:night:2026-11-16"
+    assert fq.parse_key("quote:day:2026-11-17") == ("quote", "day", "2026-11-17")
+    longest = max(len(fq.demand_key((a, k, "2026-11-16"))) for a in fq.ANSWERS for k in fq.SESSIONS)
+    assert longest <= demand.MAX_KEY_CHARS
+    collector = fq.FuturesQuote(FakeRest(), now=lambda: NIGHT_OPEN, is_open=is_open)
+    for bad in ("", "quote", "quote:day", "bars:day:2026-11-17", "quote:dawn:2026-11-17", "quote:day:20261117",
+                "quote:day:2026-11-31", "quote:day:2026-11-17:x", None):
+        with pytest.raises(ValueError):
+            fq.parse_key(bad)
+        with pytest.raises(ValueError):
+            asyncio.run(collector.serve(bad))
+
+
+def test_the_api_answers_from_the_collectors_values_without_calling_kis(redis):
+    collected, asked = FakeRest(), FakeRest()
+    collector = fq.FuturesQuote(collected, now=lambda: NIGHT_OPEN, is_open=is_open)
+    api = fq.FuturesQuote(asked, now=lambda: NIGHT_OPEN + timedelta(seconds=7), is_open=is_open)
+
+    async def go():
+        demand.configure("collector")
+        for key in COLLECTED:
+            await collector.serve(key)
+        demand.configure("api")
+        return await api.both(), await api.candles(None, "5m"), await api.quote("night")
+
+    both, five, night = asyncio.run(go())
+    assert asked.calls == [] and len(collected.calls) == 2 + 3          # two quotes, three minute pages
+    assert both["sessions"]["night"]["as_of"] == five["as_of"] == night["as_of"] == "2026-11-16T22:23:00+09:00"
+    assert (both["current"], both["price"], both["sessions"]["day"]["price"]) == ("night", 782.75, 789.35)
+    assert five["interval"] == "5m" and len(five["bars"]) == 53            # 18:00 .. 22:20, cut in the api
+    assert five["bars"][0]["t"].startswith("2026-11-16T18:00")
+    assert sc.stats()["writes"] == 3 and sc.stats()["skipped"] == 0         # every value round-trips JSON
+
+
+def test_every_read_in_the_api_marks_its_key_a_shared_answer_too(redis):
+    clock = [0.0]
+    asked = FakeRest()
+    api = fq.FuturesQuote(asked, now=lambda: NIGHT_OPEN, clock=lambda: clock[0], is_open=is_open)
+    collector = fq.FuturesQuote(FakeRest(), now=lambda: NIGHT_OPEN, is_open=is_open)
+
+    async def read():
+        await api.both()
+        await api.candles(None, "5m")
+        return demand.stats()["wanted"]
+
+    async def go():
+        demand.configure("api")
+        await read()                                    # nothing shared yet: the api asks KIS itself
+        cold = len(asked.calls)
+        await demand.flush()
+        demand.configure("collector")
+        wanted = await demand.read()
+        served = await demand.serve({"futures_quote": collector.serve})
+        demand.configure("api")                         # the marks forgotten
+        clock[0] += fq.FALLBACK_SEC + 1                 # the api's own answers ran out
+        on_shared = await read()
+        demand.configure("api")
+        on_memory = await read()
+        return cold, wanted, served, on_shared, on_memory
+
+    cold, wanted, served, on_shared, on_memory = asyncio.run(go())
+    assert wanted == {"futures_quote": sorted(COLLECTED)} and served == 3
+    assert on_shared == on_memory == 3 and len(asked.calls) == cold     # Redis, then memory: no KIS
+
+
+def test_a_failed_fetch_is_not_shared_and_the_last_good_one_stays(redis):
+    clock = [0.0]
+    rest = FakeRest(fail=True)
+    collector = fq.FuturesQuote(rest, now=lambda: NIGHT_OPEN, clock=lambda: clock[0], is_open=is_open)
+    asked = FakeRest(fail=True)
+    api = fq.FuturesQuote(asked, now=lambda: NIGHT_OPEN, is_open=is_open)
+    key = "quote:night:2026-11-16"
+
+    async def go():
+        demand.configure("collector")
+        with pytest.raises(KisError):
+            await collector.serve(key)                  # nothing to share
+        assert redis.keys(f"td:{fq.SHARED_NS}:*") == []
+        rest.fail, clock[0] = False, 30.0
+        await collector.serve(key)
+        rest.fail, clock[0] = True, 60.0
+        with pytest.raises(RuntimeError):
+            await collector.serve(key)                  # the last answer marked stale: kept here, not shared
+        clock[0] = 65.0
+        with pytest.raises(RuntimeError):
+            await collector.serve(key)                  # and KIS not asked again while that is kept
+        own = await collector.quote("night")
+        demand.configure("api")
+        return own, await api.quote("night")
+
+    own, shared = asyncio.run(go())
+    assert own["stale"] is True and len(rest.calls) == 3
+    assert shared["stale"] is False and shared["price"] == 782.75 and asked.calls == []
+    assert sc.stats()["writes"] == 1
+
+
+def test_a_failure_kept_in_the_api_gives_way_to_the_collectors_value(redis):
+    clock = [0.0]
+    asked = FakeRest(fail=True)
+    api = fq.FuturesQuote(asked, now=lambda: NIGHT_OPEN, clock=lambda: clock[0], is_open=is_open)
+    collector = fq.FuturesQuote(FakeRest(), now=lambda: NIGHT_OPEN, is_open=is_open)
+
+    async def go():
+        demand.configure("api")
+        with pytest.raises(KisError):
+            await api.quote("night")                    # a cold start with KIS failing here: kept CACHE_FAIL_SEC
+        demand.configure("collector")
+        await collector.serve("quote:night:2026-11-16")
+        demand.configure("api")
+        clock[0] = 5.0
+        return await api.quote("night")
+
+    got = asyncio.run(go())
+    assert got["price"] == 782.75 and got["stale"] is False and len(asked.calls) == 1
+
+
+def test_the_held_close_reaches_the_api_and_stays_held_there(redis):
+    now, clock, api_clock = [at("2026-11-17", "05:59") + timedelta(seconds=30)], [0.0], [0.0]
+    rest = ClosedEmpty()
+    rest.empty = set()                                  # open: KIS answers
+    collector = fq.FuturesQuote(rest, now=lambda: now[0], clock=lambda: clock[0], is_open=is_open)
+    asked = ClosedEmpty()                               # the api's KIS: the closed night answered empty
+    api = fq.FuturesQuote(asked, now=lambda: now[0], clock=lambda: api_clock[0], is_open=is_open)
+
+    async def go():
+        demand.configure("collector")
+        assert await collector.read_close() == "night"  # 05:59:30, the futures_close_quote job (collector)
+        rest.empty, now[0], clock[0] = {"CM"}, at("2026-11-17", "06:30"), 1860.0
+        await collector.serve("quote:night:2026-11-16")
+        await collector.serve("quote:day:2026-11-16")
+        demand.configure("api")
+        first = await api.both()
+        calls = len(asked.calls)
+        redis.flushall()                                # Redis has it no more (a restart): KIS answers empty
+        api_clock[0] += fq.CACHE_CLOSED_SEC + 1
+        return first, calls, await api.quote("night")
+
+    first, calls, again = asyncio.run(go())
+    night = first["sessions"]["night"]
+    assert calls == 0 and night["held"] is True and night["state"] == "closed" and night["held_early"] is False
+    assert (night["price"], night["change_pct"], night["held_at"]) == (782.75, -0.84, "2026-11-17T05:59:30+09:00")
+    assert len(_cm(asked)) == 1 and again["held"] is True and again["price"] == 782.75
+    assert again["held_at"] == "2026-11-17T05:59:30+09:00" and not again.get("from_bars")
+
+
+def test_the_apis_own_stand_in_gives_way_to_the_collectors_close_within_a_minute(redis):
+    now, clock, collector_clock = [at("2026-11-17", "05:59") + timedelta(seconds=30)], [0.0], [0.0]
+    rest = ClosedEmpty()
+    rest.empty = set()
+    collector = fq.FuturesQuote(rest, now=lambda: now[0], clock=lambda: collector_clock[0], is_open=is_open)
+    asked = ClosedEmpty()
+    api = fq.FuturesQuote(asked, now=lambda: now[0], clock=lambda: clock[0], is_open=is_open)
+
+    async def go():
+        demand.configure("collector")
+        await collector.read_close()
+        rest.empty, now[0], collector_clock[0] = {"CM"}, at("2026-11-17", "06:30"), 1860.0
+        demand.configure("api")
+        cold = await api.quote("night")                 # the card opened at 06:30: Redis has nothing yet
+        demand.configure("collector")
+        await collector.serve("quote:night:2026-11-16")
+        demand.configure("api")
+        clock[0] = fq.FALLBACK_SEC - 1
+        early = await api.quote("night")
+        clock[0] = fq.FALLBACK_SEC + 1
+        return cold, early, await api.quote("night")
+
+    cold, early, late = asyncio.run(go())
+    assert cold["from_bars"] is True and early["from_bars"] is True     # its own answer, inside FALLBACK_SEC
+    assert late["held"] is True and late["price"] == 782.75 and "from_bars" not in late
+    assert sc.stats()["writes"] == 1                                     # the api's own answers are not shared
+
+
+def test_serve_reads_kis_and_never_the_shared_tier(redis, monkeypatch):
+    reads = []
+
+    async def no_aget(*args):   # a miss, counted
+        reads.append(args)
+
+    monkeypatch.setattr(sc, "aget", no_aget)
+    monkeypatch.setattr(sc, "get", lambda *args: reads.append(args))
+    rest = ClosedEmpty()
+    collector = fq.FuturesQuote(rest, now=lambda: at("2026-11-17", "06:30"), is_open=is_open)   # e.g. a restart
+
+    async def go():
+        demand.configure("collector")
+        for key in ("quote:night:2026-11-16", "candles:night:2026-11-16", "quote:day:2026-11-16"):
+            await collector.serve(key)
+
+    asyncio.run(go())
+    assert reads == [] and rest.calls and sc.stats()["writes"] == 3
+    raw = redis.get(sc._key(fq.SHARED_NS, "candles:night:2026-11-16"))
+    assert raw and len(raw) < sc.MAX_RAW_CHARS // 4 and sc.stats()["skipped"] == 0   # a full night's 720 minutes
+
+
+def test_a_key_of_a_session_no_longer_shown_does_nothing(redis):
+    rest = FakeRest()
+    collector = fq.FuturesQuote(rest, now=lambda: NIGHT_OPEN, is_open=is_open)
+    demand.configure("collector")
+    asyncio.run(collector.serve("quote:night:2026-11-13"))     # the api read it before the bell; gone now
+    assert rest.calls == [] and redis.keys("td:*") == []
+
+
+def test_redis_down_the_api_asks_kis_itself(redis, monkeypatch):
+    asked = FakeRest()
+    api = fq.FuturesQuote(asked, now=lambda: NIGHT_OPEN, is_open=is_open)
+    demand.configure("api")
+    monkeypatch.setattr(sc._async, "pipeline", Mock(side_effect=ConnectionError("fake Redis down")))
+    got = asyncio.run(api.both())
+    assert got["price"] == 782.75 and got["sessions"]["day"]["price"] == 789.35 and len(asked.calls) == 2
+    assert sc.stats()["errors"] == 1                         # one failed read: the tier is skipped after it

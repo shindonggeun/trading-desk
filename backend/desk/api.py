@@ -44,6 +44,7 @@ from . import (
     daily_resistance,
     day_calls,
     day_sectors,
+    demand,
     earnings,
     earnings_preview,
     entry_now,
@@ -858,6 +859,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         lag_task = asyncio.create_task(lag.run())
         await net.warm()                   # #859 the shared TLS context, built off the loop before any client
         shared_cache.configure(settings)   # #689 Redis behind some caches; nothing configured = memory only
+        demand.configure(settings.role)    # #689 split roles with Redis: the collector fetches what screens read
         # #690 the market stream: in this process (all), or over Redis pub/sub when split (docs/market-stream.md)
         market_bus.BUS.configure(settings, settings.role)
         market_bus.BUS.expect("futures", lambda: futures_open(datetime.now(UTC)))
@@ -1337,6 +1339,19 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         start("futures_close_quote", getattr(futures, "rest", None) is not None, read_futures_close,
               futures_quote.CLOSE_READ_SEC, "futures close quote failed")
+
+        # #689 demand-driven collection: the api writes which shared quotes its screens read, the collector
+        # fetches those (and only those) into Redis - neither calls a broker with no screen open
+        async def write_wants() -> float:
+            await demand.flush()
+            return DEMAND_WANTS_SEC
+
+        async def serve_wants() -> float:
+            await demand.serve({"quote": prices.refresh_quote, "futures_quote": futures_quotes.serve})
+            return DEMAND_SERVE_SEC
+
+        start("demand_wants", demand.enabled(), write_wants, DEMAND_WANTS_SEC, "demand wants failed")
+        start("demand", demand.serving(), serve_wants, DEMAND_SERVE_SEC * 2, "demand collection failed")
         start("sector_movers", feeds_on, watch_sector_movers, sector_movers.SCAN_SEC, "sector movers failed")
         start("credit", feeds_on, refresh_credit, CREDIT_RETRY_SEC, "KOFIA credit refresh failed")
         if feeds_on:
@@ -1544,7 +1559,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         return {"now": datetime.now(UTC).isoformat(timespec="milliseconds"), "role": settings.role,
                 "jobs": jobs.status(), "cooldowns": cooldowns(),
                 # #689 this process's shared-cache hits and its own calls to the brokers (Toss · KIS REST)
-                "shared_cache": shared_cache.stats(), "outbound": outbound.snapshot(),
+                "shared_cache": shared_cache.stats(), "outbound": outbound.snapshot(), "demand": demand.stats(),
                 "market_stream": market_bus.BUS.stats(),
                 "loop_lag": lag.stats(),             # #859 the event loop's lateness and what held it
                 "prewarm": prewarm.LAST or None}   # #864 the last pass: when, how long, each job
@@ -4254,6 +4269,9 @@ class HoldingWatchIn(BaseModel):
 
 
 # #631 GET /api/chart-read: kept until the shortest timeframe's bar ends, within these bounds
+# #689 the api writes the wanted set this often; the collector looks at it this often (each key its own period)
+DEMAND_WANTS_SEC = 2.0
+DEMAND_SERVE_SEC = 5.0
 CHART_READ_MIN_SEC = 15.0
 CHART_READ_MAX_SEC = 300.0
 CHART_READ_WEEKS = 120

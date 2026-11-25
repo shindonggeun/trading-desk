@@ -247,7 +247,8 @@ export function evidencePriceLabels(e: TrendEvidence): string[] {
   const fallback = Array.from({ length: n }, () => EVIDENCE_KO[e.kind]);
   if (e.kind === "quarter_level" && n === 2) return ["위 25% 선", "아래 25% 선"];
   if (e.kind === "channel_quarter" && n === 4) return ["채널 상단", "상단 25%", "하단 25%", "채널 하단"];
-  if (e.kind === "overlap" && n === 2) return ["저항", "매물 구역"];
+  // 매물 구역을 못 낸 overlap(insufficient)은 저항 하나만 온다
+  if (e.kind === "overlap" && (n === 1 || n === 2)) return ["저항", "매물 구역"].slice(0, n);
   if (e.kind === "fib_extension") {
     const ratios = String(e.meta?.ratios ?? "").split(",").filter(Boolean);
     if (ratios.length === n) return ratios.map((r) => `확장 ${r}`);

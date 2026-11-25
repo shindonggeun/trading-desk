@@ -19,7 +19,8 @@ read lately, so with no screen open neither of them calls Toss or KIS.
 - Off unless the process is the api with Redis on (or the collector, for ``serve``): one process (``all``) or no
   Redis answers as before, from its own fetches.
 
-Only market data goes through here: tickers and futures keys, no user, session or holdings figures
+Only market data goes through here: tickers (quotes, #999 off-hours estimates) and futures keys, no user,
+session or holdings figures
 (docs/security.md §5.2).
 """
 
@@ -43,7 +44,10 @@ KEEP_SEC = 30.0            # a key read within this long is still wanted (a 15 s
 FLUSH_EVERY = 10.0         # the api rewrites an unchanged wanted set this often (inside WANT_TTL)
 MAX_KEYS = 80              # as desk.broker.kis_stream's subscription cap - past it, a key is not collected
 MAX_KEY_CHARS = 40
-EVERY = {"quote": 10.0, "futures_quote": 15.0}     # a key's collection period per namespace
+# a key's collection period per namespace. #999 "estimate" (desk.estimate.collect): 9 s on the 5 s serve
+# loop lands every ~10 s (10 would wait for the third pass, ~15 s)
+EVERY = {"quote": 10.0, "futures_quote": 15.0, "estimate": 9.0}
+NS_MAX = {"estimate": MAX_KEYS // 2}   # #999 a stream's 50 off-hours tickers leave room for the quotes
 PARALLEL = 2               # handlers running at once in a pass
 PASS_SEC = 10.0            # a pass stops starting handlers after this long
 HANDLER_SEC = 20.0         # one fetch past this is a failure (a slow KIS page run must not hold the next pass)
@@ -90,7 +94,8 @@ def want(namespace: str, key: str) -> None:
     if not enabled() or not SCREEN.get() or namespace not in EVERY or not isinstance(key, str)             or not 0 < len(key) <= MAX_KEY_CHARS:
         return
     with _lock:
-        if (namespace, key) not in _seen and len(_seen) >= MAX_KEYS:
+        if (namespace, key) not in _seen and (len(_seen) >= MAX_KEYS or (
+                namespace in NS_MAX and sum(1 for ns, _ in _seen if ns == namespace) >= NS_MAX[namespace])):
             _stats["dropped"] += 1
             return
         _seen[(namespace, key)] = time.monotonic()
@@ -181,7 +186,9 @@ async def serve(handlers: dict[str, Handler]) -> int:
                 return
             with _lock:
                 _fails.pop((ns, key), None)
-                _due[(ns, key)] = time.monotonic() + EVERY[ns]
+                # #999 the period runs from the pass's start, not this fetch's end: a key served late in a long
+                # pass is due with the others on the pass EVERY later, not one serve loop after that
+                _due[(ns, key)] = started + EVERY[ns]
                 _stats["served"] += 1
             served += 1
 

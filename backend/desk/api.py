@@ -133,6 +133,8 @@ from .consensus import fake_summariser, llm_summariser
 from .db import account_owner_binding, make_engine, migrate, now, require_schema_at_head
 from .db import runs as run_rows
 from .estimate import CANDLE_INTERVALS, BinanceEstimator, naver_overtime, trading_soon
+from .estimate import SHARED_NS as ESTIMATE_NS
+from .estimate import STREAM_SOURCE as ESTIMATE_SOURCE
 from .favorites import Conflict, Favorites, TooMany
 from .futures_flow import KST as futures_kst
 from .futures_flow import FuturesFlow, futures_open
@@ -327,6 +329,28 @@ def resolve_ticker(v: str) -> tuple[str, bool]:
 
 def clean_ticker(v: str) -> str:
     return resolve_ticker(v)[0]
+
+
+async def collect_estimate(estimator, session_of, ticker: str) -> None:
+    """#999 the collector's ``estimate`` handler (desk.demand): a closed market's estimate every period, shared for
+    the api (desk.estimate.BinanceEstimator.collect) and pushed to the open market streams' quote channel."""
+    found = await estimator.collect(ticker)
+    if found is None:
+        return
+    est, mark_at = found
+    session = await session_of(ticker)
+    if session != "regular":           # the broker's calendar has it open (a late open): the live quote is the price
+        market_bus.publish("quote", ticker, {**estimate_row(ticker, session, est), "close_at": est.close_at},
+                           ESTIMATE_SOURCE, mark_at)
+
+
+def estimate_row(ticker: str, session: str, est) -> dict:
+    """The quote board's row of an off-hours estimate (/api/estimates) - also (#999) the payload of the
+    collector's estimate on the market stream, with ``close_at`` (docs/market-stream.md)."""
+    return {"ticker": ticker, "close": est.last_close, "close_date": est.last_close_date, "session": session,
+            "source": {"kind": est.method, "contract": est.contract, "basis": est.basis, "multiple": est.multiple},
+            "state": "estimate", "price": est.estimate, "change_pct": est.change_pct,
+            "quote_source": ESTIMATE_SOURCE, "fetched_at": est.fetched_at}
 
 
 class RunIn(BaseModel):
@@ -813,7 +837,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     live_streams: dict[str, int] = {}   # open /api/live/stream per session (token hash)
     calendar = live.Calendar(broker)     # market holidays for the live stream, cached per market
     # #653 the analysis chart's last bar carried on with the price now (short cache, one fetch per key)
-    chart_live = live_bars.LiveBars(prices, estimator, lambda t: sessions.session(calendar, t),
+    def board_session(ticker: str):
+        return sessions.session(calendar, ticker)
+
+    chart_live = live_bars.LiveBars(prices, estimator, board_session,
                                     watch=lambda t: live.watch(prices, t),
                                     off_hours=lambda t, s, c: _chart_off_hours(t, s, c))   # defined below
     if runner is None:
@@ -1367,8 +1394,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             return DEMAND_WANTS_SEC
 
         async def serve_wants() -> float:
-            await demand.serve({"quote": prices.refresh_quote, "futures_quote": futures_quotes.serve})
-            return DEMAND_SERVE_SEC
+            started = time.monotonic()
+            await demand.serve({"quote": prices.refresh_quote, "futures_quote": futures_quotes.serve,
+                                ESTIMATE_NS: lambda t: collect_estimate(estimator, board_session, t)})
+            return demand_pause(time.monotonic() - started)
 
         start("demand_wants", demand.enabled(), write_wants, DEMAND_WANTS_SEC, "demand wants failed")
         start("demand", demand.serving(), serve_wants, DEMAND_SERVE_SEC * 2, "demand collection failed")
@@ -2595,6 +2624,21 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     market_streams: dict[str, int] = {}
 
+    def want_estimates(names: frozenset[str]) -> None:
+        """#999 a stream's quote tickers that are off hours (by the clock) and have a contract to follow are read
+        as estimates - the collector keeps computing them while the stream is open, with no REST poll. From what
+        the estimator has already read (no Binance call: the loop checks the session every HEARTBEAT_SEC); a
+        contract list not read yet is left to the board's own read, which marks them too."""
+        if not demand.enabled():
+            return
+        now = datetime.now(UTC)
+        kr_trades = sessions.kr_clock(now) in ("pre", "post")    # NXT (and the after-hours auction): a real price
+        for ticker in names:
+            if trading_soon(ticker, now, timedelta(0)) or (kr_trades and kis_stream.market_of(ticker) == "KR"):
+                continue
+            if estimator.known_contract(ticker):
+                demand.want(ESTIMATE_NS, ticker)
+
     @app.get("/api/stream/market")
     async def market_stream(request: Request, channels: str = "", tickers: str = ""):
         """#690 quotes · flows · futures · alerts pushed as they are seen (docs/market-stream.md): the latest
@@ -2630,6 +2674,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 watched_quotes = names if kis_feed is not None and "quote" in wanted else ()
                 for ticker in watched_quotes:
                     kis_feed.want(ticker)
+                if "quote" in wanted:
+                    want_estimates(names)
                 yield "retry: 3000" + NL2
                 for event in bus.snapshot(sub):
                     yield frame(event["kind"], event, event["event_id"])
@@ -2650,6 +2696,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                             return
                         for ticker in watched_quotes:
                             kis_feed.want(ticker)
+                        if "quote" in wanted:
+                            want_estimates(names)
                         next_check = loop.time() + market_bus.HEARTBEAT_SEC
                     if sub.overflowed or not bus.on:
                         yield frame("reset", {"v": market_bus.VERSION, "reason": "overflow" if bus.on else "shutdown"})
@@ -3711,8 +3759,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     if (q := await _toss_off_hours(ticker, close)) is not None:
                         return live_row(q.price, "toss", q.fetched_at)
                 if est:
-                    return {**row, "state": "estimate", "price": est.estimate, "change_pct": est.change_pct,
-                            "quote_source": "binance-estimate", "fetched_at": est.fetched_at}
+                    return estimate_row(ticker, session, est)
                 return {**row, "state": "unavailable", "price": None, "change_pct": None, "error": err,
                         "quote_source": None, "fetched_at": None}
 
@@ -4363,6 +4410,13 @@ class HoldingWatchIn(BaseModel):
 # #689 the api writes the wanted set this often; the collector looks at it this often (each key its own period)
 DEMAND_WANTS_SEC = 2.0
 DEMAND_SERVE_SEC = 5.0
+DEMAND_PAUSE_MIN_SEC = 0.5
+
+
+def demand_pause(elapsed: float) -> float:
+    """#999 the wait after a demand pass: passes start every DEMAND_SERVE_SEC (a long pass is not followed by the
+    whole period - a 10 s key would wait three passes), never back to back."""
+    return max(DEMAND_PAUSE_MIN_SEC, DEMAND_SERVE_SEC - elapsed)
 CHART_READ_MIN_SEC = 15.0
 CHART_READ_MAX_SEC = 300.0
 CHART_READ_WEEKS = 120

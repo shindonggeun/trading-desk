@@ -1259,8 +1259,10 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                                                    ahead=ahead) for t in gap_fill.WATCH)),
             }
             if sector_candles is not None:   # #620 both markets' sector picks, so a first look is instant
-                jobs["sectors"] = lambda: asyncio.gather(*(prewarm.off(sector_cache.read, m, sector_candles,
-                                                                             None, ahead) for m in day_sectors.MARKETS))
+                # #864 one worker, the markets in turn: they share the ETFs' bars under the cache's lock, so a
+                # second worker would only sit on that lock (prod: 3.3 s of a cold pass's 4 workers)
+                jobs["sectors"] = lambda: prewarm.off(
+                    lambda: [sector_cache.read(m, sector_candles, None, ahead) for m in day_sectors.MARKETS])
             if risk_cache is not None:
                 jobs["risk_us"] = lambda: prewarm.off(risk_cache.series, False, ahead)
                 jobs["risk_kr"] = lambda: prewarm.off(risk_cache.series, True, ahead)

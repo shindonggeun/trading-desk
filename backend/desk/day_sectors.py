@@ -36,6 +36,7 @@ in the model: they have no stored history to fit or check it on.
 from __future__ import annotations
 
 import bisect
+import json
 import logging
 import math
 import threading
@@ -50,7 +51,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from . import market_calendar, pools
+from . import market_calendar, pools, shared_cache
 from .day_call import CSAT_DAYS
 
 log = logging.getLogger(__name__)
@@ -71,7 +72,15 @@ NOT_READY_TTL_SEC = 2 * 60   # a view still waiting for a session's bars is aske
 FETCH_PARALLEL = 6           # one rebuild's ETF reads at a time
 BARS_FRESH_SEC = 120.0       # bars this young are used as they are (the other market's build in the same pass)
 RECENT_BARS = 10             # after the day's full read, a rebuild asks only this many (merged by date)
-FEATURES = ("own_1d", "own_5d", "own_20d", "link_1d", "link_5d")
+# #993 a restart (most are deploys) read all 30 ETFs' history again: the first prewarm pass's sectors took ~9 s. The
+# day's full read is now also kept in the shared tier under a version, not the build (desk.shared_cache
+# *_versioned), so the next process of the day reads only the last few on top of it. The value is each ETF's bar
+# times and adjusted closes - all the picks read of a bar (``_closes`` · ``_merge``). Change its shape or meaning
+# (another price, another adjustment) = bump SHARED_BARS_VERSION.
+SHARED_BARS = "sector_bars"
+SHARED_BARS_VERSION = 1
+SHARED_BARS_TTL_SEC = 24 * 3600   # read only on the KST day of its full read, which ends within a day of it
+FEATURES =("own_1d", "own_5d", "own_20d", "link_1d", "link_5d")
 
 
 @dataclass(frozen=True)
@@ -555,6 +564,7 @@ class _BarRead:
     recent_calls: int = 0
     full_calls: int = 0
     origin_max_ms: float = 0.0
+    restored: bool = False               # #993 started from the day's full read another process shared
 
 
 def _merge(old: list, recent: list) -> list | None:
@@ -575,9 +585,38 @@ def _merge(old: list, recent: list) -> list | None:
     return [by_at[k] for k in sorted(by_at)][-HISTORY_BARS:]
 
 
+def shared_value(day: date, bars: list) -> dict:
+    """#993 the day's full read as the shared tier keeps it: the KST day it was read, bar times, adjusted closes."""
+    return {"day": day.isoformat(), "at": [b.at for b in bars], "close": [b.close for b in bars]}
+
+
+def shared_bars(value: object, today: date) -> list | None:
+    """#993 bars from a shared value read today, or None: another day's read, or not that shape (a miss, never a
+    page error). A bar is its close four times over (all the picks read of it) and volume 0, as frame_bars'."""
+    from .broker.base import Bar
+
+    try:
+        if value["day"] != today.isoformat():
+            return None
+        ats, closes = value["at"], value["close"]
+        if not (isinstance(ats, list) and isinstance(closes, list) and ats and len(ats) == len(closes)):
+            return None
+        bars = []
+        for at, c in zip(ats, closes, strict=True):
+            if (not isinstance(at, str) or isinstance(c, bool) or not isinstance(c, int | float)
+                    or not math.isfinite(c) or (bars and at <= bars[-1].at)):
+                return None
+            datetime.fromisoformat(at)       # what _closes reads it with
+            bars.append(Bar(at=at, open=float(c), high=float(c), low=float(c), close=float(c), volume=0.0))
+    except (TypeError, KeyError, ValueError, OverflowError):
+        return None
+    return bars
+
+
 class Cache:
     """Each market's view, standing until it can change (``stands_until``) or for ``NOT_READY_TTL_SEC`` while its
-    bars are late; one build at a time. The ETFs' bars are kept for both markets (#864)."""
+    bars are late; one build at a time. The ETFs' bars are kept for both markets (#864), and each one's full read
+    of the day in the shared tier for the next process (#993)."""
 
     def __init__(self, ttl: float = NOT_READY_TTL_SEC, clock=_time.monotonic) -> None:
         self.ttl, self.clock = ttl, clock
@@ -588,6 +627,7 @@ class Cache:
         self._bars: dict[str, tuple[float, date, list]] = {}
         # Share failed attempts across market builds for the same window as successful reads.
         self._failed_bars_at: dict[str, float] = {}
+        self._unshared: set[str] = set()     # #993 tickers whose full read is too big for the shared tier (logged once)
         self._lock = threading.Lock()
 
     def cached(self, market: str, now: datetime, ahead: float = 0) -> dict | None:
@@ -597,6 +637,27 @@ class Cache:
         if hit[3] is not None and now < hit[3]:
             return hit[2]                     # nothing new until then: a prewarm's "ahead" does not rebuild it
         return hit[2] if self.clock() < hit[0] - ahead else None
+
+    @staticmethod
+    def _restore(ticker: str, today: date) -> list | None:
+        """#993 today's full read of ``ticker`` from the shared tier, or None (off, down, a miss, another day's)."""
+        hit = shared_cache.get_versioned(SHARED_BARS, SHARED_BARS_VERSION, ticker)
+        return shared_bars(hit[0], today) if hit is not None else None
+
+    def _share(self, ticker: str, today: date, bars: list) -> None:
+        """#993 a full read for the next process of the day. One too big for the shared tier stays here only."""
+        if not shared_cache.enabled() or ticker in self._unshared:
+            return
+        value = shared_value(today, bars)
+        try:                                 # a non-finite close passes here: the tier itself skips it
+            size = len(json.dumps(value, separators=(",", ":")))
+        except (TypeError, ValueError):      # not JSON at all: kept here only - never a failed build
+            return
+        if size + 256 > shared_cache.MAX_VALUE_BYTES:           # room for the envelope (key, written at, ttl)
+            self._unshared.add(ticker)
+            log.info("day sectors: %s full read (%d bars) not shared: %d bytes of JSON", ticker, len(bars), size)
+            return
+        shared_cache.put_versioned(SHARED_BARS, SHARED_BARS_VERSION, ticker, value, SHARED_BARS_TTL_SEC)
 
     def _read_bars(self, tickers: list[str], candles: Callable[[str, str, int], list],
                    now: datetime) -> tuple[dict, bool, list[_BarRead]]:
@@ -616,6 +677,10 @@ class Cache:
             if failed_at is not None and stamp - failed_at < BARS_FRESH_SEC:
                 result.status = "reused_failure"
                 return result
+            if had is None and (shared := self._restore(t, today)) is not None:
+                # #993 a fresh process: the day's full read another one shared stands in for its own - the last few
+                # are read on top of it as below, and it is kept (self._bars) only once they join
+                had, result.bars, result.restored = (stamp, today, shared), shared, True
 
             def fetch(count: int) -> list:
                 result.recent_calls += count == RECENT_BARS
@@ -626,13 +691,16 @@ class Cache:
                 finally:
                     result.origin_max_ms = max(result.origin_max_ms, (_time.perf_counter() - start) * 1000)
 
+            full = False
             try:
                 bars = None
                 if had and had[1] == today and had[2]:
                     recent = fetch(RECENT_BARS)
-                    bars = _merge(had[2], recent) if recent else recent
+                    # an empty answer keeps the last bars until the next try - but restored ones read all as a
+                    # cold start would (they are not this process's own read: never a view worse than a cold one)
+                    bars = _merge(had[2], recent) if recent else (None if result.restored else recent)
                 if bars is None:                 # the day's first read, or the history moved: all of it
-                    bars = fetch(HISTORY_BARS)
+                    bars, full = fetch(HISTORY_BARS), True
             except Exception as exc:  # noqa: BLE001 - one ETF down leaves the rest (and its last bars)
                 log.info("day sectors: %s failed: %s", t, type(exc).__name__)
                 result.status = "error"
@@ -641,6 +709,8 @@ class Cache:
                     self._bars[t] = (self.clock(), today, bars)
                     self._failed_bars_at.pop(t, None)
                     result.bars = bars
+                    if full:
+                        self._share(t, today, bars)
                     return result
                 result.status = "empty"
             self._failed_bars_at[t] = self.clock()
@@ -676,10 +746,10 @@ class Cache:
         log.info(
             "day sectors: rebuild market=%s complete=%s lock_ms=%.1f bars_ms=%.1f view_ms=%.1f "
             "bar_hits=%d recent_calls=%d full_calls=%d origin_max_ms=%.1f origin_errors=%d "
-            "origin_empty=%d reused_failures=%d",
+            "origin_empty=%d reused_failures=%d restored=%d",
             market, complete, (acquired_at - enqueued_at) * 1000, (view_at - fetch_at) * 1000, view_ms,
             states["cache_hit"], sum(read.recent_calls for read in reads), sum(read.full_calls for read in reads),
             max((read.origin_max_ms for read in reads), default=0.0),
-            states["error"], states["empty"], states["reused_failure"],
+            states["error"], states["empty"], states["reused_failure"], sum(read.restored for read in reads),
         )
         return v

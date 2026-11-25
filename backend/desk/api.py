@@ -175,6 +175,8 @@ MAX_BOARD = 30          # tickers per /api/estimates call
 SPLIT_SOURCES = ("nxt", "krx-overtime", "binance-estimate")
 SPLIT_SESSIONS = ("pre", "post", "closed")
 CALENDAR_INTERVAL_SEC = 6 * 3600   # economic calendar re-read (#148)
+EARNINGS_WANT_MAX = 200   # #1005 favorites an earnings pass reads from the database (every account's, first ones first)
+LIVE_RECORD_RETRY_SEC = 300.0   # #1005 a live-record read that failed is tried again this soon
 POSITIONING_PARALLEL = 3   # Cboe chains are ~2 MB each (#154)
 POSITIONING_QUOTE_SEC = 5.0
 TOKEN_TICK_SEC = 5.0       # #688 the minting process looks at the shared broker tokens this often
@@ -996,17 +998,26 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         scoring = {"fresh": True}                         # the live record is read once at boot
 
+        async def read_live_record() -> None:
+            # #147: the playbooks' live record on top of the backtest prior
+            since = now() - timedelta(days=calibration.LIVE_DAYS)
+            runs_scored = await asyncio.to_thread(store.scored_since, since, public_only=protected)
+            (public_calibration or calibration.TABLE).set_live(runs_scored)
+
         async def score_plans() -> float:
             # How each plan played out, on the bars that came after it (desk.outcome). Starts at boot.
             scored = await outcome.sweep(store, prices)
             if scored:
                 log.info("scored %d plan(s)", scored)
             if scored or scoring["fresh"]:
-                # #147: the playbooks' live record on top of the backtest prior
-                since = now() - timedelta(days=calibration.LIVE_DAYS)
-                runs_scored = await asyncio.to_thread(store.scored_since, since, public_only=protected)
-                (public_calibration or calibration.TABLE).set_live(runs_scored)
+                await read_live_record()
                 scoring["fresh"] = False
+            return settings.score_interval_sec
+
+        async def follow_live_record() -> float:
+            # #1005 a process that does not score (split: the api, the analyst scores) reads the live record back
+            # from the outcomes in the database - the same read as score_plans, so its playbooks calibrate as all's
+            await read_live_record()
             return settings.score_interval_sec
 
         async def refresh_macro() -> float:
@@ -1035,6 +1046,17 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     jobs.mark_error("sector_news", "news digest snapshot not saved")
             return settings.macro_interval_sec
 
+        async def want_favorites() -> None:
+            # #1005 the favorites the month calendar watches, read from the database before each earnings pass:
+            # GET /api/calendar asks in its own process's memory, which a split backend's collector never sees.
+            # Every account's (each sees its own: earnings.Earnings.for_days). The set only grows, so a ticker the
+            # page wanted too (all) adds nothing. A failed read leaves the set as it was and the pass runs on
+            try:
+                earnings.CACHE.want(await asyncio.to_thread(favorites.tickers, EARNINGS_WANT_MAX))
+            except Exception as exc:  # noqa: BLE001 - the type only: a database message may carry its address
+                log.warning("earnings calendar: favorites not read (%s), the pass runs on the tickers it had",
+                            type(exc).__name__)
+
         async def refresh_calendar() -> float:
             # #148: FOMC + BLS release dates change rarely; a few reads a day keep them current
             with jobs.part("economic_calendar", "economic calendar refresh failed"):
@@ -1043,6 +1065,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 if not events_calendar.CACHE.saved:     # #996 the api and the analyst would stay on the last file
                     jobs.mark_error("economic_calendar", "snapshot not saved")
             with jobs.part("earnings", "earnings calendar refresh failed"):   # #243: this month and the next
+                await want_favorites()
                 ok = await earnings.CACHE.refresh()
                 log.info("earnings calendar: %d day(s)/ticker(s) refreshed", ok)
                 if not earnings.CACHE.saved:
@@ -1465,8 +1488,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         start("reports", settings.report_every_days > 0 and not settings.fake_runs, write_reports, reports.RETRY_SEC)
         start("funds", feeds_on, refresh_funds, lambda: funds.next_delay(), "13F refresh failed")
         # Scripted runs have made-up levels; scoring them against real bars means nothing.
-        start("scoring", settings.score_interval_sec > 0 and not settings.fake_runs, score_plans,
-              settings.score_interval_sec, "plan scoring failed")
+        scoring_on = settings.score_interval_sec > 0 and not settings.fake_runs
+        start("scoring", scoring_on, score_plans, settings.score_interval_sec, "plan scoring failed")
+        # #1005 where another process scores (split: the analyst), the live record is read back on the scoring's beat;
+        # all scores here and reads it there (score_plans). Off with the scoring, as all's record would be empty
+        start("calibration_live", scoring_on and not here("scoring"), follow_live_record, LIVE_RECORD_RETRY_SEC,
+              "live calibration read failed")
         start("purge", settings.retention_days > 0, purge_old_runs, 24 * 3600, "retention sweep failed")
         # #688 the analyst claims the runs the api queued (desk.run_queue); all runs its own straight away
         queue = None

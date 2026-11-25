@@ -304,6 +304,44 @@ def test_a_market_stream_marks_its_off_hours_contract_tickers_read(db_url, monke
     assert binance.calls == []                               # the stream's loop never waits on Binance
 
 
+def test_a_stream_with_an_estimator_that_knows_no_contracts_still_streams(db_url, monkeypatch):
+    """CI market-redis: the fixture's estimator has only ``estimate`` - the stream must not die on it."""
+    from datetime import timedelta
+
+    from fastapi.testclient import TestClient
+
+    from desk.api import create_app
+    from desk.auth import Auth
+    from desk.db import make_engine
+    from desk.runner import make_fake_runner
+    from tests.test_api import OWNER, PASSWORD
+    from tests.test_market_stream import _frames
+
+    class Bare:
+        async def estimate(self, ticker):
+            return None
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(market_bus, "BUS", Bus())
+    monkeypatch.setattr(market_bus, "HEARTBEAT_SEC", 0.05)
+    monkeypatch.setattr(demand, "enabled", lambda: True)
+    monkeypatch.setattr("desk.api.trading_soon", lambda ticker, now, lead=None: False)
+    app = create_app(Settings(database_url=db_url, fake_runs=True, fake_delay=0), runner=make_fake_runner(0),
+                     estimator=Bare())
+    engine = make_engine(db_url)
+    Auth(engine, timedelta(hours=1), timedelta(hours=1)).create_user(OWNER, PASSWORD)
+    engine.dispose()
+    with TestClient(app, base_url="https://testserver") as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        with client.stream("GET", "/api/stream/market?channels=quote&tickers=AAPL") as r:
+            lines = r.iter_lines()
+            assert _frames(lines, "ready")[-1][0] == "ready"
+            assert _frames(lines, "heartbeat")[-1][0] == "heartbeat"
+    assert demand._current(demand.time.monotonic()) == {}
+
+
 def test_a_contract_known_from_what_was_read():
     est, binance = _estimator()
     assert est.known_contract("005930.KS") and est.known_contract("CL=F") and est.known_contract("^KS200")

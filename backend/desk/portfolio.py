@@ -33,9 +33,10 @@ from .prices import PriceSource
 log = logging.getLogger(__name__)
 
 FX_TTL_SEC = 10.0
-# #689 desk.demand · desk.shared_cache: the rate as an FxRate dict under one key, and how long the collector shares
-# it (twice its period demand.EVERY["fx"], 30 s; Toss itself renews it once a minute) - the api of split roles
-# takes one this old, any other process one up to FX_TTL_SEC, as its own would be
+# #689 desk.demand · desk.shared_cache: the rate as an FxRate dict under one key, and how long every process shares
+# a rate it read (twice the collector's period demand.EVERY["fx"], 30 s; Toss itself renews it once a minute) - one
+# lifetime for every writer, so no write cuts another's short. The api of split roles takes a rate this old, any
+# other process one up to FX_TTL_SEC, as its own would be
 FX_SHARED_NS = "fx"
 FX_SHARED_KEY = "usd_krw"
 FX_SHARED_TTL_SEC = 60.0
@@ -73,11 +74,28 @@ def _shared_fx(raw) -> FxRate | None:
     """#689 a shared rate only when it is one - a real number, a source and when it was read - a miss otherwise."""
     try:
         fx = FxRate(**raw)
-    except TypeError:   # not a dict, or another shape
+        ok = (isinstance(fx.usd_krw, int | float) and not isinstance(fx.usd_krw, bool) and math.isfinite(fx.usd_krw)
+              and fx.usd_krw > 0 and isinstance(fx.source, str) and _fx_rank(raw) is not None)
+    except (TypeError, ValueError, OverflowError):   # not a dict, another shape, or an int past any float
         return None
-    ok = (isinstance(fx.usd_krw, int | float) and not isinstance(fx.usd_krw, bool) and math.isfinite(fx.usd_krw)
-          and fx.usd_krw > 0 and isinstance(fx.source, str) and isinstance(fx.at, str))
     return fx if ok else None
+
+
+async def _share(fx: FxRate) -> None:
+    """#689 a rate this process read, for the others: the same lifetime from every writer (the api's own read on a
+    miss, the collector's demand job and its holding watch), and never over a rate read later - a slow read landing
+    after the collector's newer one leaves that one, and its lifetime, in place."""
+    await shared_cache.aput_newer(FX_SHARED_NS, FX_SHARED_KEY, fx.to_dict(), FX_SHARED_TTL_SEC, rank=_fx_rank)
+
+
+def _fx_rank(value) -> float | None:
+    """#689 the order of shared rates - when each was read: an older read never replaces a newer one
+    (shared_cache.aput_newer), whichever process writes last."""
+    try:
+        at = datetime.fromisoformat(value["at"])
+    except (TypeError, KeyError, ValueError):
+        return None
+    return at.timestamp() if at.tzinfo is not None else None
 
 
 def _krw(value: float) -> float:
@@ -167,10 +185,7 @@ class Portfolio:
                 return fx
         fx = await self._read_fx()
         self._fx = (self._clock(), fx)
-        # the collector's own reads (its holding watch) keep the collected lifetime: a 10 s write over its 60 s value
-        # would leave the api a gap before the next collection
-        await shared_cache.aput(FX_SHARED_NS, FX_SHARED_KEY, fx.to_dict(),
-                                FX_SHARED_TTL_SEC if demand.serving() else FX_TTL_SEC)
+        await _share(fx)
         return fx
 
     async def refresh_fx(self, key: str) -> None:
@@ -181,14 +196,14 @@ class Portfolio:
             raise ValueError("not a rate this desk reads")
         fx = await self._read_fx()
         self._fx = (self._clock(), fx)
-        await shared_cache.aput(FX_SHARED_NS, FX_SHARED_KEY, fx.to_dict(), FX_SHARED_TTL_SEC)
+        await _share(fx)
 
     async def _read_fx(self) -> FxRate:
         try:
             return FxRate(round(await self.broker.usd_krw(), 4), self.broker.name, _now())
         except Exception as exc:  # noqa: BLE001 - any broker miss falls back to Yahoo
-            if not isinstance(exc, NotImplementedError):
-                log.info("broker USD/KRW failed, using Yahoo: %s", exc)
+            if not isinstance(exc, NotImplementedError):   # the type only: a provider's message can carry its reply
+                log.info("broker USD/KRW failed, using Yahoo: %s", type(exc).__name__)
             return FxRate(round(await asyncio.to_thread(self._yahoo_fx), 4), "yahoo", _now())
 
     async def snapshot(self) -> dict:

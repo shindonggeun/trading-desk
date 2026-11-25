@@ -41,6 +41,9 @@ SHARED_NS = "quote"   # #689 desk.shared_cache: a Quote dict per ticker, QUOTE_T
 # the collector's period (demand.EVERY, 30 s) and a late pass
 MINUTES_NS = "krx_1m"
 MINUTES_TTL_SEC = 45.0
+MINUTES_AFTER_CLOSE = timedelta(minutes=1)   # the 15:30 closing print's minute still lands after the close
+# True inside _fill_krx's read of the 1m tail: a 5m-240m chart's, not a read that keeps the 1m collected
+_FILLING: ContextVar[bool] = ContextVar("desk_prices_filling", default=False)
 CANDLE_TTL_SEC = 30.0
 # #858 how far past their TTL a caller takes the bars it had, at once, while a background read brings new ones.
 # 0 - wait for new bars - everywhere but the one caller that says so with ``stale_ok``: /api/batch/candles (the
@@ -297,6 +300,17 @@ KRX_OPEN_MIN, KRX_CLOSE_MIN = 9 * 60, 15 * 60 + 30   # KRX regular session, minu
 
 def is_krx(ticker: str) -> bool:
     return ticker.upper().endswith((".KS", ".KQ"))
+
+
+def krx_minutes_move(now: datetime | None = None) -> bool:
+    """#689 KRX's regular session (desk.market_calendar: its trading days, late opens and short CSAT days) is on,
+    or closed less than MINUTES_AFTER_CLOSE ago - its 1-minute bars still change."""
+    now = now or datetime.now(UTC)
+    day = market_calendar.local_today("kr", now)
+    if not market_calendar.is_open("kr", day):
+        return False
+    opens, closes = market_calendar.session_bounds("kr", day)
+    return opens <= now <= closes + MINUTES_AFTER_CLOSE
 
 
 def _at(iso: str) -> datetime:
@@ -570,10 +584,12 @@ class PriceSource:
             raise ValueError(f"interval must be one of {INTERVALS}")
         indicators = normalize(indicators)
         count = min(max(count, 1), MAX_COUNT)
-        if is_krx(ticker) and (interval in _MINUTES or (interval == "1m" and count <= BROKER_MAX_COUNT)):
-            # #689 a KRX minute chart reads the broker's 1m tail (_broker_bars): every read, a memory hit too, keeps
-            # it collected - these entries live 30-120 s and a key unread for demand.KEEP_SEC (30 s) is dropped, so
-            # marking only the fetches would let the collection lapse between them
+        if (interval == "1m" and count <= BROKER_MAX_COUNT and is_krx(ticker) and not _FILLING.get()
+                and demand.enabled() and demand.SCREEN.get() and krx_minutes_move()):
+            # #689 a screen reading a KRX ticker's 1-minute bars on and on (the live chart every few seconds, a 1m
+            # chart) keeps them collected - every read, a memory hit too. Not the 5m-240m charts' tail (_fill_krx):
+            # read once a minute or two, they would have the collector read twice for each of their reads and still
+            # find the value gone - they take a collected value when there is one. Not while the session is off.
             demand.want(MINUTES_NS, ticker)
         key = family_key(ticker, interval, count, indicators)
         ttl = _CANDLE_TTL[interval]
@@ -687,19 +703,19 @@ class PriceSource:
         STALE_OK.set(0.0)
         # Extra bars ahead of the shown ones so the indicators have settled by the first bar drawn.
         fetch = count + max((WARMUP[i] for i in indicators), default=0)
-        fetched = None                   # #689 when shared bars were read (None: by this read, now)
+        shared = None                    # #689 (when read, age) of bars cut from the shared tier - None: read now
         try:
             if interval not in BROKER_INTERVALS or count > BROKER_MAX_COUNT or off_broker(ticker):
                 raise NotImplementedError
             # Toss caps at 200: a chart that fits keeps Toss as its source with the RSI on, taking
             # only the warm-up bars that still fit, rather than flipping to Yahoo's (unadjusted) bars.
-            bars, fetched = await self._broker_bars(ticker, interval, min(fetch, BROKER_MAX_COUNT))
+            bars, shared = await self._broker_bars(ticker, interval, min(fetch, BROKER_MAX_COUNT))
             if not bars:
                 raise ValueError("no bars")
             source = self.broker.name
         except Exception as exc:  # noqa: BLE001
-            if not isinstance(exc, NotImplementedError):
-                log.info("broker candles for %s failed, using Yahoo: %s", ticker, exc)
+            if not isinstance(exc, NotImplementedError):   # the type only: a provider's message can carry its reply
+                log.info("broker candles for %s failed, using Yahoo: %s", ticker, type(exc).__name__)
             bars = await pools.run(pools.SOURCE, pools.yahoo, self._yahoo_candles, ticker, interval, fetch)
             source = "yahoo"
             if interval in _MINUTES and is_krx(ticker):
@@ -711,8 +727,8 @@ class PriceSource:
         else:
             rows = _rows(bars, indicators)
         rows = rows[-count:]
-        result = {"ticker": ticker, "interval": interval, "source": source, "fetched_at": fetched or _now(),
-                  "bars": rows, "indicators": list(indicators),
+        result = {"ticker": ticker, "interval": interval, "source": source,
+                  "fetched_at": shared[0] if shared else _now(), "bars": rows, "indicators": list(indicators),
                   "history_limit_days": HISTORY_LIMIT_DAYS.get(interval), "truncated": len(rows) < count}
         kept = self._candles.get(key)
         now = self._clock()
@@ -734,8 +750,10 @@ class PriceSource:
             self._empty[key] = (now + CANDLES_EMPTY_RETRY_SEC, kept[3], count, result)
             return result
         if kept is None or kept[3] <= count or now - kept[0] >= ttl:
-            # #874 a narrower read never takes the place of a wider one still fresh (its askers have their bars)
-            _remember(self._candles, key, (now, result, ttl, count), ttl, self._clock)
+            # #874 a narrower read never takes the place of a wider one still fresh (its askers have their bars).
+            # #689 bars cut from the shared tier are kept as old as they are: until ``ttl`` after their read, not now
+            stamp = now - shared[1] if shared else now
+            _remember(self._candles, key, (stamp, result, ttl, count), ttl, self._clock)
             if rows:
                 self._quiet.pop(key, None)
                 if (empty := self._empty.get(key)) is not None and count >= empty[2]:
@@ -765,25 +783,30 @@ class PriceSource:
     async def _fill_krx(self, ticker: str, interval: str, bars: list[Bar]) -> tuple[list[Bar], str]:
         """KRX minute bars from Yahoo, their late tail replaced by the broker's 1-minute bars
         (#379) - the live chart folds its stream into the same buckets. Yahoo alone on a miss."""
+        token = _FILLING.set(True)               # #689 a chart's tail: not a read that keeps the 1m collected
         try:
             recent = await self.candles(ticker, "1m", BROKER_MAX_COUNT)
         except Exception as exc:  # noqa: BLE001 - the history still stands
             log.info("recent 1m for %s failed, Yahoo only: %s", ticker, exc)
             return bars, "yahoo"
+        finally:
+            _FILLING.reset(token)
         if recent["source"] != self.broker.name:
             return bars, "yahoo"                 # Yahoo's own 1m lags just the same
         filled = fill_recent(bars, [Bar(**b) for b in recent["bars"]], _MINUTES[interval])
         return filled, ("yahoo" if filled is bars else f"yahoo+{self.broker.name}")
 
-    async def _broker_bars(self, ticker: str, interval: str, count: int) -> tuple[list[Bar], str | None]:
-        """The broker's last ``count`` bars, and when they were read (None: now). #689 a KRX ticker's 1-minute bars
-        in the api of split roles (desk.demand) are cut from the BROKER_MAX_COUNT the collector shares
-        (refresh_minutes; ``candles`` marks them) while they live - a miss or Redis down reads the broker as before."""
+    async def _broker_bars(self, ticker: str, interval: str, count: int
+                           ) -> tuple[list[Bar], tuple[str, float] | None]:
+        """The broker's last ``count`` bars, and (when they were read, their age in seconds) - None: read now.
+        #689 a KRX ticker's 1-minute bars in the api of split roles (desk.demand) are cut from the BROKER_MAX_COUNT
+        the collector shares (refresh_minutes; ``candles`` marks them) while they live - a miss or Redis down
+        reads the broker as before."""
         if interval == "1m" and is_krx(ticker) and demand.enabled():
             hit = await shared_cache.aget(MINUTES_NS, ticker)
             shared = _shared_minutes(hit[0], self.broker.name) if hit is not None else None
             if shared is not None and hit[1] <= MINUTES_TTL_SEC:
-                return shared[1][-count:], shared[0]
+                return shared[1][-count:], (shared[0], hit[1])
         return await self.broker.candles(broker_symbol(ticker), interval, count), None
 
     async def refresh_minutes(self, ticker: str) -> None:
@@ -845,13 +868,13 @@ def _shared_minutes(raw, source: str) -> tuple[str, list[Bar]] | None:
         return None
     try:
         bars = [Bar(**row) for row in rows]
-    except TypeError:   # not a dict, or another shape
+        for bar in bars:
+            numbers = (bar.open, bar.high, bar.low, bar.close, bar.volume)
+            if not isinstance(bar.at, str) or not all(
+                    isinstance(n, int | float) and not isinstance(n, bool) and math.isfinite(n) for n in numbers):
+                return None
+    except (TypeError, ValueError, OverflowError):   # not a dict, another shape, or an int past any float
         return None
-    for bar in bars:
-        numbers = (bar.open, bar.high, bar.low, bar.close, bar.volume)
-        if not isinstance(bar.at, str) or not all(
-                isinstance(n, int | float) and not isinstance(n, bool) and math.isfinite(n) for n in numbers):
-            return None
     return raw["at"], bars
 
 
@@ -865,12 +888,12 @@ def _shared_quote(ticker: str, raw) -> Quote | None:
     """#689 a shared quote only when it is one for this ticker with a real price - a miss otherwise."""
     try:
         quote = Quote(**raw)
-    except TypeError:   # not a dict, or a shape from another version of this class
+        ok = (quote.ticker == ticker and isinstance(quote.price, int | float) and not isinstance(quote.price, bool)
+              and math.isfinite(quote.price) and quote.price > 0
+              and isinstance(quote.source, str) and isinstance(quote.fetched_at, str)
+              and (quote.currency is None or isinstance(quote.currency, str)))
+    except (TypeError, ValueError, OverflowError):   # not a dict, another version's shape, an int past any float
         return None
-    ok = (quote.ticker == ticker and isinstance(quote.price, int | float) and not isinstance(quote.price, bool)
-          and math.isfinite(quote.price) and quote.price > 0
-          and isinstance(quote.source, str) and isinstance(quote.fetched_at, str)
-          and (quote.currency is None or isinstance(quote.currency, str)))
     return quote if ok else None
 
 

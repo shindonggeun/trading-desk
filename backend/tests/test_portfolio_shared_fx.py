@@ -6,13 +6,15 @@ Each "process" is its own Portfolio on one fake Redis server; desk.demand is per
 for the role whose code runs next."""
 
 import asyncio
+from datetime import datetime, timedelta
 
 import fakeredis
 import pytest
 
 from desk import demand
+from desk import portfolio as portfolio_mod
 from desk import shared_cache as sc
-from desk.portfolio import FX_SHARED_NS, FX_SHARED_TTL_SEC, FX_TTL_SEC
+from desk.portfolio import FX_SHARED_NS, FX_SHARED_TTL_SEC, FX_TTL_SEC, FxRate
 from tests.test_portfolio import Book, _book
 
 
@@ -68,13 +70,18 @@ def test_the_api_snapshot_takes_the_collectors_rate_and_still_reads_the_holdings
     assert sc.stats()["skipped"] == 0
 
 
-def test_what_the_api_reads_the_collector_reads_and_the_api_reads_that_next(redis):
+def test_what_the_api_reads_the_collector_reads_and_the_api_reads_that_next(redis, monkeypatch):
     api_broker, collector_broker = Book(fx=1300.0), Book(fx=1410.0)
+    real_now = portfolio_mod._now
 
     async def go():
         demand.configure("api")
         api, clock = _book(api_broker)
-        first = await api.snapshot()                    # nothing shared yet: its own read, shared for FX_TTL_SEC
+        # nothing shared yet: its own read (a few seconds before the collector's - in one second, the same rate)
+        monkeypatch.setattr(portfolio_mod, "_now", lambda: (datetime.fromisoformat(real_now()) - timedelta(seconds=5))
+                            .isoformat(timespec="seconds"))
+        first = await api.snapshot()
+        monkeypatch.setattr(portfolio_mod, "_now", real_now)
         await demand.flush()                            # the demand_wants job
         demand.configure("collector")
         collector, _ = _book(collector_broker)
@@ -118,7 +125,44 @@ def test_with_nothing_shared_the_api_reads_the_rate_itself_and_shares_it(redis):
 
     snap, hit = asyncio.run(go())
     assert api_broker.calls == {"holdings": 1, "fx": 1}
-    assert snap["fx"]["usd_krw"] == 1300.0 and hit[0] == snap["fx"] and hit[2] <= FX_TTL_SEC
+    # every writer shares a rate for the same lifetime: no write cuts another's short
+    assert snap["fx"]["usd_krw"] == 1300.0 and hit[0] == snap["fx"] and FX_TTL_SEC < hit[2] <= FX_SHARED_TTL_SEC
+
+
+def test_a_slow_api_read_never_cuts_the_collectors_rate_short_nor_replaces_a_newer_one(redis):
+    class Slow(Book):
+        """The api's Toss call, answering only once the collector has shared its own read."""
+
+        def __init__(self, gate, **kw):
+            super().__init__(**kw)
+            self.gate = gate
+
+        async def usd_krw(self):
+            await self.gate.wait()
+            return await super().usd_krw()
+
+    async def go():
+        gate = asyncio.Event()
+        demand.configure("api")
+        api, _ = _book(Slow(gate, fx=1300.0))
+        read = asyncio.ensure_future(api.snapshot())  # the api's own read: nothing shared yet
+        await asyncio.sleep(0.01)
+        demand.configure("collector")
+        collector, _ = _book(Book(fx=1410.0))
+        await collector.refresh_fx("usd_krw")         # the collector's read lands first
+        collected = (await sc.aget(FX_SHARED_NS, "usd_krw"))[0]
+        demand.configure("api")
+        gate.set()
+        await read
+        after_race = await sc.aget(FX_SHARED_NS, "usd_krw")
+        older = (datetime.fromisoformat(collected["at"]) - timedelta(seconds=5)).isoformat(timespec="seconds")
+        await portfolio_mod._share(FxRate(1200.0, "toss", older))   # a read older than what is shared
+        return collected, after_race, await sc.aget(FX_SHARED_NS, "usd_krw")
+
+    collected, after_race, after_older = asyncio.run(go())
+    assert after_race[2] > FX_TTL_SEC                 # whichever read won, it still lives the shared lifetime
+    assert after_race[0]["at"] >= collected["at"]
+    assert after_older[0] == after_race[0]            # the older read did not replace it
 
 
 def test_redis_down_leaves_the_rate_on_its_own_path():
@@ -141,14 +185,17 @@ def test_a_shared_value_that_is_not_a_rate_is_a_miss(redis):
     api_broker = Book(fx=1300.0)
 
     async def go():
-        for bad in ({"usd_krw": "1400", "source": "toss", "at": "x"}, {"usd_krw": -1.0, "source": "toss", "at": "x"},
-                    {"usd_krw": 1400.0}, [1400.0]):
+        at = "2026-11-13T01:00:00+00:00"
+        for bad in ({"usd_krw": "1400", "source": "toss", "at": at}, {"usd_krw": -1.0, "source": "toss", "at": at},
+                    {"usd_krw": 1400.0}, [1400.0], {"usd_krw": 1400.0, "source": "toss", "at": "x"},
+                    {"usd_krw": 1400.0, "source": "toss", "at": "2026-11-13T01:00:00"},   # no zone: no order
+                    {"usd_krw": 10 ** 400, "source": "toss", "at": at}):      # past any float: a miss, no error
             await sc.aput(FX_SHARED_NS, "usd_krw", bad, 30)
             demand.configure("api")
             api, _ = _book(api_broker)
             assert (await api.snapshot())["fx"]["usd_krw"] == 1300.0
     asyncio.run(go())
-    assert api_broker.calls["fx"] == 4
+    assert api_broker.calls["fx"] == 7
 
 
 def test_the_collectors_fx_job_fails_loudly_so_demand_backs_off(redis):

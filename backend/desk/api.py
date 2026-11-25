@@ -2629,14 +2629,15 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         as estimates - the collector keeps computing them while the stream is open, with no REST poll. From what
         the estimator has already read (no Binance call: the loop checks the session every HEARTBEAT_SEC); a
         contract list not read yet is left to the board's own read, which marks them too."""
-        if not demand.enabled():
+        known = getattr(estimator, "known_contract", None)      # an estimator without it (a fake) marks nothing
+        if not demand.enabled() or known is None:
             return
         now = datetime.now(UTC)
         kr_trades = sessions.kr_clock(now) in ("pre", "post")    # NXT (and the after-hours auction): a real price
         for ticker in names:
             if trading_soon(ticker, now, timedelta(0)) or (kr_trades and kis_stream.market_of(ticker) == "KR"):
                 continue
-            if estimator.known_contract(ticker):
+            if known(ticker):
                 demand.want(ESTIMATE_NS, ticker)
 
     @app.get("/api/stream/market")

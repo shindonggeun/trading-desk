@@ -160,8 +160,11 @@ const validPrice = (v: number | null | undefined): v is number => typeof v === "
 const NUM = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 });
 const PCT = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 1, minimumFractionDigits: 1, signDisplay: "exceptZero" });
 
+const NUM_BIG = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 });
+
+/** 1,000 이상(지수 · 원화 · 선물 포인트)은 소수 둘째 자리까지 — "5,006.0298" 처럼 늘어지지 않게 */
 export function formatTrendPrice(v: number | null | undefined, unit: string | null): string {
-  return validPrice(v) ? NUM.format(v) + (unit ? " " + unit : "") : "미제공";
+  return validPrice(v) ? (v >= 1000 ? NUM_BIG : NUM).format(v) + (unit ? " " + unit : "") : "미제공";
 }
 export function formatTrendDistance(v: number | null | undefined): string {
   return typeof v === "number" && Number.isFinite(v) ? (Math.abs(v) < 0.05 ? "0.0%" : PCT.format(v) + "%") : "미제공";

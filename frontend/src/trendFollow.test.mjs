@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  byStamp, conditionState, evidenceMeta, evidencePriceLabels, evidencePractice, formatTrendDistance, trendFocus, trendPresentation, trendProduct, trendSummaryLine,
+  byStamp, conditionState, evidenceMeta, evidencePriceLabels, evidencePractice, formatTrendDistance, formatTrendPrice, trendFocus, trendPresentation, trendProduct, trendSummaryLine,
 } from "./trendFollow.ts";
 
 // #977 계약을 따른 합성 응답 — 가격은 화면 처리 확인용이지 실제 시세가 아니다.
@@ -140,6 +140,8 @@ test("근거의 설정값을 화면에 남긴다", () => {
   assert.equal(evidenceMeta({ kind: "overlap", meta: { distance_pct: 0.8, tolerance_pct: 1.5, falling: "yes" } }), "저항과 매물대 거리 +0.8% · 허용 1.5% · 하락 저항");
   assert.equal(evidenceMeta({ kind: "overlap", meta: { distance_pct: 0.8, falling: "no" } }), "저항과 매물대 거리 +0.8%");
   assert.equal(formatTrendDistance(0.01), "0.0%");
+  assert.equal(formatTrendPrice(5006.0298, "포인트"), "5,006.03 포인트");
+  assert.equal(formatTrendPrice(0.123456, "USDT"), "0.1235 USDT");
   assert.equal(formatTrendDistance(3.44), "+3.4%");
 });
 

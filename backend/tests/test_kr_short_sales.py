@@ -6,14 +6,20 @@ from functools import partial
 
 import pytest
 
-from desk import kr_short_sales, market_calendar, positioning
+from desk import market_calendar, positioning
+from desk.futures_flow import KisError
 from desk.kr_short_sales import (
+    KIS_SHORT_PATH,
+    KIS_SHORT_TR,
     BalanceRow,
     KrxShortSales,
     Publication,
     TradeRow,
     UnsupportedTicker,
+    connect,
     is_kr_ticker,
+    kis_source,
+    parse_kis_trades,
 )
 
 THURSDAY = date(2026, 10, 8)
@@ -213,12 +219,19 @@ def test_domestic_positioning_api_requires_session_and_valid_ticker(db_url):
         assert body["kr_short"]["market"] == "KOSDAQ"
         assert body["supported"] is True
         assert body["reason"] == body["kr_short"]["status"] == "source_unavailable"
+        assert body["kr_short"]["source"] is None              # fake runs: no KIS client
+        assert body["kr_short"]["balance"]["status"] == "source_unavailable"
         assert body["sources"] == []
         assert body["short"] is body["options"] is None
 
 
 def test_domestic_positioning_api_uses_injected_publications_for_single_get(db_url, monkeypatch):
-    from tests.test_api import _client
+    from fastapi.testclient import TestClient
+
+    from desk.api import create_app
+    from desk.runner import make_fake_runner
+    from desk.settings import Settings
+    from tests.test_api import OWNER, PASSWORD, _client
 
     calls = []
 
@@ -232,9 +245,12 @@ def test_domestic_positioning_api_uses_injected_publications_for_single_get(db_u
 
     service = KrxShortSales(source)
     monkeypatch.setattr(service, "get", partial(service.get, now=at(THURSDAY)))
-    monkeypatch.setattr(kr_short_sales, "KRX_SHORT_SALES", service)
     monkeypatch.setattr(positioning, "POSITIONING", positioning.Positioning())
-    with _client(db_url) as client:
+    _client(db_url, login=False).close()        # the owner account
+    app = create_app(Settings(database_url=db_url, fake_runs=True, fake_delay=0), runner=make_fake_runner(0),
+                     short_sales=service)
+    with TestClient(app, base_url="https://testserver") as client:
+        assert client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD}).status_code == 204
         response = client.get("/api/positioning", params={"ticker": "005930.ks"})
         assert response.status_code == 200
         body = response.json()
@@ -266,3 +282,117 @@ def test_domestic_positioning_api_uses_injected_publications_for_single_get(db_u
         assert item["supported"] is False
         assert "kr_short" not in item
     assert calls == ["005930.KS", "999999.KQ", "000660.KS"]
+
+
+# ---- #979 KIS 국내주식 공매도 일별추이 (FHPST04830000) ----
+
+def kis_row(day, short, total, ratio=None):
+    if ratio is None and short and total:
+        ratio = short / total * 100
+    return {"stck_bsop_date": day.strftime("%Y%m%d"), "ssts_tr_pbmn": str(short), "acml_tr_pbmn": str(total),
+            "ssts_tr_pbmn_rlim": f"{ratio or 0:.2f}"}
+
+
+class FakeKis:
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.calls = []
+
+    async def get(self, path, tr_id, params):
+        self.calls.append((path, tr_id, params))
+        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def test_kis_rows_keep_zero_share_zero_denominator_and_drop_unit_mismatch():
+    rows = parse_kis_trades({"output2": [
+        kis_row(THURSDAY, 3_180_000_000, 100_000_000_000),            # 3.18%
+        kis_row(WEDNESDAY, 0, 50_000_000_000),                        # a real 0%
+        kis_row(TUESDAY, 0, 0),                                       # a halted day: zero denominator
+        kis_row(date(2026, 10, 5), 3_180, 100_000_000_000, ratio=3.18),   # short value in another unit
+        {"stck_bsop_date": "", "ssts_tr_pbmn": "1", "acml_tr_pbmn": "2"},
+        {"stck_bsop_date": "20261002", "ssts_tr_pbmn": "-", "acml_tr_pbmn": ""},
+    ]})
+    by_day = {row.as_of: row for row in rows}
+    assert by_day[THURSDAY] == TradeRow(THURSDAY, 3_180_000_000, 100_000_000_000)
+    assert by_day[WEDNESDAY] == TradeRow(WEDNESDAY, 0, 50_000_000_000)
+    assert by_day[TUESDAY] == TradeRow(TUESDAY, 0, 0)
+    assert by_day[date(2026, 10, 5)] == TradeRow(date(2026, 10, 5), None, None)
+    assert by_day[date(2026, 10, 2)] == TradeRow(date(2026, 10, 2), None, None)
+    assert len(rows) == 5
+    with pytest.raises(TypeError):
+        parse_kis_trades({"rt_cd": "0"})
+
+
+def test_kis_rows_without_kis_own_share_fail_closed_and_a_good_duplicate_wins():
+    day = date(2026, 10, 5)
+    unverified = {"stck_bsop_date": "20261008", "ssts_tr_pbmn": "3180", "acml_tr_pbmn": "100000000000"}
+    rows = parse_kis_trades({"output2": [
+        unverified,                                                    # no ssts_tr_pbmn_rlim
+        {**kis_row(WEDNESDAY, 3_180_000_000, 100_000_000_000), "ssts_tr_pbmn_rlim": "0.00"},
+        kis_row(TUESDAY, 1, 100_000_000_000, ratio=0),                 # a tiny share rounds to 0.00
+        kis_row(day, 3_180, 100_000_000_000, ratio=3.18),              # dropped first ...
+        kis_row(day, 3_180_000_000, 100_000_000_000),                  # ... then a good row for the day
+    ]})
+    by_day = {row.as_of: row for row in rows}
+    assert by_day[THURSDAY] == TradeRow(THURSDAY, None, None)
+    assert by_day[WEDNESDAY] == TradeRow(WEDNESDAY, None, None)
+    assert by_day[TUESDAY] == TradeRow(TUESDAY, 1, 100_000_000_000)
+    assert by_day[day] == TradeRow(day, 3_180_000_000, 100_000_000_000)
+
+
+def test_connect_uses_kis_when_the_client_exists():
+    off = asyncio.run(connect(None).get("005930.KS", now=at(THURSDAY)))
+    assert off["status"] == "source_unavailable" and off["source"] is None
+    kis = FakeKis({"output2": [kis_row(THURSDAY, 1_000, 100_000)]})
+    on = asyncio.run(connect(kis).get("005930.KS", now=at(THURSDAY)))
+    assert on["source"] == "kis" and on["status"] == "available"
+    assert on["trade"]["latest"] == {"as_of": "2026-10-08", "ratio_pct": 1.0, "status": "available"}
+    assert on["balance"]["status"] == "source_unavailable"
+
+
+def test_kis_source_asks_the_krx_market_for_the_window():
+    kis = FakeKis({"output2": [kis_row(THURSDAY, 1, 4)]})
+    publication = asyncio.run(kis_source(kis)("005930.KS", date(2026, 9, 7), THURSDAY))
+    assert publication == Publication([TradeRow(THURSDAY, 1, 4)], [])
+    assert kis.calls == [(KIS_SHORT_PATH, KIS_SHORT_TR, {
+        "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": "005930",
+        "FID_INPUT_DATE_1": "20260907", "FID_INPUT_DATE_2": "20261008"})]
+
+
+def test_kis_service_pending_outage_zero_denominator_and_no_balance_source():
+    clock = [0.0]
+    rows = {"output2": [kis_row(WEDNESDAY, 2_000, 100_000), kis_row(THURSDAY, 0, 0)]}
+    kis = FakeKis(rows, rows, KisError("FHPST04830000: HTTP 500 EGW00201"))
+    service = KrxShortSales(kis_source(kis), balances=False, name="kis", clock=lambda: clock[0])
+
+    async def run():
+        # before 20:10 the day's full session is not published: today's point waits, Wednesday is latest
+        early = await service.get("005930.KS", now=at(THURSDAY, 19, 0))
+        assert early["source"] == "kis"
+        assert early["trade"]["history"][-1] == {"as_of": "2026-10-08", "ratio_pct": None, "status": "not_published"}
+        assert early["status"] == "not_published"
+        assert early["trade"]["latest"] == {"as_of": "2026-10-07", "ratio_pct": 2.0, "status": "available"}
+        assert early["balance"] == {"status": "source_unavailable", "latest": None, "stale": False}
+        assert kis.calls[0][2]["FID_INPUT_DATE_2"] == "20261007"
+
+        # after 20:10 a zero denominator never draws as 0%; the last good share stays, marked stale
+        late = await service.get("005930.KS", now=at(THURSDAY, 21, 0))
+        assert late["status"] == "zero_denominator"
+        assert late["trade"]["history"][-1]["ratio_pct"] is None
+        assert late["trade"]["latest"]["as_of"] == "2026-10-07" and late["trade"]["stale"] is True
+        clock[0] += 61                          # a published zero denominator is an answer: no retry yet
+        await service.get("005930.KS", now=at(THURSDAY, 21, 1))
+        assert len(kis.calls) == 2
+
+        # a KIS outage keeps the last publication, marked as a source error, and retries soon
+        clock[0] += 15 * 60 + 1                 # the published day's cache ends
+        down = await service.get("005930.KS", now=at(THURSDAY, 21, 5))
+        assert down["status"] == "source_error"
+        assert down["trade"]["latest"]["as_of"] == "2026-10-07" and down["trade"]["stale"] is True
+        assert down["balance"]["status"] == "source_unavailable"
+        assert len(kis.calls) == 3
+
+    asyncio.run(run())

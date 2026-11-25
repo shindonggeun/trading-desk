@@ -30,7 +30,8 @@ commerce-foundry 의 구성을 이 저장소 규모(1인, Python 백엔드 하�
 `/issue-start` · `/pr` 는 `git-ops` 로 포크되며 스킬 frontmatter 에 `claude-haiku-5-5` · low 를 적어 둔다.
 
 - `T0` 은 메인 세션이 직접, `T1` 은 메인 세션 또는 `implementer`, `T2` 이상과 치명적 버그는 `senior-implementer` 에 맡긴다.
-  구현 역할도 검사를 돌리지만 완료 판단은 메인 세션이 같은 명령을 다시 돌려 한다. 쓰기 역할은 한 번에 하나만.
+  구현 역할도 검사를 돌리지만 완료 판단은 메인 세션이 같은 명령을 다시 돌려 한다.
+  파일이 겹치지 않는 조각은 구현 역할을 병렬로 띄울 수 있고, 같은 파일(특히 공유 파일)을 두 쓰기 역할이 동시에 고치지 않는다.
 - 비용 · 쿼터: `max` 는 설계(`architect`)에만 쓴다 — 토큰이 많이 들고 과하게 생각하기 쉽다. `xhigh` 는 검토 · 어려운 구현에만.
   Fable 은 플랜에 따라 사용 크레딧으로 청구될 수 있다(`/model` 피커에 "Requires usage credits").
 - `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` 이 켜져 있으면 frontmatter 의 `model` 은 무시된다. `CLAUDE_CODE_EFFORT_LEVEL` 은 `effort` 를 덮는다.
@@ -40,7 +41,8 @@ commerce-foundry 의 구성을 이 저장소 규모(1인, Python 백엔드 하�
 
 - 하위 에이전트는 대화 기록을 보지 못한다. 경로 · 브랜치 · 이슈 번호 · 검증 결과를 프롬프트에 담는다.
 - 하위 에이전트의 "통과했다" 를 완료 근거로 쓰지 않는다. 검증 명령은 메인 세션이 직접 돌린다.
-- 읽기 전용 검토 역할은 한 메시지에서 병렬로 부른다.
+- 읽기 전용 검토 역할은 한 메시지에서 병렬로 부른다. 독립된 탐색(`explorer`)도 질문마다 하나씩 한 메시지에서 병렬로 띄운다.
+- 무거운 검사(전체 pytest · `npm run build` · Playwright · 백테스트)는 한 번에 하나 — 병렬 구현 역할은 대상 테스트만 돌린다.
 
 ## Codex
 

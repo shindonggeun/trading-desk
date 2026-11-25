@@ -1315,6 +1315,14 @@ h1 .fav-star { font-size: var(--fs-xl); }
 .fut-grid dt { color: var(--muted); font-size: 12px; }
 .fut-grid dd { margin: 0; font-variant-numeric: tabular-nums; }
 .fut-split { margin: 0; }
+/* #1008 콜 · 풋 옵션 투자자별 순매수 — 좁은 화면에서도 세 칸이 넘치지 않게 금액 위 · 계약 아래 */
+.opt { display: grid; gap: 4px; }
+.opt-lean { margin: 0; }
+.opt-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-variant-numeric: tabular-nums; }
+.opt-table caption { text-align: left; caption-side: top; padding-bottom: 2px; }
+.opt-table th, .opt-table td { padding: 3px 6px; text-align: right; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.opt-table th[scope="row"], .opt-table thead th:first-child { text-align: left; width: 22%; }
+.opt-table .opt-qty { display: block; font-size: 11px; }
 @media (max-width: 560px) {
   .fut-grid { grid-template-columns: minmax(0, 1fr); }
 }

@@ -463,6 +463,7 @@ class Paper:
         self.compute_lock = threading.Lock()   # one computation at a time
         self._rates: dict[str, float] | None = None
         self._rates_next = 0.0
+        self._fx_refreshing = False            # #859 a background refetch of rates already held is running
         self._cache: tuple[tuple, dict] | None = None
 
     # settings ----------------------------------------------------------
@@ -493,17 +494,46 @@ class Paper:
     # rates ---------------------------------------------------------------
     def rates(self) -> dict[str, float]:
         """The cached ``KRW=X`` closes, fetched again after ``FX_TTL_SEC`` (``FX_RETRY_SEC`` after a failure:
-        meanwhile the last good ones, or none - the US trades are then skipped as ``no_fx``)."""
+        meanwhile the last good ones, or none - the US trades are then skipped as ``no_fx``).
+
+        #859 with good rates held, a due refetch runs in the background and this answers the held ones at
+        once: Yahoo's ten years of ``KRW=X`` take about a second, which every summary request waited out
+        every six hours. Without any (the first read, or only failures so far) it still waits for them."""
         with self.fx_lock:
             if time.monotonic() >= self._rates_next:
-                try:
-                    self._rates = self.fetch_rates()
-                    self._rates_next = time.monotonic() + FX_TTL_SEC
-                except Exception as exc:  # noqa: BLE001 - a rate failure skips the US trades, nothing else
-                    log.warning("paper: KRW=X rates not fetched (%s)", type(exc).__name__)
-                    self._rates = self._rates or {}
-                    self._rates_next = time.monotonic() + FX_RETRY_SEC
+                if not self._rates:
+                    self._store_rates(self._fetch())
+                elif not self._fx_refreshing:
+                    self._fx_refreshing = True
+                    try:
+                        threading.Thread(target=self._refresh_rates, name="paper-fx", daemon=True).start()
+                    except RuntimeError:           # no thread to be had: the next due read tries again
+                        self._fx_refreshing = False
             return self._rates or {}
+
+    def _fetch(self) -> dict[str, float] | None:
+        try:
+            return self.fetch_rates()
+        except Exception as exc:  # noqa: BLE001 - a rate failure skips the US trades, nothing else
+            log.warning("paper: KRW=X rates not fetched (%s)", type(exc).__name__)
+            return None
+
+    def _store_rates(self, got: dict[str, float] | None) -> None:
+        """Under ``fx_lock``: new rates, or (None) a failure that keeps the last good ones a while longer."""
+        if got is None:
+            self._rates = self._rates or {}
+            self._rates_next = time.monotonic() + FX_RETRY_SEC
+        else:
+            self._rates = got
+            self._rates_next = time.monotonic() + FX_TTL_SEC
+
+    def _refresh_rates(self) -> None:
+        try:
+            got = self._fetch()                # outside the lock: readers keep the held rates meanwhile
+            with self.fx_lock:
+                self._store_rates(got)
+        finally:
+            self._fx_refreshing = False
 
     # the result ------------------------------------------------------------
     def _stamp(self) -> tuple:
@@ -522,13 +552,21 @@ class Paper:
             rows = conn.execute(select(*cols).where(*self._source)).mappings().all()
         return [dict(r) for r in rows]
 
+    def _key(self, now: datetime) -> tuple[tuple, dict, tuple, dict[str, float]]:
+        settings = self.settings()
+        stamp = self._stamp()
+        rates = self.rates()
+        key = (settings["version"], stamp, len(rates), max(rates) if rates else None, _kst_day(now))
+        return key, settings, stamp, rates
+
     def result(self, now: datetime | None = None) -> dict:
         now = now or datetime.now(UTC)
+        key = self._key(now)[0]
+        cached = self._cache
+        if cached and cached[0] == key:        # #859 a hit does not queue behind another request's computation
+            return cached[1]
         with self.compute_lock:
-            settings = self.settings()
-            stamp = self._stamp()
-            rates = self.rates()
-            key = (settings["version"], stamp, len(rates), max(rates) if rates else None, _kst_day(now))
+            key, settings, stamp, rates = self._key(now)
             if self._cache and self._cache[0] == key:
                 return self._cache[1]
             got = simulate(self._runs(), settings, rates, now, self.name_of)

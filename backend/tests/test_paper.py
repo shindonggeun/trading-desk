@@ -389,3 +389,37 @@ def test_a_skipped_trade_has_no_r():
     short = _trade(_sim([_run("s", bias="short", entry=10_000, stop=10_500, target=9_000)], allow_short=False), "s")
     assert short["r"] is None
 
+
+
+def test_a_due_rate_refetch_runs_behind_the_held_rates(tmp_path, monkeypatch):
+    # #859 Yahoo's KRW=X takes about a second: with rates held, readers do not wait it out
+    import threading
+
+    from desk.db import make_engine, migrate
+
+    url = f"sqlite:///{tmp_path / 'p.db'}"
+    migrate(url)
+    engine = make_engine(url)
+    gate, calls = threading.Event(), []
+
+    def fetch():
+        calls.append(1)
+        if len(calls) > 1:
+            assert gate.wait(5)
+            return {"2026-10-01": 1400.0, "2026-10-02": 1410.0}
+        return {"2026-10-01": 1400.0}
+    clock = [1000.0]
+    monkeypatch.setattr(paper.time, "monotonic", lambda: clock[0])
+    desk = paper.Paper(engine, fetch)
+    assert desk.rates() == {"2026-10-01": 1400.0}                    # the first read waits for them
+    clock[0] += paper.FX_TTL_SEC
+    assert desk.rates() == {"2026-10-01": 1400.0}                    # due: the held ones, at once
+    assert desk.summary()["trades"]["closed"] == 0                   # a summary does not wait either
+    assert desk.rates() == {"2026-10-01": 1400.0} and len(calls) == 2   # one refetch in flight, not one each
+    gate.set()
+    for _ in range(200):
+        if not desk._fx_refreshing:
+            break
+        threading.Event().wait(0.01)
+    assert desk.rates() == {"2026-10-01": 1400.0, "2026-10-02": 1410.0} and len(calls) == 2
+    engine.dispose()

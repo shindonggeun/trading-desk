@@ -113,7 +113,13 @@ def test_each_contract_is_read_once_per_five_minutes():
     asyncio.run(ls.get("NVDA"))
     assert len(calls) == 3
     now[0] = longshort.CACHE_TTL_SEC + 1
-    asyncio.run(ls.get("NVDA"))
+
+    async def expired():
+        got = await ls.get("NVDA")             # #859 a quick refresh is waited for (REFRESH_WAIT_SEC)
+        assert got["accounts"] and len(calls) == 6
+        await ls.settled()
+        return got
+    asyncio.run(expired())
     assert len(calls) == 6
 
 
@@ -150,3 +156,60 @@ def test_a_failing_contract_list_is_not_retried_for_every_ticker():
     now[0] = longshort.FAIL_TTL_SEC + 1
     asyncio.run(ls.get("TSLA"))
     assert asked == ["NVDA", "TSLA"]
+
+
+
+def test_past_five_minutes_a_reader_gets_the_last_summary_while_one_refresh_runs():
+    # #859 a board's first poll after the expiry used to wait out Binance in waves of PARALLEL
+    calls: list = []
+    fail: set = set()
+    ls, now = _source(calls=calls, fail=fail)
+
+    async def run():
+        first = await ls.get("NVDA")
+        now[0] = longshort.CACHE_TTL_SEC + 1
+        fail.add("NVDAUSDT")                                   # Binance now fails for it
+        a, b = await asyncio.gather(ls.get("NVDA"), ls.get("NVDA"))
+        await ls.settled()
+        assert a == b == first and len(calls) == 6             # the last good one to both, from one refresh
+        assert await ls.get("NVDA") == first                   # its failure kept: still the last good one
+        assert len(calls) == 6                                 # ... and no retry before FAIL_TTL_SEC
+        now[0] = longshort.CACHE_TTL_SEC + longshort.STALE_MAX_SEC + 1
+        late = await ls.get("NVDA")                            # too old to answer: read now, and it fails
+        assert late["error"] and late["accounts"] is None
+    asyncio.run(run())
+
+
+
+def test_a_slow_refresh_is_not_waited_out():
+    # #859 Binance slower than REFRESH_WAIT_SEC: the last good summary now, the fresh one on a later poll
+    gate = asyncio.Event()
+    calls: list = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) > 3:
+            await gate.wait()
+        path = request.url.path
+        if path.endswith("globalLongShortAccountRatio"):
+            return httpx.Response(200, json=_accounts(last=0.7 if len(calls) > 3 else 0.74))
+        if path.endswith("topLongShortPositionRatio"):
+            return httpx.Response(200, json=_accounts(1, last=0.85))
+        return httpx.Response(200, json=_taker())
+
+    async def resolve(ticker):
+        return CONTRACTS.get(ticker.upper())
+
+    async def run():
+        now = [0.0]
+        ls = LongShort(resolve, httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://b"),
+                       clock=lambda: now[0])
+        first = await ls.get("NVDA")
+        now[0] = longshort.CACHE_TTL_SEC + 1
+        assert await ls.get("NVDA") == first                   # waited REFRESH_WAIT_SEC, then the last one
+        gate.set()
+        await ls.settled()
+        fresh = await ls.get("NVDA")
+        assert fresh != first and fresh["accounts"]["long_pct"] == 70.0
+        await ls.aclose()
+    asyncio.run(run())

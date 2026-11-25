@@ -192,7 +192,9 @@ async def _measure(temp: Path, samples: int, bundles: int, origin_ms: float) -> 
                 initial, _ = await _window(client, bundles)
                 for _ in range(samples):
                     prices._candles.clear()
+                    await longshort.settled()
                     longshort._cache.clear()
+                    longshort._good.clear()         # #859 the last good summaries too: a cold read
                     program_flow._cache.clear()
                     for state in states:
                         previous = calls.copy()

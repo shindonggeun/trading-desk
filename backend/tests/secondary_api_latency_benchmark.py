@@ -150,7 +150,7 @@ async def benchmark(samples: int = 30, bundles: int = 4, fx_ms: float = 50) -> d
         raise ValueError("samples and bundles must be positive, and FX delay finite and non-negative")
     month = datetime.now(market_calendar.KST).strftime("%Y-%m")
     events, reports = _calendar_sources(month)
-    elapsed = {state: {route: [] for route in ROUTES} for state in ("cold", "warm")}
+    elapsed = {state: {route: [] for route in ROUTES} for state in ("cold", "fx_due", "warm")}
     origins = {state: Counter() for state in elapsed}
     calls = Counter()
     simulate = paper.simulate
@@ -187,12 +187,24 @@ async def benchmark(samples: int = 30, bundles: int = 4, fx_ms: float = 50) -> d
                     app.state.paper._rates = None
                     app.state.paper._rates_next = 0.0
                     for state in elapsed:
+                        if state == "fx_due":
+                            # #859 the six-hourly case: rates held but due, the result to recompute
+                            app.state.paper._cache = None
+                            app.state.paper._rates_next = 0.0
                         before = calls.copy()
                         misses = sum(cache.cache_info().misses for cache in caches)
                         window = await _window(client, month, bundles)
+                        if state == "fx_due":
+                            for _ in range(int(fx_ms / 10) + 500):        # the background refetch lands
+                                if not getattr(app.state.paper, "_fx_refreshing", False):
+                                    break
+                                await asyncio.sleep(0.01)
                         delta = calls - before
                         expected = 1 if state == "cold" else 0
-                        if any(delta[key] != expected for key in ("paper_computes", "fx_reads")):
+                        wanted = {"paper_computes": 1 if state != "warm" else 0, "fx_reads": expected}
+                        if state == "fx_due":
+                            wanted["fx_reads"] = 1
+                        if any(delta[key] != value for key, value in wanted.items()):
                             raise RuntimeError(f"wrong paper cache state in {state} window: {dict(delta)}")
                         calendar_misses = sum(cache.cache_info().misses for cache in caches) - misses
                         if bool(calendar_misses) != bool(expected):
@@ -209,6 +221,7 @@ async def benchmark(samples: int = 30, bundles: int = 4, fx_ms: float = 50) -> d
     return {
         "timing": "in-process ASGI elapsed from concurrent dispatch, login excluded",
         "cold": "calendar local caches and paper result/FX invalidated; SQLite pages retained",
+        "fx_due": "paper result invalidated and its held FX rates due (the six-hourly refetch, #859)",
         "warm": "same requests immediately after the cold window",
         "line_watch": "same uncached database reads in both windows",
         "samples_per_state": samples, "bundles_per_window": bundles, "health_probes_per_window": 1,

@@ -7,6 +7,7 @@ import { LongShortBar, LongShortToggle, useLongShort, useLongShortShown } from "
 import { boardBadge, boardBadgeClass, boardReason, quoteSourceShort } from "../korean";
 import { useLivePoll, type LiveSpec } from "../livePoll";
 import LiveBadge from "./LiveBadge";
+import { splitView } from "../changeSplit";
 
 export type BoardTicker = { ticker: string; name?: string };
 
@@ -105,7 +106,9 @@ function sourceText(it: BoardItem): string {
 }
 
 function Tile({ it, name, on, onPick }: { it: BoardItem | undefined; name: string; on: boolean; onPick: () => void }) {
-  const ch = it?.change_pct;
+  // #1002 국장 정규장 뒤 NXT · 시간외 · 저녁 추정: 큰 숫자는 합친 하루, 작은 줄에 정규 · 장외(기준 종가는 툴팁)
+  const sv = splitView(it);
+  const ch = sv ? sv.pct : it?.change_pct;
   const tone = ch == null ? "" : ch > 0 ? "up" : ch < 0 ? "down" : "";
   const badge = it ? boardBadge(it) : "…";
   return (
@@ -118,10 +121,11 @@ function Tile({ it, name, on, onPick }: { it: BoardItem | undefined; name: strin
         {it?.price != null ? price(it.price) : "—"}
         <span className={`small ${tone}`}>{ch != null ? ` ${ch > 0 ? "+" : ""}${ch.toFixed(2)}%` : ""}</span>
       </span>
+      {sv && <span className="qb-split muted small" title={sv.title}>{sv.line}</span>}
       {on && it && boardReason(it) && <span className="qb-reason small">{boardReason(it)}</span>}
       <span className="qb-sub muted small">
-        {it?.close != null && `기준 ${price(it.close)}${it.close_date ? `(${it.close_date.slice(5)})` : ""}`}
-        {it && sourceText(it) && ` · ${sourceText(it)}`}
+        {[it?.close != null && !sv ? `기준 ${price(it.close)}${it.close_date ? `(${it.close_date.slice(5)})` : ""}` : null,
+          it ? sourceText(it) || null : null].filter(Boolean).join(" · ")}
       </span>
     </button>
   );

@@ -8,6 +8,7 @@ import { loadMiniPrefs, MINI_FUTURES, saveMiniPrefs, useMiniItems, type MiniPref
 import { byAsked } from "../ticker";
 import type { BoardItem, DayCallMarket, DayCallToday } from "../types";
 import { usePoll } from "../poll";
+import { splitView } from "../changeSplit";
 
 const QUOTE_MS = 15_000;          // 시세판과 같은 주기
 const FLOW_MS = 60_000;
@@ -17,7 +18,7 @@ const EDIT_SIZE = { width: 420, height: 520 };   // ⚙ 로 종목을 고치는 
 
 type Flow = { foreign: number | null; inst: number | null; provisional: boolean } | null;
 /** 한 종목의 시세 — 시세판(/api/estimates) 또는 코스피200 선물(/api/market/futures/quote) */
-type Quote = { price: number | null; change_pct: number | null; estimate?: boolean; stale?: boolean };
+type Quote = { price: number | null; change_pct: number | null; estimate?: boolean; stale?: boolean; split?: string };
 
 function Mark({ v }: { v: number | null | undefined }) {
   if (v == null || v === 0) return <span aria-hidden="true" className="mini-mark">■</span>;
@@ -42,7 +43,13 @@ function MiniDirection({ market, data, failing }: { market: DayCallMarket; data?
   );
 }
 
-const fromBoard = (it: BoardItem): Quote => ({ price: it.price ?? null, change_pct: it.change_pct ?? null, estimate: it.state === "estimate" });
+// #1002 국장 정규장 뒤 장외: 등락은 합친 하루, 정규 · 장외는 툴팁(작은 창은 한 줄)
+const fromBoard = (it: BoardItem): Quote => {
+  const sv = splitView(it);
+  return { price: it.price ?? null, change_pct: sv ? sv.pct : it.change_pct ?? null, estimate: it.state === "estimate",
+           split: sv ? `${sv.line}
+${sv.title}` : undefined };
+};
 
 /**
  * #582 회사에서 조용히 띄워 두는 작은 창(#/mini · Document PiP) — 고른 종목 시세 · 외인/기관 수급 한 줄 · 오늘 마지막 알림.
@@ -175,7 +182,9 @@ export default function MiniWindow({ pip = false }: { pip?: boolean }) {
             : items.map((it) => {
               const q = quotes[it.ticker];
               return (
-                <li key={it.ticker} className="mini-quote" title={it.ticker === MINI_FUTURES ? `${it.name} · 근월물` : `${it.name} · ${it.ticker}`}>
+                <li key={it.ticker} className="mini-quote"
+                  title={it.ticker === MINI_FUTURES ? `${it.name} · 근월물` : `${it.name} · ${it.ticker}${q?.split ? `
+${q.split}` : ""}`}>
                   <span className="mini-name">{it.name}</span>{" "}
                   <span className="mini-price">{q?.price != null ? price(q.price) : "—"}</span>{" "}
                   <span className={`mini-chg ${tone(q?.change_pct)}`}><Mark v={q?.change_pct} />{signed(q?.change_pct)}</span>

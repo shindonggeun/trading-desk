@@ -1232,6 +1232,8 @@ span.cs-hold-text { color: var(--warn); }
 .qb-unavailable, .qb-wait { color: var(--muted); }
 .qb-price { font-size: var(--fs-l); font-variant-numeric: tabular-nums; }
 .qb-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* #1002 국장 정규장 뒤 장외: "정규 −10.00% · NXT −0.20%" — 좁은 카드에선 두 줄까지 */
+.qb-split { display: block; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .qb-x { position: absolute; top: -6px; right: -6px; width: 22px; height: 22px; padding: 0; border-radius: 50%; line-height: 1;
   background: var(--surface); color: var(--text); border: 1px solid var(--border); }
 /* #433 휴대폰: 보이는 원은 그대로 두고 탭 영역만 36px 로 */

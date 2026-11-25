@@ -14,11 +14,14 @@ last finished bar:
 
 Returns across a gap (the 17:00-18:00 ET break, a weekend, a missing bar) are left out of the samples.
 CME hours: Sunday 18:00 ET to Friday 17:00 ET without the daily 17:00-18:00 break (holidays are
-not modelled - Yahoo then has no new bar to judge).
+not modelled). #674 a last finished bar that ended more than ``STALE_SEC`` ago is not judged: on a
+holiday, after a restart or when Yahoo stops updating, the newest bar Yahoo has can be days old and was
+never judged while current (11-21 07:00 KST an ``nq_drop`` went out on a bar ~2,940 minutes old).
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from statistics import median
 
@@ -37,6 +40,12 @@ VOLUME_MIN_TIMES = 1.5
 FROM_HIGH_PCT = 1.5
 SOURCE_NAMES = {"qqq": "QQQ 실시간", "binance": "추정(바이낸스 QQQ 무기한)", "yahoo": "야후 5분봉"}   # #674
 MIN_SAMPLE = 200                 # fewer 5-minute returns than this: no quantile worth reading
+# #674 Yahoo's NQ=F bars run about ten minutes late (desk.live_bars.YAHOO_LAG): a finished bar that
+# ended longer ago than this is old news, not a move to alarm on
+STALE_SEC = 25 * 60
+
+log = logging.getLogger(__name__)
+_stale_logged: list[datetime] = []      # the stale bar end last logged: one line per bar, not every pass
 
 
 def cme_open(now: datetime) -> bool:
@@ -105,6 +114,12 @@ def judge(bars: list[dict], now: datetime | None = None) -> list[dict]:
     if len(done) < MIN_SAMPLE:
         return []
     last, end = done[-1], _at(done[-1]) + BAR
+    if (now - end).total_seconds() > STALE_SEC:
+        if _stale_logged[-1:] != [end]:
+            _stale_logged[:] = [end]
+            log.info("nq watch: last bar ended %s, %.0f min ago - not judged", end.isoformat(timespec="minutes"),
+                     (now - end).total_seconds() / 60)
+        return []
     out = []
     r5, r15 = _returns(done, 1), _returns(done, 3)
     fired = False

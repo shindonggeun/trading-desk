@@ -9,6 +9,9 @@ the latest values (``snapshot``) and the REST alert timeline.
 
 - ``publish`` is safe from any thread (the alert dispatchers run in worker threads): it hops onto the loop.
 - One ticker's quote goes out at most once a second (the newest wins); KIS ticks and polled quotes share it.
+  #999 the collector's off-hours estimates (source ``binance-estimate``) ride the quote channel in a slot of
+  their own: their own limit and latest value, so a live tick never swallows or replaces an estimate (nor the
+  other way round) and a reconnecting stream gets the latest of both.
 - A stream's queue is bounded; one that falls behind is told ``reset`` and closed, never slows the others.
 - ``degraded()`` names the channels a page should poll again: the subscription is down (``bus_down``), or a
   channel expected to move (a session is open) has been quiet for ``STALE_SEC`` (``stale``).
@@ -26,7 +29,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from . import shared_cache
 
@@ -44,6 +47,16 @@ LISTEN_POLL_SEC = 1.0        # one wait for a message on the subscription (then 
 QUEUE_MAX = 500              # events waiting for one stream; past this it is reset
 RECONNECT_MAX_SEC = 30.0
 LAG_KEEP = 500
+ESTIMATE_SOURCE = "binance-estimate"   # desk.estimate.STREAM_SOURCE: a quote event that is an estimate
+ESTIMATE_SLOT = "|estimate"            # its slot: the ticker and this (no ticker has a "|")
+# a reconnecting stream gets an estimate only this fresh (desk.estimate.SHARED_KEEP_SEC): one kept longer would tell
+# any account that some screen read that ticker off hours, and when (docs/security.md §5.2)
+ESTIMATE_REPLAY_SEC = 27.0
+
+
+def _slot(event: dict) -> str:
+    """A quote event's limit and latest-value slot: the ticker, or (#999) the ticker's estimate."""
+    return event["key"] + ESTIMATE_SLOT if event.get("source") == ESTIMATE_SOURCE else event["key"]
 
 
 class Subscription:
@@ -157,7 +170,7 @@ class Bus:
         if event["kind"] != "quote":
             self._emit(event, relay)
             return
-        key, now = event["key"], self._clock()
+        key, now = _slot(event), self._clock()
         latest = self._latest.get(("quote", key))
         if latest is not None and event["observed_at"] < latest["observed_at"]:
             return
@@ -190,7 +203,7 @@ class Bus:
         self._counts[kind] += 1
         self._last_at[kind] = self._clock()
         if kind != "alert":
-            self._latest[(kind, event["key"])] = event
+            self._latest[(kind, _slot(event) if kind == "quote" else event["key"])] = event
             if len(self._latest) > 2000:                  # never unbounded: drop the oldest quote
                 oldest = next((k for k in self._latest if k[0] == "quote"), None)
                 if oldest is not None:
@@ -198,8 +211,9 @@ class Bus:
         with contextlib.suppress(ValueError, TypeError):
             observed = datetime.fromisoformat(event["observed_at"]).timestamp()
             self._lag[kind].append(max(0.0, time.time() - observed))
-            # #690 how old the source's own stamp was when the desk saw it (only sources that stamp it)
-            if event.get("source_at"):
+            # #690 how old the source's own stamp was when the desk saw it (only sources that stamp it; #999 not an
+            # estimate's - the age of the Binance mark it used is not a quote source's delay)
+            if event.get("source_at") and event.get("source") != ESTIMATE_SOURCE:
                 source = datetime.fromisoformat(event["source_at"])
                 source = source if source.tzinfo else source.replace(tzinfo=UTC)
                 self._source_lag[kind].append(max(0.0, observed - source.timestamp()))
@@ -282,8 +296,22 @@ class Bus:
         self._subs.discard(sub)
 
     def snapshot(self, sub: Subscription) -> list[dict]:
-        """The latest event of every key the stream asked for (alerts are not replayed: REST timeline)."""
-        return [e for (kind, _key), e in list(self._latest.items()) if kind != "alert" and sub.wants(e)]
+        """The latest event of every key the stream asked for (alerts are not replayed: REST timeline; #999 an
+        estimate only within ESTIMATE_REPLAY_SEC)."""
+        oldest = (datetime.now(UTC) - timedelta(seconds=ESTIMATE_REPLAY_SEC)).isoformat(timespec="milliseconds")
+        latest = list(self._latest.items())
+
+        def replayed(kind: str, key: str, event: dict) -> bool:
+            if kind == "alert" or not sub.wants(event):
+                return False
+            if not key.endswith(ESTIMATE_SLOT):
+                return True
+            # an estimate older than the ticker's live quote is over (the market opened): a page must not put it
+            # on a live row - nor one kept past the shared estimate's life
+            live = self._latest.get(("quote", event["key"]))
+            return event["observed_at"] >= oldest and (live is None or live["observed_at"] <= event["observed_at"])
+
+        return [e for (kind, key), e in latest if replayed(kind, key, e)]
 
     def degraded(self, sub: Subscription | None = None) -> tuple[list[str], str | None]:
         """The channels a page should poll again, and why (``bus_down`` before ``stale``)."""
@@ -291,8 +319,11 @@ class Bus:
         if self._remote_required and self._bus_down:
             out, reason = list(REMOTE_KINDS), "bus_down"
         now = self._clock()
+        # a ticker's live quote or (#999) its estimate keeps it fresh: off hours the estimate is what moves
         if sub is not None and "quote" in sub.channels and any(
-                now - self._quote_sent.get(ticker, -math.inf) > QUOTE_STALE_SEC for ticker in sub.tickers):
+                now - max(self._quote_sent.get(ticker, -math.inf),
+                          self._quote_sent.get(ticker + ESTIMATE_SLOT, -math.inf)) > QUOTE_STALE_SEC
+                for ticker in sub.tickers):
             out.append("quote")
             reason = reason or "stale"
         for kind, live in self._expect.items():

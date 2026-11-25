@@ -50,21 +50,23 @@ import math
 import re
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as clock_time
 from zoneinfo import ZoneInfo
 
 import httpx
 
-from . import market_calendar, pools
+from . import demand, market_calendar, pools, shared_cache
 from .single_flight import Flights, KeyLocks
 from .ttl_cache import TTLCache
 
 log = logging.getLogger(__name__)
 
 BINANCE_URL = "https://fapi.binance.com"
-ESTIMATE_TTL_SEC = 15.0
+# #999 under the collector's period (desk.demand.EVERY["estimate"]): one process (no collector) answers a 15 s
+# board poll with a fresh estimate, not one up to 15 s old; a failure is kept as long
+ESTIMATE_TTL_SEC = 8.0
 CONTRACTS_TTL_SEC = 24 * 3600.0
 CACHE_MAX = 256
 
@@ -100,6 +102,12 @@ MINUTE_LIMIT = 1500      # #674 markPriceKlines' page at 1 minute
 MINUTE_PAGES = 8         # eight days of minutes at the first read
 MARKS_TTL_SEC = 5.0      # one premiumIndex call returns every contract's mark
 MIN_FRACTION = 0.01      # a leveraged estimate floors at 1% of the close (the fund cannot go negative)
+# #999 the collector's estimates (desk.demand, the "estimate" namespace): computed every period for the tickers
+# a screen reads off hours, shared with the api through Redis and pushed on the market stream's quote channel
+SHARED_NS = "estimate"
+SHARED_KEEP_SEC = 3 * demand.EVERY[SHARED_NS]   # a shared estimate outlives two missed periods, not more
+COLLECT_MARKS_SEC = 8.0  # the collector reads premiumIndex at most once per period (all its tickers share it)
+STREAM_SOURCE = "binance-estimate"   # the quote message's source (= /api/estimates quote_source)
 
 
 @dataclass(frozen=True)
@@ -421,6 +429,41 @@ class LastClose:
     multiple: float = 1.0
 
 
+_ESTIMATE_FIELDS = {f.name: f for f in fields(Estimate)}
+_NUMBERS = ("estimate", "change_pct", "last_close", "contract_price", "contract_price_at_close", "multiple")
+_OPTIONAL_NUMBERS = ("anchor_price", "contract_move_pct")
+_METHODS = ("binance_perp_mark", "proxy", "leveraged")
+_CONTRACT = re.compile(r"^[A-Z0-9]{1,30}$")
+_TICKER = re.compile(r"^[-A-Z0-9.^=]{1,20}$")     # desk.api.resolve_ticker's characters
+
+
+def _finite(n: object) -> bool:
+    return not isinstance(n, bool) and isinstance(n, int | float) and math.isfinite(n)
+
+
+def shared_estimate(ticker: str, value: object) -> Estimate | None:
+    """#999 the collector's shared estimate of ``ticker`` (Estimate.to_dict), or None when it is not one: another
+    ticker's, a field missing or of the wrong kind, a figure not finite, or not a closed market's."""
+    if not isinstance(value, dict) or set(value) != set(_ESTIMATE_FIELDS) or value.get("ticker") != ticker:
+        return None
+    if not all(_finite(value[k]) for k in _NUMBERS) or value["estimate"] <= 0 or not all(
+            value[k] is None or _finite(value[k]) for k in _OPTIONAL_NUMBERS):
+        return None
+    if (value["market_state"] != "closed" or value["supported"] is not True or value["method"] not in _METHODS
+            or value["anchor_source"] not in ("close", "nxt")
+            or not isinstance(value["contract"], str) or not _CONTRACT.match(value["contract"])
+            or not (value["basis"] is None or (isinstance(value["basis"], str) and _TICKER.match(value["basis"])))
+            or not all(isinstance(value[k], str) and len(value[k]) <= 40
+                       for k in ("last_close_date", "close_at", "fetched_at"))
+            or not (value["anchor_at"] is None or (isinstance(value["anchor_at"], str)
+                                                   and len(value["anchor_at"]) <= 40))):
+        return None
+    try:
+        return Estimate(**value)
+    except TypeError:
+        return None
+
+
 class BinanceEstimator:
     def __init__(self, http: httpx.AsyncClient | None = None, daily_closes: DailyCloses = yahoo_daily_closes,
                  now: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -446,7 +489,8 @@ class BinanceEstimator:
         self._cache: TTLCache[str, object] = TTLCache(CACHE_MAX, ESTIMATE_TTL_SEC, clock=lambda: self._clock())
         self._flights = Flights()          # #858 one computation per key at a time (the board and the bars ask together)
         self._anchors: dict[tuple[str, int], float] = {}
-        self._marks: tuple[float, dict[str, float]] = (-MARKS_TTL_SEC, {})
+        self._marks: tuple[float, dict[str, float]] = (-math.inf, {})
+        self._mark_times: dict[str, int] = {}
         self._marks_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
@@ -458,15 +502,43 @@ class BinanceEstimator:
             raise RuntimeError(f"Binance {path} {r.status_code}")
         return r.json()
 
-    async def contract_for(self, ticker: str) -> str | None:
-        """The Binance perpetual tracking this Yahoo ticker, or None."""
-        ticker = ticker.upper()
+    @staticmethod
+    def _fixed_contract(ticker: str) -> str | None | bool:
+        """A contract the tables name (Korean, commodity), None for none, True for a US name (Binance's list)."""
         if ticker.endswith((".KS", ".KQ")):
             return KR_CONTRACTS.get(ticker[:-3])
         if ticker in COMMODITY_CONTRACTS:
             return COMMODITY_CONTRACTS[ticker]
         if ticker.startswith("^") or "=" in ticker:
             return None
+        return True
+
+    def known_contract(self, ticker: str) -> bool:
+        """#999 ``resolve`` from what is already read, no call: whether the ticker (or its proxy, or a leveraged
+        ETF's base) has a contract by the tables and the contract list last read - none read yet, US names say no.
+        For the market stream's loop, which must not wait on Binance between its session checks."""
+        from .related import LEVERAGED
+
+        def own(t: str) -> bool:
+            fixed = self._fixed_contract(t)
+            return t.replace("-", "").replace(".", "") in self._us if fixed is True else bool(fixed)
+
+        ticker = ticker.upper()
+        if own(ticker):
+            return True
+        if (proxy := PROXIES.get(ticker)) is not None:
+            return own(proxy)
+        if (lever := LEVERAGED.get(ticker)) is not None:
+            base = lever[0]
+            return own(base) or (base in PROXIES and own(PROXIES[base]))
+        return False
+
+    async def contract_for(self, ticker: str) -> str | None:
+        """The Binance perpetual tracking this Yahoo ticker, or None."""
+        ticker = ticker.upper()
+        fixed = self._fixed_contract(ticker)
+        if fixed is not True:
+            return fixed or None
         async with self._contracts_lock:
             if self._clock() - self._us_loaded >= CONTRACTS_TTL_SEC:
                 info = await self._get("/fapi/v1/exchangeInfo")
@@ -496,13 +568,16 @@ class BinanceEstimator:
                    and any(d == local.date() for d, _ in bars))
         return day, close, session.close_moment(day), is_open
 
-    async def _mark_now(self, contract: str) -> float:
+    async def _mark_now(self, contract: str, max_age: float = MARKS_TTL_SEC) -> float:
         """The contract's mark price now. All marks come in one call (no symbol) and are shared
-        for a few seconds, so a board of 30 tickers costs Binance one request, not thirty."""
+        for a few seconds (``max_age``), so a board of 30 tickers costs Binance one request, not thirty."""
         async with self._marks_lock:
-            if self._clock() - self._marks[0] >= MARKS_TTL_SEC:
+            if self._clock() - self._marks[0] >= max_age:
                 rows = await self._get("/fapi/v1/premiumIndex")
                 self._marks = (self._clock(), {r["symbol"]: float(r["markPrice"]) for r in rows if "markPrice" in r})
+                # #999 Binance's own stamp of each mark (ms), the stream message's source_at
+                self._mark_times = {r["symbol"]: r["time"] for r in rows
+                                    if isinstance(r.get("time"), int) and not isinstance(r.get("time"), bool)}
         mark = self._marks[1].get(contract)
         if mark is None:
             raise ValueError(f"Binance has no mark price for {contract}")
@@ -538,12 +613,22 @@ class BinanceEstimator:
     async def estimate(self, ticker: str) -> Estimate | None:
         """None when Binance has no contract for the ticker. A failure is remembered for the
         cache window too, so a page polling a broken ticker does not hammer Binance/Yahoo.
-        #858: askers of one ticker at once share one computation."""
+        #858: askers of one ticker at once share one computation.
+        #999 the api of split roles takes the collector's estimate (desk.demand) when there is one, and marks the
+        ticker read on every call that gives a closed market's estimate - a hit too, so that the collector keeps
+        computing it (no contract, or the market open: nothing for it to collect)."""
         ticker = ticker.upper()
+        if demand.enabled():
+            hit = await shared_cache.aget(SHARED_NS, ticker)
+            if hit is not None and (shared := shared_estimate(ticker, hit[0])) is not None:
+                demand.want(SHARED_NS, ticker)
+                return shared
         found, value = self._cached(self._cache.entry(ticker))      # its value may be None: no contract
-        if found:
-            return value  # type: ignore[return-value]
-        return await self._flights.run(ticker, lambda: self._estimate(ticker))
+        if not found:
+            value = await self._flights.run(ticker, lambda: self._estimate(ticker))
+        if value is not None and value.market_state == "closed":     # only a closed market's estimate is collected
+            demand.want(SHARED_NS, ticker)
+        return value  # type: ignore[return-value]
 
     async def last_close(self, ticker: str) -> LastClose | Estimate | None:
         """#858 the last regular close without the contract's marks (no Binance call): a cached estimate
@@ -575,6 +660,25 @@ class BinanceEstimator:
         finished = [(d, c) for d, c in bars if KRX.close_moment(d) <= now]
         today_close = close if close_date == today.isoformat() else None
         return change_split(price, finished, today, session, source, at, today_close)
+
+    async def collect(self, ticker: str) -> tuple[Estimate, str | None] | None:
+        """#999 the collector's ``estimate`` handler (desk.demand.serve): the ticker's estimate computed now with
+        marks at most COLLECT_MARKS_SEC old (one premiumIndex call per period for every ticker), shared for the
+        api while it is a closed market's estimate. (estimate, Binance's stamp of the mark as ISO UTC) then, else
+        None - no contract, the market open or NXT trading (the live quote or the NXT trade is the price). Never
+        reads the shared tier (its own value back); a failure propagates and demand.serve backs the ticker off."""
+        ticker = ticker.upper()
+        if not _TICKER.match(ticker):
+            return None                    # the wanted set is the api's, sealed - yet only a ticker is looked up
+        used: dict[str, int] = {}
+        result = await self._flights.run(("collect", ticker),
+                                         lambda: self._compute(ticker, marks_age=COLLECT_MARKS_SEC, stamps=used))
+        self._remember(ticker, result)
+        if result is None or result.market_state != "closed":
+            return None
+        await shared_cache.aput(SHARED_NS, ticker, result.to_dict(), SHARED_KEEP_SEC)
+        stamp = used.get(result.contract)       # the mark this estimate used (another pass may have read newer)
+        return result, (_iso(datetime.fromtimestamp(stamp / 1000, UTC)) if stamp else None)
 
     async def _estimate(self, ticker: str) -> Estimate | None:
         try:
@@ -632,7 +736,8 @@ class BinanceEstimator:
             return (contract, "leveraged", base, float(multiple)) if contract else None
         return None
 
-    async def _compute(self, ticker: str) -> Estimate | None:
+    async def _compute(self, ticker: str, marks_age: float = MARKS_TTL_SEC,
+                       stamps: dict[str, int] | None = None) -> Estimate | None:
         found = await self.resolve(ticker)
         if found is None:
             return None
@@ -641,7 +746,9 @@ class BinanceEstimator:
         session = session_of(ticker)
         day, close, close_at, is_open = await asyncio.to_thread(self._anchor_close, ticker, session, now)
         anchor = await self._mark_at(contract, close_at)
-        mark = await self._mark_now(contract)
+        mark = await self._mark_now(contract, marks_age)
+        if stamps is not None and (stamp := self._mark_times.get(contract)) is not None:
+            stamps[contract] = stamp         # read with the mark: no await between them
         anchor_price, anchor_at, at_anchor, source, nxt_open = await self._anchor(
             ticker, contract, method, close, close_at, anchor, is_open, now)
         move = multiple * (mark / at_anchor - 1)

@@ -37,19 +37,29 @@ SSE 형식 그대로다: `event:` 가 종류, `data:` 가 JSON 한 줄, 데이�
 | `kind` | `quote` · `flow` · `futures` · `alert` (= `event:`) |
 | `key` | 채널 안의 대상. 아래 표 |
 | `event_id` | 이벤트 하나의 ID. 같은 ID 는 한 번만 반영한다(재접속 스냅숏과 겹칠 수 있다) |
-| `source` | 원천: `kis` · `toss` · `yahoo` · `kis_futures` · `toss_investors` · `kis_spot_investors` · `desk`(알림) |
-| `source_at` | 원천이 붙인 시각(ISO, 없으면 `null`). 지금은 수급의 `source_updated_at` 만 — 한투 틱 · 토스 · 야후 시세는 `null` |
+| `source` | 원천: `kis` · `toss` · `yahoo` · `binance-estimate`(장외 추정, #999) · `kis_futures` · `toss_investors` · `kis_spot_investors` · `desk`(알림) |
+| `source_at` | 원천이 붙인 시각(ISO, 없으면 `null`). 수급의 `source_updated_at`, 장외 추정의 바이낸스 mark 시각(`premiumIndex` 의 `time`) — 한투 틱 · 토스 · 야후 시세는 `null` |
 | `observed_at` | 데스크가 받은(확인한) 시각(ISO UTC, 밀리초). 화면 지연 계측의 기준 |
 | `payload` | 아래 표 — 같은 값의 REST 응답 모양 그대로 |
 
 | kind | key | payload | 같은 REST |
 |------|-----|---------|-----------|
 | `quote` | 종목(`AAPL`, `005930.KS`) | `{ticker, price, currency, source, fetched_at}` | `GET /api/quote?ticker=` |
+| `quote`(`source: binance-estimate`) | 종목 | 장외 추정 — `/api/estimates` 의 추정 한 줄 `{ticker, state: "estimate", price, change_pct, close, close_date, session, source: {kind, contract, basis, multiple}, quote_source, fetched_at}` 에 기준 종가 시각 `close_at`(ISO UTC) | `GET /api/estimates?tickers=` |
 | `flow` | `KOSPI:1d` 처럼 `시장:간격` | 그 시장 · 간격의 응답, `records` 최근 20개. **`premarket` · `program` 은 없다** — 장 전 · 프로그램매매 칸은 REST 그대로 | `GET /api/market/flow?market=&interval=&count=20` |
 | `futures` | `view` | 선물 화면 응답 | `GET /api/market/futures` |
 | `alert` | 알림 `kind`(`flow_turn` · `flow_shift` · `flow_warn` · `nq_alert` · `holding_alert` · `sector_mover`) | 알림 한 건(`/api/alerts/today` 의 `items[]` 한 줄 모양, `tone` 포함) | `GET /api/alerts/today` |
 
 - 같은 `quote` 키는 **초당 최대 1번**(그 사이 값은 마지막 것으로 합친다). 한투 실시간 틱과 토스 · 야후 폴링 시세가 같은 채널로 온다.
+- **장외 추정(#999):** collector 가 화면이 읽는 장외 종목의 바이낸스 추정가를 약 10초마다 계산해 `quote` 채널로 보낸다(`premiumIndex` 는 주기당 1번).
+  - 추정은 실시간 시세와 **다른 칸**이다. 초당 1번 묶기와 재접속 스냅숏의 마지막 값을 따로 두므로, 한 종목의 실시간 마지막 값과 추정 마지막 값이 둘 다 온다. 추정이 들어오는 종목은 시세 낡음에도 걸리지 않는다.
+  - 스냅숏은 27초 안에 계산된 추정만 다시 보낸다. 더 오래 남기면 어느 계정이든 "다른 화면이 그 종목을 장외에 언제 읽었는지" 알 수 있다. 같은 종목의 실시간 시세가 추정보다 새것이면(장이 열림) 그 추정은 다시 보내지 않는다.
+  - 화면은 이벤트 `source` 가 `binance-estimate` 인 메시지를 실시간 시세로 다루지 않는다(정규장 칸에 얹지 않는다). payload 의 `source` 는 문자열이 아니라 `{kind, contract, basis, multiple}` 객체다.
+  - 수요 표시는 이미 읽어 둔 계약 목록만 본다(스트림 루프에서 바이낸스를 부르지 않는다). 목록을 아직 읽지 않았으면 미국 종목은 시세판 REST 읽기가 표시한다.
+  - 추정기가 정규장(`open`)이나 NXT 거래 중(`nxt`)으로 보는 동안은 보내지 않는다. 그때는 실시간 시세나 NXT 체결이 가격이다.
+  - 미국 프리 · 애프터 · 오버나이트에는 한투 · 토스 장외 체결로 시세판 줄이 `live` 여도 추정이 온다(collector 는 그 체결을 모른다). 화면은 추정을 `state` 가 `estimate`(또는 `unavailable`)인 줄에만 얹고, `live` 줄을 추정으로 바꾸지 않는다. 장 마감 직후의 실시간 → 추정 전환은 REST 대조로 한다.
+  - 수요: `quote` 채널의 `tickers` 중 시계상 장외이고 계약(자기 · 프록시 · 레버리지 기초)이 있는 종목은 연결 시작과 heartbeat 마다 추정 수요로 표시된다(`desk/demand.py`, 30초 유지). 그래서 REST 폴링을 쉬어도 수집이 이어진다. `/api/estimates` 의 추정 읽기도 같은 수요를 표시한다.
+  - 역할 분리 + Redis 에서만 온다. 한 프로세스(`all`) · Redis 없음에서는 collector 수집이 없으므로 화면은 REST 폴링으로 추정을 읽는다.
 - `flow` · `futures` 는 collector 의 1분 스냅숏(`DESK_FUTURES_SNAPSHOT_MIN`)이 성공한 직후에 온다. 실패한 읽기는 오지 않는다.
   스냅숏은 `1d` 만 읽는다 — 다른 간격(`1w` …)은 누가 그 간격을 새로 읽었을 때만 오므로 화면은 그 키를 폴링으로 둔다.
 - `alert` 는 DB 에 기록된 뒤에 온다. 보유 종목 알림(`holding_alert`)은 소유자 세션에만 간다. 놓친 알림은 `GET /api/alerts/today` 로 다시 읽는다(스트림은 재생하지 않는다).

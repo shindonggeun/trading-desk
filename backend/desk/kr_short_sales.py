@@ -2,11 +2,14 @@
 
 The public statistics pages describe the measures, but do not serve as an
 automated data source. A caller must supply a source they are authorized to use.
+#979: the trade share comes from KIS' daily short-sale trend (``kis_source``) on the desk's own
+KIS key; no connected source publishes the net balance, so that series answers ``source_unavailable``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import re
 import time
@@ -17,6 +20,7 @@ from datetime import date, datetime
 from datetime import time as wall_time
 
 from . import market_calendar
+from .futures_flow import _short as kis_reason
 
 _TICKER = re.compile(r"[0-9]{6}\.(KS|KQ)")
 _MARKETS = {"KS": "KOSPI", "KQ": "KOSDAQ"}
@@ -25,6 +29,15 @@ _HISTORY_DAYS = 20
 _CACHE_LIMIT = 256
 _SUCCESS_TTL = 15 * 60
 _RETRY_TTL = 60
+# KIS [국내주식-134] 국내주식 공매도 일별추이: short value and the day's whole value on one row (#979)
+KIS_SHORT_PATH = "/uapi/domestic-stock/v1/quotations/daily-short-sale"
+KIS_SHORT_TR = "FHPST04830000"
+# Our share and KIS' own (ssts_tr_pbmn_rlim) must agree within this factor, else the units differ
+_KIS_RATIO_FACTOR = 10.0
+# Distinct tickers each miss the cache: at most this many KIS calls at once, under the app key's rate
+KIS_PARALLEL = 2
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -59,6 +72,76 @@ class UnsupportedTicker(ValueError):
 
 
 Source = Callable[[str, date, date], Awaitable[Publication]]
+
+
+def _kis_int(value) -> int | None:
+    text = str(value if value is not None else "").strip()
+    return int(text) if re.fullmatch(r"[0-9]+", text) else None
+
+
+def _kis_float(value) -> float | None:
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def parse_kis_trades(body: dict) -> list[TradeRow]:
+    """KIS ``output2`` rows: ``ssts_tr_pbmn`` over ``acml_tr_pbmn`` (both won) per ``stck_bsop_date``.
+
+    A row whose share disagrees with KIS' own ``ssts_tr_pbmn_rlim`` by an order of magnitude keeps
+    its date but no values (``no_data``) - a unit change must not draw a wrong share.
+    """
+    rows = body.get("output2")
+    if not isinstance(rows, list):
+        raise TypeError("KIS short sales: no output2 list")
+    trades: dict[date, TradeRow] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            day = datetime.strptime(str(row.get("stck_bsop_date") or ""), "%Y%m%d").date()
+        except ValueError:
+            continue
+        short, total = _kis_int(row.get("ssts_tr_pbmn")), _kis_int(row.get("acml_tr_pbmn"))
+        quoted = _kis_float(row.get("ssts_tr_pbmn_rlim"))
+        if short and total:
+            # Without KIS' own share to agree with, a positive share is unverified (fails closed)
+            ours = short / total * 100
+            if quoted is None or (quoted <= 0 and ours >= 0.005) or (
+                    quoted > 0 and not 1 / _KIS_RATIO_FACTOR <= ours / quoted <= _KIS_RATIO_FACTOR):
+                log.warning("KIS short sales %s: share %.4f%% vs KIS %s%%, dropped", day, ours, quoted)
+                short = total = None
+        kept = trades.get(day)
+        if kept is None or kept.short_value_krw is None:
+            trades[day] = TradeRow(day, short, total)
+    return list(trades.values())
+
+
+def kis_source(rest) -> Source:
+    """``rest`` is desk.futures_flow.KisRest (keys never leave it; its errors carry codes only).
+
+    The KRX market code ``J``; one call covers the 20-session window (about 28 days).
+    """
+    gate = asyncio.Semaphore(KIS_PARALLEL)
+
+    async def source(ticker: str, start: date, end: date) -> Publication:
+        async with gate:
+            body = await rest.get(KIS_SHORT_PATH, KIS_SHORT_TR, {
+                "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker[:6],
+                "FID_INPUT_DATE_1": start.strftime("%Y%m%d"), "FID_INPUT_DATE_2": end.strftime("%Y%m%d")})
+        trades = parse_kis_trades(body)
+        if trades and min(row.as_of for row in trades) > start:
+            # KIS caps the rows per call (no paging here): older history points then show no data
+            log.info("KIS short sales %s: rows from %s, window from %s", ticker, min(row.as_of for row in trades), start)
+        return Publication(trades, [])
+    return source
+
+
+def connect(rest) -> KrxShortSales:
+    """#979 the desk's service: trade shares from KIS when its client exists; no net-balance source."""
+    return KrxShortSales(kis_source(rest) if rest is not None else None, balances=False, name="kis")
 
 
 def is_kr_ticker(ticker: str) -> bool:
@@ -119,8 +202,11 @@ class _Cached:
 class KrxShortSales:
     """Group reads by the most recent completed publication session and keep the last good data on error."""
 
-    def __init__(self, source: Source | None = None, *, clock: Callable[[], float] = time.monotonic):
+    def __init__(self, source: Source | None = None, *, clock: Callable[[], float] = time.monotonic,
+                 balances: bool = True, name: str | None = None):
         self._source = source
+        self._balances = balances      # False: the source publishes no net balance (#979, KIS)
+        self.name = name if source is not None else None
         self._clock = clock
         self._cache: OrderedDict[str, _Cached] = OrderedDict()
         # Keep the number of locks bounded even after many different ticker requests.
@@ -164,11 +250,11 @@ class KrxShortSales:
             available = [_trade_point(row) for _, row in sorted(data.trades.items())]
             trade = _series(trade_status, available)
         balance_points = [_balance_point(row) for _, row in sorted(data.balances.items())]
-        balance_status = "source_error" if data.balance_error else (
+        balance_status = "source_unavailable" if not self._balances else "source_error" if data.balance_error else (
             balance_points[-1]["status"] if balance_points else "no_data"
         )
         return {
-            "ticker": ticker, "market": market, "status": trade_status,
+            "ticker": ticker, "market": market, "status": trade_status, "source": self.name,
             "trade": {**trade, "history": history}, "balance": _series(balance_status, balance_points),
         }
 
@@ -182,7 +268,9 @@ class KrxShortSales:
             result = await source(ticker, min(days), session)
         except UnsupportedTicker:
             data = _Cached(session, self._clock() + _SUCCESS_TTL, {}, {}, unsupported=True)
-        except Exception:  # noqa: BLE001 - source implementations can fail; preserve the last good publication
+        except Exception as exc:  # noqa: BLE001 - source implementations can fail; preserve the last good publication
+            # KisError text carries codes only; anything else (an httpx header error may quote the key) by type
+            log.warning("kr short sales for %s failed: %s", ticker, kis_reason(exc))
             data = self._updated(session, days, Publication(None, None), old)
         else:
             data = self._updated(session, days, result, old)
@@ -207,12 +295,8 @@ class KrxShortSales:
         ttl = _RETRY_TTL if retry else _SUCCESS_TTL
         return _Cached(session, self._clock() + ttl, trades, balances, trade_error, balance_error)
 
-    @staticmethod
-    def _empty(ticker: str, market: str | None, status: str) -> dict:
+    def _empty(self, ticker: str, market: str | None, status: str) -> dict:
         return {
-            "ticker": ticker, "market": market, "status": status,
+            "ticker": ticker, "market": market, "status": status, "source": self.name,
             "trade": {**_series(status, []), "history": []}, "balance": _series(status, []),
         }
-
-
-KRX_SHORT_SALES = KrxShortSales()

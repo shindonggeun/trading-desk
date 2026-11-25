@@ -444,7 +444,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                owner_resources: OwnerResources | None = None,
                options_provider: options_detail.OptionSource | None = None,
                market_outlook_service: market_outlook.MarketOutlook | None = None,
-               funding_history: binance_funding.FundingHistory | None = None) -> FastAPI:
+               funding_history: binance_funding.FundingHistory | None = None,
+               short_sales: kr_short_sales.KrxShortSales | None = None) -> FastAPI:
     settings = settings or load()
     log_setup.configure(settings.log_level)     # #676 the desk.* INFO lines reach the container log
     if settings.role in ("all", "api"):
@@ -753,6 +754,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # #676 today's spot investors from KIS first, on the same client (one token)
     if isinstance(flow, MarketFlow) and flow.kis is None and getattr(futures, "rest", None) is not None:
         flow.kis = futures.rest
+    # #979 domestic short-sale shares from KIS' daily trend, on the same client (one token); KIS has no
+    # net balance, so that series says source_unavailable. No KIS client: the whole card says so.
+    short_sales = short_sales or kr_short_sales.connect(getattr(futures, "rest", None))
 
     async def _futures_note() -> str | None:
         return futures_note(await futures.get())
@@ -3947,7 +3951,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         if kr_short_sales.is_kr_ticker(ticker):
-            domestic = await kr_short_sales.KRX_SHORT_SALES.get(ticker)
+            domestic = await short_sales.get(ticker)
             status = domestic["status"]
             reason = status if status in {"source_unavailable", "unsupported"} else None
             body = positioning.blank(ticker, supported=status != "unsupported", reason=reason)

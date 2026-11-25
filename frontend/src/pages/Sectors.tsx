@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { boardBadge } from "../korean";
+import { splitView } from "../changeSplit";
 import { Spark } from "../components/FavoritesPanel";
 import FavoriteStar from "../components/FavoriteStar";
 import InstrumentSearch, { type Picked } from "../components/InstrumentSearch";
@@ -98,7 +99,8 @@ function TickerSheet({ ticker, name, item, p, onClose }: {
     }
   }
 
-  const ch = item?.change_pct;
+  const sv = splitView(item);   // #1002 합친 하루 + 정규 · 장외
+  const ch = sv ? sv.pct : item?.change_pct;
   return (
     <div className="sheet-backdrop" onClick={onClose}>
       <div className="sheet" role="dialog" aria-modal="true" aria-label={`${name} 요약`} tabIndex={-1} ref={panel}
@@ -113,6 +115,7 @@ function TickerSheet({ ticker, name, item, p, onClose }: {
                 {ch != null ? `${ch > 0 ? "+" : ""}${ch.toFixed(2)}%` : ""}
               </span>
               {item?.state === "estimate" && <span className="qb-badge qb-estimate">추정</span>}
+              {sv && <div className="qb-split muted small" title={sv.title}>{sv.line}</div>}
             </div>
           </div>
           <span className="sheet-head-tools">
@@ -367,7 +370,8 @@ export default function Sectors() {
           ) : (
             <div className="qb-grid sector-grid">
               {rows.map((r) => {
-                const ch = r.it?.change_pct;
+                const sv = splitView(r.it);
+                const ch = sv ? sv.pct : r.it?.change_pct;
                 const tone = ch == null ? "" : ch > 0 ? "up" : ch < 0 ? "down" : "";
                 const name = r.name ?? r.ticker;
                 return (
@@ -383,6 +387,7 @@ export default function Sectors() {
                       {price(r.it?.price ?? null)}
                       <span className={`small ${tone}`}>{ch != null ? ` ${ch > 0 ? "+" : ""}${ch.toFixed(2)}%` : ""}</span>
                     </span>
+                    {sv && <span className="qb-split muted small" title={sv.title}>{sv.line}</span>}
                     <Spark ticker={r.ticker} tone={tone} order={r.i} />
                     <span className="sector-badges">
                       {positioningBadges(r.p).map((b) => <span key={b.text} className={`sector-badge ${b.tone}`}>{b.text}</span>)}

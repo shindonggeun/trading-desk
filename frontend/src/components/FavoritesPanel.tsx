@@ -43,6 +43,7 @@ import StockProfileCard from "./StockProfileCard";
 import { fundBadgeText, fundHref, useFundChanges } from "../fundBadges";
 import type { FundChangeItem } from "../types";
 import { usePoll } from "../poll";
+import { splitView } from "../changeSplit";
 
 const POLL_MS = 15_000;      // 시세판과 같은 주기
 const SPARK_MS = 120_000;    // 작은 차트는 2분마다
@@ -135,7 +136,9 @@ function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEar
   ticker: string; name: string; it: BoardItem | undefined; ls: LongShortItem | undefined; first: boolean; last: boolean;
   editing: boolean; order: number; earnIn?: number; onEarn: () => void; onInfo: (ticker: string) => void; funds?: FundChangeItem[];
 }) {
-  const ch = it?.change_pct;
+  // #1002 국장 정규장 뒤 장외: 큰 숫자는 합친 하루, 작은 줄에 정규 · 장외
+  const sv = splitView(it);
+  const ch = sv ? sv.pct : it?.change_pct;
   const tone = ch == null ? "" : ch > 0 ? "up" : ch < 0 ? "down" : "";
   const badge = it ? boardBadge(it) : "…";
   return (
@@ -150,10 +153,11 @@ function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEar
           {it?.price != null ? price(it.price) : "—"}
           <span className={`small ${tone}`}>{ch != null ? ` ${ch > 0 ? "+" : ""}${ch.toFixed(2)}%` : ""}</span>
         </span>
+        {sv && <span className="qb-split muted small" title={sv.title}>{sv.line}</span>}
         <Spark ticker={ticker} tone={tone} order={order} />
         {/* #316 기준 종가는 툴팁으로 — 좁은 카드에서 아래 줄이 잘리지 않게 */}
         <span className="qb-sub muted small"
-          title={it?.close != null ? `등락률 기준 종가 ${price(it.close)}${it.close_date ? `(${it.close_date.slice(5)})` : ""}` : undefined}>
+          title={sv ? sv.title : it?.close != null ? `등락률 기준 종가 ${price(it.close)}${it.close_date ? `(${it.close_date.slice(5)})` : ""}` : undefined}>
           {ticker}
           {it?.quote_source && ` · ${quoteSourceShort(it.quote_source)}`}
         </span>

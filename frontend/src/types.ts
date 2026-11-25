@@ -1045,6 +1045,19 @@ export interface BoardItem {
   /** #283 그 시간외 체결의 분(단일가는 10분마다) */
   traded_at?: string;
   fetched_at: string | null;
+  /** #1001 국장 장외 줄(NXT · KRX 시간외 · 저녁 추정): 오늘 KRX 종가에서 나눈 하루. change_pct 는 마지막 정규장 종가 대비 그대로 */
+  change_split?: ChangeSplit;
+}
+
+/** #1001 한 부분의 등락 — pct 는 base(base_date 종가) 대비 % */
+export interface ChangePart { pct: number; base: number; base_date: string }
+export interface ChangeSplit {
+  /** 정규장: 오늘 종가 ÷ 전일 종가. 장 전 NXT 는 null(오늘 정규장 전) */
+  regular: ChangePart | null;
+  /** 장외: 장외 가격 ÷ 오늘 종가(장 전이면 전일 종가) */
+  extended: ChangePart & { session: string; source: string; at: string | null };
+  /** 합친 하루: 장외 가격 ÷ 전일 종가 */
+  total: ChangePart;
 }
 
 /** #123 추정 봉(GET /api/estimate/candles): 마지막 정규장 종가 이후. */

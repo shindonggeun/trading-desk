@@ -149,6 +149,29 @@ def test_parse_drops_ids_answered_twice_and_booleans():
     assert news_digest.parse(text, {"0", "1"}) == {}
 
 
+def test_decimal_leans_still_sum_to_100_with_none_below_zero_and_the_saved_file_takes_them():
+    """#1004 리뷰: 11.3 / 79.1 / 0 은 반올림만 하면 13 / 88 / -1 이 되어 저장 파일 검사에서 버려졌다."""
+    text = json.dumps([{"id": "0", "title_ko": "제목", "pos": 11.3, "neg": 79.1, "neu": 0, "impact": "low"}])
+    read = news_digest.parse(text, {"0"})["0"]
+    assert read["sentiment"] == {"pos": 13, "neg": 87, "neu": 0}
+    follower = news_digest.Digest()
+    assert follower.take({"reads": [["https://a.example/1", {**read, "read_at": "t"}]]})
+    assert follower.reads["https://a.example/1"]["sentiment"] == read["sentiment"]
+
+
+def test_a_lone_surrogate_in_an_answer_is_dropped_so_the_snapshot_still_saves():
+    """#1004 리뷰: JSON 의 \\ud800 같은 짝 없는 surrogate 는 UTF-8 로 쓸 수 없어 저장이 매 패스 실패했다."""
+    answer = '[{"id": "0", "title_ko": "번역\\ud800 제목", "pos": 70, "neg": 20, "neu": 10, "impact": "high", ' \
+             '"assets": ["반도체\\udfff"], "why_ko": "이유\\ud83d"}]'
+    d = news_digest.Digest(lambda _prompt: answer)
+    assert asyncio.run(d.refresh({"fed": THEMES["fed"]})) == 1 and d.saved
+    assert d.reads["https://a.example/1"]["title_ko"] == "번역 제목"
+    assert d.reads["https://a.example/1"]["assets"] == ["반도체"] and d.reads["https://a.example/1"]["why_ko"] == "이유"
+    follower = news_digest.Digest()
+    assert follower.take(json.loads(news_digest.CACHE_FILE.read_text(encoding="utf-8")))
+    assert list(follower.reads.items()) == list(d.reads.items())
+
+
 def test_the_fake_digest_parses_and_the_note_names_high_impact_headlines(monkeypatch):
     d = news_digest.Digest(news_digest.fake_digest)
     assert asyncio.run(d.refresh(THEMES)) == 3

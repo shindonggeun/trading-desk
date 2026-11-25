@@ -10,15 +10,21 @@ desk.news_digest for a Korean title and a market read like the briefing's.
 
 Fetched only by the background loop (desk.api, with the briefing); a failed topic keeps its last
 value. Headlines are untrusted text: shown as data, never followed.
+
+#1004 each pass is saved whole (``CACHE_FILE``, on the volume the split services share): the topics with when and
+how the pass went - nothing else. The api and the analyst follow that file (desk.feed_snapshots), the split
+collector starts on it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from statistics import median
 
 import httpx
@@ -34,6 +40,9 @@ HEADLINES = 5
 STORY_OVERLAP = 0.5    # titles sharing this share of their words are one story
 GAP_SEC = 1.0          # between feed requests
 STALE_SEC = 6 * 3600
+CACHE_FILE = Path.home() / ".tradingagents" / "desk-cache" / "sector_news.json"   # #1004 the backend's volume
+# #1004 a pass runs about 100 KB (the watched topics x HEADLINES): a bigger one is neither written nor read
+SAVE_MAX_BYTES = 1_000_000
 
 
 @dataclass(frozen=True)
@@ -179,16 +188,18 @@ def rebase(topics: dict[str, dict]) -> None:
 
 
 class Cache:
-    def __init__(self) -> None:
+    def __init__(self, cache_file: Path | None = None) -> None:
         self.topics: dict[str, dict] = {}
         self.refreshed_at: str | None = None
         self.error: str | None = None
+        self.cache_file = cache_file          # tests; CACHE_FILE otherwise
+        self.saved = True                     # the last snapshot written reached its file (#1004)
 
     async def refresh(self, client: httpx.AsyncClient | None = None, now: datetime | None = None,
                       gap: float = GAP_SEC) -> int:
         own = client is None
         client = client or net.async_client(timeout=TIMEOUT_SEC, follow_redirects=True)
-        fresh, ok, failures = dict(self.topics), 0, []
+        fresh, ok, failures, error_before = dict(self.topics), 0, [], self.error
         try:
             for sector in SECTORS:
                 for topic in sector.topics:
@@ -207,7 +218,71 @@ class Cache:
         if ok:
             self.refreshed_at = (now or datetime.now(UTC)).isoformat()
         self.error = "; ".join(failures) or None
+        # #1004 what the api and the analyst follow, off the loop: a pass that fetched a topic, or a failed one whose
+        # error is new while there are topics to keep (nothing good, no file)
+        if ok or (self.topics and self.error != error_before):
+            self.saved = await asyncio.to_thread(self.save)
         return ok
+
+    # --- persistence (#1004) -----------------------------------------------------------------
+
+    def _path(self) -> Path:
+        return self.cache_file or CACHE_FILE
+
+    def save(self) -> bool:
+        """Write the pass whole (a temporary file replaced in one step). Over SAVE_MAX_BYTES it is not written -
+        a topic is whole or not at all. False: not written."""
+        path = self._path()
+        topics = self.topics                   # the dict refresh() swapped in whole
+        try:
+            text = json.dumps({"topics": topics, "refreshed_at": self.refreshed_at, "error": self.error},
+                              ensure_ascii=False)
+            size = len(text.encode("utf-8"))
+            if size > SAVE_MAX_BYTES:
+                log.warning("sector news snapshot not saved (%s): %d bytes, over %d", path, size, SAVE_MAX_BYTES)
+                return False
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(path)          # a stop mid-write leaves the last whole file
+        except (OSError, TypeError, ValueError) as exc:
+            log.warning("sector news snapshot not saved (%s): %s", path, exc)
+            return False
+        return True
+
+    def take(self, data: dict) -> bool:
+        """A pass another process saved (the collector's, #1004): its topics, when and how it went - as that process
+        has them now. A row off the schema is dropped. False (nothing changed) for a file that is not a saved pass."""
+        topics = data.get("topics")
+        if not isinstance(topics, dict):
+            return False
+        self.topics = _kept(topics)            # swapped in whole, as refresh() does
+        self.refreshed_at = data.get("refreshed_at") if isinstance(data.get("refreshed_at"), str) else None
+        self.error = data.get("error") if isinstance(data.get("error"), str) else None
+        return True
+
+    def load(self) -> bool:
+        """The last saved pass, before this process's first one (the split collector's restart, #1004): a topic its
+        first pass misses keeps its saved value, as it would have. A missing, broken or oversized file, or topics
+        already here, leave the cache as it is."""
+        if self.topics:
+            return False
+        path = self._path()
+        try:
+            if path.stat().st_size > SAVE_MAX_BYTES:
+                log.warning("sector news snapshot over %d bytes, not loaded (%s)", SAVE_MAX_BYTES, path)
+                return False
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError) as exc:
+            log.warning("sector news snapshot unreadable (%s): %s", path, exc)
+            return False
+        saved = Cache()
+        if not isinstance(data, dict) or not saved.take(data) or not saved.topics:
+            return False
+        self.topics, self.refreshed_at = saved.topics, saved.refreshed_at
+        return True
 
     def as_themes(self) -> dict[str, dict]:
         """The issues in desk.news_digest's shape (only the issues are worth a model call)."""
@@ -220,12 +295,13 @@ class Cache:
 
         digest = digest or DIGEST
         now = now or datetime.now(UTC)
+        # #1004 one pass's topics throughout: this runs in a worker thread while take() may swap them in on the loop
+        topics = self.topics
         out = []
         for s in SECTORS:
             if sector and s.id != sector:
                 continue
-            rows = [{**self.topics[t.id], "stale": _age(self.topics[t.id], now) > STALE_SEC}
-                    for t in s.topics if t.id in self.topics]
+            rows = [{**topics[t.id], "stale": _age(topics[t.id], now) > STALE_SEC} for t in s.topics if t.id in topics]
             read = digest.annotate({"themes": rows})["themes"]
             issues = sorted((r for r in read if r["issue"] and not r["stale"]),
                             key=lambda r: (-(r["spike"] or 0), -r["articles_24h"]))
@@ -262,6 +338,32 @@ def _age(row: dict, now: datetime) -> float:
         return (now - datetime.fromisoformat(row["fetched_at"])).total_seconds()
     except (KeyError, TypeError, ValueError):
         return float("inf")
+
+
+def _number(value) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def _kept(topics: dict) -> dict[str, dict]:
+    """#1004 a saved file's topics as view(), note_lines() and as_themes() index them: a watched topic's row with its
+    counts, flags and the headlines that have a title and a link (HEADLINES at most). Anything else is dropped, not
+    trusted."""
+    known = {t.id for s in SECTORS for t in s.topics}
+    out = {}
+    for key, row in topics.items():
+        if key not in known or not isinstance(row, dict) or row.get("id") != key:
+            continue
+        spike, issue, heads = row.get("spike"), row.get("issue"), row.get("headlines")
+        if (not isinstance(row.get("label"), str) or type(row.get("articles_24h")) is not int
+                or not isinstance(row.get("fetched_at"), str) or not isinstance(issue, bool)
+                or not (spike is None and not issue or _number(spike)) or not isinstance(heads, list)
+                or not (row.get("tag") is None or isinstance(row.get("tag"), str))):
+            continue
+        # spike and tag set even when the row lacks them (an older file): view() and note_lines() index both
+        out[key] = {**row, "spike": spike, "tag": row.get("tag"),
+                    "headlines": [h for h in heads if isinstance(h, dict) and isinstance(h.get("title"), str)
+                                  and isinstance(h.get("url"), str)][:HEADLINES]}
+    return out
 
 
 CACHE = Cache()

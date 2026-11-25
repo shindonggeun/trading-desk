@@ -984,17 +984,24 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             with jobs.part("macro_news", "macro news refresh failed"):
                 ok = await macro_news.CACHE.refresh()
                 log.info("macro news: %d/%d theme(s) refreshed", ok, len(macro_news.THEMES))
-                if not macro_news.CACHE.saved:      # #996 the api and the analyst would stay on the last file
-                    jobs.mark_error("macro_news", "snapshot not saved")
                 # #242: Korean titles and a market read, only while no analysis holds the plan
                 read = await news_digest.DIGEST.refresh(macro_news.CACHE.themes, slot=app.state.manager.spare_slot)
                 if read:
                     log.info("news digest: %d headline(s) read", read)
+                # #996 / #1004 the api and the analyst would stay on the last file - one message for the line
+                if not macro_news.CACHE.saved:
+                    jobs.mark_error("macro_news", "snapshot not saved")
+                elif not news_digest.DIGEST.saved:
+                    jobs.mark_error("macro_news", "news digest snapshot not saved")
             with jobs.part("sector_news", "sector news refresh failed"):   # #244: sector / key-person surges
                 ok = await sector_news.CACHE.refresh()
                 read = await news_digest.DIGEST.refresh(sector_news.CACHE.as_themes(),
                                                         slot=app.state.manager.spare_slot)
                 log.info("sector news: %d topic(s) refreshed, %d headline(s) read", ok, read)
+                if not sector_news.CACHE.saved:     # #1004 as above
+                    jobs.mark_error("sector_news", "snapshot not saved")
+                elif not news_digest.DIGEST.saved:
+                    jobs.mark_error("sector_news", "news digest snapshot not saved")
             return settings.macro_interval_sec
 
         async def refresh_calendar() -> float:
@@ -1381,10 +1388,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             # #428: the pass saved before a restart answers until the first one here finishes
             # #308: the earnings saved before a restart show until the first pass answers
             # #996 split: the economic calendar too, so a collector restart keeps what the api and the analyst show
-            # (a damaged file costs only that snapshot, never the start)
+            # (a damaged file costs only that snapshot, never the start); #1004 and the news digest (its headlines
+            # are not asked about again) and the sector news. all as before: those wait for its own first pass
             saved = [("macro news", macro_news.CACHE, "macro_news"), ("earnings calendar", earnings.CACHE, "earnings")]
             if settings.role != "all":
                 saved.append(("economic calendar", events_calendar.CACHE, "economic_calendar"))
+                saved.append(("news digest", news_digest.DIGEST, "news"))
+                saved.append(("sector news", sector_news.CACHE, "sector_news"))
             for what, cache, part in saved:
                 if not here(part):
                     continue           # followed below, as the collector has it now

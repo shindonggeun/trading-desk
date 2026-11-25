@@ -235,7 +235,7 @@ def test_a_batch_read_takes_the_bars_it_had_at_once_and_a_background_read_brings
     """#858 stale-while-revalidate for the screens' batch reads only (``stale_ok``); everyone else waits."""
     from contextlib import suppress
 
-    from desk.prices import CANDLE_TTL_SEC, CANDLES_EMPTY_RETRY_SEC, stale_ok
+    from desk.prices import CANDLE_TTL_SEC, CANDLES_EMPTY_RETRY_SEC, family_key, stale_ok
 
     clock, answers, calls = Clock(), [], []
 
@@ -250,7 +250,7 @@ def test_a_batch_read_takes_the_bars_it_had_at_once_and_a_background_read_brings
         return [Bar("2026-11-20T00:00:00+00:00", 1, 2, 0.5, close, 100)]
 
     source = PriceSource(MockBroker(), yahoo_candles=yahoo_candles, clock=clock)
-    key = ("^KS11", "1d", 5, ())
+    key = family_key("^KS11", "1d", 5)
 
     async def last(stale: float = 0.0) -> float:
         with stale_ok(stale):
@@ -292,7 +292,7 @@ def test_a_batch_read_takes_the_bars_it_had_at_once_and_a_background_read_brings
 def test_the_background_read_never_takes_old_bars_from_another_key():
     """#858 review: a batch's stale_ok went into its background read's task, so a KRX 15-minute chart rebuilt
     its tail from the old 1m bars and kept the result as new - for single charts and alerts too."""
-    from desk.prices import stale_ok
+    from desk.prices import family_key, stale_ok
 
     def minute(kst, close):
         at = datetime.fromisoformat(kst).replace(tzinfo=timezone(timedelta(hours=9))).astimezone(UTC)
@@ -316,7 +316,7 @@ def test_the_background_read_never_takes_old_bars_from_another_key():
         last["minute"] = 44                             # the broker has bars to 10:44 now
         with stale_ok(300):
             assert (await source.candles("005930.KS", "15m", 10))["bars"][-1]["close"] == 329
-        await source._inflight[("005930.KS", "15m", 10, ())]
+        await source._inflight[family_key("005930.KS", "15m", 10)]
         assert (await source.candles("005930.KS", "15m", 10))["bars"][-1]["close"] == 344
 
     asyncio.run(main())
@@ -536,3 +536,390 @@ def test_empty_yahoo_minutes_are_not_asked_again(monkeypatch):
     assert prices_mod._yahoo_rows("005930.KS", "5d", "5m") == [] and asked == ["5m"]
     asked.clear()
     assert prices_mod._yahoo_rows("GONE", "400d", "1d") == [] and asked == ["1d", "1d"]   # still nothing: no bars
+
+
+def _days(n: int) -> list[Bar]:
+    """n daily bars, oldest first, each closing at its own index (a cut shows which ones it kept)."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    return [Bar((start + timedelta(days=i)).isoformat(timespec="seconds"), 1, 2, 0.5, float(i), 100) for i in range(n)]
+
+
+def test_one_symbols_counts_share_one_read_and_each_takes_its_last_bars():
+    """#874 시세판의 1d 63, 지지 · 저항의 1d 200, 바닥 구간의 1d 5 — 같은 종목 · 주기 · 원천이면 야후 한 번을 나눠 쓴다.
+    잘라 준 봉은 마지막 count 개, ``truncated`` 는 그 count 기준. 다시 읽을 땐 최근 물은 가장 큰 count 로 읽는다."""
+    from desk.prices import CANDLE_TTL_SEC, MERGE_REMEMBER_SEC
+
+    calls, clock = [], Clock()
+
+    def yahoo_candles(ticker, interval, count):
+        calls.append(count)
+        return _days(150)[-count:]                     # Yahoo keeps 150 days of this one
+
+    source = PriceSource(MockBroker(), yahoo_candles=yahoo_candles, clock=clock)
+
+    async def asks():
+        wide = await source.candles("^KS11", "1d", 200)
+        return wide, *await asyncio.gather(source.candles("^KS11", "1d", 63), source.candles("^KS11", "1d", 5))
+
+    wide, mid, small = asyncio.run(asks())
+    assert calls == [200]
+    assert len(wide["bars"]) == 150 and wide["truncated"]
+    assert mid["bars"] == wide["bars"][-63:] and mid["truncated"] is False
+    assert small["bars"] == wide["bars"][-5:] and small["truncated"] is False
+    assert [b["close"] for b in small["bars"]] == [145.0, 146.0, 147.0, 148.0, 149.0]
+    clock.t += CANDLE_TTL_SEC + 1
+    assert len(asyncio.run(source.candles("^KS11", "1d", 5))["bars"]) == 5 and calls == [200, 200]   # the widest
+    clock.t += MERGE_REMEMBER_SEC                      # nobody asked 200 lately: 5 is read as 5 again
+    asyncio.run(source.candles("^KS11", "1d", 5))
+    assert calls == [200, 200, 5]
+
+
+def _gated_yahoo(calls):
+    """A Yahoo stand-in whose reads each wait for their own release: (ticker, count) -> threading.Event. ``started``
+    is set as each read begins, so a test orders the reads' ends without timing them."""
+    import threading
+
+    gates, started = {}, {}
+
+    def yahoo_candles(ticker, interval, count):
+        calls.append((ticker, count))
+        started.setdefault((ticker, count), threading.Event()).set()
+        gates.setdefault((ticker, count), threading.Event()).wait(5)
+        return _days(count)
+
+    def gate(ticker, count):
+        return gates.setdefault((ticker, count), threading.Event())
+
+    async def begun(ticker, count):
+        await asyncio.to_thread(started.setdefault((ticker, count), threading.Event()).wait, 5)
+
+    return yahoo_candles, gate, begun
+
+
+def test_a_narrower_ask_takes_its_bars_from_a_wider_read_under_way():
+    """#874 넓은 읽기가 진행 중이면 좁은 요청은 그걸 기다려 잘라 쓴다(원천 한 번)."""
+    calls = []
+    yahoo_candles, gate, begun = _gated_yahoo(calls)
+    source = PriceSource(MockBroker(), yahoo_candles=yahoo_candles, clock=Clock())
+
+    async def main():
+        wide = asyncio.ensure_future(source.candles("NQ=F", "1d", 200))
+        await begun("NQ=F", 200)                         # the wide read is under way
+        narrow = asyncio.ensure_future(source.candles("NQ=F", "1d", 63))
+        await asyncio.sleep(0)                           # the narrow ask joined it (or would have read)
+        gate("NQ=F", 200).set()
+        return await wide, await narrow
+
+    wide, narrow = asyncio.run(main())
+    assert calls == [("NQ=F", 200)]
+    assert narrow["bars"] == wide["bars"][-63:] and narrow["truncated"] is False
+
+
+def test_a_narrower_read_ending_last_never_takes_a_fresh_wider_ones_place():
+    """#874 좁은 읽기가 진행 중일 때 넓은 요청은 기다리지 않고 넓게 읽는다. 좁은 읽기가 나중에 끝나도(이벤트로 순서를
+    정한다) 신선한 넓은 항목을 덮지 않는다 — 그 뒤 좁은 요청 · 넓은 요청 모두 원천 없이 넓은 결과에서 잘라 쓴다."""
+    calls = []
+    yahoo_candles, gate, begun = _gated_yahoo(calls)
+    source = PriceSource(MockBroker(), yahoo_candles=yahoo_candles, clock=Clock())
+
+    async def main():
+        narrow = asyncio.ensure_future(source.candles("ES=F", "1d", 63))
+        await begun("ES=F", 63)
+        wide = asyncio.ensure_future(source.candles("ES=F", "1d", 200))
+        await begun("ES=F", 200)                         # a second read: the narrow one could not answer it
+        gate("ES=F", 200).set()
+        wide = await wide                                # the wider read lands first ...
+        gate("ES=F", 63).set()
+        narrow = await narrow                            # ... the narrower one after it
+        return narrow, wide, await source.candles("ES=F", "1d", 63), await source.candles("ES=F", "1d", 200)
+
+    narrow, wide, after63, after200 = asyncio.run(main())
+    assert calls == [("ES=F", 63), ("ES=F", 200)]
+    assert len(narrow["bars"]) == 63 and len(wide["bars"]) == 200
+    assert after63["bars"] == wide["bars"][-63:] and after200["bars"] == wide["bars"]
+
+
+def test_the_brokers_counts_and_yahoos_longer_ones_are_never_merged():
+    """#874 1d 200 이하는 토스, 넘으면 야후(수정 · 비수정 봉이 다르다) — 120 이 240 의 읽기에 묶여 출처가 바뀌지 않는다.
+    토스 쪽 count 끼리, 야후 쪽 count 끼리는 묶인다. 브로커가 없는 종목(지수)은 원천이 하나라 전부 묶인다."""
+    class Toss(MockBroker):
+        name = "toss"
+
+        def __init__(self):
+            self.calls = []
+
+        async def candles(self, symbol, interval, count):
+            self.calls.append((symbol, interval, count))
+            return _days(count)
+
+    yahoo, broker = [], Toss()
+
+    def yahoo_candles(ticker, interval, count):
+        yahoo.append((ticker, interval, count))
+        return _days(count)
+
+    source = PriceSource(broker, yahoo_candles=yahoo_candles, clock=Clock())
+
+    async def main():
+        return await asyncio.gather(*(source.candles(t, i, c) for t, i, c in (
+            ("NVDA", "1d", 240), ("NVDA", "1d", 120), ("NVDA", "1d", 63), ("NVDA", "5m", 390), ("NVDA", "5m", 78),
+            ("^SOX", "1d", 240), ("^SOX", "1d", 120))))
+
+    nvda240, nvda120, nvda63, nvda5m390, nvda5m78, sox240, sox120 = asyncio.run(main())
+    assert nvda240["source"] == "yahoo" and nvda120["source"] == nvda63["source"] == "toss"
+    assert broker.calls == [("NVDA", "1d", 120)]
+    assert sorted(yahoo) == [("NVDA", "1d", 240), ("NVDA", "5m", 390), ("^SOX", "1d", 240)]
+    assert nvda63["bars"] == nvda120["bars"][-63:] and nvda5m78["bars"] == nvda5m390["bars"][-78:]
+    assert sox120["bars"] == sox240["bars"][-120:] and sox120["source"] == "yahoo"
+
+
+def test_a_chart_scrolled_far_back_never_widens_the_small_reads():
+    """#874 MAX_COUNT 2,000 같은 긴 차트는 따로 읽는다 — 시세판의 작은 읽기가 2,000 봉에 끌려가지 않는다."""
+    from desk.prices import CANDLE_TTL_SEC
+
+    calls, clock = [], Clock()
+
+    def yahoo_candles(ticker, interval, count):
+        calls.append(count)
+        return _days(count)
+
+    source = PriceSource(MockBroker(), yahoo_candles=yahoo_candles, clock=clock)
+    asyncio.run(source.candles("^KS11", "1d", 2000))
+    asyncio.run(source.candles("^KS11", "1d", 63))
+    clock.t += CANDLE_TTL_SEC + 1
+    asyncio.run(source.candles("^KS11", "1d", 63))
+    assert calls == [2000, 63, 63]
+
+
+def test_a_nearly_stale_entry_answers_at_once_and_is_read_again_behind_it():
+    """#874 TTL 의 80% 를 넘긴 값은 그대로 바로 답하고 뒤에서 다시 읽는다(진행 중이면 또 시작하지 않는다) — 호출자는
+    그 읽기를 기다리지 않는다. 일반 호출자(STALE_OK 0)도 마찬가지: 아직 TTL 안의 값이다."""
+    import threading
+
+    from desk.prices import CANDLE_TTL_SEC, REFRESH_AHEAD, family_key
+
+    hold, begun, calls, clock = threading.Event(), threading.Event(), [], Clock()
+
+    def yahoo_candles(ticker, interval, count):
+        calls.append(count)
+        if len(calls) > 1:
+            begun.set()
+            hold.wait(5)                                # the background read takes its time
+        return [Bar("2026-11-20T00:00:00+00:00", 1, 2, 0.5, float(len(calls)), 100)]
+
+    source = PriceSource(MockBroker(), yahoo_candles=yahoo_candles, clock=clock)
+
+    async def last() -> float:
+        return (await source.candles("^KS11", "1d", 5))["bars"][-1]["close"]
+
+    async def main():
+        assert await last() == 1.0
+        clock.t = CANDLE_TTL_SEC * REFRESH_AHEAD - 1
+        assert await last() == 1.0 and len(calls) == 1          # not yet
+        assert family_key("^KS11", "1d", 5) not in source._inflight
+        clock.t = CANDLE_TTL_SEC * REFRESH_AHEAD + 1
+        assert await last() == 1.0                              # at once, though the read below hangs
+        await asyncio.to_thread(begun.wait, 5)                  # the background read is under way
+        assert await last() == 1.0 and len(calls) == 2          # one background read at a time
+        hold.set()
+        await source._inflight[family_key("^KS11", "1d", 5)]
+        clock.t += 1
+        assert await last() == 2.0 and len(calls) == 2
+
+    asyncio.run(main())
+
+
+def test_an_empty_or_failed_read_is_not_read_ahead_at_every_ask():
+    """#874 review: 1w(TTL 300 초)에서 빈 응답 뒤 남긴 봉은 TTL-30 초 나이로 저장된다 — REFRESH_AHEAD 문턱 위라
+    요청마다 뒤에서 야후를 다시 읽었다. 재시도 시각(CANDLES_EMPTY_RETRY_SEC)까지는 앞당겨 읽지 않는다. 앞당긴 읽기가
+    실패해도 마찬가지."""
+    from desk.prices import CANDLES_EMPTY_RETRY_SEC, REFRESH_AHEAD, family_key
+
+    clock, answers, calls = Clock(), [], []
+    ttl = 300.0                                          # 1w
+
+    def yahoo_candles(ticker, interval, count):
+        calls.append(clock.t)
+        got = answers.pop(0)
+        if isinstance(got, Exception):
+            raise got
+        return got
+
+    source = PriceSource(MockBroker(), yahoo_candles=yahoo_candles, clock=clock)
+    key = family_key("^KS11", "1w", 156)
+
+    async def ask():
+        got = await source.candles("^KS11", "1w", 156)
+        if (task := source._inflight.get(key)) is not None:   # a background read, if one started
+            await asyncio.gather(task, return_exceptions=True)
+        return got
+
+    async def main():
+        answers.append(_days(156))
+        await ask()
+        clock.t = ttl + 1
+        answers.append([])                               # Yahoo throttling: an empty answer, the kept bars stand
+        assert len((await ask())["bars"]) == 156 and len(calls) == 2
+        for i in range(1, int(CANDLES_EMPTY_RETRY_SEC) - 1):
+            clock.t = ttl + 1 + i
+            assert len((await ask())["bars"]) == 156
+        assert len(calls) == 2                           # no read ahead before the retry
+        clock.t = ttl + 1 + CANDLES_EMPTY_RETRY_SEC      # the retry: expired again, read
+        answers.append(_days(156))
+        await ask()
+        assert len(calls) == 3
+        # a read ahead that fails: the next asks in the ahead window do not start another at once
+        clock.t = calls[-1] + ttl * REFRESH_AHEAD + 1
+        answers.append(ConnectionError("Yahoo down"))
+        await ask()
+        assert len(calls) == 4
+        for i in range(1, 10):
+            clock.t = calls[-1] + i
+            await ask()
+        assert len(calls) == 4
+        clock.t = calls[-1] + CANDLES_EMPTY_RETRY_SEC + 1     # past the quiet: read ahead again
+        answers.append(_days(156))
+        await ask()
+        assert len(calls) == 5 and not answers
+
+    asyncio.run(main())
+
+
+def test_an_empty_narrow_read_never_ages_a_fresh_wider_entry():
+    """#874 review: 동시에 돌던 좁은 읽기가 넓은 읽기가 들어온 뒤 비어 오면, 신선한 넓은 항목의 시각을 당기지 않는다
+    (1w: TTL 300 초 - 당겼다면 TTL-30 초 나이가 되어 30 초 뒤 만료)."""
+    calls = []
+    yahoo_candles, gate, begun = _gated_yahoo(calls)
+    empty_for = {("^KQ11", 63)}
+
+    def yahoo(ticker, interval, count):
+        bars = yahoo_candles(ticker, interval, count)
+        return [] if (ticker, count) in empty_for else bars
+
+    clock = Clock()
+    source = PriceSource(MockBroker(), yahoo_candles=yahoo, clock=clock)
+
+    async def main():
+        narrow = asyncio.ensure_future(source.candles("^KQ11", "1w", 63))
+        await begun("^KQ11", 63)
+        wide = asyncio.ensure_future(source.candles("^KQ11", "1w", 200))
+        await begun("^KQ11", 200)
+        gate("^KQ11", 200).set()
+        await wide
+        gate("^KQ11", 63).set()
+        got = await narrow                               # empty, after the wide one landed: the wide bars answer
+        clock.t = 40                                     # 40 s old of 300: fresh, no read
+        return got, await source.candles("^KQ11", "1w", 200)
+
+    narrow, wide = asyncio.run(main())
+    assert len(narrow["bars"]) == 63 and len(wide["bars"]) == 200
+    assert calls == [("^KQ11", 63), ("^KQ11", 200)]
+
+
+def test_a_wider_ask_that_meets_an_empty_answer_gets_no_bars_until_its_retry():
+    """#874 review: 계열에 63 봉이 남아 있을 때 200 요청이 빈 응답을 받으면 — 63 봉을 200 인 척 주지 않고(레벨이 짧은 봉으로
+    정상처럼 계산되지 않게) 변경 전처럼 빈 봉을 준다. 재시도 시각까지 그 사이 count 는 원천 없이 같은 답, 63 이하는 남긴 봉."""
+    from desk.prices import CANDLES_EMPTY_RETRY_SEC
+
+    clock, answers, calls = Clock(), [], []
+
+    def yahoo_candles(ticker, interval, count):
+        calls.append(count)
+        return answers.pop(0)
+
+    source = PriceSource(MockBroker(), yahoo_candles=yahoo_candles, clock=clock)
+
+    async def main():
+        answers.append(_days(63))
+        await source.candles("^KS11", "1w", 63)
+        clock.t = 10
+        answers.append([])
+        first = await source.candles("^KS11", "1w", 156)
+        clock.t = 11
+        again, between, narrow = await asyncio.gather(source.candles("^KS11", "1w", 156),
+                                                      source.candles("^KS11", "1w", 100),
+                                                      source.candles("^KS11", "1w", 63))
+        clock.t = 10 + CANDLES_EMPTY_RETRY_SEC + 1       # the retry: asked again
+        answers.append(_days(156))
+        later = await source.candles("^KS11", "1w", 156)
+        return first, again, between, narrow, later
+
+    first, again, between, narrow, later = asyncio.run(main())
+    assert first["bars"] == [] and first["truncated"] and again["bars"] == [] and between["bars"] == []
+    assert len(narrow["bars"]) == 63 and narrow["truncated"] is False
+    assert calls == [63, 156, 156] and len(later["bars"]) == 156 and not answers
+
+
+def test_a_read_ahead_is_as_wide_as_the_entry():
+    """#874 review: 넓게(240) 읽힌 항목을 좁은 요청(120)만 계속 물으면 앞당긴 읽기가 120 으로 읽고 버려졌다(넓은 신선
+    항목을 덮지 못해 매 요청 반복). 앞당긴 읽기는 항목만큼 넓게 읽어 그 자리를 잇는다."""
+    from desk.prices import family_key
+
+    clock, calls = Clock(), []
+
+    def yahoo_candles(ticker, interval, count):
+        calls.append((clock.t, count))
+        return _days(count)
+
+    source = PriceSource(MockBroker(), yahoo_candles=yahoo_candles, clock=clock)
+    key = family_key("^KS11", "1M", 120)
+
+    async def ask():
+        await source.candles("^KS11", "1M", 120)
+        if (task := source._inflight.get(key)) is not None:
+            await task
+
+    async def main():
+        await source.candles("^KS11", "1M", 240)
+        for t in (400, 2900, 2960, 3020, 3080):          # 1M lives 3600 s; ahead from 2880
+            clock.t = t
+            await ask()
+
+    asyncio.run(main())
+    assert calls == [(0.0, 240), (2900, 240)]
+
+
+def test_the_price_sources_blocking_reads_run_on_the_source_threads():
+    """#874 야후 봉 · 시세 읽기는 desk.pools.SOURCE(desk-source) 에서 — 화면의 to_thread 풀을 붙잡지 않는다."""
+    import threading
+
+    names = []
+
+    def yahoo_candles(ticker, interval, count):
+        names.append(threading.current_thread().name)
+        return _days(count)
+
+    def yahoo_quote(ticker):
+        names.append(threading.current_thread().name)
+        return 2900.0, "KRW"
+
+    source = PriceSource(MockBroker(), yahoo_quote=yahoo_quote, yahoo_candles=yahoo_candles)
+
+    async def main():
+        await asyncio.gather(source.candles("^KS11", "1d", 5), source.quote("^KS11"))
+
+    asyncio.run(main())
+    assert len(names) == 2 and all(n.startswith("desk-source") for n in names), names
+
+
+def test_a_long_charts_indicators_are_built_off_the_event_loop(monkeypatch):
+    """#874 2,000 봉에 지표 전부(~25 ms)는 desk.pools.COMPUTE 에서, 시세판의 63 봉(~0.4 ms)은 그 자리에서."""
+    import threading
+
+    names, real = [], prices_mod.annotate
+
+    def spy(rows, indicators):
+        names.append(threading.current_thread().name)
+        return real(rows, indicators)
+
+    monkeypatch.setattr(prices_mod, "annotate", spy)
+    source = PriceSource(MockBroker(), yahoo_candles=lambda ticker, interval, count: _days(count))
+
+    async def main():
+        chart = await source.candles("^KS11", "1d", 2000, ("rsi", "bb"))
+        tile = await source.candles("^KS11", "1d", 63)
+        return chart, tile
+
+    chart, tile = asyncio.run(main())
+    assert names[0].startswith("desk-compute") and names[1] == threading.main_thread().name, names
+    assert len(chart["bars"]) == 2000 and "rsi" in chart["bars"][-1] and len(tile["bars"]) == 63

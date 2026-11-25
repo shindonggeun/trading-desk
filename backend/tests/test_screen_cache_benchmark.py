@@ -53,7 +53,7 @@ def test_screen_matrix_distinguishes_local_bars_from_shared_results(monkeypatch,
     for screen, expected_origins in (
         ("dashboard", 6),
         ("chart", 4),
-        ("market_board", 24),
+        ("market_board", 16),        # #874 the tiles' 1d 63 rides the levels' 1d 200 read (one family): 4 + 4 a sample
     ):
         for enabled in (False, True):
             cold = cases[screen, enabled, "cold"]

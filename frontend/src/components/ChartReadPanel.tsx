@@ -39,8 +39,11 @@ const farText = (l: ChartReadLevel) => `${price(l.price)} ${l.name}(${distText(l
  * 한 줄 요약 → 위에서 막힐 수 있는 곳 → 아래에서 받쳐 줄 수 있는 곳 → 조심할 때 / 볼 때 → 먼 레벨(접힘) → 예측 · 추천 아님.
  * 번호(①…)를 누르면 차트에서 그 선을 강조하고 나머지 선은 흐리게. 시간봉 탭은 차트 주기와 같이 움직인다.
  */
-export default function ChartReadPanel({ read, failed, frame, interval, onInterval, marks, picked, onPick, beginner, applied, onBeginner, idPrefix, open, onToggle, accumulation, selectedAccumulation, weeklyDrawdown, dailyResistance, weeklyOversold }: {
+export default function ChartReadPanel({ read, failed, frame, interval, onInterval, marks, picked, onPick, beginner, applied, onBeginner, idPrefix, open, onToggle, accumulation, selectedAccumulation, weeklyDrawdown, dailyResistance, weeklyOversold, trendFollow, trendLine }: {
   read: ChartRead | null;
+  /** #978 일봉 추세추종 칸(맨 위)과 접힌 제목에 붙는 한 줄 */
+  trendFollow?: ReactNode;
+  trendLine?: string | null;
   accumulation?: ReactNode;
   weeklyDrawdown?: ReactNode;
   dailyResistance?: ReactNode;
@@ -84,6 +87,7 @@ export default function ChartReadPanel({ read, failed, frame, interval, onInterv
       <summary>
         <span className="chart-read-title">지금 이 차트 읽기</span>
         {frame && <span className="muted small"> · {tfKo}</span>}
+        {trendLine && !open && <span className="chart-read-trend">{trendLine}</span>}
       </summary>
       <div className="chart-read-body">
         <div className="chart-read-bar">
@@ -105,6 +109,7 @@ export default function ChartReadPanel({ read, failed, frame, interval, onInterv
           <p className="muted small">이 주기는 설명이 없어요 — 5분 · 15분 · 1시간 · 4시간 · 일봉 중에서 골라 주세요.</p>
         )}
         {read && LINE_TFS.includes(interval as LineTf) && !frame && <p className="muted small">이 시간봉은 지금 읽지 못했어요.</p>}
+        {trendFollow}
         {guide && <section className="read-beginner-guide" aria-label="초보 모드 가격과 진입 조건">
           <h4>지금 가격 → 위에서 조심할 곳 → 진입 전에 볼 것</h4>
           <p>{guide.now} {guide.resistance}</p>

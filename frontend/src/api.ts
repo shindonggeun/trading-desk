@@ -487,14 +487,12 @@ export const api = {
   status: () => call<DeskStatus>("/api/status"),
   alertsToday: (date?: string) =>
     call<MarketAlertsDay>(`/api/alerts/today${date ? `?date=${encodeURIComponent(date)}` : ""}`),
-  // #581 알림 채널(#580) — 텔레그램 · 카카오톡. 웹 푸시는 기기별 구독(/api/push/*)
+  // #581 알림 채널(#580) — 텔레그램. 웹 푸시는 기기별 구독(/api/push/*)
   notifyChannels: () => call<NotifyChannels>("/api/notify/channels"),
   saveNotifyChannel: (id: NotifyChannelId, body: { enabled?: boolean; kinds?: Record<string, boolean> }) =>
     call<NotifyChannel>(`/api/notify/channels/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   testNotifyChannel: (id: NotifyChannelId) =>
     call<{ ok: boolean; error: string | null }>(`/api/notify/channels/${id}/test`, { method: "POST" }),
-  kakaoConnect: () => call<{ url: string }>("/api/notify/kakao/connect", { method: "POST" }),
-  kakaoDisconnect: () => call<void>("/api/notify/kakao", { method: "DELETE" }),
   /** #614 차트 선 알림(#613) 감시 설정 · 최근 보낸 선 알림 */
   lineWatch: (ticker?: string, signal?: AbortSignal) =>
     request<LineWatch>(`/api/notify/line-watch${ticker ? `?ticker=${encodeURIComponent(ticker)}` : ""}`, { cache: "no-store", signal }),
@@ -640,12 +638,12 @@ export interface MarketAlertsDay {
 }
 
 /** #581 알림 채널(#580) */
-export type NotifyChannelId = "telegram" | "kakao";
+export type NotifyChannelId = "telegram";
 export interface NotifyChannel {
   id: NotifyChannelId;
   label: string;
   configured: boolean;     // 서버 env 가 있는지
-  connected: boolean;      // 텔레그램 = configured, 카카오 = OAuth 를 마쳤는지
+  connected: boolean;      // 텔레그램 = configured
   enabled: boolean;
   kinds: Record<string, boolean>;
   needs_reconnect: boolean;

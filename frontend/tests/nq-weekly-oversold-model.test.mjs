@@ -51,8 +51,8 @@ test("판정 불가 상태에도 과거 확정 조건 충족 마커만 유지한
 
 test("한 채널만 연결된 경우와 재연결·알림 조건 비활성 상태를 구분한다", () => {
   assert.equal(nqChannelCopy({ channel: "telegram", status: "ready", needs_reconnect: false }), "수신 가능");
-  assert.match(nqChannelCopy({ channel: "kakao", status: "unavailable", needs_reconnect: false }), /미확인/);
-  assert.match(nqChannelCopy({ channel: "kakao", status: "disabled", needs_reconnect: false }), /꺼짐/);
-  assert.match(nqChannelCopy({ channel: "kakao", status: "needs_reconnect", needs_reconnect: true }), /재연결 필요/);
-  assert.match(nqChannelCopy({ channel: "kakao", status: "ready", needs_reconnect: true }), /재연결 예정/);
+  assert.match(nqChannelCopy({ channel: "telegram", status: "unavailable", needs_reconnect: false }), /미확인/);
+  assert.match(nqChannelCopy({ channel: "telegram", status: "disabled", needs_reconnect: false }), /꺼짐/);
+  assert.match(nqChannelCopy({ channel: "telegram", status: "needs_reconnect", needs_reconnect: true }), /재연결 필요/);
+  assert.match(nqChannelCopy({ channel: "telegram", status: "ready", needs_reconnect: true }), /재연결 예정/);
 });

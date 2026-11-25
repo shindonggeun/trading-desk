@@ -14,10 +14,10 @@ export default function PushSettings() {
   const [markets, setMarkets] = useState<ToastMarkets>(loadToastMarkets);
   const [extra, setExtra] = useState<ExtraKinds>(loadExtraKinds);
 
-  // 카카오 연결에서 돌아오거나 차트의 수신 채널 링크를 눌렀으면 이 칸으로.
+  // 차트의 수신 채널 링크를 눌렀으면 이 칸으로.
   useEffect(() => {
     const query = new URLSearchParams(window.location.hash.split("?")[1]);
-    if (query.has("notify") || query.get("kakao") === "ok" || query.get("kakao") === "fail") {
+    if (query.has("notify")) {
       document.getElementById("notify")?.scrollIntoView({ block: "start" });
     }
   }, []);
@@ -119,7 +119,7 @@ export default function PushSettings() {
         ))}
       </div>
 
-      {/* #581 텔레그램 · 카카오톡(#580) */}
+      {/* #581 텔레그램(#580) */}
       <NotifyChannels />
       {isIOS() && !isStandalone() && (
         <p className="muted small">iPhone · iPad: Safari 공유 버튼 → "홈 화면에 추가" 로 설치한 뒤, 설치한 앱에서 이 화면을 열어 알림을 켜세요(iOS 16.4 이상).</p>

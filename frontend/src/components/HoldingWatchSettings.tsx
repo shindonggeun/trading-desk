@@ -4,7 +4,7 @@ import { HoldingBadge } from "../holdingWatch";
 
 /**
  * #714 설정 → 보유 종목 알림(#694): 보유 종목마다 일봉 장세(추세 · 박스권 · 전환)로 손절선 · 익절 후보를 잡고,
- * 넘거나 닿으면 웹 푸시 · 텔레그램 · 카카오톡으로. 켜기 전까지 꺼짐, 바꿀 수 있는 사람은 데스크 주인뿐.
+ * 넘거나 닿으면 웹 푸시 · 텔레그램으로. 켜기 전까지 꺼짐, 바꿀 수 있는 사람은 데스크 주인뿐.
  * 알림에는 종목 · 가격 · % 만 — 수량 · 금액 · 평단은 보내지 않는다.
  */
 export default function HoldingWatchSettings() {
@@ -85,7 +85,7 @@ export default function HoldingWatchSettings() {
       <h2>보유 종목 알림</h2>
       <p className="muted">
         보유 종목마다 일봉 장세(상승 · 하락 추세, 박스권, 전환)를 보고 손절선 · 익절 후보를 잡아, 장중에 손절선에 가까워지거나 넘으면,
-        하락 추세로 바뀌면, 박스권 위 끝에 닿으면 알려 드려요. 웹 푸시 · 텔레그램 · 카카오톡의 "보유 종목 손절 · 익절" 종류가 켜져 있어야 받아요.
+        하락 추세로 바뀌면, 박스권 위 끝에 닿으면 알려 드려요. 웹 푸시 · 텔레그램의 "보유 종목 손절 · 익절" 종류가 켜져 있어야 받아요.
       </p>
       <label className="line-watch-on">
         <input type="checkbox" checked={w.enabled} disabled={locked}

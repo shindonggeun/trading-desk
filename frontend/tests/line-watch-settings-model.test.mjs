@@ -23,24 +23,23 @@ test("지원하지 않는 시간봉은 꺼진 규칙에서도 제거해야 하�
 });
 
 test("채널 미연결, 채널 비활성, 차트 선·참고 구독을 구분한다", () => {
-  const kakao = { id: "kakao", configured: true, connected: true, enabled: true, kinds: {}, needs_reconnect: false };
-  const info = { can_edit: true, kinds: ["line_signal", "tone_neutral"], channels: [kakao] };
-  const withKakao = patch => ({ ...info, channels: [{ ...kakao, ...patch }] });
-  assert.equal(channelStatus({ ...info, can_edit: false }, "kakao"), "상태 확인 불가");
-  assert.equal(channelStatus(withKakao({ connected: false }), "kakao"), "연결 안 됨");
-  assert.match(channelStatus(withKakao({ needs_reconnect: true }), "kakao"), /다시 연결/);
-  assert.match(channelStatus(withKakao({ enabled: false }), "kakao"), /채널 꺼짐/);
-  assert.match(channelStatus(withKakao({ kinds: { line_signal: false } }), "kakao"), /차트 선 알림 꺼짐/);
-  assert.match(channelStatus(withKakao({ kinds: { tone_neutral: false } }), "kakao"), /참고 등급 꺼짐/);
-  assert.match(channelStatus(info, "kakao"), /차트 선 알림 켜짐/);
+  const telegram = { id: "telegram", configured: true, connected: true, enabled: true, kinds: {}, needs_reconnect: false };
+  const info = { can_edit: true, kinds: ["line_signal", "tone_neutral"], channels: [telegram] };
+  const withTelegram = patch => ({ ...info, channels: [{ ...telegram, ...patch }] });
+  assert.equal(channelStatus({ ...info, can_edit: false }, "telegram"), "상태 확인 불가");
+  assert.equal(channelStatus(withTelegram({ connected: false }), "telegram"), "연결 안 됨");
+  assert.match(channelStatus(withTelegram({ needs_reconnect: true }), "telegram"), /다시 연결/);
+  assert.match(channelStatus(withTelegram({ enabled: false }), "telegram"), /채널 꺼짐/);
+  assert.match(channelStatus(withTelegram({ kinds: { line_signal: false } }), "telegram"), /차트 선 알림 꺼짐/);
+  assert.match(channelStatus(withTelegram({ kinds: { tone_neutral: false } }), "telegram"), /참고 등급 꺼짐/);
+  assert.match(channelStatus(info, "telegram"), /차트 선 알림 켜짐/);
 });
 
 test("보호 모드에서 편집 권한 없이도 승인 채널의 종류와 등급을 표시한다", () => {
   const telegram = { name: "telegram", configured: true, enabled: true, kinds: { line_signal: true, tone_neutral: true } };
-  const kakao = { name: "kakao", configured: false, enabled: false, kinds: {} };
-  const info = { can_edit: false, kinds: ["line_signal", "tone_neutral"], channels: [telegram, kakao] };
+  const info = { can_edit: false, kinds: ["line_signal", "tone_neutral"], channels: [telegram] };
   assert.equal(channelStatus(info, "telegram"), "승인된 수신처 · 차트 선 알림 켜짐");
-  assert.equal(channelStatus(info, "kakao"), "승인된 수신처 없음");
+  assert.equal(channelStatus({ ...info, channels: [{ ...telegram, configured: false }] }, "telegram"), "승인된 수신처 없음");
   assert.equal(channelStatus({ ...info, channels: [{ ...telegram, kinds: { line_signal: true } }] }, "telegram"),
     "승인된 수신처 · 참고 등급 꺼짐");
 });

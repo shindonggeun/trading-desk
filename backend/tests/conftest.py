@@ -127,10 +127,11 @@ def no_yahoo_network(monkeypatch):
 def earnings_cache_in_tmp(monkeypatch, tmp_path):
     """#308: an earnings pass saves its rows - into the test's folder, never the developer's
     ~/.tradingagents (which the server volume mirrors)."""
-    from desk import earnings, macro_news
+    from desk import earnings, events_calendar, macro_news
 
     monkeypatch.setattr(earnings, "CACHE_FILE", tmp_path / "earnings.json")
     monkeypatch.setattr(macro_news, "CACHE_FILE", tmp_path / "macro_news.json")   # #428: the macro snapshot too
+    monkeypatch.setattr(events_calendar, "CACHE_FILE", tmp_path / "economic_calendar.json")   # #996 and the calendar's
     # #338: a Nasdaq failure asks Yahoo's calendar - never the network in a test (nothing stands in)
     monkeypatch.setattr(earnings, "_yahoo_calendar", lambda first, last: {})
 

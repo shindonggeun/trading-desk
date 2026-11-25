@@ -11,15 +11,21 @@ Two keyless official sources:
 A background loop (desk.api lifespan) refreshes ``CACHE`` a few times a day; runs and the API read
 the snapshot. A failed source keeps its previous events. ``blackout()`` answers "is a major release
 close enough that a new entry should wait" — the playbook wiring comes in a later change.
+
+#996 each pass is saved (``CACHE_FILE``, on the volume the split services share): the api and the analyst
+do not run the pass, they follow that file (desk.feed_snapshots).
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -37,6 +43,8 @@ FOMC_DECISION = time(14, 0)
 NOTE_DAYS = 7                 # the agents' note lists what is due in the next week
 BLACKOUT_BEFORE = timedelta(hours=12)
 BLACKOUT_AFTER = timedelta(hours=1)
+CACHE_FILE = Path.home() / ".tradingagents" / "desk-cache" / "economic_calendar.json"   # the backend's volume
+SOURCES = ("fed", "bls")
 
 # BLS summary → (id, label, importance). Importance 2 = moves the whole market.
 BLS_KEEP: dict[str, tuple[str, str, int]] = {
@@ -67,6 +75,17 @@ class Event:
     def to_dict(self) -> dict:
         return {"id": self.id, "label": self.label, "at": self.at.isoformat(), "importance": self.importance,
                 "source": self.source, "at_et": self.at.astimezone(ET).strftime("%Y-%m-%d %H:%M ET")}
+
+    @classmethod
+    def from_saved(cls, row) -> Event | None:
+        """One event of a saved pass (``to_dict``); None for a row that is not one."""
+        try:
+            at = datetime.fromisoformat(row["at"])
+            if at.tzinfo is None:
+                return None
+            return cls(str(row["id"]), str(row["label"]), at.astimezone(UTC), int(row["importance"]), str(row["source"]))
+        except (KeyError, TypeError, ValueError):
+            return None
 
 
 def parse_fomc(html: str) -> list[Event]:
@@ -136,6 +155,8 @@ class Calendar:
     by_source: dict[str, list[Event]] = field(default_factory=dict)
     refreshed_at: str | None = None
     error: str | None = None
+    cache_file: Path | None = None            # tests; CACHE_FILE otherwise
+    saved: bool = True                        # the last pass's snapshot reached its file (#996)
 
     async def refresh(self, client: httpx.AsyncClient | None = None, now: datetime | None = None) -> int:
         own = client is None
@@ -161,7 +182,60 @@ class Calendar:
         if ok:
             self.refreshed_at = (now or datetime.now(UTC)).isoformat()
         self.error = "; ".join(failures) or None
+        self.saved = await asyncio.to_thread(self.save)   # #996 what the api and the analyst follow, off the loop
         return ok
+
+    # --- persistence (#996) ------------------------------------------------------------------
+
+    def _path(self) -> Path:
+        return self.cache_file or CACHE_FILE
+
+    def save(self) -> bool:
+        path = self._path()
+        by_source = self.by_source             # the dict refresh() swapped in whole
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"by_source": {s: [e.to_dict() for e in rows] for s, rows in by_source.items()},
+                                       "refreshed_at": self.refreshed_at, "error": self.error}), encoding="utf-8")
+            tmp.replace(path)          # a stop mid-write leaves the last whole file
+        except OSError as exc:
+            log.warning("economic calendar snapshot not saved (%s): %s", path, exc)
+            return False
+        return True
+
+    def take(self, data: dict) -> bool:
+        """A pass another process saved (the collector's, #996): its events, when and how it went - as that
+        process has them now. False (nothing changed) for a file that is not a saved pass."""
+        saved = data.get("by_source")
+        if not isinstance(saved, dict):
+            return False
+        fresh = {}
+        for source, rows in saved.items():
+            if source in SOURCES and isinstance(rows, list):
+                events = [e for e in map(Event.from_saved, rows) if e is not None]
+                fresh[source] = sorted(set(events), key=lambda e: e.at)
+        self.by_source = fresh                 # swapped in whole, as refresh() does
+        self.refreshed_at = data.get("refreshed_at")
+        self.error = data.get("error")
+        return True
+
+    def load(self) -> bool:
+        """The last saved pass, before the first one in this process answers (the collector's restart, #996).
+        A missing or broken file, or one with no events, leaves the cache as it is."""
+        path = self._path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError) as exc:
+            log.warning("economic calendar snapshot unreadable (%s): %s", path, exc)
+            return False
+        saved = Calendar()
+        if not isinstance(data, dict) or not saved.take(data) or not saved.events():
+            return False
+        self.by_source, self.refreshed_at = saved.by_source, saved.refreshed_at
+        return True
 
     def events(self) -> list[Event]:
         return sorted((e for rows in self.by_source.values() for e in rows), key=lambda e: e.at)

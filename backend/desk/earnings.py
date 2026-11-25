@@ -281,6 +281,7 @@ class Earnings:
         self.failed_sources: list[str] = []
         self.refused: bool = False                # Nasdaq answered 403 on the last pass
         self.failed_passes = 0
+        self.saved = True                         # #996 the last pass's file was written (what others follow)
         self.name_of = name_of
         self.cache_file = cache_file
         self._yahoo = yahoo
@@ -301,17 +302,22 @@ class Earnings:
     def _path(self) -> Path:
         return self.cache_file or CACHE_FILE
 
-    def save(self) -> None:
+    def save(self) -> bool:
         path = self._path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".tmp")
+            # #996 the last pass's outcome too: what the api and the analyst follow (load() reads none of it)
             tmp.write_text(json.dumps({"us": self.us, "us_at": self.us_at, "kr": self.kr, "fallback": self.fallback,
                                        "details": self.details, "refreshed_at": self.refreshed_at,
-                                       "refused_at": self.refused_at}), encoding="utf-8")
+                                       "refused_at": self.refused_at, "pass_at": self.pass_at, "error": self.error,
+                                       "failed_sources": self.failed_sources, "refused": self.refused,
+                                       "substituted": self.substituted}), encoding="utf-8")
             tmp.replace(path)
         except OSError as exc:
             log.warning("earnings cache not saved (%s): %s", path, exc)
+            return False
+        return True
 
     def load(self) -> bool:
         """The last saved rows (after a restart); a missing or broken file leaves the cache empty."""
@@ -323,10 +329,27 @@ class Earnings:
         except (OSError, ValueError) as exc:
             log.warning("earnings cache unreadable (%s): %s", path, exc)
             return False
+        self._rows_of(data)
+        return True
+
+    def _rows_of(self, data: dict) -> None:
         self.us, self.us_at = data.get("us") or {}, data.get("us_at") or {}
         self.kr, self.fallback = data.get("kr") or {}, data.get("fallback") or {}
         self.details, self.refreshed_at = data.get("details") or {}, data.get("refreshed_at")
         self.refused_at = data.get("refused_at")
+
+    def take(self, data: dict) -> bool:
+        """A pass another process saved (the collector's, #996): its rows and how its last pass went, so the
+        page's stale marks and message are that process's. False (nothing changed) for a file that is not one."""
+        if not isinstance(data.get("us"), dict) or not all(
+                isinstance(data.get(k) or {}, dict) for k in ("us_at", "kr", "fallback", "details")):
+            return False
+        self._rows_of(data)
+        failed = data.get("failed_sources")
+        self.pass_at, self.error = data.get("pass_at"), data.get("error")
+        self.failed_sources = [str(s) for s in failed] if isinstance(failed, list) else []
+        self.refused = bool(data.get("refused"))
+        self.substituted = data.get("substituted") if isinstance(data.get("substituted"), int) else 0
         return True
 
     # --- the pass ----------------------------------------------------------------------------
@@ -447,7 +470,7 @@ class Earnings:
         self.failed_sources = sorted({f.split(" ", 1)[0].rstrip(":") for f in failures})
         # a Nasdaq failure Yahoo's calendar covered is not retried sooner than usual
         self.failed_passes = self.failed_passes + 1 if nasdaq_failed and not substituted else 0
-        await asyncio.to_thread(self.save)         # #859 the cache file, off the loop
+        self.saved = await asyncio.to_thread(self.save)   # #859 the cache file, off the loop
         return ok
 
     # --- the view ----------------------------------------------------------------------------

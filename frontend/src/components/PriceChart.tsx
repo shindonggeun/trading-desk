@@ -54,6 +54,10 @@ import { nqMarkedRows } from "../nqWeeklyChart";
 import DailyResistancePanel from "./DailyResistancePanel";
 import { dailyResistanceFocus, isDailyResistanceExample, findDailyResistanceCandle } from "../dailyResistance";
 import { revealDailyResistanceBar, useDailyResistanceOverlay, type DailyOverlayTarget } from "./dailyResistanceOverlay";
+import TrendFollowPanel from "./TrendFollowPanel";
+import { revealTrendTimes, useTrendFollowOverlay, type TrendOverlayTarget } from "./trendFollowOverlay";
+import { byStamp, evidencePractice, trendFocus, trendSummaryLine } from "../trendFollow";
+import type { DrawingPractice } from "./chartDrawingPractice";
 import { sameTicker } from "../ticker";
 import type { WeeklyDrawdownObservation } from "../weeklyDrawdownTypes";
 import AccumulationPanel from "./AccumulationPanel";
@@ -715,6 +719,42 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     revealDailyResistanceBar(drawn.chart, dailyTarget.time);
     box.current?.scrollIntoView({ block: "nearest" });
   };
+  // #978 일봉 추세추종 근거 — 어느 시간봉에서도 칸은 보이고, 앵커 · 확정봉 강조는 일봉 차트에서만 같은 시각 봉에 건다
+  const trendObservation = (readOn && !readFailed && sameTicker(ticker, chartRead?.ticker) ? chartRead?.trend_follow : null) ?? null;
+  const [trendFollowPick, setTrendFollowPick] = useState<string | null>(null);
+  useEffect(() => setTrendFollowPick(null), [ticker]);
+  // 일봉 차트의 같은 시각 봉을 찾는 표(렌더마다 선형 탐색하지 않게)
+  const trendRowAt = useMemo(() => (drawn && drawn.interval === "1d" ? byStamp(drawn.rows, (r) => r.bar.at) : null), [drawn]);
+  const trendTargets = useMemo(() => {
+    const out = new Map<string, { target: TrendOverlayTarget; total: number }>();
+    if (!trendObservation || !drawn?.alive.current || !sameTicker(ticker, drawn.ticker)) return out;
+    for (const key of ["stage", "hold", "break", ...trendObservation.evidence.map((e) => e.id)]) {
+      const f = trendFocus(trendObservation, key);
+      if (!f) continue;
+      const anchors = trendRowAt ? f.anchors.flatMap((a) => {
+        const row = trendRowAt(a.at);
+        return row ? [{ time: row.key as Time, price: a.price, n: a.n }] : [];
+      }) : [];
+      const barRow = trendRowAt && f.barAt ? trendRowAt(f.barAt) : undefined;
+      const bar = barRow && trendObservation.last_bar
+        ? { time: barRow.key as Time, high: trendObservation.last_bar.high, low: trendObservation.last_bar.low } : null;
+      if (f.prices.length || anchors.length || bar) out.set(key, { target: { prices: f.prices, anchors, bar }, total: f.anchors.length });
+    }
+    return out;
+  }, [trendObservation, drawn, ticker, trendRowAt]);
+  // 지금 차트에서 그릴 수 없는 선택은 눌린 상태로 남기지 않는다(시간봉을 바꾼 뒤 등)
+  const trendActive = trendFollowPick && trendTargets.has(trendFollowPick) ? trendFollowPick : null;
+  const trendTarget = trendActive ? trendTargets.get(trendActive)!.target : null;
+  useTrendFollowOverlay(drawn, trendTarget);
+  const pickTrendFollow = (key: string | null) => {
+    setTrendFollowPick(key);
+    const target = key ? trendTargets.get(key)?.target : null;
+    if (!target || !drawn?.alive.current) return;
+    revealTrendTimes(drawn.chart, [...target.anchors.map((a) => a.time), ...(target.bar ? [target.bar.time] : [])]);
+    box.current?.scrollIntoView({ block: "nearest" });
+  };
+  const [trendPractice, setTrendPractice] = useState<{ key: string; ticker: string; interval: string; practice: DrawingPractice } | null>(null);
+  useEffect(() => setTrendPractice(null), [ticker, interval]);
   const [accumulationView, selectAccumulationView] = useState<AccumulationViewKey | null>(null);
   const selectedAccumulation = accumulationView
     ?? (interval === "1d" ? "mid" : isIntradayTf(interval) ? "short" : "long");
@@ -2424,6 +2464,18 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
     return { price: drawingChart.lastClose, label: "최근 봉 종가", observedAt: drawingCandles.at(-1)?.stamp };
   }, [drawingChart, drawingCandles]);
   const focusDrawingChart = useCallback(() => box.current?.focus({ preventScroll: true }), []);
+  const trendPractices = useMemo(() => {
+    const out = new Map<string, DrawingPractice>();
+    if (!trendObservation || !drawingChart || interval !== "1d") return out;
+    const find = byStamp(drawingCandles, (c) => c.stamp);
+    for (const e of trendObservation.evidence) {
+      const practice = evidencePractice(e, find);
+      if (practice) out.set(e.id, practice);
+    }
+    return out;
+  }, [trendObservation, drawingChart, drawingCandles, interval]);
+  const clearTrendPractice = useCallback(() => setTrendPractice(null), []);
+  const trendGuided = trendPractice && trendPractice.ticker === ticker && trendPractice.interval === interval ? trendPractice : null;
   const planShown = !!plan && !levelsContradict(plan);   // #436 모순이라 그리지 않은 값은 경고 · 범위 안내에서도 뺀다
   const levels = [...(plan && planShown ? [plan.entry_price, plan.stop_loss, plan.price_target] : []), ...(extraLines ?? []).map((l) => l.price)];
   const hasLevels = levels.some((v) => v != null);
@@ -2524,7 +2576,7 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
       {drawingChart && (
         <ChartDrawingPanel key={JSON.stringify([product, interval])} ticker={product} interval={interval} currency={drawingUnit}
           drawingChart={drawingChart} candles={drawingCandles} currentQuote={readDrawingQuote}
-          focusChart={focusDrawingChart} onPlacement={captureDrawing} />
+          focusChart={focusDrawingChart} onPlacement={captureDrawing} guided={trendGuided} onGuidedStart={clearTrendPractice} />
       )}
       {show.entry && <EntrySummary entry={entry} failed={entryFailed} fromRun={!!plan}
         elapsed={interval === "1d" ? candles?.session_elapsed ?? null : null} />}
@@ -2650,6 +2702,24 @@ function PriceChartInner({ ticker, tradeDate, plan, title, extraLines, initialIn
           onInterval={(tf) => setBarInterval(tf as Interval)} marks={readMarks} picked={readPick} onPick={(n) => pickMark(n, "panel")}
           beginner={readPrefs.beginner} applied={beginner} onBeginner={(b) => pickRead({ beginner: b })} idPrefix={readId}
           open={readExpanded} onToggle={setReadExpanded} selectedAccumulation={selectedAccumulation}
+          trendLine={trendObservation ? trendSummaryLine(trendObservation) : null}
+          trendFollow={trendObservation ? (
+            <TrendFollowPanel observation={trendObservation} interval={interval} intervalKo={TF_KO[interval] ?? interval}
+              focus={{
+                available: (key) => trendTargets.has(key),
+                coverage: (key) => {
+                  const t = trendTargets.get(key);
+                  return t ? { shown: t.target.anchors.length, total: t.total } : null;
+                },
+                active: trendActive,
+                onPick: pickTrendFollow,
+                canPractice: (id) => trendPractices.has(id),
+                onPractice: (id) => {
+                  const practice = trendPractices.get(id);
+                  if (practice) setTrendPractice({ key: `${id}:${Date.now()}`, ticker, interval, practice });
+                },
+              }} />
+          ) : undefined}
           dailyResistance={dailyObservation ? (
             <DailyResistancePanel observation={dailyObservation}
               focus={dailyEvidence ? { available: dailyTarget !== null, active: dailyActive, onToggle: toggleDailyResistance } : undefined} />

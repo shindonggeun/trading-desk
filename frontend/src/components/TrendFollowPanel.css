@@ -1,0 +1,214 @@
+.trend-follow {
+  display: grid;
+  min-inline-size: 0;
+  gap: 6px;
+  margin-block: 8px 10px;
+  padding-block-end: 10px;
+  border-block-end: 1px solid var(--border);
+}
+
+.trend-follow :is(h4, h5, p, dl, dd, ul, ol) {
+  margin: 0;
+}
+
+.trend-follow-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.trend-follow-head h4 {
+  font-size: var(--fs-l);
+}
+
+.trend-follow h5 {
+  margin-block-start: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.trend-badge {
+  padding: 1px 6px;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-s);
+  color: var(--warn);
+}
+
+.trend-product {
+  overflow-wrap: anywhere;
+}
+
+.trend-signal {
+  font-weight: 600;
+}
+
+.trend-keys {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+}
+
+.trend-key {
+  display: grid;
+  gap: 1px;
+  min-inline-size: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+}
+
+button.trend-key { cursor: pointer; }
+button.trend-key.on { background: color-mix(in srgb, var(--accent) 10%, transparent); border-color: var(--accent); }
+
+.trend-key-hold { border-inline-start: 3px solid var(--ok); }
+.trend-key-break { border-inline-start: 3px solid var(--warn); }
+
+.trend-key-head {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.trend-key-price {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.trend-key-price b {
+  font-size: var(--fs-l);
+}
+
+.trend-key-label {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.trend-focus {
+  margin-inline-start: 6px;
+}
+
+.trend-bar {
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-conditions ul,
+.trend-lead ul {
+  display: grid;
+  gap: 3px;
+  padding: 0;
+  list-style: none;
+}
+
+.trend-cond {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.trend-cond-tag,
+.trend-status {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.trend-cond-tag-met,
+.trend-status-confirmed {
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
+  color: var(--ok);
+}
+
+.trend-cond-tag-open,
+.trend-status-pending {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  color: var(--warn);
+}
+
+.trend-cond-tag-unknown,
+.trend-status-insufficient {
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+  color: var(--muted);
+}
+
+.trend-evidence > summary,
+.trend-source > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.trend-evidence ol {
+  display: grid;
+  gap: 6px;
+  margin-block-start: 6px;
+  padding: 0;
+  list-style: none;
+}
+
+.trend-ev {
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+}
+
+.trend-ev.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.trend-ev > span {
+  overflow-wrap: anywhere;
+}
+
+.trend-ev-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+}
+
+.trend-ev-cover {
+  color: var(--warn);
+}
+
+.trend-ev-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-block-start: 2px;
+}
+
+button.trend-key[aria-disabled="true"] {
+  cursor: default;
+}
+
+.trend-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 8px;
+  margin-block-start: 5px;
+}
+
+.trend-grid dt {
+  color: var(--muted);
+}
+
+.trend-source > p {
+  margin-block-start: 5px;
+}
+
+.chart-read-trend {
+  display: block;
+  font-weight: 500;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}

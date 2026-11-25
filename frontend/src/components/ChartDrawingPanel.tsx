@@ -51,6 +51,10 @@ type Props = {
   currentQuote: () => DrawingQuote | null;
   focusChart: () => void;
   onPlacement: (active: boolean) => void;
+  /** #978 차트 읽기 근거의 앵커로 연습을 시작한다 — key 가 바뀔 때마다 한 번 */
+  guided?: { key: string; practice: DrawingPractice } | null;
+  /** guided 를 받아 시작했다 — 부모가 요청을 비워 다시 마운트돼도 또 시작하지 않게 */
+  onGuidedStart?: () => void;
 };
 
 function keyFor(time: Time | undefined) {
@@ -59,7 +63,7 @@ function keyFor(time: Time | undefined) {
 }
 
 export default function ChartDrawingPanel({
-  ticker, interval, currency, drawingChart, candles, currentQuote, focusChart, onPlacement,
+  ticker, interval, currency, drawingChart, candles, currentQuote, focusChart, onPlacement, guided, onGuidedStart,
 }: Props) {
   const id = useId();
   const panel = useRef<HTMLElement>(null);
@@ -205,6 +209,10 @@ export default function ChartDrawingPanel({
       setNotice("최근 확정 봉에서 이 연습에 필요한 반응점을 찾지 못했습니다. 다른 유형이나 시간봉에서 시도하세요.");
       return;
     }
+    showPractice(practice);
+  }
+  function showPractice(practice: DrawingPractice) {
+    if (!drawingChart) return;
     const scale = drawingChart.chart.timeScale();
     const indices = [...practice.steps.map(step => step.anchor), practice.reviewAnchor]
       .filter((point): point is DrawingAnchor => point != null)
@@ -219,6 +227,17 @@ export default function ChartDrawingPanel({
     start(practice.kind, { anchors: [], practice });
   }
 
+  const showPracticeRef = useRef(showPractice);
+  showPracticeRef.current = showPractice;
+  const guidedKey = guided?.key ?? null;
+  useEffect(() => {
+    if (!guidedKey || !guided) return;
+    setOpen(true);
+    showPracticeRef.current(guided.practice);
+    onGuidedStart?.();
+    requestAnimationFrame(() => panel.current?.scrollIntoView({ block: "nearest" }));
+    // 같은 요청(key)은 한 번만 시작한다
+  }, [guidedKey]);
   function startCurrent(direction: -1 | 1) {
     const quote = currentQuote();
     if (!quote || !last || quote.price <= 0 || !Number.isFinite(quote.price)) return;

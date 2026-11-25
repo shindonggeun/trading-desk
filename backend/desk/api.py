@@ -1436,7 +1436,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             started = time.monotonic()
             # #994 every quote in one Toss call while Toss takes it; else each one's (PASS_SEC a pass)
             await demand.serve({"quote": prices.refresh_quote, "futures_quote": futures_quotes.serve,
-                                ESTIMATE_NS: lambda t: collect_estimate(estimator, board_session, t)},
+                                ESTIMATE_NS: lambda t: collect_estimate(estimator, board_session, t),
+                                "krx_1m": prices.refresh_minutes, "fx": book.refresh_fx},
                                batch={"quote": prices.refresh_quotes} if prices.batch_ready() else None)
             return demand_pause(time.monotonic() - started)
 

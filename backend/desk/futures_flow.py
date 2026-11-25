@@ -323,7 +323,7 @@ class KisRest:
         refused = None
         for attempt in (0, 1):
             token = await self.token(refused)
-            outbound.count("kis")   # #689 per-process broker calls, /api/status
+            outbound.count("kis", tr_id)   # #689 per-process broker calls, /api/status - by TR id (a code constant)
             res = await (await self._client()).get(f"{self._url}{path}", params=params, headers={
                 "content-type": "application/json; charset=utf-8", "authorization": f"Bearer {token}",
                 "appkey": self._key, "appsecret": self._secret, "tr_id": tr_id, "custtype": "P"})

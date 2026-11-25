@@ -5,6 +5,10 @@ Prices come from desk.prices (Toss, else Yahoo, cached ~10 s); the rate from the
 (Toss /api/v1/exchange-rate, the mid rate) else Yahoo ``KRW=X``, cached the same way.
 One Portfolio object serves every open tab, so N streams cost the same Toss calls as one.
 
+#689 The rate is market data, so it goes through the shared tier (desk.shared_cache, ``fx``) like the prices:
+in split roles the collector's demand job (``refresh_fx``) keeps it fresh while a screen reads it, and a
+process's own read shares it too. The holdings are account data and stay each process's own call.
+
 When a price, the rate or the holdings call fails, the last good value stays and the
 snapshot carries ``error`` - the panel keeps its numbers and says why they stopped moving.
 
@@ -17,17 +21,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 
-from . import pools
+from . import demand, pools, shared_cache
 from .broker.base import Broker, Holding
 from .prices import PriceSource
 
 log = logging.getLogger(__name__)
 
 FX_TTL_SEC = 10.0
+# #689 desk.demand · desk.shared_cache: the rate as an FxRate dict under one key, and how long the collector shares
+# it (twice its period demand.EVERY["fx"], 30 s; Toss itself renews it once a minute) - the api of split roles
+# takes one this old, any other process one up to FX_TTL_SEC, as its own would be
+FX_SHARED_NS = "fx"
+FX_SHARED_KEY = "usd_krw"
+FX_SHARED_TTL_SEC = 60.0
 HOLDINGS_TTL_SEC = 10.0
 SNAPSHOT_TTL_SEC = 1.0     # concurrent streams in the same second share one snapshot
 YAHOO_FX_TICKER = "KRW=X"  # KRW per 1 USD
@@ -56,6 +67,17 @@ def yahoo_usd_krw() -> float:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _shared_fx(raw) -> FxRate | None:
+    """#689 a shared rate only when it is one - a real number, a source and when it was read - a miss otherwise."""
+    try:
+        fx = FxRate(**raw)
+    except TypeError:   # not a dict, or another shape
+        return None
+    ok = (isinstance(fx.usd_krw, int | float) and not isinstance(fx.usd_krw, bool) and math.isfinite(fx.usd_krw)
+          and fx.usd_krw > 0 and isinstance(fx.source, str) and isinstance(fx.at, str))
+    return fx if ok else None
 
 
 def _krw(value: float) -> float:
@@ -132,14 +154,42 @@ class Portfolio:
     async def usd_krw(self) -> FxRate:
         if self._fx and self._clock() - self._fx[0] < FX_TTL_SEC:
             return self._fx[1]
+        # #689 a rate another process read (its ``at`` says when): in the api of split roles up to FX_SHARED_TTL_SEC
+        # old - marked on every read past memory, a hit too, so the collector keeps it fresh - else FX_TTL_SEC
+        demand.want(FX_SHARED_NS, FX_SHARED_KEY)
+        hit = await shared_cache.aget(FX_SHARED_NS, FX_SHARED_KEY)
+        if hit is not None:
+            fx = _shared_fx(hit[0])
+            if fx is not None and hit[1] <= (FX_SHARED_TTL_SEC if demand.enabled() else FX_TTL_SEC):
+                # kept until FX_TTL_SEC after its read (or the shared value's end), at least a second
+                life = max(1.0, min(FX_TTL_SEC - hit[1], hit[2]))
+                self._fx = (self._clock() - (FX_TTL_SEC - life), fx)
+                return fx
+        fx = await self._read_fx()
+        self._fx = (self._clock(), fx)
+        # the collector's own reads (its holding watch) keep the collected lifetime: a 10 s write over its 60 s value
+        # would leave the api a gap before the next collection
+        await shared_cache.aput(FX_SHARED_NS, FX_SHARED_KEY, fx.to_dict(),
+                                FX_SHARED_TTL_SEC if demand.serving() else FX_TTL_SEC)
+        return fx
+
+    async def refresh_fx(self, key: str) -> None:
+        """#689 the collector's ``demand`` job (desk.demand.serve) for FX_SHARED_NS: the rate read now, the same way
+        the api would (the broker, else Yahoo), shared for FX_SHARED_TTL_SEC. Never reads the shared tier (it would
+        read its own value back); a failure propagates - demand.serve backs it off and the api reads it itself."""
+        if key != FX_SHARED_KEY:
+            raise ValueError("not a rate this desk reads")
+        fx = await self._read_fx()
+        self._fx = (self._clock(), fx)
+        await shared_cache.aput(FX_SHARED_NS, FX_SHARED_KEY, fx.to_dict(), FX_SHARED_TTL_SEC)
+
+    async def _read_fx(self) -> FxRate:
         try:
-            fx = FxRate(round(await self.broker.usd_krw(), 4), self.broker.name, _now())
+            return FxRate(round(await self.broker.usd_krw(), 4), self.broker.name, _now())
         except Exception as exc:  # noqa: BLE001 - any broker miss falls back to Yahoo
             if not isinstance(exc, NotImplementedError):
                 log.info("broker USD/KRW failed, using Yahoo: %s", exc)
-            fx = FxRate(round(await asyncio.to_thread(self._yahoo_fx), 4), "yahoo", _now())
-        self._fx = (self._clock(), fx)
-        return fx
+            return FxRate(round(await asyncio.to_thread(self._yahoo_fx), 4), "yahoo", _now())
 
     async def snapshot(self) -> dict:
         async with self._lock:
@@ -152,6 +202,9 @@ class Portfolio:
     async def _build(self) -> dict:
         errors: list[str] = []
 
+        # The holdings are always this process's own call to the broker, never the shared tier (#689): quantities,
+        # averages and the account are account data, and the shared Redis is a server other projects use on the same
+        # password - docs/security.md §5.2 keeps only market data there (the rate and the prices, not these).
         if self._holdings and self._clock() - self._holdings[0] < HOLDINGS_TTL_SEC:
             holdings = self._holdings[1]
         else:

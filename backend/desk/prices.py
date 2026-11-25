@@ -36,6 +36,11 @@ DEMAND_TTL_SEC = 30.0  # #689 desk.demand: the collector shares a quote this lon
 # tickers here - the call answers before HANDLER_SEC would cut it and fail the tickers it read itself too
 JOIN_SHARE = 0.75
 SHARED_NS = "quote"   # #689 desk.shared_cache: a Quote dict per ticker, QUOTE_TTL_SEC
+# #689 desk.demand · desk.shared_cache: a KRX ticker's last 200 (BROKER_MAX_COUNT) 1-minute bars from the broker - the
+# one series its minute charts' tail and the live chart's bars are cut from (refresh_minutes) - and their lifetime:
+# the collector's period (demand.EVERY, 30 s) and a late pass
+MINUTES_NS = "krx_1m"
+MINUTES_TTL_SEC = 45.0
 CANDLE_TTL_SEC = 30.0
 # #858 how far past their TTL a caller takes the bars it had, at once, while a background read brings new ones.
 # 0 - wait for new bars - everywhere but the one caller that says so with ``stale_ok``: /api/batch/candles (the
@@ -565,6 +570,11 @@ class PriceSource:
             raise ValueError(f"interval must be one of {INTERVALS}")
         indicators = normalize(indicators)
         count = min(max(count, 1), MAX_COUNT)
+        if is_krx(ticker) and (interval in _MINUTES or (interval == "1m" and count <= BROKER_MAX_COUNT)):
+            # #689 a KRX minute chart reads the broker's 1m tail (_broker_bars): every read, a memory hit too, keeps
+            # it collected - these entries live 30-120 s and a key unread for demand.KEEP_SEC (30 s) is dropped, so
+            # marking only the fetches would let the collection lapse between them
+            demand.want(MINUTES_NS, ticker)
         key = family_key(ticker, interval, count, indicators)
         ttl = _CANDLE_TTL[interval]
         now = self._clock()
@@ -677,12 +687,13 @@ class PriceSource:
         STALE_OK.set(0.0)
         # Extra bars ahead of the shown ones so the indicators have settled by the first bar drawn.
         fetch = count + max((WARMUP[i] for i in indicators), default=0)
+        fetched = None                   # #689 when shared bars were read (None: by this read, now)
         try:
             if interval not in BROKER_INTERVALS or count > BROKER_MAX_COUNT or off_broker(ticker):
                 raise NotImplementedError
             # Toss caps at 200: a chart that fits keeps Toss as its source with the RSI on, taking
             # only the warm-up bars that still fit, rather than flipping to Yahoo's (unadjusted) bars.
-            bars = await self.broker.candles(broker_symbol(ticker), interval, min(fetch, BROKER_MAX_COUNT))
+            bars, fetched = await self._broker_bars(ticker, interval, min(fetch, BROKER_MAX_COUNT))
             if not bars:
                 raise ValueError("no bars")
             source = self.broker.name
@@ -700,7 +711,7 @@ class PriceSource:
         else:
             rows = _rows(bars, indicators)
         rows = rows[-count:]
-        result = {"ticker": ticker, "interval": interval, "source": source, "fetched_at": _now(),
+        result = {"ticker": ticker, "interval": interval, "source": source, "fetched_at": fetched or _now(),
                   "bars": rows, "indicators": list(indicators),
                   "history_limit_days": HISTORY_LIMIT_DAYS.get(interval), "truncated": len(rows) < count}
         kept = self._candles.get(key)
@@ -764,6 +775,30 @@ class PriceSource:
         filled = fill_recent(bars, [Bar(**b) for b in recent["bars"]], _MINUTES[interval])
         return filled, ("yahoo" if filled is bars else f"yahoo+{self.broker.name}")
 
+    async def _broker_bars(self, ticker: str, interval: str, count: int) -> tuple[list[Bar], str | None]:
+        """The broker's last ``count`` bars, and when they were read (None: now). #689 a KRX ticker's 1-minute bars
+        in the api of split roles (desk.demand) are cut from the BROKER_MAX_COUNT the collector shares
+        (refresh_minutes; ``candles`` marks them) while they live - a miss or Redis down reads the broker as before."""
+        if interval == "1m" and is_krx(ticker) and demand.enabled():
+            hit = await shared_cache.aget(MINUTES_NS, ticker)
+            shared = _shared_minutes(hit[0], self.broker.name) if hit is not None else None
+            if shared is not None and hit[1] <= MINUTES_TTL_SEC:
+                return shared[1][-count:], shared[0]
+        return await self.broker.candles(broker_symbol(ticker), interval, count), None
+
+    async def refresh_minutes(self, ticker: str) -> None:
+        """#689 the collector's ``demand`` job for MINUTES_NS: a KRX ticker's last BROKER_MAX_COUNT 1-minute bars from
+        the broker, shared for MINUTES_TTL_SEC as plain JSON (a Bar is a dataclass: shared_cache would keep it out).
+        Never reads the shared tier and never falls back to Yahoo: a failure propagates - demand.serve backs the
+        ticker off and the api reads it itself."""
+        if not is_krx(ticker):
+            raise ValueError("not a KRX ticker")
+        bars = await self.broker.candles(broker_symbol(ticker), "1m", BROKER_MAX_COUNT)
+        if not bars:
+            raise ValueError("no bars")
+        value = {"source": self.broker.name, "at": _now(), "bars": [_minute_dict(b) for b in bars]}
+        await shared_cache.aput(MINUTES_NS, ticker, value, MINUTES_TTL_SEC)
+
 
 def family_key(ticker: str, interval: str, count: int, indicators: tuple[str, ...] = ()) -> tuple:
     """#874 the cache key ``count`` bars of ``ticker`` are read and kept under (``indicators`` normalized):
@@ -792,6 +827,32 @@ def _rows(bars: list[Bar], indicators: tuple[str, ...]) -> list[dict]:
     rows = [asdict(bar) for bar in bars]
     annotate(rows, indicators)
     return rows
+
+
+def _minute_dict(bar: Bar) -> dict:
+    """#689 a bar as plain JSON for the shared tier (str and floats: its JSON round trip is equal to it)."""
+    return {"at": str(bar.at), "open": float(bar.open), "high": float(bar.high), "low": float(bar.low),
+            "close": float(bar.close), "volume": float(bar.volume)}
+
+
+def _shared_minutes(raw, source: str) -> tuple[str, list[Bar]] | None:
+    """#689 (when read, the bars) of a shared MINUTES_NS value only when it is what refresh_minutes wrote from this
+    broker - bars of exactly the Bar fields with finite numbers - a miss otherwise."""
+    if not isinstance(raw, dict) or raw.get("source") != source or not isinstance(raw.get("at"), str):
+        return None
+    rows = raw.get("bars")
+    if not isinstance(rows, list) or not rows:
+        return None
+    try:
+        bars = [Bar(**row) for row in rows]
+    except TypeError:   # not a dict, or another shape
+        return None
+    for bar in bars:
+        numbers = (bar.open, bar.high, bar.low, bar.close, bar.volume)
+        if not isinstance(bar.at, str) or not all(
+                isinstance(n, int | float) and not isinstance(n, bool) and math.isfinite(n) for n in numbers):
+            return None
+    return raw["at"], bars
 
 
 def kis_quote(ticker: str, tick) -> Quote:

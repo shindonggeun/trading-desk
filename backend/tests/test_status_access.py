@@ -1,11 +1,13 @@
 """#995 who sees the process diagnostics in GET /api/status."""
 
+import json
 from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from desk import outbound
 from desk.account_owner import AccountOwnerStore
 from desk.api import create_app
 from desk.auth import Auth
@@ -64,6 +66,22 @@ def test_the_diagnostics_are_the_owners_in_protected_mode(db_url, protected):
     else:
         assert set(other) == PAGE | DIAGNOSTICS                # open mode: unchanged
     assert isinstance(other["jobs"], list) and isinstance(other["cooldowns"], list) and other["now"]
+
+
+@pytest.mark.parametrize("protected", [False, True])
+def test_the_broker_calls_by_kind_are_inside_the_owners_diagnostics(db_url, protected):
+    # #689 which Toss endpoints were called (holdings among them) is the owner's, with the totals
+    outbound.reset()
+    outbound.count("toss", "holdings")
+    outbound.count("kis", "FHKIF03020100")
+    with TestClient(_app(db_url, protected), base_url="https://testserver") as client:
+        owner, other = _status(client, OWNER), _status(client, OTHER)
+    assert owner["outbound"]["by_kind"]["toss"]["holdings"] >= 1 and owner["outbound"]["toss"] >= 1
+    assert owner["outbound"]["by_kind"]["kis"]["FHKIF03020100"] >= 1
+    if protected:
+        assert "outbound" not in other and "by_kind" not in json.dumps(other)
+    else:
+        assert other["outbound"]["by_kind"]["toss"]["holdings"] >= 1
 
 
 @pytest.mark.parametrize("protected", [False, True])

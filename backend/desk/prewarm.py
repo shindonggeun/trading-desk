@@ -22,6 +22,7 @@ refetched ahead.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -44,27 +45,54 @@ Job = Callable[[], Awaitable[object]]
 
 # #864 the prewarm's own workers (#874 desk.pools.PREWARM: a fixed small pool, asyncio.to_thread's meaning)
 WORKERS = pools.PREWARM_WORKERS
-LAST: dict = {}                     # the last pass: {"at", "ms", "jobs": {name: "<ms>ms" | error}}
+# the last pass: {"at", "ms", "jobs": {name: "<ms>ms" | error}, "queued": {name: ms}}
+LAST: dict = {}
+QUEUED_MIN_MS = 50.0                # a job's wait for a prewarm worker worth naming in the pass's line
+
+
+# #864 the job ``warm`` is running: ``off`` notes how long each of its pieces waited for a worker. A cold pass
+# showed `sectors=9152ms` of which ~5.4 s was the queue for PREWARM's 4 workers, not the sectors' own work.
+_WAITS: contextvars.ContextVar[list[float] | None] = contextvars.ContextVar("prewarm_waits", default=None)
 
 
 async def off(fn: Callable, /, *args, **kwargs):
     """``asyncio.to_thread`` on the prewarm's own executor (the context goes along, as to_thread's does)."""
-    return await pools.run(pools.PREWARM, fn, *args, **kwargs)
+    waits = _WAITS.get()
+    if waits is None:
+        return await pools.run(pools.PREWARM, fn, *args, **kwargs)
+    queued = time.perf_counter()
+
+    def timed():
+        waits.append((time.perf_counter() - queued) * 1000)
+        return fn(*args, **kwargs)
+    return await pools.run(pools.PREWARM, timed)
 
 
-async def warm(jobs: dict[str, Job]) -> dict[str, str]:
-    """Every job side by side: name -> "<ms>ms" or the error's class name."""
-    async def one(job: Job) -> str:
+async def warm(jobs: dict[str, Job], queued: dict[str, float] | None = None) -> dict[str, str]:
+    """Every job side by side: name -> "<ms>ms" or the error's class name. ``queued`` (when given) gets each
+    job's longest wait for a prewarm worker, in ms - a job's time is its queue plus its own work."""
+    async def one(name: str, job: Job) -> str:
+        waits: list[float] = []
+        _WAITS.set(waits)                   # this job's task only (gather runs each in its own context)
         start = time.perf_counter()
         try:
             await job()
         except Exception as exc:  # noqa: BLE001 - a cache that cannot be warmed now is asked next pass
             return type(exc).__name__
+        finally:
+            if queued is not None:
+                queued[name] = round(max(waits, default=0.0))
         return f"{(time.perf_counter() - start) * 1000:.0f}ms"
 
     names = list(jobs)
-    got = await asyncio.gather(*(one(jobs[n]) for n in names))
+    got = await asyncio.gather(*(one(n, jobs[n]) for n in names))
     return dict(zip(names, got, strict=True))
+
+
+def _line(took: dict[str, str], queued: dict[str, float]) -> str:
+    """``sectors=9152ms(q5400)`` - the queue named only where it is worth reading."""
+    return " ".join(f"{k}={v}" + (f"(q{queued[k]:.0f})" if queued.get(k, 0) >= QUEUED_MIN_MS else "")
+                    for k, v in took.items())
 
 
 async def run(jobs: Callable[[], dict[str, Job]], tickers: Callable[[], list[str]],
@@ -89,13 +117,14 @@ async def run(jobs: Callable[[], dict[str, Job]], tickers: Callable[[], list[str
         while True:
             start = time.monotonic()
             try:
-                took = await warm(jobs())
+                queued: dict[str, float] = {}
+                took = await warm(jobs(), queued)
                 if then is not None:
-                    took.update(await warm(then()))
-                log.info("prewarm: %s", " ".join(f"{k}={v}" for k, v in took.items()))
+                    took.update(await warm(then(), queued))
+                log.info("prewarm: %s", _line(took, queued))
                 LAST.clear()
                 LAST.update(at=datetime.now(UTC).isoformat(timespec="seconds"),
-                            ms=round((time.monotonic() - start) * 1000), jobs=took)
+                            ms=round((time.monotonic() - start) * 1000), jobs=took, queued=queued)
                 if aside is not None:
                     task = asyncio.ensure_future(aside())
                     beside.add(task)

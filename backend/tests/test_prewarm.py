@@ -342,4 +342,35 @@ def test_the_last_pass_is_kept_for_the_status_page():
             pass
 
     asyncio.run(go())
-    assert set(prewarm.LAST) == {"at", "ms", "jobs"} and set(prewarm.LAST["jobs"]) == {"a"}
+    assert set(prewarm.LAST) == {"at", "ms", "jobs", "queued"} and set(prewarm.LAST["jobs"]) == {"a"}
+
+
+# --- #864 a job's time is its wait for a prewarm worker plus its own work: the pass names the wait --------
+
+def test_warm_notes_each_jobs_wait_for_a_prewarm_worker(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from desk import pools
+    one = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-prewarm")
+    monkeypatch.setattr(pools, "PREWARM", one)
+    queued: dict[str, float] = {}
+    jobs = {
+        "first": lambda: prewarm.off(time.sleep, 0.2),
+        # two pieces side by side (as gaps' tickers): the job's wait is its longest piece's
+        "second": lambda: asyncio.gather(prewarm.off(time.sleep, 0.05), prewarm.off(time.sleep, 0.05)),
+    }
+    try:
+        took = asyncio.run(prewarm.warm(jobs, queued))
+    finally:
+        one.shutdown()
+    assert queued["first"] < 50
+    assert 180 <= queued["second"] <= 600       # behind "first" on the one worker, then behind its own twin
+    assert int(took["second"].removesuffix("ms")) >= queued["second"]
+    line = prewarm._line(took, queued)
+    assert f"second={took['second']}(q{queued['second']:.0f})" in line
+    assert f"first={took['first']} " in line + " "                    # under QUEUED_MIN_MS: not named
+
+
+def test_off_outside_a_pass_does_not_measure():
+    assert asyncio.run(prewarm.off(lambda: 7)) == 7
+

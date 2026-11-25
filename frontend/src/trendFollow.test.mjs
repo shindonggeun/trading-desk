@@ -148,6 +148,7 @@ test("강조 대상 — 확정봉 · 핵심 가격 · 근거 가격과 앵커", 
 test("근거 가격마다 #977 순서대로 이름을 붙인다", () => {
   assert.deepEqual(evidencePriceLabels({ kind: "channel_quarter", prices: [10, 9, 8, 7] }), ["채널 상단", "상단 25%", "하단 25%", "채널 하단"]);
   assert.deepEqual(evidencePriceLabels({ kind: "overlap", prices: [10, 10.1] }), ["저항", "매물 구역"]);
+  assert.deepEqual(evidencePriceLabels({ kind: "overlap", status: "insufficient", prices: [10] }), ["저항"]);
   // 모르는 개수면 근거 이름으로 — 틀린 이름을 붙이지 않는다
   assert.deepEqual(evidencePriceLabels({ kind: "channel_quarter", prices: [10, 9] }), ["채널 폭 0.25 보조선", "채널 폭 0.25 보조선"]);
   assert.deepEqual(evidencePriceLabels({ kind: "fib_extension", prices: [1, 2], meta: { ratios: "1.414,1.618,2.618" } }), ["피보나치 확장", "피보나치 확장"]);

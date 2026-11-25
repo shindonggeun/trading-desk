@@ -561,6 +561,21 @@ class BinanceEstimator:
                          market_state="open" if is_open else "closed", contract=contract, method=method,
                          basis=basis, multiple=multiple)
 
+    async def change_split(self, ticker: str, price: float, session: str, source: str, at: str | None,
+                           close: float | None = None, close_date: str | None = None) -> dict | None:
+        """#1001 :func:`change_split` for a KRX stock (``.KS`` · ``.KQ``) from its daily closes - cached
+        (desk.estimate.yahoo_daily_closes), with or without a contract. ``close`` · ``close_date``: the row's base
+        (the KRX after-hours auction knows today's close before Yahoo does). None for other tickers."""
+        ticker = ticker.upper()
+        if not ticker.endswith((".KS", ".KQ")):
+            return None
+        now = self._now()
+        today = now.astimezone(KRX.zone).date()
+        bars = await asyncio.to_thread(self._daily_closes, ticker)
+        finished = [(d, c) for d, c in bars if KRX.close_moment(d) <= now]
+        today_close = close if close_date == today.isoformat() else None
+        return change_split(price, finished, today, session, source, at, today_close)
+
     async def _estimate(self, ticker: str) -> Estimate | None:
         try:
             result = await self._compute(ticker)
@@ -787,5 +802,45 @@ class BinanceEstimator:
                 "anchor_source": source, "anchor_price": _round(nxt_price), "anchor_at": _iso(nxt_at), "bars": out}
 
 
+# --- #1001: a Korean stock's day split after the KRX close - regular · off-hours · combined ------------------
+
+def _pct(price: float, base: float) -> float:
+    return round((price / base - 1) * 100, 2)
+
+
+def change_split(price: float, finished: list[tuple[date, float]], today: date, session: str, source: str,
+                 at: str | None, today_close: float | None = None) -> dict | None:
+    """#1001 a KRX stock's change cut at today's regular close, for an off-hours price (NXT · the KRX's own
+    after-hours auction · the estimate on top of them): ``change_pct`` stays against the last regular close, so
+    once today's close is in it shows only the evening (a -10 % day read -0.2 % when NXT opened).
+
+    ``finished``: the daily closes whose session has ended (oldest first); ``today_close`` stands in for today's
+    close when Yahoo has not caught up yet. After today's close (``post`` · evening ``closed``):
+    regular = today / previous close, extended = price / today's close, total = price / previous close.
+    Before today's session (``pre``, NXT 08:00-08:50): no regular yet, extended = total = price / previous close.
+    None when the bases are not known (no close, or after the close without today's)."""
+    if not price or price <= 0 or not math.isfinite(price):
+        return None
+    done = [(d, c) for d, c in finished if d <= today and math.isfinite(c) and c > 0]
+    if today_close and today_close > 0 and (not done or done[-1][0] < today):
+        done.append((today, today_close))
+    if not done:
+        return None
+    off = {"session": session, "source": source, "at": at}
+    if done[-1][0] == today:
+        if len(done) < 2:
+            return None
+        (d0, c0), (d1, c1) = done[-2], done[-1]
+        return {"regular": {"pct": _pct(c1, c0), "base": _round(c0), "base_date": d0.isoformat()},
+                "extended": {"pct": _pct(price, c1), "base": _round(c1), "base_date": d1.isoformat(), **off},
+                "total": {"pct": _pct(price, c0), "base": _round(c0), "base_date": d0.isoformat()}}
+    if session != "pre":
+        return None                      # after the close without today's close: the bases are not known
+    d0, c0 = done[-1]
+    return {"regular": None,
+            "extended": {"pct": _pct(price, c0), "base": _round(c0), "base_date": d0.isoformat(), **off},
+            "total": {"pct": _pct(price, c0), "base": _round(c0), "base_date": d0.isoformat()}}
+
+
 __all__ = ["COMMODITY_CONTRACTS", "FUTURES", "KRX", "KR_CONTRACTS", "PROXIES", "US", "BinanceEstimator", "Estimate",
-           "LastClose"]
+           "LastClose", "change_split"]

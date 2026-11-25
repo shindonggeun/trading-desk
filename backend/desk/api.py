@@ -169,6 +169,9 @@ from .ttl_cache import TTLCache
 from .universe import KR_SUFFIX, Universe
 
 MAX_BOARD = 30          # tickers per /api/estimates call
+# #1001 the rows whose change is cut at today's KRX close: an off-hours price and its session
+SPLIT_SOURCES = ("nxt", "krx-overtime", "binance-estimate")
+SPLIT_SESSIONS = ("pre", "post", "closed")
 CALENDAR_INTERVAL_SEC = 6 * 3600   # economic calendar re-read (#148)
 POSITIONING_PARALLEL = 3   # Cboe chains are ~2 MB each (#154)
 POSITIONING_QUOTE_SEC = 5.0
@@ -3616,6 +3619,25 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         await _first_trades(names)
 
         async def one(ticker: str) -> dict:
+            out = await board_row(ticker)
+            splitter = getattr(estimator, "change_split", None)
+            if (splitter is not None and out.get("quote_source") in SPLIT_SOURCES
+                    and out.get("session") in SPLIT_SESSIONS and out.get("price") is not None
+                    and kis_stream.market_of(ticker) == "KR"):
+                # #1001 after today's KRX close the change is the evening's only - say the day's parts too
+                try:
+                    async with gate:            # the daily closes may be read from Yahoo (cached)
+                        split = await splitter(ticker, out["price"], out["session"], out["quote_source"],
+                                               out.get("traded_at") or out.get("fetched_at"),
+                                               out.get("close"), out.get("close_date"))
+                except Exception as exc:  # noqa: BLE001 - Yahoo down: the row stands without its parts
+                    log.info("change split for %s failed: %s", ticker, exc)
+                    split = None
+                if split is not None:
+                    out["change_split"] = split
+            return out
+
+        async def board_row(ticker: str) -> dict:
             async with gate:
                 # #250: one session answer; while anything trades the board shows a real price
                 session = await sessions.session(calendar, ticker)

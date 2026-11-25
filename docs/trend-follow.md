@@ -13,7 +13,9 @@
 - 마지막 일봉은 장 마감에 원천 지연을 더한 시각이 지나야 확정으로 친다.
   - 국장: 15:30 KST + 20분
   - 미장: 정규장 마감 + 15분
-  - CME 선물: 17:00 ET + 10분
+  - CME 선물: 17:00 ET + 10분. 월–목 18:00 ET 뒤 오늘 날짜가 붙은 행은 새 세션일 수 있어 확정으로 치지 않는다(#741).
+  - 24시간 거래(암호화폐 쌍 · `=X` 환율): 봉 시각 + 1일
+  - 세션을 모르는 시장(`7203.T` 처럼 `.` 접미사가 붙은 해외 종목): 읽지 않고 `unsupported_market`
 - 그 전에는 마지막 봉을 빼고 읽고 `status: "in_progress"` 를 낸다. `as_of` 는 판정에 쓴 마지막 확정봉 시각이다.
 - 스윙은 양쪽 3봉 피벗(`channels.SWING_K["1d"]`)이다. 오른쪽 3봉이 확정된 다음 봉부터만 쓴다. 판정하는 봉보다 뒤의 봉은 읽지 않는다.
 
@@ -23,9 +25,10 @@
 | --- | --- | --- |
 | `breakout_confirmed` | `close_above` | 최근 20봉 안에 저항선 + 0.3 ATR 위 종가. 직전 봉은 선 아래 |
 | `failed_breakout` | `close_back_below` | 돌파 뒤 돌파한 선 − 0.3 ATR 아래 종가 |
-| `awaiting_confirmation` | `wick_touch` | 마지막 봉 고가가 가장 가까운 저항 − 0.25 ATR 에 닿고, 종가는 돌파 아래 |
+| `awaiting_confirmation` | `wick_touch` | 마지막 봉 고가가 가장 가까운 저항 − 0.25 ATR 에 닿고, 종가는 선 아래 |
+| `awaiting_confirmation` | `null` | 위와 같이 닿았는데 종가가 선 위 0.3 ATR 안(돌파 기준 전). 그 선은 아직 넘어야 할 저항으로 남는다 |
 | `first_rebound` | `support_reclaim` | 최근 3봉 안에 지지 − 0.3 ATR 아래 종가를 낸 뒤, 마지막 봉이 그 지지 위로 마감 |
-| `first_rebound` | `first_up_bar` | 직전 20봉 최고 종가에서 3 ATR 넘게 하락한 뒤 처음 나온 강한 양봉(몸통 0.6 ATR 이상, 종가가 범위 상단 30%) |
+| `first_rebound` | `first_up_bar` | 최근 20봉의 최저 저가까지, 그 앞의 최고 종가에서 3 ATR 넘게 하락한 뒤 처음 나온 강한 양봉(몸통 0.6 ATR 이상, 종가가 범위 상단 30%) |
 | `awaiting_confirmation` | `null` | 위 반등이 최근 10봉 안에 있었고 아직 돌파 전 |
 | `none` | `null` | 해당 없음 |
 
@@ -52,8 +55,8 @@
 
   | kind | id | 내용 |
   | --- | --- | --- |
-  | `confirm` | `close_above_resistance` | 저항 위 종가 |
-  | `confirm` | `hold_after_break` | 돌파 다음 봉도 선 위 |
+  | `confirm` | `close_above_resistance` | 종가가 저항 + 0.3 ATR 위(`price` 는 그 기준 가격) |
+  | `confirm` | `hold_after_break` | 돌파 다음 봉 종가가 그 봉에서의 선 위. 다음 봉이 아직 없으면 `met: null` |
   | `confirm` | `stochastic_80` | 스토캐스틱 80 도달 |
   | `confirm` | `rsi_divergence` | RSI 다이버전스 |
   | `invalidate` | `close_below_hold` | hold 아래 종가 |
@@ -79,7 +82,9 @@
 ## 선행 돌파 `lead`
 
 - 세 종목에 같은 규칙을 쓴다: 직전 스윙 고점 위 0.3 ATR 넘는 일봉 종가 마감, 최근 20봉.
-- 마지막 확정봉의 거래일이 코스피와 같을 때만 비교한다.
+- 종목마다 코스피와 둘 중 이른 마지막 확정 거래일까지 봉을 잘라 맞춘 뒤 비교한다.
+  - 한쪽 원천에 봉이 하나 빠지거나 먼저 들어와도 비교 구간이 어긋나지 않게 하려는 것이다. 예: 야후 `^KS11` 에 2026-11-24 봉이 없었다.
+  - 어느 쪽이든 잘려 나가는 봉이 2개를 넘거나 그날 봉이 없으면 `not_comparable` 이고, 이때 `at` 은 `null` 이다.
 - `state`:
   - `led`: 코스피보다 먼저 돌파했거나, 코스피는 아직 돌파 전
   - `same`: 코스피와 같은 날 돌파
@@ -96,12 +101,14 @@
 | `NQ=F` | `continuous_future` · `index_points` · `cme_globex` | `rollover: "yahoo_front_month"`. TradingView `NQ1!` 와 공급자 · 롤오버 시점이 다르다는 `note` |
 | `^KS11` | `cash_index` · `index_points` · `krx_regular` | |
 | `000660.KS` · `005930.KS` | `stock` · KRW · `krx_regular` | |
+| `BTC-USDT` · `KRW=X` 등 | `spot` · 호가 통화(`USDT` · `KRW` …) · `24h` | |
 | `SOXLUSDT(.P)` · `NAS100` · `NQ1!` | `unavailable` · `product_mismatch`, `instrument: null` | 다른 상품의 봉으로 대신하지 않음 |
 
 - `provider` 는 일봉 원천(`yahoo` · `toss`)이다.
 - 그 밖에 근거가 없을 때의 `reason`:
   - `missing_daily_source`: 일봉 없음
   - `insufficient_bars`: 확정봉 60개 미만
+  - `unsupported_market`: 세션을 모르는 시장, `instrument: null`
   - `trend_follow_error`: 계산 실패
 
 ## 과거 결과 (2026-11-25 실행)
@@ -117,7 +124,7 @@
 
 | 종목 | 기간 | 돌파 확인 | 10봉 안 재이탈 | 10봉 뒤 상승 | 수익 중앙값 | 첫 양봉 n (상승) | 지지 회복 n (상승) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| SOXX | 2022-09-09 ~ 2026-11-23 | 116 | 52 (45%) | 64 | +1.54% | 6 (3) | 6 (3) |
+| SOXX | 2022-09-09 ~ 2026-11-23 | 116 | 52 (45%) | 64 | +1.54% | 5 (2) | 6 (3) |
 | SOXL | 2022-09-09 ~ 2026-11-23 | 109 | 58 (53%) | 61 | +4.01% | 4 (2) | 3 (3) |
 | NQ=F | 2022-09-16 ~ 2026-11-25 | 127 | 57 (45%) | 81 | +1.05% | 5 (3) | 2 (1) |
 | ^KS11 | 2022-07-28 ~ 2026-11-25 | 107 | 47 (44%) | 67 | +1.00% | 3 (2) | 3 (2) |

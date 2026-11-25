@@ -72,7 +72,8 @@ def test_a_wick_into_resistance_closing_under_it_waits():
     got = read(closes, shapes={len(closes) - 1: (101, 102.4, 100.8, 101.5)})
     assert got["stage"]["state"] == "awaiting_confirmation" and got["stage"]["signal"] == "wick_touch"
     confirm = next(c for c in got["conditions"] if c["id"] == "close_above_resistance")
-    assert confirm["price"] == 102.5 and confirm["met"] is False
+    assert got["key_prices"]["break"]["price"] == 102.5
+    assert 102.5 < confirm["price"] < 104 and confirm["met"] is False     # the line plus 0.3 ATR
 
 
 def test_a_finished_close_over_resistance_is_a_breakout():
@@ -96,7 +97,62 @@ def test_a_close_back_under_the_broken_line_fails_the_breakout():
 
 def test_a_close_only_just_over_the_line_is_no_breakout():
     closes = base() + [100, 101, 102.9]                               # under 102.5 + 0.3 ATR
-    assert read(closes)["stage"]["state"] != "breakout_confirmed"
+    got = read(closes)
+    assert got["stage"]["state"] == "awaiting_confirmation" and got["stage"]["signal"] is None
+    assert got["key_prices"]["break"]["price"] == 102.5                # still the line to break
+    confirm = next(c for c in got["conditions"] if c["id"] == "close_above_resistance")
+    assert confirm["price"] > 102.9 and confirm["met"] is False      # the line plus 0.3 ATR
+
+
+def test_a_next_close_under_the_broken_line_does_not_hold_it():
+    closes = base() + [100, 101, 103.5, 102.3]                        # under 102.5, above the fail level
+    got = read(closes)
+    assert got["stage"]["state"] == "breakout_confirmed"
+    assert next(c for c in got["conditions"] if c["id"] == "hold_after_break")["met"] is False
+    just = read(base() + [100, 101, 103.5])                           # no bar after the break yet
+    assert next(c for c in just["conditions"] if c["id"] == "hold_after_break")["met"] is None
+
+
+def test_a_strong_bar_in_a_rise_is_no_first_rebound():
+    closes = [100 + .3 * i for i in range(80)]
+    closes.append(closes[-1] + 2.5)
+    got = read(closes, shapes={80: (closes[-2], closes[-1] + .1, closes[-2] - .1, closes[-1])})
+    assert got["stage"]["signal"] != "first_up_bar"
+
+
+def test_the_frame_channel_stays_while_the_last_bar_trades():
+    closes = base() + [100, 101]
+    bars = bars_of(closes)
+    i, j, live = len(bars) - 30, len(bars) - 14, len(bars) - 1
+    channel = {"id": f"1d-channel-{bars[i]['at']}-{bars[j]['at']}", "direction": "flat", "base": "upper",
+               "width_pct": 5.06,                                     # drawn to the bar still trading
+               "upper": {"start": {"at": bars[i]["at"], "price": 102.5}, "end": {"at": bars[live]["at"], "price": 102.5}},
+               "lower": {"start": {"at": bars[i]["at"], "price": 97.5}, "end": {"at": bars[live]["at"], "price": 97.5}}}
+    day = datetime.fromisoformat(bars[-1]["at"]).astimezone(market_calendar.ET).date()
+    during = datetime.combine(day, time(12), market_calendar.ET).astimezone(UTC)
+    got = trend_follow.build("SOXX", {"bars": bars, "source": "yahoo"}, during, frame={"channels": [channel]})
+    assert got["status"] == "in_progress"
+    assert next(e for e in got["evidence"] if e["kind"] == "channel_quarter")["status"] == "confirmed"
+
+
+@pytest.mark.parametrize(("ticker", "stamp", "at", "done"), [
+    ("005930.KS", "2026-11-23T15:00:00+00:00", "2026-11-24T06:49:00+00:00", False),   # KRX 15:49 KST
+    ("005930.KS", "2026-11-23T15:00:00+00:00", "2026-11-24T06:51:00+00:00", True),
+    ("NQ=F", "2026-11-24T05:00:00+00:00", "2026-11-24T22:05:00+00:00", False),       # 17:05 ET
+    ("NQ=F", "2026-11-24T05:00:00+00:00", "2026-11-24T22:11:00+00:00", True),
+    ("NQ=F", "2026-11-24T05:00:00+00:00", "2026-11-25T00:00:00+00:00", False),       # Tue 19:00 ET: a new session's row
+    ("BTC-USDT", "2026-11-24T00:00:00+00:00", "2026-11-24T22:00:00+00:00", False),   # its day ends at UTC midnight
+    ("BTC-USDT", "2026-11-24T00:00:00+00:00", "2026-11-25T00:00:00+00:00", True),
+])
+def test_a_daily_bar_is_final_once_its_session_closes(ticker, stamp, at, done):
+    assert trend_follow.final(ticker, {"at": stamp}, datetime.fromisoformat(at)) is done
+
+
+def test_a_market_without_a_known_session_is_not_read():
+    got = read(base() + [100, 101], ticker="7203.T")
+    assert got["status"] == "unavailable" and got["reason"] == "unsupported_market" and got["instrument"] is None
+    assert trend_follow.instrument("KRW=X", "yahoo")["unit"] == "KRW"
+    assert trend_follow.instrument("ETH-BTC", "yahoo")["unit"] == "BTC"
 
 
 def test_the_bar_still_trading_is_left_out():
@@ -219,13 +275,25 @@ def test_lead_compares_the_same_breakout_rule_on_the_same_session():
     assert "돌파 시점 비교" in item["detail"]
 
 
-def test_lead_without_the_same_session_is_not_comparable():
+def test_lead_lines_up_a_feed_missing_its_last_bar():
+    flat = base()
+    hynix = _kr(flat + [100, 101, 101.5, 103.5, 104, 104.5])                     # breaks on the 11-20 bar
+    kospi = _kr(flat + [100, 101, 101.5, 103.5, 104], last=date(2026, 11, 23))   # its 11-24 bar missing
+    samsung = _kr(flat + [100, 103.5, 104, 104.5, 105, 105])
+    got = trend_follow.build("000660.KS", {"bars": hynix, "source": "toss"}, NOW,
+                             peers={"^KS11": kospi, "005930.KS": samsung})
+    states = {i["ticker"]: (i["state"], i["at"]) for i in got["lead"]["items"]}
+    assert states["000660.KS"] == ("same", hynix[-3]["at"])                     # KOSPI's break day too
+    assert states["005930.KS"] == ("led", samsung[-5]["at"])
+
+
+def test_lead_without_a_matching_session_is_not_comparable():
     flat = base()
     kospi = _kr(flat + [100, 101, 101.5, 103.5, 104])
-    behind = _kr(flat + [100, 103.5, 104, 104.5], last=date(2026, 11, 23))   # a day short
-    got = trend_follow.build("000660.KS", {"bars": behind, "source": "toss"}, NOW,
+    stale = _kr(flat + [100, 103.5, 104, 104.5], last=date(2026, 11, 18))       # four sessions behind
+    got = trend_follow.build("000660.KS", {"bars": stale, "source": "toss"}, NOW,
                              peers={"^KS11": kospi, "005930.KS": None})
-    assert got["lead"]["items"] == [{"ticker": "000660.KS", "state": "not_comparable", "at": behind[-3]["at"]},
+    assert got["lead"]["items"] == [{"ticker": "000660.KS", "state": "not_comparable", "at": None},
                                     {"ticker": "005930.KS", "state": "not_comparable", "at": None}]
     assert next(e for e in got["evidence"] if e["kind"] == "lead")["status"] == "insufficient"
 

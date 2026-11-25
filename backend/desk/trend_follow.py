@@ -7,9 +7,10 @@ not a recommendation.
 - **Finished bars only.** The last bar counts once its session closed (plus the feed's lag); before that the
   read stands on the bar before it and says ``in_progress``. A swing is a pivot of ``SWING_K`` bars each side,
   usable from the bar after the one that confirmed it - nothing reads a bar ahead of the bar it judges.
-- **Resistance.** The falling trendlines and a falling channel's upper edge of the frame (from the bar after
-  their second anchor was confirmed), and every swing high not yet closed above. A close more than
-  ``BREAK_ATR`` ATRs beyond a line breaks it; a close back under it by as much is a failed breakout.
+- **Lines.** The frame's trendlines and its best channel's two edges (from the bar after their second anchor
+  was confirmed), every swing high not yet closed above (resistance) and every swing low not yet closed under
+  (support). A close more than ``BREAK_ATR`` ATRs beyond a line breaks it; a close back under it by as much is a
+  failed breakout. A close over a line by less still has it to break.
 - **Stage.** ``breakout_confirmed`` / ``failed_breakout`` (the latest break in ``LOOKBACK`` bars and what
   followed), else ``awaiting_confirmation`` when the last bar's high reached the nearest resistance and closed
   under it (``wick_touch``), else ``first_rebound`` when the last bar closed back over a support it had closed
@@ -32,6 +33,7 @@ from datetime import UTC, datetime, timedelta
 
 from . import channels, chart_read, indicators, trend, volume_profile
 from . import market_calendar as calendar
+from .prices import CRYPTO_SUFFIXES
 
 MIN_BARS = 60              # finished daily bars a read needs
 SWING_K = channels.SWING_K["1d"]
@@ -69,14 +71,24 @@ NOTE = "지난 일봉으로 계산한 관찰 근거예요 — 예측도, 매수 
 # ---- the instrument and its finished bars ---------------------------------------------------------------------
 
 def _market(ticker: str) -> str | None:
+    """cme · kr · us, None for what trades round the clock (crypto pairs, FX), "other" for a market whose
+    session this read does not know (Tokyo, London ... - their daily stamps would pass for finished)."""
     t = ticker.upper()
     if t.endswith("=F"):
         return "cme"
     if t.endswith((".KS", ".KQ")) or t.startswith(("^KS", "^KQ")):
         return "kr"
-    if t.endswith(("-USD", "=X")):
-        return None                                  # trades round the clock: no session close
+    if t.endswith((*CRYPTO_SUFFIXES, "=X")):
+        return None
+    if "." in t:
+        return "other"
     return "us"
+
+
+def _unit_24h(t: str) -> str:
+    if t.endswith("=X"):                             # KRW=X: won per dollar, EURUSD=X: dollars per euro
+        return t[:-2][-3:]
+    return t.rsplit("-", 1)[1]
 
 
 def instrument(ticker: str, provider: str | None) -> dict:
@@ -92,13 +104,22 @@ def instrument(ticker: str, provider: str | None) -> dict:
         index = t.startswith("^")
         kind, unit, session = ("cash_index", "index_points", "krx_regular") if index else ("stock", "KRW", "krx_regular")
     elif market is None:
-        kind, unit, session = "spot", "USD", "24h"
+        kind, unit, session = "spot", _unit_24h(t), "24h"
+    elif market == "other":
+        return None
     elif t.startswith("^"):
         kind, unit, session = "cash_index", "index_points", "us_regular"
     else:
         kind, unit, session = ("etf" if t in ETFS else "stock"), "USD", "us_regular"
     return {"kind": kind, "unit": unit, "symbol": t, "provider": provider, "session": session,
             "rollover": rollover, "note": note}
+
+
+def _evening_relabel(ticker: str, day, now: datetime) -> bool:
+    """#741: Monday to Thursday from 18:00 New York, a futures row dated today may already be the next session
+    (Yahoo dates it that evening; desk.prices keeps it so when its hourly rebuild fails) - not final."""
+    local = now.astimezone(calendar.ET)
+    return local.weekday() <= 3 and local.time() >= calendar.CME_OPENS and day == local.date()
 
 
 def _when(at: object) -> datetime | None:
@@ -117,10 +138,14 @@ def final(ticker: str, bar: dict, now: datetime) -> bool:
     if at is None:
         return False
     market = _market(ticker)
+    if market == "other":
+        return False
     if market is None:
         return at + timedelta(days=1) <= now
     day = calendar.bar_day(bar["at"], market == "kr")
     if market == "cme":                               # the session dated D ends 17:00 New York on D
+        if _evening_relabel(ticker, day, now):
+            return False
         close = datetime.combine(day, calendar.CME_CLOSES, calendar.ET)
     else:
         close = calendar.session_close(market, day)
@@ -268,12 +293,12 @@ def _strong_up(bar: dict, atr: float) -> bool:
 
 
 def _first_up(bars: list[dict], x: int, atr: float) -> bool:
-    """A strong up bar at ``x`` after a fall of DECLINE_ATR, the first one since the fall's low."""
+    """A strong up bar at ``x`` after a fall of DECLINE_ATR (from a close before the low), the first one since
+    the fall's low."""
     if x < DECLINE_BARS or not _strong_up(bars[x], atr):
         return False
-    window = bars[x - DECLINE_BARS:x]
-    peak = max(b["close"] for b in window)
     low_at = min(range(x - DECLINE_BARS, x + 1), key=lambda i: bars[i]["low"])
+    peak = max(b["close"] for b in bars[x - DECLINE_BARS:low_at + 1])
     if peak - bars[low_at]["low"] < DECLINE_ATR * atr:
         return False
     return not any(_strong_up(bars[i], atr) for i in range(low_at, x))
@@ -309,7 +334,8 @@ def _reclaim(lines: list[Line], bars: list[dict], x: int, tol: float) -> tuple[L
 
 
 def _resistance_now(lines: list[Line], bars: list[dict], x: int, tol: float) -> Line | None:
-    """The nearest resistance over bar ``x``'s close not yet closed through."""
+    """The nearest resistance not yet closed through: over bar ``x``'s close, or under it by less than ``tol``
+    (a close that far over a line has not broken it - the line is still to break)."""
     close, best = bars[x]["close"], None
     for ln in lines:
         if ln.side != "resistance" or x < ln.start:
@@ -317,7 +343,7 @@ def _resistance_now(lines: list[Line], bars: list[dict], x: int, tol: float) -> 
         if any(bars[i]["close"] > ln.value(i) + tol for i in range(ln.start, x + 1)):
             continue
         level = ln.value(x)
-        if level >= close and (best is None or level < best[0]):
+        if level >= close - tol and (best is None or level < best[0]):
             best = (level, ln)
     return best[1] if best else None
 
@@ -330,7 +356,7 @@ def _support_now(lines: list[Line], bars: list[dict], x: int, tol: float) -> Lin
         if any(bars[i]["close"] < ln.value(i) - tol for i in range(ln.start, x + 1)):
             continue
         level = ln.value(x)
-        if level <= close and (best is None or level > best[0]):
+        if level <= close + tol and (best is None or level > best[0]):
             best = (level, ln)
     return best[1] if best else None
 
@@ -370,8 +396,9 @@ def _stage(lines: list[Line], bars: list[dict], atr: float) -> dict:
                 "level": ln.value(t), "break_at": b}
     res = _resistance_now(lines, bars, t, tol)
     if res is not None and last["high"] >= res.value(t) - TOUCH_ATR * atr:
-        return {**out, "state": "awaiting_confirmation", "signal": "wick_touch", "at": t, "line": res,
-                "level": res.value(t)}
+        over = last["close"] > res.value(t)            # closed just over it, short of a break
+        return {**out, "state": "awaiting_confirmation", "signal": None if over else "wick_touch", "at": t,
+                "line": res, "level": res.value(t), "just_over": over}
     rebound = None
     for x in range(t, max(DECLINE_BARS, t - REBOUND_BARS) - 1, -1):
         rec = _reclaim(lines, bars, x, tol)
@@ -542,7 +569,7 @@ def stochastic(bars: list[dict], k: int = STOCH["k"], smooth: int = STOCH["smoot
     anchors = [{"at": bars[b]["at"], "price": _p(bars[b]["close"]), "k": pk[b]}]
     if e is None:
         return _item("stochastic", "pending", label,
-                     f"%K 가 {bars[b]['at'][:10]} 바닥 뒤 {len(bars) - 1 - b}봉째 {pk[-1]} — 아직 80 전이에요.",
+                     f"%K 가 바닥 뒤 {len(bars) - 1 - b}봉째 {pk[-1]} — 아직 80 전이에요.",
                      (), anchors, None, {**meta, "pullback_max": round(pull, 2)})
     anchors.append({"at": bars[e]["at"], "price": _p(bars[e]["close"]), "k": pk[e]})
     took = e - b
@@ -579,42 +606,67 @@ def overlap(bars: list[dict], resistance: tuple[float, Line] | None, atr: float)
 
 # ---- lead (KOSPI, SK hynix, Samsung Electronics) -------------------------------------------------------------
 
-def _break_day(ticker: str, bars: list[dict]):
-    """The day of the latest break of a swing high in LOOKBACK bars (the lead rule: swing highs only, so the
-    three are read alike), and the day of the last bar."""
+LEAD_SLACK = 2             # finished bars one side may run ahead of the other (a late feed, a missing bar)
+
+
+def _break(bars: list[dict]) -> tuple[str | None] | None:
+    """(the bar stamp of the latest swing-high break in LOOKBACK bars, or None) - the lead rule: swing highs
+    only, so the three are read alike. None when the bars are too few to read."""
     atr = _atr(bars)
     if len(bars) < MIN_BARS or not atr:
         return None
     got = _latest_break(_swing_lines(bars, "high"), bars, BREAK_ATR * atr)
-    day = calendar.bar_day(bars[-1]["at"], True)
-    return (calendar.bar_day(bars[got[1]]["at"], True) if got else None), day, (bars[got[1]]["at"] if got else None)
+    return (bars[got[1]]["at"] if got else None,)
+
+
+def _kr_day(at: str):
+    return calendar.bar_day(at, True)
+
+
+def _upto(bars: list[dict], day) -> list[dict] | None:
+    """``bars`` through trade day ``day`` - None when that day's bar is missing or more than LEAD_SLACK bars
+    come after it."""
+    cut = [b for b in bars if _kr_day(b["at"]) <= day]
+    if not cut or _kr_day(cut[-1]["at"]) != day or len(bars) - len(cut) > LEAD_SLACK:
+        return None
+    return cut
 
 
 def lead(ticker: str, own: list[dict], peers: dict[str, list[dict] | None], now: datetime) -> dict | None:
+    """Which of SK hynix and Samsung Electronics broke out before KOSPI, on the same rule. Each pair is read
+    through the earlier of their last finished trade days, so a bar one feed lacks or has early does not
+    shift one side's window; a pair that cannot be lined up is ``not_comparable``."""
     if ticker not in KR_LEAD:
         return None
-    rows = {ticker: own}
+    rows: dict[str, list[dict] | None] = {ticker: own}
     for t in KR_LEAD:
         if t != ticker:
             peer = peers.get(t)
             rows[t] = finished(t, peer, now)[0] if peer else None
-    reads = {t: (_break_day(t, b) if b else None) for t, b in rows.items()}
-    bench = reads.get(KR_LEAD[0])
+    bench_rows = rows.get(KR_LEAD[0])
+    bench_read = _break(bench_rows) if bench_rows else None
     items = []
     for t in KR_LEAD[1:]:
-        mine = reads.get(t)
-        if bench is None or mine is None or mine[1] != bench[1]:
-            items.append({"ticker": t, "state": "not_comparable", "at": mine[2] if mine else None})
+        mine_rows = rows.get(t)
+        pair = None
+        if bench_rows and mine_rows:
+            day = min(_kr_day(bench_rows[-1]["at"]), _kr_day(mine_rows[-1]["at"]))
+            a, b = _upto(bench_rows, day), _upto(mine_rows, day)
+            if a is not None and b is not None:
+                pair = (_break(a), _break(b))
+        if pair is None or None in pair:
+            items.append({"ticker": t, "state": "not_comparable", "at": None})
             continue
-        if mine[0] is None:
+        (bench_at,), (mine_at,) = pair
+        if mine_at is None:
             state = "waiting"
-        elif bench[0] is None or mine[0] < bench[0]:
+        elif bench_at is None or _kr_day(mine_at) < _kr_day(bench_at):
             state = "led"
         else:
-            state = "same" if mine[0] == bench[0] else "lagged"
-        items.append({"ticker": t, "state": state, "at": mine[2]})
-    return {"benchmark": KR_LEAD[0], "benchmark_at": bench[2] if bench else None, "condition": LEAD_CONDITION,
-            "items": items}
+            state = "same" if _kr_day(mine_at) == _kr_day(bench_at) else "lagged"
+        items.append({"ticker": t, "state": state, "at": mine_at})
+    return {"benchmark": KR_LEAD[0], "benchmark_at": bench_read[0] if bench_read else None,
+            "condition": LEAD_CONDITION, "items": items}
 
 
 def _lead_item(got: dict) -> dict:
@@ -668,12 +720,17 @@ def build(ticker: str, daily: dict | None, now: datetime, frame: dict | None = N
         return unavailable(t, now, "product_mismatch")
     if not isinstance(daily, dict) or not isinstance(daily.get("bars"), list) or not daily["bars"]:
         return unavailable(t, now, "missing_daily_source")
+    if _market(t) == "other":
+        return unavailable(t, now, "unsupported_market")
     provider = daily.get("source")
-    bars, pending = finished(t, daily["bars"][-channels.BARS["1d"]:], now)
+    rows = _usable(daily["bars"][-channels.BARS["1d"]:])
+    pending = bool(rows) and not final(t, rows[-1], now)
+    bars = rows[:-1] if pending else rows
     atr = _atr(bars) if len(bars) >= MIN_BARS else None
     if not atr:
         return unavailable(t, now, "insufficient_bars", provider)
-    index = {b["at"]: i for i, b in enumerate(bars)}
+    # every bar's index, the one still trading too: the frame draws its lines to that bar (#977 review)
+    index = {b["at"]: i for i, b in enumerate(rows)}
     lines = _frame_lines(frame, index) + _swing_lines(bars, "high") + _swing_lines(bars, "low")
     tol = BREAK_ATR * atr
     last, n = bars[-1], len(bars)
@@ -707,13 +764,16 @@ def build(ticker: str, daily: dict | None, now: datetime, frame: dict | None = N
     div = divergence(bars)
     conditions = []
     if state == "breakout_confirmed":
-        after = n - 1 - stage["break_at"]
+        b, ln = stage["break_at"], stage["line"]
+        nxt = b + 1                                     # the bar after the break, on the line where it then was
         conditions.append({"id": "hold_after_break", "kind": "confirm",
-                           "text": f"돌파한 선 {hold['price']:,} 위에서 다음 일봉도 마감", "price": hold["price"],
-                           "met": True if after >= 1 else None})
+                           "text": f"돌파한 선({hold['price']:,}) 위에서 다음 일봉도 마감", "price": hold["price"],
+                           "met": None if nxt > n - 1 else bars[nxt]["close"] > ln.value(nxt)})
     elif brk is not None:
+        need = _p(brk["price"] + tol)                   # a break is a close this far over the line
         conditions.append({"id": "close_above_resistance", "kind": "confirm",
-                           "text": f"일봉 종가가 {brk['price']:,} 위에서 마감", "price": brk["price"], "met": False})
+                           "text": f"일봉 종가가 {need:,} 위에서 마감(선 {brk['price']:,} + 0.3 ATR)", "price": need,
+                           "met": close > need})
     conditions.append({"id": "stochastic_80", "kind": "confirm",
                        "text": f"스토캐스틱 %K 가 바닥({STOCH_FLOOR:g} 이하)에서 {STOCH_MAX_BARS}봉 안에 {STOCH_CEILING:g} 이상",
                        "price": None,
@@ -739,8 +799,11 @@ def build(ticker: str, daily: dict | None, now: datetime, frame: dict | None = N
     trend_read = chart_read.trend_state(bars)
     signal = stage["signal"] or stage.get("rebound_signal")
     basis = _SIGNAL_KO.get(signal, "최근에 반등 · 돌파 신호가 없어요")
-    if state == "awaiting_confirmation" and stage["signal"] is None:
-        basis = f"{bars[stage['at']]['at'][:10]} {_SIGNAL_KO[signal]} 뒤 저항 돌파 확인 전"
+    if stage.get("just_over"):
+        basis = f"저항 {_p(stage['level']):,} 바로 위 마감 — 돌파 기준(+0.3 ATR) 전"
+    elif state == "awaiting_confirmation" and stage["signal"] is None:
+        day = calendar.bar_day(bars[stage["at"]]["at"], _market(t) == "kr").isoformat()   # the market's own date
+        basis = f"{day} {_SIGNAL_KO[signal]} 뒤 저항 돌파 확인 전"
     return {
         "ticker": t, "timeframe": "1d", "status": "in_progress" if pending else "confirmed", "reason": None,
         "instrument": instrument(t, provider), "observed_at": _utc(now), "as_of": last["at"],

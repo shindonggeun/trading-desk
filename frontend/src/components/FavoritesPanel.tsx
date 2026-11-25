@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, batchGet, type Candles } from "../api";
 import { byAsked } from "../ticker";
 import { boardBadge, boardBadgeClass, boardReason, quoteSourceShort } from "../korean";
@@ -42,10 +42,11 @@ function useEarningsSoon(key: string): Record<string, number> {
 import StockProfileCard from "./StockProfileCard";
 import { fundBadgeText, fundHref, useFundChanges } from "../fundBadges";
 import type { FundChangeItem } from "../types";
-import { usePoll } from "../poll";
+import { useNow, usePoll } from "../poll";
 import { splitView } from "../changeSplit";
+import { useLivePoll } from "../livePoll";
+import { agoText, BOARD_POLL_MS, boardLive } from "../boardLive";
 
-const POLL_MS = 15_000;      // 시세판과 같은 주기
 const SPARK_MS = 120_000;    // 작은 차트는 2분마다
 const MAX_QUOTES = 30;       // /api/estimates 한 번에 30종목
 const FOLD = 8;              // #636 넓은 화면 3열에서 처음 보이는 수 — 30개면 가운데 열만 1,800px 로 길어진다(styles.css 와 같이)
@@ -132,9 +133,10 @@ export function Spark({ ticker, tone, order }: { ticker: string; tone: "up" | "d
   );
 }
 
-function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEarn, onInfo, funds }: {
+function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEarn, onInfo, funds, now }: {
   ticker: string; name: string; it: BoardItem | undefined; ls: LongShortItem | undefined; first: boolean; last: boolean;
   editing: boolean; order: number; earnIn?: number; onEarn: () => void; onInfo: (ticker: string) => void; funds?: FundChangeItem[];
+  now: number;
 }) {
   // #1002 국장 정규장 뒤 장외: 큰 숫자는 합친 하루, 작은 줄에 정규 · 장외
   const sv = splitView(it);
@@ -160,6 +162,7 @@ function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEar
           title={sv ? sv.title : it?.close != null ? `등락률 기준 종가 ${price(it.close)}${it.close_date ? `(${it.close_date.slice(5)})` : ""}` : undefined}>
           {ticker}
           {it?.quote_source && ` · ${quoteSourceShort(it.quote_source)}`}
+          {it?.state === "estimate" && agoText(it.fetched_at, now) && ` · ${agoText(it.fetched_at, now)}`}
         </span>
       </a>
       <LongShortBar it={ls} />
@@ -190,7 +193,7 @@ function Tile({ ticker, name, it, ls, first, last, editing, order, earnIn, onEar
 
 /**
  * 대시보드 "즐겨찾기 시세"(#135): 즐겨찾기마다 가격 · 기준 종가 대비 % · 실시간/추정 배지와 작은 차트(최근 5분봉,
- * 장외면 추정 봉을 점선으로 이어서). 15초마다 갱신, 누르면 시세판에서 그 종목 큰 차트.
+ * 장외면 추정 봉을 점선으로 이어서). 시장 스트림(실시간 · #999 추정)으로 받고 없으면 10초마다 다시 읽는다, 누르면 시세판에서 그 종목 큰 차트.
  */
 export default function FavoritesPanel() {
   const { list, error } = useFavorites();
@@ -207,14 +210,17 @@ export default function FavoritesPanel() {
   const fundCh = useFundChanges(tickers);   // #484 기관 배지
   const [preview, setPreview] = useState<{ ticker: string; name: string } | null>(null);
 
-  // #626 15초마다(가려진 탭은 쉰다) — 같은 종목 묶음이면 시세판 · 섹터 화면과 요청 하나를 함께 쓴다
-  usePoll(key ? `board:${key}` : null, () => api.board(key.split(",")), POLL_MS, {
+  // #626 · #1000 10초마다(가려진 탭은 쉰다) — 같은 종목 묶음이면 시세판 · 섹터 · 작은 창과 요청 하나를 함께 쓴다.
+  // 스트림이 모든 칸을 덮는 동안은 쉰다(boardLive.ts)
+  const liveSpec = useMemo(() => boardLive(key ? key.split(",") : []), [key]);
+  const now = useNow(1_000, Object.values(items).some((it) => it.state === "estimate"));
+  useLivePoll(key ? `board:${key}` : null, () => api.board(key.split(",")), BOARD_POLL_MS, {
     onData: (r) => {
       setItems((cur) => ({ ...cur, ...byAsked(key.split(","), r.items) }));
       setFailedAt(null);
     },
     onError: () => setFailedAt(new Date().toISOString()),
-  });
+  }, liveSpec);
 
   if (list === null) return <p className="empty-state">불러오는 중…</p>;
   const updated = Object.values(items).map((i) => i.fetched_at).filter(Boolean).sort().pop();
@@ -250,7 +256,7 @@ export default function FavoritesPanel() {
               <Tile key={f.ticker} ticker={f.ticker} name={f.name ?? f.ticker} it={items[f.ticker]} ls={lsShown ? ls[f.ticker] : undefined}
                 first={i === 0} last={i === list.length - 1} editing={editing} order={i}
                 earnIn={earnSoon[f.ticker]} onEarn={() => setPreview({ ticker: f.ticker, name: f.name ?? f.ticker })}
-                onInfo={(t) => setInfo((cur) => (cur === t ? null : t))} funds={fundCh[f.ticker]} />
+                onInfo={(t) => setInfo((cur) => (cur === t ? null : t))} funds={fundCh[f.ticker]} now={now} />
             ))}
           </div>
           {shown.length > FOLD && (

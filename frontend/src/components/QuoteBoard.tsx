@@ -5,42 +5,14 @@ import { price, time } from "../format";
 import type { BoardItem } from "../types";
 import { LongShortBar, LongShortToggle, useLongShort, useLongShortShown } from "./LongShortBar";
 import { boardBadge, boardBadgeClass, boardReason, quoteSourceShort } from "../korean";
-import { useLivePoll, type LiveSpec } from "../livePoll";
+import { useLivePoll } from "../livePoll";
+import { agoText, BOARD_POLL_MS, boardLive } from "../boardLive";
+import { useNow } from "../poll";
 import LiveBadge from "./LiveBadge";
 import { splitView } from "../changeSplit";
 
 export type BoardTicker = { ticker: string; name?: string };
 
-const POLL_MS = 15_000;
-/** #764 스트림이 시세를 대신 주는 동안에도 칸의 상태(장중 · 추정 · 장 마감)는 서버가 정한다 — 이만큼마다 한 번 맞춘다 */
-const RECONCILE_MS = 5 * 60_000;
-
-type Board = { items: BoardItem[] };
-type StreamQuote = { ticker?: string; price?: number | null; source?: string | null; fetched_at?: string | null };
-const trading = (it: BoardItem) => it.state === "live" && it.session === "regular";
-
-/** #764 실시간 시세(quote)를 정규장 칸에만 — 추정 · 시간외(NXT) 칸은 서버의 계산을 그대로 둔다 */
-export const BOARD_LIVE = (tickers: string[]): LiveSpec<Board> => ({
-  channel: "quote",
-  keys: tickers,
-  apply: (prev, m) => {
-    const q = m.payload as StreamQuote | null;
-    if (!q || q.price == null || !Number.isFinite(q.price)) return undefined;
-    let hit = false;
-    const items = prev.items.map((it) => {
-      if (!trading(it) || askedOf([m.key], it.ticker) !== m.key || it.price === q.price) return it;
-      hit = true;
-      const change = it.close ? Math.round((q.price! / it.close - 1) * 10_000) / 100 : it.change_pct;
-      return { ...it, price: q.price!, change_pct: change, quote_source: q.source ?? it.quote_source, fetched_at: q.fetched_at ?? m.observed_at };
-    });
-    return hit ? { ...prev, items } : undefined;
-  },
-  // 모든 칸이 정규장일 때만 쉰다 — 추정 칸은 서버가 바이낸스로 계산한다
-  pauseWhen: (d) => !!d && d.items.length > 0 && d.items.every(trading),
-  reconcileMs: RECONCILE_MS,
-  // #690 지연 실측 — 정규장 칸만(추정 칸은 서버가 계산한 값이라 원천 지연이 아니다)
-  stamps: (d) => d.items.filter(trading).map((it) => ({ key: it.ticker, id: it.price, at: it.fetched_at })),
-});
 const BUNDLE_KEY = "desk.board.weekend";
 const OPEN_KEY = "desk.board.weekend.open";
 
@@ -105,7 +77,7 @@ function sourceText(it: BoardItem): string {
   return `바이낸스 ${s.contract}`;
 }
 
-function Tile({ it, name, on, onPick }: { it: BoardItem | undefined; name: string; on: boolean; onPick: () => void }) {
+function Tile({ it, name, on, onPick, now }: { it: BoardItem | undefined; name: string; on: boolean; onPick: () => void; now: number }) {
   // #1002 국장 정규장 뒤 NXT · 시간외 · 저녁 추정: 큰 숫자는 합친 하루, 작은 줄에 정규 · 장외(기준 종가는 툴팁)
   const sv = splitView(it);
   const ch = sv ? sv.pct : it?.change_pct;
@@ -124,8 +96,10 @@ function Tile({ it, name, on, onPick }: { it: BoardItem | undefined; name: strin
       {sv && <span className="qb-split muted small" title={sv.title}>{sv.line}</span>}
       {on && it && boardReason(it) && <span className="qb-reason small">{boardReason(it)}</span>}
       <span className="qb-sub muted small">
+        {/* #1002 나눈 줄이 있으면 "기준 …" 은 툴팁으로, #1000 추정 칸은 계산한 지 "n초 전" */}
         {[it?.close != null && !sv ? `기준 ${price(it.close)}${it.close_date ? `(${it.close_date.slice(5)})` : ""}` : null,
-          it ? sourceText(it) || null : null].filter(Boolean).join(" · ")}
+          it ? sourceText(it) || null : null,
+          it?.state === "estimate" ? agoText(it.fetched_at, now) : null].filter(Boolean).join(" · ")}
       </span>
     </button>
   );
@@ -133,7 +107,7 @@ function Tile({ it, name, on, onPick }: { it: BoardItem | undefined; name: strin
 
 /**
  * 시세판(#124): 관심 종목 타일 — 장중엔 실시간, 장 마감 · 주말엔 바이낸스 무기한으로 낸 추정가.
- * 주말 · 모든 관심 종목이 장 마감이면 "주말 추정" 묶음이 위에 뜬다(접기 · 빼기 기억). 15초마다 갱신.
+ * 주말 · 모든 관심 종목이 장 마감이면 "주말 추정" 묶음이 위에 뜬다(접기 · 빼기 기억). 실시간 · 추정 모두 시장 스트림으로 받고, 스트림이 없으면 10초마다 다시 읽는다(#1000).
  */
 export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
   watch: BoardTicker[];
@@ -150,6 +124,8 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
   const [items, setItems] = useState<Record<string, BoardItem>>({});
   const [failedAt, setFailedAt] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  // #1000 추정 칸의 "n초 전" — 추정 칸이 있을 때만 1초마다
+  const now = useNow(1_000, Object.values(items).some((it) => it.state === "estimate"));
   const weekend = isWeekendKst();
   const watchLive = watch.some((w) => items[w.ticker]?.state === "live");
   // 주말이거나, 관심 종목이 하나도 장중이 아니면(장 마감) 주말 추정 묶음을 보인다
@@ -164,23 +140,24 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
   const [lsShown, flipLs] = useLongShortShown();
   const ls = useLongShort(tickers, lsShown);
 
-  // #626 15초마다(가려진 탭은 쉰다) — 같은 종목 묶음이면 즐겨찾기 · 섹터 화면과 요청 하나를 함께 쓴다
-  const boardLive = useMemo(() => BOARD_LIVE(tickers), [tickers]);
-  const boardPoll = useLivePoll(tickers.length ? `board:${key}` : null, () => api.board(tickers), POLL_MS, {
+  // #626 · #1000 10초마다(가려진 탭은 쉰다) — 같은 종목 묶음이면 즐겨찾기 · 섹터 · 작은 창과 요청 하나를 함께 쓴다.
+  // 스트림(실시간 quote · #999 추정)이 모든 칸을 덮는 동안은 쉰다(boardLive.ts)
+  const liveSpec = useMemo(() => boardLive(tickers), [tickers]);
+  const boardPoll = useLivePoll(tickers.length ? `board:${key}` : null, () => api.board(tickers), BOARD_POLL_MS, {
     onData: (r) => {
       setItems((cur) => ({ ...cur, ...byAsked(tickers, r.items) }));
       for (const it of r.items) {
         const t = askedOf(tickers, it.ticker);
-        // #764 스트림이 칸 하나를 바꿀 때마다 모든 종목을 다시 알리지 않게 — 바뀐 가격만(같은 값은 지금처럼 15초에 한 번)
+        // #764 스트림이 칸 하나를 바꿀 때마다 모든 종목을 다시 알리지 않게 — 바뀐 가격만(같은 값은 주기에 한 번)
         const before = lastPrice.current[t];
-        if (it.price == null || (before && before.p === it.price && Date.now() - before.at < POLL_MS)) continue;
+        if (it.price == null || (before && before.p === it.price && Date.now() - before.at < BOARD_POLL_MS)) continue;
         lastPrice.current[t] = { p: it.price, at: Date.now() };
         onPriceRef.current?.(t, it.price);
       }
       setFailedAt(null);
     },
     onError: () => setFailedAt(new Date().toISOString()),
-  }, boardLive);
+  }, liveSpec);
 
   const flipBundle = () => {
     save(OPEN_KEY, !bundleOpen);
@@ -226,7 +203,7 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
             <div className="qb-grid">
               {bundle.map((b) => (
                 <div key={b.ticker} className="qb-cell">
-                  <Tile it={items[b.ticker]} name={b.name ?? b.ticker} on={selected === b.ticker} onPick={() => onPick(b)} />
+                  <Tile it={items[b.ticker]} name={b.name ?? b.ticker} on={selected === b.ticker} onPick={() => onPick(b)} now={now} />
                   {lsShown && <LongShortBar it={ls[b.ticker]} />}
                   {editing && (
                     <button type="button" className="qb-x" aria-label={`${b.name ?? b.ticker} 빼기`} onClick={() => removeFromBundle(b.ticker)}>×</button>
@@ -242,7 +219,7 @@ export default function QuoteBoard({ watch, selected, onPick, onPrice }: {
         <div className="qb-grid">
           {watch.map((w) => (
             <div key={w.ticker} className="qb-cell">
-              <Tile it={items[w.ticker]} name={w.name ?? w.ticker} on={selected === w.ticker} onPick={() => onPick(w)} />
+              <Tile it={items[w.ticker]} name={w.name ?? w.ticker} on={selected === w.ticker} onPick={() => onPick(w)} now={now} />
               {lsShown && <LongShortBar it={ls[w.ticker]} />}
             </div>
           ))}

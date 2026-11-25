@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { alertKey, alertLines, ALERTS_KEY, badgeOf, hhmm, loadAlerts } from "../alertsFeed";
 import { api, Unauthorized, type MarketAlert } from "../api";
 import MiniTickerEditor from "../components/MiniTickerEditor";
@@ -9,6 +9,8 @@ import { byAsked } from "../ticker";
 import type { BoardItem, DayCallMarket, DayCallToday } from "../types";
 import { usePoll } from "../poll";
 import { splitView } from "../changeSplit";
+import { useLivePoll } from "../livePoll";
+import { BOARD_POLL_MS, boardLive } from "../boardLive";
 
 const QUOTE_MS = 15_000;          // 시세판과 같은 주기
 const FLOW_MS = 60_000;
@@ -92,7 +94,9 @@ export default function MiniWindow({ pip = false }: { pip?: boolean }) {
   const boardKey = items.filter((it) => it.ticker !== MINI_FUTURES).map((it) => it.ticker).join(",");
   const wantFutures = items.some((it) => it.ticker === MINI_FUTURES);
   // #626 작은 창은 연 탭이 가려져도(다른 앱을 보는 중) 계속 읽는다
-  usePoll(boardKey ? `board:${boardKey}` : null, () => api.board(boardKey.split(",")), QUOTE_MS, {
+  // #1000 시세판과 같은 스트림 규칙(실시간 · #999 추정) — 탭이 가려지면 스트림은 닫히고 REST 로 10초마다 읽는다
+  const liveSpec = useMemo(() => boardLive(boardKey ? boardKey.split(",") : []), [boardKey]);
+  useLivePoll(boardKey ? `board:${boardKey}` : null, () => api.board(boardKey.split(",")), BOARD_POLL_MS, {
     pauseHidden: false,
     onData: (r) => {
       ok();
@@ -101,7 +105,7 @@ export default function MiniWindow({ pip = false }: { pip?: boolean }) {
       setQuotes((q) => ({ ...q, ...Object.fromEntries(Object.entries(got).map(([k, it]) => [k, fromBoard(it)])) }));
     },
     onError: fail,
-  });
+  }, liveSpec);
 
   usePoll(wantFutures ? "futures-quote" : null, () => api.futuresQuote(), QUOTE_MS, {
     pauseHidden: false,

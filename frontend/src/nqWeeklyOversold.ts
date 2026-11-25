@@ -1,12 +1,12 @@
 /** #945의 NQ=F 주봉 관찰과 전체 규칙 저장 계약. */
 export const NQ_PRICE_CONDITIONS = ["bollinger", "channel", "fib"] as const;
 export type NqPriceCondition = typeof NQ_PRICE_CONDITIONS[number];
-export type NqChannelName = "telegram" | "kakao";
+export type NqChannelName = "telegram";
 
 export const NQ_PRICE_LABEL: Record<NqPriceCondition, string> = {
   bollinger: "볼린저 하단", channel: "평행 채널 바깥 하단", fib: "피보나치 2.618",
 };
-export const NQ_CHANNEL_LABEL: Record<NqChannelName, string> = { telegram: "텔레그램", kakao: "카카오톡" };
+export const NQ_CHANNEL_LABEL: Record<NqChannelName, string> = { telegram: "텔레그램" };
 
 export interface NqWeeklyOversoldSettings {
   enabled: boolean;

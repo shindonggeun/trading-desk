@@ -231,12 +231,11 @@ function DeliveryStatus({ signal }: { signal?: AbortSignal }) {
       </div>
       <dl>
         <dt>텔레그램</dt><dd>{status ? channelStatus(channels, "telegram") : "확인 중…"}</dd>
-        <dt>카카오톡</dt><dd>{status ? channelStatus(channels, "kakao") : "확인 중…"}</dd>
         <dt>웹 푸시</dt><dd>{status ? webText : "확인 중…"}</dd>
       </dl>
       <p className="muted small">
         {channels?.channels.some(item => "name" in item)
-          ? "텔레그램과 카카오톡은 서버에서 승인한 수신 정책을 표시해요. 이 기기의 웹 푸시는 위의 알림 설정에서 바꿀 수 있어요."
+          ? "텔레그램은 서버에서 승인한 수신 정책을 표시해요. 이 기기의 웹 푸시는 위의 알림 설정에서 바꿀 수 있어요."
           : "수신 채널과 이 기기의 차트 선·참고 등급 선택은 위의 알림 설정에서 바꿀 수 있어요."}
       </p>
     </section>

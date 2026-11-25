@@ -6,9 +6,9 @@ values rather than call the brokers itself - these counters are how that is chec
 after 401 · 429 counts again), not token issuance. Counts only: no path,
 no account, no token.
 
-Each count also lands under a kind (``by_kind``: Toss' endpoint - holdings, quote, candles_1m, usd_krw, ... -
-or KIS' TR id), so what is still called directly shows by name. A kind is a code constant: anything else (a
-ticker, a market, a query value) counts as ``other``, and the kinds of a name always add up to its total.
+``by_kind`` splits each total by what the calls were for (/api/status ``outbound_by_kind``): Toss' endpoint
+(TOSS_KINDS) or KIS' TR id, so what is still called directly shows by name. Only those labels are kept - anything
+else (a ticker, a market, a query value) counts as ``other`` - and the kinds of a name add up to its total.
 """
 
 from __future__ import annotations
@@ -20,7 +20,10 @@ from collections import Counter
 from datetime import UTC, datetime
 
 OTHER = "other"
-_KIND = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,31}")   # holdings, candles_1m, FHKIF03020100 - not 005930.KS
+# every label desk.broker.toss._kind gives
+TOSS_KINDS = frozenset({"accounts", "holdings", "list_stocks", "quote", "candles", "candles_1m", "usd_krw",
+                        "index_prices", "investor_flow", "market_calendar", "fills"})
+_KIS_TR = re.compile(r"[A-Z]{4,6}[0-9]{6,10}")       # FHKIF03020100 - never a ticker (NVDA, 005930) or KOSPI
 
 _lock = threading.Lock()
 _counts: Counter[str] = Counter()
@@ -28,17 +31,36 @@ _kinds: dict[str, Counter[str]] = {}
 _since = time.time()
 
 
+def _label(name: str, kind: str | None) -> str:
+    if not isinstance(kind, str):
+        return OTHER
+    if name == "toss" and kind in TOSS_KINDS:
+        return kind
+    if name == "kis" and _KIS_TR.fullmatch(kind):
+        return kind
+    return OTHER
+
+
 def count(name: str, kind: str | None = None) -> None:
-    label = kind if isinstance(kind, str) and _KIND.fullmatch(kind) else OTHER
+    label = _label(name, kind)
     with _lock:
         _counts[name] += 1
         _kinds.setdefault(name, Counter())[label] += 1
 
 
 def snapshot() -> dict:
+    return report()[0]
+
+
+def by_kind() -> dict[str, dict[str, int]]:
+    return report()[1]
+
+
+def report() -> tuple[dict, dict[str, dict[str, int]]]:
+    """(``snapshot``, ``by_kind``) read at once: the kinds add up to these very totals."""
     with _lock:
-        return {"since": datetime.fromtimestamp(_since, UTC).isoformat(timespec="seconds"), **dict(_counts),
-                "by_kind": {name: dict(kinds) for name, kinds in _kinds.items()}}
+        return ({"since": datetime.fromtimestamp(_since, UTC).isoformat(timespec="seconds"), **dict(_counts)},
+                {name: dict(kinds) for name, kinds in _kinds.items()})
 
 
 def reset() -> None:

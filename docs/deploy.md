@@ -508,8 +508,8 @@ api · collector · analyst(#688) 가 따로 뜨면 같은 수급 · 시세를 �
 | `market_flow` · `futures_flow` | collector 스냅샷 잡(`fresh`) → api 카드. 실패한 읽기는 넣지 않는다 | 각 캐시 TTL, 최소 90초(1분 스냅샷 사이를 잇는다) |
 | `quote` | 먼저 읽은 프로세스 → 나머지. 역할을 나누면 collector 의 수요 수집(`demand`)이 화면이 읽는 종목을 10초마다 받아 쓴다 | 10초(직접), 30초(수집). api 만 10초 넘은 값을 받는다 |
 | `futures_quote` | collector 의 수요 수집 → api 의 선물 시세 카드(현재가 · 분봉). 실패한 읽기는 넣지 않는다 | 카드 TTL 이상 |
-| `fx` | 원/달러 환율(토스 매매기준율, 안 되면 야후 `KRW=X`). 먼저 읽은 프로세스 → 나머지. 역할을 나누면 collector 의 수요 수집이 "내 투자" 화면이 읽는 동안 30초마다 받아 쓴다(holding watch 의 스냅샷도 쓴다). 값의 `source` · `at` 은 실제로 읽은 곳 · 때다 | 10초(직접), 60초(수집). api 만 10초 넘은 값을 받는다 |
-| `krx_1m` | collector 의 수요 수집 → api. 국장 종목의 토스 1분봉 200개(분봉 차트의 늦은 꼬리 채우기 · `/api/live/stream` 1분봉이 여기서 잘라 쓴다). 국장 분봉을 읽는 화면이 있는 동안 30초마다. 실패 · 빈 읽기는 넣지 않는다 | 45초 |
+| `fx` | 원/달러 환율(토스 매매기준율, 안 되면 야후 `KRW=X`). 먼저 읽은 프로세스 → 나머지. 역할을 나누면 collector 의 수요 수집이 "내 투자" 화면이 읽는 동안 30초마다 받아 쓴다(holding watch 의 스냅샷도 쓴다). 값의 `source` · `at` 은 실제로 읽은 곳 · 때다. 늦게 끝난 더 오래된 읽기는 새 값을 덮지 않는다(`at` 순, `aput_newer`) | 60초(쓰는 쪽 모두 같다 — 누가 써도 남은 수명이 줄지 않는다). api 만 10초 넘은 값을 받는다 |
+| `krx_1m` | collector 의 수요 수집 → api. 국장 종목의 토스 1분봉 200개 — `/api/live/stream` · 1분봉 차트가 여기서 잘라 쓰고, 5분–240분봉 차트의 늦은 꼬리 채우기도 값이 있으면 쓴다. 수집 요청은 **정규장(+1분) 동안 화면이 1분봉을 계속 읽을 때만** 한다(1–2분에 한 번 읽는 분봉 차트가 요청하면 collector 가 두 번 읽고도 다음 읽기 땐 값이 사라져 호출만 는다). api 메모리는 값이 읽힌 때부터 센다. 실패 · 빈 읽기는 넣지 않는다 | 45초 |
 | `want` | api(`demand_wants`, 2초마다, 바뀌었거나 10초 지났을 때) → collector(`demand`, 5초마다) | 20초 |
 | `sr` · `gap_fill` · `oscillator` | 계산한 프로세스 → 나머지(메모리 → Redis 2단) | 각 캐시 TTL |
 | `sector_bars` (#993) | api 의 섹터 뷰(`day_sectors`)가 ETF 하나의 그날 전체 일봉 읽기를 마치면 쓴다(봉 시각 · 수정 종가, 하루 한 번). 그날 다음 api 프로세스가 읽고 최근 10봉만 합친다. **빌드 지문 대신 버전으로 키를 만들어 배포를 넘겨 남는다**(docs/security.md 5.2) | 24시간(그 KST 날짜에만 읽는다) |
@@ -565,14 +565,17 @@ unset REDISCLI_AUTH
 2. 켠 **뒤** 같은 요일 · 같은 시간대에 똑같이 한다.
 3. 비교: `/api/market/flow` · `/api/market/futures` · `/api/quote` · `/api/levels` · `/api/gaps` · `/api/oscillator` 의 p95,
    그리고 `/api/status` `outbound` 의 `toss` · `kis`(그 프로세스가 `since` 부터 부른 수). api 프로세스의 수가 0 에 가까우면 완료.
-   `outbound.by_kind` 는 그 합계를 무엇에 썼는지로 나눈다 — 토스는 엔드포인트(`holdings` · `quote` · `candles` · `candles_1m` · `usd_krw` ·
-   `investor_flow` · `index_prices` · `market_calendar` · `fills` · `list_stocks` · `accounts`, 목록에 없는 경로는 `other`), KIS 는 TR id.
-   이름마다 종류의 합은 그 합계와 같다. 종류는 코드 상수뿐이라 종목 · 계좌 · 조회 값이 들어가지 않는다(보호 모드에서는 소유자에게만 보인다, 위 #995).
+   그 옆의 `outbound_by_kind` 는 같은 합계를 무엇에 썼는지로 나눈다(`outbound` 안에는 지금처럼 `since` 와 제공자별 합계만 있다) —
+   토스는 엔드포인트(`holdings` · `quote` · `candles` · `candles_1m` · `usd_krw` · `investor_flow` · `index_prices` · `market_calendar` ·
+   `fills` · `list_stocks` · `accounts`), KIS 는 TR id(`FHKIF03020100` 꼴). 그 밖의 이름은 전부 `other` 로 세서 종목 · 시장 · 계좌 · 조회 값이
+   들어가지 않는다. 제공자마다 종류의 합은 같은 응답의 합계와 같다(보호 모드에서는 소유자에게만 보인다, 위 #995).
 4. 수요 수집(#689): api 의 `/api/status` `demand` 는 `wanted`(최근 30초에 읽힌 키 수) · `flushes`, collector 의 `demand` 는
    `collecting` · `served` · `failed` 다. 화면을 닫으면 1분 안에 둘 다 0 이 된다. collector 의 `shared_cache.misses` 에는 want 조회(쉬는 동안 분당 12번)가 들어간다.
    수집 뒤에도 api 에 남는 직접 호출: 포트폴리오의 보유(`holdings`, 계좌 데이터라 공유하지 않는다 — 스트림이 열려 있으면 10초마다),
    키마다 처음 한 번(콜드: 수집이 시작되기 전 첫 읽기, `quote` · `candles_1m` · `usd_krw`), 수집이 실패해 물러난 동안의 읽기.
-   환율(`fx`)과 국장 1분봉(`krx_1m`)은 수집 대상이라 api 의 `usd_krw` · `candles_1m` 은 첫 읽기 뒤 0 에 가까워야 한다(미국 종목 1분봉 · 일봉 `candles` 는 그대로 직접).
+   환율(`fx`)은 수집 대상이라 api 의 `usd_krw` 는 첫 읽기 뒤 0 에 가까워야 한다. `candles_1m` 은 장중 라이브 차트 · 1분봉 차트만 열려 있으면
+   0 에 가깝지만, 5분–240분봉 차트만 열려 있거나 장외면 지금처럼 api 가 직접 읽는다(그래야 합계가 `all` 한 프로세스보다 늘지 않는다).
+   미국 종목 1분봉 · 일봉 `candles` 는 그대로 직접.
 
 ### 이벤트 루프 지연 (#859)
 

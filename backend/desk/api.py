@@ -1701,9 +1701,12 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                 "cooldowns": cooldowns()}
         if not full:
             return body
+        calls, calls_by_kind = outbound.report()
         return {**body, "role": settings.role,
-                # #689 this process's shared-cache hits and its own calls to the brokers (Toss · KIS REST)
-                "shared_cache": shared_cache.stats(), "outbound": outbound.snapshot(), "demand": demand.stats(),
+                # #689 this process's shared-cache hits and its own calls to the brokers (Toss · KIS REST), and
+                # those calls by Toss endpoint · KIS TR id (code constants only)
+                "shared_cache": shared_cache.stats(), "outbound": calls, "outbound_by_kind": calls_by_kind,
+                "demand": demand.stats(),
                 "market_stream": market_bus.BUS.stats(),
                 "loop_lag": lag.stats(),             # #859 the event loop's lateness and what held it
                 "prewarm": prewarm.LAST or None}   # #864 the last pass: when, how long, each job

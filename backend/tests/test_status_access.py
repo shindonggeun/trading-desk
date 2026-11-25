@@ -19,7 +19,8 @@ from tests.test_api import OWNER, PASSWORD
 
 OTHER = "status-other@example.com"
 PAGE = {"now", "jobs", "cooldowns"}                       # what the page reads (frontend/src/api.ts DeskStatus)
-DIAGNOSTICS = {"role", "shared_cache", "outbound", "demand", "market_stream", "loop_lag", "prewarm"}
+DIAGNOSTICS = {"role", "shared_cache", "outbound", "outbound_by_kind", "demand", "market_stream", "loop_lag",
+               "prewarm"}
 
 
 def _app(db_url, protected: bool):
@@ -76,12 +77,15 @@ def test_the_broker_calls_by_kind_are_inside_the_owners_diagnostics(db_url, prot
     outbound.count("kis", "FHKIF03020100")
     with TestClient(_app(db_url, protected), base_url="https://testserver") as client:
         owner, other = _status(client, OWNER), _status(client, OTHER)
-    assert owner["outbound"]["by_kind"]["toss"]["holdings"] >= 1 and owner["outbound"]["toss"] >= 1
-    assert owner["outbound"]["by_kind"]["kis"]["FHKIF03020100"] >= 1
+    kinds = owner["outbound_by_kind"]
+    assert kinds["toss"]["holdings"] >= 1 and kinds["kis"]["FHKIF03020100"] >= 1
+    # a sibling of the totals: `outbound` keeps only `since` and the providers' counts (docs read it that way)
+    assert all(isinstance(v, int) for k, v in owner["outbound"].items() if k != "since")
+    assert {k: sum(v.values()) for k, v in kinds.items()} == {k: v for k, v in owner["outbound"].items() if k != "since"}
     if protected:
-        assert "outbound" not in other and "by_kind" not in json.dumps(other)
+        assert set(other) == PAGE and "FHKIF03020100" not in json.dumps(other)
     else:
-        assert other["outbound"]["by_kind"]["toss"]["holdings"] >= 1
+        assert other["outbound_by_kind"]["toss"]["holdings"] >= 1
 
 
 @pytest.mark.parametrize("protected", [False, True])

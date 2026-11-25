@@ -19,8 +19,14 @@ lifespan in ``desk.api`` starts a job only when ``runs(role, name)`` - and its o
 The broker tokens are shared already (desk.token_store: only ``all`` | ``collector`` issue, the ``tokens`` job
 below). Production stays on ``all`` until the later steps of #688 land, because these still live in one
 process's memory:
-- caches read both by the screens and by a run's notes: credit, the economic calendar, macro news, market /
-  futures flow, tips (prewarm) and ``calibration.TABLE``'s live record (scoring);
+- caches read both by the screens and by a run's notes: credit, market / futures flow, tips (prewarm) and
+  ``calibration.TABLE``'s live record (scoring) - the economic calendar, macro news and earnings calendar are
+  followed from the files their passes save (#996, desk.feed_snapshots: the ``snapshots`` jobs);
+- still one process's memory after #996, left for follow-up issues (not fixed there): ``news_digest.DIGEST`` (the
+  Korean headlines and market read the collector writes - the api's ``GET /api/macro/brief`` shows none),
+  ``sector_news.CACHE`` (the api's ``GET /api/sector-news`` is empty), the earnings ``want`` set (the favorites the
+  api's month calendar asks for never reach the collector's pass) and ``calibration.TABLE``'s live record (the
+  analyst's scoring sets it, the api's playbooks read only the backtest prior);
 - the KIS live quotes (``kis_stream``, api) that ``nq_fast`` (collector) reads for QQQ;
 - the run gate's ``spare_slot`` the news digest, the brief and the reports wait on, and its rate-limit cooldown
   the chat (api) reads.
@@ -60,6 +66,10 @@ JOBS: tuple[tuple[str, str, str, str | None, str], ...] = (
     ("calendar", "일정", "FOMC · BLS · 나스닥", None, COLLECTOR),
     ("economic_calendar", "경제 일정(FOMC · BLS)", "연준 · BLS", "calendar", COLLECTOR),
     ("earnings", "실적 일정", "나스닥", "calendar", COLLECTOR),
+    # #996 what the calendar and news passes save, read where they do not run (desk.feed_snapshots) - a line
+    # per role, as a job has one; off in all and the collector, which run those passes themselves
+    ("snapshots", "수집 스냅숏 따라 읽기(경제 일정 · 거시 뉴스 · 실적)", "collector 저장 파일", None, API),
+    ("snapshots_analyst", "수집 스냅숏 따라 읽기(경제 일정 · 거시 뉴스 · 실적)", "collector 저장 파일", None, ANALYST),
     ("prewarm", "대시보드 미리 읽기", "야후 · 토스 · 한투", None, API),
     ("briefs", "아침 시황", "ChatGPT · 데스크", None, ANALYST),
     ("day_call", "오늘 방향", "야후", None, ANALYST),

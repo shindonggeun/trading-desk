@@ -50,6 +50,7 @@ from . import (
     explain,
     extreme_fear_reports,
     fear,
+    feed_snapshots,
     filings,
     flow_intraday,
     funds13f,
@@ -980,6 +981,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             with jobs.part("macro_news", "macro news refresh failed"):
                 ok = await macro_news.CACHE.refresh()
                 log.info("macro news: %d/%d theme(s) refreshed", ok, len(macro_news.THEMES))
+                if not macro_news.CACHE.saved:      # #996 the api and the analyst would stay on the last file
+                    jobs.mark_error("macro_news", "snapshot not saved")
                 # #242: Korean titles and a market read, only while no analysis holds the plan
                 read = await news_digest.DIGEST.refresh(macro_news.CACHE.themes, slot=app.state.manager.spare_slot)
                 if read:
@@ -996,9 +999,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             with jobs.part("economic_calendar", "economic calendar refresh failed"):
                 ok = await events_calendar.CACHE.refresh()
                 log.info("economic calendar: %d/2 source(s) refreshed", ok)
+                if not events_calendar.CACHE.saved:     # #996 the api and the analyst would stay on the last file
+                    jobs.mark_error("economic_calendar", "snapshot not saved")
             with jobs.part("earnings", "earnings calendar refresh failed"):   # #243: this month and the next
                 ok = await earnings.CACHE.refresh()
                 log.info("earnings calendar: %d day(s)/ticker(s) refreshed", ok)
+                if not earnings.CACHE.saved:
+                    jobs.mark_error("earnings", "snapshot not saved")
             # #308: a failed earnings pass comes back sooner (30 min, 1 h, 2 h, 4 h)
             return earnings.CACHE.next_delay(CALENDAR_INTERVAL_SEC)
 
@@ -1364,18 +1371,44 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         start("demand", demand.serving(), serve_wants, DEMAND_SERVE_SEC * 2, "demand collection failed")
         start("sector_movers", feeds_on, watch_sector_movers, sector_movers.SCAN_SEC, "sector movers failed")
         start("credit", feeds_on, refresh_credit, CREDIT_RETRY_SEC, "KOFIA credit refresh failed")
+        # #996 a cache this process reads but whose pass runs elsewhere (api, analyst: the collector's) follows
+        # the file that pass saves (desk.feed_snapshots); all and the collector follow nothing
+        followed = feed_snapshots.followed(here) if feeds_on else []
         if feeds_on:
             # #428: the pass saved before a restart answers until the first one here finishes
             # #308: the earnings saved before a restart show until the first pass answers
+            # #996 split: the economic calendar too, so a collector restart keeps what the api and the analyst show
             # (a damaged file costs only that snapshot, never the start)
-            for what, cache in (("macro news", macro_news.CACHE), ("earnings calendar", earnings.CACHE)):
+            saved = [("macro news", macro_news.CACHE, "macro_news"), ("earnings calendar", earnings.CACHE, "earnings")]
+            if settings.role != "all":
+                saved.append(("economic calendar", events_calendar.CACHE, "economic_calendar"))
+            for what, cache, part in saved:
+                if not here(part):
+                    continue           # followed below, as the collector has it now
                 try:
                     if await asyncio.to_thread(cache.load):
                         log.info("%s: last saved snapshot loaded", what)
                 except Exception:
                     log.exception("%s: saved snapshot not loaded", what)
+        # read before the first request, as the loads above (a failure never stops the start: the job's first
+        # pass reads again and shows what is still wrong on its line)
+        if followed:
+            try:
+                await feed_snapshots.follow(followed)
+            except Exception:
+                log.exception("collector snapshots not read at start")
+        follow_job = "snapshots" if settings.role == roles.API else "snapshots_analyst"
+
+        async def follow_snapshots() -> float:
+            failed = await feed_snapshots.follow(followed)
+            if failed:              # every pass while a file cannot be taken (desk.feed_snapshots)
+                jobs.mark_error(follow_job, "; ".join(failed))
+            return feed_snapshots.FOLLOW_SEC
+
         start("news", feeds_on, refresh_macro, settings.macro_interval_sec)
         start("calendar", feeds_on, refresh_calendar, CALENDAR_INTERVAL_SEC)
+        start("snapshots", bool(followed), follow_snapshots, feed_snapshots.FOLLOW_SEC, "snapshot follow failed")
+        start("snapshots_analyst", bool(followed), follow_snapshots, feed_snapshots.FOLLOW_SEC, "snapshot follow failed")
         if here("prewarm") and feeds_on:
             started.append(jobs.spawn("prewarm", prewarm.run(prewarm_jobs, prewarm_tickers, _positioning,
                                                              then=prewarm_then, aside=open_fill.plan)))

@@ -505,6 +505,7 @@ class Cache:
     gdelt_resume_at: datetime | None = None   # set by a 429: passes until then go straight to Google News
     restored: bool = False                    # #428: the themes are the snapshot saved before a restart
     cache_file: Path | None = None            # tests; CACHE_FILE otherwise
+    saved: bool = True                        # the last snapshot written reached its file (#996)
 
     def history_dir(self) -> Path:
         """#485 the kept tone · article-count files, next to the snapshot."""
@@ -515,6 +516,7 @@ class Cache:
         gdelt = gdelt or Gdelt()
         ok, failures = 0, []
         start = now or datetime.now(UTC)
+        error_before = self.error
         use_gdelt = self.gdelt_resume_at is None or start >= self.gdelt_resume_at
         limited = False                # #485 a 429 this pass: the rest keep their last GDELT values
         with_headlines = market_hours(start)
@@ -568,8 +570,10 @@ class Cache:
             self.refreshed_at = (now or datetime.now(UTC)).isoformat()
             self.restored = False
         self.error = "; ".join(failures) or None
-        if ok:
-            await asyncio.to_thread(self.save)     # #859 the snapshot file, off the loop
+        # #859 the snapshot file, off the loop; #996 a failed pass too when its error is new (what others follow),
+        # as long as there are themes to keep (#428: nothing good, no file)
+        if ok or (self.themes and self.error != error_before):
+            self.saved = await asyncio.to_thread(self.save)
         return ok
 
     def status(self) -> str:
@@ -583,16 +587,21 @@ class Cache:
     def _path(self) -> Path:
         return self.cache_file or CACHE_FILE
 
-    def save(self) -> None:
+    def save(self) -> bool:
         path = self._path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"themes": self.themes, "refreshed_at": self.refreshed_at},
+            # #996 error and the GDELT pause too: what the api and the analyst follow (load() reads neither)
+            resume = self.gdelt_resume_at
+            tmp.write_text(json.dumps({"themes": self.themes, "refreshed_at": self.refreshed_at, "error": self.error,
+                                       "gdelt_resume_at": resume.isoformat() if resume else None},
                                       ensure_ascii=False, default=str), encoding="utf-8")
             tmp.replace(path)          # a stop mid-write leaves the last whole file
         except OSError as exc:
             log.warning("macro news snapshot not saved (%s): %s", path, exc)
+            return False
+        return True
 
     def load(self) -> bool:
         """The last saved pass, before the first one after a restart answers. Each theme keeps its own
@@ -611,13 +620,27 @@ class Cache:
         themes = data.get("themes") if isinstance(data, dict) else None
         if not isinstance(themes, dict) or not themes:
             return False
-        known = {t.id for t in THEMES}
-        # a row missing what prompt_note and brief() index (an older format) is dropped, not trusted
-        self.themes = {k: v for k, v in themes.items()
-                       if k in known and isinstance(v, dict) and _SAVED_KEYS <= v.keys()}
+        self.themes = _kept(themes)
         self.refreshed_at = data.get("refreshed_at")
         self.restored = bool(self.themes)
         return self.restored
+
+    def take(self, data: dict) -> bool:
+        """A pass another process saved (the collector's, #996), as that process has it now - its current
+        pass, not one from before a restart. False (nothing changed) for a file that is not a saved pass."""
+        themes = data.get("themes")
+        if not isinstance(themes, dict):
+            return False
+        try:
+            resume = datetime.fromisoformat(data["gdelt_resume_at"]) if data.get("gdelt_resume_at") else None
+        except (TypeError, ValueError):
+            resume = None
+        self.themes = _kept(themes)
+        self.refreshed_at = data.get("refreshed_at")
+        self.error = data.get("error")
+        self.gdelt_resume_at = resume if resume is None or resume.tzinfo else None
+        self.restored = False
+        return True
 
     def brief(self, ticker: str | None = None, now: datetime | None = None) -> dict:
         """GET /api/macro/brief: every theme, the ones that matter to ``ticker`` first."""
@@ -648,6 +671,15 @@ class Cache:
 
 
 _SAVED_KEYS = frozenset({"id", "label", "fetched_at", "articles_24h", "spike", "tone", "why"})
+
+
+def _kept(themes: dict) -> dict[str, dict]:
+    """A saved file's themes: a row missing what prompt_note and brief() index (an older format) is dropped,
+    not trusted."""
+    known = {t.id for t in THEMES}
+    return {k: v for k, v in themes.items() if k in known and isinstance(v, dict) and _SAVED_KEYS <= v.keys()}
+
+
 CACHE = Cache()
 
 

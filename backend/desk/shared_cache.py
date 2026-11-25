@@ -19,6 +19,10 @@ fetch - a cache must never make a page fail or wait.
 - ``get``/``put`` are for code in worker threads (``asyncio.to_thread``); called on the event loop's thread
   they skip Redis (a blocking socket call there would stall every request). ``aget``/``aput`` are for
   coroutines.
+- Every key name and sealed ``k`` carries this build's fingerprint (``BUILD``), so a deploy starts on fresh keys.
+  #993 the ``*_versioned`` calls carry a hand-bumped ``v<version>`` instead, so a value outlives a deploy: only
+  for raw source data whose shape that version fixes (``sector_bars``: public ETF closes), never for a view the
+  code computes. Changing such a value's shape means bumping its version (docs/security.md 5.2).
 - What is never put here: broker tokens (#688 keeps them in the DB), session data, anything per user - but
   the screens' wanted tickers (desk.demand, one sealed value: the same tickers the ``quote`` keys already hold).
   The password and the cache key come from Vault (``kv/trading-desk/backend/prod/env`` ``DESK_REDIS_PASSWORD`` ·
@@ -61,6 +65,7 @@ MAX_TTL_SEC = 7 * 86400     # no cache here lives longer (the closed-market wait
 LATEST_KEEP_SEC = 90.0      # a latest value (flows) stays shared at least this long: the collector's snapshot
                             # jobs read every minute, while the card's own cache (and its "ttl") is 30-60 s
 SKEW_SEC = 5.0              # clocks of the api · collector · analyst hosts
+LATE_FACTOR = 2.0          # an async timeout woken past this many bounds: the loop was blocked, not Redis
 
 _lock = threading.Lock()
 _sync = None                # redis.Redis (or a test double)
@@ -68,7 +73,7 @@ _async = None               # redis.asyncio.Redis (or a test double)
 _box: Fernet | None = None  # seals values
 _name_key = b""             # HMAC key for key names
 _down_until = 0.0
-_stats = {"hits": 0, "misses": 0, "writes": 0, "skipped": 0, "rejected": 0, "errors": 0}
+_stats = {"hits": 0, "misses": 0, "writes": 0, "skipped": 0, "rejected": 0, "errors": 0, "late": 0}
 _unshareable: set[str] = set()
 _warned_rejected = False
 
@@ -227,6 +232,17 @@ def _failed(exc: BaseException) -> None:
         log.warning("shared cache unreachable (%s) - memory only for %ds", type(exc).__name__, int(DOWN_SEC))
 
 
+def _async_failed(exc: BaseException, started: float) -> None:
+    """An awaited call that failed. A timeout that woke well past its bound is this process's event loop having
+    been blocked (a first holiday-calendar build, a GIL-heavy worker), not Redis: that read is a miss (``late``)
+    and the tier stays up - marking it down would turn every path, the worker threads' too, to memory for
+    DOWN_SEC right after a restart, when the shared values matter most (#993)."""
+    if isinstance(exc, TimeoutError) and time.monotonic() - started > TIMEOUT_SEC * LATE_FACTOR:
+        _count("late")
+        return
+    _failed(exc)
+
+
 def _count(name: str) -> None:
     with _lock:
         _stats[name] += 1
@@ -247,15 +263,26 @@ def _build_id() -> str:
 BUILD = _build_id()
 
 
-def _plain(namespace: str, key: Hashable) -> str:
+def _plain(namespace: str, key: Hashable, head: str | None = None) -> str:
+    """What a key's name is the HMAC of, and what its sealed value names: ``<head>|<namespace>:<key>``. The head
+    is this build (``BUILD``, read now - tests change it) unless a versioned call gives ``v<version>``."""
     parts = key if isinstance(key, tuple) else (key,)
-    return BUILD + "|" + namespace + ":" + ":".join("" if p is None else str(p) for p in parts)
+    return (BUILD if head is None else head) + "|" + namespace + ":" + ":".join(
+        "" if p is None else str(p) for p in parts)
 
 
-def _key(namespace: str, key: Hashable) -> str:
+def _versioned(version: int) -> str:
+    """#993 the head of a versioned key. A code constant, so a wrong one is a bug, not a miss. ``v`` is no hex digit:
+    it never meets a ``BUILD`` head."""
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise ValueError(f"a shared cache version is a positive int, not {version!r}")
+    return f"v{version}"
+
+
+def _key(namespace: str, key: Hashable, head: str | None = None) -> str:
     """``td:<namespace>:<HMAC>`` - the namespace stays readable (what kind of data, for whoever runs the
     server); the key itself (a ticker, a date) does not."""
-    digest = hmac.new(_name_key, _plain(namespace, key).encode(), hashlib.sha256).hexdigest()[:32]
+    digest = hmac.new(_name_key, _plain(namespace, key, head).encode(), hashlib.sha256).hexdigest()[:32]
     return PREFIX + namespace + ":" + digest
 
 
@@ -263,9 +290,9 @@ def _reject_constant(name: str):
     raise ValueError(name)
 
 
-def _encode(namespace: str, key: Hashable, value: Any, ttl: float) -> str | None:
+def _encode(namespace: str, key: Hashable, value: Any, ttl: float, head: str | None = None) -> str | None:
     try:
-        text = json.dumps({"k": _plain(namespace, key), "v": value, "at": time.time(), "ttl": float(ttl)},
+        text = json.dumps({"k": _plain(namespace, key, head), "v": value, "at": time.time(), "ttl": float(ttl)},
                           separators=(",", ":"), allow_nan=False)
         same = json.loads(text)["v"] == value
     except (TypeError, ValueError):
@@ -279,7 +306,7 @@ def _encode(namespace: str, key: Hashable, value: Any, ttl: float) -> str | None
     return _box.encrypt(text.encode()).decode("ascii")
 
 
-def _decode(namespace: str, key: Hashable, raw: str | None, left_ms: int | None
+def _decode(namespace: str, key: Hashable, raw: str | None, left_ms: int | None, head: str | None = None
             ) -> tuple[Any, float, float] | None:
     """Open and check a value read from the server; anything not sealed by this app for this very key, or
     older than its own ttl, is a miss (counted as ``rejected``)."""
@@ -289,7 +316,7 @@ def _decode(namespace: str, key: Hashable, raw: str | None, left_ms: int | None
         if len(raw) > MAX_RAW_CHARS:
             raise ValueError("too long")
         env = json.loads(_box.decrypt(raw.encode("ascii")), parse_constant=_reject_constant)
-        if env["k"] != _plain(namespace, key):
+        if env["k"] != _plain(namespace, key, head):
             raise ValueError("another key's value")
         at, ttl = float(env["at"]), float(env["ttl"])
         if not (math.isfinite(at) and math.isfinite(ttl) and 0 < ttl <= MAX_TTL_SEC):
@@ -326,17 +353,21 @@ def _on_loop_thread() -> bool:
 
 def get(namespace: str, key: Hashable) -> tuple[Any, float, float] | None:
     """``(value, age_sec, ttl_left_sec)`` or None. Skips Redis on the event loop's thread."""
+    return _get(namespace, key, None)
+
+
+def _get(namespace: str, key: Hashable, head: str | None) -> tuple[Any, float, float] | None:
     if _sync is None or not _up() or _on_loop_thread():
         return None
     try:
         pipe = _sync.pipeline(transaction=False)
-        pipe.get(_key(namespace, key))
-        pipe.pttl(_key(namespace, key))
+        pipe.get(_key(namespace, key, head))
+        pipe.pttl(_key(namespace, key, head))
         raw, left = pipe.execute()
     except Exception as exc:  # noqa: BLE001 - any client error means "no shared value"
         _failed(exc)
         return None
-    hit = _decode(namespace, key, raw, left)
+    hit = _decode(namespace, key, raw, left, head)
     _count("hits" if hit else "misses")
     return hit
 
@@ -348,14 +379,18 @@ def _life(ttl: float) -> float:
 
 
 def put(namespace: str, key: Hashable, value: Any, ttl: float) -> None:
+    _put(namespace, key, value, ttl, None)
+
+
+def _put(namespace: str, key: Hashable, value: Any, ttl: float, head: str | None) -> None:
     ttl = _life(ttl)
     if _sync is None or ttl <= 0 or not _up() or _on_loop_thread():
         return
-    text = _encode(namespace, key, value, ttl)
+    text = _encode(namespace, key, value, ttl, head)
     if text is None:
         return
     try:
-        _sync.set(_key(namespace, key), text, px=max(1, int(ttl * 1000)))
+        _sync.set(_key(namespace, key, head), text, px=max(1, int(ttl * 1000)))
     except Exception as exc:  # noqa: BLE001
         _failed(exc)
         return
@@ -363,35 +398,75 @@ def put(namespace: str, key: Hashable, value: Any, ttl: float) -> None:
 
 
 async def aget(namespace: str, key: Hashable) -> tuple[Any, float, float] | None:
+    return await _aget(namespace, key, None)
+
+
+async def _aget(namespace: str, key: Hashable, head: str | None) -> tuple[Any, float, float] | None:
     if _async is None or not _up():
         return None
+    started = time.monotonic()
     try:
         pipe = _async.pipeline(transaction=False)
-        pipe.get(_key(namespace, key))
-        pipe.pttl(_key(namespace, key))
+        pipe.get(_key(namespace, key, head))
+        pipe.pttl(_key(namespace, key, head))
         # one bound for the whole call: Sentinel discovery tries each sentinel in turn (3 x the socket timeout)
         raw, left = await asyncio.wait_for(pipe.execute(), TIMEOUT_SEC)
     except Exception as exc:  # noqa: BLE001
-        _failed(exc)
+        _async_failed(exc, started)
         return None
-    hit = _decode(namespace, key, raw, left)
+    hit = _decode(namespace, key, raw, left, head)
     _count("hits" if hit else "misses")
     return hit
 
 
 async def aput(namespace: str, key: Hashable, value: Any, ttl: float) -> None:
+    await _aput(namespace, key, value, ttl, None)
+
+
+async def _aput(namespace: str, key: Hashable, value: Any, ttl: float, head: str | None) -> None:
     ttl = _life(ttl)
     if _async is None or ttl <= 0 or not _up():
         return
-    text = _encode(namespace, key, value, ttl)
+    text = _encode(namespace, key, value, ttl, head)
     if text is None:
         return
+    started = time.monotonic()
     try:
-        await asyncio.wait_for(_async.set(_key(namespace, key), text, px=max(1, int(ttl * 1000))), TIMEOUT_SEC)
+        await asyncio.wait_for(_async.set(_key(namespace, key, head), text, px=max(1, int(ttl * 1000))),
+                               TIMEOUT_SEC)
     except Exception as exc:  # noqa: BLE001
-        _failed(exc)
+        _async_failed(exc, started)
         return
     _count("writes")
+
+
+# -- #993 versioned keys: a value that outlives a deploy
+#
+# Every other key carries BUILD, so a deploy (most restarts are one) starts on empty keys: nothing a page reads
+# can come back in an old shape. These calls name ``v<version>`` instead and keep every other rule (the HMAC
+# name, the seal, the envelope's key · ttl · age checks, the size cap, the stats, skipping a down server).
+# Only for raw source data whose shape a hand-bumped version constant fixes (desk.day_sectors' ETF closes) -
+# never for a view code computes: a code change would serve the old view until its TTL. Change the shape (or
+# what it means) = bump the version (docs/security.md 5.2).
+
+def get_versioned(namespace: str, version: int, key: Hashable) -> tuple[Any, float, float] | None:
+    """``get`` under ``v<version>`` instead of this build - for worker threads (skips Redis on the loop's)."""
+    return _get(namespace, key, _versioned(version))
+
+
+def put_versioned(namespace: str, version: int, key: Hashable, value: Any, ttl: float) -> None:
+    """``put`` under ``v<version>`` instead of this build - for worker threads (skips Redis on the loop's)."""
+    _put(namespace, key, value, ttl, _versioned(version))
+
+
+async def aget_versioned(namespace: str, version: int, key: Hashable) -> tuple[Any, float, float] | None:
+    """``aget`` under ``v<version>`` instead of this build - for coroutines."""
+    return await _aget(namespace, key, _versioned(version))
+
+
+async def aput_versioned(namespace: str, version: int, key: Hashable, value: Any, ttl: float) -> None:
+    """``aput`` under ``v<version>`` instead of this build - for coroutines."""
+    await _aput(namespace, key, value, ttl, _versioned(version))
 
 
 async def aput_newer(
@@ -410,6 +485,7 @@ async def aput_newer(
 
     client = _async
     name = _key(namespace, key)
+    started = time.monotonic()
     try:
         # Watch the sealed value itself. No observation or ordering metadata is stored in the clear.
         async with asyncio.timeout(TIMEOUT_SEC):
@@ -430,7 +506,7 @@ async def aput_newer(
                 _count("writes")
                 return
     except Exception as exc:  # noqa: BLE001 - Redis remains an optional cache
-        _failed(exc)
+        _async_failed(exc, started)
 
 
 def latest(hit: tuple[Any, float, float] | None) -> tuple[dict, float, float] | None:

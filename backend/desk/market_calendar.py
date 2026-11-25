@@ -54,6 +54,15 @@ def _closed(market: str, year: int) -> dict[date, str]:
     return out
 
 
+def warm(today: date | None = None) -> None:
+    """Build this year's and its neighbours' holiday tables now (desk.api runs it off the event loop at startup):
+    the first ``holidays`` build takes seconds and would otherwise run inside the first request that asks (#993)."""
+    year = (today or date.today()).year
+    for market in ("kr", "us"):
+        for y in (year - 1, year, year + 1):
+            _closed(market, y)
+
+
 def holiday(market: str, d: date) -> str | None:
     return _closed(market, d.year).get(d)
 

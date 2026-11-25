@@ -894,6 +894,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             raise PolicyChanged("process privacy approval unavailable")
         lag_task = asyncio.create_task(lag.run())
         await net.warm()                   # #859 the shared TLS context, built off the loop before any client
+        await asyncio.to_thread(market_calendar.warm)   # #993 the holiday tables, off the loop (seconds, once)
         shared_cache.configure(settings)   # #689 Redis behind some caches; nothing configured = memory only
         demand.configure(settings.role)    # #689 split roles with Redis: the collector fetches what screens read
         # #690 the market stream: in this process (all), or over Redis pub/sub when split (docs/market-stream.md)

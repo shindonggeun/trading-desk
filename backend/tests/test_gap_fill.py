@@ -1,5 +1,8 @@
 """#577 session gaps: which count, when they fill, the odds of gaps like them - from fixed bars."""
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -197,3 +200,40 @@ def test_a_sunday_evening_row_still_opens_the_weekend_gap():
 
 def test_futures_say_their_daily_gaps_are_mostly_the_weekends():
     assert "주말 · 휴장 뒤" in gap_fill.basis_of("NQ=F")["note"] and gap_fill.basis_of("SPY")["note"] is None
+
+
+def test_cold_asks_for_one_ticker_at_once_read_its_bars_once():
+    """#993 기동 직후 prewarm · 팁 화면 · run 노트가 같은 종목을 동시에 물으면 8년 일봉을 각자 읽었다."""
+    gap_fill._CACHE.clear()
+    reads, release = [], threading.Event()
+
+    def fetch(symbol):
+        reads.append(symbol)
+        assert release.wait(5)                      # the first read is slow; the others ask meanwhile
+        return series()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        asks = [pool.submit(gap_fill.read, fetch, "spy", ahead=a) for a in (300.0, 0.0, 0.0, 300.0)]
+        deadline = time.monotonic() + 5
+        while not reads and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.2)                             # the other three arrive (at the ticker's lock) meanwhile
+        release.set()
+        reports = [a.result(timeout=5) for a in asks]
+    assert reads == ["SPY"] and all(r is reports[0] for r in reports)
+    assert len(gap_fill._READS) == 0                # nobody left holding or waiting
+
+
+def test_a_failed_read_is_not_handed_to_the_next_asker():
+    gap_fill._CACHE.clear()
+    reads = []
+
+    def fetch(symbol):
+        reads.append(symbol)
+        if len(reads) == 1:
+            raise TimeoutError()
+        return series()
+
+    with pytest.raises(TimeoutError):
+        gap_fill.read(fetch, "QQQ")
+    assert gap_fill.read(fetch, "QQQ")["gaps_counted"] == 2 and reads == ["QQQ", "QQQ"]

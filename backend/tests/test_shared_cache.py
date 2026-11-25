@@ -2,6 +2,8 @@
 unreachable Redis leaves every cache working from memory as before."""
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import time
@@ -58,7 +60,7 @@ def test_keys_are_prefixed_always_expire_and_round_trip(redis):
     value, age, left = sc.get("sr", ("NVDA", None, "swing"))
     assert value == {"zones": [1.5, 2], "label": "지지"} and 0 <= age < 5 and 0 < left <= 30
     assert sc.stats() | {"down_sec": 0} == {"on": True, "down_sec": 0, "hits": 1, "misses": 0, "writes": 1,
-                                             "skipped": 0, "rejected": 0, "errors": 0}
+                                             "skipped": 0, "rejected": 0, "errors": 0, "late": 0}
 
 
 def test_a_value_json_would_change_stays_in_memory(redis, caplog):
@@ -424,6 +426,87 @@ def test_another_build_never_reads_this_ones_values(redis, monkeypatch):
     assert sc.get("osc", ("A", "1d")) is None and sc.stats()["rejected"] == 0   # another name: a plain miss
 
 
+def test_build_keys_are_named_and_sealed_as_before_the_versioned_head(redis):
+    """#993 the head moved into a parameter: a build's key name and sealed ``k`` are byte for byte what they were."""
+    assert sc._plain("sr", ("NVDA", None, "swing")) == sc.BUILD + "|sr:NVDA::swing"
+    assert sc._key("quote", "AAPL") == "td:quote:" + hmac.new(
+        sc._name_key, f"{sc.BUILD}|quote:AAPL".encode(), hashlib.sha256).hexdigest()[:32]
+    sc.put("quote", "AAPL", {"p": 1}, 10)
+    env = json.loads(sc._box.decrypt(redis.get(sc._key("quote", "AAPL")).encode()))
+    assert env["k"] == f"{sc.BUILD}|quote:AAPL" and env["v"] == {"p": 1} and env["ttl"] == 10.0
+    assert sc._plain("quote", "AAPL", sc._versioned(1)) == "v1|quote:AAPL" != sc._plain("quote", "AAPL")
+
+
+def test_a_versioned_value_outlives_a_deploy_and_a_version_bump_misses(redis, monkeypatch):
+    bars = {"day": "2026-11-25", "at": ["2026-11-24T05:00:00+00:00"], "close": [101.25]}
+    sc.put_versioned("sector_bars", 1, "SPY", bars, 3600)
+    [name] = redis.keys("*")
+    assert name == sc._key("sector_bars", "SPY", "v1") and name.startswith("td:sector_bars:") and "SPY" not in name
+    assert "101.25" not in redis.get(name) and 0 < redis.pttl(name) <= 3_600_000
+    monkeypatch.setattr(sc, "BUILD", "the-next-deploy")                 # every desk/*.py change rotates it
+    value, age, left = sc.get_versioned("sector_bars", 1, "SPY")
+    assert value == bars and 0 <= age < 5 and 3590 < left <= 3600
+    assert sc.get_versioned("sector_bars", 2, "SPY") is None             # its shape changed: bumped, never read
+    assert sc.get("sector_bars", "SPY") is None                           # nor a build's key
+    sc.put("sector_bars", "QQQ", bars, 60)
+    assert sc.get_versioned("sector_bars", 1, "QQQ") is None              # ...nor the other way
+    assert sc.stats()["rejected"] == 0 and sc.stats()["hits"] == 1
+
+
+def test_a_versioned_value_moved_replayed_or_from_the_future_is_a_miss(redis):
+    sc.put_versioned("sector_bars", 1, "SPY", {"c": [1.0]}, 60)
+    redis.set(sc._key("sector_bars", "QQQ", "v1"), redis.get(sc._key("sector_bars", "SPY", "v1")), px=60_000)
+    assert sc.get_versioned("sector_bars", 1, "QQQ") is None              # moved: names SPY inside
+    sc.put("sector_bars", "IWM", {"c": [2.0]}, 60)
+    redis.set(sc._key("sector_bars", "IWM", "v1"), redis.get(sc._key("sector_bars", "IWM")), px=60_000)
+    assert sc.get_versioned("sector_bars", 1, "IWM") is None              # a build's value under the version's name
+
+    def sealed(key: str, at: float) -> str:
+        return sc._box.encrypt(json.dumps({"k": f"v1|sector_bars:{key}", "v": {"c": [3.0]}, "at": at,
+                                           "ttl": 10.0}).encode()).decode()
+
+    redis.set(sc._key("sector_bars", "DIA", "v1"), sealed("DIA", time.time() - 11), px=3_600_000)
+    assert sc.get_versioned("sector_bars", 1, "DIA") is None              # older than its own ttl
+    redis.set(sc._key("sector_bars", "XLK", "v1"), sealed("XLK", time.time() + sc.SKEW_SEC + 30), px=3_600_000)
+    assert sc.get_versioned("sector_bars", 1, "XLK") is None              # written "later" than clocks can skew
+    assert sc.stats()["rejected"] == 4 and sc.get_versioned("sector_bars", 1, "SPY")[0] == {"c": [1.0]}
+
+
+def test_versioned_async_calls_and_the_loop_thread(redis, monkeypatch):
+    async def go():
+        await sc.aput_versioned("sector_bars", 1, "SPY", {"c": [1.5]}, 60)
+        monkeypatch.setattr(sc, "BUILD", "the-next-deploy")
+        sc.put_versioned("sector_bars", 1, "QQQ", {"c": [2.5]}, 60)    # skipped here: aput is the loop's call
+        return (await sc.aget_versioned("sector_bars", 1, "SPY"), sc.get_versioned("sector_bars", 1, "SPY"),
+                await sc.aget_versioned("sector_bars", 3, "SPY"))
+
+    hit, blocked, bumped = asyncio.run(go())
+    assert hit[0] == {"c": [1.5]} and blocked is None and bumped is None
+    assert redis.keys(sc._key("sector_bars", "QQQ", "v1")) == []
+    assert sc.get_versioned("sector_bars", 1, "SPY")[0] == {"c": [1.5]}  # a worker thread's read
+
+
+@pytest.mark.parametrize("version", [0, -1, True, "1", 1.0, None])
+def test_a_version_is_a_positive_int(redis, version):
+    with pytest.raises(ValueError):
+        sc.get_versioned("sector_bars", version, "SPY")
+    with pytest.raises(ValueError):
+        sc.put_versioned("sector_bars", version, "SPY", {"c": [1.0]}, 60)
+
+
+def test_versioned_calls_skip_a_down_server_and_keep_the_size_cap(redis):
+    sc.put_versioned("sector_bars", 1, "BIG", {"c": [1.0] * (sc.MAX_VALUE_BYTES // 4)}, 60)
+    assert redis.keys("*") == [] and sc.stats()["skipped"] == 1          # too big: memory only
+    broken = _Broken()
+    sc.use(broken, None)
+    try:
+        assert sc.get_versioned("sector_bars", 1, "SPY") is None
+        sc.put_versioned("sector_bars", 1, "SPY", {"c": [1.0]}, 60)
+        assert broken.calls == 1 and sc.stats()["errors"] == 1            # down: the next call never reaches it
+    finally:
+        sc.use(None, None)
+
+
 def test_a_slow_server_costs_at_most_the_timeout_on_the_loop():
     class Slow:
         def pipeline(self, transaction=False):
@@ -464,3 +547,56 @@ def test_broker_calls_are_counted_where_they_are_made():
     asyncio.run(kis())
     snap = outbound.snapshot()
     assert snap["toss"] == 1 and snap["kis"] == 1
+
+
+class _Silent:
+    """An async client that never answers (a dead socket): every call waits past the bound."""
+
+    def pipeline(self, transaction=False):
+        return self
+
+    def get(self, *args):
+        return self
+
+    def pttl(self, *args):
+        return self
+
+    async def execute(self):
+        await asyncio.sleep(10)
+
+    async def set(self, *args, **kwargs):
+        await asyncio.sleep(10)
+
+
+def test_a_timeout_the_blocked_loop_caused_is_a_miss_not_an_outage(monkeypatch):
+    """#993 right after a restart the event loop can be blocked for seconds (the first holiday build): a read
+    that wakes that late is a miss, and the tier stays up for every other path."""
+    sc.use(None, _Silent(), secret="0123456789abcdef0123456789abcdef")
+    monkeypatch.setattr(sc, "_down_until", 0.0)
+    before = dict(sc.stats())
+
+    async def blocked():
+        task = asyncio.create_task(sc.aget("ns", "k"))
+        await asyncio.sleep(0)                               # the read is waiting on Redis ...
+        time.sleep(sc.TIMEOUT_SEC * (sc.LATE_FACTOR + 1))  # noqa: ASYNC251 - the loop blocked past the bound is the case
+        return await task
+
+    try:
+        assert asyncio.run(blocked()) is None
+        after = sc.stats()
+        assert after["late"] == before["late"] + 1 and after["errors"] == before["errors"] and sc._up()
+        assert asyncio.run(sc.aget("ns", "k")) is None       # a free loop: the silence is Redis - down
+        assert sc.stats()["errors"] == before["errors"] + 1 and not sc._up()
+    finally:
+        sc.use(None, None)
+        monkeypatch.setattr(sc, "_down_until", 0.0)
+
+
+def test_the_holiday_tables_are_built_ahead():
+    from datetime import date
+
+    from desk import market_calendar
+    market_calendar._closed.cache_clear()
+    market_calendar.warm(date(2026, 11, 25))
+    assert market_calendar._closed.cache_info().currsize == 6
+    assert market_calendar.holiday("kr", date(2026, 12, 25)) is not None

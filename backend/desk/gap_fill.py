@@ -36,6 +36,7 @@ from typing import Any
 from . import market_calendar
 from . import underlying as under
 from .shared_cache import TieredCache
+from .single_flight import KeyLocks
 from .sr import _local_day
 from .ttl_cache import TTLCache
 
@@ -307,16 +308,27 @@ CACHE_MAX = 128
 _CACHE = TieredCache("gap_fill", TTLCache(CACHE_MAX, CACHE_TTL_SEC))
 
 
+_READS = KeyLocks()   # #993 one report per ticker at a time
+
+
 def read(fetch: Fetch, ticker: str, events: Events | None = None, clock: Callable[[], float] = time.monotonic,
          ahead: float = 0.0) -> dict:
-    """``report`` cached CACHE_TTL_SEC; ``ahead`` refreshes one that would expire that soon (prewarm)."""
+    """``report`` cached CACHE_TTL_SEC; ``ahead`` refreshes one that would expire that soon (prewarm).
+
+    #993 a cold start's asks for one ticker at once (the prewarm, the tips page, a run's note) each read eight years
+    of bars: a second asker now waits for the first one's report and takes it from the cache. A fresh report never
+    waits behind a refresh (checked before the lock)."""
     key = ticker.upper()
     hit = _CACHE.get(key, ahead=ahead, now=clock())
     if hit is not None:
         return hit
-    result = report(fetch, key, events)   # a failure raises: nothing is kept
-    _CACHE.put(key, result, now=clock())
-    return result
+    with _READS.hold(key):
+        hit = _CACHE.get(key, ahead=ahead, now=clock())
+        if hit is not None:
+            return hit
+        result = report(fetch, key, events)   # a failure raises: nothing is kept
+        _CACHE.put(key, result, now=clock())
+        return result
 
 
 def cached(ticker: str, clock: Callable[[], float] = time.monotonic) -> dict | None:

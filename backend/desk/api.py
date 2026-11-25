@@ -120,6 +120,7 @@ from . import (
     shared_cache,
     stock_social,
     tips,
+    trend_follow,
     verdict,
     web_search,
     weekly_chart_evidence,
@@ -2948,6 +2949,24 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     chart_reads: dict[tuple[str, tuple[str, ...], tuple[date, str] | None], tuple[float, dict]] = {}
 
+    async def _trend_follow(ticker: str, tfs: tuple[str, ...], got: list, frames: list[dict], now: datetime) -> dict:
+        """#977 the daily trend-following read on chart-read's own daily bars and 1d frame; for KOSPI, SK hynix
+        and Samsung Electronics the other two's daily bars too (the lead comparison)."""
+        daily = got[tfs.index("1d")]
+        frame = next((f for f in frames if f.get("timeframe") == "1d" and "error" not in f), None)
+        peers: dict[str, list[dict] | None] = {}
+        if ticker in trend_follow.KR_LEAD:
+            others = [t for t in trend_follow.KR_LEAD if t != ticker]
+            count = max(channels.BARS["1d"], accumulation_live.DAILY_BARS)      # the chart-read's own daily ask
+            more = await asyncio.gather(*(prices.candles(t, "1d", count) for t in others), return_exceptions=True)
+            peers = {t: r.get("bars") if isinstance(r, dict) else None for t, r in zip(others, more, strict=True)}
+        try:
+            return await asyncio.to_thread(trend_follow.build, ticker, daily if isinstance(daily, dict) else None,
+                                           now, frame, peers)
+        except Exception as exc:                        # the chart's other reads still stand
+            log.warning("chart read trend follow failed: %s", type(exc).__name__, exc_info=True)
+            return trend_follow.unavailable(ticker, now, "trend_follow_error")
+
     @app.get("/api/chart-read")
     async def chart_read_get(ticker: str = "NQ=F", tf: str | None = None):
         """#631 the chart alone (desk.chart_read): per timeframe the trend, channel, pattern, nearest
@@ -3040,6 +3059,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     out["weekly_drawdown"] = weekly_chart_evidence.unavailable("weekly_evidence_error", now)
                 if out["weekly_drawdown"]["status"] == "unavailable":
                     keep = min(keep, CHART_READ_MIN_SEC * 4)
+            out["trend_follow"] = await _trend_follow(ticker, tfs, got, frames, now)
+            if out["trend_follow"]["status"] == "unavailable":
+                keep = min(keep, CHART_READ_MIN_SEC * 4)
         if len(chart_reads) > 256:
             chart_reads.clear()
         chart_reads[key] = (time.monotonic() + max(CHART_READ_MIN_SEC, keep), out)

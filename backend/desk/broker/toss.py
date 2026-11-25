@@ -53,6 +53,11 @@ _SYMBOL = re.compile(r"[A-Za-z0-9.\-]{1,20}")
 
 def _symbol_form(symbol: object) -> bool:
     return isinstance(symbol, str) and _SYMBOL.fullmatch(symbol) is not None
+# #689 /api/status outbound.by_kind: what each data request was for, by its path - one of these constants, never
+# the market in a path (KOSPI, KR) nor a query value. A path not listed here counts as "other".
+_KINDS = {"/api/v1/accounts": "accounts", "/api/v1/holdings": "holdings", "/api/v1/stocks/all": "list_stocks",
+          "/api/v1/prices": "quote", "/api/v1/candles": "candles", "/api/v1/exchange-rate": "usd_krw",
+          "/api/v1/market-indicators/prices": "index_prices", "/api/v1/orders": "fills"}
 
 
 class TossError(RuntimeError):
@@ -61,6 +66,16 @@ class TossError(RuntimeError):
         self.status = status     # #994 the HTTP status of a data GET Toss refused (_get), else None
         self.token = token       # #994 raised getting the token for a data GET (_get)
         self.unpriced = False    # #994 quote(): Toss answered, with no usable price for the symbol
+
+
+def _kind(path: str, params: dict | None) -> str:
+    if path.startswith("/api/v1/market-indicators/") and path.endswith("/investor-trading"):
+        return "investor_flow"
+    if path.startswith("/api/v1/market-calendar/"):
+        return "market_calendar"
+    if path == "/api/v1/candles" and (params or {}).get("interval") == "1m":
+        return "candles_1m"                     # the minute tails (desk.prices _fill_krx, the live chart) apart
+    return _KINDS.get(path, outbound.OTHER)
 
 
 def _provider_errors(method):
@@ -300,8 +315,9 @@ class TossBroker(Broker):
         token = await self._data_token()
         renewed = False
         attempt = 0
+        kind = _kind(path, params)
         while True:
-            outbound.count("toss")   # #689 per-process broker calls, /api/status
+            outbound.count("toss", kind)   # #689 per-process broker calls by endpoint, /api/status
             r = await self._http.get(path, params=params,
                                      headers={"Authorization": f"Bearer {token}", **(headers or {})})
             # 401: revoked by a token issued elsewhere, or expired early. Renew once and retry.

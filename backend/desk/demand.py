@@ -48,7 +48,7 @@ MAX_KEYS = 80              # as desk.broker.kis_stream's subscription cap - past
 MAX_KEY_CHARS = 40
 # a key's collection period per namespace. #999 "estimate" (desk.estimate.collect): 9 s on the 5 s serve
 # loop lands every ~10 s (10 would wait for the third pass, ~15 s)
-EVERY = {"quote": 10.0, "futures_quote": 15.0, "estimate": 9.0}
+EVERY = {"quote": 10.0, "futures_quote": 15.0, "estimate": 9.0, "fx": 30.0, "krx_1m": 30.0}
 NS_MAX = {"estimate": MAX_KEYS // 2}   # #999 a stream's 50 off-hours tickers leave room for the quotes
 PARALLEL = 2               # handlers running at once in a pass (a batch handler's call takes one place)
 PASS_SEC = 10.0            # a pass stops starting handlers after this long

@@ -2949,17 +2949,20 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
     chart_reads: dict[tuple[str, tuple[str, ...], tuple[date, str] | None], tuple[float, dict]] = {}
 
-    async def _trend_follow(ticker: str, tfs: tuple[str, ...], got: list, frames: list[dict], now: datetime) -> dict:
+    async def _lead_peers(ticker: str) -> dict[str, list[dict] | None]:
+        """#977 the daily bars of the KOSPI-lead tickers other than ``ticker`` (a failed one is None)."""
+        others = [t for t in trend_follow.KR_LEAD if t != ticker]
+        count = max(channels.BARS["1d"], accumulation_live.DAILY_BARS)          # the chart-read's own daily ask
+        more = await asyncio.gather(*(prices.candles(t, "1d", count) for t in others), return_exceptions=True)
+        return {t: r.get("bars") if isinstance(r, dict) else None for t, r in zip(others, more, strict=True)}
+
+    async def _trend_follow(ticker: str, tfs: tuple[str, ...], got: list, frames: list[dict], now: datetime,
+                            peer_fetch: asyncio.Future | None) -> dict:
         """#977 the daily trend-following read on chart-read's own daily bars and 1d frame; for KOSPI, SK hynix
-        and Samsung Electronics the other two's daily bars too (the lead comparison)."""
+        and Samsung Electronics the other two's daily bars too (``peer_fetch``, started beside the chart's own)."""
         daily = got[tfs.index("1d")]
         frame = next((f for f in frames if f.get("timeframe") == "1d" and "error" not in f), None)
-        peers: dict[str, list[dict] | None] = {}
-        if ticker in trend_follow.KR_LEAD:
-            others = [t for t in trend_follow.KR_LEAD if t != ticker]
-            count = max(channels.BARS["1d"], accumulation_live.DAILY_BARS)      # the chart-read's own daily ask
-            more = await asyncio.gather(*(prices.candles(t, "1d", count) for t in others), return_exceptions=True)
-            peers = {t: r.get("bars") if isinstance(r, dict) else None for t, r in zip(others, more, strict=True)}
+        peers = await peer_fetch if peer_fetch is not None else {}     # failed fetches come back as None
         try:
             return await asyncio.to_thread(trend_follow.build, ticker, daily if isinstance(daily, dict) else None,
                                            now, frame, peers)
@@ -2994,6 +2997,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
         if "1d" in tfs:
             # the weekly gaps beside the daily, and (#751) the long view's weeks
             wanted.append(prices.candles(ticker, "1w", max(CHART_READ_WEEKS, accumulation_live.WEEKLY_BARS)))
+        # #977 the lead comparison's other two daily series, fetched beside the chart's own
+        peer_fetch = (asyncio.ensure_future(_lead_peers(ticker))
+                      if "1d" in tfs and ticker in trend_follow.KR_LEAD else None)
         got = await asyncio.gather(*wanted, return_exceptions=True)
         weekly = got[-1] if "1d" in tfs and isinstance(got[-1], dict) else None
         weeks = weekly["bars"] if weekly is not None else None
@@ -3059,9 +3065,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                     out["weekly_drawdown"] = weekly_chart_evidence.unavailable("weekly_evidence_error", now)
                 if out["weekly_drawdown"]["status"] == "unavailable":
                     keep = min(keep, CHART_READ_MIN_SEC * 4)
-            out["trend_follow"] = await _trend_follow(ticker, tfs, got, frames, now)
-            if out["trend_follow"]["status"] == "unavailable":
-                keep = min(keep, CHART_READ_MIN_SEC * 4)
+            out["trend_follow"] = await _trend_follow(ticker, tfs, got, frames, now, peer_fetch)
+            if out["trend_follow"]["reason"] in ("missing_daily_source", "trend_follow_error"):
+                keep = min(keep, CHART_READ_MIN_SEC * 4)          # a passing failure: ask again soon
         if len(chart_reads) > 256:
             chart_reads.clear()
         chart_reads[key] = (time.monotonic() + max(CHART_READ_MIN_SEC, keep), out)

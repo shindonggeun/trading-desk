@@ -67,3 +67,20 @@ def test_kospi_lead_reads_the_other_two_daily_bars(db_url, monkeypatch):
     assert [i["ticker"] for i in read["lead"]["items"]] == ["000660.KS", "005930.KS"]
     states = {i["state"] for i in read["lead"]["items"]}               # the same bars all round: never ahead
     assert len(states) == 1 and states <= {"same", "waiting"}
+
+
+def test_a_failing_read_leaves_the_rest_of_the_chart(db_url, daily_feed, monkeypatch):  # noqa: F811
+    from desk import trend_follow
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("bad bars")
+
+    monkeypatch.setattr(trend_follow, "build", boom)
+    prices, _, _ = daily_feed
+    with _client(db_url, prices, fake_runs=True) as client:
+        _login(client)
+        response = client.get(URL, params={"ticker": "SOXX", "tf": "1d"})
+    assert response.status_code == 200
+    result = response.json()
+    assert result["trend_follow"]["status"] == "unavailable" and result["trend_follow"]["reason"] == "trend_follow_error"
+    assert result["daily_reaction"]["status"] == "confirmed" and result["timeframes"][0]["timeframe"] == "1d"

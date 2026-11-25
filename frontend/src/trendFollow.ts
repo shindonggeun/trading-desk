@@ -3,7 +3,7 @@ import type { DrawingAnchor, DrawingKind } from "./chartDrawingModel";
 import type { DrawingCandle, DrawingPractice } from "./components/chartDrawingPractice";
 
 /** #977 GET /api/chart-read 의 선택 필드 trend_follow — 일봉 추세추종 근거(관찰이지 매매 신호가 아니다). */
-export type TrendFollowReason = "missing_daily_source" | "product_mismatch" | "insufficient_bars" | "trend_follow_error";
+export type TrendFollowReason = "missing_daily_source" | "product_mismatch" | "insufficient_bars" | "trend_follow_error" | "unsupported_market";
 export type TrendState = "down" | "sideways" | "up";
 export type TrendStage = "first_rebound" | "awaiting_confirmation" | "breakout_confirmed" | "failed_breakout" | "none";
 export type TrendSignal = "first_up_bar" | "support_reclaim" | "wick_touch" | "close_above" | "close_back_below";
@@ -48,7 +48,8 @@ export interface TrendFollowObservation {
   reason: TrendFollowReason | null;
   instrument: {
     kind: "etf" | "cash_index" | "continuous_future" | "perpetual" | "stock" | "index" | "spot";
-    unit: "USD" | "KRW" | "index_points" | "USDT";
+    /** spot 은 호가 통화(USDT · KRW · BTC …) */
+    unit: "USD" | "KRW" | "index_points" | "USDT" | (string & {});
     symbol: string;
     provider: string | null;
     session?: "us_regular" | "krx_regular" | "cme_globex" | "24h" | string;
@@ -95,6 +96,7 @@ const REASON_KO: Record<TrendFollowReason, string> = {
   product_mismatch: "차트 상품과 판정 상품이 달라 추세를 판정하지 않았어요.",
   insufficient_bars: "확정된 일봉이 모자라 추세를 판정하지 않았어요.",
   trend_follow_error: "추세 근거를 계산하지 못했어요.",
+  unsupported_market: "거래 세션을 모르는 시장이라 확정봉을 가릴 수 없어 판정하지 않았어요.",
 };
 export const EVIDENCE_KO: Record<EvidenceKind, string> = {
   quarter_level: "수평 구간 0.25",
@@ -131,7 +133,7 @@ const KIND_KO = {
 };
 const SESSION_KO: Record<string, string> = { us_regular: "미국 정규장", krx_regular: "한국 정규장", cme_globex: "CME Globex", "24h": "24시간" };
 const ROLLOVER_KO: Record<string, string> = { yahoo_front_month: "야후 근월물 연결" };
-const UNIT_KO = { USD: "USD", KRW: "원", index_points: "포인트", USDT: "USDT" };
+const UNIT_KO: Record<string, string> = { USD: "USD", KRW: "원", index_points: "포인트", USDT: "USDT" };
 const PROVIDER_KO: Record<string, string> = { yahoo: "Yahoo Finance", toss: "토스증권", binance: "Binance" };
 
 export function productName(ticker: string): string {
@@ -146,7 +148,7 @@ export function trendProduct(o: Pick<TrendFollowObservation, "ticker" | "instrum
   const kind = KIND_KO[instrument.kind];
   return {
     label: [instrument.symbol || ticker, name, name?.includes(kind) ? null : kind].filter(Boolean).join(" · "),
-    unit: UNIT_KO[instrument.unit],
+    unit: UNIT_KO[instrument.unit] ?? instrument.unit,
     source: [instrument.provider && (PROVIDER_KO[instrument.provider] ?? instrument.provider),
       instrument.session && (SESSION_KO[instrument.session] ?? instrument.session), instrument.rollover && `롤오버 ${ROLLOVER_KO[instrument.rollover] ?? instrument.rollover}`]
       .filter(Boolean).join(" · "),
@@ -178,7 +180,8 @@ export function trendPresentation(o: TrendFollowObservation) {
   return {
     line: `일봉 ${TREND_KO[o.trend.state]} · ${STAGE_KO[o.stage.state]}`,
     reason: null,
-    signal: o.stage.signal ? SIGNAL_KO[o.stage.signal] : null,
+    // 신호가 없으면(예: 선 위 0.3 ATR 안 마감) 판정 근거 문장으로 대신한다
+    signal: o.stage.signal ? SIGNAL_KO[o.stage.signal] : o.stage.basis || null,
     pending: o.status === "in_progress",
   };
 }

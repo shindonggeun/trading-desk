@@ -793,6 +793,23 @@ def test_the_board_shows_an_open_nxt_trade_as_a_live_price(db_url):
     finally:
         del ANCHOR[("SAMSUNGUSDT", "2026-11-06T07:58:00+00:00")]
     assert row["state"] == "live" and row["quote_source"] == "nxt" and row["price"] == 220000.0
+    # #1001 change_pct keeps its meaning (against the last regular close - today's, here) and the day's parts
+    # come beside it: Thursday 215000 -> Friday 218000 (regular) -> NXT 220000
+    assert row["change_pct"] == round((220000 / 218000 - 1) * 100, 2)
+    split = row["change_split"]
+    assert split["regular"] == {"pct": 1.4, "base": 215000.0, "base_date": "2026-11-05"}
+    assert (split["extended"]["pct"], split["extended"]["base"], split["extended"]["source"]) == (0.92, 218000.0, "nxt")
+    assert split["total"] == {"pct": 2.33, "base": 215000.0, "base_date": "2026-11-05"}
+
+
+def test_the_board_leaves_us_rows_and_the_weekend_estimate_without_a_split(db_url):
+    """#1001 only a KRX stock's row on the day of its close gets the parts: a US row never, Saturday's
+    estimate of Friday's close neither (its change is the whole move since that close)."""
+    est, _ = _estimator(SATURDAY_KST_10AM, after_hours=lambda code: NXT_FRIDAY_20H)
+    with _client(db_url, est) as client:
+        client.post("/api/auth/login", json={"username": OWNER, "password": PASSWORD})
+        rows = client.get("/api/estimates?tickers=005930.KS,SOXL").json()["items"]
+    assert all("change_split" not in r for r in rows)
 
 
 # --- #238: US pre / after market and the overnight session are real trades on KIS ----------------

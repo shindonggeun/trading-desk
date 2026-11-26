@@ -4,7 +4,7 @@
 
 | 원천 | 확인한 범위 | 연결 범위 |
 | --- | --- | --- |
-| 한국투자증권 | 종목별 투자자매매동향 일별 `FHPTJ04160001`의 `output2`에 영업일 `stck_bsop_date`, 종목 누적 거래대금 `acml_tr_pbmn`, 외국인 매수 `frgn_shnu_tr_pbmn`, 매도 `frgn_seln_tr_pbmn`가 정의돼 있다. 요청의 `J`는 KRX, `NX`는 NXT, `UN`은 통합이다. | 기존 저장소의 한국투자 수급은 시장 합계다. 종목별 승인 응답의 기준일·단위·집계와 제공 계정의 이용 범위는 개발 환경에서 확인하지 못했다. 종목별 요청과 키 발급을 추가하지 않는다. [한국투자 공식 요청 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/investor_trade_by_stock_daily/investor_trade_by_stock_daily.py) · [공식 응답 필드 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/investor_trade_by_stock_daily/chk_investor_trade_by_stock_daily.py) · [서비스 이용 안내](https://apiportal.koreainvestment.com/about-howto) |
+| 한국투자증권 | 종목별 투자자매매동향 일별 `FHPTJ04160001`의 `output2`에 영업일 `stck_bsop_date`, 종목 누적 거래대금 `acml_tr_pbmn`, 외국인 매수 `frgn_shnu_tr_pbmn`, 매도 `frgn_seln_tr_pbmn`가 정의돼 있다. 금액마다 거래량 필드(`acml_vol`, `frgn_shnu_vol`, `frgn_seln_vol`)가 따로 있다. 주식현재가 시세 `FHKST01010100`은 외국인 보유 수량 `frgn_hldn_qty`, 상장 주식 수 `lstn_stcn`, HTS 외국인 소진율 `hts_frgn_ehrt`를, 주식현재가 일자별 `FHKST01010400`은 일별 `hts_frgn_ehrt`를 준다. 요청의 `J`는 KRX, `NX`는 NXT, `UN`은 통합이다. 공식 예제는 금액 단위를 밝히지 않는다. | #916에서 연결했다. 관심종목과 거래대금 상위 50개 종목에 세 TR을 `J`로 부른다. 기존 선물 수급과 같은 한국투자 클라이언트를 쓰며 토큰을 새로 발급하지 않는다. 금액 단위는 응답마다 거래량과 가격 범위로 확인한다(아래 [한국투자 종목별 수급](#한국투자-종목별-수급-916)). 삼성전자·SK하이닉스 실측 대조는 배포 뒤에 한다(#1018). [한국투자 공식 요청 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/investor_trade_by_stock_daily/investor_trade_by_stock_daily.py) · [공식 응답 필드 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/investor_trade_by_stock_daily/chk_investor_trade_by_stock_daily.py) · [서비스 이용 안내](https://apiportal.koreainvestment.com/about-howto) |
 | 토스증권 | 공개 시세 계약은 호가·가격·최근 체결·상하한가·캔들이다. 저장소에 있는 투자자 매매는 KOSPI/KOSDAQ 시장 단위다. | 종목별 외국인 매수·매도의 하루 거래대금으로 확인된 경로가 없다. 시장 합계만 별도 표시한다. [토스증권 시세 명세](https://developers.tossinvest.com/docs/market-data) |
 | KRX 종목 시세 | 유가증권시장과 코스닥의 상장 주권 일별매매정보는 시장별 서비스다. 기존 KRX 수집 목록에는 지수, ETF 등 일곱 서비스가 있다. 두 종목 시세 서비스는 각각 이용 신청·승인이 필요하다. | 승인된 일별 주권 시세가 같은 시장·거래일의 전체 스냅샷으로 저장된 경우 거래대금 순위를 계산한다. 화면에 출처를 표시한다. [유가증권 일별매매정보](https://openapi.krx.co.kr/contents/OPP/USES/service/OPPUSES002_S2.cmd?BO_ID=JvJFzlAENzZlPBDNGAWC) · [코스닥 일별매매정보](https://openapi.krx.co.kr/contents/OPP/USES/service/OPPUSES002_S2.cmd?BO_ID=hZjGpkllgCBCWqeTsYFj) · [KRX API 이용약관](https://openapi.krx.co.kr/contents/OPP/INFO/OPPINFO002.jsp) · [이용 신청](https://openapi.krx.co.kr/contents/OPP/INFO/OPPINFO003.jsp) |
 | KRX 외국인 보유 | 웹 통계는 지분율과 한도소진율을 별도 열과 순위 방식으로 제공한다. 보유수량·한도소진율은 장 개시 시 표시하는 전일 확정치다. | 승인된 자동 수집 경로가 확인되지 않아 웹 통계에 요청하지 않는다. 별도 보유 기준일과 공표 시각이 있는 지분율 계약을 제공한다. [KRX 보유 지분 통계](https://data.krx.co.kr/contents/MDC/EASY/ranking/MDCEASY021.jsp) · [KRX 데이터 수신과 이용](https://openapi.krx.co.kr/contents/OPP/DATA/OPPDATA003.jsp) |
@@ -79,7 +79,7 @@ KRX 주권 거래대금과 외국인 보유 행을 한 쌍으로 확인할 수 �
 | --- | --- |
 | `latest_session`, `sessions[]` | 한국 현지 정규장이 종료된 마지막 거래일과 조회에 포함된 오름차순 거래일. 주말·휴장과 진행 중인 세션은 제외한다. 최근 마감과 원천의 공표 가능일은 다를 수 있다. |
 | `ranking` | `status`, `as_of`, `source`, `published_at`, `items[]`. 각 시장에서 같은 날의 종목 거래대금 내림차순, 동률은 종목 코드순이다. 최근 마감보다 이전에 발표된 순위는 `stale`이다. |
-| `favorites` | 인증 계정이 저장한 선택 시장 관심종목만 기존 표시 순서로 제공한다. `items[].history[]`는 자료가 없는 날짜도 포함한다. 다른 계정의 관심종목은 응답이나 공유 캐시에 들어가지 않는다. |
+| `favorites` | 인증 계정이 저장한 선택 시장 관심종목만 기존 표시 순서로 제공한다. `items[].history[]`는 자료가 없는 날짜도 포함한다. 다른 계정의 관심종목은 응답에 들어가지 않는다. 공유 캐시에는 관심종목 목록이나 계정이 아니라 종목별 공개 시세만 종목 단위로 들어간다. |
 | `market_summary` | `scope: "market"`, `flow`, `index`의 별도 시점·출처와 상태를 표시한다. 시장 전체 외국인 수급이나 지수는 개별 종목 계산에 사용하지 않는다. |
 | `market_summary.index.change_pct` | 지수 종가와 같은 KRX 대표지수 일별 행의 `FLUC_RT`를 퍼센트 단위로 표시한다. 현재 종가는 `CLSPRC_IDX`이며 기준일은 `index.as_of`다. [KOSPI 일별시세](https://openapi.krx.co.kr/contents/OPP/USES/service/OPPUSES001_S2.cmd?BO_ID=EREKZauXnMmxyIlqzeDN) · [KOSDAQ 일별시세](https://openapi.krx.co.kr/contents/OPP/USES/service/OPPUSES001_S2.cmd?BO_ID=nimebcamqFNIPNcRrHoO) |
 | `sources` | `turnover`, `foreign_flow`, `ownership`의 사용 가능 여부를 표시한다. 각 관측의 세부 상태와 기준일은 행 안에 있다. |
@@ -103,9 +103,49 @@ KRX 주권 거래대금과 외국인 보유 행을 한 쌍으로 확인할 수 �
 
 ## 조회량과 검증 범위
 
-현황판 요청은 DB에 이미 저장된 주권 거래대금·지수와 기존 시장 수급 캐시만 읽는다.
+현황판 요청은 DB에 저장된 주권 거래대금·지수, 기존 시장 수급 캐시, 한국투자 종목별 수급(#916)을 읽는다.
 거래대금 순위는 시장별 하루 묶음으로 읽으며 이력은 관심종목을 한 번에 조회한다. 캐시가 없거나 원천이
-미연결이면 가능한 항목만 표시한다. 화면에서 상위 50개가 보여도 공급자 요청은 발생하지 않는다.
+미연결이면 가능한 항목만 표시한다. 공급자 요청은 아래 한국투자 종목별 수급에서만 생긴다.
+
+### 한국투자 종목별 수급 (#916)
+
+- 대상: 요청 계정의 선택 시장 관심종목을 먼저, 그다음 거래대금 순위 상위 50개를 순서대로 부른다.
+  순위 스냅샷이 없으면 관심종목만 부른다. 시장 코드는 KOSPI와 KOSDAQ 모두 `J`(KRX)다.
+- 호출: 종목 하나에 `FHPTJ04160001`, `FHKST01010100`, `FHKST01010400`을 한 번씩 부른다.
+  하나가 실패하면 그 계열만 빠진다. 이 기능의 한국투자 요청은 한 번에 두 개까지이고, 앞 요청이 시작된 뒤
+  0.1초가 지나야 다음 요청을 보낸다(초당 10건 이하). collector 와 같은 앱 키의 초당 한도에 여유를 남기기 위해서다.
+- 금액 단위: 응답은 금액 단위를 밝히지 않는다. 금액을 자기 거래량으로 나눈 평균가가 그날 저가·고가의
+  ±10% 안에 드는 배율을 1, 1,000, 1,000,000 중에서 찾는다. ±10%는 시간외 단일가가 움직일 수 있는 폭이다.
+  거래대금은 `acml_tr_pbmn`/`acml_vol`, 외국인 매수는 `frgn_shnu_tr_pbmn`/`frgn_shnu_vol`,
+  매도는 `frgn_seln_tr_pbmn`/`frgn_seln_vol`로 따로 본다. 맞는 배율이 정확히 하나일 때만 원으로 바꾼다.
+  금액은 자기 단위로 반올림돼 있어 ±0.5단위 안의 값을 모두 후보로 본다(작은 거래가 백만원 단위로 "1"이 되는 경우).
+  금액과 거래량이 모두 0이면 0이다. 한쪽만 0이거나 맞는 배율이 없으면 그 값은 null이다. 거래대금은
+  `no_data`, 외국인 매수·매도 중 한쪽만 남으면 `partial`이고 비율은 내지 않는다.
+  서버 로그에는 종목 코드·날짜·필드 이름만 남긴다.
+- 확정: 거래일 D의 행은 D의 정규장 마감 4시간 40분 뒤(보통 20:10, 수능일처럼 늦게 끝나는 날은 그만큼 늦게)
+  이후에 받은 경우에만 확정이다. 그 전에 받은 행은
+  `not_published`다. 휴장일 행은 버린다. 거래 범위는 시간외를 포함한 KRX 전체(`all_sessions`)로 표시한다.
+- 참여율 분모: 같은 날 한국투자 외국인 대금이 있으면 표시 거래대금과 참여율 분모 모두 같은 응답의
+  거래대금을 쓴다. KRX 스냅샷 거래대금은 거래 범위가 확인되지 않아 참여율 분모로 쓰지 않는다.
+  순위 순서와 한국투자 값이 없는 날의 거래대금 표시에만 쓴다.
+- 지분율: 외국인 보유 수량 ÷ 상장 주식 수 × 100이다. 보유 수량이 상장 주식 수 이하이고 상장 주식 수가
+  양수일 때만 쓴다. 이 값과 HTS 소진율의 차이가 0.02%p 이하이면 외국인 한도가 상장 주식 수와 같다고 본다.
+  이때만 일자별 소진율을 그날의 지분율로 쓴다. 한도가 있는 종목은 이력이 `no_data`이고 최신 지분율만 표시한다.
+- 지분율 기준일: 세션 S 동안 보이는 보유 수량은 직전 거래일 종가 기준 확정치다. 일자별 행은 S의 직전
+  거래일을 기준일로 붙인다. 현재가 값은 조회 시점에 시작한 최근 세션의 직전 거래일이다. 개장 전이면 최근
+  세션은 전 거래일이다. 두 경우 모두 `OWNERSHIP_LAG_SESSIONS = 1` 하나로 정한다. 기준일이 같으면 현재가 값을
+  쓴다. 이 지연은 배포 뒤 KRX 화면과 대조해 확인한다(#1018).
+- 캐시: 종목과 최근 마감 거래일마다 메모리(최대 256개)와 봉인된 공유 캐시 `kr_stock_flow`에 둔다.
+  최근 거래일 행이 확정이면 6시간, 아니면 10분 동안 쓴다. 호출이 하나라도 실패하면 1분 뒤 다시 부르고
+  그 응답은 공유하지 않는다. 다음 장 개시 시각은 넘기지 않는다(현재가 지분율의 기준일이 바뀐다).
+  같은 종목을 동시에 요청하면 한 번만 부른다. 다시 부르다 실패하면 같은 거래일의 지난 값을 쓴다.
+  만료된 값은 기다리지 않고 바로 보여 주고, 새로 받는 일은 뒤에서 한다. 새 거래일 값이 아직 없으면
+  메모리에 남은 직전 거래일 값으로 이력을 보여 준다. 한꺼번에 대기하는 조회는 120개까지이고, 넘으면 캐시에 있는 것만 보여 준다.
+- 대기: 요청은 최대 2초 기다리고 끝난 종목만 보여 준다. 남은 조회는 계속 돌아 다음 요청에 쓰인다.
+  아직 조회 중인 종목만 있으면 그 계열은 `no_data`다(원천 미연결이 아니다).
+  한국투자 키가 없거나 가짜 실행이면 `foreign_flow`와 `ownership`은 `source_unavailable`이다.
+
+### KRX 주권 스냅샷
 
 기본 KRX 자동 수집 목록에는 두 주권 서비스가 들어 있지 않다. 순위를 게시하려면 해당 시장의
 승인된 전종목 일별 JSON 응답을 확보한 뒤 아래 검증을 실행한다. 입력은 `OutBlock_1`이 들어 있는
@@ -121,6 +161,6 @@ python -m desk.kr_flow_import --market kospi --date 2026-11-24 --input approved-
 거래대금, 중복·누락 코드는 전체 입력을 거절하며 마지막 정상 스냅샷을 유지한다.
 
 스냅샷이 없으면 순위는 `source_unavailable`이다. 개발 환경에서는 주권 스냅샷, 외국인 수급,
-지분율을 합성하여 날짜·단위와 응답 상태를 검증했다. 승인된 KIS·KRX 실측에서 확인할 종목은
-삼성전자(005930)와 SK하이닉스(000660)다. 실제 수급과 지분율의 적재가 연결될 때까지 두 원천의
-종목 값은 null이다.
+지분율을 합성하여 날짜·단위와 응답 상태를 검증했다. 한국투자 응답은 원·백만원 단위, 단위 불일치,
+0과 결측, 20:10 전후, 한도 유무를 합성 응답으로 시험했다. 실측 대조 종목은 삼성전자(005930)와
+SK하이닉스(000660)이며 배포 뒤에 확인한다(#1018). 그 전까지 값을 막는 기준은 단위 점검과 확정 규칙이다.

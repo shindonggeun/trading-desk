@@ -158,6 +158,17 @@ def test_only_a_screens_krx_1m_reads_mark_on_every_read(redis):
     assert marked == {(MINUTES_NS, KRX)} and again
 
 
+def test_krx_minute_charts_take_at_most_their_share_of_the_wanted_set(monkeypatch):
+    monkeypatch.setattr(demand, "enabled", lambda: True)   # one account opening many charts keeps the quotes
+    demand.configure("api")
+    for i in range(demand.NS_MAX[MINUTES_NS] + 5):
+        demand.want(MINUTES_NS, f"{i:06d}")
+    demand.want("quote", "AAPL")
+    wanted = demand._current(demand.time.monotonic())
+    assert len(wanted[MINUTES_NS]) == demand.NS_MAX[MINUTES_NS] == 10 and wanted["quote"] == ["AAPL"]
+    assert demand.stats()["dropped"] == 5
+
+
 @pytest.mark.parametrize("interval", ["5m", "15m", "60m", "240m"])
 def test_a_krx_minute_charts_tail_marks_nothing_but_takes_a_collected_value(redis, interval):
     api_broker = Toss(shift=-50)

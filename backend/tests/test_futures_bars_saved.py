@@ -108,6 +108,9 @@ def test_a_shorter_read_never_replaces_a_longer_one():
     assert not fq.save_bars("night", "2026-11-16", long[:3])                   # e.g. another process's earlier read
     assert not fq.save_bars("night", "2026-11-16", long)                       # the same: not written again
     assert fq.load_bars("night", "2026-11-16") == long
+    settled = {**long[-1], "c": 2.0}
+    assert fq.save_bars("night", "2026-11-16", [settled])                      # one minute again, settled
+    assert fq.load_bars("night", "2026-11-16") == [*long[:-1], settled]
     assert fq.save_bars("night", "2026-11-17", long[:1])                       # the next session replaces it
     assert fq.load_bars("night", "2026-11-16") is None
 
@@ -124,3 +127,93 @@ def test_while_it_trades_the_bars_are_saved_at_most_every_few_minutes():
     now[0], clock[0] = at("2026-11-16", "22:29"), fq.BARS_SAVE_SEC + 20
     asyncio.run(quotes.candles("night"))
     assert fq.load_bars("night", "2026-11-16")[-1]["t"].startswith("2026-11-16T22:29")
+
+
+class LastMinuteSettles(FakeRest):
+    """The night's rows end at 05:59 (no 06:00 row); its close is 781 at 05:59:30 and 785 once it settles."""
+
+    def __init__(self):
+        super().__init__()
+        self.close = 781.0
+
+    async def get(self, path, tr_id, params):
+        got = await super().get(path, tr_id, params)
+        if tr_id == fq.CANDLE_TR:
+            rows = [r for r in got["output2"] if r["stck_cntg_hour"][:4] != "0600"]
+            if rows and rows[0]["stck_cntg_hour"][:4] == "0559":
+                rows[0] = {**rows[0], "futs_prpr": str(self.close)}
+            got = {**got, "output2": rows}
+        return got
+
+
+def test_the_last_bar_settling_after_the_bell_is_saved_though_its_minute_is_the_same():
+    rest = LastMinuteSettles()
+    now, clock = [at("2026-11-17", "05:59") + timedelta(seconds=30)], [0.0]
+    job = fq.FuturesQuote(rest, now=lambda: now[0], clock=lambda: clock[0], is_open=is_open)
+    asyncio.run(job.read_close())
+    assert fq.load_bars("night", "2026-11-16")[-1]["c"] == 781.0
+    rest.close, now[0], clock[0] = 785.0, at("2026-11-17", "06:01"), 90.0
+    assert asyncio.run(job.read_close()) == "night"
+    saved = fq.load_bars("night", "2026-11-16")
+    assert saved[-1]["t"].startswith("2026-11-17T05:59") and saved[-1]["c"] == 785.0
+    # the read after the bell was one short page (KIS ended it early): the night's earlier minutes stay, here too
+    assert len(saved) == 720 and len(asyncio.run(job.candles("night"))["bars"]) == 720
+
+
+def test_writers_at_once_each_use_a_temporary_file_of_their_own():
+    from concurrent.futures import ThreadPoolExecutor
+
+    bar = {"o": 1.0, "h": 1.0, "l": 1.0, "c": 1.0, "v": 1}
+    lists = [[{**bar, "t": f"2026-11-16T{18 + m // 60:02d}:{m % 60:02d}:00+09:00"} for m in range(n)]
+             for n in range(100, 140)]
+    with ThreadPoolExecutor(8) as pool:                    # the api's and the collector's saves, both PID 1
+        list(pool.map(lambda bars: fq.save_bars("night", "2026-11-16", bars), lists))
+    assert fq.load_bars("night", "2026-11-16") is not None
+    assert not list(fq.BARS_DIR.glob("*.tmp"))
+
+
+def test_bars_failing_at_the_close_fail_the_job_so_it_runs_again_after_the_bell():
+    class CandlesDown(FakeRest):
+        down = True
+
+        async def get(self, path, tr_id, params):
+            if tr_id == fq.CANDLE_TR and self.down:
+                raise RuntimeError("KIS 500")
+            return await super().get(path, tr_id, params)
+
+    rest = CandlesDown()
+    now, clock = [at("2026-11-17", "05:59") + timedelta(seconds=30)], [0.0]
+    job = fq.FuturesQuote(rest, now=lambda: now[0], clock=lambda: clock[0], is_open=is_open)
+    try:
+        asyncio.run(job.read_close())
+        raise AssertionError("the job must fail")
+    except RuntimeError:
+        pass
+    assert [t for t, _ in rest.calls].count(fq.PRICE_TR) == 1           # the close quote was read first
+    rest.down, now[0], clock[0] = False, at("2026-11-17", "06:00"), 30.0 + fq.CACHE_FAIL_SEC
+    assert asyncio.run(job.read_close()) == "night"                     # desk.jobs' retry, 30 s on
+    assert fq.load_bars("night", "2026-11-16") is not None
+
+
+def test_fridays_night_answers_through_the_weekend_until_the_monday_open():
+    rest = BarsGone()
+    asyncio.run(fq.FuturesQuote(rest, now=lambda: at("2026-11-14", "05:59") + timedelta(seconds=30),
+                                is_open=is_open).read_close())        # Friday's night, ending Saturday 06:00
+    rest.closed = {"CM"}
+    for when in (at("2026-11-14", "12:00"), at("2026-11-15", "20:00"), at("2026-11-16", "08:44")):
+        got = asyncio.run(_restart(rest, when).candles("night"))
+        assert got["held"] is True and got["session_date"] == "2026-11-13" and len(got["bars"]) == 720
+
+
+def test_a_file_with_times_that_are_not_times_or_too_big_is_not_taken():
+    path = fq.BARS_DIR / "futures-bars-night.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plain = {"o": 1, "h": 1, "l": 1, "c": 1, "v": 1}
+    for bars in ([{**plain, "t": "a"}, {**plain, "t": "b"}],
+                 [{**plain, "t": "2026-11-16T18:00:00"}]):                 # no zone
+        path.write_text(json.dumps({"session": "night", "date": "2026-11-16", "bars": bars}), encoding="utf-8")
+        assert fq.load_bars("night", "2026-11-16") is None
+    good = [{**plain, "t": "2026-11-16T18:00:00+09:00"}]
+    path.write_text(json.dumps({"session": "night", "date": "2026-11-16", "bars": good, "pad": "x" * 600_000}),
+                    encoding="utf-8")
+    assert fq.load_bars("night", "2026-11-16") is None

@@ -155,6 +155,7 @@ def save_bars(kind: str, day: str, bars: list[dict]) -> bool:
     tmp = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        _drop_stale_tmp(path)
         # a name of its own: the services' processes are all PID 1 in their containers, and share the volume
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=path.name + ".",
                                          suffix=".tmp", delete=False) as f:
@@ -168,6 +169,20 @@ def save_bars(kind: str, day: str, bars: list[dict]) -> bool:
             tmp.unlink(missing_ok=True)
         return False
     return True
+
+
+STALE_TMP_SEC = 3600.0            # a temporary file this old is a killed writer's (a write takes milliseconds)
+
+
+def _drop_stale_tmp(path: Path) -> None:
+    """A writer killed between creating its temporary file and replacing the file leaves it: gone within the hour."""
+    now = _time.time()
+    for old in path.parent.glob(path.name + ".*.tmp"):
+        try:
+            if now - old.stat().st_mtime > STALE_TMP_SEC:
+                old.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def merge_bars(kept: list[dict], bars: list[dict]) -> list[dict]:
@@ -561,7 +576,7 @@ class FuturesQuote:
         return {**self._base(s, front), "bars": bars}
 
     async def _save(self, kind: str, day: str, bars: list[dict], force: bool = False) -> None:
-        """#1020 the session's bars to its file: newer ones only, while it trades at most every BARS_SAVE_SEC."""
+        """#1020 the session's bars to its file: changed ones only, while it trades at most every BARS_SAVE_SEC."""
         last = self._saved.get(kind)
         if last is not None and last[0] == day and (
                 (last[1] and merge_bars(last[1], bars) == last[1])

@@ -475,8 +475,8 @@ def test_the_collectors_demand_job_passes_the_quote_batch_only_while_the_broker_
         broker.on = False
         asyncio.run(step())
     # #999 the estimate namespace is served as before, by its own handler
-    assert passed == [(["estimate", "futures_quote", "quote"], {"quote": source.refresh_quotes}),
-                      (["estimate", "futures_quote", "quote"], None)]
+    assert passed == [(["estimate", "futures_quote", "fx", "krx_1m", "quote"], {"quote": source.refresh_quotes}),
+                      (["estimate", "futures_quote", "fx", "krx_1m", "quote"], None)]
 
 
 # --- the collector's pass, before and after ------------------------------------------------------------------

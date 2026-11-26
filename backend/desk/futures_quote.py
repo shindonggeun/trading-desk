@@ -50,7 +50,7 @@ import asyncio
 import json
 import logging
 import math
-import os
+import tempfile
 import time as _time
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -90,6 +90,7 @@ BARS_DIR = Path.home() / ".tradingagents" / "desk-cache"
 BARS_SAVE_SEC = 300.0             # while a session trades its bars are saved at most this often (each close read too)
 CLOSE_BARS_AFTER_SEC = 60.0       # the close read job reads the bars once more this long after the bell
 MAX_SAVED_BARS = 2000             # a file with more is not this module's (a night has 721 minutes)
+MAX_BARS_FILE_BYTES = 512 * 1024  # nor a bigger file (a night's 721 bars are ~70 KB): refused unread
 BAR_KEYS = ("o", "h", "l", "c", "v")
 
 
@@ -101,14 +102,20 @@ def _valid_bars(bars: object) -> list[dict] | None:
     """Saved bars as this module writes them (oldest first, ``t`` ISO and finite numbers), else None."""
     if not isinstance(bars, list) or not 0 < len(bars) <= MAX_SAVED_BARS:
         return None
-    last = ""
+    last = None
     for b in bars:
-        if not isinstance(b, dict) or not isinstance(b.get("t"), str) or b["t"] <= last:
+        if not isinstance(b, dict) or not isinstance(b.get("t"), str):
+            return None
+        try:
+            at = datetime.fromisoformat(b["t"])
+        except ValueError:
+            return None
+        if at.tzinfo is None or (last is not None and at <= last):
             return None
         if not all(isinstance(b.get(k), int | float) and not isinstance(b.get(k), bool) and math.isfinite(b[k])
                    for k in BAR_KEYS):
             return None
-        last = b["t"]
+        last = at
     return bars
 
 
@@ -117,6 +124,9 @@ def load_bars(kind: str, day: str) -> list[dict] | None:
     session's, or a file that is not one). Blocking: off the event loop."""
     path = _bars_path(kind)
     try:
+        if path.stat().st_size > MAX_BARS_FILE_BYTES:
+            log.info("futures %s bars file too big: not read", kind)
+            return None
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
@@ -129,25 +139,43 @@ def load_bars(kind: str, day: str) -> list[dict] | None:
 
 
 def save_bars(kind: str, day: str, bars: list[dict]) -> bool:
-    """#1020 ``bars`` of the ``kind`` session that opened on ``day`` written whole (a temporary file replaced in one
-    step) - unless the file already holds that session up to a later or the same minute (another process's, or a
-    longer read). Blocking: off the event loop. True when written."""
+    """#1020 ``bars`` of the ``kind`` session that opened on ``day`` merged into what its file holds (``merge_bars``:
+    a short read never drops minutes, a minute read again - the last one settling after the bell - takes the new
+    values) and written whole (a temporary file of its own replaced in one step); nothing new, nothing written.
+    Between processes the read and the write are not one step: of two saves at once the later write wins, each a
+    whole file. Blocking: off the event loop. True when written."""
     if _valid_bars(bars) is None:
         return False
     kept = load_bars(kind, day)
-    if kept is not None and (kept[-1]["t"], len(kept)) >= (bars[-1]["t"], len(bars)):
-        return False
+    if kept is not None:
+        bars = merge_bars(kept, bars)
+        if bars == kept:
+            return False
     path = _bars_path(kind)
+    tmp = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")     # one per process: the three share the volume
-        tmp.write_text(json.dumps({"session": kind, "date": day, "bars": bars,
-                                   "saved_at": datetime.now(UTC).isoformat(timespec="seconds")}), encoding="utf-8")
+        # a name of its own: the services' processes are all PID 1 in their containers, and share the volume
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=path.name + ".",
+                                         suffix=".tmp", delete=False) as f:
+            tmp = Path(f.name)
+            f.write(json.dumps({"session": kind, "date": day, "bars": bars,
+                                "saved_at": datetime.now(UTC).isoformat(timespec="seconds")}))
         tmp.replace(path)
     except OSError as exc:
         log.warning("futures %s bars not saved: %s", kind, type(exc).__name__)
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
         return False
     return True
+
+
+def merge_bars(kept: list[dict], bars: list[dict]) -> list[dict]:
+    """#1020 one session's bars read at two times as one list, oldest first: every minute of either, a minute in both
+    with ``bars``' values (the newer read)."""
+    out = {datetime.fromisoformat(b["t"]): b for b in kept}
+    out.update((datetime.fromisoformat(b["t"]), b) for b in bars)
+    return [out[k] for k in sorted(out)]
 
 
 def _kst(now: datetime) -> datetime:
@@ -298,7 +326,8 @@ class FuturesQuote:
         self._locks: dict[tuple, asyncio.Lock] = {}   # one per answer: a paging candle fetch does not hold the quote
         # #713 (session, opening day) -> its last quote with a price; ("bars", session, day) -> its minutes
         self._good: dict[tuple, dict | list] = {}
-        self._saved: dict[str, tuple[str, str, float]] = {}   # #1020 session -> (day, last bar, when) saved here
+        # #1020 session -> (day, the bars saved here, when): what this process wrote last
+        self._saved: dict[str, tuple[str, list[dict], float]] = {}
 
     def _session(self, kind: str | None) -> dict:
         now = self._now()
@@ -474,12 +503,14 @@ class FuturesQuote:
         return None
 
     async def _keep_bars(self, kind: str) -> None:
-        """#1020 the session's bars read (as a screen's read would) and saved to its file now."""
+        """#1020 the session's bars read (as a screen's read would) and saved to its file now. A failure raises:
+        the job fails and is tried again (desk.jobs, CLOSE_READ_SEC) - on no screen's night these reads are what
+        keeps the bars."""
         try:
             await self.candles(kind)
-        except Exception as exc:  # noqa: BLE001 - the close read's quote stands; the next read tries again
-            log.info("futures %s bars at the close failed: %s", kind, _short(exc))
-            return
+        except Exception as exc:
+            log.warning("futures %s bars at the close failed: %s", kind, _short(exc))
+            raise
         s = self._session(kind)
         bars = self._good.get(("bars", kind, s["date"]))
         if bars:
@@ -516,6 +547,8 @@ class FuturesQuote:
         bars = normalize_bars(rows, s)
         key = ("bars", s["shown"], s["date"])
         if bars:
+            # #1020 a short read (KIS' page cut short) never drops the minutes already taken
+            bars = merge_bars(self._good[key], bars) if self._good.get(key) else bars
             self._good[key] = bars
             await self._save(s["shown"], s["date"], bars, force=s["now"] != s["shown"])
         elif s["now"] != s["shown"]:
@@ -531,10 +564,14 @@ class FuturesQuote:
         """#1020 the session's bars to its file: newer ones only, while it trades at most every BARS_SAVE_SEC."""
         last = self._saved.get(kind)
         if last is not None and last[0] == day and (
-                last[1] >= bars[-1]["t"] or (not force and self._clock() - last[2] < BARS_SAVE_SEC)):
+                (last[1] and merge_bars(last[1], bars) == last[1])
+                or (not force and self._clock() - last[2] < BARS_SAVE_SEC)):
             return
-        if await asyncio.to_thread(save_bars, kind, day, bars) or last is None or last[0] != day:
-            self._saved[kind] = (day, bars[-1]["t"], self._clock())
+        saved = await asyncio.to_thread(save_bars, kind, day, bars)
+        # not written (the file has them, or a disk error - logged): the time is kept, so a trading session's
+        # reads try again only after BARS_SAVE_SEC; the close reads always try
+        kept = bars if saved else (last[1] if last is not None and last[0] == day else [])
+        self._saved[kind] = (day, kept, self._clock())
 
     async def serve(self, key: str) -> None:
         """#689 the collector (desk.demand's handler): the wanted ``key`` (``demand_key``) read as this process

@@ -7,6 +7,8 @@ from sqlalchemy import event, insert
 
 from desk import kr_flow_data, kr_flow_import
 from desk.db import krx_daily, krx_days, make_engine
+from desk.kis_stock_flow import KisStockFlow
+from desk.kr_flow_board import ForeignFlow, Ownership, Turnover
 from desk.krx_etp import isin
 
 MON = date(2026, 11, 23)
@@ -173,3 +175,38 @@ def test_market_summary_reuses_sealed_page_and_skips_provisional_records(monkeyp
     assert result == {"scope": "market", "status": "partial", "index": None,
                       "flow": {"as_of": MON.isoformat(), "source": "toss", "published_at": None, "unit": "KRW",
                                "investors": {"foreigner": {"buy": 10, "sell": 2, "net": 8}}}}
+
+
+class FakeStockFlow:
+    def __init__(self):
+        self.asked = []
+
+    async def collect(self, codes, market, latest_session, *, budget_sec=2.0):
+        self.asked.append((list(codes), market, latest_session))
+        ticker = "005930.KS"
+        return ([Turnover(ticker, market, latest_session, "kis", 1_000, trade_scope="all_sessions")],
+                [ForeignFlow(ticker, market, latest_session, "kis", 100, 50, venue="krx", unit="KRW",
+                             trade_scope="all_sessions")],
+                [Ownership(ticker, market, MON, "kis", 50.0, denominator="listed_shares")])
+
+
+def test_read_asks_kis_for_the_favorites_first_then_the_ranking_and_merges_its_rows(engine):
+    rows = [_stock(TUE, "035420", "300"), _stock(TUE, "000660", "200"), _stock(TUE, "005930", "100")]
+    with engine.begin() as conn:
+        conn.execute(insert(krx_days), [{"api": API, "bas_dd": TUE, "rows": 3, "fetched_at": NOW}])
+        conn.execute(insert(krx_daily), rows)
+    favorites = [{"ticker": "005930.KS"}, {"ticker": "247540.KQ"}, {"ticker": "000270.KS"}, {"ticker": "NVDA"}]
+    stock_flow = FakeStockFlow()
+    result = asyncio.run(kr_flow_data.read(engine, "kospi", 2, favorites, NOW, stock_flow=stock_flow))
+    assert stock_flow.asked == [(["005930", "000270", "035420", "000660"], "kospi", TUE)]
+    assert [item["ticker"] for item in result["ranking"]["items"]] == ["035420.KS", "000660.KS", "005930.KS"]
+    samsung = result["favorites"]["items"][0]
+    assert samsung["history"][-1]["participation_pct"] == 7.5        # (100 + 50) / (2 x 1,000)
+    assert samsung["latest_ownership"]["ratio_pct"] == 50.0
+    assert result["sources"] == {"turnover": {"status": "available"}, "foreign_flow": {"status": "available"},
+                                 "ownership": {"status": "available"}}
+
+    for off in (None, KisStockFlow(None)):          # no KIS client (fake runs, no keys): the sources say so
+        result = asyncio.run(kr_flow_data.read(engine, "kospi", 2, favorites, NOW, stock_flow=off))
+        assert result["sources"]["foreign_flow"] == result["sources"]["ownership"] == {"status": "source_unavailable"}
+        assert [item["ticker"] for item in result["ranking"]["items"]] == ["035420.KS", "000660.KS", "005930.KS"]

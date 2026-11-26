@@ -59,6 +59,7 @@ from . import (
     halving,
     holding_watch,
     horizons,
+    kis_stock_flow,
     kr_flow_data,
     kr_short_sales,
     krx,
@@ -480,7 +481,8 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                options_provider: options_detail.OptionSource | None = None,
                market_outlook_service: market_outlook.MarketOutlook | None = None,
                funding_history: binance_funding.FundingHistory | None = None,
-               short_sales: kr_short_sales.KrxShortSales | None = None) -> FastAPI:
+               short_sales: kr_short_sales.KrxShortSales | None = None,
+               stock_flow: kis_stock_flow.KisStockFlow | None = None) -> FastAPI:
     settings = settings or load()
     log_setup.configure(settings.log_level)     # #676 the desk.* INFO lines reach the container log
     if settings.role in ("all", "api"):
@@ -792,6 +794,9 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
     # #979 domestic short-sale shares from KIS' daily trend, on the same client (one token); KIS has no
     # net balance, so that series says source_unavailable. No KIS client: the whole card says so.
     short_sales = short_sales or kr_short_sales.connect(getattr(futures, "rest", None))
+    # #916 the flow board's per-stock foreign trading and ownership, on the same client (one token)
+    if stock_flow is None:
+        stock_flow = kis_stock_flow.KisStockFlow(getattr(futures, "rest", None))
 
     async def _futures_note() -> str | None:
         return futures_note(await futures.get())
@@ -1552,6 +1557,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
             task.cancel()
         await estimator.aclose()
         await longshort.aclose()
+        await stock_flow.aclose()        # #916 its fetches use the futures' KIS client and the shared cache
         await futures.aclose()
         await market_bus.BUS.aclose()    # #690 its streams are told reset; its subscription and publishes stop
         await shared_cache.aclose()      # #689 after every task that reads or writes it has stopped
@@ -2412,7 +2418,7 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
                                 days: Annotated[int, Query(ge=1, le=22)] = 22):
         """Load the closed-session KRX board and the current account's favorites."""
         starred = await asyncio.to_thread(favorites.list, request.state.user.id)
-        result = await kr_flow_data.read(engine, market, days, starred, datetime.now(UTC))
+        result = await kr_flow_data.read(engine, market, days, starred, datetime.now(UTC), stock_flow=stock_flow)
         return JSONResponse(result, headers={"Cache-Control": "private, no-store"})
 
     @app.get("/api/market/futures")

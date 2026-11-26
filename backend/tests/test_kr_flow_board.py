@@ -225,3 +225,54 @@ def test_ranking_holdings_cutoff_and_holdings_only_partial_result():
     assert favorite["history"][0]["ownership"]["ratio_pct"] is None
     assert favorite["latest_ownership"]["ratio_pct"] == 50
     assert got["favorites"]["status"] == "partial"
+
+
+def test_participation_uses_the_flow_sources_own_turnover_and_the_rank_stays_the_snapshots():
+    snapshot = [board.Turnover(SEC, MARKET, TODAY, "krx_open_api", 50_000),     # ranked, no trade scope
+                board.Turnover(HYNIX, MARKET, TODAY, "krx_open_api", 70_000)]
+    kis = board.Turnover(SEC, MARKET, TODAY, "kis", 100_000, trade_scope="all_sessions")
+    flow = board.ForeignFlow(SEC, MARKET, TODAY, "kis", 12_000, 8_000, venue="krx", unit="KRW",
+                             trade_scope="all_sessions")
+    rankings = [board.RankingDay(MARKET, TODAY, "krx_open_api")]
+    got = _view(board.Publication(turnover=[*snapshot, kis], foreign_flow=[flow], rankings=rankings))
+    assert [item["ticker"] for item in got["ranking"]["items"]] == [HYNIX, SEC]
+    assert board.ranked_tickers(board.Publication(turnover=[*snapshot, kis], rankings=rankings), "KOSPI",
+                                TODAY, NOW) == [HYNIX, SEC]
+    for point in (got["ranking"]["items"][1]["latest"], got["favorites"]["items"][0]["history"][-1]):
+        assert (point["turnover"]["source"], point["turnover"]["value_krw"]) == ("kis", 100_000)
+        assert point["participation_pct"] == pytest.approx(10.0)
+        assert point["participation_status"] == "available"
+
+    # Without the flow source's own turnover the snapshot's scope cannot be compared: no ratio
+    alone = _view(board.Publication(turnover=snapshot, foreign_flow=[flow], rankings=rankings))
+    point = alone["ranking"]["items"][1]["latest"]
+    assert (point["turnover"]["source"], point["turnover"]["value_krw"]) == ("krx_open_api", 50_000)
+    assert point["participation_pct"] is None and point["participation_status"] == "no_data"
+    assert point["buy_sell_imbalance"] == pytest.approx(0.2)
+
+
+def test_an_unconfirmed_same_source_turnover_gives_way_to_the_snapshot_until_it_is_final():
+    snapshot = [board.Turnover(SEC, MARKET, TODAY, "krx_open_api", 50_000)]
+    pending = board.Turnover(SEC, MARKET, TODAY, "kis", 100_000, trade_scope="all_sessions", confirmed=False)
+    flow = board.ForeignFlow(SEC, MARKET, TODAY, "kis", 12_000, 8_000, venue="krx", unit="KRW",
+                             trade_scope="all_sessions", confirmed=False)
+    rankings = [board.RankingDay(MARKET, TODAY, "krx_open_api")]
+    point = _view(board.Publication(turnover=[*snapshot, pending], foreign_flow=[flow],
+                                    rankings=rankings))["ranking"]["items"][0]["latest"]
+    assert (point["turnover"]["source"], point["turnover"]["status"]) == ("krx_open_api", "available")
+    assert point["foreign_flow"]["status"] == "not_published" and point["participation_pct"] is None
+    # With no other turnover the pending row still says it is not published yet
+    alone = _view(board.Publication(turnover=[pending], foreign_flow=[flow]))["favorites"]["items"][0]["history"][-1]
+    assert (alone["turnover"]["source"], alone["turnover"]["status"]) == ("kis", "not_published")
+
+
+def test_a_same_source_turnover_without_a_checked_value_gives_way_to_the_snapshot():
+    snapshot = [board.Turnover(SEC, MARKET, TODAY, "krx_open_api", 50_000)]
+    unchecked = board.Turnover(SEC, MARKET, TODAY, "kis", None, trade_scope="all_sessions")
+    flow = board.ForeignFlow(SEC, MARKET, TODAY, "kis", 12_000, 8_000, venue="krx", unit="KRW",
+                             trade_scope="all_sessions")
+    rankings = [board.RankingDay(MARKET, TODAY, "krx_open_api")]
+    point = _view(board.Publication(turnover=[*snapshot, unchecked], foreign_flow=[flow],
+                                    rankings=rankings))["ranking"]["items"][0]["latest"]
+    assert (point["turnover"]["source"], point["turnover"]["value_krw"]) == ("krx_open_api", 50_000)
+    assert point["participation_pct"] is None and point["buy_sell_imbalance"] == pytest.approx(0.2)

@@ -23,12 +23,13 @@ process's memory:
   economic calendar, macro news and earnings calendar are followed from the files their passes save (#996,
   desk.feed_snapshots: the ``snapshots`` jobs), and so are the news digest (the headlines' Korean reads) and the
   sector news (#1004);
-- read back from the database where they are not made (#1005): the earnings ``want`` set (the collector's earnings
-  pass reads every account's favorites itself) and ``calibration.TABLE``'s live record (the analyst's scoring
-  sets it, the api's ``calibration_live`` job reads the scored runs back for the playbooks);
 - the KIS live quotes (``kis_stream``, api) that ``nq_fast`` (collector) reads for QQQ;
 - the run gate's ``spare_slot`` the news digest, the brief and the reports wait on, and its rate-limit cooldown
   the chat (api) reads.
+
+Read back from the database instead where they are not made (#1005): the earnings ``want`` set (the collector's
+earnings pass reads every account's favorites itself) and ``calibration.TABLE``'s live record (the analyst's
+scoring sets it, the api's ``calibration_live`` job reads the scored runs back for the playbooks).
 
 A run's events already cross processes on PostgreSQL (desk.run_events: ``pg_notify`` on write, the ``run_events``
 job listens where the streams are served), and runs from the api to the analyst (desk.run_queue).

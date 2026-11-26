@@ -217,3 +217,17 @@ def test_a_file_with_times_that_are_not_times_or_too_big_is_not_taken():
     path.write_text(json.dumps({"session": "night", "date": "2026-11-16", "bars": good, "pad": "x" * 600_000}),
                     encoding="utf-8")
     assert fq.load_bars("night", "2026-11-16") is None
+
+
+def test_a_killed_writers_temporary_file_is_dropped_within_the_hour():
+    import os
+
+    fq.BARS_DIR.mkdir(parents=True, exist_ok=True)
+    old, new = fq.BARS_DIR / "futures-bars-night.json.abc.tmp", fq.BARS_DIR / "futures-bars-night.json.def.tmp"
+    for f in (old, new):
+        f.write_text("{", encoding="utf-8")
+    hour_ago = old.stat().st_mtime - fq.STALE_TMP_SEC - 1
+    os.utime(old, (hour_ago, hour_ago))
+    bar = {"t": "2026-11-16T18:00:00+09:00", "o": 1.0, "h": 1.0, "l": 1.0, "c": 1.0, "v": 1}
+    assert fq.save_bars("night", "2026-11-16", [bar])
+    assert not old.exists() and new.exists()                                    # a writer at work now is left alone

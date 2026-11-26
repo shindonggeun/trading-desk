@@ -23,7 +23,11 @@ keeps the last good quote of that very session (``held``) when KIS answers it em
 (a restart) its last minute bar's close stands in (``from_bars``: no change against the base). Its
 minute bars likewise: KIS answers a closed night's minutes empty, so the ones taken while it traded
 stay (``held``). A new session is a new cache key (its opening day), so 08:45 and 18:00 are read fresh.
-What is kept lives in this process: after a restart a closed session shows what KIS still gives.
+#1020 the bars kept outlive the process: each session's minutes are saved to a file on the volume the three services
+share (``BARS_DIR``, as desk.feed_snapshots' - not Redis, whose keys a deploy empties), and a closed session KIS
+answers empty with nothing in memory (a restart, a deploy, or nobody looked while it traded) answers that file's
+bars when they are that very session's (``held``). The ``futures_close_quote`` job reads the bars with the close
+(CLOSE_READ_SEC before the end) and once more CLOSE_BARS_AFTER_SEC after it (the last minute), screen or not.
 A held quote keeps its own ``as_of`` (``held_at``); one taken more than HELD_CLOSE_SEC before its session
 ended is ``held_early`` - not the close. So that the close is what is held, the ``futures_close_quote`` job
 reads each session ``CLOSE_READ_SEC`` before it ends (``seconds_to_close_read``). KIS answering a price
@@ -43,9 +47,13 @@ FALLBACK_SEC so that the collector's replaces it.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import math
+import os
 import time as _time
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 
 from . import demand, market_calendar, shared_cache
 from .futures_flow import KST, PRICE_PATH, PRICE_TR, KisRest, _num, _short, front_month
@@ -76,6 +84,70 @@ ANSWERS = ("quote", "candles")    # what a key names: the quote, or the session'
 SHARED_KEEP_SEC = 3 * demand.EVERY[SHARED_NS]
 FALLBACK_SEC = 60.0               # #689 the api's own fetch (Redis had nothing) is kept at most this long
 HELD_KEYS = ("held", "held_at", "held_early")
+# #1020 a session's minute bars saved here (futures-bars-<session>.json, the latest session of each), so that a closed
+# one outlives a restart or a deploy; the backend's volume, shared by the api, the collector and the analyst
+BARS_DIR = Path.home() / ".tradingagents" / "desk-cache"
+BARS_SAVE_SEC = 300.0             # while a session trades its bars are saved at most this often (each close read too)
+CLOSE_BARS_AFTER_SEC = 60.0       # the close read job reads the bars once more this long after the bell
+MAX_SAVED_BARS = 2000             # a file with more is not this module's (a night has 721 minutes)
+BAR_KEYS = ("o", "h", "l", "c", "v")
+
+
+def _bars_path(kind: str) -> Path:
+    return BARS_DIR / f"futures-bars-{kind}.json"
+
+
+def _valid_bars(bars: object) -> list[dict] | None:
+    """Saved bars as this module writes them (oldest first, ``t`` ISO and finite numbers), else None."""
+    if not isinstance(bars, list) or not 0 < len(bars) <= MAX_SAVED_BARS:
+        return None
+    last = ""
+    for b in bars:
+        if not isinstance(b, dict) or not isinstance(b.get("t"), str) or b["t"] <= last:
+            return None
+        if not all(isinstance(b.get(k), int | float) and not isinstance(b.get(k), bool) and math.isfinite(b[k])
+                   for k in BAR_KEYS):
+            return None
+        last = b["t"]
+    return bars
+
+
+def load_bars(kind: str, day: str) -> list[dict] | None:
+    """#1020 the bars saved for the ``kind`` session that opened on ``day``, or None (none saved, another
+    session's, or a file that is not one). Blocking: off the event loop."""
+    path = _bars_path(kind)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        log.info("futures %s bars file unreadable: %s", kind, type(exc).__name__)
+        return None
+    if not isinstance(data, dict) or data.get("session") != kind or data.get("date") != day:
+        return None
+    return _valid_bars(data.get("bars"))
+
+
+def save_bars(kind: str, day: str, bars: list[dict]) -> bool:
+    """#1020 ``bars`` of the ``kind`` session that opened on ``day`` written whole (a temporary file replaced in one
+    step) - unless the file already holds that session up to a later or the same minute (another process's, or a
+    longer read). Blocking: off the event loop. True when written."""
+    if _valid_bars(bars) is None:
+        return False
+    kept = load_bars(kind, day)
+    if kept is not None and (kept[-1]["t"], len(kept)) >= (bars[-1]["t"], len(bars)):
+        return False
+    path = _bars_path(kind)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")     # one per process: the three share the volume
+        tmp.write_text(json.dumps({"session": kind, "date": day, "bars": bars,
+                                   "saved_at": datetime.now(UTC).isoformat(timespec="seconds")}), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        log.warning("futures %s bars not saved: %s", kind, type(exc).__name__)
+        return False
+    return True
 
 
 def _kst(now: datetime) -> datetime:
@@ -109,8 +181,9 @@ def futures_session(now: datetime, is_open=market_calendar.is_open) -> dict:
 
 
 def seconds_to_close_read(now: datetime, is_open=market_calendar.is_open) -> float:
-    """#713 until the next session's end less CLOSE_READ_SEC (05:59:30, 15:44:30 on trading days), at most
-    MAX_SLEEP_SEC (a holiday added later is seen within the hour)."""
+    """#713 until the next session's end less CLOSE_READ_SEC (05:59:30, 15:44:30 on trading days) - #1020 or
+    CLOSE_BARS_AFTER_SEC past an end (06:01, 15:46) - at most MAX_SLEEP_SEC (a holiday added later is seen within
+    the hour)."""
     local = _kst(now)
     targets = []
     for back in range(-1, LOOKBACK_DAYS):
@@ -118,9 +191,11 @@ def seconds_to_close_read(now: datetime, is_open=market_calendar.is_open) -> flo
         if not is_open("kr", d):
             continue
         for _, end_t, plus in SESSIONS.values():
-            at = datetime.combine(d + timedelta(days=plus), end_t, KST) - timedelta(seconds=CLOSE_READ_SEC)
-            if at > local:
-                targets.append(at)
+            end = datetime.combine(d + timedelta(days=plus), end_t, KST)
+            # #1020 and once more after the bell: the bars' last minute
+            for at in (end - timedelta(seconds=CLOSE_READ_SEC), end + timedelta(seconds=CLOSE_BARS_AFTER_SEC)):
+                if at > local:
+                    targets.append(at)
     if not targets:
         return MAX_SLEEP_SEC
     return max(1.0, min((min(targets) - local).total_seconds(), MAX_SLEEP_SEC))
@@ -223,6 +298,7 @@ class FuturesQuote:
         self._locks: dict[tuple, asyncio.Lock] = {}   # one per answer: a paging candle fetch does not hold the quote
         # #713 (session, opening day) -> its last quote with a price; ("bars", session, day) -> its minutes
         self._good: dict[tuple, dict | list] = {}
+        self._saved: dict[str, tuple[str, str, float]] = {}   # #1020 session -> (day, last bar, when) saved here
 
     def _session(self, kind: str | None) -> dict:
         now = self._now()
@@ -383,13 +459,31 @@ class FuturesQuote:
 
     async def read_close(self) -> str | None:
         """#713 the ``futures_close_quote`` job: the session ending within CLOSE_READ_SEC (+ a little) read now,
-        so its held quote is its close; the session read, or None."""
+        so its held quote is its close - #1020 and its minute bars, saved; and the session that ended within
+        CLOSE_BARS_AFTER_SEC (+ a little) its bars once more. The session read, or None."""
         now = _kst(self._now())
         s = futures_session(now, self._is_open)
-        if s["now"] == "closed" or s["end"] - now > timedelta(seconds=CLOSE_READ_SEC + 15):
-            return None
-        await self.quote(s["now"])
-        return s["now"]
+        if s["now"] != "closed" and s["end"] - now <= timedelta(seconds=CLOSE_READ_SEC + 15):
+            await self.quote(s["now"])
+            await self._keep_bars(s["now"])        # #1020 its minutes with it, whether a screen looked or not
+            return s["now"]
+        # #1020 just after the bell: the bars once more, for the last minute (KIS may answer them empty by now)
+        if s["now"] == "closed" and timedelta(0) <= now - s["end"] <= timedelta(seconds=CLOSE_BARS_AFTER_SEC + 30):
+            await self._keep_bars(s["shown"])
+            return s["shown"]
+        return None
+
+    async def _keep_bars(self, kind: str) -> None:
+        """#1020 the session's bars read (as a screen's read would) and saved to its file now."""
+        try:
+            await self.candles(kind)
+        except Exception as exc:  # noqa: BLE001 - the close read's quote stands; the next read tries again
+            log.info("futures %s bars at the close failed: %s", kind, _short(exc))
+            return
+        s = self._session(kind)
+        bars = self._good.get(("bars", kind, s["date"]))
+        if bars:
+            await self._save(kind, s["date"], bars, force=True)
 
     async def candles(self, session: str | None = None, interval: str = "1m") -> dict:
         if interval not in INTERVALS:
@@ -423,11 +517,24 @@ class FuturesQuote:
         key = ("bars", s["shown"], s["date"])
         if bars:
             self._good[key] = bars
-        elif s["now"] != s["shown"] and key in self._good:
+            await self._save(s["shown"], s["date"], bars, force=s["now"] != s["shown"])
+        elif s["now"] != s["shown"]:
             # #713 KIS answers a closed session's minutes empty (night bars at 11:37, 2026-11-20): the
-            # ones taken while it traded
-            return {**self._base(s, front), "bars": self._good[key], "held": True}
+            # ones taken while it traded - #1020 or, none here (a restart), the ones saved for that session
+            if key not in self._good and (saved := await asyncio.to_thread(load_bars, s["shown"], s["date"])):
+                self._good[key] = saved
+            if key in self._good:
+                return {**self._base(s, front), "bars": self._good[key], "held": True}
         return {**self._base(s, front), "bars": bars}
+
+    async def _save(self, kind: str, day: str, bars: list[dict], force: bool = False) -> None:
+        """#1020 the session's bars to its file: newer ones only, while it trades at most every BARS_SAVE_SEC."""
+        last = self._saved.get(kind)
+        if last is not None and last[0] == day and (
+                last[1] >= bars[-1]["t"] or (not force and self._clock() - last[2] < BARS_SAVE_SEC)):
+            return
+        if await asyncio.to_thread(save_bars, kind, day, bars) or last is None or last[0] != day:
+            self._saved[kind] = (day, bars[-1]["t"], self._clock())
 
     async def serve(self, key: str) -> None:
         """#689 the collector (desk.demand's handler): the wanted ``key`` (``demand_key``) read as this process

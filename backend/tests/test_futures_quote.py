@@ -247,7 +247,8 @@ def test_a_closed_nights_empty_minutes_keep_the_ones_taken_while_it_traded():
     held = asyncio.run(quotes.candles("night", "5m"))
     assert held["held"] is True and held["bars"] == live and held["market"] == "day"
     fresh = fq.FuturesQuote(rest, now=lambda: at("2026-11-17", "11:37"), is_open=is_open)   # a restart
-    assert asyncio.run(fresh.candles("night"))["bars"] == []
+    again = asyncio.run(fresh.candles("night", "5m"))                    # #1020 the bars saved while it traded
+    assert again["held"] is True and again["bars"] == live
 
 
 def test_a_zero_price_counts_as_empty_and_is_never_held():
@@ -283,14 +284,17 @@ def test_a_quote_held_long_before_the_end_keeps_its_time_and_says_it_is_not_the_
 
 def test_the_close_read_job_reads_the_session_ending_and_sleeps_to_the_next_close():
     assert fq.seconds_to_close_read(at("2026-11-17", "05:00"), is_open) == 59 * 60 + 30     # → 05:59:30
-    assert fq.seconds_to_close_read(at("2026-11-17", "06:00"), is_open) == fq.MAX_SLEEP_SEC  # 15:44:30 is far
+    assert fq.seconds_to_close_read(at("2026-11-17", "06:00"), is_open) == fq.CLOSE_BARS_AFTER_SEC   # #1020 06:01
+    assert fq.seconds_to_close_read(at("2026-11-17", "06:02"), is_open) == fq.MAX_SLEEP_SEC  # 15:44:30 is far
     assert fq.seconds_to_close_read(at("2026-11-17", "15:30"), is_open) == 14 * 60 + 30
-    assert fq.seconds_to_close_read(at("2026-11-17", "15:45"), is_open) == fq.MAX_SLEEP_SEC
+    assert fq.seconds_to_close_read(at("2026-11-17", "15:45"), is_open) == fq.CLOSE_BARS_AFTER_SEC   # 15:46
+    assert fq.seconds_to_close_read(at("2026-11-17", "15:47"), is_open) == fq.MAX_SLEEP_SEC
     # Saturday: Friday's night ends 06:00, then Monday's day session (no session on the weekend)
     assert fq.seconds_to_close_read(at("2026-11-14", "05:59"), is_open) == 30.0     # Friday night: 05:59:30 Sat
     rest = FakeRest()
     near = fq.FuturesQuote(rest, now=lambda: at("2026-11-17", "05:59") + timedelta(seconds=30), is_open=is_open)
-    assert asyncio.run(near.read_close()) == "night" and len(rest.calls) == 1
+    assert asyncio.run(near.read_close()) == "night"
+    assert [t for t, _ in rest.calls].count(fq.PRICE_TR) == 1 and fq.CANDLE_TR in {t for t, _ in rest.calls}
     early = fq.FuturesQuote(FakeRest(), now=lambda: at("2026-11-17", "05:50"), is_open=is_open)
     assert asyncio.run(early.read_close()) is None
 

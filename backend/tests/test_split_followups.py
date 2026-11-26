@@ -218,3 +218,20 @@ def test_no_live_record_to_read_back_when_scoring_is_off(db_url, monkeypatch):
         with TestClient(_app(db_url, "api", **settings), base_url="https://testserver") as client:
             _login(client)
             assert _status(client)["calibration_live"]["state"] == "off"
+
+
+def test_a_big_us_names_consensus_shows_only_to_the_account_that_stars_it(tmp_path):
+    """#1005: the earnings pass fetches consensus for every account's favorites, so a big US name another account
+    stars would carry a revenue estimate on everyone's calendar - kept to one's own favorites and ``MAJOR_US``."""
+    e = earnings.Earnings(cache_file=tmp_path / "e.json")
+    day = "2026-11-18"
+    e.us = {day: [earnings.blank(ticker="ADBE", date=day, market="us", source="nasdaq", market_cap=2e11),
+                  earnings.blank(ticker="NVDA", date=day, market="us", source="nasdaq", market_cap=4e12)]}
+    e.details = {"ADBE": {"revenue_estimate": 6.1e9}, "NVDA": {"revenue_estimate": 5.4e10}}
+
+    def shown(watch: set[str]) -> dict[str, float | None]:
+        rows = e.for_days(date(2026, 11, 1), date(2026, 11, 30), watch)[day]
+        return {r["ticker"]: r["revenue_estimate"] for r in rows}
+
+    assert shown(set()) == {"ADBE": None, "NVDA": 5.4e10}          # another account's star does not show
+    assert shown({"ADBE"}) == {"ADBE": 6.1e9, "NVDA": 5.4e10}       # the account that stars it sees its consensus

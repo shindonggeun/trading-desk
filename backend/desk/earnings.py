@@ -512,8 +512,10 @@ class Earnings:
                 return None
         return None
 
-    def _with_detail(self, row: dict) -> dict:
-        extra = self.details.get(row["ticker"]) or {}
+    def _with_detail(self, row: dict, detail: bool = True) -> dict:
+        """``detail`` False leaves the consensus off: #1005 details are fetched for every account's favorites,
+        and a big US name carrying them on someone else's calendar would tell that another account stars it."""
+        extra = (self.details.get(row["ticker"]) or {}) if detail else {}
         out = blank(**row)
         for k in DETAIL:
             if out.get(k) is None and extra.get(k) is not None:
@@ -533,7 +535,8 @@ class Earnings:
             if lo <= day <= hi:
                 at = us_at.get(day)
                 stale = at is None or (self.pass_at is not None and at < self.pass_at)
-                keep = [{**self._with_detail(r), "watched": r["ticker"] in watch, "refreshed_at": at, "stale": stale}
+                keep = [{**self._with_detail(r, r["ticker"] in watch or r["ticker"] in MAJOR_US),
+                         "watched": r["ticker"] in watch, "refreshed_at": at, "stale": stale}
                         for r in rows if r["ticker"] in watch or (r.get("market_cap") or 0) >= MAJOR_CAP]
                 listed.update(r["ticker"] for r in keep)
                 if keep:

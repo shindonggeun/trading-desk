@@ -1429,9 +1429,13 @@ def create_app(settings: Settings | None = None, runner=None, prices: PriceSourc
 
         async def serve_wants() -> float:
             started = time.monotonic()
+            # #994 every quote in one Toss call while Toss takes it; else each one's (PASS_SEC a pass)
             await demand.serve({"quote": prices.refresh_quote, "futures_quote": futures_quotes.serve,
-                                ESTIMATE_NS: lambda t: collect_estimate(estimator, board_session, t)})
+                                ESTIMATE_NS: lambda t: collect_estimate(estimator, board_session, t)},
+                               batch={"quote": prices.refresh_quotes} if prices.batch_ready() else None)
             return demand_pause(time.monotonic() - started)
+
+        app.state.serve_wants = serve_wants   # #994 tests run it once
 
         start("demand_wants", demand.enabled(), write_wants, DEMAND_WANTS_SEC, "demand wants failed")
         start("demand", demand.serving(), serve_wants, DEMAND_SERVE_SEC * 2, "demand collection failed")

@@ -269,3 +269,138 @@ def test_an_expired_want_is_ignored(redis):
     asyncio.run(sc.aput(demand.WANT_NS, demand.WANT_KEY, {"quote": ["005930"]}, 0.05))
     real_time.sleep(0.1)
     assert asyncio.run(demand.read()) == {}
+
+
+# --- #994 a namespace's due keys in one batch call ---------------------------------------------------------
+
+
+def test_a_batch_namespace_is_served_in_one_call_beside_the_per_key_handlers(redis, clock):
+    _wanted(redis, {"quote": ["005930", "NVDA", "AAPL"], "futures_quote": ["F:quote"]})
+    calls = []
+
+    async def per_key(key):
+        calls.append(("quote", key))                                 # the batch takes the namespace
+
+    async def futures(key):
+        calls.append(("futures_quote", key))
+
+    async def quotes(keys):
+        calls.append(("batch", tuple(sorted(keys))))
+        return set()
+
+    handlers, batch = {"quote": per_key, "futures_quote": futures}, {"quote": quotes}
+    assert asyncio.run(demand.serve(handlers, batch=batch)) == 4
+    assert sorted(calls) == [("batch", ("005930", "AAPL", "NVDA")), ("futures_quote", "F:quote")]
+    assert asyncio.run(demand.serve(handlers, batch=batch)) == 0      # not due yet
+    clock[0] += demand.EVERY["quote"]
+    assert asyncio.run(demand.serve(handlers, batch=batch)) == 3      # every quote again, in one call
+    assert calls[-1] == ("batch", ("005930", "AAPL", "NVDA"))
+    assert demand.stats()["served"] == 7 and demand.stats()["failed"] == 0
+
+
+def test_keys_a_batch_answers_as_failed_back_off_alone(redis, clock):
+    _wanted(redis, {"quote": ["BAD", "OK1", "OK2"]})
+    asked = []
+
+    async def quotes(keys):
+        asked.append(sorted(keys))
+        return {"BAD", "NOT-ASKED"}                                  # a key it was not given counts for nothing
+
+    assert asyncio.run(demand.serve({}, batch={"quote": quotes})) == 2
+    assert demand.stats()["served"] == 2 and demand.stats()["failed"] == 1
+    clock[0] += demand.EVERY["quote"]
+    asyncio.run(demand.serve({}, batch={"quote": quotes}))
+    assert asked[-1] == ["OK1", "OK2"]                                # BAD waits twice the period
+    clock[0] += demand.EVERY["quote"]
+    asyncio.run(demand.serve({}, batch={"quote": quotes}))
+    assert asked[-1] == ["BAD", "OK1", "OK2"]
+
+
+@pytest.mark.parametrize("failure", ["raises", "slow"])
+def test_a_failed_or_slow_batch_call_backs_off_every_key_in_it(redis, clock, monkeypatch, failure):
+    monkeypatch.setattr(demand, "HANDLER_SEC", 0.05)
+    _wanted(redis, {"quote": ["A", "B", "C"], "futures_quote": ["F:quote"]})
+    asked, futures = [], []
+
+    async def quotes(keys):
+        asked.append(sorted(keys))
+        if failure == "raises":
+            raise RuntimeError("toss 500")
+        await asyncio.sleep(1)
+        return set()
+
+    async def per_future(key):
+        futures.append(key)
+
+    handlers = {"futures_quote": per_future}
+    assert asyncio.run(demand.serve(handlers, batch={"quote": quotes})) == 1     # the other namespace goes on
+    assert demand.stats()["failed"] == 3 and futures == ["F:quote"]
+    clock[0] += demand.EVERY["quote"] - 1
+    asyncio.run(demand.serve(handlers, batch={"quote": quotes}))
+    assert len(asked) == 1
+    clock[0] += 1
+    asyncio.run(demand.serve(handlers, batch={"quote": quotes}))
+    # a whole call's first failure waits one period only (the shared value outlives it), not twice
+    assert asked == [["A", "B", "C"], ["A", "B", "C"]]
+    clock[0] += 2 * demand.EVERY["quote"]
+    asyncio.run(demand.serve(handlers, batch={"quote": quotes}))
+    assert len(asked) == 2                                           # failed twice: four times the period
+    clock[0] += 2 * demand.EVERY["quote"]
+    asyncio.run(demand.serve(handlers, batch={"quote": quotes}))
+    assert len(asked) == 3
+
+
+def test_a_batch_call_takes_one_place_of_the_gate(redis):
+    _wanted(redis, {"quote": ["A", "B", "C"], "futures_quote": ["F1", "F2", "F3"]})
+    active, peak, batches = [0], [0], []
+
+    async def busy():
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        await asyncio.sleep(0.01)
+        active[0] -= 1
+
+    async def quotes(keys):
+        batches.append(len(keys))
+        await busy()
+        return set()
+
+    async def per_future(key):
+        await busy()
+
+    assert asyncio.run(demand.serve({"futures_quote": per_future}, batch={"quote": quotes})) == 6
+    assert batches == [3] and peak[0] == demand.PARALLEL
+
+
+def test_a_batch_past_the_pass_time_waits_for_the_next_pass(redis, clock, monkeypatch):
+    _wanted(redis, {"quote": ["A", "B"]})
+    asked = []
+
+    async def quotes(keys):
+        asked.append(sorted(keys))
+        return set()
+
+    monkeypatch.setattr(demand, "PASS_SEC", -1.0)                   # the pass is over before it starts one
+    assert asyncio.run(demand.serve({}, batch={"quote": quotes})) == 0
+    assert asked == [] and demand.stats()["failed"] == 0
+    monkeypatch.setattr(demand, "PASS_SEC", 10.0)
+    assert asyncio.run(demand.serve({}, batch={"quote": quotes})) == 2   # still due
+
+
+def test_a_batch_key_is_due_again_a_period_after_its_pass_started(redis, clock):
+    """A slow pass does not stretch the period: due again EVERY after the pass began, not after the call ended."""
+    _wanted(redis, {"quote": ["A", "B"]})
+    asked = []
+
+    async def quotes(keys):
+        asked.append(sorted(keys))
+        clock[0] += 4.0                                              # a 4 s pass
+        return set()
+
+    started = clock[0]
+    assert asyncio.run(demand.serve({}, batch={"quote": quotes})) == 2
+    clock[0] = started + demand.EVERY["quote"] - 0.5
+    assert asyncio.run(demand.serve({}, batch={"quote": quotes})) == 0
+    clock[0] = started + demand.EVERY["quote"]
+    assert asyncio.run(demand.serve({}, batch={"quote": quotes})) == 2   # 10 s on, not 14
+    assert asked == [["A", "B"], ["A", "B"]]

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import fakeredis
 import pytest
 
-from desk import demand
+from desk import demand, prices
 from desk import shared_cache as sc
 from desk.broker import MockBroker
 from desk.prices import DEMAND_TTL_SEC, QUOTE_TTL_SEC, PriceSource
@@ -270,3 +270,365 @@ def _fresh():
     server = fakeredis.FakeServer()
     return (fakeredis.FakeRedis(server=server, decode_responses=True),
             fakeredis.FakeAsyncRedis(server=server, decode_responses=True))
+
+
+# --- #994 the collector's quotes in one broker call ----------------------------------------------------------
+
+
+class BatchBroker(Broker):
+    """A broker with a many-symbol read: answers ``prices``' symbols, leaves the others out."""
+
+    def __init__(self, prices: dict, alone: dict | None = None, fail=False):
+        super().__init__()
+        self.prices, self.alone, self.fail_batch = prices, alone or {}, fail
+        self.batches: list[list[str]] = []
+        self.singles: list[str] = []
+
+    async def quotes(self, symbols):
+        self.batches.append(list(symbols))
+        if self.fail_batch:
+            raise ConnectionError("429 rate limited")
+        return {s: (self.prices[s], "USD") for s in symbols if s in self.prices}
+
+    async def quote(self, symbol):
+        self.singles.append(symbol)
+        if symbol not in self.alone:
+            raise ConnectionError("no price")
+        return self.alone[symbol], "USD"
+
+
+def _published(monkeypatch):
+    from desk import market_bus
+    events = []
+    monkeypatch.setattr(market_bus, "publish", lambda kind, key, payload, source, *a: events.append(
+        (kind, key, payload["price"], source)))
+    return events
+
+
+def test_a_batch_refresh_keeps_shares_and_publishes_as_one_tickers_refresh_does(redis, monkeypatch):
+    events = _published(monkeypatch)
+
+    async def go():
+        demand.configure("collector")
+        one = PriceSource(Broker(price=101.5), yahoo_quote=_no_yahoo)
+        await one.refresh_quote("AAPL")
+        broker = BatchBroker({"AAPL": 101.5, "BRK.B": 450.25, "005930": 74800.0})
+        many = PriceSource(broker, yahoo_quote=_no_yahoo)
+        reads = sc.stats()["hits"] + sc.stats()["misses"]
+        failed = await many.refresh_quotes(["AAPL", "BRK-B", "005930.KS"])
+        unread = sc.stats()["hits"] + sc.stats()["misses"] == reads             # never reads the shared tier
+        shared = {t: await sc.aget("quote", t) for t in ("AAPL", "BRK-B", "005930.KS")}
+        return one, many, broker, failed, unread, shared
+
+    one, many, broker, failed, unread, shared = asyncio.run(go())
+    assert failed == set() and unread
+    assert broker.batches == [["AAPL", "BRK.B", "005930"]] and broker.singles == []
+    for ticker, (value, _age, left) in shared.items():
+        assert value["ticker"] == ticker and value["source"] == "toss"
+        assert QUOTE_TTL_SEC < left <= DEMAND_TTL_SEC                            # refresh_quote's lifetime
+    assert {k: v for k, v in shared["AAPL"][0].items() if k != "fetched_at"} == \
+        {k: v for k, v in one._quotes["AAPL"][1].to_dict().items() if k != "fetched_at"}
+    assert shared["005930.KS"][0]["price"] == 74800.0 and shared["BRK-B"][0]["price"] == 450.25
+    assert set(many._quotes) == {"AAPL", "BRK-B", "005930.KS"}                   # kept in memory as well
+    assert sorted(events) == sorted([("quote", "AAPL", 101.5, "toss"), ("quote", "AAPL", 101.5, "toss"),
+                                     ("quote", "BRK-B", 450.25, "toss"), ("quote", "005930.KS", 74800.0, "toss")])
+
+
+def test_tickers_the_broker_left_out_fail_without_a_second_read(redis):
+    """Broker.quotes leaves out only what failed alone as well (Toss reads those itself): never read again here."""
+    broker = BatchBroker({"AAPL": 101.5}, alone={"NVDA": 181.5})
+
+    async def go():
+        demand.configure("collector")
+        failed = await PriceSource(broker, yahoo_quote=_no_yahoo).refresh_quotes(["AAPL", "NVDA", "GONE", "^KS11"])
+        return failed, {t: await sc.aget("quote", t) for t in ("AAPL", "NVDA", "GONE", "^KS11")}
+
+    failed, shared = asyncio.run(go())
+    assert failed == {"NVDA", "GONE", "^KS11"}                        # an index is never a broker call
+    assert broker.batches == [["AAPL", "NVDA", "GONE"]] and broker.singles == []
+    assert shared["AAPL"][0]["price"] == 101.5 and shared["NVDA"] is None and shared["^KS11"] is None
+
+
+class SlowBatch(MockBroker):
+    """A many-symbol read held until ``release`` is set (``asked``: each call's symbols, when it starts) - reads
+    under way side by side with no real wait; with ``hold``, only a call holding one of those symbols is held. A
+    call holding a symbol of ``fail`` fails as a whole; ``leave_out`` are left out. ``singles``: each one-symbol
+    read (refresh_quote's)."""
+    name = "toss"
+
+    def __init__(self, leave_out=(), fail=(), hold=None):
+        self.leave_out, self.fail = set(leave_out), set(fail)
+        self.hold = None if hold is None else set(hold)
+        self.asked: list[list[str]] = []
+        self.singles: list[str] = []
+        self.release = asyncio.Event()
+
+    async def quotes(self, symbols):
+        self.asked.append(list(symbols))
+        if self.hold is None or self.hold & set(symbols):
+            await self.release.wait()
+        if self.fail & set(symbols):
+            raise ConnectionError("429 rate limited")
+        return {s: (10.0, "USD") for s in symbols if s not in self.leave_out}
+
+    async def quote(self, symbol):
+        self.singles.append(symbol)
+        return 10.0, "USD"
+
+
+async def _until(done, tries: int = 1000) -> None:
+    """Let the loop run until ``done()`` (each step one pass of the loop, no real wait)."""
+    for _ in range(tries):
+        if done():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("never came to pass")
+
+
+@pytest.mark.parametrize("outcome", ["read", "left_out", "failed", "cancelled"])
+def test_a_ticker_another_batch_is_reading_is_not_read_again_and_takes_that_reads_outcome(redis, outcome):
+    """#994 review: a ticker already under way is not read again, by a batch or by its own refresh_quote - each
+    waits for that read and fails it when that read failed it (left out), failed as a whole or was cancelled."""
+    broker = SlowBatch(leave_out=["NVDA"] if outcome == "left_out" else (),
+                       fail=["AAPL"] if outcome == "failed" else ())
+
+    async def go():
+        demand.configure("collector")
+        source = PriceSource(broker, yahoo_quote=_no_yahoo)
+        first = asyncio.ensure_future(source.refresh_quotes(["AAPL", "NVDA"]))
+        await _until(lambda: len(broker.asked) == 1)                 # the first one is under way
+        reading = source._collecting["NVDA"]
+        second = asyncio.ensure_future(source.refresh_quotes(["NVDA", "TSLA"]))   # TSLA read, NVDA joined
+        third = asyncio.ensure_future(source.refresh_quotes(["NVDA"]))            # NVDA joined only
+        own = asyncio.ensure_future(source.refresh_quote("NVDA"))                 # its own read joins it too
+        await _until(lambda: len(broker.asked) == 2)                 # TSLA's read: every one above is waiting
+        if outcome == "cancelled":
+            reading.cancel()                     # by another: none of these calls is cancelled itself
+        broker.release.set()
+        done = await asyncio.gather(first, second, third, own, return_exceptions=True)
+        await asyncio.sleep(0)                                       # the reads' done callbacks
+        return done, set(source._collecting), [await sc.aget("quote", t) for t in ("AAPL", "NVDA", "TSLA")]
+
+    (first, second, third, own), collecting, shared = asyncio.run(go())
+    assert broker.asked == [["AAPL", "NVDA"], ["TSLA"]] and broker.singles == []   # NVDA's one read
+    assert collecting == set() and shared[2] is not None
+    if outcome == "read":
+        assert first == second == third == set() and own is None
+        assert all(hit is not None for hit in shared)
+        return
+    assert second == third == {"NVDA"} and shared[1] is None
+    if outcome == "left_out":
+        assert first == {"NVDA"} and shared[0] is not None and isinstance(own, LookupError)
+    elif outcome == "failed":
+        assert isinstance(first, ConnectionError) and isinstance(own, ConnectionError) and shared[0] is None
+    else:                                                            # never a CancelledError of its own
+        assert isinstance(first, LookupError) and isinstance(own, LookupError) and shared[0] is None
+
+
+def test_calls_cancelled_with_the_read_they_wait_for_are_cancelled_themselves(redis):
+    """#994 review (cancelled-both): only another's cancelling a read turns into a LookupError (a failure demand
+    counts); a call cancelled together with it (the loop closing, the demand job stopped) raises its own
+    CancelledError - the read's owner, a ticker's own refresh_quote and a batch that joined it alike."""
+    broker = SlowBatch()
+
+    async def go():
+        demand.configure("collector")
+        source = PriceSource(broker, yahoo_quote=_no_yahoo)
+        first = asyncio.ensure_future(source.refresh_quotes(["AAPL", "NVDA"]))
+        await _until(lambda: len(broker.asked) == 1)
+        reading = source._collecting["NVDA"]
+        own = asyncio.ensure_future(source.refresh_quote("NVDA"))
+        joined = asyncio.ensure_future(source.refresh_quotes(["NVDA"]))
+        for _ in range(3):
+            await asyncio.sleep(0)                                   # both waiting for that read
+        reading.cancel()
+        for task in (first, own, joined):
+            task.cancel()
+        return await asyncio.gather(first, own, joined, return_exceptions=True)
+
+    assert [type(result) for result in asyncio.run(go())] == [asyncio.CancelledError] * 3
+    assert broker.asked == [["AAPL", "NVDA"]] and broker.singles == []
+
+
+def test_the_demand_job_cancelled_with_its_batch_read_is_cancelled_and_counts_no_failure(redis):
+    """#994 review (cancelled-both): the job's pass cancelled together with the batch read it waits for - the
+    cancellation goes on out of demand.serve, and no key is backed off as if its fetch had failed."""
+    broker = SlowBatch()
+
+    async def go():
+        demand.configure("api")
+        for ticker in ("AAPL", "NVDA"):
+            demand.want("quote", ticker)
+        await demand.flush()
+        demand.configure("collector")
+        source = PriceSource(broker, yahoo_quote=_no_yahoo)
+        job = asyncio.ensure_future(demand.serve({}, batch={"quote": source.refresh_quotes}))
+        await _until(lambda: len(broker.asked) == 1)
+        source._collecting["AAPL"].cancel()
+        job.cancel()
+        try:
+            await job
+        except asyncio.CancelledError:
+            pass
+        return job.cancelled(), dict(demand._fails), dict(demand._due)
+
+    cancelled, fails, due = asyncio.run(go())
+    assert cancelled and fails == {} and due == {}
+
+
+def test_a_batch_waiting_on_a_read_still_held_counts_the_tickers_it_read_itself(redis, monkeypatch):
+    """#994 review: a read a demand timeout cut still held (Toss not answering) - the next batch reads its new
+    ticker and waits JOIN_SHARE of HANDLER_SEC for the held ones: only those fail, before HANDLER_SEC would cut
+    it and fail the new one as well."""
+    monkeypatch.setattr(prices, "JOIN_SHARE", 0.0)                   # that wait runs out at once (no real wait)
+    monkeypatch.setattr(demand, "HANDLER_SEC", 0.5)                  # a call still waiting would be cut here
+    broker = SlowBatch(hold=["AAPL"])
+
+    async def go():
+        demand.configure("api")
+        for ticker in ("AAPL", "NVDA", "TSLA"):
+            demand.want("quote", ticker)
+        await demand.flush()
+        demand.configure("collector")
+        source = PriceSource(broker, yahoo_quote=_no_yahoo)
+        held = asyncio.ensure_future(source.refresh_quotes(["AAPL", "NVDA"]))   # a cut read, still held
+        await _until(lambda: len(broker.asked) == 1)
+        served = await demand.serve({}, batch={"quote": source.refresh_quotes})
+        fails, tsla = set(demand._fails), await sc.aget("quote", "TSLA")
+        broker.release.set()
+        await held                                                   # still shares what it reads
+        return served, fails, tsla, [await sc.aget("quote", t) for t in ("AAPL", "NVDA")]
+
+    served, fails, tsla, held_shared = asyncio.run(go())
+    assert served == 1 and fails == {("quote", "AAPL"), ("quote", "NVDA")} and tsla is not None
+    assert all(hit is not None for hit in held_shared)
+    assert broker.asked == [["AAPL", "NVDA"], ["TSLA"]]
+
+
+def test_a_read_under_way_on_another_loop_is_never_joined(redis):
+    """#994 review: as desk.single_flight.Flights - a read another event loop left (tests run one asyncio.run
+    after another) is neither waited for nor taken as this one's."""
+    broker = SlowBatch()
+    broker.release.set()
+    other = asyncio.new_event_loop()
+    try:
+        demand.configure("collector")
+        source = PriceSource(broker, yahoo_quote=_no_yahoo)
+        source._collecting["NVDA"] = other.create_future()
+        failed = asyncio.run(source.refresh_quotes(["NVDA"]))
+        source._collecting["NVDA"] = other.create_future()
+        asyncio.run(source.refresh_quote("NVDA"))
+    finally:
+        other.close()
+    assert failed == set() and broker.asked == [["NVDA"]] and broker.singles == ["NVDA"]
+
+
+def test_a_batch_cut_by_the_demand_timeout_still_shares_what_it_reads(redis, monkeypatch):
+    monkeypatch.setattr(demand, "HANDLER_SEC", 0.01)
+    broker = SlowBatch()
+
+    async def go():
+        demand.configure("api")
+        for ticker in ("AAPL", "NVDA"):
+            demand.want("quote", ticker)
+        await demand.flush()
+        demand.configure("collector")
+        source = PriceSource(broker, yahoo_quote=_no_yahoo)
+        served = await demand.serve({}, batch={"quote": source.refresh_quotes})   # held past HANDLER_SEC: cut
+        cut, during = dict(demand._fails), set(source._collecting)
+        reading = source._collecting["AAPL"]
+        broker.release.set()                                         # the read goes on past the cut
+        await reading
+        await asyncio.sleep(0)                                       # its done callback
+        return served, cut, during, set(source._collecting), [await sc.aget("quote", t) for t in ("AAPL", "NVDA")]
+
+    served, cut, during, after, shared = asyncio.run(go())
+    assert served == 0 and set(cut) == {("quote", "AAPL"), ("quote", "NVDA")}
+    assert during == {"AAPL", "NVDA"} and after == set()
+    assert [hit[0]["price"] for hit in shared] == [10.0, 10.0]
+    assert [sorted(a) for a in broker.asked] == [["AAPL", "NVDA"]]
+
+
+def test_a_tickers_own_read_joins_the_batch_a_demand_timeout_cut(redis, monkeypatch):
+    """#994 review: a batch refused, then cut by HANDLER_SEC, the batch since off - the next pass's per-ticker
+    reads wait for that batch read instead of a second GET each."""
+    monkeypatch.setattr(demand, "HANDLER_SEC", 0.01)
+    broker = SlowBatch()
+    joined = []
+    real = prices._outcome
+
+    async def outcome(reading):
+        joined.append(reading)
+        return await real(reading)
+
+    monkeypatch.setattr(prices, "_outcome", outcome)
+
+    async def go():
+        demand.configure("api")
+        for ticker in ("AAPL", "NVDA"):
+            demand.want("quote", ticker)
+        await demand.flush()
+        demand.configure("collector")
+        source = PriceSource(broker, yahoo_quote=_no_yahoo)
+        await demand.serve({}, batch={"quote": source.refresh_quotes})            # cut, still reading
+        reading = source._collecting["AAPL"]
+        demand._due.clear()                                          # both due again
+        monkeypatch.setattr(demand, "HANDLER_SEC", 5.0)
+        joined.clear()
+        each = asyncio.ensure_future(demand.serve({"quote": source.refresh_quote}))   # the batch off
+        await _until(lambda: len(joined) == 2)                       # both tickers wait for that read
+        broker.release.set()
+        return await each, reading.result(), dict(demand._fails)
+
+    served, theirs, fails = asyncio.run(go())
+    assert served == 2 and theirs == set() and fails == {}
+    assert [sorted(a) for a in broker.asked] == [["AAPL", "NVDA"]] and broker.singles == []   # one GET in all
+
+
+def test_a_batch_writes_the_shared_tier_two_at_a_time(redis, monkeypatch):
+    """Past shared_cache.TIMEOUT_SEC one write takes the tier down for DOWN_SEC: no burst of 60 at once."""
+    real, active, peak = sc.aput, [0], [0]
+
+    async def aput(*args):
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        await asyncio.sleep(0.005)
+        active[0] -= 1
+        await real(*args)
+
+    monkeypatch.setattr(sc, "aput", aput)
+    tickers = [f"T{i:02d}" for i in range(10)]
+    demand.configure("collector")
+    failed = asyncio.run(PriceSource(BatchBroker({t: 1.0 for t in tickers}), yahoo_quote=_no_yahoo)
+                         .refresh_quotes(tickers))
+    assert failed == set() and peak[0] == 2 and len(redis.keys("td:quote:*")) == 10
+
+
+def test_a_failed_batch_call_propagates_and_shares_nothing(redis):
+    broker = BatchBroker({"AAPL": 101.5}, alone={"AAPL": 101.5}, fail=True)
+    demand.configure("collector")
+    with pytest.raises(ConnectionError):
+        asyncio.run(PriceSource(broker, yahoo_quote=_no_yahoo).refresh_quotes(["AAPL", "NVDA"]))
+    assert broker.singles == [] and redis.keys("td:quote:*") == []   # never one by one against a refusing source
+
+
+def test_what_the_api_reads_the_collector_fetches_in_one_call(redis):
+    collector, api_broker, clock = BatchBroker({"AAPL": 101.5, "NVDA": 181.5}), Broker(price=99.0), Clock()
+
+    async def go():
+        demand.configure("api")
+        api = PriceSource(api_broker, yahoo_quote=_no_yahoo, clock=clock)
+        await api.quote("AAPL")
+        await api.quote("NVDA")
+        await demand.flush()
+        demand.configure("collector")
+        source = PriceSource(collector)
+        served = await demand.serve({"quote": source.refresh_quote}, batch={"quote": source.refresh_quotes})
+        demand.configure("api")
+        clock.t += POLL_SEC
+        return served, [(await api.quote(t)).price for t in ("AAPL", "NVDA")]
+
+    served, prices = asyncio.run(go())
+    assert (served, prices) == (2, [101.5, 181.5])
+    assert [sorted(b) for b in collector.batches] == [["AAPL", "NVDA"]] and collector.singles == []
+    assert api_broker.calls == 2                                     # its own first reads only

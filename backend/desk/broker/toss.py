@@ -12,6 +12,7 @@ import asyncio
 import base64
 import logging
 import math
+import re
 import time
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -20,6 +21,7 @@ from functools import wraps
 import httpx
 
 from .. import outbound
+from ..demand import MAX_KEYS as DEMAND_MAX_KEYS
 from ..token_store import Issued, TokenStore, TokenUnavailable
 from .base import INSTITUTION_KINDS, Bar, Broker, Fill, FlowRecord, Holding, IndexPrice, Listing, MarketDay
 
@@ -35,10 +37,30 @@ FILL_PAGES = 20
 RATE_LIMIT_RETRIES = 4
 MAX_RETRY_AFTER_SEC = 10.0
 _MALFORMED_RESPONSE = "Toss response is malformed"
+# #994 GET /api/v1/prices takes 1-200 symbols, comma-joined (spec 1.2.28; past that, 400 invalid-request)
+PRICES_MAX_SYMBOLS = 200
+# #994 a many-symbol prices ask refused while each of its symbols has a price alone, or answered with one row or
+# none while the symbols it left out had a price read alone: quotes() reads one symbol at a time for this long
+# (this process), then tries it again. A symbol a refused ask's reads alone blame is asked alone for as long
+BATCH_OFF_SEC = 600.0
+# #994 symbols kept out of many-symbol asks at once (the soonest due back goes first): as many as the collector's
+# wanted keys (desk.demand.MAX_KEYS), so no blamed symbol is let back in while it is still wanted
+ALONE_MAX = DEMAND_MAX_KEYS
+# #994 the form of a symbol the prices read is asked for (005930, NVDA, BRK.B): anything else - a comma, a
+# caret, '=' - is never sent, so one odd ticker cannot get a many-symbol ask refused for every other one
+_SYMBOL = re.compile(r"[A-Za-z0-9.\-]{1,20}")
+
+
+def _symbol_form(symbol: object) -> bool:
+    return isinstance(symbol, str) and _SYMBOL.fullmatch(symbol) is not None
 
 
 class TossError(RuntimeError):
-    pass
+    def __init__(self, *args: object, status: int | None = None, token: bool = False) -> None:
+        super().__init__(*args)
+        self.status = status     # #994 the HTTP status of a data GET Toss refused (_get), else None
+        self.token = token       # #994 raised getting the token for a data GET (_get)
+        self.unpriced = False    # #994 quote(): Toss answered, with no usable price for the symbol
 
 
 def _provider_errors(method):
@@ -65,6 +87,27 @@ def _retry_after(value: str | None) -> float:
     except ValueError:
         seconds = 1.0
     return min(max(seconds, 0.5), MAX_RETRY_AFTER_SEC)
+
+
+def _refuses_many(status: int | None) -> bool:
+    """#994 a 4xx that says the many-symbol ask itself was refused - not 401 (the token: _get renews once),
+    403 (an IP not registered with Toss) or 429 (the rate limit: _get waits and retries), which one symbol's
+    ask would get as well."""
+    return status is not None and 400 <= status < 500 and status not in (401, 403, 429)
+
+
+def _refused_alone(exc: Exception | None) -> bool:
+    """#994 a symbol's own read was refused as a many-symbol ask holding it is (a 4xx past 401 · 403 · 429 -
+    a 400 one way, a 404 the other is one symbol's fault too), or answered with no price (TossError.unpriced):
+    that symbol is to blame for the refusal. Not the token's failure, 401 · 403 · 429 (every symbol's), a 5xx,
+    the network's or a malformed answer (redacted, TossErrors of no status): nothing to judge by."""
+    return isinstance(exc, TossError) and not exc.token and (_refuses_many(exc.status) or exc.unpriced)
+
+
+def _unpriced(message: str) -> TossError:
+    exc = TossError(message)
+    exc.unpriced = True
+    return exc
 
 
 # Toss field names of the investor-trading record (spec 1.2.14) -> ours.
@@ -153,6 +196,8 @@ class TossBroker(Broker):
         self._expires_at = 0.0
         self._lock = asyncio.Lock()
         self._renewed_at: float | None = None
+        self._batch_off_until = 0.0       # #994 quotes() reads one symbol at a time until then (monotonic)
+        self._alone_until: dict[str, float] = {}   # #994 SYMBOL -> kept out of many-symbol asks until (monotonic)
 
     @_provider_errors
     async def _access_token(self, revoked: str | None = None) -> str:
@@ -233,9 +278,26 @@ class TossBroker(Broker):
             self._token, self._expires_at = got[0], time.monotonic() + max(0.0, left)
         return True
 
+    async def _data_token(self, revoked: str | None = None) -> str:
+        """#994 _access_token, every failure of it a TossError marked as the token's (TossError.token): quotes()
+        reads no more symbols on one. The desk's own TossError keeps its text (already redacted when protected:
+        the status, the docs/deploy.md hint); anything else (the token store's Redis or database, a client
+        error _provider_errors leaves as it is) is "Toss token unavailable" - its text and traceback dropped
+        when protected, chained otherwise."""
+        try:
+            return await self._access_token(revoked)
+        except TossError as exc:
+            exc.token = True
+            raise
+        except Exception as exc:          # every token failure stops the reads (quotes), none leaks
+            unavailable = TossError("Toss token unavailable", token=True)
+            if self._redact_errors:
+                raise unavailable from None
+            raise unavailable from exc
+
     @_provider_errors
     async def _get(self, path: str, headers: dict | None = None, params: dict | None = None):
-        token = await self._access_token()
+        token = await self._data_token()
         renewed = False
         attempt = 0
         while True:
@@ -245,7 +307,7 @@ class TossBroker(Broker):
             # 401: revoked by a token issued elsewhere, or expired early. Renew once and retry.
             if r.status_code == 401 and not renewed:
                 renewed = True
-                token = await self._access_token(revoked=token)
+                token = await self._data_token(revoked=token)
                 continue
             # Some endpoints allow 1 call/s (/stocks/all: x-ratelimit-limit 1) and answer 429 with Retry-After.
             if r.status_code != 429 or attempt == RATE_LIMIT_RETRIES:
@@ -254,8 +316,8 @@ class TossBroker(Broker):
             await asyncio.sleep(_retry_after(r.headers.get("retry-after")))
         if r.status_code != 200:
             if self._redact_errors:
-                raise TossError(f"Toss GET request failed {r.status_code}")
-            raise TossError(f"Toss GET {path} failed {r.status_code}: {r.text[:300]}")
+                raise TossError(f"Toss GET request failed {r.status_code}", status=r.status_code)
+            raise TossError(f"Toss GET {path} failed {r.status_code}: {r.text[:300]}", status=r.status_code)
         return r.json().get("result")
 
     async def _account(self) -> str:
@@ -320,17 +382,135 @@ class TossBroker(Broker):
 
     @_provider_errors
     async def quote(self, symbol: str) -> tuple[float, str | None]:
+        if not _symbol_form(symbol):        # #994 never sent: no symbol Toss lists has that form
+            raise _unpriced("Not a symbol Toss lists")
         rows = _rows(await self._get("/api/v1/prices", params={"symbols": symbol}), "prices")
         for row in rows:
-            if str(row.get("symbol", "")).upper() == symbol.upper():
-                price = self._number(row.get("lastPrice"))
-                if price:
-                    currency = row.get("currency")
-                    if currency is not None:
-                        self._check_text(currency)
-                    return price, currency
-        raise TossError("Toss has no price for the requested symbol" if self._redact_errors
+            hit = self._price_row(row)       # #994 the checks of quotes()' rows
+            if hit is not None and hit[0] == symbol.upper():
+                return hit[1]
+        raise _unpriced("Toss has no price for the requested symbol" if self._redact_errors
                         else f"Toss has no price for {symbol}")
+
+    @_provider_errors
+    async def quotes(self, symbols: list[str]) -> dict[str, tuple[float, str | None]]:
+        """#994 many symbols' quotes, one GET /api/v1/prices per PRICES_MAX_SYMBOLS of them (the MARKET_DATA
+        group, as quote()). A symbol not of a Toss symbol's form is never sent. One a many-symbol answer leaves
+        out, or gives no usable price, is read alone once (quote()); left out here, it failed both ways - the
+        caller does not read it again. A many-symbol GET that fails after _get's 401 / 429 retries fails the
+        call: reading each symbol alone then would only multiply the calls Toss refuses. Reads alone stop on a
+        401 · 403 · 429 or the token (Broker.quotes).
+
+        The spec says Toss takes many symbols; what a many-symbol ask gets says otherwise only when the symbols'
+        own reads clear them (each logged, a status and counts only):
+        - refused (a 4xx a single symbol would not get as well): each symbol is read alone. The ones refused the
+          same way, or without a price, alone too are to blame - each is asked alone, out of the many-symbol
+          asks, for BATCH_OFF_SEC (ALONE_MAX at most), and the many-symbol read stays on. Only when every one
+          has a price alone is the many-symbol read off that long; a read alone failing otherwise (a 5xx, the
+          network) leaves nothing to judge by - asked as many again next time.
+        - answered with one row or none: off when a symbol it left out has a price read alone; else those
+          symbols' fault (unlisted, delisted, a typo) and it stays on."""
+        asked: dict[str, str] = {}                       # SYMBOL -> the first symbol asked as it
+        for symbol in symbols:
+            if _symbol_form(symbol):
+                asked.setdefault(symbol.upper(), symbol)
+        now = time.monotonic()
+        alone = [s for s in asked.values() if self._alone_until.get(s.upper(), 0.0) > now]   # blamed before
+        order = [s for s in asked.values() if self._alone_until.get(s.upper(), 0.0) <= now]
+        got: dict[str, tuple[float, str | None]] = {}    # SYMBOL -> (price, currency)
+        refused: list[tuple[int, list[str]]] = []        # (the status, the symbols a many-symbol ask held)
+        thin: list[tuple[str, list[str]]] = []           # (a thin answer, the symbols it left out)
+        for start in range(0, len(order), PRICES_MAX_SYMBOLS):
+            chunk = order[start:start + PRICES_MAX_SYMBOLS]
+            if len(chunk) == 1 or not self.batching():
+                alone += chunk                           # one symbol: its many-symbol ask is quote()'s
+                continue
+            try:
+                payload = await self._get("/api/v1/prices", params={"symbols": ",".join(chunk)})
+            except TossError as exc:
+                if not _refuses_many(exc.status):
+                    raise
+                refused.append((exc.status, chunk))
+                alone += chunk
+                continue
+            rows = _rows(payload, "prices")
+            for row in rows:
+                hit = self._price_row(row)
+                if hit is not None:
+                    got.setdefault(hit[0], hit[1])
+            left = [s for s in chunk if s.upper() not in got]
+            alone += left
+            if len(rows) <= 1 and left:
+                thin.append((f"answered {len(rows)} row(s) for {len(chunk)} symbols", left))
+        stop, failures = None, {}
+        if alone:
+            read, stop, failures = await self._quotes_alone(alone)
+            for symbol, quote in read.items():
+                got[symbol.upper()] = quote
+            if stop is not None and not got:
+                raise stop                               # nothing read: the source refuses this call
+        for status, chunk in refused:
+            if stop is not None:
+                break                                    # reads alone cut short: nothing to judge by
+            blamed = [s for s in chunk if s.upper() not in got and _refused_alone(failures.get(s))]
+            if blamed:
+                self._ask_alone(blamed, f"answered {status} to {len(chunk)} symbols")
+            elif all(s.upper() in got for s in chunk):
+                self._batch_off(f"answered {status} to {len(chunk)} symbols, each priced alone")
+        for why, left in thin:
+            priced = sum(1 for s in left if s.upper() in got)
+            if priced:                                   # a price alone the many-symbol ask did not give
+                self._batch_off(f"{why}, {priced} of the {len(left)} left out priced alone")
+        return {s: got[s.upper()] for s in symbols if s.upper() in got}
+
+    def _ask_alone(self, symbols: list[str], why: str) -> None:
+        """#994 keep ``symbols`` out of many-symbol asks for BATCH_OFF_SEC, ALONE_MAX at most."""
+        now = time.monotonic()
+        for symbol in symbols:
+            if symbol.upper() not in self._alone_until and len(self._alone_until) >= ALONE_MAX:
+                for gone in [s for s, until in self._alone_until.items() if until <= now]:
+                    del self._alone_until[gone]
+                if len(self._alone_until) >= ALONE_MAX:
+                    del self._alone_until[min(self._alone_until, key=self._alone_until.__getitem__)]
+            self._alone_until[symbol.upper()] = now + BATCH_OFF_SEC
+        # a status and counts only: no symbol, token or answer text
+        log.warning("toss many-symbol prices %s: %d of them refused alone too, asked alone for %.0f s",
+                    why, len(symbols), BATCH_OFF_SEC)
+
+    def batching(self) -> bool:
+        """#994 quotes() asks many symbols in one GET now (not within BATCH_OFF_SEC of its being refused)."""
+        return time.monotonic() >= self._batch_off_until
+
+    def _stops_quotes(self, exc: Exception) -> bool:
+        """#994 401 (the token refused after one renewal), 403 (an IP not registered with Toss), 429 (the rate
+        limit, after _get's retries) or no token: every next symbol's read would meet it too."""
+        return isinstance(exc, TossError) and (exc.status in (401, 403, 429) or exc.token)
+
+    def _price_row(self, row) -> tuple[str, tuple[float, str | None]] | None:
+        """#994 one row of a prices answer as (SYMBOL, (price, currency)), or None when it holds no usable price
+        (quote() and quotes() alike): a finite price above 0, a text currency or none. A bad row costs only its
+        own symbol."""
+        symbol = row.get("symbol") if isinstance(row, dict) else None
+        if not isinstance(symbol, str) or not symbol:
+            return None
+        try:
+            price = self._number(row.get("lastPrice"))
+            currency = row.get("currency")
+            if currency is not None:
+                self._check_text(currency)
+        except TossError:
+            return None
+        if price is None or not math.isfinite(price) or price <= 0:
+            return None
+        if currency is not None and not isinstance(currency, str):
+            return None
+        return symbol.upper(), (price, currency)
+
+    def _batch_off(self, why: str) -> None:
+        self._batch_off_until = time.monotonic() + BATCH_OFF_SEC
+        # every time: a status and counts only - no symbol, token or answer text
+        log.warning("toss many-symbol prices %s: quotes are read one symbol at a time for %.0f s",
+                    why, BATCH_OFF_SEC)
 
     @_provider_errors
     async def candles(self, symbol: str, interval: str, count: int) -> list[Bar]:

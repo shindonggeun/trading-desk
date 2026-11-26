@@ -31,6 +31,10 @@ log = logging.getLogger(__name__)
 
 QUOTE_TTL_SEC = 10.0
 DEMAND_TTL_SEC = 30.0  # #689 desk.demand: the collector shares a quote this long, the api takes one this old
+# #994 a refresh_quotes call waits this share of desk.demand.HANDLER_SEC (from its start) for the reads under way
+# it joined: one still running then (a read a demand timeout cut, Toss still not answering) fails only its own
+# tickers here - the call answers before HANDLER_SEC would cut it and fail the tickers it read itself too
+JOIN_SHARE = 0.75
 SHARED_NS = "quote"   # #689 desk.shared_cache: a Quote dict per ticker, QUOTE_TTL_SEC
 CANDLE_TTL_SEC = 30.0
 # #858 how far past their TTL a caller takes the bars it had, at once, while a background read brings new ones.
@@ -395,6 +399,7 @@ class PriceSource:
         self._refresh_gate: asyncio.Semaphore | None = None    # #858 background reads of stale bars, per loop
         self._refresh_loop: asyncio.AbstractEventLoop | None = None
         self._queued: set[asyncio.Future] = set()     # background reads still waiting for the gate
+        self._collecting: dict[str, asyncio.Future] = {}   # #994 ticker -> the refresh_quotes read reading it
 
     async def quote(self, ticker: str) -> Quote:
         tick = self.stream.latest(ticker) if self.stream is not None else None
@@ -408,7 +413,16 @@ class PriceSource:
     async def refresh_quote(self, ticker: str) -> None:
         """#689 the collector's ``demand`` job (desk.demand.serve): a quote the api's screens read, from the broker,
         shared for DEMAND_TTL_SEC. Never reads the shared tier (it would read its own value back) and never falls
-        back to Yahoo: a failure propagates - demand.serve backs the ticker off and the api reads it itself."""
+        back to Yahoo: a failure propagates - demand.serve backs the ticker off and the api reads it itself.
+
+        #994 a ticker a refresh_quotes read is still reading (one a demand timeout cut, the batch since off) is
+        not read again: that read's answer is this one's - a failure when it failed, or failed this ticker."""
+        reading = self._reading(ticker)
+        if reading is not None:
+            if ticker in await _outcome(reading):
+                raise LookupError("the batch reading it got no quote")
+            return
+
         async def fetch() -> None:
             if off_broker(ticker):
                 raise ValueError("not a broker symbol")
@@ -420,6 +434,94 @@ class PriceSource:
 
         # its own flight: joining a quote() read in flight could take a shared value and write it back as new
         await self._quote_reads.run(("demand", ticker), fetch)
+
+    async def refresh_quotes(self, tickers: list[str]) -> set[str]:
+        """#994 refresh_quote for many tickers in one broker call (desk.demand.serve's ``quote`` batch; Toss: one
+        GET per 200 symbols): each quote read is kept, shared for DEMAND_TTL_SEC and published as refresh_quote's.
+        Returns the tickers that failed - off-broker ones, and those the broker left out (Broker.quotes: read
+        alone as well, so never read again here). The broker call failing propagates, as one ticker's read does:
+        demand.serve backs them all off.
+
+        A ticker another of these reads is still reading (one a demand timeout left running) is not read again:
+        this call waits for that read, and the ticker fails when it fails it, fails as a whole or is cancelled -
+        or is still reading JOIN_SHARE of HANDLER_SEC after this call started: those tickers fail (backed off
+        further), the ones this call read itself count as they came. The trade-off: a joined read answering
+        between then and HANDLER_SEC shares its quotes all the same, but its tickers here count as failed."""
+        deadline = asyncio.get_running_loop().time() + JOIN_SHARE * demand.HANDLER_SEC
+        mine: list[str] = []
+        joined: dict[asyncio.Future, list[str]] = {}       # another read under way -> the tickers it reads
+        for ticker in dict.fromkeys(tickers):
+            reading = self._reading(ticker)
+            if reading is None:
+                mine.append(ticker)
+            else:
+                joined.setdefault(reading, []).append(ticker)
+        failed: set[str] = set()
+        if mine:
+            # its own task, never a quote() read's flight (whose shared value it would write back as new),
+            # shielded: a demand timeout leaves it running, so what it reads is still shared
+            task = asyncio.ensure_future(self._refresh_many(mine))
+            for ticker in mine:
+                self._collecting[ticker] = task
+
+            def done(t: asyncio.Future, names: list[str] = mine) -> None:
+                for name in names:
+                    if self._collecting.get(name) is t:
+                        del self._collecting[name]
+                if not t.cancelled():
+                    t.exception()                  # retrieved: the caller may have left
+            task.add_done_callback(done)
+            failed |= await _outcome(task)         # its failure propagates: demand backs every ticker off
+        if joined:
+            # never cancels them (asyncio.wait): a read left running still shares what it reads; this call's own
+            # cancellation (demand's timeout, the job stopped) is raised
+            left = max(0.0, deadline - asyncio.get_running_loop().time())
+            done, _ = await asyncio.wait(joined, timeout=left)
+            for reading, names in joined.items():
+                if reading not in done or reading.cancelled() or reading.exception() is not None:
+                    failed.update(names)           # still reading, cancelled or failed as a whole
+                else:
+                    failed.update(t for t in names if t in reading.result())
+        return failed
+
+    def _reading(self, ticker: str) -> asyncio.Future | None:
+        """#994 the refresh_quotes read under way for ``ticker`` on this event loop, else None - as Flights, a
+        read of another loop (tests run one asyncio.run after another) is never joined."""
+        task = self._collecting.get(ticker)
+        if task is None or task.done() or task.get_loop() is not asyncio.get_running_loop():
+            return None
+        return task
+
+    async def _refresh_many(self, tickers: list[str]) -> set[str]:
+        failed = {t for t in tickers if off_broker(t)}
+        by_symbol: dict[str, list[str]] = {}       # the broker's symbol -> its tickers (BRK-B, BRK.B: one symbol)
+        for ticker in tickers:
+            if ticker not in failed:
+                by_symbol.setdefault(broker_symbol(ticker), []).append(ticker)
+        if not by_symbol:
+            return failed
+        got = await self.broker.quotes(list(by_symbol))
+        failed.update(t for s, names in by_symbol.items() if s not in got for t in names)
+        read = [(t, got[s]) for s, names in by_symbol.items() if s in got for t in names]
+        # two shared-tier writes at once: past shared_cache.TIMEOUT_SEC one would take the tier down for a while
+        gate = asyncio.Semaphore(2)
+
+        async def keep(ticker: str, price: float, currency: str | None) -> None:
+            # refresh_quote's fetch, for a quote the batch read
+            quote = Quote(ticker, _tidy(price), currency, self.broker.name, _now())   # fetched_at: this read
+            _remember(self._quotes, ticker, (self._clock(), quote), QUOTE_TTL_SEC, self._clock)
+            async with gate:
+                await shared_cache.aput(SHARED_NS, ticker, quote.to_dict(), DEMAND_TTL_SEC)
+            market_bus.publish("quote", ticker, quote.to_dict(), quote.source)   # #690 open market streams
+
+        results = await asyncio.gather(*(keep(t, *hit) for t, hit in read), return_exceptions=True)
+        failed.update(t for (t, _), result in zip(read, results, strict=True) if isinstance(result, BaseException))
+        return failed
+
+    def batch_ready(self) -> bool:
+        """#994 the broker reads many quotes in one call now: desk.demand's ``quote`` batch is worth it (else
+        each ticker's refresh_quote, a pass at a time)."""
+        return self.broker.batching()
 
     async def _read_quote(self, ticker: str) -> Quote:
         # #689 a quote another process (collector · analyst · api) read in the last QUOTE_TTL_SEC - in the api of
@@ -709,6 +811,22 @@ def _shared_quote(ticker: str, raw) -> Quote | None:
           and isinstance(quote.source, str) and isinstance(quote.fetched_at, str)
           and (quote.currency is None or isinstance(quote.currency, str)))
     return quote if ok else None
+
+
+async def _outcome(reading: asyncio.Future) -> set[str]:
+    """#994 the tickers a refresh_quotes read under way (``reading``: a refresh_quotes call's own, or the one a
+    refresh_quote joins) failed, waited for shielded: this call cut by demand's HANDLER_SEC leaves that read
+    running. Its failure as a whole is raised. Its cancellation is a LookupError only when another cancelled it
+    and this call was not cancelled (a failure demand.serve counts for these keys); this call cancelled as well
+    (with it - the loop closing, the demand job stopped) raises its own CancelledError, so the cancellation
+    goes on out of demand.serve."""
+    try:
+        return await asyncio.shield(reading)
+    except asyncio.CancelledError:
+        me = asyncio.current_task()
+        if reading.cancelled() and not (me is not None and me.cancelling()):
+            raise LookupError("the batch reading it was cancelled") from None
+        raise
 
 
 def _remember(cache: dict, key, entry: tuple, ttl: float, clock) -> None:

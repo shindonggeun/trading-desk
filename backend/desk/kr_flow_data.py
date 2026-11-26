@@ -1,12 +1,14 @@
-"""Read pre-existing public market snapshots for the Korean stock flow board."""
+"""Read pre-existing public market snapshots for the Korean stock flow board, plus #916 KIS per-stock rows."""
 
 from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import date, datetime
 from math import isfinite
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
@@ -14,9 +16,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from . import krx, market_bus, market_flow, shared_cache
 from .db import instruments, krx_daily, krx_days
-from .kr_flow_board import Publication, RankingDay, Turnover, build_board, sessions
+from .kr_flow_board import Publication, RankingDay, Turnover, build_board, ranked_tickers, sessions
 from .krx_etp import isin
 from .universe import KR_SUFFIX
+
+if TYPE_CHECKING:
+    from .kis_stock_flow import KisStockFlow
 
 # A general KRX collector may drop malformed rows. These keys are written only by the
 # whole-publication validator, before a day is eligible for a market-wide ranking.
@@ -180,9 +185,41 @@ def _sections(engine: Engine, market: str, dates: Sequence[date], favorites: Seq
     return sources, dict.fromkeys(confirmed, market), index_snapshot(engine, market, dates)
 
 
-async def read(engine: Engine, market: str, days: int, favorites: Sequence[dict], now: datetime) -> dict:
+def _favorite_codes(favorites: Sequence[dict], market: str, favorite_markets: Mapping[str, str]) -> list[str]:
+    """The account's codes in this market, in its own order (bare codes only once the listing confirmed them)."""
+    suffix = KR_SUFFIX[market.upper()]
+    codes = []
+    for favorite in favorites:
+        raw = favorite["ticker"].strip().upper()
+        code = raw.removesuffix(suffix) if raw.endswith(suffix) else raw if raw in favorite_markets else None
+        if code is not None and _CODE.fullmatch(code):
+            codes.append(code)
+    return codes
+
+
+async def _with_stock_flow(
+    stock_flow: KisStockFlow, sources: Publication, market: str, latest: date, now: datetime,
+    favorites: Sequence[dict], favorite_markets: Mapping[str, str],
+) -> Publication:
+    """#916 KIS per-stock rows for the favorites first, then the ranking's top stocks."""
+    ranked = [ticker[:6] for ticker in ranked_tickers(sources, market, latest, now)]
+    codes = list(dict.fromkeys(_favorite_codes(favorites, market, favorite_markets) + ranked))
+    stock = await stock_flow.collect(codes, market, latest)
+    if stock is None:
+        return sources
+    turnover, foreign_flow, ownership = stock
+    if turnover is not None:
+        turnover = [*(sources.turnover or ()), *turnover]
+    return replace(sources, turnover=sources.turnover if turnover is None else turnover,
+                   foreign_flow=foreign_flow, ownership=ownership)
+
+
+async def read(engine: Engine, market: str, days: int, favorites: Sequence[dict], now: datetime,
+               stock_flow: KisStockFlow | None = None) -> dict:
     dates = sessions(now)
     sources, favorite_markets, index = await asyncio.to_thread(_sections, engine, market, dates, favorites)
+    if stock_flow is not None:
+        sources = await _with_stock_flow(stock_flow, sources, market, dates[-1], now, favorites, favorite_markets)
     result = build_board(market, dates[-days:], publication=sources, now=now,
                          favorites=favorites, favorite_markets=favorite_markets)
     result["market_summary"] = await market_summary(market, dates, now, index)

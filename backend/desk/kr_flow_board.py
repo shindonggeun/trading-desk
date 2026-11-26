@@ -220,14 +220,16 @@ def _ratios(turnover: dict, foreign_flow: dict, turnover_scope: str | None, flow
             "buy_sell_imbalance": imbalance, "imbalance_status": imbalance_status}
 
 
-def _index(rows: Sequence[_Row] | None, market: str, latest: date, now: datetime) -> dict[tuple[str, date], _Row]:
-    by_key: dict[tuple[str, date], _Row] = {}
+def _index(rows: Sequence[_Row] | None, market: str, latest: date, now: datetime, *,
+           by_source: bool = False) -> dict[tuple, _Row]:
+    """The preferred row per (ticker, day), or per (ticker, day, source) with ``by_source``."""
+    by_key: dict[tuple, _Row] = {}
     for row in rows or ():
         if row.market.lower() != market or row.as_of > latest or not market_calendar.is_open("kr", row.as_of):
             continue
         ticker = _ticker(row.ticker, market)
         if ticker:
-            key = (ticker, row.as_of)
+            key = (ticker, row.as_of, row.source) if by_source else (ticker, row.as_of)
             old = by_key.get(key)
             if old is None or _preference(row, now) > _preference(old, now):
                 by_key[key] = row
@@ -269,6 +271,11 @@ def _ranking(
     return _metadata(day, "available" if day.as_of == latest else "stale"), ranked[:RANK_LIMIT]
 
 
+def ranked_tickers(publication: Publication, market: str, latest: date, now: datetime) -> list[str]:
+    """The board's ranking tickers in its order (turnover desc, ticker asc), at most ``RANK_LIMIT``."""
+    return [ticker for ticker, _ in _ranking(publication, market.lower(), latest, now)[1]]
+
+
 def _section(points: Sequence[dict], latest_ownership: Sequence[dict]) -> str:
     statuses = [point[key]["status"] for point in points for key in ("turnover", "foreign_flow", "ownership")]
     statuses.extend(row["status"] for row in latest_ownership)
@@ -290,6 +297,9 @@ def build_board(
         raise ValueError("market must be kospi or kosdaq")
     latest = dates[-1]
     turnover = _index(publication.turnover, market, latest, now)
+    # A flow source's own turnover (a confirmed trade scope) is the participation denominator for its flow
+    scoped_turnover = _index([row for row in publication.turnover or () if row.trade_scope is not None],
+                             market, latest, now, by_source=True)
     foreign = _index(publication.foreign_flow, market, latest, now)
     ownership = _index(publication.ownership, market, latest, now)
     empty_turnover = _empty_status(publication.turnover)
@@ -298,8 +308,13 @@ def build_board(
 
     def point(ticker: str, day: date, ranked: Turnover | None = None) -> dict:
         key = (ticker, day)
-        amount_row = ranked or turnover.get(key)
         flow_row = foreign.get(key)
+        same_source = scoped_turnover.get((ticker, day, flow_row.source)) if flow_row else None
+        if same_source is not None and _turnover(same_source, now, empty_turnover)["status"] != "available":
+            # Not final yet (before 20:10) or no checked value: another source's turnover is shown, if there is one
+            amount_row = ranked or turnover.get(key) or same_source
+        else:
+            amount_row = same_source or ranked or turnover.get(key)
         amount = _turnover(amount_row, now, empty_turnover)
         flow = _foreign_flow(flow_row, now, empty_foreign)
         ratios = _ratios(amount, flow, amount_row.trade_scope if amount_row else None,

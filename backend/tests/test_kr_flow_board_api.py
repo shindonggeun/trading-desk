@@ -1,10 +1,12 @@
 from contextlib import closing
 from datetime import UTC, date, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 
 from desk import kr_flow_data, kr_flow_import
 from desk.db import make_engine
+from desk.kr_flow_board import ForeignFlow, Turnover
 from desk.krx import KrxDaily
 from tests.test_favorites import OTHER, _app, _login
 
@@ -17,8 +19,8 @@ def test_flow_board_auth_and_per_account_favorites_with_a_shared_ranking(db_url,
     app = _app(db_url)
     read = kr_flow_data.read
 
-    async def read_at(engine, market, days, favorites, now):
-        return await read(engine, market, days, favorites, NOW)
+    async def read_at(engine, market, days, favorites, now, **options):
+        return await read(engine, market, days, favorites, NOW, **options)
 
     monkeypatch.setattr(kr_flow_data, "read", read_at)
     engine = make_engine(db_url)
@@ -66,8 +68,8 @@ def test_flow_board_index_change_follows_completed_kst_sessions(db_url, monkeypa
     thursday = date(2026, 10, 8)
     holiday = date(2026, 10, 9)
 
-    async def read_at(engine, market, days, favorites, _now):
-        return await read(engine, market, days, favorites, now)
+    async def read_at(engine, market, days, favorites, _now, **options):
+        return await read(engine, market, days, favorites, now, **options)
 
     monkeypatch.setattr(kr_flow_data, "read", read_at)
     engine = make_engine(db_url)
@@ -106,3 +108,62 @@ def test_flow_board_index_change_follows_completed_kst_sessions(db_url, monkeypa
         check(client, "kospi", thursday, 3000, 0)
         now = datetime(2026, 10, 12, 7, tzinfo=UTC)  # Monday's close is not yet published
         check(client, "kospi", date(2026, 10, 12), 3000, 0, as_of=thursday)
+
+
+class FakeStockFlow:
+    """Stands in for desk.kis_stock_flow: KIS rows for Samsung only, recording what each request asked."""
+
+    def __init__(self):
+        self.asked = []
+        self.closed = False
+
+    async def collect(self, codes, market, latest_session, *, budget_sec=2.0):
+        self.asked.append((list(codes), market, latest_session))
+        if "005930" not in codes:
+            return [], [], []
+        turnover = Turnover("005930.KS", market, latest_session, "kis", 1_000_000, trade_scope="all_sessions")
+        flow = ForeignFlow("005930.KS", market, latest_session, "kis", 120_000, 80_000, venue="krx", unit="KRW",
+                           trade_scope="all_sessions")
+        return [turnover], [flow], []
+
+    async def aclose(self):
+        self.closed = True
+
+
+def test_flow_board_shows_kis_participation_for_the_accounts_own_favorite(db_url, monkeypatch):
+    stock_flow = FakeStockFlow()
+    app = _app(db_url, stock_flow=stock_flow)
+    read = kr_flow_data.read
+
+    async def read_at(engine, market, days, favorites, now, **options):
+        return await read(engine, market, days, favorites, NOW, **options)
+
+    monkeypatch.setattr(kr_flow_data, "read", read_at)
+    engine = make_engine(db_url)
+    try:
+        source = {"OutBlock_1": [
+            {"BAS_DD": "20261124", "ISU_CD": code, "ISU_NM": name, "MKT_NM": "KOSPI", "ACC_TRDVAL": amount}
+            for code, name, amount in (("005930", "삼성전자", "1000"), ("000660", "SK하이닉스", "2000"))
+        ]}
+        assert kr_flow_import.save(engine, "kospi", DAY, source, NOW) == 2
+    finally:
+        engine.dispose()
+
+    with _login(app) as owner, closing(_login(app, OTHER)) as other:
+        assert owner.post("/api/favorites", json={"ticker": "005930.KS"}).status_code in (200, 201, 204)
+        assert other.post("/api/favorites", json={"ticker": "000660.KS"}).status_code in (200, 201, 204)
+        one, two = owner.get(URL).json(), other.get(URL).json()
+        # Favorites first, then the ranking (turnover desc); each code once
+        assert [asked[0] for asked in stock_flow.asked] == [["005930", "000660"], ["000660", "005930"]]
+        assert {asked[1:] for asked in stock_flow.asked} == {("kospi", DAY)}
+        latest = one["favorites"]["items"][0]["history"][-1]
+        assert latest["date"] == DAY.isoformat()
+        assert latest["foreign_flow"]["status"] == "available"
+        assert (latest["turnover"]["source"], latest["turnover"]["value_krw"]) == ("kis", 1_000_000)
+        assert latest["participation_pct"] == pytest.approx(10.0)
+        assert latest["buy_sell_imbalance"] == pytest.approx(0.2)
+        assert one["sources"]["foreign_flow"]["status"] == "available"
+        assert one["sources"]["ownership"]["status"] == "no_data"
+        assert [item["ticker"] for item in two["favorites"]["items"]] == ["000660.KS"]
+        assert {p["participation_pct"] for p in two["favorites"]["items"][0]["history"]} == {None}
+    assert stock_flow.closed

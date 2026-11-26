@@ -13,8 +13,9 @@ from desk.settings import Settings
 OWNER, OTHER, PASSWORD = "owner", "other", "correct horse battery"
 
 
-def _app(db_url):
-    app = create_app(Settings(database_url=db_url, fake_runs=True, fake_delay=0), runner=make_fake_runner(0))
+def _app(db_url, **options):
+    app = create_app(Settings(database_url=db_url, fake_runs=True, fake_delay=0), runner=make_fake_runner(0),
+                     **options)
     engine = make_engine(db_url)
     auth = Auth(engine, timedelta(hours=1), timedelta(hours=1))
     auth.create_user(OWNER, PASSWORD)

@@ -14,7 +14,9 @@ read lately, so with no screen open neither of them calls Toss or KIS.
   Nothing read - nothing written, and the value runs out in ``WANT_TTL``.
 - **collector** (``serve``, the ``demand`` job): reads that value and calls a handler per namespace for each key
   due (``EVERY``), two at a time, each within ``HANDLER_SEC``, a pass starting none after ``PASS_SEC``. A handler fetches from the source without
-  reading the shared tier (it would read its own value back) and writes the value for the api. The collector
+  reading the shared tier (it would read its own value back) and writes the value for the api. A namespace
+  with a batch handler (#994: ``quote``, one Toss call for every ticker) has all its due keys in one call per
+  pass instead, under the same limits as one key's, which answers the keys that failed. The collector
   keeps no wanted set of its own - a restart picks up where Redis is.
 - Off unless the process is the api with Redis on (or the collector, for ``serve``): one process (``all``) or no
   Redis answers as before, from its own fetches.
@@ -48,12 +50,14 @@ MAX_KEY_CHARS = 40
 # loop lands every ~10 s (10 would wait for the third pass, ~15 s)
 EVERY = {"quote": 10.0, "futures_quote": 15.0, "estimate": 9.0}
 NS_MAX = {"estimate": MAX_KEYS // 2}   # #999 a stream's 50 off-hours tickers leave room for the quotes
-PARALLEL = 2               # handlers running at once in a pass
+PARALLEL = 2               # handlers running at once in a pass (a batch handler's call takes one place)
 PASS_SEC = 10.0            # a pass stops starting handlers after this long
 HANDLER_SEC = 20.0         # one fetch past this is a failure (a slow KIS page run must not hold the next pass)
 BACKOFF_MAX_SEC = 60.0     # a key that failed waits twice as long each time, up to this
 
 Handler = Callable[[str], Awaitable[None]]
+# #994 a namespace's due keys in one call -> the keys that failed (raising, or past HANDLER_SEC: all of them)
+Batch = Callable[[list[str]], Awaitable[set[str]]]
 
 # True inside an HTTP request (ScreenReads): only a screen's reads are wanted
 SCREEN: ContextVar[bool] = ContextVar("desk_demand_screen", default=False)
@@ -151,10 +155,30 @@ async def read() -> dict[str, list[str]]:
     return _valid(hit[0]) if hit else {}
 
 
-async def serve(handlers: dict[str, Handler]) -> int:
-    """collector: one pass - every wanted key due calls its namespace's handler. Returns the keys served."""
+def _settle(ns: str, key: str, ok: bool, *, started: float, whole: bool) -> None:
+    """#994 a batch call's key ended. Under ``_lock``. Served: due again a period after its pass ``started``
+    (not after the call ended - a 4 s pass must not stretch a 10 s period to 14). Failed: backed off as one
+    key's failure is - but ``whole`` (the call failed as a whole: one brief fault fails every key in it) the
+    first time waits one period only (inside desk.prices.DEMAND_TTL_SEC: the shared value outlives the next
+    try); from the second on, as a key's."""
+    if ok:
+        _fails.pop((ns, key), None)
+        _due[(ns, key)] = started + EVERY[ns]
+        _stats["served"] += 1
+        return
+    n = _fails[(ns, key)] = _fails.get((ns, key), 0) + 1
+    wait = EVERY[ns] if whole and n == 1 else min(BACKOFF_MAX_SEC, EVERY[ns] * 2 ** n)
+    _due[(ns, key)] = time.monotonic() + wait
+    _stats["failed"] += 1
+
+
+async def serve(handlers: dict[str, Handler], *, batch: dict[str, Batch] | None = None) -> int:
+    """collector: one pass - every wanted key due calls its namespace's handler; a namespace in ``batch`` (#994)
+    has its due keys in one call of its batch handler instead (its own handler, if any, is not called).
+    Returns the keys served."""
     if not serving():
         return 0
+    batch = batch or {}
     wanted = await read()
     now = time.monotonic()
     with _lock:
@@ -162,7 +186,8 @@ async def serve(handlers: dict[str, Handler]) -> int:
         for k in [k for k in _due if k not in live]:       # no longer wanted: forget its timing
             _due.pop(k, None)
             _fails.pop(k, None)
-        due = sorted((k for k in live if k[0] in handlers and _due.get(k, 0.0) <= now), key=lambda k: _due.get(k, 0.0))
+        due = sorted((k for k in live if (k[0] in handlers or k[0] in batch) and _due.get(k, 0.0) <= now),
+                     key=lambda k: _due.get(k, 0.0))
     if not due:
         return 0
     started = time.monotonic()
@@ -191,7 +216,31 @@ async def serve(handlers: dict[str, Handler]) -> int:
                 _stats["served"] += 1
             served += 1
 
-    await asyncio.gather(*(one(ns, key) for ns, key in due))
+    async def group(ns: str, keys: list[str]) -> None:
+        nonlocal served
+        async with gate:                                   # one place of the gate for the whole call
+            if time.monotonic() - started > PASS_SEC:
+                return
+            why, whole = "", False
+            try:
+                failed = set(await asyncio.wait_for(batch[ns](list(keys)), HANDLER_SEC) or ()) & set(keys)
+            except Exception as exc:  # noqa: BLE001 - the call failing (or too slow) fails every key in it
+                failed, why, whole = set(keys), f": {type(exc).__name__}", True
+            with _lock:
+                for key in keys:
+                    _settle(ns, key, key not in failed, started=started, whole=whole)
+            if failed:
+                # counts only, no key (as one key's failure above)
+                log.info("demand: %s fetch failed for %d of %d keys%s", ns, len(failed), len(keys), why)
+            served += len(keys) - len(failed)
+
+    keys_of: dict[str, list[str]] = {}
+    for ns, key in due:
+        if ns in batch:
+            keys_of.setdefault(ns, []).append(key)
+    # the batch calls first: the largest share of the pass, each in the first places of the gate
+    await asyncio.gather(*(group(ns, keys) for ns, keys in keys_of.items()),
+                         *(one(ns, key) for ns, key in due if ns not in batch))
     return served
 
 

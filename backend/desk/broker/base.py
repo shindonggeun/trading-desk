@@ -4,10 +4,14 @@ idempotency and a daily cap first (see README, "Execution"), so there is no
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from typing import Any
+
+# #994 the default quotes() reads this many symbols at once - as desk.demand ran its per-ticker quote reads
+QUOTES_PARALLEL = 2
 
 
 @dataclass(frozen=True)
@@ -118,6 +122,50 @@ class Broker(ABC):
     async def quote(self, symbol: str) -> tuple[float, str | None]:
         """(last price, currency) for the broker's own symbol."""
         raise NotImplementedError
+
+    async def quotes(self, symbols: list[str]) -> dict[str, tuple[float, str | None]]:
+        """#994 ``quote`` for many of the broker's symbols: symbol -> (last price, currency). A symbol left out
+        is one whose own read failed as well - the caller does not read it again. One symbol failing never fails
+        the others; a failure every next read would meet too (``_stops_quotes``: Toss' 401 · 403 · 429, its
+        token) stops the reads, and is raised when no symbol was read (else the ones not read are left out).
+        This default reads them one by one, QUOTES_PARALLEL at a time; a broker with a many-symbol read (Toss)
+        overrides it."""
+        got, stop, _failures = await self._quotes_alone(symbols)
+        if stop is not None and not got:
+            raise stop
+        return got
+
+    def batching(self) -> bool:
+        """#994 ``quotes`` reads many symbols in one call now (desk.demand's batch is worth it): not by default."""
+        return False
+
+    def _stops_quotes(self, exc: Exception) -> bool:
+        """#994 a symbol's read failed in a way every next one's would: the rest are not read."""
+        return False
+
+    async def _quotes_alone(self, symbols: list[str]) -> tuple[dict[str, tuple[float, str | None]],
+                                                                Exception | None, dict[str, Exception]]:
+        """#994 each symbol's ``quote``, QUOTES_PARALLEL at a time: (what was read, the failure that stopped the
+        reads or None, each other symbol's failure - left out of what was read)."""
+        gate = asyncio.Semaphore(QUOTES_PARALLEL)
+        out: dict[str, tuple[float, str | None]] = {}
+        stop: list[Exception] = []
+        failures: dict[str, Exception] = {}
+
+        async def one(symbol: str) -> None:
+            async with gate:
+                if stop:
+                    return                                 # the source refuses: no more reads this call
+                try:
+                    out[symbol] = await self.quote(symbol)
+                except Exception as exc:  # noqa: BLE001 - that symbol only, unless every next one would fail too
+                    if self._stops_quotes(exc):
+                        stop.append(exc)
+                    else:
+                        failures[symbol] = exc
+
+        await asyncio.gather(*(one(s) for s in dict.fromkeys(symbols)))
+        return out, (stop[0] if stop else None), failures
 
     async def candles(self, symbol: str, interval: str, count: int) -> list[Bar]:
         """Up to ``count`` bars of ``interval`` (1m | 1d), oldest first."""

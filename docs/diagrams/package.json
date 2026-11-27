@@ -1,0 +1,17 @@
+{
+  "name": "trading-desk-diagrams",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "README 구성도 생성기 · 기능 GIF 녹화기 (#1027)",
+  "scripts": {
+    "build": "node generate-diagrams.mjs",
+    "record": "node record-features.mjs",
+    "gif": "python -X utf8 frames-to-gif.py"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "playwright": "1.63.0",
+    "simple-icons": "16.28.0"
+  }
+}

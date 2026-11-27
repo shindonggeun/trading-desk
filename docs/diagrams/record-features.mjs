@@ -2,21 +2,21 @@
  * README · docs/FEATURES.md 의 기능 GIF 녹화기 (#1027).
  *
  *   cd docs/diagrams && npm install && npx playwright install chromium
- *   node record-features.mjs [장면 …]   # 장면을 빼면 전부. 계정은 미리 설정한 DESK_CHECK_USER · DESK_CHECK_PASS 환경 변수
+ *   node record-features.mjs [장면 …]   # 장면을 빼면 전부. 계정은 미리 설정한 DESK_DEMO_USER · DESK_DEMO_PASS 환경 변수
  *   python -X utf8 frames-to-gif.py                                        # frames/ → ../images/features/*.gif
  *
  * 운영(trading.8llow8llowme.com)을 실제로 조작하며 장면마다 프레임을 찍는다. 화면 아래 자막이 지금 하는 일을,
  * 주황 테두리가 설명하는 자리를 알려 준다. 프레임과 표시 시간은 frames/<장면>/ 에 남고 GIF 는 frames-to-gif.py 가 묶는다.
  *
- * 계좌 값은 GIF 에 싣지 않는다(docs/security.md #775). 녹화 계정이 소유자여도 브라우저에서
+ * 계좌 값은 GIF 에 싣지 않는다(docs/security.md #775). 녹화는 **소유자가 아닌 녹화용 계정**으로만 한다 —
+ * 서버가 계좌 경로를 403 으로 막고, 계좌를 읽은 분석을 목록 · 상세에서 빼고, 모의 계좌를 계좌 분석 없이 계산한다.
+ * 로그인한 계정이 계좌를 읽을 수 있으면(소유자) 녹화를 시작하지 않는다. 그 위에 이중 방어로 브라우저에서
  * - 계좌 경로(/api/portfolio · /api/review · /api/holding-watch)를 비소유 계정과 같은 403 으로 막고,
  * - 분석 목록에서 계좌를 읽은 분석(options.use_portfolio)을 빼고,
- * - 모의 계좌(/api/paper/summary · equity · trades)를 막고 대시보드 모의 투자 카드를 숨기고,
  * - 오늘 알림에서 보유 종목 알림(holding_alert)을 빼고, 시장 스트림은 alert 채널 없이 구독하고,
  * - 목록에서 뺀 분석을 id 로 직접 여는 경로(/api/runs/{id} · ?run=)는 404 로 막고,
- * - 머리글의 로그인 아이디를 `demo` 로 바꾼다.
- * 응답 모양이 예상과 다르면 통과시키지 않고 막는다. 가장 안전한 길은 비소유 계정으로 녹화하는 것이다.
- * 계정 값은 환경 변수로만 받고 어디에도 쓰지 않는다.
+ * - 머리글의 로그인 아이디를 `demo` 로 보인다.
+ * 응답 모양이 예상과 다르면 통과시키지 않고 막는다. 계정 값은 환경 변수로만 받고 어디에도 쓰지 않는다.
  */
 import { chromium } from 'playwright';
 import fs from 'node:fs';
@@ -28,8 +28,6 @@ const FRAMES = path.join(HERE, 'frames');
 const BASE = process.env.DESK_BASE_URL || 'https://trading.8llow8llowme.com';
 // 계좌 값이 나가는 경로(docs/security.md #775 · tests/test_account_egress.py EXITS)
 const ACCOUNT = [/\/api\/portfolio/, /\/api\/review/, /\/api\/holding-watch/];
-// 소유자의 모의 계좌는 계좌를 읽은 분석까지 계산한다 — 다른 계정용 계산을 받을 길이 없어 통째로 막고 카드도 숨긴다
-const PAPER = /\/api\/paper\/(summary|equity|trades)/;
 const ACCENT = '#F97316';
 
 const OVERLAY_CSS = `
@@ -46,13 +44,12 @@ const OVERLAY_CSS = `
     background: rgba(249, 115, 22, .35); border: 2px solid ${ACCENT}; pointer-events: none; }
   /* 녹화에 방해되는 떠 있는 요소 */
   .tour-prompt { display: none !important; }
-  section[data-section="paper"] { display: none !important; }
 `;
 
 export async function openDesk({ width = 1440, height = 900, mobile = false } = {}) {
-  const user = process.env.DESK_CHECK_USER;
-  const pass = process.env.DESK_CHECK_PASS;
-  if (!user || !pass) throw new Error('DESK_CHECK_USER / DESK_CHECK_PASS 가 필요하다');
+  const user = process.env.DESK_DEMO_USER;
+  const pass = process.env.DESK_DEMO_PASS;
+  if (!user || !pass) throw new Error('DESK_DEMO_USER / DESK_DEMO_PASS(소유자가 아닌 녹화용 계정)가 필요하다');
   const browser = await chromium.launch();
   const ctx = await browser.newContext({
     baseURL: BASE,
@@ -76,7 +73,7 @@ export async function openDesk({ width = 1440, height = 900, mobile = false } = 
   await ctx.route('**/api/**', async (route) => {
     const req = route.request();
     const url = req.url();
-    if (ACCOUNT.some((re) => re.test(url)) || PAPER.test(url)) return deny(route);
+    if (ACCOUNT.some((re) => re.test(url))) return deny(route);
     const runRef = url.match(/\/api\/runs\/([\w-]+)/) || url.match(/[?&]run=([\w-]+)/);
     if (runRef && hidden.has(runRef[1])) return route.fulfill({ status: 404, json: { detail: 'run not found' } });
     if (/\/api\/stream\/market/.test(url)) {
@@ -114,6 +111,12 @@ export async function openDesk({ width = 1440, height = 900, mobile = false } = 
   });
   const res = await ctx.request.post('/api/auth/login', { headers: { Origin: BASE }, data: { username: user, password: pass } });
   if (res.status() !== 204) throw new Error(`로그인 실패 ${res.status()}`);
+  // 소유자 판정은 서버 것(desk.auth.owner_id)을 그대로 쓴다 — 계좌 경로가 403 이 아니면 녹화하지 않는다
+  const owner = await ctx.request.get('/api/portfolio');
+  if (owner.status() !== 403) {
+    await browser.close();
+    throw new Error(`녹화 계정이 계좌를 읽을 수 있다(${owner.status()}) — 소유자가 아닌 계정으로 녹화한다`);
+  }
   const page = await ctx.newPage();
   return { browser, ctx, page };
 }
@@ -424,6 +427,10 @@ const SCENES = {
     await rec.go('#/backtest', 6000);
     await rec.caption('백테스트 — 계획 규칙의 과거 체결률 · 기대 R', '규칙을 바꾸면 로컬에서 스냅샷을 다시 만들어 커밋');
     await rec.shot(2800);
+    await rec.go('#/paper', 6000);
+    await rec.caption('모의 투자 — 지난 분석의 진입 · 손절 · 목표대로 가상 계좌에서 샀다면', '실제 주문은 없습니다');
+    await rec.shot(2800);
+    await rec.scroll(700, { steps: 4, each: 450 });
     await rec.go('#/day-call', 6000);
     await rec.caption('오늘 방향 기록 — 매일의 롱 / 숏 판정과 적중');
     await rec.shot(2800);

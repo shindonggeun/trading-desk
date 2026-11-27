@@ -27,7 +27,7 @@
 
 ## 주요 기능
 
-> 모든 기능을 흐름 순서대로 GIF 로 보여 주는 소개는 **[docs/FEATURES.md](docs/FEATURES.md)** 에 있습니다. 운영 서버를 Playwright 로 직접 조작해 녹화했습니다(2026-11-27, 계좌 정보는 가림).
+> 모든 기능을 흐름 순서대로 GIF 로 보여 주는 소개는 **[docs/FEATURES.md](docs/FEATURES.md)** 에 있습니다. 운영 서버를 Playwright 로 직접 조작해 녹화했습니다(2026-11-27, 소유자가 아닌 녹화용 계정 — 계좌 정보 없음).
 
 ### 사용 흐름
 
@@ -48,7 +48,7 @@
 | 분석 없이 여는 차트(지지 · 저항 · 추세선 · 매물대 · 보조 지표 · 차트 읽기) | [차트](docs/FEATURES.md#5-차트) |
 | 시장 수급(외국인 · 기관 · 개인 · 프로그램) · 국장 수급 현황판 | [수급](docs/FEATURES.md#6-수급) |
 | 섹터별 등락 · 구성 종목 · 급등락 주범, 주간 지도 | [섹터](docs/FEATURES.md#7-섹터--주간-지도) |
-| 초보자용 리포트 · 백테스트 · 오늘 방향 기록 | [리포트 · 채점](docs/FEATURES.md#8-리포트--백테스트--모의-투자--방향-기록) |
+| 초보자용 리포트 · 백테스트 · 모의 투자 · 오늘 방향 기록 | [리포트 · 채점](docs/FEATURES.md#8-리포트--백테스트--모의-투자--방향-기록) |
 
 ### 기능 목록
 
@@ -183,11 +183,11 @@ PYTHONIOENCODING=utf-8 .venv/Scripts/python -m desk.cli day-call backtest --mark
 ```bash
 cd docs/diagrams && npm install
 npm run build                                       # docs/images/architecture.png
-npm run record                                      # 운영 화면 녹화 → frames/ (계정은 미리 설정한 DESK_CHECK_USER · DESK_CHECK_PASS)
+npm run record                                      # 운영 화면 녹화 → frames/ (소유자가 아닌 녹화용 계정: DESK_DEMO_USER · DESK_DEMO_PASS)
 npm run gif                                         # frames/ → docs/images/features/*.gif (Pillow)
 ```
 
-녹화는 계좌 경로 · 모의 계좌 · 계좌 분석 · 보유 종목 알림을 막고 로그인 아이디를 가린다. 커밋 전에 프레임을 훑어 계좌 값 · 개인 정보가 없는지 본다([docs/FEATURES.md](docs/FEATURES.md#다시-녹화하기)).
+녹화는 소유자가 아닌 계정으로만 한다 — 서버가 계좌 경로 · 계좌 분석을 거르고, 녹화 브라우저도 같은 경로와 보유 종목 알림을 한 번 더 막는다. 소유자 계정이면 녹화기가 시작하지 않는다. 커밋 전에 프레임을 훑어 계좌 값 · 개인 정보가 없는지 본다([docs/FEATURES.md](docs/FEATURES.md#다시-녹화하기)).
 
 </details>
 
